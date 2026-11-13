@@ -1,29 +1,11 @@
-//! `tilo-doc-pdf` — render a [`tilo_doc::DocSnapshot`] to a paginated PDF.
+//! `tilo-doc-pdf` — render a [`tilo_doc::DocSnapshot`] to a paginated PDF: the
+//! read-only document view laid out onto US-Letter pages as the bytes of a
+//! valid PDF 1.7 file. The crate exposes only [`render_pdf`].
 //!
-//! Takes the materialized, read-only document view and lays it out onto
-//! US-Letter pages, returning the bytes of a valid PDF 1.7 file. This
-//! crate only exposes [`render_pdf`].
-//!
-//! ## Approach
-//!
-//! Written by a small hand-rolled writer (`pdf`) — no `printpdf`
-//! dependency — for lockfile stability and full control of pagination
-//! and image embedding. Text uses the base-14 Helvetica family —
-//! regular, bold, oblique and bold oblique (viewer-shipped); AFM advance
-//! widths (`metrics`) drive accurate word-wrap. Headings are bold; inline
-//! `strong` and `em` marks set bold and italic per run, wrapped as one
-//! line of mixed runs. Images are decoded with the `image` crate and
-//! embedded as `/DeviceRGB` `Image` `XObjects`.
-//!
-//! ## Known limitations
-//!
-//! Fonts: base-14 Helvetica only — glyphs outside `WinAnsiEncoding` (CJK,
-//! most non-Latin) render as `?`. Images: re-encoded to raw RGB and
-//! Flate-compressed (fine for export, not size-optimal); failures fall
-//! back to a labelled placeholder. Tables: a simple fixed-grid, no
-//! merging/per-cell wrapping beyond one clipped line/row spanning.
-//! Marks: only `strong` and `em` are drawn; underline, strike, colour,
-//! size and font family are not.
+//! The writer (`pdf`) is hand-rolled, so pagination and image embedding stay
+//! under control and the lockfile stable. Text uses the base-14 Helvetica
+//! family with AFM advance widths (`metrics`) for word-wrap; images are decoded
+//! with the `image` crate and embedded as `/DeviceRGB` `Image` `XObjects`.
 
 mod metrics;
 mod pdf;
@@ -37,23 +19,20 @@ use tilo_doc::{BlockView, DocSnapshot};
 use pdf::{ObjId, PdfWriter, escape_pdf_text};
 use tilo_content::ContentSource;
 
-/// Errors that can arise while rendering a snapshot to PDF.
 #[derive(Debug)]
 pub enum DocPdfError {
-    /// An image block referenced a blob that could not be decoded. Carries
-    /// the blob hash for diagnostics; non-fatal in [`render_pdf`] (a
-    /// placeholder is drawn instead).
+    /// An image block referenced a blob that could not be decoded, with the blob hash
+    /// for diagnostics; non-fatal, a placeholder is drawn instead.
     ImageDecode(String),
 }
 
-/// One raster page for a searchable scanned-document PDF.
 pub struct ScannedPdfPage {
     pub width: u32,
     pub height: u32,
     /// Packed RGB8 pixels, row-major.
     pub rgb: Vec<u8>,
-    /// OCR text associated with this page. It is embedded invisibly so copy,
-    /// search, and indexing work without drawing over the original scan.
+    /// OCR text, embedded invisibly, so copy, search and indexing work without
+    /// drawing over the scan.
     pub recognized_text: String,
 }
 
@@ -111,9 +90,9 @@ pub fn render_scanned_pdf(pages: &[ScannedPdfPage]) -> Vec<u8> {
             content.extend_from_slice(&escaped);
             content.extend_from_slice(b") Tj ET\n");
         }
-        // Content commands are tiny compared with the compressed raster and
-        // remain uncompressed so document indexers can recover the invisible
-        // OCR layer even when they implement only the core PDF filters.
+        /// Content commands are tiny beside the compressed raster, so they stay
+        /// uncompressed and an indexer that implements only core filters can still
+        /// recover the invisible OCR layer.
         let contents = writer.add_stream("", &content);
         let resources = format!(
             "<< /Font << /F1 {} 0 R >> /XObject << /Im{index} {} 0 R >> >>",
@@ -166,7 +145,6 @@ const PARA_GAP: f32 = 6.0; // extra space after a paragraph/heading
 const LIST_INDENT: f32 = 18.0; // per-level indent for lists
 const TABLE_PAD: f32 = 4.0; // cell text padding
 
-/// Which face of the Helvetica family a run is set in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Style {
     bold: bool,
@@ -179,8 +157,8 @@ impl Style {
         italic: false,
     };
 
-    /// The advance widths of this face: an oblique face is its upright
-    /// face slanted, so it shares that face's widths.
+    /// The advance widths of this face; an oblique face is its upright face slanted
+    /// and shares its widths.
     fn widths(self) -> &'static [u16; 256] {
         if self.bold {
             &metrics::HELVETICA_BOLD
@@ -189,7 +167,6 @@ impl Style {
         }
     }
 
-    /// The page resource name of this face's font (see [`finish`]).
     fn font(self) -> &'static str {
         match (self.bold, self.italic) {
             (false, false) => "F1",
@@ -212,10 +189,9 @@ const FACES: [&str; 4] = [
     "Helvetica-BoldOblique",
 ];
 
-/// One drawing op accumulated into a page's content stream, collected
-/// per page and serialized at the end so the writer stays a single pass.
+/// One drawing op, collected per page and serialized at the end, so the writer
+/// stays a single pass.
 enum Op {
-    /// Show `text` at baseline `(x, y)` in face `style` at `size` pt.
     Text {
         x: f32,
         y: f32,
@@ -223,11 +199,18 @@ enum Op {
         style: Style,
         text: String,
     },
-    /// Stroke a 1pt line from `(x1,y1)` to `(x2,y2)`.
-    Line { x1: f32, y1: f32, x2: f32, y2: f32 },
-    /// Stroke a rectangle outline at `(x,y)` (lower-left) sized `w`×`h`.
-    Rect { x: f32, y: f32, w: f32, h: f32 },
-    /// Paint image `XObject` `name` into the box `(x,y,w,h)` (lower-left origin).
+    Line {
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+    },
+    Rect {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    },
     Image {
         name: String,
         x: f32,
@@ -238,7 +221,6 @@ enum Op {
 }
 
 impl Op {
-    /// Move the op up by `dy` points.
     fn raise(&mut self, dy: f32) {
         match self {
             Op::Text { y, .. } | Op::Rect { y, .. } | Op::Image { y, .. } => *y += dy,
@@ -250,10 +232,8 @@ impl Op {
     }
 }
 
-/// One page under construction: the list of ops drawn on it so far.
 struct Page {
     ops: Vec<Op>,
-    /// Image `XObjects` referenced on this page: `(resource_name, obj_id)`.
     images: Vec<(String, ObjId)>,
 }
 
@@ -266,19 +246,14 @@ impl Page {
     }
 }
 
-/// The pagination/rendering cursor. Owns the writer (so images can be
-/// added as `XObjects` on demand) and the running list of pages; page breaks
-/// follow the same rules as the word processor's on-screen sheets.
-///
-/// `first_page` is split out from `later_pages` (rather than one `Vec`
-/// with a never-empty invariant) so "there is always a page" is a fact of
-/// the type, not a runtime check [`Layout::page`] would otherwise have to
-/// assert.
+/// The pagination and rendering cursor: the writer, so images can be added as
+/// `XObjects` on demand, and the pages. `first_page` is split out of
+/// `later_pages` so "there is always a page" is a fact of the type rather than a
+/// runtime check.
 struct Layout {
     writer: PdfWriter,
     first_page: Page,
     later_pages: Vec<Page>,
-    /// Where the next block goes, as a distance below the top margin.
     flow: PageFlow,
     /// Each placed block's page and first op there, in placement order, so a
     /// heading carried to the next page with its text can follow it.
@@ -298,7 +273,6 @@ impl Layout {
         }
     }
 
-    /// Page `index`, starting any pages before it.
     fn page(&mut self, index: usize) -> &mut Page {
         if index > self.later_pages.len() {
             self.later_pages.resize_with(index, Page::new);
@@ -324,7 +298,6 @@ impl Layout {
         if let Some(carry) = placed.carry
             && let Some(&(page, first_op)) = self.block_ops.get(carry.block)
         {
-            // The carried run is everything on its page from its first op.
             let from = self.page(page);
             let ops = from.ops.split_off(first_op.min(from.ops.len()));
             let (images, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut from.images)
@@ -347,15 +320,12 @@ impl Layout {
         placed
     }
 
-    /// Place a block of already-wrapped lines of runs, each `leading` below
-    /// the one before it, and return where it went.
     fn lines(&mut self, block: &PageBlock, lines: &[Vec<Run>], text: TextSet) -> Placed {
         let TextSet { x, size, leading } = text;
         let boxes = line_boxes(lines.len(), f64::from(leading));
         let placed = self.place(block, &boxes);
         for (index, runs) in lines.iter().enumerate() {
             let (page, top) = placed.locate(&boxes, index);
-            // Baseline sits ~`size` below the line's top (approx ascent).
             let baseline = pdf_y(top) - size * 0.8;
             let mut x = x;
             for (text, style) in runs {
@@ -377,7 +347,6 @@ impl Layout {
     }
 }
 
-/// Where a block's lines are set: their left edge, point size and leading.
 #[derive(Clone, Copy)]
 struct TextSet {
     x: f32,
@@ -385,7 +354,6 @@ struct TextSet {
     leading: f32,
 }
 
-/// The PDF y (larger = higher) of a point `offset` below the top margin.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "an offset within one page's content box, far inside f32's range"
@@ -394,7 +362,6 @@ fn pdf_y(offset: f64) -> f32 {
     CONTENT_TOP - offset as f32
 }
 
-/// `count` lines `height` tall, stacked from a block's top.
 fn line_boxes(count: usize, height: f64) -> Vec<(f64, f64)> {
     (0..count)
         .scan(0.0, |top, _| {
@@ -405,8 +372,6 @@ fn line_boxes(count: usize, height: f64) -> Vec<(f64, f64)> {
         .collect()
 }
 
-/// A block of `lines` lines `leading` apart, breaking before itself when the
-/// document asks for a manual page break there.
 fn text_block(block: &BlockView, lines: usize, leading: f32) -> PageBlock {
     #[allow(
         clippy::cast_precision_loss,
@@ -416,25 +381,20 @@ fn text_block(block: &BlockView, lines: usize, leading: f32) -> PageBlock {
     PageBlock::new(height).breaking_before(breaks_before(block))
 }
 
-/// The document's manual page break before `block`.
 fn breaks_before(block: &BlockView) -> bool {
     block.flag("page_break_before")
 }
 
-/// Render a materialized tilo-doc snapshot to PDF bytes. Always succeeds for
-/// a well-formed snapshot — undecodable image blobs degrade to a
-/// placeholder box rather than erroring; an empty document still yields
-/// a valid, single-page PDF.
+/// Render a materialized tilo-doc snapshot to PDF bytes, a valid single page even
+/// when the document is empty. An undecodable image blob or a missing blob hash
+/// degrades to a placeholder box.
 ///
 /// # Errors
 ///
-/// Never in the current implementation: every failure mode (an undecodable
-/// image blob, a missing blob hash) degrades to a placeholder box instead of
-/// propagating. The `Result` is kept so a future encoding failure has
-/// somewhere to surface without a signature change.
+/// Never: the `Result` is kept so a future encoding failure has somewhere to
+/// surface.
 pub fn render_pdf(snap: &DocSnapshot, content: &dyn ContentSource) -> Result<Vec<u8>, DocPdfError> {
     let mut layout = Layout::new();
-    // Kept inline elements without visible text (drawings, formulas) have no text to lay out.
     let snap = tilo_doc::export::without_kept_placeholders(snap);
 
     for block in &snap.blocks {
@@ -473,7 +433,6 @@ fn render_heading(layout: &mut Layout, block: &BlockView) {
     let size = heading_size(level);
     let leading = size * 1.25;
     let lines = wrap(&styled(block, Style::BOLD), TEXT_W, size);
-    // A heading moves on with the text it introduces rather than end a page.
     let page_block = text_block(block, lines.len(), leading)
         .with_lead(f64::from(PARA_GAP))
         .keeping_with_next(true);
@@ -511,9 +470,6 @@ fn render_paragraph(layout: &mut Layout, block: &BlockView) {
 
 fn render_list_item(layout: &mut Layout, block: &BlockView) {
     let level = match block.attrs.get("level") {
-        // `level` comes from the document; clamp to a depth no real list
-        // nests past, so a corrupt/hostile attribute can't push the
-        // indent (and this cast) to an absurd value.
         #[allow(
             clippy::cast_precision_loss,
             reason = "clamped to a small range just above; precision loss is impossible in that range"
@@ -547,8 +503,6 @@ fn render_list_item(layout: &mut Layout, block: &BlockView) {
             leading: BODY_LEADING,
         },
     );
-    // Marker on the first line, hung to the left of the wrapped text, at the
-    // same baseline.
     let (page, top) = placed.locate(&line_boxes(1, f64::from(BODY_LEADING)), 0);
     layout.page(page).ops.push(Op::Text {
         x: indent,
@@ -577,8 +531,6 @@ fn render_image(layout: &mut Layout, content: &dyn ContentSource, block: &BlockV
 }
 
 fn render_table(layout: &mut Layout, block: &BlockView) {
-    // Rows are child blocks, each row's children its cells. Tolerates
-    // the alternate flat-cells-with-`cols`-attr shape.
     let plan = TablePlan::new(block);
     if plan.is_empty() {
         return;
@@ -590,9 +542,6 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
         .max()
         .unwrap_or(1)
         .max(1);
-    // A column count feeding a display-only width ratio; precision loss
-    // is invisible well before a table could plausibly have this many
-    // columns.
     #[allow(
         clippy::cast_precision_loss,
         reason = "ncols is a column count feeding a display ratio; no real table approaches f32's precision limit"
@@ -624,11 +573,7 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
         let top = pdf_y(offset);
         let bottom = top - row_h;
         let page = layout.page(page);
-        // Cell grid + text.
         for (ci, cell) in row.iter().enumerate() {
-            // A column index feeding a display-only x-offset; precision
-            // loss is invisible well before a table could plausibly have
-            // this many columns.
             #[allow(
                 clippy::cast_precision_loss,
                 reason = "ci is a column index feeding a display offset; no real table approaches f32's precision limit"
@@ -650,11 +595,7 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
                 text,
             });
         }
-        // Outline any missing trailing cells so the grid stays rectangular.
         for ci in row.len()..ncols {
-            // A column index feeding a display-only x-offset; precision
-            // loss is invisible well before a table could plausibly have
-            // this many columns.
             #[allow(
                 clippy::cast_precision_loss,
                 reason = "ci is a column index feeding a display offset; no real table approaches f32's precision limit"
@@ -674,7 +615,6 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
 struct DecodedImage {
     width: u32,
     height: u32,
-    /// Raw RGB8, row-major, top-to-bottom.
     rgb: Vec<u8>,
 }
 
@@ -690,9 +630,8 @@ fn decode_image(bytes: &[u8]) -> Result<DecodedImage, DocPdfError> {
 }
 
 fn place_image(layout: &mut Layout, block: &BlockView, img: &DecodedImage) {
-    // Scale to text width, preserving aspect; cap height to one page's content.
-    // A display-only aspect ratio; no real decoded image dimension
-    // approaches f32's precision limit.
+    /// Scale to the text width, keeping the aspect, and cap the height to one page's
+    /// content.
     #[allow(
         clippy::cast_precision_loss,
         reason = "aspect ratio is display-only; no real image dimension approaches f32's precision limit"
@@ -709,7 +648,6 @@ fn place_image(layout: &mut Layout, block: &BlockView, img: &DecodedImage) {
     let bottom = top - h;
 
     let name = format!("Im{}", layout.next_img);
-    // Bounded by the number of images in one document — nowhere near `usize::MAX`.
     layout.next_img = layout.next_img.saturating_add(1);
     let compressed = pdf::flate(&img.rgb);
     let dict = format!(
@@ -730,14 +668,12 @@ fn place_image(layout: &mut Layout, block: &BlockView, img: &DecodedImage) {
     layout.gap(PARA_GAP);
 }
 
-/// An image or its placeholder, `h` tall: it cannot split.
 fn figure_block(block: &BlockView, h: f32) -> PageBlock {
     PageBlock::new(f64::from(h))
         .with_lead(f64::from(PARA_GAP))
         .breaking_before(breaks_before(block))
 }
 
-/// Draw a labelled placeholder box where an image couldn't be embedded.
 fn placeholder(layout: &mut Layout, block: &BlockView, label: &str) {
     let h = 120.0;
     let placed = layout.place(&figure_block(block, h), &[]);
@@ -750,7 +686,6 @@ fn placeholder(layout: &mut Layout, block: &BlockView, label: &str) {
         w: TEXT_W,
         h,
     });
-    // Diagonal cross to read clearly as a placeholder.
     page.ops.push(Op::Line {
         x1: MARGIN,
         y1: bottom,
@@ -775,14 +710,10 @@ fn placeholder(layout: &mut Layout, block: &BlockView, label: &str) {
     layout.gap(PARA_GAP);
 }
 
-/// A run of text set in one face.
 type Run = (String, Style);
 
-/// One character and the face it is set in.
 type Styled = (char, Style);
 
-/// `block`'s characters, each in `base` — made bold under a `strong` mark
-/// and italic under an `em` mark (mark offsets count characters).
 fn styled(block: &BlockView, base: Style) -> Vec<Styled> {
     let on = |name: &str, at: usize| {
         block.marks.iter().any(|mark| {
@@ -814,7 +745,6 @@ fn styled_width(chars: &[Styled], size: f32) -> f32 {
         .sum()
 }
 
-/// `chars` as runs: consecutive characters in one face joined.
 fn runs(chars: &[Styled]) -> Vec<Run> {
     let mut runs: Vec<Run> = Vec::new();
     for &(ch, style) in chars {
@@ -837,7 +767,6 @@ fn wrap(chars: &[Styled], max_w: f32, size: f32) -> Vec<Vec<Run>> {
             continue;
         }
         let mut line: Vec<Styled> = Vec::new();
-        // Each piece is a word and the space after it, if any.
         for piece in source.split_inclusive(|&(ch, _)| ch == ' ') {
             let word = match piece.split_last() {
                 Some((&(' ', _), word)) => word,
@@ -853,7 +782,6 @@ fn wrap(chars: &[Styled], max_w: f32, size: f32) -> Vec<Vec<Run>> {
             if styled_width(word, size) <= max_w {
                 line.extend_from_slice(piece);
             } else {
-                // A single word longer than the column: hard-break it.
                 out.extend(hard_break(word, max_w, size));
             }
         }
@@ -867,7 +795,6 @@ fn wrap(chars: &[Styled], max_w: f32, size: f32) -> Vec<Vec<Run>> {
     out.iter().map(|line| runs(line)).collect()
 }
 
-/// `line` without the spaces it ends in.
 fn trimmed(mut line: Vec<Styled>) -> Vec<Styled> {
     while line.last().is_some_and(|&(ch, _)| ch == ' ') {
         line.pop();
@@ -875,7 +802,6 @@ fn trimmed(mut line: Vec<Styled>) -> Vec<Styled> {
     line
 }
 
-/// Break a single overlong word into column-width chunks (char granularity).
 fn hard_break(word: &[Styled], max_w: f32, size: f32) -> Vec<Vec<Styled>> {
     let mut chunks = Vec::new();
     let mut cur: Vec<Styled> = Vec::new();
@@ -892,8 +818,6 @@ fn hard_break(word: &[Styled], max_w: f32, size: f32) -> Vec<Vec<Styled>> {
     chunks
 }
 
-/// Truncate `text` to fit `max_w` at `size`pt, appending "…" if clipped
-/// — used for table cells and single-line placeholder labels.
 fn clip_to_width(text: &str, max_w: f32, size: f32) -> String {
     let table = &metrics::HELVETICA;
     if metrics::text_width(table, &pdf::to_winansi(text), size) <= max_w {
@@ -914,9 +838,7 @@ fn clip_to_width(text: &str, max_w: f32, size: f32) -> String {
     cur
 }
 
-/// Turn the accumulated pages into the final PDF byte stream.
 fn finish(mut layout: Layout) -> Vec<u8> {
-    // Font objects (shared across pages), `/F1` … `/F4` in `FACES` order.
     let fonts = {
         use std::fmt::Write as _;
         let mut fonts = String::new();
@@ -931,7 +853,6 @@ fn finish(mut layout: Layout) -> Vec<u8> {
     // Reserve the pages-tree object so each page can reference its parent.
     let pages_obj = layout.writer.reserve();
 
-    // Take ownership of the page list so we can borrow the writer mutably.
     let mut pages = vec![std::mem::replace(&mut layout.first_page, Page::new())];
     pages.append(&mut layout.later_pages);
     let mut page_objs: Vec<ObjId> = Vec::with_capacity(pages.len());
@@ -943,22 +864,16 @@ fn finish(mut layout: Layout) -> Vec<u8> {
             .writer
             .add_stream(" /Filter /FlateDecode", &content_data);
 
-        // Per-page resources: fonts always; XObjects when images were placed.
         let mut xobjects = String::new();
         if !page.images.is_empty() {
             use std::fmt::Write as _;
             xobjects.push_str(" /XObject << ");
             for (name, obj) in &page.images {
-                // Writing to a `String` cannot fail; discard the always-`Ok`
-                // result rather than allocating a temporary just to push it.
                 let _ = write!(xobjects, "/{} {} 0 R ", name, obj.0);
             }
             xobjects.push_str(">>");
         }
         let resources = format!("<< /Font << {fonts}>>{xobjects} >>");
-        // `PAGE_W`/`PAGE_H` are fixed page-geometry constants (612.0,
-        // 792.0), not derived from any document input, so this truncation
-        // is provably exact.
         #[allow(
             clippy::cast_possible_truncation,
             reason = "PAGE_W/PAGE_H are fixed whole-number constants, not document-derived"
@@ -993,7 +908,6 @@ fn font_dict(base: &str) -> String {
     format!("<< /Type /Font /Subtype /Type1 /BaseFont /{base} /Encoding /WinAnsiEncoding >>")
 }
 
-/// Serialize a page's ops into a PDF content stream.
 fn serialize_ops(ops: &[Op]) -> Vec<u8> {
     use std::io::Write as _;
     let mut s = Vec::new();
@@ -1018,7 +932,6 @@ fn serialize_ops(ops: &[Op]) -> Vec<u8> {
                 let _ = writeln!(s, "{x:.2} {y:.2} {w:.2} {h:.2} re S");
             }
             Op::Image { name, x, y, w, h } => {
-                // Image space is a unit square mapped by the CTM; q/Q isolates it.
                 let _ = writeln!(s, "q {w:.2} 0 0 {h:.2} {x:.2} {y:.2} cm /{name} Do Q");
             }
         }

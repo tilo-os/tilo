@@ -1,23 +1,16 @@
-//! Glyph-width metrics for the two base-14 fonts we use (Helvetica and
-//! Helvetica-Bold). Widths are in 1000-unit em space, indexed by `WinAnsi` byte.
-//!
-//! These are the standard Adobe AFM advance widths. They let us word-wrap text
-//! accurately without embedding a font program — the viewer ships its own
-//! Helvetica, but we still need the widths to know where to break lines.
+//! Glyph-width metrics for Helvetica and Helvetica-Bold, in 1000-unit em space
+//! and indexed by `WinAnsi` byte: the standard Adobe AFM advance widths, which
+//! word-wrap needs even though the viewer ships the font program.
 
 /// Helvetica advance widths (AFM `WX`) for `WinAnsi` byte values 0..=255.
 /// Bytes with no glyph use the Helvetica default of 0; unknown printable
 /// positions fall back to the space width via [`char_width`].
 pub static HELVETICA: [u16; 256] = build_helvetica();
 
-/// Helvetica-Bold advance widths for `WinAnsi` byte values 0..=255.
 pub static HELVETICA_BOLD: [u16; 256] = build_helvetica_bold();
 
-/// Advance width (in 1000-em units) of one `WinAnsi` byte in the given table.
 #[inline]
 pub fn byte_width(table: &[u16; 256], b: u8) -> u16 {
-    // `b: u8` is always `0..=255`, exactly `table`'s index range, so this
-    // is never `None`; `.get()` just spells that out instead of `[]`.
     let w = table.get(b as usize).copied().unwrap_or(0);
     if w == 0 && b != b' ' {
         // Fall back to space width for any unmapped printable byte so wrapping
@@ -28,12 +21,8 @@ pub fn byte_width(table: &[u16; 256], b: u8) -> u16 {
     }
 }
 
-/// Width of a `WinAnsi` byte slice at `font_size` points, in points.
 pub fn text_width(table: &[u16; 256], bytes: &[u8], font_size: f32) -> f32 {
     let units: u32 = bytes.iter().map(|&b| u32::from(byte_width(table, b))).sum();
-    // A cumulative glyph-width sum feeding a word-wrap decision; wrapping
-    // is already an approximation, so precision loss here is invisible in
-    // practice long before `units` could reach f32's precision limit.
     #[allow(
         clippy::cast_precision_loss,
         reason = "feeds an approximate word-wrap width; no realistic text run reaches f32's precision limit"
@@ -42,14 +31,12 @@ pub fn text_width(table: &[u16; 256], bytes: &[u8], font_size: f32) -> f32 {
     units_f32 * font_size / 1000.0
 }
 
-// The tables below are the canonical Adobe Helvetica / Helvetica-Bold AFM
-// widths. Generated as const fns so they live in static memory with no runtime
-// init cost. Positions not assigned by the AFM are left 0 and resolved by
-// `byte_width`'s space fallback.
+// The canonical Adobe Helvetica / Helvetica-Bold AFM widths, built by const fns
+// so they live in static memory with no runtime init. Positions the AFM leaves
+// unassigned are 0 and resolve through `byte_width`'s space fallback.
 
-// ASCII printable range (0x20..0x7E), hoisted out of `build_helvetica` so
-// that function stays under the line-count limit; the data itself is
-// unchanged, just no longer a local of the function that consumes it.
+// ASCII printable range (0x20..0x7E), hoisted out of `build_helvetica` so that
+// function stays under the line-count limit; the data is unchanged.
 const HELVETICA_ASCII: [(u8, u16); 95] = [
     (32, 278),
     (33, 278),
@@ -148,10 +135,6 @@ const HELVETICA_ASCII: [(u8, u16); 95] = [
     (126, 584),
 ];
 
-/// Builds [`HELVETICA`] from [`HELVETICA_ASCII`] plus a handful of
-/// high-byte overrides. `HELVETICA_ASCII`'s indices/loop counter are
-/// bounded by its own fixed length, checked by the const evaluator at
-/// compile time — there is no runtime input and no failure path.
 #[allow(
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
@@ -164,8 +147,6 @@ const fn build_helvetica() -> [u16; 256] {
         t[HELVETICA_ASCII[i].0 as usize] = HELVETICA_ASCII[i].1;
         i += 1;
     }
-    // A few high-byte WinAnsi positions used by `to_winansi` (quotes, dashes,
-    // bullet, ellipsis, nbsp). Widths from the Helvetica AFM.
     t[0x85] = 1000; // ellipsis
     t[0x91] = 222; // quoteleft
     t[0x92] = 222; // quoteright
@@ -178,8 +159,6 @@ const fn build_helvetica() -> [u16; 256] {
     t
 }
 
-// Hoisted out of `build_helvetica_bold` for the same reason as
-// `HELVETICA_ASCII` above; the data is unchanged.
 const HELVETICA_BOLD_ASCII: [(u8, u16); 95] = [
     (32, 278),
     (33, 333),
@@ -278,8 +257,6 @@ const HELVETICA_BOLD_ASCII: [(u8, u16); 95] = [
     (126, 584),
 ];
 
-/// Builds [`HELVETICA_BOLD`]; see [`build_helvetica`] for why the
-/// indexing/arithmetic here is allowed.
 #[allow(
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
