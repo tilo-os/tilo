@@ -163,7 +163,7 @@ mail-a11y-refused = The server refused this message: { $reason }
 mail-a11y-cancel-sending = Cancel sending to { $to }
 mail-a11y-outbox-row = To { $to }: { $subject }
 mail-a11y-no-messages = No messages in { $folder }
-mail-status-send-failed = Send failed: { $error }
+mail-status-send-failed = Couldn’t send the message: { $error }
 mail-purge-body = { $count ->
     [one] One message in Trash will be deleted from this mailbox and the server. This can’t be undone.
    *[other] { $count } messages in Trash will be deleted from this mailbox and the server. This can’t be undone.
@@ -193,6 +193,7 @@ mail-status-deleted = { $count ->
     [one] Deleted one message
    *[other] Deleted { $count } messages
 }
+mail-status-trusted-senders-not-saved = Couldn’t save your trusted senders: { $error }
 mail-status-account-not-saved = Selected account, but could not save that preference: { $error }
 mail-status-purged = { $count ->
     [one] Permanently deleted one trashed message
@@ -298,3 +299,56 @@ mail-app-title = Mail
 mail-copies = Mail on your devices
 mail-copies-keep-copies = Keep fetched mail
 mail-copies-forget-copies = Forget fetched mail
+
+## What Mail says once: what it did, what it could not do, and what is next
+mail-notice-server-unreachable = Mail couldn’t reach the mail server
+mail-notice-offline = You’re offline. New mail arrives when you’re back online.
+mail-notice-sign-in-failed = Can’t sign in. Check the account’s password in Settings, under External accounts.
+mail-notice-sign-in-failed-account = Can’t sign in to { $account }. Check its password in Settings, under External accounts.
+mail-notice-check-failed = Can’t check mail: { $error }
+mail-notice-check-failed-account = Can’t check mail for { $account }: { $error }
+mail-notice-sign-in-unfinished = Sign-in didn’t finish: { $error }
+mail-notice-server-failed = Couldn’t update the mail server: { $error }
+mail-notify-arrived = { $count ->
+    [one] New message
+   *[other] { $count } new messages
+}
+mail-outbox-waiting = Waiting to be sent
+
+mail-status-picker-open = The file picker is already open
+mail-status-select-before-purge = Nothing is selected to delete permanently
+mail-status-purge-needs-trash = Only messages in Trash can be deleted permanently
+mail-status-message-gone = That message is no longer here
+mail-status-no-sending-account = Add a sending account before sending this message
+mail-status-sending-unavailable = Sending isn’t available here; save the draft instead
+mail-status-no-recipient = Add a recipient before sending
+mail-status-sending = Sending…
+mail-status-sent = Message sent
+mail-status-draft-gone = That draft is gone
+mail-status-invitation-drafted = Invitation drafted
+mail-status-outbox-cancelled = Taken out of the outbox; nothing was sent
+mail-status-moved = Moved one message to { $folder }
+mail-status-selected-all = Selected all { $count } messages in { $folder }
+mail-status-selected-all-inboxes = Selected all { $count } messages in every inbox
+mail-status-reading-folder = { $count ->
+    [one] Still reading this folder; one message selected so far
+   *[other] Still reading this folder; { $count } selected so far
+}
+mail-purge-title = { $count ->
+    [one] Delete this message permanently?
+   *[other] Delete { $count } messages permanently?
+}
+mail-cancel = Cancel
+mail-undo = Undo
+
+## The host's own file and folder choosers
+mail-attach-dialog-title = Attach file
+mail-attach-dialog-accept = Attach
+mail-attachment-save-accept = Save
+
+## An attachment that cannot leave Mail
+mail-attachment-unknown-message = That message is no longer in this mailbox
+mail-attachment-not-loaded = That attachment is no longer in this mailbox
+mail-attachment-not-kept = { $file } is no longer kept on this device
+mail-attachment-too-large-save = { $file } is too large to save here; open it in Files instead
+mail-attachment-changed = That attachment changed since it was downloaded

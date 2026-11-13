@@ -130,7 +130,7 @@ fn presentation_state_stays_local() {
 
     {
         let (mut app, _doc) = app();
-        app.shared.borrow_mut().status = Some("Synced 3 messages".into());
+        app.shared.borrow_mut().status = Some(Notice::info("Synced 3 messages"));
         app.show_status();
         assert_eq!(app.nav.toast_text(), Some("Synced 3 messages"));
         assert!(
@@ -195,4 +195,62 @@ fn a_fresh_window_offers_adding_an_account() {
         Some("Externe Konten öffnen"),
     );
     crate::i18n::CATALOG.set_locale("en-US");
+}
+
+/// A window that speaks German for the length of one test, then returns to
+/// the language the rest of the suite pins.
+struct GermanWindow {
+    before: String,
+}
+
+impl GermanWindow {
+    fn new() -> Self {
+        let before = CATALOG.current_locale();
+        CATALOG.set_locale("de-DE");
+        Self { before }
+    }
+}
+
+impl Drop for GermanWindow {
+    fn drop(&mut self) {
+        CATALOG.set_locale(&self.before);
+    }
+}
+
+/// A German Mail says its notices in German, and every notice still reads the
+/// way it was chosen: translating the words never turns a failure into a
+/// success.
+#[test]
+fn a_german_window_says_its_notices_in_german() {
+    let _german = GermanWindow::new();
+
+    let failure = engine_error_text("fetch", "authentication failed", "anna@example.test");
+    assert_eq!(failure.kind, ToastKind::Error, "{}", failure.text);
+    assert!(
+        failure.text.contains("Anmeldung bei anna@example.test"),
+        "the account that failed is named in German: {}",
+        failure.text
+    );
+
+    let offline = engine_error_text("fetch", "network unreachable", "anna@example.test");
+    assert_eq!(offline.kind, ToastKind::Warning, "{}", offline.text);
+    assert!(
+        offline.text.starts_with("Du bist offline"),
+        "{}",
+        offline.text
+    );
+
+    let (mut app, _doc) = app();
+    app.shared.borrow_mut().status = Some(Notice::warning(CATALOG.t("mail-status-message-gone")));
+    app.show_status();
+    assert_eq!(
+        app.nav.toast_text(),
+        Some("Diese Nachricht ist nicht mehr da")
+    );
+
+    // The words a person moves a message with follow the same language.
+    assert_eq!(
+        crate::state::moved_to(Folder::Inbox),
+        "Eine Nachricht nach Posteingang verschoben"
+    );
 }

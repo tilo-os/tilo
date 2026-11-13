@@ -16,6 +16,7 @@ use automerge::AutoCommit;
 use vello::kurbo::{Point, Rect};
 
 use ui::icons::Icon;
+use ui::widget::toast::ToastKind;
 
 use crate::account::AccountStore;
 use ui::framework::Dispatcher;
@@ -28,6 +29,64 @@ use ui::framework::Submit;
 
 /// Cheap-to-clone handle every pane holds.
 pub type Shared = Rc<RefCell<MailState>>;
+
+/// Something Mail says once in its window: the words, and how they read
+/// there. The kind is set where the words are chosen, so a translated notice
+/// keeps its colour instead of being classified by the words it happens to
+/// use.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Notice {
+    pub text: String,
+    pub kind: ToastKind,
+}
+
+impl Notice {
+    fn new(kind: ToastKind, text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            kind,
+        }
+    }
+
+    /// What Mail did.
+    pub fn success(text: impl Into<String>) -> Self {
+        Self::new(ToastKind::Success, text)
+    }
+
+    /// Work in progress, or something the person can take back.
+    pub fn info(text: impl Into<String>) -> Self {
+        Self::new(ToastKind::Info, text)
+    }
+
+    /// Why Mail did nothing, with what to do about it.
+    pub fn warning(text: impl Into<String>) -> Self {
+        Self::new(ToastKind::Warning, text)
+    }
+
+    /// Something Mail could not do.
+    pub fn error(text: impl Into<String>) -> Self {
+        Self::new(ToastKind::Error, text)
+    }
+}
+
+impl std::ops::Deref for Notice {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+/// The notice for moving one message into `folder`, named as the folders are.
+pub(crate) fn moved_to(folder: Folder) -> String {
+    crate::i18n::t_args(
+        "mail-status-moved",
+        &[(
+            "folder",
+            ui::i18n::ArgValue::from(crate::i18n::t(folder.message())),
+        )],
+    )
+}
 
 /// A single message action, shared as the source of truth by the row context
 /// menu, the swipe gestures, and the reader's action bar.
@@ -194,8 +253,10 @@ pub struct QueuedMessage {
 impl QueuedMessage {
     /// The line the outbox shows under the subject: the server's refusal, or
     /// the fact that nothing has refused it yet.
-    pub fn state_line(&self) -> &str {
-        self.reason.as_deref().unwrap_or("Waiting to be sent")
+    pub fn state_line(&self) -> String {
+        self.reason
+            .clone()
+            .unwrap_or_else(|| crate::i18n::t("mail-outbox-waiting"))
     }
 }
 
@@ -265,7 +326,7 @@ pub struct MailState {
     /// the no-side-effect mode visible in the reader and prevents the normal
     /// read-on-open action from being queued.
     pub inspection: Option<MessageId>,
-    pub status: Option<String>,
+    pub status: Option<Notice>,
     /// The status tells of a change the person may want back: its notice
     /// offers Undo.
     pub status_undo: bool,
@@ -808,7 +869,9 @@ impl MailState {
         if self.outbox_selected.as_deref() == Some(id) {
             self.outbox_selected = self.queued().last().map(|queued| queued.id.clone());
         }
-        self.status = Some("Taken out of the outbox; nothing was sent".into());
+        self.status = Some(Notice::success(crate::i18n::t(
+            "mail-status-outbox-cancelled",
+        )));
         self.dirty = true;
     }
 
@@ -978,14 +1041,25 @@ impl MailState {
         grew
     }
 
-    /// The folder is whole: Select all has every message it holds.
-    pub fn finish_selection(&mut self, noun: &str) {
+    /// The folder is whole: Select all has every message it holds. `folder` is
+    /// the folder's own name, or `None` for every inbox at once.
+    pub fn finish_selection(&mut self, folder: Option<&str>) {
         self.extend_selection();
         self.selecting_all = false;
-        self.status = Some(format!(
-            "Selected all {} messages in {noun}",
-            self.selected_bulk_ids().len()
-        ));
+        let count = self.selected_bulk_ids().len();
+        self.status = Some(Notice::success(match folder {
+            Some(folder) => crate::i18n::t_args(
+                "mail-status-selected-all",
+                &[
+                    ("count", ui::i18n::ArgValue::from(count)),
+                    ("folder", ui::i18n::ArgValue::from(folder)),
+                ],
+            ),
+            None => crate::i18n::t_args(
+                "mail-status-selected-all-inboxes",
+                &[("count", ui::i18n::ArgValue::from(count))],
+            ),
+        }));
         self.status_undo = false;
         self.dirty = true;
     }
@@ -996,10 +1070,13 @@ impl MailState {
         if !(self.selecting_all && self.more_older) {
             return false;
         }
-        self.status = Some(format!(
-            "Still reading this folder; {} selected so far",
-            self.selected_bulk_ids().len()
-        ));
+        self.status = Some(Notice::warning(crate::i18n::t_args(
+            "mail-status-reading-folder",
+            &[(
+                "count",
+                ui::i18n::ArgValue::from(self.selected_bulk_ids().len()),
+            )],
+        )));
         self.status_undo = false;
         self.dirty = true;
         true
@@ -1134,8 +1211,12 @@ impl MailState {
     }
 
     /// Say `text` with an Undo beside it.
-    pub(crate) fn say_undoable(&mut self, text: &str) {
-        self.status = Some(text.to_owned());
+    pub(crate) fn say_undoable(
+        &mut self,
+        kind: ui::widget::toast::ToastKind,
+        text: impl Into<String>,
+    ) {
+        self.status = Some(Notice::new(kind, text));
         self.status_undo = true;
     }
 
@@ -1236,7 +1317,13 @@ impl MailState {
                 let was_selected = self.selected == Some(id);
                 self.move_message(doc, id, Folder::Archive);
                 self.after_remove(doc, was_selected);
-                self.say_undoable("Archived");
+                self.say_undoable(
+                    ToastKind::Success,
+                    crate::i18n::t_args(
+                        "mail-status-archived",
+                        &[("count", ui::i18n::ArgValue::from(1u32))],
+                    ),
+                );
             }
             CtxAction::Delete => {
                 let was_selected = self.selected == Some(id);
@@ -1251,7 +1338,13 @@ impl MailState {
                 let moved_to = self.mailbox.get(id).map(|m| m.folder);
                 if let Some(to) = moved_to {
                     self.submit(doc, Self::message_paths(id).folder.set(to));
-                    self.say_undoable("Moved to Trash");
+                    self.say_undoable(
+                        ToastKind::Success,
+                        crate::i18n::t_args(
+                            "mail-status-trashed",
+                            &[("count", ui::i18n::ArgValue::from(1u32))],
+                        ),
+                    );
                 } else if purging {
                     self.submit(
                         doc,
@@ -1266,13 +1359,13 @@ impl MailState {
                 let was_selected = self.selected == Some(id);
                 self.move_message(doc, id, Folder::Inbox);
                 self.after_remove(doc, was_selected);
-                self.say_undoable("Moved to Inbox");
+                self.say_undoable(ToastKind::Success, moved_to(Folder::Inbox));
             }
             CtxAction::Junk => {
                 let was_selected = self.selected == Some(id);
                 self.move_message(doc, id, Folder::Junk);
                 self.after_remove(doc, was_selected);
-                self.say_undoable("Moved to Junk");
+                self.say_undoable(ToastKind::Success, moved_to(Folder::Junk));
             }
         }
     }
@@ -1418,7 +1511,7 @@ mod tests {
 
         // Nothing left to read: the selection is the folder.
         st.more_older = false;
-        st.finish_selection("Inbox");
+        st.finish_selection(Some("Inbox"));
         assert!(!st.selecting_all);
         assert_eq!(st.selected_bulk_ids().len(), rows.len());
         assert_eq!(

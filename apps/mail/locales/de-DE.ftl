@@ -160,7 +160,7 @@ mail-a11y-refused = Der Server hat diese Nachricht abgelehnt: { $reason }
 mail-a11y-cancel-sending = Senden an { $to } abbrechen
 mail-a11y-outbox-row = An { $to }: { $subject }
 mail-a11y-no-messages = Keine Nachrichten in { $folder }
-mail-status-send-failed = Senden fehlgeschlagen: { $error }
+mail-status-send-failed = Die Nachricht ließ sich nicht senden: { $error }
 mail-purge-body = { $count ->
     [one] Eine Nachricht im Papierkorb wird aus diesem Postfach und auf dem Server gelöscht. Das lässt sich nicht rückgängig machen.
    *[other] { $count } Nachrichten im Papierkorb werden aus diesem Postfach und auf dem Server gelöscht. Das lässt sich nicht rückgängig machen.
@@ -190,6 +190,7 @@ mail-status-deleted = { $count ->
     [one] Eine Nachricht gelöscht
    *[other] { $count } Nachrichten gelöscht
 }
+mail-status-trusted-senders-not-saved = Deine vertrauenswürdigen Absender ließen sich nicht speichern: { $error }
 mail-status-account-not-saved = Konto ausgewählt, aber die Einstellung ließ sich nicht speichern: { $error }
 mail-status-purged = { $count ->
     [one] Eine Nachricht aus dem Papierkorb endgültig gelöscht
@@ -295,3 +296,56 @@ mail-app-title = Mail
 mail-copies = Mail auf deinen Geräten
 mail-copies-keep-copies = Abgerufene Mails behalten
 mail-copies-forget-copies = Abgerufene Mails vergessen
+
+## Was Mail einmal sagt: was es getan hat, was nicht ging, und was jetzt hilft
+mail-notice-server-unreachable = Mail konnte den Mailserver nicht erreichen
+mail-notice-offline = Du bist offline. Neue Mail kommt an, sobald du wieder online bist.
+mail-notice-sign-in-failed = Anmeldung nicht möglich. Prüfe das Passwort des Kontos in den Einstellungen unter Externe Konten.
+mail-notice-sign-in-failed-account = Anmeldung bei { $account } nicht möglich. Prüfe das Passwort des Kontos in den Einstellungen unter Externe Konten.
+mail-notice-check-failed = Mail lässt sich nicht abrufen: { $error }
+mail-notice-check-failed-account = Mail für { $account } lässt sich nicht abrufen: { $error }
+mail-notice-sign-in-unfinished = Die Anmeldung wurde nicht abgeschlossen: { $error }
+mail-notice-server-failed = Die Änderung am Mailserver ließ sich nicht übertragen: { $error }
+mail-notify-arrived = { $count ->
+    [one] Neue Nachricht
+   *[other] { $count } neue Nachrichten
+}
+mail-outbox-waiting = Wartet auf das Senden
+
+mail-status-picker-open = Die Dateiauswahl ist schon offen
+mail-status-select-before-purge = Es ist nichts ausgewählt, was endgültig gelöscht werden könnte
+mail-status-purge-needs-trash = Endgültig löschen lassen sich nur Nachrichten im Papierkorb
+mail-status-message-gone = Diese Nachricht ist nicht mehr da
+mail-status-no-sending-account = Lege ein Sendekonto an, bevor du diese Nachricht sendest
+mail-status-sending-unavailable = Senden ist hier nicht möglich; speichere stattdessen den Entwurf
+mail-status-no-recipient = Trage einen Empfänger ein, bevor du sendest
+mail-status-sending = Wird gesendet…
+mail-status-sent = Nachricht gesendet
+mail-status-draft-gone = Dieser Entwurf ist nicht mehr da
+mail-status-invitation-drafted = Einladung entworfen
+mail-status-outbox-cancelled = Aus dem Postausgang genommen; nichts wurde gesendet
+mail-status-moved = Eine Nachricht nach { $folder } verschoben
+mail-status-selected-all = Alle { $count } Nachrichten in { $folder } ausgewählt
+mail-status-selected-all-inboxes = Alle { $count } Nachrichten in allen Posteingängen ausgewählt
+mail-status-reading-folder = { $count ->
+    [one] Der Ordner wird noch gelesen; bisher ist eine Nachricht ausgewählt
+   *[other] Der Ordner wird noch gelesen; bisher sind { $count } Nachrichten ausgewählt
+}
+mail-purge-title = { $count ->
+    [one] Diese Nachricht endgültig löschen?
+   *[other] { $count } Nachrichten endgültig löschen?
+}
+mail-cancel = Abbrechen
+mail-undo = Widerrufen
+
+## Die Datei- und Ordnerauswahl des Desktops
+mail-attach-dialog-title = Datei anhängen
+mail-attach-dialog-accept = Anhängen
+mail-attachment-save-accept = Speichern
+
+## Ein Anhang, der Mail nicht verlassen kann
+mail-attachment-unknown-message = Diese Nachricht ist nicht mehr in diesem Postfach
+mail-attachment-not-loaded = Dieser Anhang ist nicht mehr in diesem Postfach
+mail-attachment-not-kept = { $file } wird auf diesem Gerät nicht mehr aufbewahrt
+mail-attachment-too-large-save = { $file } ist zu groß, um sie hier zu speichern; öffne sie stattdessen in Dateien
+mail-attachment-changed = Dieser Anhang hat sich seit dem Herunterladen geändert

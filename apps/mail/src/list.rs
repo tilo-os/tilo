@@ -501,11 +501,15 @@ impl MessageList {
                 .pointer
                 .filter(|point| r.contains(*point) && rect.contains(*point));
             let actions = [CANCEL_SEND];
-            let recipient = format!("To {}", message.to);
+            let recipient = crate::i18n::t_args(
+                "mail-to",
+                &[("recipient", ui::i18n::ArgValue::Text(message.to.clone()))],
+            );
+            let state_line = message.state_line();
             let mut face = ListRowFace::new(&recipient)
                 .leading(RowLeading::Icon(Icon::Send))
                 .subtitle(&message.subject)
-                .secondary(message.state_line())
+                .secondary(&state_line)
                 .selected(selected)
                 .actions(&actions)
                 .interaction(Interaction {

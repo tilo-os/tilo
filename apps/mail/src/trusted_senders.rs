@@ -104,7 +104,10 @@ impl MailApp {
         for edit in &edits {
             if let Err(error) = followed.record.invoke(edit) {
                 self.shared.borrow_mut().status =
-                    Some(format!("Could not save your trusted senders: {error}"));
+                    Some(crate::state::Notice::error(crate::i18n::t_args(
+                        "mail-status-trusted-senders-not-saved",
+                        &[("error", ui::i18n::ArgValue::Text(error.to_string()))],
+                    )));
                 break;
             }
         }

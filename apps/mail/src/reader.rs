@@ -232,7 +232,10 @@ fn recipients_line(message: &Message) -> String {
     if names.is_empty() {
         String::new()
     } else {
-        format!("To {}", names.join(", "))
+        crate::i18n::t_args(
+            "mail-to",
+            &[("recipient", ArgValue::Text(names.join(", ")))],
+        )
     }
 }
 

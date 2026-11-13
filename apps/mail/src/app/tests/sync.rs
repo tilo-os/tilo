@@ -588,7 +588,13 @@ fn a_forward_carries_the_messages_files() {
         crate::attachment_store::materialize(&app.content, file).unwrap(),
         b"quarter,total\n3,42\n"
     );
-    let status = app.shared.borrow().status.clone().unwrap_or_default();
+    let status = app
+        .shared
+        .borrow()
+        .status
+        .clone()
+        .map(|notice| notice.text)
+        .unwrap_or_default();
     assert!(
         status.contains("deck.pdf") && status.contains("not downloaded"),
         "the file left behind is named: {status}"
@@ -634,7 +640,13 @@ fn a_forward_names_a_file_too_large_to_carry_as_too_large() {
         );
     };
     assert_eq!(file.filename, "notes.txt");
-    let status = app.shared.borrow().status.clone().unwrap_or_default();
+    let status = app
+        .shared
+        .borrow()
+        .status
+        .clone()
+        .map(|notice| notice.text)
+        .unwrap_or_default();
     assert!(
         status.contains("footage.mp4") && status.contains("more than one message can carry"),
         "the downloaded file too large to carry is named as too large: {status}"
@@ -731,6 +743,10 @@ fn select_all_takes_the_whole_folder_and_says_how_many() {
 /// whole — the old "Marked 50 read" over a wall of unread mail was a
 /// whole-folder command applied to one page.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps the paging, the refusal and the whole-folder result in view"
+)]
 fn select_all_reads_the_pages_the_server_still_holds() {
     let (mut app, mut doc) = app();
     let (outgoing, requests) = std::sync::mpsc::channel();
@@ -796,9 +812,16 @@ fn select_all_reads_the_pages_the_server_still_holds() {
     );
     assert!(app.shared.borrow().selecting_all);
     let chose = app.shared.borrow().selected_bulk_ids().len();
+    assert!(
+        app.shared.borrow().status.is_none(),
+        "reading the rest says nothing: the selection growing already shows it"
+    );
+    // An action meanwhile would act on a part of the folder, so it waits and
+    // says why.
+    assert!(app.shared.borrow_mut().selection_still_arriving());
     assert_eq!(
         app.shared.borrow().status.as_deref(),
-        Some("Reading the rest of this folder…")
+        Some(format!("Still reading this folder; {chose} selected so far").as_str())
     );
 
     // The last page arrives: the folder is whole, and the selection is
@@ -971,7 +994,13 @@ fn a_late_engine_error_stays_with_the_account_that_asked() {
         })
         .unwrap();
     app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
-    let status = app.shared.borrow().status.clone().unwrap_or_default();
+    let status = app
+        .shared
+        .borrow()
+        .status
+        .clone()
+        .map(|notice| notice.text)
+        .unwrap_or_default();
     assert!(status.contains("asking@example.test"), "{status}");
     assert!(!status.contains("selected@example.test"), "{status}");
     // Its sync health is kept for that account, in this app's profile.

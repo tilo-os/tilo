@@ -13,6 +13,7 @@ use ui::widget::Element;
 
 use super::{MailApp, Mailroom};
 use crate::actions::{MailEffect, Outgoing, ServerUpdate};
+use crate::i18n::CATALOG;
 use crate::resource::Mail;
 use crate::state::MailState;
 
@@ -222,9 +223,16 @@ fn answer_effect(
         _ => {}
     }
     if let MailEffect::Save { message, index } = &effect {
-        let (name, bytes) = room.borrow().attachment_to_save(message, *index)?;
+        let (name, bytes) = room
+            .borrow()
+            .attachment_to_save(message, *index)
+            .map_err(|cause| cause.message())?;
         let resource = format!("mail.attachment:{message}:{index}");
-        let request = PickRequest::save("Save attachment", "Save", &name)
+        let (title, accept) = (
+            CATALOG.t("mail-save-attachment"),
+            CATALOG.t("mail-attachment-save-accept"),
+        );
+        let request = PickRequest::save(&title, &accept, &name)
             .thread_name("mail-portal-save-attachment")
             .filter(FileFilter::all_files());
         let room = Rc::clone(room);
@@ -421,7 +429,9 @@ impl Mailroom {
             .get(index)
             .ok_or_else(|| format!("the message has no attachment {index}"))?;
         let media_type = attachment.mime.clone();
-        let (name, bytes) = self.attachment_to_save(&found.id.to_string(), index)?;
+        let (name, bytes) = self
+            .attachment_to_save(&found.id.to_string(), index)
+            .map_err(|cause| cause.message())?;
         let store = ui::tilo_resource::content::current()
             .ok_or("this window keeps no content to hand the attachment over in")?;
         let hash = store

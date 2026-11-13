@@ -76,11 +76,14 @@ use crate::list::MessageList;
 use crate::model::{
     AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
 };
+use crate::notice::{AttachmentUnavailable, engine_error_text, staged_notice};
 use crate::reader::MessageReader;
 use crate::resource::{Mail, mailbox, read_mail};
 use crate::shortcuts_overlay::MailShortcutsOverlay;
 use crate::sidebar;
-use crate::state::{BulkAction, Command, CtxAction, Intent, MailState, QueuedMessage, Shared};
+use crate::state::{
+    BulkAction, Command, CtxAction, Intent, MailState, Notice, QueuedMessage, Shared,
+};
 use crate::util::format_absolute;
 
 /// How often the app auto-refreshes the current folder from the server while in
@@ -250,37 +253,6 @@ fn wake_through(slot: &Arc<std::sync::Mutex<Option<ui::WakeHandle>>>) -> crate::
             waker.wake();
         }
     })
-}
-
-/// What a failed engine request says to the person: what did not happen,
-/// and why in their terms, never the protocol step that failed.
-fn engine_error_text(context: &str, message: &str, account: &str) -> String {
-    let lower = message.to_ascii_lowercase();
-    let signed_out = lower.contains("authentication")
-        || lower.contains("password")
-        || lower.contains("credential")
-        || lower.contains("oauth")
-        || lower.contains("sign in");
-    let offline = lower.contains("network unreachable");
-    let account = if account.is_empty() {
-        "your account"
-    } else {
-        account
-    };
-    match context {
-        "connect" | "fetch" if signed_out => {
-            format!(
-                "Can’t sign in to {account}. Check its password in Settings, External accounts."
-            )
-        }
-        "connect" | "fetch" if offline => "You’re offline. Mail will check again.".to_owned(),
-        "connect" | "fetch" => format!("Can’t check mail for {account}: {message}"),
-        "send" | "smtp" | crate::engine::SMTP_UNREACHED => {
-            format!("Couldn’t send the message: {message}")
-        }
-        "oauth" => format!("Sign-in didn’t finish: {message}"),
-        _ => format!("Couldn’t update the mail server: {message}"),
-    }
 }
 
 /// Where email accounts are added, changed and removed: Settings' External
@@ -607,7 +579,13 @@ impl MailApp {
                         senders.push(name);
                     }
                 }
-                (format!("{} new messages", many.len()), senders.join(", "))
+                (
+                    crate::i18n::t_args(
+                        "mail-notify-arrived",
+                        &[("count", ArgValue::from(many.len()))],
+                    ),
+                    senders.join(", "),
+                )
             }
         };
         let body = if several_accounts {
@@ -968,7 +946,7 @@ impl MailApp {
             }
             "offline" => {
                 self.shared.borrow_mut().status =
-                    Some("You’re offline. Showing downloaded mail.".into());
+                    Some(Notice::warning(CATALOG.t("mail-notice-offline")));
             }
             _ => {}
         }
@@ -1128,7 +1106,8 @@ impl Mailroom {
             account: request.account().to_owned(),
         };
         if engine.tx.send(request).is_err() {
-            self.shared.borrow_mut().status = Some("Mail couldn’t reach the mail server".into());
+            self.shared.borrow_mut().status =
+                Some(Notice::error(CATALOG.t("mail-notice-server-unreachable")));
             self.dirty = true;
             return None;
         }
@@ -1153,13 +1132,11 @@ impl MailApp {
         st.more_older = more;
         st.selecting_all = more;
         if more {
-            st.status = Some("Reading the rest of this folder…".into());
-            st.status_undo = false;
             drop(st);
             self.load_older();
         } else {
-            let noun = Self::folder_noun(folder, all_inboxes);
-            st.finish_selection(&noun);
+            let named = (!all_inboxes).then(|| crate::i18n::t(folder.message()));
+            st.finish_selection(named.as_deref());
         }
         self.dirty = true;
     }
@@ -1168,15 +1145,6 @@ impl MailApp {
     fn open_listing(&self) -> (AccountConfig, Folder, bool) {
         let st = self.shared.borrow();
         (st.accounts.active_config(), st.folder, st.all_inboxes)
-    }
-
-    /// What "all of it" is called: the folder's own name, or both inboxes'.
-    fn folder_noun(folder: Folder, all_inboxes: bool) -> String {
-        if all_inboxes {
-            "these folders".to_owned()
-        } else {
-            crate::i18n::t(folder.message())
-        }
     }
 
     /// Select all reads the whole folder, not the page of it this device
@@ -1197,8 +1165,8 @@ impl MailApp {
         if more {
             self.load_older();
         } else {
-            let noun = Self::folder_noun(folder, all_inboxes);
-            self.shared.borrow_mut().finish_selection(&noun);
+            let named = (!all_inboxes).then(|| crate::i18n::t(folder.message()));
+            self.shared.borrow_mut().finish_selection(named.as_deref());
         }
         self.dirty = true;
     }
@@ -1386,10 +1354,15 @@ impl MailApp {
 
     fn request_compose_attachment(&mut self) {
         if self.compose_attachment_rx.is_some() || self.compose_attachment_contents.is_some() {
-            self.shared.borrow_mut().status = Some("Attachment picker is already open".into());
+            self.shared.borrow_mut().status =
+                Some(Notice::warning(CATALOG.t("mail-status-picker-open")));
             return;
         }
-        let request = PickRequest::open("Attach file", "Attach")
+        let (title, accept) = (
+            CATALOG.t("mail-attach-dialog-title"),
+            CATALOG.t("mail-attach-dialog-accept"),
+        );
+        let request = PickRequest::open(&title, &accept)
             .thread_name("mail-portal-stage-attachment")
             .filter(FileFilter::all_files());
         // Where files have paths the host hands over an open descriptor, so
@@ -1403,7 +1376,7 @@ impl MailApp {
                     .send_contents(),
             );
         }
-        self.shared.borrow_mut().status = Some(CATALOG.t("mail-status-choose-file"));
+        self.shared.borrow_mut().status = Some(Notice::info(CATALOG.t("mail-status-choose-file")));
         self.dirty = true;
     }
 
@@ -1417,49 +1390,42 @@ impl MailApp {
             .as_ref()
             .map(std::sync::mpsc::Receiver::try_recv);
         let Some(outcome) = outcome else { return };
-        match outcome {
+        let notice = match outcome {
             Ok(OpenFileOutcome::Opened(source)) => {
                 self.compose_attachment_rx = None;
                 if !self.compose.open {
-                    self.shared.borrow_mut().status =
-                        Some(CATALOG.t("mail-status-selection-composer-closed"));
+                    self.shared.borrow_mut().status = Some(Notice::info(
+                        CATALOG.t("mail-status-selection-composer-closed"),
+                    ));
                     return;
                 }
                 let name = source.display_name().to_string();
                 let result =
                     crate::attachment_store::stage_file(&self.content, source.into_file(), &name)
                         .and_then(|attachment| self.compose.add_attachment(attachment));
-                self.shared.borrow_mut().status = Some(match result {
-                    Ok(()) => {
-                        CATALOG.t_args("mail-status-attached", &[("name", ArgValue::Text(name))])
-                    }
-                    Err(error) => CATALOG.t_args(
-                        "mail-status-attach-failed",
-                        &[
-                            ("name", ArgValue::Text(name)),
-                            ("error", ArgValue::Text(error)),
-                        ],
-                    ),
-                });
+                Some(staged_notice(name, result))
             }
             Ok(OpenFileOutcome::Cancelled) => {
                 self.compose_attachment_rx = None;
-                self.shared.borrow_mut().status =
-                    Some(CATALOG.t("mail-status-selection-cancelled"));
+                Some(Notice::info(CATALOG.t("mail-status-selection-cancelled")))
             }
             Ok(OpenFileOutcome::Failed(error)) => {
                 self.compose_attachment_rx = None;
-                self.shared.borrow_mut().status = Some(CATALOG.t_args(
+                Some(Notice::error(CATALOG.t_args(
                     "mail-status-picker-failed",
                     &[("error", ArgValue::Text(error))],
-                ));
+                )))
             }
-            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => {
                 self.compose_attachment_rx = None;
-                self.shared.borrow_mut().status =
-                    Some(CATALOG.t("mail-status-picker-disconnected"));
+                Some(Notice::warning(
+                    CATALOG.t("mail-status-picker-disconnected"),
+                ))
             }
+        };
+        if let Some(notice) = notice {
+            self.shared.borrow_mut().status = Some(notice);
         }
         self.dirty = true;
     }
@@ -1476,31 +1442,28 @@ impl MailApp {
         let status = match outcome {
             Err(TryRecvError::Empty) => return,
             Ok(ContentsOutcome::Picked(files)) => match files.into_iter().next() {
-                Some(_) if !self.compose.open => CATALOG.t("mail-status-selection-composer-closed"),
+                Some(_) if !self.compose.open => {
+                    Notice::info(CATALOG.t("mail-status-selection-composer-closed"))
+                }
                 Some(file) => {
                     let name = file.name;
-                    match crate::attachment_store::stage_bytes(&self.content, &file.bytes, &name)
-                        .and_then(|attachment| self.compose.add_attachment(attachment))
-                    {
-                        Ok(()) => CATALOG
-                            .t_args("mail-status-attached", &[("name", ArgValue::Text(name))]),
-                        Err(error) => CATALOG.t_args(
-                            "mail-status-attach-failed",
-                            &[
-                                ("name", ArgValue::Text(name)),
-                                ("error", ArgValue::Text(error)),
-                            ],
-                        ),
-                    }
+                    let result =
+                        crate::attachment_store::stage_bytes(&self.content, &file.bytes, &name)
+                            .and_then(|attachment| self.compose.add_attachment(attachment));
+                    staged_notice(name, result)
                 }
-                None => CATALOG.t("mail-status-selection-cancelled"),
+                None => Notice::info(CATALOG.t("mail-status-selection-cancelled")),
             },
-            Ok(ContentsOutcome::Cancelled) => CATALOG.t("mail-status-selection-cancelled"),
-            Ok(ContentsOutcome::Failed(error)) => CATALOG.t_args(
+            Ok(ContentsOutcome::Cancelled) => {
+                Notice::info(CATALOG.t("mail-status-selection-cancelled"))
+            }
+            Ok(ContentsOutcome::Failed(error)) => Notice::error(CATALOG.t_args(
                 "mail-status-picker-failed",
                 &[("error", ArgValue::Text(error))],
-            ),
-            Err(TryRecvError::Disconnected) => CATALOG.t("mail-status-picker-disconnected"),
+            )),
+            Err(TryRecvError::Disconnected) => {
+                Notice::warning(CATALOG.t("mail-status-picker-disconnected"))
+            }
         };
         self.compose_attachment_contents = None;
         self.shared.borrow_mut().status = Some(status);
@@ -1546,8 +1509,9 @@ impl MailApp {
                 Intent::ConfirmBulkPurge => {
                     let count = self.shared.borrow().selected_bulk_ids().len();
                     if count == 0 {
-                        self.shared.borrow_mut().status =
-                            Some("Select messages before deleting them permanently".into());
+                        self.shared.borrow_mut().status = Some(Notice::warning(
+                            CATALOG.t("mail-status-select-before-purge"),
+                        ));
                     } else if self.shared.borrow().selected_bulk_ids().iter().all(|id| {
                         self.shared
                             .borrow()
@@ -1558,7 +1522,7 @@ impl MailApp {
                         self.open_purge_confirmation(count);
                     } else {
                         self.shared.borrow_mut().status =
-                            Some("Permanent deletion requires an all-Trash selection".into());
+                            Some(Notice::warning(CATALOG.t("mail-status-purge-needs-trash")));
                     }
                 }
                 Intent::AccountSettings => self.open_account_settings(),
@@ -1620,7 +1584,7 @@ impl MailApp {
 irrelevant"
                         )]
                         let count = affected as f64;
-                        self.shared.borrow_mut().status = Some(CATALOG.t_args(
+                        self.shared.borrow_mut().status = Some(Notice::success(CATALOG.t_args(
                             match action {
                                 BulkAction::Archive => "mail-status-archived",
                                 BulkAction::Delete => "mail-status-trashed",
@@ -1629,7 +1593,7 @@ irrelevant"
                                 BulkAction::Purge => "mail-status-deleted",
                             },
                             &[("count", ArgValue::Number(count))],
-                        ));
+                        )));
                     }
                 }
                 Command::Message(action) => {
@@ -1785,7 +1749,8 @@ irrelevant"
         doc: &mut ui::widget::Edits<'_>,
     ) {
         if self.shared.borrow().mailbox.get(message).is_none() {
-            self.shared.borrow_mut().status = Some("That message is no longer available.".into());
+            self.shared.borrow_mut().status =
+                Some(Notice::warning(CATALOG.t("mail-status-message-gone")));
             self.dirty = true;
             return;
         }
@@ -1840,17 +1805,15 @@ irrelevant"
         let cancel = Rc::clone(&answer);
         let dismiss = Rc::clone(&answer);
         let dialog = ModalDialog::new(
-            if count == 1 {
-                "Delete message permanently?".to_owned()
-            } else {
-                format!("Delete {count} messages permanently?")
-            },
+            CATALOG.t_args("mail-purge-title", &[("count", ArgValue::Number(number))]),
             body,
         )
         .with_test_id("mail-purge-confirmation")
         .with_destructive(true)
-        .primary_action("Delete permanently", move || confirm.set(Some(true)))
-        .secondary_action("Cancel", move || cancel.set(Some(false)))
+        .primary_action(CATALOG.t("mail-delete-permanently"), move || {
+            confirm.set(Some(true));
+        })
+        .secondary_action(CATALOG.t("mail-cancel"), move || cancel.set(Some(false)))
         .on_dismiss(move || dismiss.set(Some(false)))
         .open(true);
         self.bulk_purge_confirmation = Some(PurgeConfirmation { dialog, answer });
@@ -2119,7 +2082,7 @@ irrelevant"
         })
         .collect::<Vec<_>>();
         if !left_behind.is_empty() {
-            self.shared.borrow_mut().status = Some(left_behind.join("\n"));
+            self.shared.borrow_mut().status = Some(Notice::warning(left_behind.join("\n")));
         }
         self.close_menu();
         self.dirty = true;
@@ -2141,16 +2104,18 @@ irrelevant"
             let staged = self
                 .state()
                 .attachment_to_save(&msg.id.to_string(), index)
+                .map_err(|_| ())
                 .and_then(|(_, bytes)| {
                     crate::attachment_store::stage_bytes(
                         &self.content,
                         &bytes,
                         &attachment.filename,
                     )
+                    .map_err(|_| ())
                 });
             match staged {
                 Ok(file) => files.push(file),
-                Err(_) => not_downloaded.push(attachment.filename.clone()),
+                Err(()) => not_downloaded.push(attachment.filename.clone()),
             }
         }
         let carried = crate::attachment_store::bounded(&files);
@@ -2180,26 +2145,30 @@ irrelevant"
         let draft = self.compose.to_draft(doc);
         let acct = self.sending_account();
         if !self.contact_sender_matches(&draft) {
-            self.shared.borrow_mut().status = Some(crate::i18n::t("mail-contact-sender-changed"));
+            self.shared.borrow_mut().status = Some(Notice::warning(crate::i18n::t(
+                "mail-contact-sender-changed",
+            )));
             self.dirty = true;
             return;
         }
         if acct.email.trim().is_empty() {
             self.shared.borrow_mut().status =
-                Some("Add a sending account before sending this message".into());
+                Some(Notice::warning(CATALOG.t("mail-status-no-sending-account")));
             self.dirty = true;
             return;
         }
         if self.shared.borrow().dispatcher.is_none() {
-            self.shared.borrow_mut().status =
-                Some("Sending is unavailable in this offline preview; save a draft instead".into());
+            self.shared.borrow_mut().status = Some(Notice::warning(
+                CATALOG.t("mail-status-sending-unavailable"),
+            ));
             self.dirty = true;
             return;
         }
         let from = Addr::new(acct.display_name.clone(), acct.email.clone());
         if let Err(e) = crate::transport::build_mime(&self.content, &from, &draft) {
-            self.shared.borrow_mut().status =
-                Some(CATALOG.t_args("mail-status-send-failed", &[("error", ArgValue::Text(e))]));
+            self.shared.borrow_mut().status = Some(Notice::error(
+                CATALOG.t_args("mail-status-send-failed", &[("error", ArgValue::Text(e))]),
+            ));
             self.dirty = true;
             return;
         }
@@ -2207,7 +2176,8 @@ irrelevant"
             .into_iter()
             .all(|field| crate::transport::parse_addr_list(field).is_empty())
         {
-            self.shared.borrow_mut().status = Some("Add a recipient before sending".into());
+            self.shared.borrow_mut().status =
+                Some(Notice::warning(CATALOG.t("mail-status-no-recipient")));
             self.dirty = true;
             return;
         }
@@ -2253,7 +2223,9 @@ irrelevant"
         // takes it back.
         self.sends_to_hold += 1;
         self.sending_notice_next = true;
-        self.shared.borrow_mut().say_undoable("Sending…");
+        self.shared
+            .borrow_mut()
+            .say_undoable(ToastKind::Info, CATALOG.t("mail-status-sending"));
         self.dirty = true;
     }
 
@@ -2317,7 +2289,6 @@ irrelevant"
             self.shared
                 .borrow_mut()
                 .save_draft_as(doc, Some(&id), &draft);
-            self.shared.borrow_mut().status = Some("Saved to Drafts".into());
             self.compose.close();
             self.store_preferences_if_changed();
             self.dirty = true;
@@ -2330,8 +2301,6 @@ irrelevant"
         // so it can be found and reopened — not a write-only slot.
         let id = self.upsert_draft_message(doc, &draft, self.editing_draft);
         self.editing_draft = Some(id);
-        // The composer closes: say where the draft went.
-        self.shared.borrow_mut().status = Some("Saved to Drafts".into());
         self.compose.close();
         self.store_preferences_if_changed();
         self.dirty = true;
@@ -2498,8 +2467,6 @@ impl Mailroom {
                 self.accounts_persist.root().as_deref(),
                 &account_id,
                 accounts::AccountSyncHealth::Syncing,
-                false,
-                Some("Checking mail"),
             );
             // Checking for mail is routine: new mail appearing in the list
             // is all it shows.
@@ -2607,45 +2574,26 @@ impl MailApp {
             && (!self.held_sends.is_empty() || self.sends_to_hold > 0)
             && self.nav.toast_text().is_none()
         {
-            self.nav
-                .toast_with_action("Sending…", ToastKind::Info, "undo-2", "Undo");
+            self.nav.toast_with_action(
+                CATALOG.t("mail-status-sending"),
+                ToastKind::Info,
+                "undo-2",
+                CATALOG.t("mail-undo"),
+            );
         }
         let (status, undoable) = {
             let mut st = self.shared.borrow_mut();
             (st.status.take(), std::mem::take(&mut st.status_undo))
         };
-        let Some(msg) = status else {
+        let Some(notice) = status else {
             return;
         };
-        let kind = Self::status_kind(&msg);
         self.send_notice = std::mem::take(&mut self.sending_notice_next);
         if undoable {
-            self.nav.toast_with_action(msg, kind, "undo-2", "Undo");
+            self.nav
+                .toast_with_action(notice.text, notice.kind, "undo-2", CATALOG.t("mail-undo"));
         } else {
-            self.nav.toast(msg, kind);
-        }
-    }
-
-    fn status_kind(msg: &str) -> ToastKind {
-        let lower = msg.to_ascii_lowercase();
-        if lower.contains("failed")
-            || lower.contains("couldn’t")
-            || lower.contains("couldn't")
-            || lower.contains("can’t")
-            || lower.contains("can't")
-            || lower.contains("didn’t")
-            || lower.contains("error")
-        {
-            ToastKind::Error
-        } else if lower.contains("offline") || lower.contains("isn't available") {
-            ToastKind::Warning
-        } else if lower.contains("sync")
-            || lower.contains("connecting")
-            || lower.contains("opening")
-        {
-            ToastKind::Info
-        } else {
-            ToastKind::Success
+            self.nav.toast(notice.text, notice.kind);
         }
     }
 
@@ -2751,8 +2699,6 @@ impl MailApp {
             self.state().accounts_persist.root().as_deref(),
             account_id,
             accounts::AccountSyncHealth::Healthy,
-            true,
-            Some("Mail is up to date"),
         );
         let mut room = self.state();
         if let Some((pending, invocation)) = room.resource_refresh_invocation
@@ -2892,7 +2838,7 @@ impl MailApp {
         st.ingest_messages(doc, std::slice::from_ref(&pending.message));
         st.mailbox.insert(pending.message);
         (pending.done)(Ok(ui::tilo_resource::Settled::Done(())));
-        st.status = Some("Message sent".into());
+        st.status = Some(Notice::success(CATALOG.t("mail-status-sent")));
         self.editing_draft = None;
         self.compose.close();
     }
@@ -2925,9 +2871,9 @@ impl MailApp {
         if matches!(context, "connect" | "fetch") {
             // A failing account is said once, not on every refresh that
             // fails the same way; it is said again when the failure changes.
-            if st.sync_error.as_deref() != Some(shown.as_str()) {
-                st.status = Some(shown.clone());
-                st.sync_error = Some(shown);
+            if st.sync_error.as_deref() != Some(shown.text.as_str()) {
+                st.sync_error = Some(shown.text.clone());
+                st.status = Some(shown);
             }
         } else {
             st.status = Some(shown);
@@ -2945,8 +2891,6 @@ impl MailApp {
             self.state().accounts_persist.root().as_deref(),
             &account_id,
             health,
-            false,
-            Some(&detail),
         );
         let refused = self.state().pending_send.remove(&request_id);
         if let Some(pending) = refused {
@@ -2989,8 +2933,6 @@ impl MailApp {
                     self.state().accounts_persist.root().as_deref(),
                     &account_id,
                     accounts::AccountSyncHealth::Syncing,
-                    false,
-                    Some("Connected; fetching mail"),
                 );
             }
             EngineEvent::Folders {
@@ -3289,10 +3231,10 @@ impl MailApp {
         let saved = self.persist_accounts(&accounts);
         self.persisted_active_account = active;
         if let Err(error) = saved {
-            self.shared.borrow_mut().status = Some(CATALOG.t_args(
+            self.shared.borrow_mut().status = Some(Notice::error(CATALOG.t_args(
                 "mail-status-account-not-saved",
                 &[("error", ArgValue::Text(error.to_string()))],
-            ));
+            )));
         }
     }
 
@@ -3441,10 +3383,10 @@ impl MailApp {
         let saved = preferences.set(shown.clone());
         self.followed_preferences = shown;
         if let Err(error) = saved {
-            self.shared.borrow_mut().status = Some(CATALOG.t_args(
+            self.shared.borrow_mut().status = Some(Notice::error(CATALOG.t_args(
                 "mail-status-preferences-not-saved",
                 &[("error", ArgValue::Text(error.to_string()))],
-            ));
+            )));
         }
     }
 
@@ -3681,8 +3623,6 @@ fn report_account_sync(
     config_root: Option<&std::path::Path>,
     account_id: &str,
     health: accounts::AccountSyncHealth,
-    _success: bool,
-    _message: Option<&str>,
 ) {
     let Some(config_root) = config_root else {
         return;
@@ -3740,7 +3680,8 @@ impl MailApp {
     fn confirm_bulk_purge(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.bulk_purge_confirmation = None;
         if self.apply_bulk(state, BulkAction::Purge) == 0 {
-            self.shared.borrow_mut().status = Some(CATALOG.t("mail-status-purge-nothing"));
+            self.shared.borrow_mut().status =
+                Some(Notice::warning(CATALOG.t("mail-status-purge-nothing")));
         }
         self.process_intents();
         self.dirty = true;
@@ -4924,7 +4865,6 @@ impl Mailroom {
                 if !self.shared.borrow_mut().preview_message(id) {
                     return Err("message is no longer loaded".into());
                 }
-                self.shared.borrow_mut().status = Some("Preview".into());
                 Ok(done)
             }
             MailEffect::Reply { message } => {
@@ -4937,7 +4877,8 @@ impl Mailroom {
                 self.compose_from(&message, Intent::Forward).map(|()| done)
             }
             MailEffect::Save { message, index } => {
-                self.attachment_to_save(&message, index)?;
+                self.attachment_to_save(&message, index)
+                    .map_err(|cause| cause.message())?;
                 Err("saving an attachment asks the host where to put it".into())
             }
             MailEffect::SearchMessages { .. }
@@ -5125,10 +5066,10 @@ impl Mailroom {
         &self,
         message: &str,
         index: usize,
-    ) -> Result<(String, Vec<u8>), String> {
+    ) -> Result<(String, Vec<u8>), AttachmentUnavailable> {
         let message_id = message
             .parse::<MessageId>()
-            .map_err(|_| "invalid message id")?;
+            .map_err(|_| AttachmentUnavailable::UnknownMessage)?;
         let attachment = self
             .shared
             .borrow()
@@ -5136,9 +5077,9 @@ impl Mailroom {
             .get(message_id)
             .and_then(|message| message.attachments.get(index))
             .cloned()
-            .ok_or_else(|| "attachment is no longer loaded".to_string())?;
+            .ok_or(AttachmentUnavailable::NotLoaded)?;
         if !attachment.is_downloadable() {
-            return Err("attachment content is not downloaded yet".into());
+            return Err(AttachmentUnavailable::NotDownloaded);
         }
         let mut attachment = attachment;
         if attachment.content.is_empty() && attachment.kept {
@@ -5153,20 +5094,15 @@ impl Mailroom {
             attachment.content = self
                 .store
                 .attachment(&account, message_id, index)
-                .ok_or_else(|| {
-                    format!("{} is no longer kept on this device", attachment.filename)
-                })?;
+                .ok_or_else(|| AttachmentUnavailable::NotKept(attachment.filename.clone()))?;
         }
         if attachment.content.len() > MAX_ATTACHMENT_SAVE_BYTES {
-            return Err(format!(
-                "{} is too large to save here; open it in Files instead",
-                attachment.filename
-            ));
+            return Err(AttachmentUnavailable::TooLarge(attachment.filename));
         }
         let content_len = u64::try_from(attachment.content.len())
-            .map_err(|_| "attachment is too large to save".to_string())?;
+            .map_err(|_| AttachmentUnavailable::TooLarge(attachment.filename.clone()))?;
         if attachment.size != content_len {
-            return Err("attachment metadata no longer matches its downloaded content".into());
+            return Err(AttachmentUnavailable::Changed);
         }
         Ok((
             MailApp::attachment_save_name(&attachment.filename),
@@ -5183,12 +5119,12 @@ impl Mailroom {
         resource: String,
     ) -> ui::framework::Effected {
         self.shared.borrow_mut().status = Some(if saved {
-            CATALOG.t_args(
+            Notice::success(CATALOG.t_args(
                 "mail-status-copy-saved",
                 &[("file", ArgValue::Text(name.to_owned()))],
-            )
+            ))
         } else {
-            CATALOG.t("mail-status-copy-cancelled")
+            Notice::info(CATALOG.t("mail-status-copy-cancelled"))
         });
         self.dirty = true;
         ui::framework::Effected::Done(tilo_actions::ActionOutput {
@@ -5335,21 +5271,24 @@ impl MailApp {
                         self.compose.open_draft(named, &draft.draft());
                         self.editing_draft = None;
                     } else {
-                        self.shared.borrow_mut().status = Some("That draft is gone".into());
+                        self.shared.borrow_mut().status =
+                            Some(Notice::warning(CATALOG.t("mail-status-draft-gone")));
                     }
                 }
                 Reveal::Contact(draft) => {
                     self.shared.borrow_mut().save_draft(doc, &draft);
                     self.compose.open_with_draft(&draft);
                     self.editing_draft = None;
-                    self.shared.borrow_mut().status =
-                        Some(crate::i18n::t("mail-contact-draft-prepared"));
+                    self.shared.borrow_mut().status = Some(Notice::success(crate::i18n::t(
+                        "mail-contact-draft-prepared",
+                    )));
                 }
                 Reveal::Invitation(draft) => {
                     self.shared.borrow_mut().save_draft(doc, &draft);
                     self.compose.open_with_draft(&draft);
                     self.editing_draft = None;
-                    self.shared.borrow_mut().status = Some("Invitation drafted".into());
+                    self.shared.borrow_mut().status =
+                        Some(Notice::success(CATALOG.t("mail-status-invitation-drafted")));
                 }
             }
             self.dirty = true;
@@ -5360,8 +5299,8 @@ impl MailApp {
     /// type, through its published `open-attachment`: the desktop opens it,
     /// as it does for an agent.
     fn open_attachment(&self, message: MessageId, index: usize) {
-        if let Err(error) = self.state().attachment_to_save(&message.to_string(), index) {
-            self.shared.borrow_mut().status = Some(error);
+        if let Err(cause) = self.state().attachment_to_save(&message.to_string(), index) {
+            self.shared.borrow_mut().status = Some(Notice::warning(cause.message()));
             return;
         }
         let dispatcher = self.shared.borrow().dispatcher.clone();
@@ -5378,8 +5317,8 @@ impl MailApp {
     }
 
     fn request_attachment_save(&self, message: MessageId, index: usize) {
-        if let Err(error) = self.state().attachment_to_save(&message.to_string(), index) {
-            self.shared.borrow_mut().status = Some(error);
+        if let Err(cause) = self.state().attachment_to_save(&message.to_string(), index) {
+            self.shared.borrow_mut().status = Some(Notice::warning(cause.message()));
             return;
         }
         let dispatcher = self.shared.borrow().dispatcher.clone();
@@ -5705,7 +5644,7 @@ impl MailApp {
                 reason = "a count only selects a plural form; exactness past 2^52 is irrelevant"
             )]
             let count = affected as f64;
-            self.shared.borrow_mut().status = Some(CATALOG.t_args(
+            self.shared.borrow_mut().status = Some(Notice::success(CATALOG.t_args(
                 match action {
                     BulkAction::Archive => "mail-status-archived",
                     BulkAction::Delete => "mail-status-trashed",
@@ -5714,7 +5653,7 @@ impl MailApp {
                     BulkAction::Purge => "mail-status-purged",
                 },
                 &[("count", ArgValue::Number(count))],
-            ));
+            )));
         }
         affected
     }
@@ -5826,7 +5765,6 @@ impl MailApp {
                 if let Some(id) = selected
                     && self.shared.borrow_mut().preview_message(id)
                 {
-                    self.shared.borrow_mut().status = Some("Preview".into());
                     self.process_intents();
                     *handled = true;
                 }
