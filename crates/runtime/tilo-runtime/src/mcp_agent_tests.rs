@@ -93,6 +93,9 @@ struct Notes {
     /// Whether this host puts a note's deletion to the person before it runs,
     /// as a workspace whose grants ask does.
     asks: Arc<Mutex<bool>>,
+    /// Whether the notebook follows a link for an agent, as the live Notes does: `open-link`,
+    /// its one action whose id begins with `open`.
+    links: Arc<Mutex<bool>>,
 }
 
 /// What a workspace answers about its installed apps.
@@ -147,7 +150,14 @@ impl Notes {
                 kind: "person".into(),
             }]))),
             asks: Arc::default(),
+            links: Arc::default(),
         }
+    }
+
+    /// The same Notes, its notebook following a link as the live one does (`open-link`).
+    fn following_links(self) -> Self {
+        *self.links.lock().unwrap() = true;
+        self
     }
 
     /// The same host, putting a note's deletion to the person first.
@@ -532,6 +542,16 @@ impl Notes {
                 false,
             ),
         ]);
+        if *self.links.lock().unwrap() {
+            rows.push(self.row(
+                NOTEBOOK,
+                NOTEBOOK,
+                "notes.notebook",
+                "Notebook",
+                Some(("open-link", "Open link", vec![text("url", true)], Effect)),
+                false,
+            ));
+        }
         for (page, _, label) in &notes {
             rows.push(self.row(NOTEBOOK, page, "notes.page", label, None, true));
         }
@@ -2936,5 +2956,7 @@ fn an_action_the_person_must_allow_answers_pending_with_the_ask() {
 
 #[path = "mcp_agent_flux_tests.rs"]
 mod flux;
+#[path = "mcp_agent_open_tests.rs"]
+mod opening;
 #[path = "mcp_agent_watch_tests.rs"]
 mod watch_tests;

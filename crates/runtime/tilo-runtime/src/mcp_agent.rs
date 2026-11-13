@@ -724,6 +724,25 @@ fn action_rank(name: &str, action: &ActionDescriptor) -> Option<u8> {
         .then_some(2)
 }
 
+/// `picked`, the action `name` was found to mean at `path`, unless `name` is
+/// the word that starts an app (`starts`) and names the action by nothing
+/// but the start of its id: `open` begins `open-link` and is neither its id
+/// nor its label, so it is not that action.
+fn named_beyond_its_start(
+    starts: bool,
+    name: &str,
+    path: &str,
+    picked: Result<(String, ActionDescriptor), String>,
+) -> Result<(String, ActionDescriptor), String> {
+    match picked {
+        Ok((_, found)) if starts && action_rank(name, &found) == Some(2) => Err(format!(
+            "{path} has no action {name}; its {} is another action",
+            found.address.action
+        )),
+        picked => picked,
+    }
+}
+
 /// The action that reads a resource, among those its directory level offers:
 /// the one declared to read its document, else one named `read`, else a view
 /// whose action starts with `read` (`read-settings` next to `read`).
@@ -2623,11 +2642,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 };
             }
             // `notes#open` is what the listing of a stopped app says to
-            // call; once the app runs, it answers what is in it.
-            let opens = parsed.segments.is_empty() && arguments.is_empty();
-            match self.pick_action_in(&action, &resolved).await {
+            // call; once the app runs, it answers what is in it. The word
+            // that starts an app names an action of the running app only
+            // where the app calls one that, by its id or its label: never
+            // another whose id merely begins with it (`open-link`), which
+            // nobody asked for.
+            let starts = parsed.segments.is_empty() && starts_app(&action);
+            let picked = self.pick_action_in(&action, &resolved).await;
+            match named_beyond_its_start(starts, &action, &resolved.path, picked) {
                 Ok(found) => found,
-                Err(_) if opens && starts_app(&action) => {
+                Err(_) if starts && arguments.is_empty() => {
                     return Ok(self.running(&resolved.app_id).await);
                 }
                 Err(error) => return Err(format!("{error}; tilo_ls {} lists them", resolved.path)),
