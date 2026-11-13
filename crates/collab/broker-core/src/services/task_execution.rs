@@ -298,11 +298,7 @@ pub fn issue_answers<'a>(
     policy: &'a tilo_action_policy::WorkspacePolicy,
     run: &TrackerRun,
 ) -> impl Iterator<Item = &'a tilo_action_policy::Grant> + 'a {
-    let prefix = issue_answer_prefix(&run.issue);
-    policy
-        .grants
-        .iter()
-        .filter(move |grant| grant.id.as_str().starts_with(&prefix))
+    tilo_action_policy::issue_answers(&policy.grants, &run.issue)
 }
 
 /// The prefix of a run that answers a person's message in a conversation: Chat's record, the

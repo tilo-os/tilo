@@ -62,6 +62,15 @@ pub fn is_issue_answer(grant: &Grant) -> bool {
     grant.id.as_str().starts_with(ISSUE_ANSWER_PREFIX)
 }
 
+/// The answers a person gave for the work of `issue`: what that work is
+/// decided by, and no other is.
+pub fn issue_answers<'g>(grants: &'g [Grant], issue: &str) -> impl Iterator<Item = &'g Grant> + 'g {
+    let prefix = format!("{ISSUE_ANSWER_PREFIX}{issue}:");
+    grants
+        .iter()
+        .filter(move |grant| grant.id.as_str().starts_with(&prefix))
+}
+
 pub use grant::{Answer, Context, Grant, GrantId, Grantee, Lifetime, Role};
 pub use kind::{ActionKind, KindSet};
 pub use member::{

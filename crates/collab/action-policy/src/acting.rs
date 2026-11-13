@@ -48,12 +48,21 @@ impl<'a> Authority<'a> {
         // person it runs for, and its steps are that person's grants. One that
         // runs for nobody allows nothing.
         let owned = !acting.acted_for.is_empty();
+        // The answers a person gave for the work that caused the acting (its
+        // issue) decide for the whole tree, as the agent's own do.
+        let answers: Vec<&Grant> = match &acting.cause {
+            Some(cause) => crate::issue_answers(&policy.grants, cause.as_str()).collect(),
+            None => Vec::new(),
+        };
         for node in acting.nodes() {
             match &node.by {
                 Actor::Member(member) => match member {
                     MemberId::Person(person) => {
                         people = people.saturating_add(1);
-                        let party = policy.party(person).with_grants(granted);
+                        let party = policy
+                            .party(person)
+                            .with_grants(granted)
+                            .with_grants(answers.iter().copied());
                         person_parts.push(if node.foreign_device {
                             party.capped(crate::Cap::FOREIGN_DEVICE)
                         } else {
@@ -61,7 +70,10 @@ impl<'a> Authority<'a> {
                         });
                     }
                     MemberId::Agent(_) | MemberId::Bot(_) => {
-                        others.push(software_party(member, policy, granted));
+                        others.push(
+                            software_party(member, policy, granted)
+                                .with_grants(answers.iter().copied()),
+                        );
                     }
                 },
                 Actor::Automation(_) if owned => {}
@@ -182,7 +194,10 @@ pub fn admit_invocation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Acting, ActionKind, Answer, Context, Grant, KindSet, Role, Verdict, roles};
+    use crate::{
+        Acting, ActionKind, Answer, Context, Grant, ISSUE_ANSWER_PREFIX, KindSet, Role, Verdict,
+        roles,
+    };
 
     const WORKSPACE: &str = "w";
 
@@ -284,6 +299,44 @@ mod tests {
             answer(&unbounded, &policy, &[], ActionKind::Undoable),
             Answer::Deny,
             "an agent with no grants of its own does nothing"
+        );
+    }
+
+    #[test]
+    fn an_issues_answers_decide_the_work_it_caused_and_no_other() {
+        let issue = "tasks.tracker/issues/release";
+        let mut policy = policy();
+        policy.grants.push(Grant::new(
+            "scribe-asks",
+            Grantee::agent("scribe"),
+            TreePath::workspace(WORKSPACE),
+            KindSet::READ_UNDOABLE,
+            Answer::Ask,
+            Grantee::person("owner"),
+        ));
+        policy.grants.push(Grant::new(
+            format!("{ISSUE_ANSWER_PREFIX}{issue}:app:so.tilo.notes:undoable"),
+            Grantee::agent("scribe"),
+            app(),
+            KindSet::UNDOABLE,
+            Answer::Allow,
+            Grantee::person("owner"),
+        ));
+        let run = Acting::agent("scribe")
+            .acting_for(Acting::person("editor"))
+            .caused_by(issue);
+        assert_eq!(
+            answer(&run, &policy, &[], ActionKind::Undoable),
+            Answer::Allow,
+            "the person's answer for the issue decides its work"
+        );
+        let another = Acting::agent("scribe")
+            .acting_for(Acting::person("editor"))
+            .caused_by("tasks.tracker/issues/other");
+        assert_eq!(
+            answer(&another, &policy, &[], ActionKind::Undoable),
+            Answer::Ask,
+            "another issue's answers decide nothing here"
         );
     }
 
