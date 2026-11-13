@@ -77,11 +77,14 @@ pub enum Label {
     /// Content a record references, sealed under the key its reference
     /// carries.
     RecordContent,
+    /// One sender's media keys, sealed to the device that may publish with
+    /// them and to no other.
+    SenderMediaKeys,
 }
 
 impl Label {
     /// Every registered label, for uniqueness checks and documentation.
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::RelayEnrollOffer,
         Self::RelayEnrollRequest,
         Self::RelayEnrollResponse,
@@ -110,6 +113,7 @@ impl Label {
         Self::TpmLockoutAuth,
         Self::SealedInvitation,
         Self::RecordContent,
+        Self::SenderMediaKeys,
     ];
 
     /// The stable byte string bound into the cryptography. Changing one of
@@ -144,6 +148,7 @@ impl Label {
             Self::TpmLockoutAuth => "tilo-seal/v1/tpm-lockout-auth",
             Self::SealedInvitation => "tilo-seal/v1/sealed-invitation",
             Self::RecordContent => "tilo-seal/v1/record-content",
+            Self::SenderMediaKeys => "tilo-seal/v1/sender-media-keys",
         }
     }
 

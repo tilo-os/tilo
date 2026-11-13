@@ -453,7 +453,7 @@ fn plane(
             &Join {
                 scope: Scope::workspace(WORKSPACE.to_owned()),
                 device,
-                keys: keys.clone(),
+                keys: keys.clone().into(),
                 roster: LiveRoster::new(devices.iter().copied()),
                 publish: true,
             },

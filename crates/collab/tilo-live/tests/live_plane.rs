@@ -29,6 +29,7 @@ use std::time::Duration;
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use iroh::endpoint::{Connection, VarInt};
 use iroh::{Endpoint, EndpointAddr, RelayMode};
+use tilo_live::frame::PlaneKeys;
 use tilo_live::grant;
 use tilo_live::live::{self, Namespace, Track};
 use tilo_live::native;
@@ -205,11 +206,11 @@ fn grant_for(certificate: &[u8]) -> Vec<u8> {
     .encode()
 }
 
-fn join(device: [u8; 32], roster: Roster, keys: ChannelContentKeys) -> Join {
+fn join(device: [u8; 32], roster: Roster, keys: impl Into<PlaneKeys>) -> Join {
     Join {
         scope: scope(),
         device,
-        keys,
+        keys: keys.into(),
         roster,
         publish: true,
     }
@@ -1364,5 +1365,105 @@ async fn a_shared_window_travels_only_while_a_member_shows_it() {
     assert_eq!(
         a.send_window(TAB, &window(sequence, true)),
         Err(PlaneError::Unwanted)
+    );
+}
+
+/// A device that publishes to a workspace without holding any of its content
+/// keys — a hosted machine confined to its own record — is handed the media
+/// keys of exactly the streams it publishes. What it seals reaches a member
+/// that holds the content keys, it cannot seal a stream it was not handed,
+/// and nothing the member seals is opened here.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_on_its_own_media_keys_publishes_to_the_members_and_opens_nothing() {
+    use tilo_live::frame::{Refusal, Stream};
+
+    /// The window whose page the device publishes.
+    const TAB: u64 = 0x5EED_0000_0000_0007;
+
+    let authority = Authority::new();
+    let (relay_endpoint, member_endpoint, confined_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (member_key, confined_key) = (
+        *member_endpoint.id().as_bytes(),
+        *confined_endpoint.id().as_bytes(),
+    );
+    let (member_cert, confined_cert) = (
+        authority.admit_device(member_key),
+        authority.admit_device(confined_key),
+    );
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let channel = keys();
+
+    // The member holds the workspace's content keys and derives this device's
+    // own ones from them, for the presence and the page it publishes.
+    let handed = channel
+        .sender_media_keys(
+            channel.epoch(),
+            confined_key,
+            &[Stream::Presence.tag(), Stream::Page.tag()],
+        )
+        .unwrap();
+    let member = Plane::join(
+        Arc::new(native::Iroh::new(member_endpoint, addr(&relay_endpoint))),
+        &grant_for(&member_cert),
+        join(member_key, roster.clone(), channel.clone()),
+    )
+    .await
+    .unwrap();
+    let confined = Plane::join(
+        Arc::new(native::Iroh::new(confined_endpoint, addr(&relay_endpoint))),
+        &grant_for(&confined_cert),
+        join(confined_key, roster, handed),
+    )
+    .await
+    .unwrap();
+    wait_until("both sessions admitted", || relay.counters().accepted == 2);
+
+    // Presence sealed under the keys it was handed opens on the member, under
+    // the keys the member derived them from.
+    confined
+        .publish(Track::Presence, 1, b"role=hosted")
+        .unwrap();
+    wait_until("the member opens the device's presence", || {
+        heard(&member, Track::Presence)
+            .iter()
+            .any(|object| object.sender == confined_key && object.body == b"role=hosted")
+    });
+
+    // A page it publishes the same way, on a track the member asks for, seals
+    // under the same handed keys.
+    member.show(confined_key, &[Track::Page(TAB)]);
+    wait_until("the page is asked for", || confined.wanted_pages() == [TAB]);
+    let mut page = 0_u64;
+    wait_until("the member opens the device's page", || {
+        let _ = confined.send_page(TAB, &page_object(page, true));
+        page = page.saturating_add(1);
+        !pages(&member, Track::Page(TAB)).is_empty()
+    });
+
+    // A stream it was not handed is not one it can seal: its call audio is
+    // refused here rather than sealed under another device's key.
+    assert_eq!(
+        confined.publish(Track::Audio, 1, &voice(0, b"hello")),
+        Err(PlaneError::Refused(Refusal::NoKey(channel.epoch())))
+    );
+
+    // Nothing the member seals is opened here, its presence included: the
+    // device holds nobody's keys but its own, and those seal only.
+    let mut sequence = 1;
+    wait_until("the device refuses what it reads", || {
+        member
+            .publish(Track::Presence, sequence, b"role=member")
+            .unwrap();
+        sequence = sequence.saturating_add(1);
+        !confined.refusals().is_empty()
+    });
+    assert_eq!(confined.heard_total(), 0, "it opens nobody's frames");
+    assert_eq!(
+        confined.publish(Track::Presence, sequence, b"role=hosted"),
+        Ok(()),
+        "it keeps publishing what it was handed"
     );
 }

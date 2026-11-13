@@ -382,7 +382,7 @@ impl Shared {
         let join = Join {
             scope: scope.clone(),
             device: self.device,
-            keys,
+            keys: keys.into(),
             roster,
             publish: true,
         };
