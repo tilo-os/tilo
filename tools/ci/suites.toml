@@ -757,6 +757,7 @@ readers = [
   "apps/tilolang/src/packages.rs",
   "apps/tilolang/tests/board.rs",
   "apps/tilolang/tests/history_undo.rs",
+  "apps/tilolang/tests/narrow.rs",
   "apps/tilolang/tests/opening.rs",
   "apps/tilolang/tests/support.rs",
   "apps/tilolang/tests/tasks_board.rs",

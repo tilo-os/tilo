@@ -15,7 +15,7 @@
 //! control that runs an app action (or edits a record's field) with this, and
 //! nothing else: a widget that runs none is left as it is.
 
-use super::{AppModel, Element, ModelPath, Widget};
+use super::{Element, Widget};
 use crate::a11y::AccessNode;
 
 /// A control and what it does.
@@ -93,10 +93,6 @@ impl super::Decorator for Identified {
         let node = self.content.build_layout(taffy, theme, node_map);
         super::decorator::register_node(node_map, node, self);
         node
-    }
-
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.content.update(state, path)
     }
 }
 

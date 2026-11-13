@@ -239,9 +239,9 @@ impl Adapter {
     /// state and a header row, and the person's language renames it; neither changes what it
     /// does, so neither changes this.
     pub(crate) fn identity_of(&self, node: &UiNode) -> Option<String> {
-        // One event per control runs what the person presses it for; a node that runs an action
-        // from any event is that action's, and the maps are ordered, so this is the same one
-        // every frame.
+        // One event per control runs what the person presses it for. A node whose events run
+        // several actions is none of them in particular, so the first the map holds answers for
+        // it — the map is ordered, so this is the same one every frame.
         if let Some((resource, action)) = node
             .events
             .values()

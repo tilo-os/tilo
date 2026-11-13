@@ -178,6 +178,17 @@ impl ActionRef {
         self.from = from.cloned();
         self
     }
+
+    /// What the reference does, as a control that runs it acts: a `then` runs its first action,
+    /// and its second only completes it (clearing the state the first set). So a button that
+    /// answers a message and clears its entry acts on the message, whatever else it runs.
+    #[must_use]
+    pub fn acting(&self) -> &Self {
+        match (self.action.as_str(), self.args.first()) {
+            (crate::host_ui::THEN_ACTION, Some(Value::Action(first))) => first.acting(),
+            _ => self,
+        }
+    }
 }
 
 impl From<(&str, Vec<Value>)> for ActionRef {

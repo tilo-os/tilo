@@ -406,7 +406,8 @@ pub(crate) fn invokes(
     key: &str,
     event: &str,
 ) -> Option<(ResourceRef, String)> {
-    let aref = view.event_action(key, event)?;
+    // What the control does, where a `then` runs more than one action to do it.
+    let aref = view.event_action(key, event)?.acting().clone();
     let given = aref
         .args
         .iter()
