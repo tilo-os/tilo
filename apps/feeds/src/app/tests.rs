@@ -540,6 +540,128 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         assert!(loaded(&doc).articles.len() >= total);
     }
 
+    // What a feed reports again lands once, and an answer that changes
+    // nothing queues nothing.
+    {
+        let mut a = app();
+        let mut doc = synced(&mut a);
+        let (worker, tx) = FetchWorker::for_test();
+        a.core_mut().worker = Some(worker);
+        let feed_id = nth_feed(&a, 0);
+        let now = a.core().now;
+        let answer =
+            |feed: &Id, title: Option<&str>, articles: Vec<Fetched>| FetchResult::Articles {
+                feed_id: feed.clone(),
+                title: title.map(str::to_owned),
+                articles,
+                certificate_pin: None,
+            };
+        let waiting = |a: &FeedsApp| -> Vec<usize> {
+            a.core()
+                .pending_landings
+                .iter()
+                .map(|landing| landing.fetched.articles.len())
+                .collect()
+        };
+        let title_of = |library: &Library| {
+            library
+                .feeds
+                .get(&feed_id)
+                .map(|feed: &Feed| feed.title.clone())
+        };
+        let once = fetched("Reported once", now, vec![]);
+        let twice = fetched("Reported twice", now, vec![]);
+        let stored = loaded(&doc).articles.len();
+        let counted = (
+            a.core().refresh.done,
+            a.core().refresh.updated_feeds,
+            a.core().refresh.new_items,
+        );
+
+        // Twice in one answer, and again in the next while the first waits.
+        tx.send(answer(
+            &feed_id,
+            None,
+            vec![once.clone(), twice.clone(), twice.clone()],
+        ))
+        .unwrap();
+        tx.send(answer(&feed_id, None, vec![twice.clone(), once.clone()]))
+            .unwrap();
+        a.core_mut().drain_fetches_live();
+        assert_eq!(waiting(&a), [2], "each article waits once");
+        assert_eq!(
+            (
+                a.core().refresh.done,
+                a.core().refresh.updated_feeds,
+                a.core().refresh.new_items,
+            ),
+            (counted.0 + 2, counted.1 + 1, counted.2 + 2),
+            "two answers, one of them news, two new articles"
+        );
+        a.core_mut()
+            .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
+        assert!(a.core().pending_landings.is_empty());
+        assert_eq!(loaded(&doc).articles.len(), stored + 2);
+        present(&a, &doc);
+
+        // And once more when the library holds them.
+        tx.send(answer(&feed_id, None, vec![once, twice])).unwrap();
+        a.core_mut().drain_fetches_live();
+        assert!(
+            a.core().pending_landings.is_empty(),
+            "what the library holds is not queued again"
+        );
+        assert_eq!(a.core().refresh.new_items, counted.2 + 2);
+
+        // The title the feed already has, and an empty one, are no news.
+        let title = a.core().store.feed(&feed_id).unwrap().title.clone();
+        tx.send(answer(&feed_id, Some(title.as_str()), vec![]))
+            .unwrap();
+        tx.send(answer(&feed_id, Some(""), vec![])).unwrap();
+        a.core_mut().drain_fetches_live();
+        assert!(a.core().pending_landings.is_empty());
+
+        // Nor is the answer for a subscription that is gone, though it
+        // counts as answered.
+        let done = a.core().refresh.done;
+        tx.send(answer(
+            &Id::from_raw("unsubscribed-meanwhile"),
+            Some("Gone"),
+            vec![fetched("Orphan", now, vec![])],
+        ))
+        .unwrap();
+        a.core_mut().drain_fetches_live();
+        assert!(a.core().pending_landings.is_empty());
+        assert_eq!(a.core().refresh.done, done + 1);
+
+        // A frame with nothing waiting persists nothing.
+        let heads = doc.get_heads();
+        a.core_mut()
+            .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
+        assert_eq!(doc.get_heads(), heads);
+        assert_eq!(title_of(&loaded(&doc)), Some(title));
+
+        // A new title lands with the first step of its articles, and the
+        // rest follows without taking it back.
+        let renamed = "Renamed by the feed";
+        let articles: Vec<Fetched> = (0..=FLUSH_BUDGET)
+            .map(|i| fetched(&format!("Renamed {i}"), now, vec![]))
+            .collect();
+        tx.send(answer(&feed_id, Some(renamed), articles)).unwrap();
+        a.core_mut().drain_fetches_live();
+        assert_eq!(waiting(&a), [FLUSH_BUDGET + 1]);
+        a.core_mut()
+            .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
+        assert_eq!(waiting(&a), [1]);
+        assert_eq!(title_of(&loaded(&doc)).as_deref(), Some(renamed));
+        assert_eq!(loaded(&doc).articles.len(), stored + 2 + FLUSH_BUDGET);
+        a.core_mut()
+            .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
+        assert!(a.core().pending_landings.is_empty());
+        assert_eq!(title_of(&loaded(&doc)).as_deref(), Some(renamed));
+        assert_eq!(loaded(&doc).articles.len(), stored + 3 + FLUSH_BUDGET);
+    }
+
     {
         let mut a = app();
         let doc = synced(&mut a);
@@ -1226,15 +1348,38 @@ fn the_list_scrolls_and_keeps_the_open_article_in_view() {
 
 #[test]
 fn article_links_reject_local_files() {
-    let mut reader = FeedsApp::new();
-    reader
-        .core_mut()
-        .open_url("file:///does-not-exist-tilo-link-proof");
-    reader.take_toast();
-    assert_eq!(
-        reader.shell().toast_text(),
-        Some(crate::i18n::t("feeds-open-link-invalid").as_str())
-    );
+    // A link is whatever its feed wrote. Only a web or Gemini address with a
+    // host, or a mail address, leaves the reader; each of these is refused
+    // by a reader of its own, so no row reads the toast of the one before.
+    for link in [
+        "file:///does-not-exist-tilo-link-proof",
+        "FILE:///does-not-exist-tilo-link-proof",
+        "  file:///does-not-exist-tilo-link-proof  ",
+        "file://localhost/does-not-exist-tilo-link-proof",
+        "javascript:alert(1)",
+        "data:text/html,does-not-exist-tilo-link-proof",
+        "ftp://example.invalid/does-not-exist-tilo-link-proof",
+        "/does-not-exist-tilo-link-proof",
+        "example.invalid/page",
+        "//example.invalid/page",
+        "http://",
+        "mailto:",
+        "",
+        "   ",
+    ] {
+        let mut reader = FeedsApp::new();
+        reader.core_mut().open_url(link);
+        assert!(
+            reader.core().open_link_rx.is_none(),
+            "{link:?} went to the opener"
+        );
+        reader.take_toast();
+        assert_eq!(
+            reader.shell().toast_text(),
+            Some(crate::i18n::t("feeds-open-link-invalid").as_str()),
+            "{link:?}"
+        );
+    }
 }
 
 fn check_add_dialog_native_accessibility_sets_the_field() {
