@@ -111,13 +111,8 @@ pub fn parse_publish_diagnostics(msg: &Value) -> Option<(String, Vec<LspDiagnost
     Some((uri, diags))
 }
 
-/// Parse a `$/progress` notification into a [`Progress`].
-///
-/// `begin` carries the title, `report` carries updates without repeating it,
-/// and `end` may carry only a closing message — so a caller that wants a
-/// stable label has to remember the title from `begin`. That is the client's
-/// job (see [`LspClient`]), not the parser's; this returns exactly what the
-/// notification said.
+/// A `$/progress` notification as a [`Progress`]. `begin` carries the title and `end` may carry only
+/// a closing message, so remembering it is [`LspClient`]'s job.
 pub fn parse_progress(msg: &Value) -> Option<Progress> {
     let params: ProgressParams = payload(msg, "params")?;
     let token = match params.token {
@@ -277,14 +272,7 @@ pub fn apply_text_edits(text: &str, edits: &[TextEdit]) -> Result<String, String
     Ok(out)
 }
 
-/// Frame a JSON-RPC payload as bytes: `Content-Length: N\r\n\r\n<body>`.
-///
-/// Every payload this client builds is either a `json!()` literal or a
-/// `Value` freshly parsed from valid JSON — both are always representable in
-/// JSON (the only way to construct a non-representable `Value`, a NaN/
-/// infinite float, is not something this code does) — so serialization here
-/// cannot practically fail; the empty-frame fallback exists only so a future
-/// caller building a payload another way degrades instead of crashing.
+/// A JSON-RPC payload as bytes: `Content-Length: N\r\n\r\n<body>`.
 pub fn encode(payload: &Value) -> Vec<u8> {
     let body = serde_json::to_vec(payload).unwrap_or_default();
     let mut out = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();

@@ -27,14 +27,12 @@ impl AfterSave {
 }
 
 impl CodeApp {
-    /// Read a disk-backed file into its buffer the first time this session
-    /// opens it. The document may already hold text for it — a collaborator's
-    /// or a previous session's unsaved edits, which are not ours to discard —
-    /// so the seed only creates text that is missing; the file's bytes and
-    /// stamp become the comparison a save is checked against either way.
+    /// Read a disk-backed file into its buffer the first time this session opens it. Text the document
+    /// already holds (a collaborator's, a previous session's unsaved edits) is kept, and the file's bytes
+    /// and stamp become the comparison a save is checked against.
     ///
-    /// A read failure closes the tab again: a file that opened as a silently
-    /// empty buffer would be written back empty by the next Ctrl+S.
+    /// A read failure closes the tab again: a buffer that opened empty would be written back empty by the
+    /// next Ctrl+S.
     pub(super) fn seed_buffer(&mut self, node: TreeId) {
         let Some(buffer) = self.session.buffer_of(node) else {
             return;
@@ -104,13 +102,11 @@ impl CodeApp {
         }
     }
 
-    /// Write one buffer to its file. Whether it landed by the time this
-    /// returns: on the frame loop the write runs on a background thread and
-    /// its outcome is folded in later (`Self::save_buffer_then`).
+    /// Write one buffer to its file, and say whether it landed: on the frame loop the write runs on a
+    /// background thread and its outcome is folded in later (`Self::save_buffer_then`).
     ///
-    /// `force` is the user having answered "overwrite anyway" to a conflict; it
-    /// is the only way to skip the freshness check, and it is never set by the
-    /// app on its own.
+    /// `force` is the person having answered "overwrite anyway"; it is the only way past the freshness
+    /// check, and the app never sets it itself.
     pub fn save_buffer(&mut self, doc: &AutoCommit, node: TreeId, force: bool) -> bool {
         self.save_buffer_then(doc, node, force, AfterSave::Nothing)
     }
@@ -274,12 +270,8 @@ impl CodeApp {
         }
     }
 
-    /// Notice files that changed on disk since we read them, so a tab can warn
-    /// before the user tries to save over someone else's work.
-    ///
-    /// One look at a time. On the frame loop the look runs on a background
-    /// thread and wakes the window only when the file did change, so an idle
-    /// window is not kept awake looking.
+    /// Notice files that changed on disk since their last read, so a tab warns before a save over
+    /// someone else's work. One look at a time, off the frame loop, waking the window only on a change.
     pub(super) fn check_disk_staleness(&mut self) {
         if self.staleness_looking {
             return;
@@ -332,16 +324,9 @@ impl CodeApp {
         }
     }
 
-    /// Ask the host desktop for a folder to open as the project.
-    ///
-    /// This goes through the XDG `FileChooser` portal rather than any in-app
-    /// browser: under app-state confinement the editor has exactly one writable
-    /// directory of its own and no manifest field can add more, so a path the
-    /// user picked in the portal — which is where the sandbox's file-access
-    /// grant is made — is the only way it reaches the rest of the filesystem.
-    ///
-    /// It asks for a folder, to change: the editor saves into the project
-    /// it opens, and the picker gives exactly what it was asked for.
+    /// Ask the host desktop for a folder to open as the project, through the XDG `FileChooser` portal:
+    /// under app-state confinement it is the only way out of the editor's one writable directory, and it
+    /// is where the sandbox's file-access grant is made.
     pub(super) fn request_open_folder(&mut self) {
         self.portal_intent = Some(PortalIntent::OpenFolder);
         self.portal = Some(
@@ -623,10 +608,8 @@ impl CodeApp {
     }
 }
 
-/// Why `path` did not open. A path Code cannot see is most often one it was
-/// never handed: its sandbox reaches the files the desktop gave it (opened
-/// from Files, dropped on it, picked in the file chooser), not every path on
-/// the machine, so the answer names the way that hands one over.
+/// Why `path` did not open: the editor's sandbox reaches the files the desktop gave it (from Files,
+/// dropped on it, picked in the file chooser), not every path on the machine.
 pub(super) fn could_not_open(path: &std::path::Path, error: &std::io::Error) -> String {
     let unreachable = matches!(
         error.kind(),

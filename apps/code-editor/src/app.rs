@@ -1847,12 +1847,8 @@ impl CodeApp {
     }
 }
 
-/// The flat character index of `(line, col)` in `text`.
-///
-/// Automerge's `Text` is character-addressed and so is the editor's caret, so
-/// every splice has to be converted here rather than from a byte offset — a
-/// buffer containing any non-ASCII character would otherwise splice in the
-/// wrong place.
+/// The character index of `(line, col)` in `text`: Automerge's `Text` and the caret are character
+/// addressed, so a byte offset would splice in the wrong place past the first non-ASCII character.
 pub(crate) fn flat_index(text: &str, line: usize, col: usize) -> Option<usize> {
     let mut idx = 0usize;
     for (i, l) in text.split('\n').enumerate() {
@@ -1865,9 +1861,6 @@ pub(crate) fn flat_index(text: &str, line: usize, col: usize) -> Option<usize> {
     None
 }
 
-/// Character-addressed replacement used to prepare a text action from editor
-/// UI state. It intentionally operates on an ordinary temporary `String`;
-/// the following action dispatch is the only CRDT mutation path.
 pub(crate) fn replace_chars(text: &mut String, start: usize, delete: usize, replacement: &str) {
     let total = text.chars().count();
     let start = start.min(total);
@@ -2010,8 +2003,8 @@ impl Widget for CodeApp {
                 self.open_node(node);
             }
         }
-        // A file picker in flight is drained here, once a frame, off a channel
-        // the worker thread fills — the UI never waits on D-Bus.
+        // The file picker's answer arrives off a channel a worker fills, drained once a frame: the UI never
+        // waits on D-Bus.
         self.poll_portal(state);
         self.poll_search();
         self.record_disk_entries();
@@ -2191,9 +2184,8 @@ impl Widget for CodeApp {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.track_pointer(event, ctx.scale_factor);
 
-        // A question (a save conflict, unsaved changes on close) is modal:
-        // while it is up it owns all input, because answering it decides
-        // which of two versions of the file survives.
+        // A question (a save conflict, unsaved changes on close) owns all input while it is up: answering it
+        // decides which of two versions of the file survives.
         if let Some(question) = self.question() {
             self.handle_question(
                 question,
@@ -2322,9 +2314,8 @@ impl Widget for CodeApp {
         )
     }
 
-    /// Expose the panes so headless driving can address them by name. Without
-    /// this the whole editor is one opaque rect and `--headless-drive` can only
-    /// click at raw coordinates.
+    /// The panes, so headless driving can address them by name; without this the editor is one opaque
+    /// rect and `--headless-drive` can only click at raw coordinates.
     fn children(&self) -> Vec<&dyn Widget> {
         let mut out: Vec<&dyn Widget> = vec![&self.editor];
         if self.panel_visible {
