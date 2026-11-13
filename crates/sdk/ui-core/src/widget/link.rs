@@ -1,14 +1,6 @@
-//! A hyperlink: primary ink with an underline, theme-driven, that opens a
-//! URL when clicked, activated by keyboard (Enter / Space), or triggered by
-//! an assistive-technology `Activate`.
-//!
-//! Activation hands the URL to the current host's [`crate::host::UriOpener`]
-//! through [`crate::portal::open_uri`] (on the native desktop, the XDG
-//! `OpenURI` portal with the `portal` feature). A host routes external opens
-//! through its own opener; a test observes them with
-//! [`crate::host::HostServices::recording`]. The most-recently-activated URL
-//! is also recorded on [`Link::last_activated`] so a parent can confirm the
-//! link fired.
+//! A hyperlink: primary ink with an underline, theme-driven, that opens a URL when clicked,
+//! activated by keyboard (Enter / Space), or triggered by an assistive-technology
+//! `Activate`.
 
 use crate::widget::ModelPath;
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -26,7 +18,6 @@ use crate::widget::Widget;
 pub use component::LinkProps;
 
 /// Best-effort and non-blocking — a launch failure is logged, not surfaced.
-/// See [`crate::portal::open_uri`] for how the URL reaches the desktop.
 pub fn os_open(url: &str) {
     crate::portal::open_uri_detached(url);
 }
@@ -46,28 +37,20 @@ pub fn try_os_open(url: &str) -> std::io::Result<()> {
 )]
 pub struct Link {
     url: String,
-    /// Defaults to the URL; a caller can show a friendlier label via
-    /// [`with_label`](Self::with_label).
     label: String,
     text_role: TextRole,
-    /// The role resolved in the theme seen at `build_layout`, for `measure`.
     style: TextStyle,
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
     is_focused: bool,
     enabled: bool,
-    /// Lets a parent or test observe that the link fired without intercepting the opener.
     last_activated: Option<String>,
-    /// An exported action the link runs instead of opening a URL.
     action: Option<crate::widget::ActionEmitter<()>>,
     dirty: bool,
     last_state: (bool, bool, bool),
-    /// What a press does instead of opening the address: a view's event.
     click: Option<Box<dyn FnMut()>>,
-    /// Its stable identity, as the view names it.
     id: Option<String>,
-    /// What inputs the host has, from the frame: the link's target grows to a finger's.
     interaction: crate::interaction::InteractionEnvironment,
 }
 
@@ -94,8 +77,8 @@ impl Link {
         }
     }
 
-    /// A link that runs an exported action instead of opening a URL ("Search
-    /// everywhere", "Open in Files"): link-shaped navigation inside Tilo.
+    /// A link that runs an exported action instead of opening a URL ("Search everywhere",
+    /// "Open in Files"): link-shaped navigation inside Tilo.
     pub fn action(label: &str, binding: tilo_actions::ActionBinding<()>) -> Self {
         let mut link = Self::new("");
         link.label = label.to_string();
@@ -125,8 +108,8 @@ impl Link {
         self
     }
 
-    /// Set the link in `role` (default [`TextRole::Body`]), usually the role
-    /// of the text around it.
+    /// Set the link in `role` (default [`TextRole::Body`]), usually the role of the text
+    /// around it.
     #[must_use]
     pub fn with_text_role(mut self, role: TextRole) -> Self {
         self.text_role = role;
@@ -163,8 +146,8 @@ impl Link {
         self.dirty = true;
     }
 
-    /// What a press lands on: its face, grown to the host's minimum target about its centre,
-    /// so a finger meets it however thin its line is.
+    /// What a press lands on: its face, grown to the host's minimum target about its
+    /// centre, so a finger meets it however thin its line is.
     #[must_use]
     pub fn target(&self) -> Rect {
         self.interaction.minimum_target_rect(self.rect)
@@ -189,8 +172,8 @@ impl Link {
     }
 
     /// Bypasses taffy — mirrors
-    /// [`TextInput::apply_layout_external`](crate::widget::TextInput) for
-    /// parents that lay children out by hand.
+    /// [`TextInput::apply_layout_external`](crate::widget::TextInput) for parents that lay
+    /// children out by hand.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         if rect != self.rect {
             self.rect = rect;
@@ -253,7 +236,6 @@ impl Widget for Link {
     ) -> NodeId {
         let mut style = theme.text(self.text_role);
         if self.label == self.url {
-            // A link that shows its address is read as one.
             style = style.with_kind(crate::text_render::TextKind::Url);
         }
         if style != self.style {
@@ -282,10 +264,6 @@ impl Widget for Link {
         }
     }
 
-    // Exact equality is intentional: `new_rect` and `self.rect` are both
-    // widths/heights from finite taffy layout resolution, not independent
-    // float computations prone to precision drift — any bit-level
-    // difference means the layout changed and a redraw is due.
     #[allow(
         clippy::float_cmp,
         reason = "dirty-checking wants exact equality against the previous layout, not a fuzzy tolerance"
@@ -327,7 +305,6 @@ impl Widget for Link {
             &style,
         );
 
-        // A touch thicker on hover so the link reads as "live".
         let uy = y0 + th - 1.5;
         let stroke_w = if self.is_hovered { 1.6 } else { 1.0 };
         scene.stroke(
@@ -392,7 +369,6 @@ impl Widget for Link {
                         if self.is_pressed {
                             *ctx.focus_target = Some(ctx.node_id);
                         } else {
-                            // Release over the link → open it.
                             self.activate();
                         }
                     }
@@ -499,7 +475,6 @@ mod tests {
         fn click_opens_url_through_the_opener_with_the_right_url() {
             let (services, recorder) = crate::host::HostServices::recording();
             let _host = crate::host::enter(&services);
-            // Opening runs as background work; pump it so the open is observable.
             let work = crate::background::Pumped::new();
             let _work = work.background().enter();
             let mut link = Link::new("https://example.com/page");
@@ -572,7 +547,6 @@ mod tests {
         keyboard_activate_opens_url();
     }
 
-    /// Lay the link out at a known rect so it has a non-zero hit box.
     fn laid_out(link: &mut Link) -> (TaffyTree<()>, NodeId) {
         let mut tree = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
@@ -587,7 +561,6 @@ mod tests {
         )
         .unwrap();
         link.apply_layout(&tree, node, Point::ZERO);
-        // Deterministic hit rect (measure needs a text renderer we don't have here).
         link.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 20.0));
         (tree, node)
     }

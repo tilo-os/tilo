@@ -1,21 +1,4 @@
 //! Drag-to-arrange canvas for the Displays pane.
-//!
-//! Each attached, enabled display is drawn at its size on the shared desktop (mode, rotation and
-//! scale), numbered the way the compositor numbers it when asked to identify screens. Pressing,
-//! tapping, an arrow key or a screen reader's activation of a tile chooses the display; dragging
-//! one moves it 1:1 under the pointer by transform alone, nothing laid out or stored while it
-//! moves, and the canvas holds its frame so only the held tile moves. Within a few pixels its
-//! edges snap onto another display's edges and its centre onto another's, with an alignment
-//! guide for each line ([`placement::snap_with_guides`]). On release it settles where it touches
-//! another display and covers none ([`placement::settle`]) with the paged-strip spring
-//! (`motion::Snap`), carrying the hand's velocity, and the drop is sent once as the output's
-//! exported `move` action, so a drag is what an agent or script can do. Ctrl with an arrow key
-//! moves the chosen display the same way ([`placement::step`]). At rest the canvas asks for no
-//! frames.
-//!
-//! [`placement::snap_with_guides`]: crate::widget::display_arrangement::placement::snap_with_guides
-//! [`placement::settle`]: crate::widget::display_arrangement::placement::settle
-//! [`placement::step`]: crate::widget::display_arrangement::placement::step
 
 pub use settings_store::display_placement as placement;
 use tilo_sort::CompactSort as _;
@@ -57,12 +40,10 @@ fn t(key: &str) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ArrangedDisplay {
     pub connector: String,
-    /// Screens in one device move together without changing its native seat layout.
     pub movement_group: Option<String>,
     /// Certified shared identity and layout state; absent for native-only or legacy tiles.
     pub shared: Option<SharedDisplayState>,
     pub label: String,
-    /// The number Identify shows on this display.
     pub number: usize,
     pub placement: Placement,
     pub primary: bool,
@@ -72,7 +53,6 @@ pub struct ArrangedDisplay {
 }
 
 /// State of one certified output in the person's shared layout.
-/// Availability and inclusion are independent: an offline display keeps its place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SharedDisplayState {
     pub device: String,
@@ -99,11 +79,8 @@ impl ArrangedDisplay {
     }
 }
 
-/// What the canvas is doing with the hand: a drag in progress, a dropped
-/// display settling into place, and the part of the desktop the canvas
-/// frames while either happens. Owned by the pane, not the widget, so it
-/// survives the composition being rebuilt between frames (a selection or a
-/// drop recomposes the pane).
+/// What the canvas is doing with the hand: a drag in progress, a dropped display settling
+/// into place, and the part of the desktop the canvas frames while either happens.
 #[derive(Clone, Debug, Default)]
 pub struct ArrangementGesture {
     drag: Option<ArrangementDrag>,
@@ -120,9 +97,8 @@ impl ArrangementGesture {
         self.drag.as_ref().is_some_and(|drag| drag.active)
     }
 
-    /// A drag of `connector` held at `preview`, as a capture shows it mid
-    /// drag: pulled onto the lines it is near and framed, as a real press
-    /// and move would be.
+    /// A drag of `connector` held at `preview`, as a capture shows it mid drag: pulled onto
+    /// the lines it is near and framed, as a real press and move would be.
     #[must_use]
     pub fn held(connector: &str, preview: Placement) -> Self {
         Self {
@@ -143,36 +119,24 @@ impl ArrangementGesture {
     }
 }
 
-/// An in-progress drag.
 #[derive(Clone, Debug)]
 struct ArrangementDrag {
     connector: String,
-    /// Where on the held display the hand took it, as a share of its width
-    /// and height: that point stays under the hand however the canvas
-    /// frames the desktop.
     grab: (f64, f64),
     pressed_at: Point,
-    /// Where the hand is on the canvas; `None` for a capture's held drag.
     pointer: Option<Point>,
-    /// A capture's held place, standing in for a hand.
     held: Option<Placement>,
     active: bool,
-    /// The finger holding it; `None` for the pointer.
     touch: Option<u64>,
-    /// The hand's path on the desktop, for the velocity the settle carries.
     path_x: FingerPath,
     path_y: FingerPath,
 }
 
-/// A dropped display springing from where it was let go to where it rests.
 #[derive(Clone, Debug)]
 struct Settle {
     connector: String,
-    /// Where the display's top-left stood when it was let go.
     from: Point,
-    /// Where it rests.
     placement: Placement,
-    /// From 0 (let go) to 1 (at rest).
     progress: MotionValue<f64>,
 }
 
@@ -240,7 +204,6 @@ impl Mapping {
     }
 }
 
-/// `placement` as a desktop rect.
 fn rect_of(placement: Placement) -> Rect {
     Rect::new(
         f64::from(placement.x),
@@ -250,7 +213,6 @@ fn rect_of(placement: Placement) -> Rect {
     )
 }
 
-/// The desktop rect `displays` cover; a 1080p display's when there are none.
 fn bounds_of<'a>(displays: impl IntoIterator<Item = &'a Placement>) -> Rect {
     displays
         .into_iter()
@@ -274,19 +236,14 @@ pub struct DisplayArrangement {
     displays: Vec<ArrangedDisplay>,
     moves: Vec<(String, ActionEmitter<(i32, i32)>)>,
     gesture: ui::LocalState<ArrangementGesture>,
-    /// The page's one display selection, chosen here.
     selection: Option<ui::LocalState<String>>,
-    /// While Identify shows each display's number: when it showed and
-    /// goes. The tiles show the same numbers in the accent meanwhile.
     identify: Option<(Instant, Instant)>,
     hovered: Option<String>,
     cursor: Option<Point>,
     padding: f64,
     snap_radius: f64,
     motion: EffectiveMotion,
-    /// What the canvas shows changed since its last paint.
     dirty: bool,
-    /// Keyboard focus: arrow keys move the selected display.
     focused: bool,
     rect: Rect,
 }
@@ -317,16 +274,16 @@ impl DisplayArrangement {
         }
     }
 
-    /// Share the selected display (by connector) with the pane: pressing a
-    /// display selects it, and the selected one is drawn chosen.
+    /// Share the selected display (by connector) with the pane: pressing a display selects
+    /// it, and the selected one is drawn chosen.
     #[must_use]
     pub fn with_selection(mut self, selection: ui::LocalState<String>) -> Self {
         self.selection = Some(selection);
         self
     }
 
-    /// Identify shows each display's number from `shown` until `until`;
-    /// the tiles show theirs in the accent meanwhile.
+    /// Identify shows each display's number from `shown` until `until`; the tiles show
+    /// theirs in the accent meanwhile.
     #[must_use]
     pub fn identifying(mut self, window: Option<(Instant, Instant)>) -> Self {
         self.identify = window;
@@ -340,20 +297,16 @@ impl DisplayArrangement {
             .filter(|selected| !selected.is_empty())
     }
 
-    /// The desktop rect the arrangement covers: what the canvas frames at
-    /// rest, centred, inside its padding.
     fn fitted_view(&self) -> Rect {
         bounds_of(self.displays.iter().map(|display| &display.placement))
     }
 
-    /// The desktop rect the canvas frames at `now`.
     fn view_at(&self, now: Instant) -> Rect {
         self.gesture
             .with(|gesture| gesture.view.as_ref().map(|view| view.get(now)))
             .unwrap_or_else(|| self.fitted_view())
     }
 
-    /// Where the canvas maps the desktop this frame.
     fn mapping(&self) -> Mapping {
         self.mapping_at(crate::motion::frame_now())
     }
@@ -417,7 +370,6 @@ impl DisplayArrangement {
         });
     }
 
-    /// Spring the framed view back to fit the arrangement.
     fn settle_view(&self, now: Instant) {
         let fitted = self.fitted_view();
         let timing = Snap::SPEC.timing(Direction::Enter, self.motion, MotionSource::Gesture);
@@ -428,8 +380,6 @@ impl DisplayArrangement {
         });
     }
 
-    /// Whether `settle` still describes a display at the place it springs
-    /// to: a drop the pane did not take (or another change since) ends it.
     fn settle_current(&self, settle: &Settle) -> bool {
         self.displays.iter().any(|display| {
             display.connector == settle.connector && display.placement == settle.placement
@@ -582,8 +532,6 @@ impl DisplayArrangement {
         )
     }
 
-    /// The display drawn under `point`, topmost first: the last drawn wins
-    /// where rectangles meet.
     fn display_at(&self, point: Point) -> Option<ArrangedDisplay> {
         let mapping = self.mapping();
         self.displays
@@ -593,8 +541,6 @@ impl DisplayArrangement {
             .cloned()
     }
 
-    /// A press or touch at `point`: the display there becomes the selected
-    /// one, and one that can move is picked up. Whether a display was there.
     fn press(&mut self, point: Point) -> bool {
         self.press_with(point, None)
     }
@@ -625,8 +571,6 @@ impl DisplayArrangement {
         path_y.push(now, dy);
         let share = |offset: f64, length: i32| offset / f64::from(length.max(1));
         self.gesture.update(|gesture| {
-            // Taking hold of a display stops any settle where it is drawn,
-            // and the canvas keeps framing what it shows.
             gesture.settle = None;
             gesture.view = Some(MotionValue::new(view));
             gesture.drag = Some(ArrangementDrag {
@@ -676,9 +620,6 @@ impl DisplayArrangement {
         true
     }
 
-    /// Let go: the held display settles into the nearest valid place on a
-    /// spring that carries the hand's velocity, the view settles back to fit
-    /// the arrangement, and that place is sent once as the display's move.
     fn release(&mut self) -> bool {
         let Some(drag) = self.gesture.with(|gesture| gesture.drag.clone()) else {
             return false;
@@ -706,11 +647,6 @@ impl DisplayArrangement {
         true
     }
 
-    /// A key on the focused canvas: an arrow chooses the next display that
-    /// way; with Ctrl it moves the chosen display instead (as Ctrl+arrow
-    /// moves a Quick Settings tile). Whether the canvas took the key: an
-    /// arrow with nowhere to go is still the canvas's, so focus does not
-    /// wander off on it.
     fn key(&mut self, key: &Key, control: bool) -> bool {
         let way = match key {
             Key::Named(NamedKey::ArrowLeft) => placement::Step::Left,
@@ -727,8 +663,6 @@ impl DisplayArrangement {
         true
     }
 
-    /// Choose the display nearest the chosen one's centre that way (the
-    /// first display when none is chosen). Whether the choice changed.
     fn select_toward(&mut self, way: placement::Step) -> bool {
         let Some(selection) = self.selection.clone() else {
             return false;
@@ -762,7 +696,6 @@ impl DisplayArrangement {
                         placement::Step::Up => (cy - y, x - cx),
                         placement::Step::Down => (y - cy, x - cx),
                     };
-                    // Ahead that way; straight ahead before off to a side.
                     (along > 0.0).then(|| (along + 2.0 * across.abs(), display))
                 })
                 .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -779,7 +712,6 @@ impl DisplayArrangement {
         true
     }
 
-    /// Choose `connector`, as a screen reader's activation of its tile does.
     fn choose(&mut self, connector: &str) -> bool {
         let Some(selection) = &self.selection else {
             return false;
@@ -798,9 +730,6 @@ impl DisplayArrangement {
         true
     }
 
-    /// An arrow key moves the selected display to the next place that way
-    /// ([`placement::step`]), settling there as a drop does. Whether it
-    /// moved.
     fn step(&mut self, way: placement::Step) -> bool {
         let Some(connector) = self.selected() else {
             return false;
@@ -897,7 +826,6 @@ impl DisplayArrangement {
         self.settle_view(now);
     }
 
-    /// Drop a drag without moving anything (Escape, a cancelled touch).
     fn cancel(&mut self) -> bool {
         if self.gesture.with(|gesture| gesture.drag.is_none()) {
             return false;
@@ -908,8 +836,6 @@ impl DisplayArrangement {
         true
     }
 
-    /// The pointer is over `point` (or left the canvas): the display under
-    /// it is drawn hovered. Whether that changed.
     fn hover(&mut self, point: Option<Point>) -> bool {
         let hovered = point
             .filter(|point| self.rect.contains(*point))
@@ -942,8 +868,6 @@ impl DisplayArrangement {
         })
     }
 
-    /// How strongly the tiles' numbers take the accent: with Identify's
-    /// cards, arriving and fading as they do.
     fn identify_level(&self, now: Instant) -> f32 {
         self.identify.map_or(0.0, |window| {
             Transient::opacity(Transient::READOUT, window, now, self.motion)
@@ -963,9 +887,6 @@ impl DisplayArrangement {
         let ground = colors.lift(0.1);
         let radius = f64::from(theme.tokens.radii.control);
         let selection = ui::chrome::SelectionState::new(state.selected, state.hovered, state.held);
-        // A tile is a control with its own floor; the chosen one takes the
-        // design system's selection: the accent-tinted lift with its
-        // hairline and glow.
         let tier = ui::chrome::selection_tier_on(theme, selection, ground);
         let fill = if display.muted() {
             colors.lift_on(ground, 0.1)
@@ -1055,8 +976,6 @@ impl DisplayArrangement {
             &caption_style,
         );
         if display.primary {
-            // Primary marker: a small bar along the top edge, the place the
-            // top bar lives on that display.
             let bar = Rect::new(rect.x0 + 6.0, rect.y0 + 5.0, rect.x1 - 6.0, rect.y0 + 8.0);
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -1069,13 +988,11 @@ impl DisplayArrangement {
     }
 }
 
-/// How one tile stands this frame.
 #[derive(Clone, Copy, Debug, Default)]
 struct TileState {
     selected: bool,
     hovered: bool,
     held: bool,
-    /// How strongly its number takes the accent (Identify showing).
     identify: f32,
 }
 
@@ -1089,9 +1006,6 @@ impl Widget for DisplayArrangement {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.padding = f64::from(theme.tokens.spacing.s6);
-        // A few pixels of pull: enough to land flush without hunting,
-        // little enough that the tile runs free under the hand between
-        // lines.
         self.snap_radius = f64::from(theme.tokens.spacing.s2);
         self.motion = theme.motion();
         let style = Style {
@@ -1105,8 +1019,6 @@ impl Widget for DisplayArrangement {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    /// Value, hover and drag change the paint, not this leaf's intrinsic size.
-    /// Theme, viewport and input-capability changes rebuild the host layout.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
@@ -1141,7 +1053,6 @@ impl Widget for DisplayArrangement {
         let selected = self.selected();
         let identify = self.identify_level(now);
         let mut drawn = self.drawn_at(now);
-        // The held display paints last so it rides above the others.
         drawn.compact_sort_by_key(|(_, _, held)| *held);
         for (display, shift, held) in &drawn {
             let rect = mapping.at(display.placement, *shift);
@@ -1193,7 +1104,6 @@ impl Widget for DisplayArrangement {
             ui::chrome::paint_alignment_guide(scene, transform, from, to, theme);
         }
         scene.pop_layer();
-        // A settle that has come to rest is over: the canvas is idle again.
         let rested = self.gesture.with(|gesture| {
             gesture.settle.as_ref().is_some_and(|settle| {
                 !settle.progress.is_moving(now) || !self.settle_current(settle)
@@ -1202,7 +1112,6 @@ impl Widget for DisplayArrangement {
         if rested {
             self.gesture.update(|gesture| gesture.settle = None);
         }
-        // So is a view back at the arrangement's fit with nothing held.
         let fitted = self.fitted_view();
         let framed = self.gesture.with(|gesture| {
             gesture.drag.is_none()
@@ -1235,8 +1144,6 @@ impl Widget for DisplayArrangement {
         }
     }
 
-    /// A screen reader's action on a display's tile: activating or focusing
-    /// it chooses that display.
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -1251,8 +1158,6 @@ impl Widget for DisplayArrangement {
             && self.choose(connector)
     }
 
-    /// Focusable when there is a display to choose or move: arrow keys
-    /// choose, and with Ctrl move, the chosen one.
     fn is_focusable(&self) -> bool {
         self.displays.len() > 1 && (self.selection.is_some() || !self.moves.is_empty())
     }
@@ -1286,8 +1191,6 @@ impl Widget for DisplayArrangement {
         self.settling(now) || self.identify_moving(now)
     }
 
-    /// While Identify's numbers are held: when they start to fade, then
-    /// when they go.
     fn next_wake_deadline(&self) -> Option<Instant> {
         let (_, until) = self.identify?;
         let now = crate::motion::frame_now();
@@ -1306,7 +1209,6 @@ impl Widget for DisplayArrangement {
         true
     }
 
-    /// A held display keeps the pointer wherever it goes.
     fn wants_pointer_capture(&self) -> bool {
         self.gesture.with(|gesture| gesture.drag.is_some())
     }
@@ -1319,11 +1221,7 @@ impl Widget for DisplayArrangement {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = ctx.logical(position);
                 self.cursor = Some(point);
-                if touch_held.is_some() {
-                    // A finger holds the display; the pointer a host makes
-                    // of the same finger follows it already.
-                    *ctx.handled = true;
-                } else if self.drag_to(point) || self.hover(Some(point)) {
+                if touch_held.is_some() || self.drag_to(point) || self.hover(Some(point)) {
                     *ctx.handled = true;
                 }
             }
@@ -1439,7 +1337,6 @@ impl Widget for DisplayArrangement {
             ))
             .with_bounds(mapping.to_canvas(display.placement))
             .with_state(ui::a11y::AccessState::new().selected(chosen));
-            // A screen reader chooses a display by activating its tile.
             let node = if self.selection.is_some() {
                 let node = node.with_action_target(format!("{CHOOSE_TARGET}{}", display.connector));
                 let state = node.state.checked(chosen);
@@ -1673,9 +1570,6 @@ mod tests {
         let mapping = canvas.mapping();
         let monitor = mapping.to_canvas(displays()[1].placement);
         let panel = mapping.to_canvas(displays()[0].placement);
-        // One frame's instant throughout: the view grows to take in the held
-        // display, so a drop read later than its move lands where the grown
-        // view puts the hand, which a loaded test machine would make vary.
         let _frame = crate::motion::pin_frame();
         assert!(canvas.press(monitor.center()));
         let target = Point::new(
@@ -1859,8 +1753,6 @@ mod tests {
         assert_eq!(selection.with(Clone::clone), "eDP-1");
         host.set_modifiers(&["ctrl".to_owned()]);
         host.key("ArrowRight");
-        // (The move is sent as the display's move action, as
-        // `arrow_keys_move_the_selected_display_from_the_keyboard` shows.)
         assert_eq!(
             place_of(&mut host, "eDP-1"),
             Some((3840, 0)),
@@ -1868,7 +1760,6 @@ mod tests {
         );
         assert_eq!(selection.with(Clone::clone), "eDP-1", "and stays chosen");
 
-        // A screen reader: each display's tile is a choice it can activate.
         let mut canvas = host.root_mut::<DisplayArrangement>();
         let tiles = canvas.accessibility().unwrap().children;
         assert_eq!(tiles.len(), 2);
@@ -1911,7 +1802,6 @@ mod tests {
         assert!(!node.children[0].state.selected);
         assert!(canvas.release(), "a press without a drag is just a choice");
         assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
-        // A choice made another way (keys, a screen reader) shows too.
         selection.set("eDP-1".into());
         assert!(canvas.accessibility().unwrap().children[0].state.selected);
     }
@@ -1948,8 +1838,6 @@ mod tests {
                 !(canvas.needs_redraw() || canvas.needs_animation_frame()) || view_growing,
                 "move {step} asks for nothing more"
             );
-            // 1:1: away from every line, the held display is exactly where
-            // the hand put it.
             let (held, _) = canvas.drawn().into_iter().find(|(_, held)| *held).unwrap();
             let (dx, dy) = mapping.to_desktop(point);
             let grab = mapping.to_desktop(monitor.center());
@@ -2026,9 +1914,6 @@ mod tests {
             })
         }
         let drop = |by_touch: bool| {
-            // The view follows a held display and settles back over time:
-            // read the whole drag at one instant, so the target the mapping
-            // names is where the drop lands however long the drag takes.
             let _frame = crate::motion::pin_frame();
             let mut canvas = canvas();
             let mapping = canvas.mapping();
@@ -2086,13 +1971,8 @@ mod tests {
         let mapping = canvas.mapping();
         let monitor = mapping.to_canvas(displays()[1].placement);
         assert!(!canvas.needs_animation_frame(), "idle costs nothing");
-        // One frame's instant from the press to the first read of the
-        // settle: on the live clock a loaded machine let the spring move
-        // between the release and the read, and the drop seemed to start
-        // away from where it was let go.
         let _frame = crate::motion::pin_frame();
         assert!(canvas.press(monitor.center()));
-        // Let go overlapping the panel: it rests clear of it.
         let over = mapping.to_canvas(displays()[0].placement).center();
         assert!(canvas.drag_to(over));
         let held = canvas
@@ -2136,8 +2016,6 @@ mod tests {
         let monitor = fitted.to_canvas(displays()[1].placement);
         assert!(canvas.press(monitor.center()));
         let panel = fitted.to_canvas(displays()[0].placement);
-        // Past the canvas's bottom edge: the tile goes with the hand, cut
-        // at the edge, and nothing else moves.
         let hand = Point::new(panel.center().x, canvas.rect.y1 + 40.0);
         assert!(canvas.drag_to(hand));
         let later = crate::motion::frame_now() + crate::time::Duration::from_secs(2);
@@ -2174,23 +2052,13 @@ mod tests {
         assert!(!canvas.settling(after), "and then asks for nothing");
     }
 
-    /// What a drag did, frame by frame, on a Settings-sized canvas with a
-    /// laptop panel and a larger desk monitor beside it.
     struct DragTrace {
-        /// On each axis, how far the point the hand took the tile by was
-        /// from the hand, in canvas pixels, and whether a snap line held
-        /// the tile on that axis.
         misses: Vec<[(f64, bool); 2]>,
-        /// The view's scale on each frame after the drag began.
         scales: Vec<f64>,
-        /// The held tile's top-left on the canvas, each frame.
         tiles: Vec<Point>,
-        /// The hand on each frame.
         hands: Vec<Point>,
     }
 
-    /// Press the monitor and move it along `path` (canvas offsets from
-    /// where it was pressed), one move per 120 Hz frame.
     fn trace_drag(path: impl Fn(f64) -> Vec2, frames: u32) -> DragTrace {
         let mut canvas = DisplayArrangement::new(
             vec![
@@ -2260,8 +2128,6 @@ mod tests {
 
     #[test]
     fn a_drag_follows_the_hand_every_frame() {
-        // Left along under the panel and back up beside it, as a person
-        // moves a monitor from the laptop's right to its lower left.
         let trace = trace_drag(
             |t| {
                 Vec2::new(
@@ -2307,7 +2173,6 @@ mod tests {
             .windows(2)
             .filter(|pair| (pair[0] - pair[1]).abs() > 1e-9)
             .count();
-        // The held tile's step against the hand's step, frame to frame.
         let worst_step = trace
             .tiles
             .windows(2)

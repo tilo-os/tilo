@@ -1,22 +1,10 @@
-//! Turning a flood of individual changes into a small number of things a
-//! person can name, collapse and restore to. History surfaces show
-//! **groups**, expanding to individual changes on demand.
+//! Turning a flood of individual changes into a small number of things a person can name,
+//! collapse and restore to. History surfaces show **groups**, expanding to individual
+//! changes on demand.
 //!
-//! An explicit action work-group (issue, task, agent run) forms the strongest
-//! automatic boundary and may span people, apps, and operation families. With
-//! no explicit group, a boundary forms when: the author changed; the clock jumped more than
-//! [`GroupingConfig::idle_gap`] (an unstamped change is not a gap —
-//! splitting on it would tear a session differently per peer); the op
-//! family changed (matching the timeline's filter chips); or the group hit
-//! [`GroupingConfig::max_changes`]. All are checked against data every
-//! change already carries, so grouping is a pure function of the change
-//! graph and every peer computes the same groups. Not used: "a burst of
-//! edits to the same region" — its boundaries would move as the document
-//! changes, so two peers could group it differently.
-//!
-//! A [`NamedRange`] is a user's name over a run of changes, authoritative
-//! and never split or extended automatically. Named ranges nest one level
-//! ([`MAX_GROUP_DEPTH`]); see [`group_entries`] for concurrent naming.
+//! A [`NamedRange`] is a user's name over a run of changes, authoritative and never split
+//! or extended automatically. Named ranges nest one level ([`MAX_GROUP_DEPTH`]); see
+//! [`group_entries`] for concurrent naming.
 
 use crate::i18n::widget_format;
 use crate::time::{Duration, SystemTime};
@@ -31,26 +19,17 @@ use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
 /// the next one, short enough that a coffee break shows up as a break.
 pub const DEFAULT_IDLE_GAP: Duration = Duration::from_secs(300);
 
-/// Ceiling on how many changes one automatic group may hold.
 pub const DEFAULT_MAX_GROUP: usize = 200;
 
-/// Two levels is what a reader can hold; three is a tree of edit history
-/// nobody asked for.
 pub const MAX_GROUP_DEPTH: usize = 2;
 
 /// A user's name over a run of history, as stored in the document.
-///
-/// `end` is `None` while the group is still **open**: someone said what they
-/// were about to do and is still doing it, so the range absorbs every change
-/// after `start` until it is closed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NamedRange {
-    /// Identity of the naming record in the document. A rename addresses this.
     pub id: String,
     pub label: String,
     pub start: HistoryEntryId,
     pub end: Option<HistoryEntryId>,
-    /// Who wrote the name — not necessarily who authored the changes.
     pub named_by: Option<HistoryAuthor>,
     pub created: SystemTime,
 }
@@ -63,7 +42,6 @@ pub struct NamedRange {
 /// onto `tilo_ui::history_source::groups::clear_name`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupNameRequest {
-    /// The naming record being replaced, when one already exists.
     pub record_id: Option<String>,
     pub start: HistoryEntryId,
     pub end: HistoryEntryId,
@@ -107,7 +85,6 @@ impl OpFamily {
         }
     }
 
-    /// "3 edits", in the desktop's language.
     fn count(self, count: usize) -> String {
         let key = match self {
             OpFamily::Edit => "history-group-edits",
@@ -120,42 +97,28 @@ impl OpFamily {
 }
 
 /// One collapsible band in a history surface.
-///
-/// `start..end` are indices into the entry slice the group was built from, in
-/// the producer's causal order. `children` are named sub-ranges; entries inside
-/// `start..end` that no child covers are the group's own rows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryGroup {
-    /// Derived from the group's first change, which does not move as the
-    /// group grows, so expand/collapse survives a refresh.
     pub key: String,
     pub name: Option<String>,
-    /// Record id of the naming, so a rename can address it.
     pub record_id: Option<String>,
     pub named_by: Option<HistoryAuthor>,
     /// The kind of explicit work unit (`task`, `agent-run`, `shortcut`, …)
     /// the band is, when its changes share one rather than a person's name.
     pub work: Option<String>,
-    /// True while the range is still absorbing new changes.
     pub open: bool,
     pub start: usize,
     pub end: usize,
     /// At most [`MAX_GROUP_DEPTH`] deep in total.
     pub children: Vec<HistoryGroup>,
-    /// 0 for a top-level group.
     pub depth: usize,
-    /// First-seen order.
     pub authors: Vec<HistoryAuthor>,
-    /// First-seen order.
     pub families: Vec<OpFamily>,
-    /// Both are `UNIX_EPOCH` when no change in the range carried a clock.
     pub first_time: SystemTime,
     pub last_time: SystemTime,
     /// `None` when at least one change in the range didn't report a count —
     /// a partial total would read as a complete one.
     pub text_delta: Option<(usize, usize)>,
-    /// The last one is the restore target: "restore to the end of this
-    /// version".
     pub first_entry: HistoryEntryId,
     pub last_entry: HistoryEntryId,
 }
@@ -170,8 +133,8 @@ impl HistoryGroup {
         self.end <= self.start
     }
 
-    /// True when this band is a single unnamed change — the surfaces render
-    /// those as a plain row rather than as a group with one thing in it.
+    /// True when this band is a single unnamed change — the surfaces render those as a
+    /// plain row rather than as a group with one thing in it.
     pub fn is_bare_change(&self) -> bool {
         self.name.is_none() && self.len() == 1 && self.children.is_empty()
     }
@@ -199,7 +162,6 @@ impl HistoryGroup {
         self.over_span(count)
     }
 
-    /// `count` followed by how long the range took, when that is worth saying.
     fn over_span(&self, count: String) -> String {
         match self.span_label() {
             Some(span) => widget_format(
@@ -222,8 +184,8 @@ impl HistoryGroup {
         self.subtitle_facts_summarised(entries, None)
     }
 
-    /// [`Self::subtitle_facts`], with what the app says the band amounts to
-    /// (`summary`) in place of how much text moved.
+    /// [`Self::subtitle_facts`], with what the app says the band amounts to (`summary`) in
+    /// place of how much text moved.
     pub fn subtitle_facts_summarised(
         &self,
         entries: &[HistoryEntry],
@@ -234,8 +196,6 @@ impl HistoryGroup {
             let count = widget_format("history-group-changes", &[("count", self.len().into())]);
             parts.push(self.over_span(count));
         }
-        // What the app says the band amounts to is what it is read by, so
-        // it is kept before who made it (whose faces the band shows too).
         let summarised = summary.is_some();
         if let Some(summary) = summary {
             parts.push(summary);
@@ -259,8 +219,6 @@ impl HistoryGroup {
             && self.len() > 1
             && let Some(first) = entries.get(self.start)
         {
-            // No character counts to aggregate (a run of governance acts, say):
-            // name the first thing that happened rather than padding the row.
             parts.push(widget_format(
                 "history-group-from",
                 &[("summary", first.summary.as_str().into())],
@@ -325,7 +283,6 @@ impl HistoryGroup {
     }
 }
 
-/// A resolved named range, before it is placed in the forest.
 #[derive(Clone, Debug)]
 struct Placed {
     id: String,
@@ -334,7 +291,6 @@ struct Placed {
     /// have a stable projection id but nothing in the CRDT to update yet.
     persisted: bool,
     named_by: Option<HistoryAuthor>,
-    /// The kind of the action work group (task, agent run, shortcut) this is.
     work: Option<String>,
     start: usize,
     end: usize,
@@ -446,8 +402,6 @@ pub fn group_entries(
         }
         run_start = run_end;
     }
-    // Outermost first at a given start, then by record id so two peers order
-    // identically.
     resolved.compact_sort_by(|a, b| {
         a.start
             .cmp(&b.start)
@@ -463,20 +417,16 @@ pub fn group_entries(
     build_level(entries, &forest, 0, entries.len(), 0, cfg)
 }
 
-/// Insert `r` into `nodes` (siblings sorted by start), nesting or clipping as
-/// documented on [`group_entries`]. `depth` is the depth `r` would occupy.
 fn insert_placed(nodes: &mut Vec<Placed>, mut r: Placed, depth: usize) -> bool {
     if let Some(last) = nodes.last_mut()
         && r.start < last.end
     {
         if r.end <= last.end {
-            // Contained: nest it, or refuse if that would be too deep.
             if depth < MAX_GROUP_DEPTH {
                 return insert_placed(&mut last.children, r, depth.saturating_add(1));
             }
             return false;
         }
-        // Partial overlap: the earlier range keeps what it has.
         r.start = last.end;
         if r.start >= r.end {
             return false;
@@ -486,8 +436,6 @@ fn insert_placed(nodes: &mut Vec<Placed>, mut r: Placed, depth: usize) -> bool {
     true
 }
 
-/// Build the groups covering `lo..hi`: the named ranges in `named`, and derived
-/// groups over whatever is between them.
 fn build_level(
     entries: &[HistoryEntry],
     named: &[Placed],
@@ -535,7 +483,6 @@ fn named_group(entries: &[HistoryEntry], n: &Placed, depth: usize) -> Option<His
     finish_group(entries, n.start, n.end, depth, Some(n), children)
 }
 
-/// Chop `lo..hi` at the automatic boundaries.
 fn derived_groups(
     entries: &[HistoryEntry],
     lo: usize,
@@ -550,15 +497,9 @@ fn derived_groups(
     };
     for (offset, pair) in window.windows(2).enumerate() {
         let [prev, cur] = pair else { continue };
-        // `offset` is the index of `prev` within `window`, so `cur` sits one
-        // past it, at absolute index `lo + offset + 1`.
         let i = lo.saturating_add(offset).saturating_add(1);
         let author_changed = author_key(prev) != author_key(cur);
         let family_changed = OpFamily::of(prev.entry_kind) != OpFamily::of(cur.entry_kind);
-        // No recorded clock is not evidence of a gap — splitting on it would
-        // tear a session differently per peer. A clock running backwards
-        // (skewed peer, merged late) likewise reads as no gap, not a
-        // negative one.
         let timed =
             prev.timestamp != SystemTime::UNIX_EPOCH && cur.timestamp != SystemTime::UNIX_EPOCH;
         let gap = cur
@@ -582,9 +523,6 @@ fn derived_groups(
     out
 }
 
-/// The identity two consecutive changes are compared on. The short identity
-/// hash is included so two different people who chose the same display name are
-/// still two groups.
 fn author_key(e: &HistoryEntry) -> (&str, &str) {
     (e.author.name.as_str(), e.author.identity_short.as_str())
 }
@@ -912,8 +850,6 @@ mod tests {
                 created: SystemTime::UNIX_EPOCH,
             }];
             let groups = group_entries(&entries, &named, &GroupingConfig::default());
-            // Change 0 is outside; 1..5 are inside the open group even though the
-            // gaps between them are far past the idle threshold.
             assert_eq!(groups.len(), 2);
             assert!(groups[0].is_bare_change());
             assert!(groups[1].open);
@@ -996,9 +932,6 @@ mod tests {
         }
 
         fn two_people_naming_overlapping_runs_converge_on_one_layout() {
-            // Alice names 0..5, Bob names 3..8 — a genuine concurrent case. The
-            // earlier start keeps its range; the later one is clipped to the tail.
-            // Both peers see the same thing whichever order the names merged in.
             let entries: Vec<HistoryEntry> = (0..9)
                 .map(|i| entry(i, "Alice", 1000 + u64::from(i), EntryKind::Text))
                 .collect();

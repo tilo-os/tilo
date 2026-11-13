@@ -1,11 +1,9 @@
-//! The one body of every floating Panel: popovers, menus, modal sheets and
-//! toasts.
+//! The one body of every floating Panel: popovers, menus, modal sheets and toasts.
 //!
-//! A floating Panel is the panel radius (`radii.panel`), the blurred
-//! material with its opaque fallback, the derived panel edge plus the 1 px
-//! inner light edge on a dark material, and one soft shadow
-//! (`elevation.floating`). The overlays differ in placement and
-//! interaction; they never differ in this.
+//! A floating Panel is the panel radius (`radii.panel`), the blurred material with its
+//! opaque fallback, the derived panel edge plus the 1 px inner light edge on a dark
+//! material, and one soft shadow (`elevation.floating`). The overlays differ in placement
+//! and interaction; they never differ in this.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Shape};
@@ -32,37 +30,29 @@ pub fn radius(theme: &Theme) -> f64 {
     f64::from(theme.tokens.radii.panel)
 }
 
-/// How far a floating Panel's shadow reaches past its rect on any side:
-/// what a host repaints around a panel that appears, moves or changes.
+/// How far a floating Panel's shadow reaches past its rect on any side: what a host
+/// repaints around a panel that appears, moves or changes.
 #[must_use]
 pub fn shadow_reach(theme: &Theme) -> f64 {
     let elevation = &theme.tokens.elevation.floating;
     f64::from(elevation.blur) * 2.0 + f64::from(elevation.offset_y).abs()
 }
 
-/// Every pixel a floating Panel in `rect` paints, its shadow included: what
-/// a host repaints where one appears, changes or goes. Tighter than
-/// [`shadow_reach`] on every side, as it follows the shadow's real kernel
-/// and offset ([`crate::surface::shadow_bounds`]).
+/// Every pixel a floating Panel in `rect` paints, its shadow included: what a host repaints
+/// where one appears, changes or goes.
 #[must_use]
 pub fn painted_bounds(rect: Rect, theme: &Theme) -> Rect {
     crate::surface::shadow_bounds(rect, &theme.tokens.elevation.floating)
         .map_or(rect, |shadow| shadow.union(rect))
 }
 
-/// Paint a floating Panel's body in `rect`: shadow, material, edge. Content
-/// is drawn on top by the caller.
+/// Paint a floating Panel's body in `rect`: shadow, material, edge.
 pub fn paint(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     paint_rounded(scene, transform, rect, radius(theme), theme);
 }
 
-/// The one floating card: a notification banner, a toast, the command
-/// palette, a desk widget's card, the frame around an app's call or
-/// navigation card. It is the floating Panel's shape (its radius, capped
-/// for a card shorter than two corners) on an opaque ground: the panel
-/// ground, the derived panel edge and, on a dark material, the inner light
-/// edge, lifted by the floating elevation. Nothing behind a card reads
-/// through it; translucency belongs to scrims.
+/// The one floating card: a notification banner, a toast, the command palette, a desk
+/// widget's card, the frame around an app's call or navigation card.
 #[must_use]
 pub fn card_radius(rect: Rect, theme: &Theme) -> f64 {
     radius(theme).min(rect.height() / 2.0)
@@ -74,8 +64,7 @@ pub fn card_ground(theme: &Theme) -> Color {
     crate::chrome::panel_ground(theme)
 }
 
-/// Paint a floating card's shadow, `alpha` of its strength (a card that
-/// is still arriving).
+/// Paint a floating card's shadow, `alpha` of its strength (a card that is still arriving).
 pub fn paint_card_shadow(
     scene: &mut Scene,
     transform: Affine,
@@ -93,15 +82,13 @@ pub fn paint_card_shadow(
     );
 }
 
-/// Paint a floating card's body without its shadow: the opaque ground and
-/// its edges. A host that fades or moves the shadow on its own paints it
-/// with [`paint_card_shadow`].
+/// Paint a floating card's body without its shadow: the opaque ground and its edges.
 pub fn paint_card_body(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     paint_card_body_with(scene, transform, rect, card_ground(theme), theme);
 }
 
-/// [`paint_card_body`] on another opaque `ground`: an app's own content
-/// ground inside the card's frame.
+/// [`paint_card_body`] on another opaque `ground`: an app's own content ground inside the
+/// card's frame.
 pub fn paint_card_body_with(
     scene: &mut Scene,
     transform: Affine,
@@ -141,8 +128,7 @@ pub fn single_row_radius(theme: &Theme) -> f64 {
     (f64::from(radii.item) + menu_inset(theme)).min(f64::from(radii.panel))
 }
 
-/// [`paint`] with an explicit corner `radius` (a single-row menu's
-/// [`single_row_radius`]).
+/// [`paint`] with an explicit corner `radius` (a single-row menu's [`single_row_radius`]).
 pub fn paint_rounded(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
     // A blurred filled shape also covers its interior. Keep that shadow
     // outside the panel: the material below records this scene for blur,
@@ -156,35 +142,21 @@ pub fn paint_rounded(scene: &mut Scene, transform: Affine, rect: Rect, radius: f
     crate::surface::panel(scene, transform, rect, radius, theme);
 }
 
-/// How far a menu's rows sit inside its Panel, on every side: the `s2`
-/// step. Popover menus, dropdown lists and context menus share it, so the
-/// armed row's corners run concentric with the panel in all of them.
+/// How far a menu's rows sit inside its Panel, on every side: the `s2` step.
 #[must_use]
 pub fn menu_inset(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s2)
 }
 
-/// How many surface steps the armed row of a menu stands off its panel.
-///
-/// A selected row is a lift (`docs/design-language.md`, "No brand accent";
-/// HIG §9.3). On a floating panel one step measured ΔL* ≈ 11 and read as
-/// "no highlighting" on a dark desktop, so a panel takes a stronger lift
-/// step: half a step more, which clears ΔL* 15 on every material
-/// (`tests/menu_highlight_render.rs`) while staying a quiet grey on white,
-/// like the sidebar lift.
 pub const OVERLAY_LIFT: f32 = 1.5;
 
-/// [`OVERLAY_LIFT`] on a light material, whose lift step is smaller.
 pub const OVERLAY_LIFT_LIGHT: f32 = OVERLAY_LIFT + 0.5;
 
-/// The fill of a menu's armed row (the row Enter or a click activates) and
-/// the ink on it: the panel ground's overlay lift ([`OVERLAY_LIFT`]) with
-/// primary ink measured on it. Hue-free under the default emphasis.
+/// The fill of a menu's armed row (the row Enter or a click activates) and the ink on it:
+/// the panel ground's overlay lift ([`OVERLAY_LIFT`]) with primary ink measured on it.
 #[must_use]
 pub fn armed_row(theme: &Theme) -> (Color, Color) {
     let colors = &theme.tokens.colors;
-    // A light material's lift is a smaller step (calm hovers everywhere
-    // else), so its armed row takes more of them to clear the same ΔL*.
     let steps = if colors.palette.dark {
         OVERLAY_LIFT
     } else {
@@ -213,8 +185,8 @@ pub fn paint_armed_row(
     paint_armed_row_in(scene, transform, row, radius(theme), inset, theme)
 }
 
-/// [`paint_armed_row`] inside a panel of `panel_radius` (a single-row
-/// menu's [`single_row_radius`]).
+/// [`paint_armed_row`] inside a panel of `panel_radius` (a single-row menu's
+/// [`single_row_radius`]).
 pub fn paint_armed_row_in(
     scene: &mut Scene,
     transform: Affine,
@@ -241,16 +213,16 @@ pub fn paint_armed_row_in(
     ink
 }
 
-/// How far every anchored floating Panel (popovers, menus, dropdown lists)
-/// stays from the window's edges: the `s2` step, the menu's own inset, so
-/// a panel pushed against an edge keeps the same air as its rows.
+/// How far every anchored floating Panel (popovers, menus, dropdown lists) stays from the
+/// window's edges: the `s2` step, the menu's own inset, so a panel pushed against an edge
+/// keeps the same air as its rows.
 #[must_use]
 pub fn viewport_margin(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s2)
 }
 
-/// The room an anchored floating Panel is placed in: `window` less the
-/// [`viewport_margin`] on every side.
+/// The room an anchored floating Panel is placed in: `window` less the [`viewport_margin`]
+/// on every side.
 #[must_use]
 pub fn panel_room(window: Rect, theme: &Theme) -> Rect {
     let margin = viewport_margin(theme)
@@ -260,28 +232,21 @@ pub fn panel_room(window: Rect, theme: &Theme) -> Rect {
     window.inset(-margin)
 }
 
-/// The inset of a control inside a floating Panel that holds a row of
-/// controls (a media control bar, a prompt): the panel radius less the
-/// control radius, so the control's corners run concentric with the
-/// panel's.
+/// The inset of a control inside a floating Panel that holds a row of controls (a media
+/// control bar, a prompt): the panel radius less the control radius, so the control's
+/// corners run concentric with the panel's.
 #[must_use]
 pub fn control_inset(theme: &Theme) -> f64 {
     let radii = &theme.tokens.radii;
     f64::from((radii.panel - radii.control).max(0.0))
 }
 
-/// Which edge of its anchor a floating Panel lines up with on the cross
-/// axis.
+/// Which edge of its anchor a floating Panel lines up with on the cross axis.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum PanelAlign {
-    /// The panel's leading edge on the anchor's leading edge (a menu under
-    /// a toolbar button at the start of a row).
     #[default]
     Leading,
-    /// The panel's trailing edge on the anchor's trailing edge (a menu under
-    /// a button at the end of a header row).
     Trailing,
-    /// The panel centred on the anchor (a tooltip under its control).
     Centre,
 }
 
@@ -295,7 +260,6 @@ pub enum PopoverSide {
     Right,
 }
 
-// The side of its anchor a popover opens on, as a component's prop.
 crate::component::choice!(PopoverSide, "PopoverSide", {
     Above => "above",
     Below => "below",
@@ -319,8 +283,8 @@ impl PopoverSide {
     }
 }
 
-/// The room a Panel has on `side` of `anchor`, `gap` away, inside
-/// `viewport`: the most a menu opening there can grow before it scrolls.
+/// The room a Panel has on `side` of `anchor`, `gap` away, inside `viewport`: the most a
+/// menu opening there can grow before it scrolls.
 #[must_use]
 pub fn anchored_room(anchor: Rect, side: PopoverSide, gap: f64, viewport: Rect) -> f64 {
     let anchor = clamp_anchor(anchor, viewport);
@@ -333,24 +297,15 @@ pub fn anchored_room(anchor: Rect, side: PopoverSide, gap: f64, viewport: Rect) 
     .max(0.0)
 }
 
-/// `anchor` moved inside `viewport`.
 fn clamp_anchor(anchor: Rect, viewport: Rect) -> Rect {
     let x = |v: f64| v.clamp(viewport.x0, viewport.x1.max(viewport.x0));
     let y = |v: f64| v.clamp(viewport.y0, viewport.y1.max(viewport.y0));
     Rect::new(x(anchor.x0), y(anchor.y0), x(anchor.x1), y(anchor.y1))
 }
 
-/// Where a floating Panel of `size` goes against `anchor` (the control that
-/// opened it, or a zero-size pointer position) inside `viewport`: on `side`
-/// of the anchor, `gap` away, its leading edge on the anchor's leading
-/// edge. It **flips** to the other side when `side` has no room and the
-/// other side has more, flips its alignment to the anchor's trailing edge
-/// when it would run past the viewport's trailing edge, and then **shifts**
-/// along the anchor into the viewport. Returns the panel and the side it
-/// opened on.
-///
-/// Every anchored floating Panel (context menus, popovers, dropdown lists)
-/// places itself through here, so a menu always opens at its trigger.
+/// Where a floating Panel of `size` goes against `anchor` (the control that opened it, or a
+/// zero-size pointer position) inside `viewport`: on `side` of the anchor, `gap` away, its
+/// leading edge on the anchor's leading edge.
 #[must_use]
 pub fn place_anchored(
     anchor: Rect,
@@ -362,9 +317,9 @@ pub fn place_anchored(
     place_aligned(anchor, size, side, PanelAlign::Leading, gap, viewport)
 }
 
-/// Where a sheet of `size` that asks about the control at `anchor` stands:
-/// under it where there is room (else over it), `gap` from it, inside
-/// `window` and within `room` vertically.
+/// Where a sheet of `size` that asks about the control at `anchor` stands: under it where
+/// there is room (else over it), `gap` from it, inside `window` and within `room`
+/// vertically.
 #[must_use]
 pub fn place_sheet_beside(
     anchor: Rect,
@@ -393,7 +348,6 @@ pub fn place_aligned(
     viewport: Rect,
 ) -> (Rect, PopoverSide) {
     if align == PanelAlign::Trailing {
-        // Mirror the cross axis, place leading, and mirror back.
         let (mirror_x, mirror_y) = (side.vertical(), !side.vertical());
         let flip = |r: Rect| {
             let (x0, x1) = if mirror_x {
@@ -419,8 +373,6 @@ pub fn place_aligned(
         return (flip(rect), side);
     }
     let (w, h) = (size.0.max(0.0), size.1.max(0.0));
-    // An anchor past the viewport's edge (a pointer outside it) opens the
-    // panel from the nearest point on the edge.
     let anchor = clamp_anchor(anchor, viewport);
     let room = |side: PopoverSide| anchored_room(anchor, side, gap, viewport);
     let need = if side.vertical() { h } else { w };
@@ -470,13 +422,12 @@ pub fn place_aligned(
     (Rect::new(x0, y0, x0 + w, y0 + h), side)
 }
 
-/// One control of a [`ControlBar`]: an icon button over media, named for
-/// assistive technology and its tooltip.
+/// One control of a [`ControlBar`]: an icon button over media, named for assistive
+/// technology and its tooltip.
 #[derive(Clone, Copy, Debug)]
 pub struct BarControl<'a> {
     pub icon: crate::icons::Icon,
     pub name: &'a str,
-    /// A toggle that is on (the grid overlay, the mute) shows the lift.
     pub toggled: bool,
     pub enabled: bool,
 }
@@ -505,12 +456,9 @@ impl<'a> BarControl<'a> {
     }
 }
 
-/// The floating bar of controls over media (a camera's capture controls, a
-/// player's transport): one floating Panel shaped to a row of Regular icon
-/// buttons, `control_inset` inside it so the buttons' corners run
-/// concentric with the panel's, `s1` between them. It owns the panel, the
-/// gaps, the hover and press faces and the hit rects; the host says which
-/// controls stand in it and where, and acts on the index it reports.
+/// The floating bar of controls over media (a camera's capture controls, a player's
+/// transport): one floating Panel shaped to a row of Regular icon buttons, `control_inset`
+/// inside it so the buttons' corners run concentric with the panel's, `s1` between them.
 #[derive(Clone, Debug, Default)]
 pub struct ControlBar {
     rect: Rect,
@@ -542,8 +490,8 @@ impl ControlBar {
         )
     }
 
-    /// Where a bar of `count` controls stands in `area`: centred, one
-    /// content gutter above its bottom edge.
+    /// Where a bar of `count` controls stands in `area`: centred, one content gutter above
+    /// its bottom edge.
     #[must_use]
     pub fn bottom_centre(area: Rect, count: usize, theme: &Theme) -> Rect {
         let (w, h) = Self::size(count, theme);
@@ -612,9 +560,7 @@ impl ControlBar {
         self.rect.contains(point)
     }
 
-    /// Route `event`; returns the control a click activated. A press on
-    /// the bar but between controls is still the bar's: check
-    /// [`Self::contains`] to swallow it.
+    /// Route `event`; returns the control a click activated.
     pub fn handle(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -755,8 +701,6 @@ impl DetachedContent {
         if let Some(node) = hosted {
             content.handle_event(event, &mut ctx.reborrow(ctx.path, node));
         } else if let Some(detached) = detached {
-            // A node of the Panel's own tree means nothing to the host; the
-            // content keeps its own focus.
             let mut detached_focus = None;
             content.handle_event(
                 event,
@@ -789,7 +733,6 @@ impl DetachedContent {
 mod tests {
     use super::*;
 
-    /// CIE L* of a colour, from the crate's WCAG luminance.
     fn lightness(c: Color) -> f64 {
         let y = crate::a11y::relative_luminance(c);
         let f = if y > 216.0 / 24389.0 {
@@ -808,13 +751,10 @@ mod tests {
             let ground = crate::chrome::panel_ground(&theme);
             let (fill, ink) = armed_row(&theme);
             let delta = (lightness(fill) - lightness(ground)).abs();
-            // The armed row's floor: CIE ΔL* 15 off its panel.
             assert!(
                 delta >= 15.0,
                 "{name}: the armed row stands only ΔL* {delta:.1} off its panel"
             );
-            // A lift, not an inverted slab: the list lift points the same
-            // way and the overlay step is the stronger of the two.
             let list = colors.lift_on(ground, 1.0);
             let list_delta = (lightness(list) - lightness(ground)).abs();
             assert!(
@@ -839,8 +779,6 @@ mod tests {
         assert_eq!(side, PopoverSide::Below);
         assert_eq!((rect.x0, rect.y0), (200.0, 52.0));
 
-        // A header button at the trailing edge: the menu's trailing edge
-        // lines up with the button's instead of being pushed off it.
         let more = Rect::new(1088.0, 16.0, 1112.0, 40.0);
         let (rect, _) = place_anchored(more, (220.0, 240.0), PopoverSide::Below, 4.0, WINDOW);
         assert!(
@@ -849,21 +787,17 @@ mod tests {
         );
         assert!(rect.y0 >= more.y1, "below its trigger, not over it");
 
-        // No room below: flips above.
         let low = Rect::new(400.0, 740.0, 480.0, 772.0);
         let (rect, side) = place_anchored(low, (160.0, 240.0), PopoverSide::Below, 4.0, WINDOW);
         assert_eq!(side, PopoverSide::Above);
         assert!((rect.y1 - (low.y0 - 4.0)).abs() < 1e-9);
 
-        // A pointer in the bottom-trailing corner: flips up and to the
-        // pointer's leading side, and stays in the window.
         let point = Rect::new(1270.0, 790.0, 1270.0, 790.0);
         let (rect, _) = place_anchored(point, (200.0, 300.0), PopoverSide::Below, 0.0, WINDOW);
         assert!(rect.x0 >= WINDOW.x0 && rect.y0 >= WINDOW.y0);
         assert!(rect.x1 <= WINDOW.x1 && rect.y1 <= WINDOW.y1);
         assert!((rect.x1 - 1270.0).abs() < 1e-9 && (rect.y1 - 790.0).abs() < 1e-9);
 
-        // Wider than the room either way: shifted into the window.
         let middle = Rect::new(600.0, 100.0, 640.0, 120.0);
         let (rect, _) = place_anchored(middle, (1270.0, 100.0), PopoverSide::Below, 4.0, WINDOW);
         assert!(rect.x0 >= WINDOW.x0 && rect.x1 <= WINDOW.x1);

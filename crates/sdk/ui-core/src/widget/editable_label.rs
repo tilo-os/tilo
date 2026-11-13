@@ -1,15 +1,5 @@
-//! An inline-editable label: reads as static text until the caller puts it
-//! into edit mode, then becomes a real [`TextInput`].
-//!
-//! An edit ends one of three ways, matching native inline rename: **Enter**
-//! commits; **focus loss / a click outside the field** blur-commits — a
-//! rename shouldn't be lost just because you clicked away instead of
-//! pressing Enter; **Esc** cancels, keeping the previous value. A blank
-//! commit also keeps the previous value, so an accidental clear can't empty
-//! `value()`.
-//!
-//! The outcome of the most recent edit is polled once via [`take_outcome`]
-//! (rising-edge, like [`TextInput::take_dirty`]).
+//! An inline-editable label: reads as static text until the caller puts it into edit mode,
+//! then becomes a real [`TextInput`].
 
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
@@ -33,8 +23,6 @@ pub use component::EditableLabelProps;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditOutcome {
     None,
-    /// Also returned when a blank entry kept the previous value — the
-    /// payload is always the live value.
     Committed(String),
     Cancelled,
 }
@@ -50,46 +38,26 @@ pub struct EditableLabel {
     editing: bool,
     /// An explicit family; otherwise the role's.
     family: Option<FontChoice>,
-    /// What the label is; its idle text is set in the theme's style for it.
     role: crate::tokens::TextRole,
-    /// The role resolved in the latest theme (stock before the first
-    /// layout): size, weight, line height and family, at the text scale.
     style: TextStyle,
     idle_color: Option<vello::peniko::Color>,
     rect: Rect,
-    /// Tracked so a press can be classified as inside (caret) vs. outside
-    /// (blur-commit) without the press event carrying a position.
     last_pointer: Point,
     outcome: EditOutcome,
-    /// Invoked with each committed new value.
     action: Option<crate::widget::ActionEmitter<String>>,
-    /// A double click on the idle label begins an edit.
     renames: bool,
-    /// When the last press on the idle label was, to count the second.
     last_press: Option<crate::time::Instant>,
-    /// Take the width the row leaves.
     grow: bool,
-    /// A single press on the idle label begins an edit, as a document's
-    /// title does.
     edits_on_click: bool,
-    /// Shown, dimmed, while the value is empty and no edit is open.
     placeholder: Option<String>,
-    /// Set by something else that offers a rename (a context menu's
-    /// "Rename"): the label begins an edit with the next event it sees.
     edit_request: Option<crate::LocalState<bool>>,
     /// The text and style the last `measure` sized; the label needs measuring
     /// again only when either changed.
     measured: Option<(String, TextStyle)>,
-    /// A blank commit empties the value instead of keeping it: the label
-    /// names something that has a default to fall back to.
     blank_clears: bool,
-    /// What a committed name is reported to, as a described component's binding path does.
     edits: Option<crate::component::Bound<String>>,
-    /// The revision of the bound name last shown here.
     seen: u64,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -171,50 +139,47 @@ impl EditableLabel {
         self.grow
     }
 
-    /// Begin an edit when `request` is set, as a rename offered elsewhere
-    /// (a context menu) asks; the label clears it once the edit is open.
+    /// Begin an edit when `request` is set, as a rename offered elsewhere (a context menu)
+    /// asks; the label clears it once the edit is open.
     #[must_use]
     pub fn begins_editing_on(mut self, request: &crate::LocalState<bool>) -> Self {
         self.edit_request = Some(request.clone());
         self
     }
 
-    /// Invoke `binding` with each committed value that differs from the one
-    /// before: a rename is the app's own action.
+    /// Invoke `binding` with each committed value that differs from the one before: a
+    /// rename is the app's own action.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
         self.action = Some(crate::widget::ActionEmitter::new(binding));
         self
     }
 
-    /// Begin an edit on a double click, the way a list renames its items in
-    /// place. A single click is left to what is beneath (selecting the row).
+    /// Begin an edit on a double click, the way a list renames its items in place.
     #[must_use]
     pub fn renames_on_double_click(mut self) -> Self {
         self.renames = true;
         self
     }
 
-    /// Begin an edit on a single press, the way a document's title is
-    /// renamed in place. The edit still ends as every edit does: Enter or
-    /// a click away commits it once, Escape keeps the value.
+    /// Begin an edit on a single press, the way a document's title is renamed in place.
     #[must_use]
     pub fn edits_on_click(mut self) -> Self {
         self.edits_on_click = true;
         self
     }
 
-    /// Commit a blank entry as an empty value rather than keeping the one
-    /// before, for a name with a default behind it: clearing a tab's name
-    /// gives it back its window's own title.
+    /// Commit a blank entry as an empty value rather than keeping the one before, for a
+    /// name with a default behind it: clearing a tab's name gives it back its window's own
+    /// title.
     #[must_use]
     pub fn clears_on_blank(mut self) -> Self {
         self.blank_clears = true;
         self
     }
 
-    /// What the label reads, dimmed, while its value is empty: idle, and in
-    /// its field while an edit is open with nothing typed yet.
+    /// What the label reads, dimmed, while its value is empty: idle, and in its field while
+    /// an edit is open with nothing typed yet.
     #[must_use]
     pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
         let placeholder = placeholder.into();
@@ -237,8 +202,8 @@ impl EditableLabel {
         self
     }
 
-    /// Set the label in `role` (default [`crate::tokens::TextRole::Body`]),
-    /// idle and while editing.
+    /// Set the label in `role` (default [`crate::tokens::TextRole::Body`]), idle and while
+    /// editing.
     #[must_use]
     pub fn with_text_role(mut self, role: crate::tokens::TextRole) -> Self {
         self.set_text_role(role);
@@ -253,8 +218,6 @@ impl EditableLabel {
         self.input.set_text_role(role);
     }
 
-    /// The idle style: the theme's style for the role, in an explicit
-    /// family when one was given.
     fn adopt_theme(&mut self, theme: &Theme) {
         let mut style = theme.text(self.role);
         if let Some(family) = &self.family {
@@ -311,8 +274,6 @@ impl EditableLabel {
         }
     }
 
-    /// What the idle label shows: its value, or the placeholder while the
-    /// value is empty.
     fn shown_text(&self) -> &str {
         match &self.placeholder {
             Some(placeholder) if !self.editing && self.value.is_empty() => placeholder,
@@ -332,8 +293,8 @@ impl EditableLabel {
         self.editing
     }
 
-    /// What the last draw painted outside the label's rect: while it is
-    /// being edited, what its field painted beyond it (a correction chip).
+    /// What the last draw painted outside the label's rect: while it is being edited, what
+    /// its field painted beyond it (a correction chip).
     #[must_use]
     pub fn overhang(&self) -> Option<Rect> {
         if self.editing {
@@ -353,9 +314,9 @@ impl EditableLabel {
         self.outcome = EditOutcome::None;
     }
 
-    /// Begin an edit with an empty field, its placeholder showing, the way a
-    /// name not given yet is entered: what is typed becomes the value, and a
-    /// blank commit keeps the value it had.
+    /// Begin an edit with an empty field, its placeholder showing, the way a name not given
+    /// yet is entered: what is typed becomes the value, and a blank commit keeps the value
+    /// it had.
     pub fn begin_blank_edit(&mut self) {
         self.input.set_text("");
         self.input.set_focus(true);
@@ -400,15 +361,13 @@ impl EditableLabel {
         std::mem::replace(&mut self.outcome, EditOutcome::None)
     }
 
-    /// For callers embedding the label in their own immediate-mode chrome,
-    /// without a taffy pass.
+    /// For callers embedding the label in their own immediate-mode chrome, without a taffy
+    /// pass.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
         self.input.apply_layout_external(rect);
     }
 
-    /// A press on the idle label that begins an edit: any press with
-    /// [`Self::edits_on_click`], else the second of a double click.
     fn begin_on_press(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !(self.renames || self.edits_on_click)
             || !matches!(
@@ -441,8 +400,6 @@ impl EditableLabel {
         }
     }
 
-    /// The idle text's line, centred in the rect as the editing field
-    /// centres its own.
     fn text_band(&self) -> (f64, f64) {
         let line_height = f64::from(self.style.line_height_px());
         let top = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
@@ -455,8 +412,6 @@ impl Widget for EditableLabel {
 
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
-    /// A field holding its value: the page's own input, with its caret,
-    /// selection and IME.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         let value = if self.editing {
             self.input.value().to_owned()
@@ -519,8 +474,6 @@ impl Widget for EditableLabel {
         self.input.apply_layout_external(self.rect);
     }
 
-    /// Its size follows the text it shows and the style it shows it in, so
-    /// it is measured again when either changed since the last measure.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
             || self
@@ -595,8 +548,6 @@ impl Widget for EditableLabel {
             return;
         }
         match event {
-            // The field itself consumes neither Enter nor Esc, so the
-            // wrapper intercepts both before forwarding.
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -621,19 +572,13 @@ impl Widget for EditableLabel {
                 self.cancel();
                 *ctx.handled = true;
             }
-            // Deliberately NOT consumed, so the click still reaches whatever
-            // is under it — clicking away both saves and acts, like a
-            // native inline rename.
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } if !self.rect.contains(self.last_pointer) => {
                 self.commit();
-                // handled stays false: fall through to the host.
             }
-            // A plain hover move is forwarded but not claimed, so the host
-            // keeps its own pointer bookkeeping.
             WindowEvent::CursorMoved { .. } => {
                 let was = *ctx.handled;
                 self.input.handle_event(event, ctx);
@@ -683,8 +628,6 @@ impl Widget for EditableLabel {
         true
     }
 
-    /// Losing focus while editing blur-commits — the keyboard-navigation
-    /// counterpart to a click-outside.
     fn set_focus(&mut self, focused: bool) {
         self.dirty = true;
         if focused {
@@ -696,8 +639,6 @@ impl Widget for EditableLabel {
         }
     }
 
-    /// A label being edited owns the keyboard, so an edit the app opened (a note's
-    /// title as the note is made) takes it in the build it began in.
     fn take_focus_request(&mut self) -> Option<String> {
         self.is_focused()
             .then(|| self.test_id().unwrap_or_default().to_owned())
@@ -867,7 +808,6 @@ mod tests {
             el.begin_edit();
             assert!(el.is_editing());
 
-            // begin_edit selects-all, so the first keystroke replaces the value.
             drive(&mut el, &mut doc, &char_key("N"), no_mods());
             drive(&mut el, &mut doc, &char_key("e"), no_mods());
             drive(&mut el, &mut doc, &char_key("w"), no_mods());
@@ -878,7 +818,6 @@ mod tests {
             );
             assert!(el.is_editing(), "still editing until a commit trigger");
 
-            // Move the pointer well outside the field, then press — a click away.
             drive(&mut el, &mut doc, &cursor_moved(500.0, 500.0), no_mods());
             let consumed = drive(&mut el, &mut doc, &mouse_press(), no_mods());
 
@@ -927,7 +866,6 @@ mod tests {
             el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
             let mut doc = AutoCommit::new();
             el.begin_edit(); // selects all
-            // select-all is already active; type a space then backspace to empty it.
             drive(&mut el, &mut doc, &char_key(" "), no_mods()); // → " "
             drive(
                 &mut el,
@@ -993,7 +931,6 @@ mod tests {
             el.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 30.0));
             let mut doc = AutoCommit::new();
             el.begin_edit();
-            // Collapse the initial select-all by pressing Right (caret to end).
             drive(
                 &mut el,
                 &mut doc,

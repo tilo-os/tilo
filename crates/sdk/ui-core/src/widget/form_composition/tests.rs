@@ -249,8 +249,6 @@ fn long_form() -> Form {
             .with_actions(Actions::new(super::super::Button::new("save", "Save account changes").role(ButtonRole::Primary))
                 .secondary(super::super::Button::new("cancel", "Cancel")))
 }
-/// A field's visible label is its text input's accessible name, though the
-/// input was given none of its own.
 #[test]
 fn a_labelled_text_input_is_named_by_its_label() {
     let harness =
@@ -265,8 +263,6 @@ fn a_labelled_text_input_is_named_by_its_label() {
     assert_eq!(name("name").as_deref(), Some("Name"));
     assert_eq!(name("email").as_deref(), Some("Email address"));
 }
-/// A form of one question says what it asks in its title: its field stands with no label, so
-/// its control starts at the field's own edge and takes the room the label would leave.
 #[test]
 fn a_one_question_forms_field_stands_without_a_label() {
     fn control(field: &mut Field, room: f32) -> Rect {
@@ -291,9 +287,6 @@ fn a_one_question_forms_field_stands_without_a_label() {
         "and takes the room its label would leave: {lonely:?} {beside:?}"
     );
 }
-/// A field with a validation error marks its control invalid: the control
-/// reports it to assistive technology (and edges itself in danger ink),
-/// while a field without one stays valid.
 #[test]
 fn a_validation_error_marks_its_control_invalid() {
     let harness = FrameHarness::new_with_theme(
@@ -409,10 +402,6 @@ fn form_page_edges_and_resize_match_fresh_layout() {
         );
     }
 
-    /// A settings card's choosers: one label fits beside its control, the other
-    /// does not. The section decides once for both, and a trailing control keeps
-    /// its own width — at the trailing edge beside its label, at the leading edge
-    /// under it once the section stacks.
     fn trailing_controls_switch_with_their_section_and_share_the_trailing_edge() {
         let wide = FrameHarness::new_with_theme(
             crate::State::new(),
@@ -485,8 +474,6 @@ fn form_page_edges_and_resize_match_fresh_layout() {
         }
     }
 
-    /// In a plain form a chooser keeps its own width but starts where the
-    /// fields around it start: on the control column's leading edge.
     fn a_plain_forms_chooser_starts_on_the_fields_edge() {
         use crate::widget::{Dropdown, TextInput};
         let form: Element = Box::new(
@@ -714,7 +701,6 @@ fn grouped_sections_are_settings_rows_with_separators() {
             "a grouped row is at least {row} tall"
         );
     }
-    // Rows sit edge to edge; the separator lives between them.
     let gap = fields[1].rect[1] - (fields[0].rect[1] + fields[0].rect[3]);
     assert!(gap.abs() < 0.5, "rows touch, got {gap}");
     let mut titles = Vec::new();
@@ -754,7 +740,6 @@ fn value_fixture(german: bool) -> Element {
 
 #[test]
 fn read_only_values_reserve_readable_phrase_width_in_both_themes() {
-    // The content width left by an ordinary Settings window and its sidebar.
     for theme in [Theme::light(), Theme::dark()] {
         for german in [false, true] {
             let harness = FrameHarness::new_with_theme(
@@ -889,13 +874,11 @@ fn untitled_sections_custom_fields_and_control_rows() {
     let root = harness.inspection().root;
     let mut names = Vec::new();
     semantic_names(&root, &mut names);
-    // No heading for the untitled section; the titled one keeps its own.
     let headings: Vec<_> = names
         .iter()
         .filter(|(role, _)| matches!(role, crate::a11y::Role::Heading { .. }))
         .collect();
     assert_eq!(headings.len(), 1, "{headings:?}");
-    // A control's label is read once, through the control.
     assert_eq!(
         names.iter().filter(|(_, name)| name == "Name").count(),
         1,
@@ -907,15 +890,11 @@ fn untitled_sections_custom_fields_and_control_rows() {
             .any(|(role, name)| *role == crate::a11y::Role::Label && name == "Version"),
         "a custom field's label is a label: {names:?}"
     );
-    // One label column across both sections: the controls line up even
-    // though the second section's label is the longer one.
     let name = named(&root, "name").rect;
     let email = named(&root, "email").rect;
     let version = named(&root, "version").rect;
     assert!((name[0] - email[0]).abs() < 0.5, "{name:?} {email:?}");
     assert!((version[0] - email[0]).abs() < 0.5, "{version:?} {email:?}");
-    // The control row spans both columns: its first button starts on the
-    // label column.
     let export = named(&root, "export").rect;
     let mut labels = Vec::new();
     collect(&root, "FieldLabel", &mut labels);
@@ -1011,9 +990,6 @@ fn grouped_switches_end_on_the_trailing_edge_and_stack_full_width() {
     let format = named(&root, "format").rect;
     let mut sections = Vec::new();
     collect(&root, "FormSection", &mut sections);
-    // A stacked chooser leaves the trailing edge for its row's leading
-    // edge, under its label (as wide as the column lets an expandable
-    // control be; a dropdown sized to its options keeps that size).
     assert!(
         (format[0] - sections[0].rect[0]).abs() < 0.5,
         "a stacked chooser starts under its label: {format:?}"

@@ -1,12 +1,5 @@
-//! Pages: a readable column on the window's leading edge that scrolls, with
-//! an optional footer of actions pinned under it.
-//!
-//! [`Page`] holds sections of facts, lists and settings; [`FormPage`] holds
-//! one [`Form`] under a title. Both bound their content to the readable
-//! width (`metrics.readable_width`) and align it to the leading edge of the
-//! column they fill, so a wide window leaves its extra room beside the
-//! content instead of around it. Neither paints a ground: the window's
-//! region does.
+//! Pages: a readable column on the window's leading edge that scrolls, with an optional
+//! footer of actions pinned under it.
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -17,16 +10,11 @@ use super::{
 };
 use crate::tokens::Rhythm;
 
-/// How far an item of a page's body sits below the one before it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Lead {
-    /// The first item.
     None,
-    /// The step between related items (a title and its description).
     Related,
-    /// Between head items.
     Section,
-    /// Between sections, and between the head and the first section.
     Group,
 }
 
@@ -37,7 +25,6 @@ struct PageBody {
     leads: Vec<Lead>,
     name: &'static str,
     max_width: Option<f32>,
-    /// A page of objects (a dashboard of cards) takes the whole column.
     full_width: bool,
     effective: Rc<Cell<Option<PageLayout>>>,
 }
@@ -134,8 +121,6 @@ impl Widget for PageBody {
     }
 }
 
-/// Actions pinned under a page's scroller: the same measure and gutter as
-/// the column above, a hairline between them.
 struct PinnedActions {
     parts: Parts,
     gutter_probe: Rc<Cell<f32>>,
@@ -164,7 +149,6 @@ impl Widget for PinnedActions {
             bottom: length(rhythm.section),
         };
         let node = self.parts.build(style, tree, theme, map);
-        // The actions end where the readable column above ends.
         if let Some(&actions) = self.parts.nodes.first()
             && let Ok(current) = tree.style(actions)
         {
@@ -214,7 +198,6 @@ impl Widget for PinnedActions {
     }
 }
 
-/// The scroller with its body, and the pinned footer under it.
 struct Frame {
     parts: Parts,
     gutter_probe: Rc<Cell<f32>>,
@@ -316,9 +299,7 @@ impl Page {
             sections: 0,
         }
     }
-    /// An item above the sections (a summary, a filter, a banner). Head
-    /// items sit `rhythm.section` apart and a group step above the first
-    /// section.
+    /// An item above the sections (a summary, a filter, a banner).
     #[must_use]
     pub fn head(mut self, item: Element) -> Self {
         if let Some(body) = self.frame.body() {
@@ -337,8 +318,8 @@ impl Page {
         }
         self
     }
-    /// The next section: a `Section`, a `FormSection`, a `Form`, a
-    /// `PropertyList`, a `CardGrid`.
+    /// The next section: a `Section`, a `FormSection`, a `Form`, a `PropertyList`, a
+    /// `CardGrid`.
     #[must_use]
     pub fn section(mut self, section: Element) -> Self {
         if let Some(body) = self.frame.body() {
@@ -361,23 +342,23 @@ impl Page {
         }
         self
     }
-    /// Pin `actions` under the scroller, on the page's measure and gutter
-    /// with a hairline above them, so the page's commit stays in reach.
+    /// Pin `actions` under the scroller ("Save", "Cancel"), on the page's measure and
+    /// gutter with a hairline above them, instead of at the end of a long form.
     #[must_use]
     pub fn with_pinned_actions(mut self, actions: Actions) -> Self {
         self.frame.pin(Box::new(actions));
         self
     }
-    /// [`Self::with_pinned_actions`] for a footer that says more than its
-    /// actions: the outcome of the last operation above the buttons that
-    /// start one (a `ModelView` of a status and an `Actions`).
+    /// [`Self::with_pinned_actions`] for a footer that says more than its actions: the
+    /// outcome of the last operation above the buttons that start one (a `ModelView` of a
+    /// status and an `Actions`).
     #[must_use]
     pub fn with_pinned(mut self, footer: Element) -> Self {
         self.frame.pin(footer);
         self
     }
-    /// Give the page's scroll group a stable semantic key, so the controls
-    /// on it keep durable identities (`Scrollable::with_semantic_key`).
+    /// Give the page's scroll group a stable semantic key, so the fields keep durable
+    /// identities (`Scrollable::with_semantic_key`).
     #[must_use]
     pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
         if let Some(scroller) = self.frame.scroller() {
@@ -402,9 +383,8 @@ impl Page {
         }
         self
     }
-    /// A page of objects (a dashboard of cards, a grid of media) that
-    /// reflows across the whole column instead of keeping the readable
-    /// width; the gutter stays.
+    /// A page of objects (a dashboard of cards, a grid of media) that reflows across the
+    /// whole column instead of keeping the readable width; the gutter stays.
     #[must_use]
     pub fn full_width(mut self) -> Self {
         if let Some(body) = self.frame.body() {
@@ -456,8 +436,7 @@ impl FormPage {
             has_description: false,
         }
     }
-    /// One action beside the title ("Add account", "Reset"), on its
-    /// trailing edge.
+    /// One action beside the title ("Add account", "Reset"), on its trailing edge.
     #[must_use]
     pub fn with_header_action(mut self, action: super::super::Button) -> Self {
         let Some(title) = self.title.clone() else {
@@ -500,6 +479,7 @@ impl FormPage {
         }
         self
     }
+    /// Override the readable width; `None` restores `metrics.readable_width`.
     #[must_use]
     pub fn with_max_content_width(mut self, value: Option<f32>) -> Self {
         if let Some(body) = self.frame.body() {
@@ -516,8 +496,8 @@ impl FormPage {
         }
         self
     }
-    /// Give the page's scroll group a stable semantic key, so the fields
-    /// keep durable identities (`Scrollable::with_semantic_key`).
+    /// Give the page's scroll group a stable semantic key, so the fields keep durable
+    /// identities (`Scrollable::with_semantic_key`).
     #[must_use]
     pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
         if let Some(scroller) = self.frame.scroller() {
@@ -525,17 +505,16 @@ impl FormPage {
         }
         self
     }
-    /// Pin `actions` under the scroller ("Save", "Cancel"), on the page's
-    /// measure and gutter with a hairline above them, instead of at the end
-    /// of a long form.
+    /// Pin `actions` under the scroller ("Save", "Cancel"), on the page's measure and
+    /// gutter with a hairline above them, instead of at the end of a long form.
     #[must_use]
     pub fn with_pinned_actions(mut self, actions: Actions) -> Self {
         self.frame.pin(Box::new(actions));
         self
     }
-    /// [`Self::with_pinned_actions`] for a footer that says more than its
-    /// actions: the outcome of the last operation above the buttons that
-    /// start one (a `ModelView` of a status and an `Actions`).
+    /// [`Self::with_pinned_actions`] for a footer that says more than its actions: the
+    /// outcome of the last operation above the buttons that start one (a `ModelView` of a
+    /// status and an `Actions`).
     #[must_use]
     pub fn with_pinned(mut self, footer: Element) -> Self {
         self.frame.pin(footer);

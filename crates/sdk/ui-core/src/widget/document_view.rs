@@ -1,11 +1,4 @@
 //! Keyed, model-derived retained subtrees.
-//!
-//! [`ModelView`] is the structural counterpart to
-//! [`Text::from_document`](super::Text::from_document): a projection reads the
-//! live Automerge document or typed [`LocalState`](crate::LocalState), and a
-//! builder creates a subtree only when that projected value changes. Unrelated
-//! updates therefore keep widget identity, focus, scroll positions, and other
-//! retained presentation state.
 
 use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
@@ -56,7 +49,6 @@ pub(crate) fn boundary_style(child: Option<&Style>) -> Style {
     style.flex_grow = child.flex_grow;
     if child.flex_grow > 0.0 {
         style.flex_basis = child.flex_basis;
-        // The child grows into whatever the boundary is given.
         style.min_size.height = taffy::Dimension::length(0.0);
     }
     style
@@ -65,11 +57,6 @@ pub(crate) fn boundary_style(child: Option<&Style>) -> Style {
 type Projection<K> = Box<dyn FnMut(&AutoCommit, &ObjId) -> K>;
 type Builder<K> = Box<dyn FnMut(&K, Option<&crate::ControlDomain>) -> Element>;
 
-/// A retained subtree selected by a value projected from application state.
-///
-/// `K` is both the value passed to `build` and the reconciliation key. Keep it
-/// small and make its equality match structural meaning: if two values compare
-/// equal, the existing subtree is retained and synchronized normally.
 #[crate::component::not_a_component(
     framework,
     "binds a native app's model to its view; a tilolang view is bound by the language"
@@ -109,9 +96,6 @@ where
             child_domain: None,
             scope_domain: None,
             current: None,
-            // The first sync happens before layout. This inert child merely
-            // keeps the wrapper valid for headless/manual users that inspect it
-            // before synchronizing.
             child: Box::new(Text::new("")),
             rect: Rect::ZERO,
             structure_dirty: false,
@@ -321,8 +305,6 @@ where
         )
     }
 
-    /// A child that left the flow (an absent element, bound text with
-    /// nothing to say) takes the boundary out with it.
     fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -1,16 +1,12 @@
-//! General-purpose [`Image`] widget for displaying PNG or vector SVG content. Decoded
-//! RGBA pixels are wrapped in a [`peniko::ImageData`] and painted via
-//! `scene.fill(..)`. Three fit modes mirror CSS `object-fit`:
-//! [`ImageFit::Fill`] stretches, [`ImageFit::Contain`] letterboxes,
-//! [`ImageFit::Cover`] crops.
+//! General-purpose [`Image`] widget for displaying PNG or vector SVG content. Decoded RGBA
+//! pixels are wrapped in a [`peniko::ImageData`] and painted via `scene.fill(..)`. Three
+//! fit modes mirror CSS `object-fit`: [`ImageFit::Fill`] stretches, [`ImageFit::Contain`]
+//! letterboxes, [`ImageFit::Cover`] crops.
 //!
-//! The `ImageData` is built once at layout-tree construction or first direct
-//! paint and cached (cloning only bumps the internal `Arc`). A decode failure renders a red border +
-//! "Image failed" text so it surfaces during development instead of
-//! silently painting nothing.
-//!
-//! PNG raster decoding and vector SVG loading are provided in-tree. Call
-//! [`Image::from_rgba`] with bytes decoded elsewhere for other raster formats.
+//! The `ImageData` is built once at layout-tree construction or first direct paint and
+//! cached (cloning only bumps the internal `Arc`). A decode failure renders a red border +
+//! "Image failed" text so it surfaces during development instead of silently painting
+//! nothing.
 
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
@@ -26,11 +22,6 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
 
-/// The ink a decode failure is marked in when the caller has no `Theme` to
-/// offer ([`Image::paint_at`]): the default palette's `semantic.danger`,
-/// resolved once rather than by building a `Theme` per frame. Draw paths
-/// that hold a theme go through [`Image::paint_at_on`] or [`Widget::draw`]
-/// and take that palette's danger instead.
 static FALLBACK_ERROR_INK: LazyLock<Color> =
     LazyLock::new(|| Theme::dark().tokens.colors.semantic.danger);
 
@@ -49,12 +40,8 @@ pub enum ImageFit {
 }
 
 /// A picture as a component takes one, by where its bytes are.
-///
-/// The address is opaque to the widget: an image store loads it, reading a content address
-/// (`tilo-blob://<hash>`) from the window's content store and any other address by fetching it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PictureSource {
-    /// Where its bytes are read from: a content address (`tilo-blob://<hash>`) or a URL.
     pub src: String,
 }
 
@@ -66,7 +53,6 @@ impl PictureSource {
     }
 }
 
-/// A picture as a prop: `Type::Picture` holding [`tilo_ui_graph::component::Picture`].
 impl crate::component::PropType for PictureSource {
     fn ty() -> crate::component::Type {
         crate::component::Type::Picture
@@ -85,10 +71,7 @@ impl crate::component::PropType for PictureSource {
 /// Errors that can occur when constructing an [`Image`] from encoded bytes.
 #[derive(Debug)]
 pub enum ImageDecodeError {
-    /// The PNG decoder rejected the input (corrupt header, unsupported
-    /// chunk ordering, etc.).
     Decode(String),
-    /// I/O failure while reading the encoded buffer.
     Io(std::io::Error),
 }
 
@@ -107,7 +90,6 @@ impl std::error::Error for ImageDecodeError {}
 /// to a layout tree or directly painted, never in the measurement callback.
 /// Widget construction is cheap and a missing file does not panic the caller.
 enum Source {
-    /// Already decoded RGBA bytes plus dimensions.
     Decoded {
         rgba: Arc<[u8]>,
         width: u32,
@@ -116,37 +98,24 @@ enum Source {
     /// Explicit host path to a PNG file. The first layout-tree build or
     /// direct paint latches the decoded result (including an error).
     Path(PathBuf),
-    /// Parsed SVG paths, kept as vectors through rendering.
     Vector(Box<Scene>),
-    /// A picture by its address, loaded through the window's pictures as it arrives: the
-    /// placeholder paints until then.
     Loading {
         pictures: crate::pictures::Pictures,
         picture: PictureSource,
     },
-    /// Decode previously failed — paint the error state every frame.
     Failed,
 }
 
-/// General-purpose image widget. See module docs for the contract.
+/// General-purpose image widget.
 pub struct Image {
     source: Source,
     intrinsic_size: (u32, u32),
     fit: ImageFit,
     rect: Rect,
     cached: Option<PenikoImage>,
-    /// Optional alternative text describing the image's content. Surfaced as
-    /// the accessible name in [`Widget::accessibility`]; `None` leaves the
-    /// image unnamed (decorative).
     alt: Option<String>,
-    /// Fill the rectangle offered by the parent instead of remaining an
-    /// intrinsic/auto-sized leaf. This is the right mode for previews inside
-    /// an explicitly sized viewport or card.
     fill_parent: bool,
     icon_size: Option<super::IconSize>,
-    /// The radius its corners are cut to, in the pixels of the rect it is
-    /// drawn in, when it shows as a tile (a cover, a thumbnail) rather than as
-    /// a bare picture.
     corner_radius: Option<f32>,
     layout_scale: f32,
 }
@@ -303,8 +272,6 @@ impl Image {
         }
     }
 
-    /// Whether it waits for a picture's bytes: a picture being loaded, or an SVG that paints
-    /// itself. Neither is a failure, and an address that names nothing waits for nothing.
     fn loading(&self) -> bool {
         matches!(
             &self.source,
@@ -312,8 +279,6 @@ impl Image {
         )
     }
 
-    /// Take the picture its address names, once it has arrived; `true` when that changed what
-    /// it shows.
     fn follow_picture(&mut self) -> bool {
         let Source::Loading {
             pictures, picture, ..
@@ -340,7 +305,7 @@ impl Image {
         self
     }
 
-    /// Set the fit mode. See [`ImageFit`].
+    /// Set the fit mode.
     #[must_use]
     pub fn with_fit(mut self, fit: ImageFit) -> Self {
         self.fit = fit;
@@ -352,18 +317,15 @@ impl Image {
         self.fit = fit;
     }
 
-    /// Set the alternative text describing the image. Surfaced as the
-    /// accessible name in [`Widget::accessibility`]. Omitting it leaves the
-    /// image unnamed (treated as decorative by assistive technology).
+    /// Set the alternative text describing the image.
     #[must_use]
     pub fn with_alt(mut self, alt: impl Into<String>) -> Self {
         self.alt = Some(alt.into());
         self
     }
 
-    /// Stretch the widget's layout box to its parent's available width and
-    /// height; [`ImageFit`] still controls whether pixels contain, cover, or
-    /// fill that box.
+    /// Stretch the widget's layout box to its parent's available width and height;
+    /// [`ImageFit`] still controls whether pixels contain, cover, or fill that box.
     #[must_use]
     pub fn filling(mut self) -> Self {
         self.fill_parent = true;
@@ -394,8 +356,7 @@ impl Image {
         self.alt.as_deref()
     }
 
-    /// The image's intrinsic pixel dimensions. Returns `(0, 0)` for
-    /// path-loaded images not yet admitted to layout or directly painted.
+    /// The image's intrinsic pixel dimensions.
     pub fn intrinsic_size(&self) -> (u32, u32) {
         self.intrinsic_size
     }
@@ -429,11 +390,6 @@ impl Image {
         self.paint(scene, Affine::IDENTITY, *FALLBACK_ERROR_INK);
     }
 
-    /// Resolve `self.source` into a cached [`PenikoImage`]. On
-    /// success, [`Self::intrinsic_size`] is populated and the handle
-    /// is reused on every subsequent frame. On failure, the source
-    /// flips to [`Source::Failed`] so the error state paints
-    /// deterministically.
     fn ensure_cached(&mut self) {
         if self.cached.is_some() {
             return;
@@ -483,8 +439,6 @@ impl Image {
         }
     }
 
-    /// Paint the cached image into `scene` honouring the fit mode, or
-    /// paint the error state if decoding has failed.
     #[allow(
         clippy::similar_names,
         reason = "iw_f/ih_f (image width/height as f64) and rw/rh (rect width/height) are the clearest short names for this fit-mode geometry"
@@ -546,13 +500,10 @@ impl Image {
                 let dx = self.rect.x0 + (rw - dw) * 0.5;
                 let dy = self.rect.y0 + (rh - dh) * 0.5;
                 let bt = Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
-                // Clip to the widget rect so cover crops on the long axis.
                 (bt, self.rect)
             }
         };
 
-        // Cover overflows its rect and is cropped to it; a rounded tile crops
-        // to its corners. Fill and Contain stay inside either way.
         let clip = self
             .corner_radius
             .map(|radius| RoundedRect::from_rect(self.rect, f64::from(radius)));
@@ -593,17 +544,10 @@ impl Image {
         }
     }
 
-    /// Paint the failure state: a danger-coloured border and a "Image
-    /// failed" label. Drawn whenever `cached` is `None` after
-    /// `ensure_cached`. The colour is the theme's `semantic.danger`, not a
-    /// literal red, so it follows the palette (and high contrast) like every
-    /// other error mark.
     fn paint_error(&self, scene: &mut Scene, transform: Affine, red: Color) {
         let stroke = Stroke::new(2.0);
         scene.stroke(&stroke, transform, red, None, &self.rect);
 
-        // Diagonal cross to make the failure state unambiguous even
-        // without a text renderer in scope.
         let tl = Point::new(self.rect.x0, self.rect.y0);
         let tr = Point::new(self.rect.x1, self.rect.y0);
         let bl = Point::new(self.rect.x0, self.rect.y1);
@@ -625,9 +569,6 @@ impl Image {
     }
 }
 
-/// Decode a PNG byte slice into an `(rgba, width, height)` triple. The
-/// returned buffer is always 8-bit-per-channel RGBA, regardless of the
-/// PNG's source colour type or bit depth.
 fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), ImageDecodeError> {
     let decoded =
         crate::png::decode_rgba8(bytes).map_err(|e| ImageDecodeError::Decode(e.to_string()))?;
@@ -643,8 +584,6 @@ impl Widget for Image {
         Some(self)
     }
 
-    /// A picture's bytes may have arrived since the last frame: take them, and ask for the
-    /// frame that draws them.
     fn update(
         &mut self,
         _state: &crate::widget::AppModel,
@@ -755,8 +694,6 @@ impl Widget for Image {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        // The caller-supplied alt text is the accessible name; without it the
-        // image is treated as decorative (unnamed).
         Some(AccessNode::new(Role::Image).with_optional_name(self.alt.clone()))
     }
 }
@@ -862,7 +799,6 @@ mod tests {
         assert!(Image::from_svg(b"not SVG", 64, 64).is_err());
     }
 
-    /// Original quadrant image decoded from the committed text fixture by the build.
     const FIXTURE_PATH: &str = concat!(env!("OUT_DIR"), "/test_image.png");
 
     #[test]
@@ -879,9 +815,6 @@ mod tests {
             let mut scene = Scene::new();
             let mut img = img;
             img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 100.0, 50.0));
-            // No panic; rendering proceeds. The widget's rect should now
-            // match the requested target so a parent layout pass would
-            // place subsequent siblings correctly.
             assert_eq!(img.get_rect(), Rect::new(0.0, 0.0, 100.0, 50.0));
         }
 
@@ -890,8 +823,6 @@ mod tests {
                 .with_fit(ImageFit::Contain);
             let mut scene = Scene::new();
             let mut img = img;
-            // 200×50 rect with a square source: contain should scale to
-            // height (50), width 50, centred at x=75.
             img.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 200.0, 50.0));
             // No assertion on scene encoding here; the paint path simply
             // must not panic and must respect the chosen fit.

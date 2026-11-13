@@ -1,15 +1,4 @@
 //! A retained widget placed by hand inside a widget that draws itself.
-//!
-//! Canvas-style widgets (a word processor's review panel, a PDF viewer's
-//! comment overlay) paint their own chrome and hand out rectangles. A child
-//! that lays itself out through Taffy (a block editor, a card) still needs a
-//! layout tree, node bindings and the event plumbing a host gives it.
-//! [`Embedded`] is that host, owned by the parent: lay the child out in a
-//! rectangle, then draw it and route events to it as usual.
-//!
-//! A child can live in its own coordinate space under a transform: a text
-//! box on a slide is laid out at the slide's size and drawn scaled to the
-//! canvas, with pointer events mapped back into it and its caret mapped out.
 
 use std::collections::HashMap;
 
@@ -28,30 +17,20 @@ use crate::{PresenceCtx, Theme, text_render::TextRenderer};
 
 /// A widget laid out and driven by the widget that owns it.
 pub struct Embedded<W: Widget> {
-    // Boxed so the node map's pointers stay valid when the host moves.
     widget: Box<W>,
     tree: TaffyTree<()>,
     nodes: HashMap<NodeId, *mut dyn Widget>,
     bindings: BoundNodeMap,
     root: Option<NodeId>,
     rect: Rect,
-    /// From the child's own space to the owner's.
     transform: Affine,
-    /// The text colour the child paints with, in place of the theme's.
     text_color: Option<Color>,
-    /// The rectangle last laid out and the height it came to, reused while
-    /// nothing about the child changed (a thumbnail redrawn every frame).
     laid: Option<(Rect, f64)>,
-    /// A press inside the child asked for keyboard focus since the owner
-    /// last looked ([`Embedded::take_focus_request`]).
     focus_request: bool,
-    /// The child takes exactly the rectangle it is given.
     fill: bool,
     /// Build-time theme inputs must match the paint-time theme even when the
     /// rectangle and document have not changed (for example, larger text).
     layout_theme: Option<Theme>,
-    /// The owner's viewport as its last draw saw it, in the owner's space:
-    /// what a panel the child opens is kept inside.
     owner_viewport: Option<Rect>,
 }
 
@@ -75,30 +54,28 @@ impl<W: Widget + 'static> Embedded<W> {
         }
     }
 
-    /// The child takes exactly the rectangle it is laid out in, rather than
-    /// its content's height: a viewport of its own (a terminal, a viewer)
-    /// that scrolls inside the rectangle the owner gives it.
+    /// The child takes exactly the rectangle it is laid out in, rather than its content's
+    /// height: a viewport of its own (a terminal, a viewer) that scrolls inside the
+    /// rectangle the owner gives it.
     #[must_use]
     pub fn filling(mut self) -> Self {
         self.fill = true;
         self
     }
 
-    /// Place the child's own space in the owner's: layout rectangles are in
-    /// the child's space, and it is drawn, hit and its caret reported
-    /// through `transform` (a slide's text box scaled onto the canvas).
+    /// Place the child's own space in the owner's: layout rectangles are in the child's
+    /// space, and it is drawn, hit and its caret reported through `transform` (a slide's
+    /// text box scaled onto the canvas).
     pub fn set_transform(&mut self, transform: Affine) {
         self.transform = transform;
     }
 
-    /// Paint the child's text in `color` rather than the theme's (a text
-    /// box coloured by its slide).
+    /// Paint the child's text in `color` rather than the theme's (a text box coloured by
+    /// its slide).
     pub fn set_text_color(&mut self, color: Option<Color>) {
         self.text_color = color;
     }
 
-    /// The theme the child is laid out and painted with, when it is not
-    /// the owner's.
     fn recoloured(&self, theme: &Theme) -> Option<Theme> {
         self.text_color.map(|color| {
             let mut theme = theme.clone();
@@ -108,8 +85,8 @@ impl<W: Widget + 'static> Embedded<W> {
         })
     }
 
-    /// Where the child's caret is, in the owner's space, for the input
-    /// method's candidate window.
+    /// Where the child's caret is, in the owner's space, for the input method's candidate
+    /// window.
     pub fn ime_cursor_rect(&self) -> Option<Rect> {
         self.widget
             .ime_cursor_rect()
@@ -126,8 +103,7 @@ impl<W: Widget + 'static> Embedded<W> {
         &mut self.widget
     }
 
-    /// Where the widget was last laid out, at the height it wanted, in the
-    /// owner's space.
+    /// Where the widget was last laid out, at the height it wanted, in the owner's space.
     pub fn rect(&self) -> Rect {
         self.transform.transform_rect_bbox(self.rect)
     }
@@ -163,9 +139,6 @@ impl<W: Widget + 'static> Embedded<W> {
         let rebuilt = self.root.is_none()
             || structure_dirty
             || self.layout_theme.as_ref().is_none_or(|laid| laid != theme);
-        // A widget about to be drawn anew is laid out again too: what it
-        // paints (a hovered handle, an open menu) it places while laid out,
-        // and a repaint no longer asks for a measure of its own.
         if !rebuilt
             && let Some((laid, height)) = self.laid
             && laid == rect
@@ -242,10 +215,6 @@ impl<W: Widget + 'static> Embedded<W> {
         self.widget.mark_drawn();
     }
 
-    /// Note the owner's viewport, and show it to the child in the child's
-    /// own space for the child's draw: a panel the child places (a menu, a
-    /// picker) is kept inside what the owner shows. Returns the owner's, to
-    /// put back after.
     fn child_viewport(&mut self, presence: &PresenceCtx) -> Option<Rect> {
         let owner = presence.viewport.get();
         if owner.is_some() {
@@ -259,9 +228,7 @@ impl<W: Widget + 'static> Embedded<W> {
         owner
     }
 
-    /// Paint what the widget floats over everything (its menus, a link's
-    /// popover). Call from the owner's own `draw_overlay`, so it lands in the
-    /// window's top layer, above the rest of the owner's paint.
+    /// Paint what the widget floats over everything (its menus, a link's popover).
     pub fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -281,13 +248,6 @@ impl<W: Widget + 'static> Embedded<W> {
         presence.viewport.set(owner);
     }
 
-    /// While the child has a panel open over everything (a menu,
-    /// [`Widget::modal_capture`]), what places the child's space for it: the
-    /// panel stands where the child drawn under [`Self::set_transform`] puts
-    /// its corner, at the owner's own scale, so a menu opened on words drawn
-    /// small on a canvas reads and is hit as a menu anywhere else does; and
-    /// moved as little as keeps it inside the owner's viewport, as a menu
-    /// near a window's edge is.
     fn overlay_transform(&self) -> Option<Affine> {
         let panel = self.widget.modal_capture()?;
         let corner = panel.origin();
@@ -314,16 +274,13 @@ impl<W: Widget + 'static> Embedded<W> {
     }
 
     /// The panel the child has open over everything, in the owner's space
-    /// ([`Widget::modal_capture`]): while there is one, the owner routes
-    /// every pointer and key event to the child, which takes the panel's.
+    /// ([`Widget::modal_capture`]): while there is one, the owner routes every pointer and
+    /// key event to the child, which takes the panel's.
     pub fn modal_capture(&self) -> Option<Rect> {
         let panel = self.widget.modal_capture()?;
         Some(self.overlay_transform()?.transform_rect_bbox(panel))
     }
 
-    /// From the child's space to the owner's for pointer input and what is
-    /// drawn over everything: the panel's placement while one is open,
-    /// else the child's transform.
     fn input_transform(&self) -> Affine {
         self.overlay_transform().unwrap_or(self.transform)
     }
@@ -337,16 +294,12 @@ impl<W: Widget + 'static> Embedded<W> {
         path: &ObjId,
         handled: &mut bool,
     ) {
-        // Keys can reach a field before it is first laid out (typing right
-        // after it opens); give the widget its tree so they are not lost.
         if self.root.is_none() {
             self.rebuild(&Theme::dark());
         }
         let Some(root) = self.root else {
             return;
         };
-        // Pointer positions arrive in the owner's space; the child hits in
-        // its own.
         let mapped;
         let event = match event {
             WindowEvent::CursorMoved {
@@ -382,14 +335,11 @@ impl<W: Widget + 'static> Embedded<W> {
                 taffy: &self.tree,
             },
         );
-        // The owner holds the window's focus for its embedded child: a press
-        // that focused something inside is the owner's cue to take it.
         if focus.is_some() {
             self.focus_request = true;
         }
     }
 
-    /// A physical position in the owner's space, in the child's.
     fn to_child(
         &self,
         position: PhysicalPosition<f64>,
@@ -409,10 +359,8 @@ impl<W: Widget + 'static> Embedded<W> {
         self.widget.settle(edits, path);
     }
 
-    /// When the child next needs a sync with no input
-    /// ([`Widget::next_wake_deadline`]): a spelling squiggle settling, the
-    /// suggestion for the word under the caret. The owner reports it as its
-    /// own.
+    /// When the child next needs a sync with no input ([`Widget::next_wake_deadline`]): a
+    /// spelling squiggle settling, the suggestion for the word under the caret.
     pub fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
         self.widget.next_wake_deadline()
     }
@@ -422,8 +370,8 @@ impl<W: Widget + 'static> Embedded<W> {
         self.widget.needs_animation_frame()
     }
 
-    /// The pointer shape the child shows at `point`, in the owner's space
-    /// (the text beam over a text box drawn scaled onto a canvas).
+    /// The pointer shape the child shows at `point`, in the owner's space (the text beam
+    /// over a text box drawn scaled onto a canvas).
     pub fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.widget.cursor_shape(self.transform.inverse() * point)
     }
@@ -467,9 +415,8 @@ impl<W: Widget + 'static> Embedded<W> {
         Some(node)
     }
 
-    /// An assistive technology operates a node of [`Self::accessibility`]:
-    /// `key_path` is relative to the child's own node
-    /// ([`Widget::perform_action`]).
+    /// An assistive technology operates a node of [`Self::accessibility`]: `key_path` is
+    /// relative to the child's own node ([`Widget::perform_action`]).
     pub fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -480,8 +427,8 @@ impl<W: Widget + 'static> Embedded<W> {
         self.widget.perform_action(action, key_path, edits, path)
     }
 
-    /// An assistive technology operates a node of [`Self::accessibility`]
-    /// that names its target ([`Widget::perform_semantic_action`]).
+    /// An assistive technology operates a node of [`Self::accessibility`] that names its
+    /// target ([`Widget::perform_semantic_action`]).
     pub fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -493,9 +440,8 @@ impl<W: Widget + 'static> Embedded<W> {
             .perform_semantic_action(target, action, edits, path)
     }
 
-    /// Where the person is in the child (a caret, a selection), for the
-    /// owner to publish to collaborators as its own
-    /// ([`crate::presence::capability::PublishesPresence`]).
+    /// Where the person is in the child (a caret, a selection), for the owner to publish to
+    /// collaborators as its own ([`crate::presence::capability::PublishesPresence`]).
     pub fn presence_payload(
         &self,
     ) -> Option<(
@@ -505,8 +451,8 @@ impl<W: Widget + 'static> Embedded<W> {
         crate::presence::capability::presence_payload(&*self.widget)
     }
 
-    /// What the person has selected in the child, for asking an agent about
-    /// it ([`crate::presence::capability::PublishesPresence::shared_selection`]).
+    /// What the person has selected in the child, for asking an agent about it
+    /// ([`crate::presence::capability::PublishesPresence::shared_selection`]).
     pub fn shared_selection(&self) -> Option<crate::shared_selection::SharedSelection> {
         crate::shared_selection::selection_of(&*self.widget)
     }
@@ -593,8 +539,6 @@ mod tests {
         let mut host = Embedded::new(BlockEditor::new().with_wrap_lines(true));
         host.widget_mut()
             .present_blocks(&[BlockContent::paragraph("a", "words at the edge")]);
-        // Laid out 400 wide and drawn at half size against the right and
-        // bottom edges of an 800 x 600 owner.
         host.set_transform(Affine::translate((600.0, 570.0)) * Affine::scale(0.5));
         host.layout(Rect::new(0.0, 0.0, 400.0, 0.0), &theme, &mut text);
         let owner = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -654,8 +598,6 @@ mod tests {
                 .unwrap()
                 .line
                 .selection_range();
-            // Let the initial structure-dirty pass settle before changing
-            // settings; a pending rebuild would hide a stale retained tree.
             for _ in 0..3 {
                 host.layout(Rect::new(0.0, 0.0, 220.0, 0.0), &normal, &mut text);
                 host.draw(

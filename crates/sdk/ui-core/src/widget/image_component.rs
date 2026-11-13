@@ -11,9 +11,7 @@ crate::component::choice!(ImageFit, "ImageFit", {
     Fill => "fill",
 });
 
-/// A picture: artwork, a photo, a cover. Its bytes are read from its address as it arrives; a
-/// picture that is not here yet keeps its place, and one whose bytes cannot be read shows the
-/// error mark, never nothing.
+/// A picture: artwork, a photo, a cover, read from its address.
 #[derive(Component, Default)]
 #[component(name = "Image", role = "Image", label = "alt")]
 pub struct ImageProps {
@@ -25,11 +23,9 @@ pub struct ImageProps {
     /// decorative.
     #[component(required)]
     pub alt: Option<String>,
-    /// How it fills its box: `contain` (the whole picture, letterboxed, unless said), `cover`
-    /// (cropped to fill) or `fill` (stretched to the box).
+    /// How it fills its box: `contain`, `cover` or `fill`.
     pub fit: Option<ImageFit>,
-    /// The window's pictures, which load its bytes. A host that shows pictures for a window
-    /// hands them in; the widget reads the picture from them as it arrives.
+    /// The window's pictures, which load its bytes; a host hands them in.
     #[component(skip)]
     pub pictures: Option<Pictures>,
 }
@@ -44,8 +40,6 @@ impl Described for Image {
             fit,
             pictures,
         } = props;
-        // Without a host's store the window's own loads it: the same content store answers a
-        // content address, and the host's store answers instead wherever it serves the window.
         let pictures = pictures.unwrap_or_else(crate::pictures::Pictures::window);
         let mut image = Self::from_picture(pictures, super::PictureSource { src });
         if let Some(alt) = alt {
@@ -57,7 +51,6 @@ impl Described for Image {
         image
     }
 
-    /// A changed address loads the new picture, the old one staying until its bytes arrive.
     fn set_props(&mut self, props: ImageProps) -> bool {
         let ImageProps {
             src,

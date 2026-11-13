@@ -1,19 +1,9 @@
-//! Inline marks model used by [`RichTextLine`](crate::widget::rich_text_line::RichTextLine).
+//! Inline marks model used by
+//! [`RichTextLine`](crate::widget::rich_text_line::RichTextLine).
 //!
-//! A `MarkSpan` is a half-open byte range `[start, end)` over a
-//! [`RichTextLine`](crate::widget::rich_text_line::RichTextLine)'s text plus a [`Mark`] tag, stored sorted by `start`.
-//! Multiple marks may cover the same byte range — bold + italic on the same
-//! word produces two `MarkSpan`s, not one fused `BoldItalic` variant.
-//!
-//! Two marks of different kinds may share a range, but two marks of the same
-//! kind never overlap — the mutation helpers ([`toggle_mark_range`]) enforce
-//! this by merging touching same-kind spans and removing same-kind spans
-//! fully covered by the toggle range.
-//!
-//! Nested markdown (`**bold *italic***`) is out of scope: the serialiser
-//! emits it and the parser accepts it, but the model treats bold + italic as
-//! independent marks rather than materialising a "bold-italic" variant —
-//! enough for round-trip stability on documents we produce.
+//! Two marks of different kinds may share a range, but two marks of the same kind never
+//! overlap — the mutation helpers ([`toggle_mark_range`]) enforce this by merging touching
+//! same-kind spans and removing same-kind spans fully covered by the toggle range.
 
 use std::ops::Range;
 use tilo_sort::CompactSort as _;
@@ -26,56 +16,32 @@ use uuid::Uuid;
 /// round-trips through the markdown layer.
 pub type PageId = Uuid;
 
-/// One inline mark applied to a byte range of a [`RichTextLine`](crate::widget::rich_text_line::RichTextLine).
+/// One inline mark applied to a byte range of a
+/// [`RichTextLine`](crate::widget::rich_text_line::RichTextLine).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mark {
-    /// **Bold** — renders as `TextWeight::Bold`.
     Bold,
-    /// *Italic* — renders with cosmic-text's italic style.
     Italic,
-    /// `Inline code` — renders in monospace, accent-coloured.
     Code,
-    /// <u>Underline</u> — renders a rule along the text baseline.
     Underline,
-    /// ~~Strikethrough~~ — renders a rule through the text mid-line.
     Strikethrough,
-    /// `[[Page Title]]` — renders accent-coloured + underlined.
-    /// Clicking navigates to the page identified by the embedded id.
     Link(PageId),
-    /// `![[Page Title]]` — a block-level live projection of another page.
-    /// The UUID, rather than the visible title, is the durable identity.
     Transclusion(PageId),
-    /// `![[Record Title]]` — a block-level live projection of a resource by the catalogue's
-    /// reference to it ([`tilo_reference::embed`]): the same thing a [`Mark::Transclusion`] is
-    /// for a host's own page, for a record any app keeps, which is found again by its reference
-    /// however it is renamed. The marked text is the title the record had when it was written.
     Embed(String),
-    /// `[label](https://example.test)` — a host-opened external URI.
     ExternalLink(String),
-    /// A `link` whose target names another resource of this desktop: the
-    /// address `tilo://open#…` a reference is written as
-    /// (`RESOURCE_LINK_SCHEME`).
-    /// The marked text is the label shown — the resource's title or its kind
-    /// — and activating it opens the resource through its own app's `open`,
-    /// as a chip does. The address, not the label, is what it opens.
     ResourceLink(String),
-    /// `@Ada` — a reference to a participant, by the owning model's id; the
-    /// marked text is the label shown. Renders bold in the participant's
-    /// colours ([`MentionPaint`]), accent-coloured by default.
     Mention(String),
 }
 
 /// How a mention of one participant is painted.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MentionColors {
-    /// The label's text colour.
     pub ink: vello::peniko::Color,
-    /// A band drawn behind the label, if any (a mention of the viewer).
     pub band: Option<vello::peniko::Color>,
 }
 
-/// The colours a mention of the participant with this id is painted in,
-/// supplied by the owning model (it knows who the participant is).
+/// The colours a mention of the participant with this id is painted in, supplied by the
+/// owning model (it knows who the participant is).
 pub type MentionPaint = std::rc::Rc<dyn Fn(&str) -> MentionColors>;
 
 impl Mark {
@@ -114,14 +80,12 @@ impl MarkSpan {
     }
 }
 
-/// Result of `toggle_mark_range`: did the toggle add or remove the
-/// mark on this range? Returned so the caller can update any pending
-/// "next character will be marked" state.
+/// Result of `toggle_mark_range`: did the toggle add or remove the mark on this range?
+/// Returned so the caller can update any pending "next character will be marked" state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToggleOutcome {
     Added,
     Removed,
-    /// The range was empty — toggle didn't touch the span list.
     NoOp,
 }
 
@@ -132,8 +96,6 @@ pub fn range_fully_covered(spans: &[MarkSpan], range: &Range<usize>, mark: &Mark
     if range.start >= range.end {
         return false;
     }
-    // Walk same-kind spans sorted by start, tracking the rightmost end of
-    // contiguous coverage.
     let mut covered = range.start;
     let mut sorted: Vec<&Range<usize>> = spans
         .iter()
@@ -217,8 +179,6 @@ pub fn add_mark_to_range(spans: &mut Vec<MarkSpan>, range: Range<usize>, mark: M
             out.push(s);
         }
     }
-    // A merged Link span's payload is not preserved — the new payload wins.
-    // Simpler, and most callers pass the same Link payload anyway.
     out.push(MarkSpan::new(start..end, mark));
     out.compact_sort_by_key(|s| s.range.start);
     *spans = out;
@@ -265,7 +225,6 @@ pub fn shift_after_edit(
         let mut end = s.range.end;
 
         if removed_len > 0 {
-            // Clip the span against [at, removed_end).
             if start >= removed_end {
                 // `start >= removed_end == at + removed_len >= removed_len`
                 // here, so this can't underflow; `saturating_sub` is a
@@ -273,10 +232,7 @@ pub fn shift_after_edit(
                 start = start.saturating_sub(removed_len);
                 end = end.saturating_sub(removed_len);
             } else if end <= at {
-                // entirely before — no change.
             } else {
-                // Overlaps deletion: union of the portions before `at`
-                // and after `removed_end`.
                 let before = if s.range.start < at {
                     Some(s.range.start..at.min(s.range.end))
                 } else {
@@ -310,7 +266,6 @@ pub fn shift_after_edit(
                         end = a.end.saturating_sub(removed_len);
                     }
                     (None, None) => {
-                        // entirely within deletion
                         continue;
                     }
                 }
@@ -322,7 +277,6 @@ pub fn shift_after_edit(
                 start = start.saturating_add(inserted_len);
                 end = end.saturating_add(inserted_len);
             } else if end > at {
-                // straddle — extend right
                 end = end.saturating_add(inserted_len);
             }
         }
@@ -335,8 +289,6 @@ pub fn shift_after_edit(
     *spans = out;
 }
 
-/// A contiguous [start, end) segment tagged with the set of marks active
-/// inside it. One `draw_text` call per segment on the render path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -351,11 +303,8 @@ pub struct MarkSegment {
     pub strikethrough: bool,
     pub link: Option<PageId>,
     pub external_link: bool,
-    /// The `tilo://open#…` address a [`Mark::ResourceLink`] names.
     pub resource_link: Option<String>,
-    /// The reference a [`Mark::Embed`] covering this segment names.
     pub embed: Option<String>,
-    /// The participant a mention covering this segment refers to.
     pub mention: Option<String>,
 }
 
@@ -377,9 +326,7 @@ impl MarkSegment {
     }
 }
 
-/// Produce the partition. Boundaries: every span's `start` and `end`,
-/// plus 0 and `text_len`. The resulting segments together cover
-/// `[0, text_len)`.
+/// Produce the partition.
 pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
     if text_len == 0 {
         return Vec::new();

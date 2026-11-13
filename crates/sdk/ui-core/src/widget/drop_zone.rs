@@ -1,13 +1,5 @@
-//! `DropZone`: where files can be dropped (an import target, an image to
-//! flash, a book to add).
-//!
-//! At rest the zone is a dashed edge derived from its ground around a
-//! centred icon, title and an optional line saying what it accepts. Only
-//! while a drag hovers it does it take colour: your colour on the edge and
-//! the text-selection tint inside, the same as every drop indicator. An
-//! optional action ("Choose files") offers the same route without dragging.
-//!
-//! [`DropZoneFace`] paints the same geometry for immediate-mode callers.
+//! `DropZone`: where files can be dropped (an import target, an image to flash, a book to
+//! add).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -29,7 +21,6 @@ use crate::tokens::TextRole;
 use crate::widget::DrawChild;
 use crate::widget::{Button, TaffyTreeExt, Widget};
 
-/// The resolved geometry of a drop zone in `theme`.
 #[derive(Clone, Debug)]
 struct ZoneMetrics {
     title: TextStyle,
@@ -122,8 +113,8 @@ impl<'a> DropZoneFace<'a> {
         self
     }
 
-    /// The zone's height at `width`, around its content and `extra` (the
-    /// height of an action the caller places under the text, or 0).
+    /// The zone's height at `width`, around its content and `extra` (the height of an
+    /// action the caller places under the text, or 0).
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64, extra: f64) -> f64 {
         let m = ZoneMetrics::new(theme);
         let inner = width - 2.0 * m.pad;
@@ -135,8 +126,8 @@ impl<'a> DropZoneFace<'a> {
         h.ceil()
     }
 
-    /// Paint the zone into `rect`; returns where an action of `extra`
-    /// height goes under the text (empty when `extra` is 0).
+    /// Paint the zone into `rect`; returns where an action of `extra` height goes under the
+    /// text (empty when `extra` is 0).
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect, extra: f64) -> Rect {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return Rect::ZERO;
@@ -212,7 +203,7 @@ impl<'a> DropZoneFace<'a> {
     }
 }
 
-/// A retained drop zone. See the module docs.
+/// A retained drop zone.
 pub struct DropZone {
     id: String,
     title: String,
@@ -221,7 +212,6 @@ pub struct DropZone {
     action: Option<Button>,
     action_node: Option<NodeId>,
     on_files: Option<Box<dyn FnMut(Vec<PathBuf>)>>,
-    /// The files handed over, published as the zone's effect action `drop`.
     files_action: Option<crate::widget::ActionEmitter<Vec<PathBuf>>>,
     native_resource: Option<crate::tilo_actions::ResourceSpec>,
     drag_over: bool,
@@ -272,17 +262,12 @@ impl DropZone {
     }
 
     /// Receive the dropped files.
-    ///
-    /// The zone, as control `id`, publishes receiving them as its effect
-    /// action `drop`, so a person's drop, a script and an agent hand files
-    /// over through the same action.
     #[must_use]
     pub fn on_files_view(mut self, f: impl FnMut(Vec<PathBuf>) + 'static) -> Self {
         self.set_on_files_view(f);
         self
     }
 
-    /// [`Self::on_files_view`] on a zone already built.
     #[expect(
         clippy::expect_used,
         reason = "the generated text parameter and its action are internally consistent"
@@ -368,16 +353,12 @@ impl DropZone {
         self.hand_over(files);
     }
 
-    /// Hand `files` to the zone's handler: the drop and the published effect
-    /// action both arrive here.
     fn hand_over(&mut self, files: Vec<PathBuf>) {
         if let Some(on_files) = &mut self.on_files {
             on_files(files);
         }
     }
 
-    /// Apply a `tilo.ui.drop_zone.drop` addressed to this control.
-    /// `Ok(false)` when the operation is not this control's.
     fn drop_operation(
         &mut self,
         kind: crate::tilo_actions::OperationKind,
@@ -448,8 +429,6 @@ impl Widget for DropZone {
         };
         let node = match self.action_node {
             Some(child) => {
-                // The button is placed absolutely under the text in
-                // `adjust_layout_style`.
                 if let Ok(current) = taffy.style(child) {
                     let mut child_style = current.clone();
                     child_style.position = taffy::Position::Absolute;
@@ -758,8 +737,6 @@ mod tests {
         assert!(face.height(&mut text, &Theme::dark().with_text_scale(2.0), 400.0, 0.0) > height);
     }
 
-    /// The zone centres its button by the button's auto margins, and a button with no count
-    /// leaves its margins to whoever places it: the layout settles, the button centred.
     #[test]
     fn a_zone_with_a_button_settles_with_the_button_centred_under_its_text() {
         let zone = DropZone::new("picture", "Drop a picture")

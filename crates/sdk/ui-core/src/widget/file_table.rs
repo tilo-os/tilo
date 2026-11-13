@@ -1,27 +1,7 @@
-//! The file list: a folder's entries as the toolkit's [`DataTable`], with a
-//! Name, a Size and a Modified column. It is the one list of files on the
-//! desktop: the file manager's folder view and the system file chooser both
-//! show it, so a folder reads, sorts, selects and scrolls the same wherever
-//! a person meets it.
-//!
-//! The table paints the header, the rows, the selection lift, the sort
-//! indicator, the numeric columns and the scrollbar, and owns scrolling,
-//! column resizing, keyboard movement, touch and the accessibility rows. The
-//! file list adds what makes it a list of files:
-//!
-//! * the columns, which shrink and then drop out on a narrow list (the name
-//!   always keeps its room) and follow the text scale and the host's zoom;
-//! * the name cell, which a row paints itself ([`FileRow::paint_name`]): by
-//!   default the file's icon and its name, and in the file manager its
-//!   preview, its sync emblem and an in-place rename;
-//! * the rows' rectangles, read back from the table's accessibility export,
-//!   so a host can resolve a press, a drag or a drop to the row the table
-//!   laid out.
-//!
-//! A [`FileTable`] lives across its host's rebuilds, so its scroll position,
-//! its column widths and its scroll anchor survive them. Everything a
-//! rebuild changes (rows, selection, sort, zoom) goes in through
-//! [`FileTable::sync`].
+//! The file list: a folder's entries as the toolkit's [`DataTable`], with a Name, a Size
+//! and a Modified column. It is the one list of files on the desktop: the file manager's
+//! folder view and the system file chooser both show it, so a folder reads, sorts, selects
+//! and scrolls the same wherever a person meets it.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -46,24 +26,14 @@ use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable, text_band, ty
 
 /// One row of a file list: a file or a folder.
 pub trait FileRow: 'static {
-    /// Where the entry is; also the row's identity across rebuilds.
     fn path(&self) -> &Path;
-    /// The name the row shows.
     fn name(&self) -> &str;
     fn is_dir(&self) -> bool;
-    /// The Size column: a file's size, or what a folder holds once counted
-    /// (blank until then).
     fn size_text(&self) -> String;
-    /// When the entry last changed, if known.
     fn modified(&self) -> Option<chrono::DateTime<chrono::Local>>;
-    /// What kind of thing the entry is, for a list of things that are not
-    /// files (an app: Flatpak, `AppImage`, …). A list any of whose rows has a
-    /// kind shows a Kind column where it would show when each changed.
     fn kind(&self) -> Option<String> {
         None
     }
-    /// Paint the name cell. The default is the file's icon and its name,
-    /// which is all a list without previews needs.
     fn paint_name(
         &self,
         scene: &mut Scene,
@@ -89,31 +59,20 @@ pub trait FileRow: 'static {
     }
 }
 
-/// The file list's measures, from the theme's tokens, scaled by the host's
-/// zoom (`scale`). Every host of the list lays it out with these, so a
-/// folder's rows and columns are the same size everywhere.
+/// The file list's measures, from the theme's tokens, scaled by the host's zoom (`scale`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FileTableMetrics {
-    /// The host's zoom: 1.0 at the default size.
     pub scale: f64,
-    /// The type's scale, which widens the detail columns with it.
     pub text_scale: f64,
-    /// One row.
     pub row: f64,
-    /// The name cell's leading glyph.
     pub icon: f64,
-    /// Between the glyph and the name.
     pub icon_label_gap: f64,
-    /// Before the glyph.
     pub icon_lead: f64,
     pub size_col: f64,
-    /// The Modified column with the time of day.
     pub modified_col: f64,
-    /// The Modified column with the date alone.
     pub date_col: f64,
     /// The width unit the column breakpoints count in.
     pub unit: f64,
-    /// The room the scrollbar takes at the table's trailing edge.
     pub scrollbar_gutter: f64,
 }
 
@@ -147,7 +106,6 @@ impl FileTableMetrics {
 pub struct NameCell<'a> {
     pub icon: crate::icons::Icon,
     pub name: &'a str,
-    /// A folder's glyph is in primary ink, a file's dimmed.
     pub is_dir: bool,
 }
 
@@ -206,11 +164,8 @@ pub fn paint_icon_and_name(
 /// How much of a file's modified time its column shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Modified {
-    /// The column is dropped.
     Hidden,
-    /// The date alone.
     Date,
-    /// The date and the time of day.
     DateTime,
 }
 
@@ -219,15 +174,13 @@ pub enum Modified {
 pub struct Shape {
     pub size: bool,
     pub modified: Modified,
-    /// The rows have kinds ([`FileRow::kind`]): the modified column's place
-    /// shows them instead. It follows the rows, not the width.
     pub kind: bool,
 }
 
 impl Shape {
-    /// The columns a list `width` wide shows: the name always has room, so
-    /// the detail columns shrink and then drop out on a narrow list (and
-    /// sooner with larger type or zoom).
+    /// The columns a list `width` wide shows: the name always has room, so the detail
+    /// columns shrink and then drop out on a narrow list (and sooner with larger type or
+    /// zoom).
     #[must_use]
     pub fn for_width(width: f64, metrics: &FileTableMetrics) -> Self {
         if width <= 0.0 {
@@ -278,26 +231,21 @@ impl FileColumn {
     }
 }
 
-/// What the table's callbacks recorded during one event.
 #[derive(Default)]
 struct Mailbox {
     header_click: Cell<Option<usize>>,
     click: Cell<Option<(usize, bool, bool)>>,
     activate: Cell<Option<usize>>,
-    /// The row an assistive technology asked a menu for, and where it asked
-    /// for it.
     menu: Cell<Option<(usize, Point)>>,
 }
 
 /// What a host reads after forwarding an event to the list.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FileTableOutcome {
-    /// A press landed on the header of this column.
     pub sort: Option<FileColumn>,
     /// A row was pressed: its display index, and whether Ctrl and Shift
     /// were held. Only a list that [`FileTable::handles_clicks`] reports it.
     pub click: Option<(usize, bool, bool)>,
-    /// A row was opened: double-clicked, or Enter on the selected row.
     pub activate: Option<usize>,
     /// A row's own menu was asked for, by a right-press or an assistive
     /// technology: its index and the point the menu opens at. Only a list
@@ -315,8 +263,6 @@ pub struct FileTableInputs<'a, R> {
     pub theme: &'a Theme,
 }
 
-/// A row as the table holds it: the host's row and the measures its name
-/// cell paints with.
 struct Held<R> {
     row: R,
     metrics: Rc<FileTableMetrics>,
@@ -331,26 +277,19 @@ pub struct FileTable<R: FileRow> {
     accessible_name: String,
     clicks: bool,
     menu: bool,
-    /// The table's width at its last layout, which decides its columns.
     width: f64,
-    /// The body height and row height last given to the table.
     viewport: (f32, f32),
-    /// The header band, from the theme's type (the table sizes it the same way).
     header_h: f64,
-    /// What the columns are fitted with, kept for the layout that re-fits them.
     metrics: Option<FileTableMetrics>,
-    /// Scroll back to the top at the next sync.
     reset_scroll: bool,
 }
 
-/// A stable identity for a row: its path.
 fn row_key<R: FileRow>(held: &Held<R>) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     held.row.path().hash(&mut hasher);
     hasher.finish()
 }
 
-/// The header band the table sizes from the theme's caption line.
 fn header_height(theme: &Theme) -> f64 {
     let tokens = &theme.tokens;
     text_band(
@@ -373,8 +312,7 @@ fn px(width: f64) -> f32 {
 }
 
 impl<R: FileRow> FileTable<R> {
-    /// A list with the accessibility `id` and `accessible_name` it is known
-    /// by. It shows selection; the host decides what a press selects.
+    /// A list with the accessibility `id` and `accessible_name` it is known by.
     #[must_use]
     pub fn new(id: &'static str, accessible_name: impl Into<String>) -> Self {
         Self {
@@ -402,10 +340,9 @@ impl<R: FileRow> FileTable<R> {
         self
     }
 
-    /// The list reports a row's own menu ([`FileTableOutcome::menu`]) instead
-    /// of opening it: a right-press, and the assistance technology's
-    /// "show context menu" on the same row, both reach the host, which draws
-    /// the one menu it has.
+    /// The list reports a row's own menu ([`FileTableOutcome::menu`]) instead of opening
+    /// it: a right-press, and the assistance technology's "show context menu" on the same
+    /// row, both reach the host, which draws the one menu it has.
     #[must_use]
     pub fn handles_row_menu(mut self) -> Self {
         self.menu = true;
@@ -484,9 +421,6 @@ impl<R: FileRow> FileTable<R> {
                 ),
             );
         }
-        // The table's scrollbar overlays its last column's trailing edge; an
-        // empty column of the scrollbar's gutter keeps the last column's
-        // figures clear of it.
         columns.push(ColumnDef::new(
             "end",
             "",
@@ -553,17 +487,14 @@ impl<R: FileRow> FileTable<R> {
         };
         table.set_rows(rows);
         table.set_selection(inputs.selection.clone());
-        // The host hands over rows already in the order it sorted them; the
-        // table shows which column that is by.
         table.set_sort_indicator(inputs.sort.key(), inputs.ascending);
         if reset {
             table.set_scroll_y(0.0);
         }
     }
 
-    /// The column widths the person set by dragging an edge, by column key:
-    /// what a host keeps so a resized column is where they left it next
-    /// time.
+    /// The column widths the person set by dragging an edge, by column key: what a host
+    /// keeps so a resized column is where they left it next time.
     #[must_use]
     pub fn column_widths(&self) -> Vec<(String, f32)> {
         self.table
@@ -572,8 +503,7 @@ impl<R: FileRow> FileTable<R> {
             .unwrap_or_default()
     }
 
-    /// Lay the columns out at the widths the person set last time. Widths
-    /// for columns this table does not show are ignored.
+    /// Lay the columns out at the widths the person set last time.
     pub fn set_column_widths(&mut self, widths: impl IntoIterator<Item = (String, f32)>) {
         let Some(table) = self.table.as_mut() else {
             return;
@@ -642,8 +572,6 @@ impl<R: FileRow> FileTable<R> {
     /// Add the table's node to `taffy`, sized to fill its parent.
     pub fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme) -> Option<NodeId> {
         let table = self.table.as_mut()?;
-        // The table is a part of its host, not a widget of the tree: its
-        // node stays out of the tree's widget map.
         let mut scratch = HashMap::new();
         let node = table.build_layout(taffy, theme, &mut scratch);
         let mut style = taffy
@@ -658,9 +586,8 @@ impl<R: FileRow> FileTable<R> {
         Some(node)
     }
 
-    /// Lay the table out in `node`, and give it the body height and row
-    /// height it scrolls by. Returns whether the columns should change with
-    /// the new width, so the host syncs again.
+    /// Lay the table out in `node`, and give it the body height and row height it scrolls
+    /// by.
     pub fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> bool {
         let Some(table) = self.table.as_mut() else {
             return false;
@@ -669,8 +596,8 @@ impl<R: FileRow> FileTable<R> {
         self.fit(table_rect(self.table.as_ref()))
     }
 
-    /// Lay the table out in `rect` on a layout of its own, for a host that
-    /// places its parts itself. Returns what [`Self::apply_layout`] does.
+    /// Lay the table out in `rect` on a layout of its own, for a host that places its parts
+    /// itself.
     pub fn place(&mut self, rect: Rect, theme: &Theme) -> bool {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let Some(node) = self.build_layout(&mut taffy, theme) else {
@@ -703,8 +630,6 @@ impl<R: FileRow> FileTable<R> {
         self.apply_layout(&taffy, node, rect.origin())
     }
 
-    /// Hand the table the viewport `rect` gives it; report whether its
-    /// columns no longer fit the width.
     fn fit(&mut self, rect: Rect) -> bool {
         #[allow(
             clippy::cast_possible_truncation,
@@ -779,8 +704,7 @@ impl<R: FileRow> FileTable<R> {
         (self.mailbox.activate.take(), self.mailbox.menu.take())
     }
 
-    /// Whether `at` is over the table's scrollbar, which the table keeps for
-    /// itself.
+    /// Whether `at` is over the table's scrollbar, which the table keeps for itself.
     #[must_use]
     pub fn in_scrollbar(&self, at: Point) -> bool {
         self.table
@@ -896,7 +820,6 @@ impl<R: FileRow> FileTable<R> {
         node.children
             .iter()
             .filter_map(|row| {
-                // A row's `key` is its identity; its place is its position in the set.
                 let index = row.pos_in_set?.checked_sub(1)?;
                 let rect = row.bounds?.to_rect().intersect(body);
                 (rect.width() > 0.0 && rect.height() > 0.0).then_some((index, rect))
@@ -910,8 +833,8 @@ impl<R: FileRow> FileTable<R> {
         self.table.as_ref()?.accessibility()
     }
 
-    /// Run an assistive technology's `action` on the table's row at
-    /// `key_path` (empty: the table itself).
+    /// Run an assistive technology's `action` on the table's row at `key_path` (empty: the
+    /// table itself).
     pub fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -924,9 +847,8 @@ impl<R: FileRow> FileTable<R> {
             .is_some_and(|table| table.perform_action(action, key_path, state, path))
     }
 
-    /// Run an assistive technology's `action` on the synthetic row the
-    /// semantic target `target` names: the row an access node forwarded from
-    /// this table addresses.
+    /// Run an assistive technology's `action` on the synthetic row the semantic target
+    /// `target` names: the row an access node forwarded from this table addresses.
     pub fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -934,11 +856,6 @@ impl<R: FileRow> FileTable<R> {
         state: &mut crate::widget::Edits<'_>,
         path: &crate::widget::ModelPath,
     ) -> bool {
-        // An activation is the row the app opens, read by the host once a
-        // frame ([`Self::take_row_requests`]) and opened as a double-click or
-        // Enter opens it. The table's own view operation is not this app's
-        // open: the file explorer navigates from the command, not from an
-        // operation published for a window it does not host.
         if matches!(action, crate::a11y::Action::Activate)
             && let Some(index) = self
                 .table
@@ -1066,17 +983,12 @@ mod tests {
         assert!(row.state.context_menu, "the row's menu is announced");
 
         let mut doc = automerge::AutoCommit::new();
-        // The activation an assistive technology sends is the double-click's:
-        // the host is handed the row, and no pointer went anywhere.
         assert!(table.perform_action(
             &crate::a11y::Action::Activate,
             &[0],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
-        // The activation publishes the list's own open action; the host
-        // answers it on the way out of the accessibility call, as it does for
-        // a press.
         assert_eq!(
             crate::testing::answer_controls(table.table.as_mut().expect("the table")),
             1
@@ -1085,7 +997,6 @@ mod tests {
         assert_eq!(open, Some(0), "the file the reader activated opens");
         assert_eq!(menu, None);
 
-        // Its menu verb hands the host the row and where that row stands.
         assert!(table.perform_action(
             &crate::a11y::Action::ShowContextMenu,
             &[1],
@@ -1102,11 +1013,6 @@ mod tests {
             "opened where that row stands: {at:?} in {rect:?}"
         );
 
-        // A row this list shows on another widget's node (the file view
-        // forwards this table's tree) is reached by the semantic target it
-        // carries: the list holds the table outside the window's widget tree,
-        // where no host drains what a press publishes, so the activation is
-        // answered here and the row it opened is waiting to be read.
         let node = table.accessibility().expect("list semantics");
         let target = node.children[2]
             .action_target

@@ -9,10 +9,6 @@ use crate::widget::{ResourceOperation, ResourceOperationStart};
 use automerge::ReadDoc;
 use automerge::{AutoCommit, ObjId};
 
-/// The method names declared at the top level of the block that opens with
-/// the line `header` in `source`: lines indented four spaces deeper than the
-/// header that begin with `fn`. Comment lines (including doc examples) are
-/// skipped, and the block ends at the header's closing `}`.
 fn block_methods(source: &str, header: &str) -> std::collections::BTreeSet<String> {
     let indent = &header[..header.len() - header.trim_start().len()];
     let close = format!("{indent}}}");
@@ -38,8 +34,6 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
     /// decorator would silently answer it with the `Widget` default instead of
     /// the inner widget's answer.
     fn decorator_forwards_every_widget_method() {
-        // The trait itself lives in `contract.rs`; the widget tree's host side
-        // is `mod.rs`.
         let widget = block_methods(include_str!("contract.rs"), "pub trait Widget {");
         let source = include_str!("decorator.rs");
         // `decorator_trait!` turns each `ref`/`mut` line into both copies;
@@ -127,8 +121,6 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
                 "start_operation",
             ]
         );
-        // The inner widget registered its node; the decorator stands in for
-        // it, so a host reaching the node meets the decorator.
         assert_eq!(nodes.len(), 1);
         let registered = nodes[&node];
         // SAFETY: `decorated` is alive and was laid out into `nodes` above.
@@ -137,7 +129,6 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
         assert_eq!(registered.name(), "Named");
     }
 
-    /// A decorator's `handle_event` override sees input before its inner widget.
     fn a_decorator_intercepts_input() {
         struct Swallow {
             inner: Recorder,
@@ -211,7 +202,6 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
         );
         assert!(doc.get(automerge::ROOT, "admitted").unwrap().is_some());
         assert!(plain.take_structure_dirty());
-        // Every child was drained, not just the first dirty one.
         assert!(!plain.take_structure_dirty());
     }
 
@@ -223,7 +213,6 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
 
 type Log = Rc<RefCell<Vec<&'static str>>>;
 
-/// A leaf that records which of its methods were called.
 struct Recorder {
     log: Log,
     dirty: bool,
@@ -340,7 +329,6 @@ impl crate::widget::controls::ActionControls for Recorder {
     }
 }
 
-/// Adds exactly one hook — a name — and nothing else.
 struct Named {
     inner: Recorder,
 }
@@ -400,8 +388,6 @@ fn decorators_preserve_content_free_physical_feedback() {
     ));
 }
 
-/// [`Named`] through [`concrete::Decorator`] and a concrete [`Widget`] impl,
-/// as the toolkit's own boxed decorators are.
 struct ConcreteNamed {
     inner: Recorder,
 }
@@ -424,10 +410,6 @@ impl concrete::Decorator for ConcreteNamed {
 
 concrete_decorator_widget!(ConcreteNamed);
 
-/// A toolkit decorator with a concrete `Widget` impl (compiled once into the
-/// toolkit rather than in every app that boxes it) is the same widget as one
-/// through the blanket impl: its inner widget plus its overrides, standing in
-/// for the inner widget's layout node.
 #[test]
 fn a_concrete_decorator_forwards_and_stands_in_like_the_blanket_one() {
     let log = Log::default();

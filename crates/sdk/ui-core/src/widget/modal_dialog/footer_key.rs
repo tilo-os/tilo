@@ -1,5 +1,5 @@
-//! A footer action's focus node: its place in the window's keyboard focus
-//! order and its button in the accessibility tree.
+//! A footer action's focus node: its place in the window's keyboard focus order and its
+//! button in the accessibility tree.
 
 use crate::i18n::widget_text;
 use std::cell::RefCell;
@@ -10,24 +10,16 @@ use super::{
     DialogAction, ModelPath, NodeId, Rect, Slot, Style, TaffyTree, TaffyTreeExt, Theme, Widget,
 };
 
-/// A footer action's place in the window's keyboard focus order and its
-/// button in the accessibility tree. The dialog paints the action and runs
-/// it; this node holds focus, so Tab moves from the content to the footer and
-/// on around inside the trap, and a reader lands on a named button. An
-/// activation it is sent lands where the action stands, so the dialog runs it
-/// as it would a press.
+/// A footer action's place in the window's keyboard focus order and its button in the
+/// accessibility tree.
 pub(super) struct FooterKey {
     pub(super) slot: Slot,
     pub(super) label: String,
-    /// The action's callback, shared with the dialog.
     pub(super) run: Option<Rc<RefCell<dyn FnMut()>>>,
-    /// The semantic address a reader or agent operates the action by.
     pub(super) action_target: String,
     pub(super) rect: Rect,
     pub(super) focused: bool,
     pub(super) enabled: bool,
-    /// The address a harness or `tilo-control` operates the action by:
-    /// `modal.primary`, or `<dialog test id>.primary`.
     pub(super) test_id: String,
 }
 
@@ -63,7 +55,6 @@ impl Widget for FooterKey {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Out of flow and empty: the dialog places the action itself.
         let style = Style {
             position: taffy::Position::Absolute,
             ..Default::default()

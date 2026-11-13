@@ -1,7 +1,7 @@
-//! [`DisclosureBand`] — any content that opens and closes in place in a
-//! column on the disclosure motion (`motion::Disclosure`), as a banner
-//! does: it unrolls from its top while what follows moves down with its
-//! edge, and when its view stops building it the column rolls it up.
+//! [`DisclosureBand`] — any content that opens and closes in place in a column on the
+//! disclosure motion (`motion::Disclosure`), as a banner does: it unrolls from its top
+//! while what follows moves down with its edge, and when its view stops building it the
+//! column rolls it up.
 
 use std::collections::HashMap;
 
@@ -43,13 +43,8 @@ pub use component::DisclosureBandProps;
 pub struct DisclosureBand {
     child: Element,
     key: String,
-    /// The child's node in its host's tree, while the host lays it out
-    /// (the band rests in the layout).
     child_node: Option<NodeId>,
-    /// The child laid out across the band's slot, while the band moves out
-    /// of the layout, and the width it was laid out at.
     detached: Option<(DetachedContent, f64)>,
-    /// A host has built its layout.
     built: bool,
     rect: Rect,
     layout_dirty: bool,
@@ -85,8 +80,6 @@ impl DisclosureBand {
         format!("disclosure band\u{1f}{}", self.key)
     }
 
-    /// Whether the host's tree holds the child, against whether it should:
-    /// it holds it exactly while the band rests in the layout.
     fn hosting_changed(&self) -> bool {
         self.built && self.child_node.is_some() != self.band.in_flow(true)
     }
@@ -112,9 +105,6 @@ impl DisclosureBand {
         }
     }
 
-    /// On its way, out of the layout: the child laid out across its slot
-    /// (again when the slot's width changed or the child asks), placed at
-    /// the slot's top, and the band as tall as the child is there.
     fn place_detached(&mut self, text: &mut TextRenderer, theme: &Theme) {
         let slot = self.band.laid_rect;
         let width = slot.width();
@@ -141,7 +131,6 @@ impl Widget for DisclosureBand {
 
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let changed = self.child.update(state, path);
-        // A band that has come to rest takes its place in the layout.
         if self.band.layout_moved(true) {
             crate::widget::note_layout_moved();
         }
@@ -155,14 +144,10 @@ impl Widget for DisclosureBand {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.band.motion = theme.motion();
-        // Built again by its view: go on from the band it replaces, else
-        // arrive.
         let key = self.carry_key();
         self.band.build_keyed(&key);
         self.band.laid_in_flow = self.band.in_flow(true);
         self.built = true;
-        // At rest the host lays the child out; on its way it is laid out
-        // across its slot when drawn.
         let children = if self.band.laid_in_flow {
             self.detached = None;
             let child = self.child.build_layout(taffy, theme, node_map);
@@ -188,8 +173,6 @@ impl Widget for DisclosureBand {
             self.dirty = true;
         }
         if !self.band.laid_in_flow {
-            // On its way: its container puts it in its slot, and its
-            // content is placed there when it is drawn.
             self.band.unplaced = true;
             return;
         }
@@ -212,8 +195,6 @@ impl Widget for DisclosureBand {
             if self.rect.width() <= 0.0 {
                 return;
             }
-            // Kept, so its column can draw it leaving when its view stops
-            // building it.
             let mut painted = self.band.take_painted();
             self.child
                 .draw_child(&mut painted, Affine::IDENTITY, text, theme, presence);
@@ -221,8 +202,6 @@ impl Widget for DisclosureBand {
             return;
         }
         if self.band.land_unplaced(true) {
-            // Out of the layout with no container to put it in its slot:
-            // it lands, and the next layout takes it in.
             self.layout_dirty = true;
             return;
         }
@@ -312,8 +291,6 @@ impl Widget for DisclosureBand {
         self.layout_dirty = false;
     }
 
-    /// Joining or leaving the layout adds or removes the child's nodes in
-    /// its host's tree.
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.band.structure_dirty) || self.hosting_changed();
         super::defaults::take_structure_dirty(self.children_mut()) || own
@@ -339,8 +316,6 @@ impl Widget for DisclosureBand {
     }
 }
 
-/// A band a rebuild drops leaves its motion for the one put in its place,
-/// or for its column to draw it leaving.
 impl Drop for DisclosureBand {
     fn drop(&mut self) {
         let key = self.carry_key();

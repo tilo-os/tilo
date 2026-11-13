@@ -1,24 +1,5 @@
 //! Pointer intent for a row of items that open on hover to show more controls (a tab pill's
 //! search/maximize chips beside its ×).
-//!
-//! Opening an item changes the row's geometry: it grows rightward from its leading edge, so its
-//! own controls and everything after it move. The rules, in priority order:
-//!
-//! 1. **An aimed-at control never moves**: a pointer that settles on a control is aiming at it,
-//!    and nothing opens or collapses that would move that control until it leaves.
-//! 2. **Passing over a control is not hovering it**: a trajectory continuing past the control is
-//!    in transit, and lights no hover wash — so a change that would move it waits at most
-//!    [`SETTLE`] for the answer.
-//! 3. **Heading for a control the change would move holds the change**, checked against the
-//!    convex hull spanned by a recent pointer position and the control.
-//! 4. **Seeing more takes a short rest on the item** ([`DWELL`], counted from when the pointer
-//!    entered), and once open the item stays open while the pointer is in it or heading for its
-//!    revealed controls.
-//!
-//! A change held by heading resumes [`AIM_HOLD`] after the last sample that confirmed it, so a
-//! pointer that stops short lets go instead of pinning the row. Transit and aim come from
-//! [`super::aim::Trajectory`]; the state is pure, so pointer paths are tested against a
-//! synthetic timeline.
 
 use super::aim::Trajectory;
 pub(crate) use super::aim::{SETTLE, in_aim_hull};
@@ -37,12 +18,8 @@ pub(crate) const AIM_HOLD: Duration = Duration::from_millis(300);
 /// One item of the row, as laid out now.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Item {
-    /// The host's key for the item.
     pub(crate) idx: usize,
-    /// Where it starts. Items grow and shrink rightward from here, so a
-    /// change in its width moves every control from this x on.
     pub(crate) edge: f64,
-    /// Where its controls sit once it has opened: the menu-aim target.
     pub(crate) controls: Rect,
 }
 
@@ -57,32 +34,22 @@ impl Item {
 pub(crate) struct Sample<'a> {
     pub(crate) p: Point,
     pub(crate) under: Option<Item>,
-    /// The item that is open now, if any ([`HoverIntent::open`]).
     pub(crate) open: Option<Item>,
-    /// Every control clickable right now, as its pointer target.
     pub(crate) controls: &'a [Rect],
 }
 
 /// Why an open item stays open while the pointer is outside it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Hold {
-    /// Heading for its controls, or for a control its collapse would move;
-    /// the instant of the last sample that confirmed it.
     Aim(Instant),
-    /// In a control its collapse would move: held until the pointer leaves.
     InControl,
 }
 
-/// Where the last sample was, as far as the timers care.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Last {
     at: Instant,
     settling: bool,
-    /// The sample was inside a control, whose hover wash waits on whether
-    /// the pointer settles there.
     in_control: bool,
-    /// The sample was inside a control that opening the pending item would
-    /// move.
     in_moved_control: bool,
 }
 
@@ -94,7 +61,6 @@ pub(crate) struct HoverIntent {
     /// aiming at a control the opening would move by then.
     pending: Option<(usize, Instant)>,
     hold: Option<Hold>,
-    /// The item the last sample was over.
     rest: Option<usize>,
     last: Option<Last>,
     path: Trajectory,
@@ -134,7 +100,6 @@ impl HoverIntent {
         self.path.push(p, now);
         self.settle(now);
 
-        // A repeated position says nothing about direction.
         let from = self.path.apex().filter(|a| *a != p);
         let toward = |r: Rect| from.is_some_and(|a| in_aim_hull(p, a, r));
         // From inside a clickable control only settling counts, never
@@ -181,8 +146,6 @@ impl HoverIntent {
         self.pending = match s.under {
             None => None,
             Some(u) if s.controls.iter().any(|r| u.moves(*r) && heading(*r)) => {
-                // On its way to a control this item's opening would move:
-                // wait until the pointer has clearly stopped heading there.
                 Some((u.idx, now + AIM_HOLD))
             }
             Some(u) => match self.pending {
@@ -269,8 +232,8 @@ pub struct EdgeAim {
 }
 
 impl EdgeAim {
-    /// Forget the trajectory, e.g. when the pointer leaves the display or
-    /// jumps to another one.
+    /// Forget the trajectory, e.g. when the pointer leaves the display or jumps to another
+    /// one.
     pub fn clear(&mut self) {
         self.path.clear();
     }
@@ -285,16 +248,15 @@ impl EdgeAim {
             .position(|target| in_aim_hull(p, from, *target) && self.path.comes_to_rest_in(*target))
     }
 
-    /// The target the pointer has come to rest in at `now`: still for
-    /// [`SETTLE`] inside it, having arrived from outside it. A throw into a
-    /// corner ends this way, with no slow sample to read.
+    /// The target the pointer has come to rest in at `now`: still for [`SETTLE`] inside it,
+    /// having arrived from outside it.
     #[must_use]
     pub fn rested_in(&self, now: Instant, targets: &[Rect]) -> Option<usize> {
         self.path.rested_in(now, targets)
     }
 
-    /// Whether the pointer is resting where it is: slow at its last sample,
-    /// or silent for [`SETTLE`] since. Without motion seen, it is.
+    /// Whether the pointer is resting where it is: slow at its last sample, or silent for
+    /// [`SETTLE`] since.
     #[must_use]
     pub fn settled(&self, now: Instant) -> bool {
         self.path.settled(now)
@@ -370,8 +332,6 @@ mod tests {
         h.on_motion(&sample(Point::new(30.0, 10.0), Some(0), None, &[]), t0);
         assert_eq!(h.open(), None);
         assert_eq!(h.deadline(t0), Some(t0 + DWELL));
-        // Steady motion inside the body, back and forth, away from its
-        // controls, does not restart the dwell.
         for step in 1..10_u32 {
             let x = 10.0 + f64::from(step % 3) * 8.0;
             let at = ms(t0, u64::from(step) * 10);
@@ -422,7 +382,6 @@ mod tests {
         assert_eq!(h.open(), None, "opened under a pointer resting on the ×");
         assert_eq!(h.deadline(ms(t0, 10_000)), None, "nothing to wake for");
 
-        // Where the chips will sit is just the body until they are there.
         let mut h = HoverIntent::default();
         h.on_motion(
             &sample(Point::new(60.0, 10.0), Some(0), None, &[CLOSE_0]),
@@ -432,9 +391,6 @@ mod tests {
         assert_eq!(h.open(), Some(0));
     }
 
-    /// Entering through the × at speed, on the way to the body: transit, not
-    /// hovering. The pill opens on the dwell from entry as if the × were
-    /// not there.
     #[test]
     fn crossing_the_close_control_in_transit_still_opens() {
         let t0 = crate::time::now();
@@ -467,9 +423,6 @@ mod tests {
         assert_eq!(h.open(), Some(0), "the dwell counts from entry, × included");
     }
 
-    /// A pointer drifting through the × whose dwell runs out while it is
-    /// still inside: the pill waits for it to leave (it was passing) rather
-    /// than move the × under a pointer that may be about to stop there.
     #[test]
     fn a_dwell_that_ends_inside_a_control_waits_for_the_pointer_to_leave() {
         let t0 = crate::time::now();
@@ -489,8 +442,6 @@ mod tests {
         assert_eq!(h.open(), Some(0), "opens the moment the pointer is off it");
     }
 
-    /// Speed falling off so fast that the pointer will stop inside the × is
-    /// aim already, before it has come to rest.
     #[test]
     fn decelerating_into_a_control_is_aim() {
         let t0 = crate::time::now();
@@ -558,7 +509,6 @@ mod tests {
         h.force_open(Some(0));
         let close_1 = Rect::new(180.0, 0.0, 210.0, 20.0);
         let controls = [close_1];
-        // Out of item 0, across the gap, onto item 1's ×.
         for (k, x) in [95.0, 105.0, 150.0, 195.0].into_iter().enumerate() {
             let p = Point::new(x, 10.0);
             let under = if x < 100.0 {
@@ -576,8 +526,6 @@ mod tests {
         assert_eq!(h.open(), Some(0), "the × under the pointer must not move");
     }
 
-    /// A widget's reach zone in the bottom-right corner of a 1600 × 900
-    /// display and another along the middle of its right edge.
     const CORNER: Rect = Rect::new(1340.0, 820.0, 1600.0, 900.0);
     const RIGHT: Rect = Rect::new(1540.0, 350.0, 1600.0, 550.0);
 
@@ -622,8 +570,6 @@ mod tests {
 
     #[test]
     fn slowing_toward_a_corner_widget_is_aim_before_the_pointer_arrives() {
-        // From the middle toward the bottom-right corner, decelerating so the
-        // stop lands in the corner zone while the pointer is still outside.
         let mut aim = EdgeAim::default();
         let path = [(1000.0, 560.0), (1160.0, 656.0), (1280.0, 728.0)];
         let aimed = feed(&mut aim, crate::time::now(), &path);
@@ -668,8 +614,6 @@ mod tests {
 
     #[test]
     fn slowing_down_an_edge_toward_its_corner_is_not_yet_aim() {
-        // Down the right edge, easing off but still fast enough to run past
-        // the display's bottom: no stop is predicted inside the corner.
         let mut aim = EdgeAim::default();
         let path = [(1590.0, 400.0), (1590.0, 560.0), (1590.0, 700.0)];
         assert!(

@@ -1,6 +1,5 @@
-//! Making room on a strip: a window arriving between others moves the ones
-//! on its right along, and one leaving lets them slide back into the gap,
-//! each from where it was drawn.
+//! Making room on a strip: a window arriving between others moves the ones on its right
+//! along, and one leaving lets them slide back into the gap, each from where it was drawn.
 
 use super::tests::{
     make_group, make_row_with_groups_with_taffy, relayout_row_owned, relayout_row_owned_with,
@@ -53,8 +52,6 @@ fn making_room_slides_pushed_groups_from_their_old_place() {
             }
         }
 
-        /// And the ones that moved are *seen* moving: they paint where they
-        /// used to be and travel to where they now belong.
         fn the_groups_that_moved_start_from_where_they_were() {
             let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
             let unmoved = row.groups[0].id;
@@ -123,8 +120,6 @@ fn making_room_slides_pushed_groups_from_their_old_place() {
             );
         }
 
-        /// Reduced motion: the pushed groups are drawn where they now
-        /// belong on the first frame, and nothing asks to be redrawn.
         fn reduced_motion_makes_room_without_a_slide() {
             let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
             let pushed: Vec<u64> = row.groups.iter().map(|g| g.id).collect();
@@ -187,8 +182,6 @@ fn making_room_slides_pushed_groups_from_their_old_place() {
             );
         }
 
-        /// Closing a window: the groups to its right are drawn where they
-        /// were and spring left into the gap.
         fn closing_a_window_slides_its_right_neighbours_into_the_gap() {
             let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
             let (mut row, _taffy, _root) = relayout_row_owned(row, 2000.0);
@@ -207,8 +200,6 @@ fn making_room_slides_pushed_groups_from_their_old_place() {
             assert!(row.needs_animation_frame(), "the gap closes over frames");
         }
 
-        /// A keyboard move swaps two groups; both are seen travelling, in
-        /// opposite directions.
         fn a_reorder_springs_both_groups_from_their_old_places() {
             let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
             let (mut row, _taffy, _root) = relayout_row_owned(row, 2000.0);
@@ -226,8 +217,6 @@ fn making_room_slides_pushed_groups_from_their_old_place() {
             );
         }
 
-        /// Critically damped: the path approaches home from one side and
-        /// arrives within the heavy spring's budget; then the row goes quiet.
         fn the_spring_never_crosses_home_and_settles_then_goes_quiet() {
             let start = crate::time::now();
             let mut m = strip_motion(-600.0);
@@ -268,16 +257,11 @@ fn making_room_slides_pushed_groups_from_their_old_place() {
             );
         }
 
-        /// A close left of the view, with the strip panned to its far end:
-        /// the pan follows the canvas the close took from before the view,
-        /// in the same pass the close lands in, so no group shown moves at
-        /// all, and nothing has to be pulled back into the strip's range.
         fn a_close_while_panned_starts_every_group_where_it_was_drawn() {
             fn panned_four() -> GroupRow {
                 let (row, _taffy, _root) =
                     make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4]]);
                 let (mut row, _taffy, _root) = relayout_row_owned(row, 1200.0);
-                // Past the end: the layout clamps it to the far end.
                 row.set_scroll_x_for_test(1.0e6);
                 let (row, _taffy, _root) = relayout_row_owned(row, 1200.0);
                 assert!(row.scroll_x() > 1.0, "fixture: the strip is panned");

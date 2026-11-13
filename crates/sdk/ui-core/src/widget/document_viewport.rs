@@ -1,21 +1,10 @@
-//! `DocumentViewport` — a reusable zoom/pan viewport for document & canvas
-//! content: cursor-focal Ctrl+wheel zoom, centre zoom for +/- buttons,
-//! fit-reset, drag-to-pan, arrow-key pan, Shift+wheel horizontal pan, and
-//! scrollbars that appear only on overflow.
+//! `DocumentViewport` — a reusable zoom/pan viewport for document & canvas content: cursor-
+//! focal Ctrl+wheel zoom, centre zoom for +/- buttons, fit-reset, drag-to-pan, arrow-key
+//! pan, Shift+wheel horizontal pan, and scrollbars that appear only on overflow.
 //!
-//! Two entry points share the same [`ViewportState`] math: the kernel
-//! itself, for a canvas-root app that owns its own draw + event handling;
-//! or [`DocumentViewport`], the composing `Widget` that wraps a child
-//! [`Element`] (or draw closure).
-//!
-//! `screen = content * zoom + viewport_top_left + pad - scroll`, recovered
-//! exactly by [`ViewportState::content_to_screen`] /
-//! [`ViewportState::screen_to_content`].
-//!
-//! A toolbar outside the viewport reaches its zoom
-//! through [`DocumentViewport::with_zoom`]: the buttons write what they want, the
-//! viewport writes back the factor it shows, and the level a person reads is
-//! never a frame behind the canvas it names.
+//! A toolbar outside the viewport reaches its zoom through [`DocumentViewport::with_zoom`]:
+//! the buttons write what they want, the viewport writes back the factor it shows, and the
+//! level a person reads is never a frame behind the canvas it names.
 
 use crate::widget::{AppModel, ModelPath};
 
@@ -37,9 +26,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Element, Widget};
 
-/// Default lower zoom bound (25 %).
 pub const DEFAULT_MIN_ZOOM: f64 = 0.25;
-/// Default upper zoom bound (600 %).
 pub const DEFAULT_MAX_ZOOM: f64 = 6.0;
 /// Default padding (screen px) reserved around the content so it doesn't
 /// sit flush against the viewport edges. Matches the PDF reader's feel.
@@ -69,28 +56,19 @@ fn compose(a: Affine, b: Affine) -> Affine {
     a * b
 }
 
-/// How the content is positioned along an axis when it is *smaller* than
-/// the viewport along that axis (i.e. nothing to scroll).
+/// How the content is positioned along an axis when it is *smaller* than the viewport along
+/// that axis (i.e. nothing to scroll).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SmallContentAlign {
-    /// Pin the content to the start (top / left) of the viewport.
     Start,
-    /// Centre the content in the viewport (the PDF reader's behaviour for
-    /// the horizontal axis when the page fits).
     Center,
 }
 
-/// What a control outside a [`DocumentViewport`] — a toolbar's Zoom out, its
-/// level, its Zoom in — asks the content's zoom to be.
-///
-/// The viewport applies the request and writes back the
-/// [`Self::Factor`] it now shows, so the level a person reads follows a
-/// gesture (Ctrl+wheel, a pinch, the keyboard) as well as a button.
+/// What a control outside a [`DocumentViewport`] — a toolbar's Zoom out, its level, its
+/// Zoom in — asks the content's zoom to be.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ViewportZoom {
-    /// Fit the whole content into the viewport.
     Fit,
-    /// A factor of the content's own size.
     Factor(f64),
 }
 
@@ -113,16 +91,9 @@ impl ViewportZoom {
     }
 }
 
-/// The pure zoom/pan state kernel. Owns the zoom factor and the scroll
-/// offsets, derives the content↔screen transform, and reduces input events
-/// (wheel, drag, arrow keys) into new state. Render-agnostic and cheap to
-/// clone — a host stores one of these and drives it from its own event +
-/// draw paths. See the module docs for the two usage shapes.
+/// The pure zoom/pan state kernel.
 #[derive(Clone, Debug)]
 pub struct ViewportState {
-    /// The viewport's on-screen rect (the window region the content is
-    /// shown in). Set every frame by the host (or by [`DocumentViewport`]'s
-    /// `apply_layout`).
     rect: Rect,
     /// Intrinsic content size in content units.
     content_w: f64,
@@ -134,7 +105,6 @@ pub struct ViewportState {
     /// origin). Always within `0..=max_scroll`.
     scroll_x: f64,
     scroll_y: f64,
-    /// Inclusive zoom bounds.
     min_zoom: f64,
     max_zoom: f64,
     /// Screen-px padding reserved around the content. Follows the theme's
@@ -142,30 +112,19 @@ pub struct ViewportState {
     /// [`Self::with_padding`]; [`DEFAULT_PADDING`] is the theme-less value
     /// a viewport has before its first layout.
     pad: f64,
-    /// `with_padding` was called: keep the host's value over the theme's.
     pad_overridden: bool,
-    /// Per-axis small-content alignment.
     align_x: SmallContentAlign,
     align_y: SmallContentAlign,
-    /// In-progress drag-to-pan, if any. Records the screen point + scroll
-    /// offsets captured at press so motion maps 1:1.
     pan: Option<PanAnchor>,
-    /// Shared vertical-bar interaction model (thumb drag + track paging +
-    /// hover). See [`crate::widget::scrollbar`]. Pressing the thumb drags
-    /// it directly rather than pan-grabbing the content beneath it.
     vbar: Scrollbar,
-    /// Shared horizontal-bar interaction model.
     hbar: Scrollbar,
 }
 
-/// Snapshot captured at pan-press so cursor motion maps 1:1 to scroll.
 #[derive(Clone, Copy, Debug)]
 struct PanAnchor {
     start: Point,
     scroll_x0: f64,
     scroll_y0: f64,
-    /// Set once the pointer travels past [`PAN_SLOP`] — lets the host treat
-    /// a no-move press as a click.
     moved: bool,
 }
 
@@ -221,8 +180,7 @@ impl ViewportState {
         self
     }
 
-    /// Override how content is aligned along each axis when it is smaller
-    /// than the viewport on that axis.
+    /// Override small-content alignment (forwards to the kernel builder).
     #[must_use]
     pub fn with_alignment(
         mut self,
@@ -274,13 +232,11 @@ impl ViewportState {
         (self.content_w, self.content_h)
     }
 
-    /// Total screen width the content occupies at the current zoom, plus
-    /// both side pads.
+    /// Total screen width the content occupies at the current zoom, plus both side pads.
     pub fn scaled_content_width(&self) -> f64 {
         self.content_w * self.zoom + 2.0 * self.pad
     }
-    /// Total screen height the content occupies at the current zoom, plus
-    /// both pads.
+    /// Total screen height the content occupies at the current zoom, plus both pads.
     pub fn scaled_content_height(&self) -> f64 {
         self.content_h * self.zoom + 2.0 * self.pad
     }
@@ -294,8 +250,8 @@ impl ViewportState {
         (self.scaled_content_height() - self.rect.height()).max(0.0)
     }
 
-    /// Whether the content overflows the viewport horizontally (scrollbar +
-    /// horizontal pan become live).
+    /// Whether the content overflows the viewport horizontally (scrollbar + horizontal pan
+    /// become live).
     pub fn overflows_x(&self) -> bool {
         self.max_scroll_x() > 1.0
     }
@@ -311,8 +267,6 @@ impl ViewportState {
         self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll_y());
     }
 
-    /// Screen-space position of the content origin `(0, 0)` along x, taking
-    /// alignment-when-small into account.
     fn origin_x(&self) -> f64 {
         if self.overflows_x() {
             self.rect.x0 + self.pad - self.scroll_x
@@ -326,7 +280,6 @@ impl ViewportState {
             }
         }
     }
-    /// Screen-space position of the content origin `(0, 0)` along y.
     fn origin_y(&self) -> f64 {
         if self.overflows_y() {
             self.rect.y0 + self.pad - self.scroll_y
@@ -341,8 +294,7 @@ impl ViewportState {
         }
     }
 
-    /// Screen-space top-left of the content (`content (0,0)` mapped to
-    /// screen). Useful for hosts that want the origin directly.
+    /// Screen-space top-left of the content (`content (0,0)` mapped to screen).
     pub fn content_origin(&self) -> Point {
         Point::new(self.origin_x(), self.origin_y())
     }
@@ -359,8 +311,8 @@ impl ViewportState {
         )
     }
 
-    /// How far the content is panned from where it shows unpanned: the
-    /// scroll along each axis it overflows.
+    /// How far the content is panned from where it shows unpanned: the scroll along each
+    /// axis it overflows.
     pub fn pan(&self) -> Vec2 {
         Vec2::new(
             if self.overflows_x() {
@@ -407,9 +359,7 @@ impl ViewportState {
         Point::new((p.x - o.x) / self.zoom, (p.y - o.y) / self.zoom)
     }
 
-    /// Whether a screen point lands within the content's drawn area (its
-    /// scaled rect). Hosts can use it to decide whether a click hits the
-    /// document or empty viewport margin.
+    /// Whether a screen point lands within the content's drawn area (its scaled rect).
     pub fn content_contains_screen(&self, p: Point) -> bool {
         let o = self.content_origin();
         let r = Rect::new(
@@ -431,7 +381,6 @@ impl ViewportState {
         if (new_zoom - old_zoom).abs() < 1e-9 {
             return;
         }
-        // The content point under the focal screen point right now.
         let doc = self.screen_to_content(focal);
         self.zoom = new_zoom;
         // After re-scaling, re-derive the scroll so `doc` maps back onto
@@ -440,7 +389,6 @@ impl ViewportState {
         // axis doesn't overflow at the new zoom the scroll is just zeroed —
         // the alignment math then re-centres / pins it.
         if self.scaled_content_width() - self.rect.width() > 1.0 {
-            // focal.x = rect.x0 + pad - scroll_x + doc.x*zoom
             self.scroll_x = self.rect.x0 + self.pad + doc.x * self.zoom - focal.x;
         } else {
             self.scroll_x = 0.0;
@@ -453,8 +401,8 @@ impl ViewportState {
         self.clamp_scroll();
     }
 
-    /// Zoom by `factor` holding the **viewport centre** fixed — the +/-
-    /// buttons and Ctrl+Plus / Ctrl+Minus path.
+    /// Zoom by `factor` holding the **viewport centre** fixed — the +/- buttons and
+    /// Ctrl+Plus / Ctrl+Minus path.
     pub fn zoom_by(&mut self, factor: f64) {
         let c = self.rect.center();
         self.zoom_at(factor, Point::new(c.x, c.y));
@@ -493,8 +441,7 @@ impl ViewportState {
         (avail_w / self.content_w).clamp(self.min_zoom, self.max_zoom)
     }
 
-    /// Reset to fit-the-whole-content zoom, scrolled to the top-left. The
-    /// Ctrl+0 path.
+    /// Reset to fit-the-whole-content zoom, scrolled to the top-left.
     pub fn reset_to_fit(&mut self) {
         self.zoom = self.fit_zoom();
         self.scroll_x = 0.0;
@@ -535,8 +482,7 @@ impl ViewportState {
         self.clamp_scroll();
     }
 
-    /// Begin a drag-to-pan at `start` (screen point). Captures the current
-    /// scroll so motion maps 1:1.
+    /// Begin a drag-to-pan at `start` (screen point).
     pub fn begin_pan(&mut self, start: Point) {
         self.pan = Some(PanAnchor {
             start,
@@ -546,9 +492,7 @@ impl ViewportState {
         });
     }
 
-    /// Continue a drag-to-pan: move so the content tracks the cursor. Past
-    /// [`PAN_SLOP`] the drag is flagged as a real pan. Returns `true` while a
-    /// pan is in progress. No-op when no pan is active.
+    /// Continue a drag-to-pan: move so the content tracks the cursor.
     pub fn update_pan(&mut self, cursor: Point) -> bool {
         let Some(anchor) = self.pan else { return false };
         let dx = cursor.x - anchor.start.x;
@@ -564,8 +508,7 @@ impl ViewportState {
         true
     }
 
-    /// End a drag-to-pan. Returns `true` if the gesture actually moved the
-    /// content (so the host can treat a no-move release as a click).
+    /// End a drag-to-pan.
     pub fn end_pan(&mut self) -> bool {
         self.pan.take().is_some_and(|a| a.moved)
     }
@@ -574,9 +517,6 @@ impl ViewportState {
     pub fn is_panning(&self) -> bool {
         self.pan.is_some()
     }
-
-    // ---- raw event reducers (used by the composing widget; reusable by
-    //      canvas-root hosts that want the whole gesture set wired) -----
 
     /// Reduce a mouse-wheel event into zoom/pan, mirroring the PDF reader's
     /// mapping:
@@ -665,8 +605,8 @@ impl ViewportState {
         }
     }
 
-    /// Where the scroll bars paint over the content without moving with
-    /// it: each bar's lane (screen space).
+    /// Where the scroll bars paint over the content without moving with it: each bar's lane
+    /// (screen space).
     pub fn scrollbar_lanes(&self) -> Vec<Rect> {
         [self.v_track(), self.h_track()]
             .into_iter()
@@ -675,8 +615,8 @@ impl ViewportState {
             .collect()
     }
 
-    /// What the scroll bars paint: the vertical and the horizontal thumb,
-    /// each with whether it is lit.
+    /// What the scroll bars paint: the vertical and the horizontal thumb, each with whether
+    /// it is lit.
     pub fn scrollbar_thumbs(&self) -> [(Option<Rect>, bool); 2] {
         [
             (self.v_scrollbar_thumb(), self.vbar.is_active()),
@@ -684,9 +624,6 @@ impl ViewportState {
         ]
     }
 
-    /// The horizontal scrollbar track rect (screen space), or `None` when
-    /// the content fits horizontally. Leaves room for the vertical bar so
-    /// the two don't overlap in the corner.
     fn h_track(&self) -> Option<Rect> {
         if !self.overflows_x() {
             return None;
@@ -701,8 +638,6 @@ impl ViewportState {
         Some(Rect::new(x0, y0, x1, y1))
     }
 
-    /// The vertical scrollbar track rect (screen space), or `None` when the
-    /// content fits vertically.
     fn v_track(&self) -> Option<Rect> {
         if !self.overflows_y() {
             return None;
@@ -732,16 +667,15 @@ impl ViewportState {
         )
     }
 
-    /// The horizontal scrollbar thumb rect (screen space), or `None` when
-    /// the content fits horizontally. A host can paint it itself, or rely on
-    /// [`DocumentViewport`] to do so.
+    /// The horizontal scrollbar thumb rect (screen space), or `None` when the content fits
+    /// horizontally.
     pub fn h_scrollbar_thumb(&self) -> Option<Rect> {
         let track = self.h_track()?;
         self.hbar.thumb_rect(track, self.h_metrics())
     }
 
-    /// The vertical scrollbar thumb rect (screen space), or `None` when the
-    /// content fits vertically.
+    /// The vertical scrollbar thumb rect (screen space), or `None` when the content fits
+    /// vertically.
     pub fn v_scrollbar_thumb(&self) -> Option<Rect> {
         let track = self.v_track()?;
         self.vbar.thumb_rect(track, self.v_metrics())
@@ -779,8 +713,7 @@ impl ViewportState {
         false
     }
 
-    /// Continue an active scrollbar thumb drag, mapping the cursor to a new
-    /// scroll offset. Returns `true` while a bar is being dragged.
+    /// Continue an active scrollbar thumb drag, mapping the cursor to a new scroll offset.
     pub fn drag_scrollbar(&mut self, cursor: Point) -> bool {
         if self.vbar.is_dragging() {
             if let Some(track) = self.v_track() {
@@ -810,16 +743,15 @@ impl ViewportState {
         self.vbar.is_dragging() || self.hbar.is_dragging()
     }
 
-    /// End any active scrollbar drag. Returns `true` when one was in
-    /// progress.
+    /// End any active scrollbar drag.
     pub fn release_scrollbar(&mut self) -> bool {
         let v = self.vbar.release();
         let h = self.hbar.release();
         v || h
     }
 
-    /// Recompute thumb hover from the cursor; returns `true` when a hover
-    /// edge changed (so the caller can schedule a redraw).
+    /// Recompute thumb hover from the cursor; returns `true` when a hover edge changed (so
+    /// the caller can schedule a redraw).
     pub fn update_scrollbar_hover(&mut self, cursor: Point) -> bool {
         let mut changed = false;
         if let Some(track) = self.v_track() {
@@ -874,17 +806,11 @@ impl ViewportState {
 /// zoom + pan. The viewport rect is supplied for clipping decisions.
 pub type ContentDraw = Box<dyn FnMut(&mut Scene, Affine, &mut TextRenderer, &Theme, Rect)>;
 
-/// Source of the viewport's content: either a child [`Element`] (drawn under
-/// the transform) or a host draw closure.
 enum Content {
     Widget(Element),
     Draw(ContentDraw),
 }
 
-/// The composing viewport widget: wraps content (a child widget or a draw
-/// closure), owns the zoom/pan input, and paints scrollbars on top. See the
-/// module docs for when to prefer the standalone [`ViewportState`] kernel
-/// instead.
 #[crate::component::not_a_component(
     framework,
     "the viewport around a painted document's Rust drawing code"
@@ -892,27 +818,14 @@ enum Content {
 pub struct DocumentViewport {
     state: ViewportState,
     content: Content,
-    /// Last cursor position in screen space (`MouseInput` carries none).
     last_cursor: Point,
-    /// Inner taffy tree for a wrapped child widget (so it lays out + can be
-    /// asked for its measured/intrinsic size). `None` for the draw-closure
-    /// form.
     inner_taffy: Option<TaffyTree<()>>,
     content_node: Option<NodeId>,
     rect: Rect,
     dirty: bool,
     layout_theme: Theme,
-    /// What the frame being drawn shows of the content, and what the last
-    /// frame the host presented showed: a pan between the two that changed
-    /// nothing else is offered to the host as a copy
-    /// ([`crate::scroll_copy::offer`]).
     shown: crate::scroll_copy::ShownFrames<ViewShown>,
-    /// Something besides a pan changed what the frame being drawn paints
-    /// (`dirty` is cleared by the draw itself, before the host collects
-    /// damage).
     repaint: bool,
-    /// What a toolbar outside the viewport asks its zoom to be, and where the
-    /// viewport writes back what it shows.
     zoom_state: Option<crate::LocalState<ViewportZoom>>,
     /// Where the scroll stands, kept across the rebuilds an app's view takes
     /// when something else on screen changes (a selection, an inspector
@@ -920,9 +833,6 @@ pub struct DocumentViewport {
     scroll_cell: Option<std::rc::Rc<Cell<(f32, f32)>>>,
 }
 
-/// Where a frame shows the content: where its origin lands and at what
-/// zoom, the viewport, the content's size, the transform it is drawn with,
-/// and the scroll bars' tracks, which stay put over it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ViewShown {
     origin: Point,
@@ -1017,9 +927,8 @@ impl DocumentViewport {
         self
     }
 
-    /// Keep the scroll in `cell`, so a rebuilt viewport (the app's view is
-    /// built again when the selection or the inspector changes) opens where
-    /// the last one was left.
+    /// Keep the scroll in `cell`, so a rebuilt viewport (the app's view is built again when
+    /// the selection or the inspector changes) opens where the last one was left.
     #[must_use]
     pub fn with_scroll(mut self, cell: &std::rc::Rc<Cell<(f32, f32)>>) -> Self {
         let (x, y) = cell.get();
@@ -1028,7 +937,6 @@ impl DocumentViewport {
         self
     }
 
-    /// Tell `cell` where the scroll stands now.
     fn publish_scroll(&self) {
         let Some(cell) = &self.scroll_cell else {
             return;
@@ -1043,8 +951,6 @@ impl DocumentViewport {
         }
     }
 
-    /// Take the zoom `state` asks for, and answer with the factor the
-    /// viewport shows now.
     fn apply_requested_zoom(&mut self) -> f64 {
         if let Some(state) = &self.zoom_state {
             match state.with(|wanted| *wanted) {
@@ -1060,9 +966,6 @@ impl DocumentViewport {
         self.state.zoom()
     }
 
-    /// Whether a toolbar has asked for a zoom the viewport has not taken
-    /// yet: the frame that repaints takes it, so a button outside the
-    /// viewport needs no rebuild of its own to be obeyed.
     fn zoom_requested(&self) -> bool {
         let Some(state) = &self.zoom_state else {
             return false;
@@ -1075,8 +978,6 @@ impl DocumentViewport {
         }
     }
 
-    /// Tell `state` the factor the viewport shows now, when it says something
-    /// else: a gesture or a fit resolved to a factor the toolbar is showing.
     fn publish_zoom(&self) {
         let Some(state) = &self.zoom_state else {
             return;
@@ -1132,8 +1033,8 @@ impl DocumentViewport {
         self.state.content_point_to_screen(point)
     }
 
-    /// The first viewport in `root`'s tree, if any: for a host that has to
-    /// say where a control inside a canvas is on screen.
+    /// The first viewport in `root`'s tree, if any: for a host that has to say where a
+    /// control inside a canvas is on screen.
     #[must_use]
     pub fn first_in(root: &dyn Widget) -> Option<&Self> {
         if let Some(viewport) = root.as_any().and_then(|it| it.downcast_ref::<Self>()) {
@@ -1186,13 +1087,7 @@ impl DocumentViewport {
                 );
             }
         }
-        // Lay the child out at content-space origin (0,0). Its draw happens
-        // under the content→screen transform, so this gives content-space
-        // rects directly.
         child.apply_layout(&taffy, node, Point::ZERO);
-        // The child knows how big it really is (a graph's nodes reach past
-        // the size it was given); the scroll extent follows it, so the last
-        // node is reachable rather than cut off by a guess.
         let (right, bottom) = content_extent(child.as_ref());
         if (right > cw || bottom > ch) && right.is_finite() && bottom.is_finite() {
             self.state.set_content_size(cw.max(right), ch.max(bottom));
@@ -1258,8 +1153,6 @@ impl Widget for DocumentViewport {
         self.dirty = true;
         let theme = self.layout_theme.clone();
         crate::text_render::with_layout_renderer(&theme, |tr| self.place_child(&theme, tr));
-        // A toolbar's request is solved once the rect it fits into, and how
-        // big the content really is, are both known.
         self.apply_requested_zoom();
         self.publish_zoom();
     }
@@ -1272,9 +1165,6 @@ impl Widget for DocumentViewport {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // A request from a toolbar outside the viewport is taken here: the
-        // frame that draws is the frame that answers it, so the level a
-        // person reads and the canvas agree at once.
         if self.zoom_requested() {
             self.apply_requested_zoom();
             self.publish_zoom();
@@ -1294,9 +1184,6 @@ impl Widget for DocumentViewport {
             transform: crate::scroll_copy::on_screen(transform),
             tracks: [self.state.v_track(), self.state.h_track()],
         });
-        // A host drawing the frame as layers keeps the content panned on
-        // its own (`crate::strip_layers::draw_strip`): it is drawn where it
-        // shows with no pan, the same drawing at every pan.
         let pan = self.state.pan();
         let rect = self.rect;
         let content = &mut self.content;
@@ -1319,7 +1206,6 @@ impl Widget for DocumentViewport {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
-                // An active scrollbar thumb drag owns the move.
                 if self.state.drag_scrollbar(self.last_cursor) {
                     self.dirty = true;
                     *ctx.handled = true;
@@ -1342,8 +1228,6 @@ impl Widget for DocumentViewport {
                 ..
             } => {
                 if self.rect.contains(self.last_cursor) {
-                    // A press on a scrollbar (thumb or track) wins over both
-                    // the child and drag-to-pan beneath it.
                     if self.state.press_scrollbar(self.last_cursor) {
                         self.dirty = true;
                         self.repaint = true;
@@ -1450,10 +1334,6 @@ impl Widget for DocumentViewport {
             || self.zoom_requested()
     }
 
-    /// A pan offers the host a copy of what stays on screen: the bars'
-    /// tracks are what does not move with the content, and what changed in
-    /// the wrapped widget besides moving is its own damage, placed on
-    /// screen. Anything else repaints the viewport.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         let shown_changed = self
             .shown
@@ -1484,8 +1364,6 @@ impl Widget for DocumentViewport {
     }
 
     fn mark_drawn(&mut self) {
-        // Not drawn this frame, what the screen shows where it lies is not
-        // known to be its content: the next pan repaints the viewport.
         self.shown.present();
         self.repaint = false;
         for child in self.children_mut() {
@@ -1493,24 +1371,17 @@ impl Widget for DocumentViewport {
         }
     }
 
-    /// Hold the pointer while panning or dragging a scrollbar thumb so the
-    /// gesture keeps receiving moves even if the cursor leaves the rect.
     fn wants_pointer_capture(&self) -> bool {
         self.state.is_panning() || self.state.scrollbar_dragging()
     }
 }
 
-/// A canvas viewport is a widget whose content zooms by itself: the window's
-/// Zoom in, Zoom out and Actual size reach the content, and the window bar
-/// says the factor, instead of the whole window's text growing.
 impl crate::content_zoom::ContentZoom for DocumentViewport {
     fn zoom_content(&mut self, step: crate::content_zoom::ZoomStep) -> Option<f32> {
         use crate::content_zoom::ZoomStep;
         match step {
             ZoomStep::In => self.state.zoom_by(1.15),
             ZoomStep::Out => self.state.zoom_by(1.0 / 1.15),
-            // Actual size for content with a frame of its own is the frame's
-            // fit, exactly as a picture fitted to its window.
             ZoomStep::Reset => self.state.reset_to_fit(),
         }
         self.dirty = true;
@@ -1525,13 +1396,6 @@ impl crate::content_zoom::ContentZoom for DocumentViewport {
 }
 
 impl DocumentViewport {
-    /// Route an event to the wrapped child, if any.
-    ///
-    /// The child's widgets were laid out in *content* space, while a pointer
-    /// event names a place in the window: a pointer event is mapped through
-    /// the viewport's own transform first, so a control on a zoomed or
-    /// panned canvas is pressed where a person sees it. The child's inner
-    /// taffy node is passed through so child containers can recurse.
     fn route_to_child(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let (Content::Widget(c), Some(taffy), Some(node)) = (
             &mut self.content,
@@ -1558,7 +1422,6 @@ impl DocumentViewport {
                     };
                     &mapped
                 }
-                // A touch names its place the same way, in physical pixels.
                 WindowEvent::Touch(touch) => {
                     let content = self.state.screen_to_content(ctx.logical(
                         winit::dpi::PhysicalPosition::new(touch.location.x, touch.location.y),
@@ -1599,8 +1462,6 @@ mod tests {
             assert_eq!(viewport.layout_theme.text_scale, 2.0);
         }
 
-        /// The theme-less default is the spacing token it stands in for, and
-        /// the scrollbar's thickness is the step below it.
         fn default_gutter_and_scrollbar_thickness_equal_the_spacing_tokens() {
             let spacing = crate::tokens::Spacing::default();
             assert_eq!(DEFAULT_PADDING, f64::from(spacing.s6));
@@ -1644,8 +1505,6 @@ mod tests {
         gutter_follows_the_theme_unless_a_host_pinned_it();
     }
 
-    /// Build a kernel with a 1000×1400 content in an 800×600 viewport at the
-    /// top-left of the window.
     fn kernel() -> ViewportState {
         let mut v = ViewportState::new();
         v.set_rect(Rect::new(0.0, 0.0, 800.0, 600.0));
@@ -1653,8 +1512,6 @@ mod tests {
         v
     }
 
-    /// A button of `label` inside a canvas at content point (`x`, `y`), the
-    /// content 600×600.
     fn canvas_with_button(label: &str, x: f64, y: f64) -> (Element, f64, f64) {
         let button = crate::widget::Button::new("canvas-button", label);
         let manual = crate::widget::Manual::new(move |cx| {
@@ -1691,8 +1548,6 @@ mod tests {
         find(&harness.inspection().root, id).expect("the canvas button is laid out")
     }
 
-    /// A control on a zoomed canvas is pressed where a person sees it, and
-    /// not where its content-space rect would put it.
     #[test]
     fn a_zoomed_canvas_control_is_pressed_where_it_is_drawn() {
         use std::cell::Cell;
@@ -1731,7 +1586,6 @@ mod tests {
         let mut harness =
             crate::headless::FrameHarness::new(crate::State::new(), Box::new(viewport), (800, 900));
         let content = canvas_rect(&harness, "canvas-button");
-        // The transform the canvas draws with: content × 2, its own gutter in.
         let pad = f64::from(crate::tokens::Spacing::default().s6);
         let drawn = Point::new(
             pad + content.center().x * 2.0,
@@ -1751,8 +1605,6 @@ mod tests {
         );
     }
 
-    /// A toolbar's Zoom out, Fit and Zoom in reach the viewport, and the
-    /// viewport answers with the factor it shows.
     #[test]
     fn a_toolbar_sets_the_zoom_and_the_viewport_answers_with_the_factor_it_shows() {
         let (content, _, _) = canvas_with_button("Inspect", 0.0, 0.0);
@@ -1788,8 +1640,6 @@ mod tests {
         assert_eq!(ViewportZoom::Fit.percent(), None);
     }
 
-    /// The window's own Zoom in / Zoom out / Actual size reach a canvas that
-    /// has a scale of its own, and the level the toolbar shows follows.
     #[test]
     fn the_windows_zoom_reaches_a_canvas_that_has_one_of_its_own() {
         use crate::content_zoom::{ContentZoom, ZoomStep};
@@ -1869,7 +1719,6 @@ mod tests {
         fn screen_to_content_hit_test_inside_and_outside() {
             let mut v = kernel();
             v.set_zoom(1.0);
-            // A point at the content origin maps to (0,0) content.
             let origin = v.content_origin();
             let c = v.screen_to_content(origin);
             assert!(c.x.abs() < 1e-6 && c.y.abs() < 1e-6);
@@ -1958,7 +1807,6 @@ mod tests {
             let mut v = kernel();
             let z = v.fit_width_zoom();
             v.set_zoom(z);
-            // content_w * zoom + 2*pad ≈ viewport width.
             assert!(
                 (v.scaled_content_width() - v.rect().width()).abs() < 1.0,
                 "fit-width content spans the viewport width"
@@ -2009,14 +1857,11 @@ mod tests {
 
         fn no_overflow_means_no_scroll_and_centered_x() {
             let mut v = kernel();
-            // Shrink so the content fits inside the viewport on both axes.
             v.set_zoom(0.25);
             assert!(!v.overflows_x(), "small content must not overflow x");
             assert!(!v.overflows_y(), "small content must not overflow y");
             assert_eq!(v.max_scroll_x(), 0.0);
             assert_eq!(v.max_scroll_y(), 0.0);
-            // Centre alignment: content origin should be > pad and the content
-            // should be horizontally centred in the viewport.
             let scaled_w = 1000.0 * v.zoom();
             let expected_x0 = v.rect().x0 + (v.rect().width() - scaled_w) / 2.0;
             let origin = v.content_origin();
@@ -2033,9 +1878,7 @@ mod tests {
             v.set_zoom(2.0);
             v.set_scroll(100.0, 100.0);
             v.begin_pan(Point::new(400.0, 300.0));
-            // Tiny move under slop: not flagged moved.
             v.update_pan(Point::new(401.0, 300.0));
-            // Big move: content tracks the cursor (scroll decreases by drag delta).
             v.update_pan(Point::new(450.0, 360.0));
             assert!(
                 (v.scroll_x() - (100.0 - 50.0)).abs() < 1e-6,
@@ -2079,11 +1922,9 @@ mod tests {
     fn viewport_scrollbars_appear_track_and_drag() {
         fn scrollbars_present_only_when_overflowing() {
             let mut v = kernel();
-            // Fits: no bars.
             v.set_zoom(0.25);
             assert!(v.h_scrollbar_thumb().is_none());
             assert!(v.v_scrollbar_thumb().is_none());
-            // Overflows both: both bars.
             v.set_zoom(3.0);
             assert!(v.h_scrollbar_thumb().is_some(), "h-bar appears when wide");
             assert!(v.v_scrollbar_thumb().is_some(), "v-bar appears when tall");
@@ -2092,10 +1933,8 @@ mod tests {
         fn scrollbar_thumb_tracks_scroll_progress() {
             let mut v = kernel();
             v.set_zoom(3.0);
-            // Top-left: thumb sits at the track start.
             v.set_scroll(0.0, 0.0);
             let top = v.v_scrollbar_thumb().unwrap();
-            // Bottom: thumb sits at the track end.
             v.set_scroll(0.0, v.max_scroll_y());
             let bottom = v.v_scrollbar_thumb().unwrap();
             assert!(
@@ -2107,9 +1946,6 @@ mod tests {
         fn press_thumb_begins_drag_then_move_scrolls() {
             let mut v = kernel();
             v.set_zoom(3.0);
-            // set_zoom anchors on the viewport centre, so scroll is non-zero
-            // after it — normalise to the top so the thumb sits at the track
-            // start (same reset the geometry test above relies on).
             v.set_scroll(0.0, 0.0);
             let thumb = v.v_scrollbar_thumb().unwrap();
             let mid = Point::new(
@@ -2150,7 +1986,6 @@ mod tests {
         fn press_in_content_area_is_not_a_bar() {
             let mut v = kernel();
             v.set_zoom(3.0);
-            // Middle of the viewport, far from either edge bar → pan is free.
             assert!(
                 !v.press_scrollbar(Point::new(400.0, 300.0)),
                 "content press leaves pan free"

@@ -1,14 +1,5 @@
-//! `IconWidget` — a leaf that paints one themed vector glyph from the
-//! shared [`crate::icons::Icon`] set, at one of the theme's three icon
-//! sizes ([`IconSize`]).
-//!
-//! Wraps the immediate-mode [`crate::icons::Icon::draw`] helper in the
-//! [`Widget`] contract so an icon can be dropped straight into a
-//! `Row`/`Column`/`Container` like any other widget, sized by the layout
-//! pass, and tinted from the active [`Theme`].
-//!
-//! Defaults to [`Theme::text_primary`] and the lucide 1.5px stroke; see
-//! [`IconWidget::with_color`], [`IconWidget::dim`], [`IconWidget::with_stroke`].
+//! `IconWidget` — a leaf that paints one themed vector glyph from the shared
+//! [`crate::icons::Icon`] set, at one of the theme's three icon sizes ([`IconSize`]).
 
 use std::collections::HashMap;
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -27,27 +18,22 @@ use crate::widget::Widget;
 mod component;
 pub use component::IconProps;
 
-/// Where the glyph colour comes from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Tint {
     Primary,
     Dim,
     Accent,
-    /// A status's colour (a check in success, a warning sign in warning).
     Tone(crate::widget::Tone),
     Fixed(Color),
 }
 
-/// Which of the theme's icon sizes a glyph takes: `metrics.icon_sm`,
-/// `icon_md` or `icon_lg` (14, 20 and 24 by default).
+/// Which of the theme's icon sizes a glyph takes: `metrics.icon_sm`, `icon_md` or `icon_lg`
+/// (14, 20 and 24 by default).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum IconSize {
-    /// Beside a caption or inside a small control.
     Small,
-    /// Beside a row's label; the default.
     #[default]
     Regular,
-    /// A header mark, a glyph beside a title.
     Large,
 }
 
@@ -67,17 +53,12 @@ impl IconSize {
 /// Themed glyph widget — see module docs.
 pub struct IconWidget {
     icon: Icon,
-    /// The square the glyph is centred in, resolved from the theme at
-    /// layout.
     size: IconSize,
     tint: Tint,
     stroke_px: f64,
-    /// What the glyph means, where it says something on its own: its tooltip.
     description: Option<String>,
     rect: Rect,
-    /// What it shows changed since the last frame drew it.
     dirty: bool,
-    /// What it holds changed its size since the layout pass last placed it.
     layout_dirty: bool,
 }
 
@@ -97,15 +78,14 @@ impl IconWidget {
         }
     }
 
-    /// What the glyph means, where it says something on its own ("Mail: the server could not
-    /// be reached"): read on hover, as a control's tooltip is.
+    /// What the glyph means, where it says something on its own ("Mail: the server could
+    /// not be reached"): read on hover, as a control's tooltip is.
     #[must_use]
     pub fn describing(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
     }
 
-    /// [`Self::describing`] where it stands.
     fn set_description(&mut self, description: Option<String>) {
         if self.description != description {
             self.description = description;
@@ -113,8 +93,6 @@ impl IconWidget {
         }
     }
 
-    /// The glyph, the square it takes and how it is inked, changed where it stands: another
-    /// glyph, or one that takes another size, says so and keeps its place.
     fn set_glyph(&mut self, icon: Icon, size: IconSize, tint: Tint) {
         if self.icon == icon && self.size == size && self.tint == tint {
             return;
@@ -146,17 +124,15 @@ impl IconWidget {
         self
     }
 
-    /// Resolve the glyph through the active theme's primary accent. Prefer
-    /// this over capturing `Theme::dark().tokens.colors.intent.accent` at construction so
-    /// light, custom, and high-contrast themes remain truthful.
+    /// Resolve the glyph through the active theme's primary accent.
     #[must_use]
     pub fn accent(mut self) -> Self {
         self.tint = Tint::Accent;
         self
     }
 
-    /// Resolve the glyph through a status's colour in the active theme: a
-    /// passed check in success, a warning sign in warning.
+    /// Resolve the glyph through a status's colour in the active theme: a passed check in
+    /// success, a warning sign in warning.
     #[must_use]
     pub fn tone(mut self, tone: crate::widget::Tone) -> Self {
         self.tint = Tint::Tone(tone);
@@ -219,8 +195,6 @@ impl Widget for IconWidget {
         if self.icon.is_brand() {
             self.icon.draw_filled(scene, transform, self.rect, color);
         } else {
-            // The theme's icon role sets the outline's weight; an explicit
-            // `with_stroke` still wins where a call site states one.
             let stroke = if (self.stroke_px - LUCIDE_DEFAULT_STROKE_PX).abs() < f64::EPSILON {
                 f64::from(theme.tokens.icon_stroke_px)
             } else {
@@ -276,20 +250,17 @@ mod tests {
             assert!(color_tags >= 1, "icon widget must paint its glyph");
         }
 
-        /// A zero-size rect is a no-op (no panic, no draw).
         fn icon_widget_zero_rect_is_noop() {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
             let mut w = IconWidget::new(Icon::Home).sized(IconSize::Large);
-            // rect stays ZERO
             w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             let tags = scene.encoding().draw_tags.len();
             assert_eq!(tags, 0, "no draw work for a zero-size icon");
         }
 
-        /// The colour builders pick the documented theme slots.
         fn icon_widget_color_resolution() {
             let theme = Theme::dark();
             let primary = IconWidget::new(Icon::Star);
@@ -302,7 +273,6 @@ mod tests {
             assert_eq!(fixed.resolve_color(&theme), Color::from_rgb8(1, 2, 3));
         }
 
-        /// Each size resolves from the theme's icon metrics.
         fn icon_widget_sizes_follow_the_theme() {
             let theme = Theme::dark();
             let metrics = &theme.tokens.metrics;
@@ -318,8 +288,6 @@ mod tests {
         icon_widget_color_resolution();
     }
 
-    /// A glyph standing on its own says what it means where it stands, read on hover; one with
-    /// nothing to say is no tooltip target at all.
     #[test]
     fn an_icon_says_what_it_means_on_hover() {
         let mut w = IconWidget::new(Icon::WifiOff).describing("Mail: no route to host");

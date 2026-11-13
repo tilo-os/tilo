@@ -5,9 +5,7 @@ use crate::tokens::TextRole;
 
 use super::Link;
 
-/// A hyperlink: primary ink with an underline, opening what it names when pressed, activated by
-/// Enter or Space, or from assistive technology. A link that names a resource opens it; one
-/// whose view gives it an `activate` acts.
+/// A hyperlink: primary ink with an underline, opening what it names when pressed.
 #[derive(Component)]
 #[component(name = "Link", role = "Link", label = "label", presents = "item")]
 pub struct LinkProps {
@@ -59,9 +57,6 @@ impl Described for Link {
         link
     }
 
-    /// A link showing something else now shows and opens the new address where it stands, and
-    /// does what a press is now told to do: a change of its words or its event costs the link's
-    /// own fields, never the widget.
     fn set_props(&mut self, props: LinkProps) -> bool {
         self.set_url(&props.url);
         self.set_label(props.label.as_deref().unwrap_or(&props.url));

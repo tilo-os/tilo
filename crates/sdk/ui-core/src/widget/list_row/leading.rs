@@ -19,9 +19,9 @@ impl ListRow {
         self
     }
 
-    /// What the leading badge or icon stands for ("Retrieves the resource"
-    /// for `GET`, "SSH" for a terminal glyph): the tooltip when the pointer
-    /// rests on it, and the row's accessible description.
+    /// What the leading badge or icon stands for ("Retrieves the resource" for `GET`, "SSH"
+    /// for a terminal glyph): the tooltip when the pointer rests on it, and the row's
+    /// accessible description.
     #[must_use]
     pub fn leading_tooltip(mut self, tooltip: impl Into<String>) -> Self {
         self.leading_tooltip = Some(tooltip.into());
@@ -35,8 +35,8 @@ impl ListRow {
         self
     }
 
-    /// See [`RowLeading::Media`](super::RowLeading::Media): art from `source` at `aspect`, the
-    /// placeholder with the title's initials until it loads.
+    /// See [`RowLeading::Media`](super::RowLeading::Media): art from `source` at `aspect`,
+    /// the placeholder with the title's initials until it loads.
     #[must_use]
     pub fn media(mut self, source: MediaSource, aspect: MediaAspect) -> Self {
         self.leading = Some(Leading::Media {
@@ -47,15 +47,14 @@ impl ListRow {
         self
     }
 
-    /// See [`RowLeading::Checkbox`](super::RowLeading::Checkbox): a selection checkbox. Pressing
-    /// it (or Space on the focused row) runs `on_toggle` with the new state.
+    /// See [`RowLeading::Checkbox`](super::RowLeading::Checkbox): a selection checkbox.
     #[must_use]
     pub fn checkbox(self, checked: bool, on_toggle: impl FnMut(bool) + 'static) -> Self {
         self.checked_with(checked, None, on_toggle)
     }
 
     /// [`Self::checkbox`] with a glyph after the box: a task checks off and still says how
-    /// important it is. The glyph takes no press: it is what the row is, not a control.
+    /// important it is.
     #[must_use]
     pub fn checkbox_with_icon(
         self,

@@ -1,5 +1,6 @@
-//! Where a row puts what it holds: the height it asks for and the rect of every column — leading,
-//! text, meta and trailing — so a retained row and the immediate [`ListRowFace`] agree.
+//! Where a row puts what it holds: the height it asks for and the rect of every column —
+//! leading, text, meta and trailing — so a retained row and the immediate [`ListRowFace`]
+//! agree.
 
 use vello::kurbo::{Point, Rect};
 
@@ -8,9 +9,8 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::BadgeFace;
 
-/// Where a row led by a mark — a glyph or a face — starts its text, past the left edge of its
-/// rect: the content edge, the mark's slot and the gap to the text. Both lead in one slot, so a
-/// list's titles keep one column; a row's own line under its title starts here too.
+/// Where a row led by a mark — a glyph or a face — starts its text, past the left edge of
+/// its rect: the content edge, the mark's slot and the gap to the text.
 #[must_use]
 pub fn mark_text_inset(theme: &Theme) -> f64 {
     let m = RowMetrics::new(theme);
@@ -18,8 +18,8 @@ pub fn mark_text_inset(theme: &Theme) -> f64 {
 }
 
 impl ListRowFace<'_> {
-    /// Whether the row says anything under its title: a secondary line, or facts standing where
-    /// one would.
+    /// Whether the row says anything under its title: a secondary line, or facts standing
+    /// where one would.
     pub(super) fn has_secondary_line(&self) -> bool {
         self.secondary.is_some() || !self.facts.is_empty()
     }
@@ -122,10 +122,7 @@ impl ListRowFace<'_> {
             Some(RowLeading::Icon(_) | RowLeading::Swatch(_) | RowLeading::Signal(_)) => {
                 (m.icon, m.icon)
             }
-            // A face takes the glyph's slot, so a list's titles line up whichever a row leads
-            // with; its ring and ground stand in the gap to the text.
             Some(RowLeading::Face(_)) => (m.icon, m.icon),
-            // A box says whether it is done, and a glyph after it what kind of thing it is.
             Some(RowLeading::Checkbox { icon, .. }) => match icon {
                 Some(_) => (2.0 * m.icon + m.column_gap, m.icon),
                 None => (m.icon, m.icon),
@@ -177,8 +174,6 @@ impl ListRowFace<'_> {
             .max(leading_h)
             .max(value)
             .max(fact_avatar);
-        // A row given its own height stands at that token and insets what it holds by whatever
-        // the token leaves; a tree's rows are shorter than a list's rows of the same theme.
         if let Some(height) = self.row_height {
             return held.max(height).max(self.min_target).ceil();
         }
@@ -193,8 +188,6 @@ impl ListRowFace<'_> {
         (held + 2.0 * m.pad_y).max(min).ceil()
     }
 
-    /// A card's height: its title's lines and what follows them, the facts on their own line
-    /// under that, and the card's own padding around both.
     fn card_height(&self, text: &mut TextRenderer, m: &RowMetrics, theme: &Theme) -> f64 {
         let (_, leading_h) = self.leading_extent(m, text, theme);
         let facts = self.facts_height(text, m, theme);
@@ -209,7 +202,6 @@ impl ListRowFace<'_> {
             .ceil()
     }
 
-    /// Whether the card has facts to stand under its title: a day, who, how far, how important.
     fn has_facts(&self) -> bool {
         self.meta.is_some()
             || !self.meta_spans.is_empty()
@@ -219,8 +211,6 @@ impl ListRowFace<'_> {
             || self.value.is_some()
     }
 
-    /// The height of the line the facts stand on: the tallest of them, nothing when the card
-    /// holds none.
     fn facts_height(&self, text: &mut TextRenderer, m: &RowMetrics, theme: &Theme) -> f64 {
         if !self.has_facts() {
             return 0.0;
@@ -289,13 +279,9 @@ impl ListRowFace<'_> {
         self.count.map(|count| count.to_string())
     }
 
-    /// The side of the avatar in the facts column, where the row shows one: the inline size,
-    /// as a fact's line is. A row without one takes no room there: its other facts run on
-    /// together.
+    /// The side of the avatar in the facts column, where the row shows one: the inline
+    /// size, as a fact's line is.
     pub(super) fn fact_avatar(&self, theme: &Theme) -> Option<f64> {
-        // A fact stands on a line of its own height: the inline size, however many lines the
-        // row's text takes, so a person's face reads beside the other facts, not as a leading
-        // avatar over them.
         self.avatar
             .is_some()
             .then(|| RowMetrics::avatar(theme, false))
@@ -345,11 +331,6 @@ impl ListRowFace<'_> {
         if self.card {
             return self.card_geometry(rect, m, text, theme);
         }
-        // A nested row indents its content one step per depth, its lift still filling the row.
-        // A tree's chevron hangs in the step in front of its row's content: the list leads every
-        // row's depth's column by one step, so the top level stands where the list's own column
-        // starts and nothing indents it twice. A row that keeps a chevron column inside its own
-        // box holds that column first, and its content starts past it.
         let left = rect.x0 + m.bleed + self.chevron_column + f64::from(self.depth) * m.nest;
         let mut right = rect.x1 - m.bleed;
         let cy = rect.center().y;
@@ -390,9 +371,6 @@ impl ListRowFace<'_> {
             geo.trailing = Some(Rect::new(right - width, rect.y0, right, rect.y1));
             right -= width + m.column_gap;
         }
-        // The facts stand in one column, right-aligned on the edge the trailing slot leaves:
-        // when, who, how far, how important, in that order from the text to the row's end. A
-        // value of the row's own is no fact: it keeps the edge, the facts stand inside it.
         if self.value.is_some() {
             geo.value_right = right;
             right -= self.value_width(m, text) + m.column_gap;
@@ -403,8 +381,6 @@ impl ListRowFace<'_> {
             n * m.action + (n - 1.0).max(0.0) * m.action_gap
         });
         if let Some(width) = actions {
-            // The hover actions take the facts' place: nothing else stands on that edge while
-            // they show.
             geo.meta_right = facts_right;
             geo.meta_left = facts_right;
             geo.text_right = facts_right - width - m.column_gap;
@@ -440,14 +416,10 @@ impl ListRowFace<'_> {
         geo.text_right = right;
         geo.title_right = right;
         geo.second_right = right;
-        // The changer's face leads the line under the title, before the words it says.
         geo.change = self.said_face(rect, &geo, m, text, theme);
         geo
     }
 
-    /// Where the face of whoever changed the row sits: the start of the line under the title,
-    /// as tall as an icon, the words it leads after it. `None` while the row says nothing of a
-    /// change.
     fn said_face(
         &self,
         rect: Rect,
@@ -467,8 +439,6 @@ impl ListRowFace<'_> {
             .clamp_to_lines(&shown, &title_style, room, reserved)
             .len()
             .clamp(1, reserved);
-        // The row keeps the height of every title line it allows; the lines it draws centre
-        // the block, as the row paints them.
         let unused = reserved - drawn;
         let block = self.text_block(text, m) - title_line * crate::num::f64_of_usize(unused);
         let text_top = if self.card {
@@ -506,8 +476,6 @@ impl ListRowFace<'_> {
         rect.y0 + m.pad_y + ((rect.height() - 2.0 * m.pad_y - held) / 2.0).max(0.0)
     }
 
-    /// The height of what a card holds: its text, the gap and the facts line under it, or
-    /// its leading column where that is taller.
     fn card_content_height(&self, m: &RowMetrics, text: &mut TextRenderer, theme: &Theme) -> f64 {
         let facts = self.facts_height(text, m, theme);
         let gap = if facts > 0.0 {
@@ -519,10 +487,6 @@ impl ListRowFace<'_> {
         (self.text_block(text, m) + gap + facts).max(lead_h)
     }
 
-    /// Lay a card out in `rect`, its own surface: the checkbox hangs on the title's first line,
-    /// the text takes the rest of the card's width, and the facts stand on one line under the
-    /// text, read left to right in the order a row keeps them — the day, who, how far, how
-    /// important — so they sit together under the title rather than spread across it.
     fn card_geometry(
         &self,
         rect: Rect,
@@ -558,7 +522,6 @@ impl ListRowFace<'_> {
         if facts <= 0.0 {
             return geo;
         }
-        // The hover actions take the facts' place, on the facts line's trailing edge.
         if self.shows_actions() {
             geo.meta_right = right;
             geo.meta_left = right;
@@ -567,7 +530,6 @@ impl ListRowFace<'_> {
         }
         let gap = f64::from(theme.tokens.spacing.rhythm.tight);
         let mut cy = top + block + gap + facts / 2.0;
-        // A card is as tall as its facts line; the facts centre on it.
         cy = cy
             .min(rect.y1 - m.pad_y - facts / 2.0)
             .max(rect.y0 + m.pad_y + facts / 2.0);
@@ -610,7 +572,6 @@ impl ListRowFace<'_> {
         if marks > 0.0 {
             geo.marks_right = Some(x + gap + marks);
         }
-        // A value of the row's own keeps the card's trailing edge.
         if self.value.is_some() {
             geo.value_right = right;
         }
@@ -656,9 +617,9 @@ impl ListRowFace<'_> {
         self.action_slots_with(rect, m, text, theme)
     }
 
-    /// Where each of the row's actions stands in `rect`, in order, whether
-    /// or not the row shows them: assistive technology reaches an action
-    /// without hovering the row, so its node says where it is.
+    /// Where each of the row's actions stands in `rect`, in order, whether or not the row
+    /// shows them: assistive technology reaches an action without hovering the row, so its
+    /// node says where it is.
     pub(super) fn action_slots_with(
         &self,
         rect: Rect,
@@ -695,8 +656,8 @@ impl ListRowFace<'_> {
         rects
     }
 
-    /// The slot [`Self::trailing_width`] reserved in `rect`, as tall as the
-    /// row; centre the control in it.
+    /// The slot [`Self::trailing_width`] reserved in `rect`, as tall as the row; centre the
+    /// control in it.
     pub fn trailing_rect(
         &self,
         rect: Rect,
@@ -723,7 +684,6 @@ impl ListRowFace<'_> {
             return geo.leading;
         };
         let hit = match icon {
-            // The whole leading column, row-tall: a box is a small target.
             None => Rect::new(geo.leading.x0 - m.bleed, rect.y0, geo.text_x, rect.y1),
             // Only the box takes the press; the glyph after it is what the row is, unless the
             // target grown below reaches it.
@@ -734,8 +694,6 @@ impl ListRowFace<'_> {
                 rect.y1,
             ),
         };
-        // `rect` is the row's band, which bleeds into the list's gutter as the rest of the row
-        // does: a press on the box stays in it.
         self.reach_target(hit, checkbox_box(geo.leading, icon, &m), rect)
     }
 

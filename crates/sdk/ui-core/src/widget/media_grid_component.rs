@@ -1,9 +1,5 @@
-//! [`MediaGrid`], [`MediaCard`] and [`MediaTransport`] as described components: what plays and
-//! what a library shows, each steered by the view's own events.
-//!
-//! A card's art is a picture by its address, loaded through the window's pictures as it
-//! arrives, or the icon of a kind of thing. A band's controls report what the person pressed;
-//! the view's action does the rest.
+//! [`MediaGrid`], [`MediaCard`] and [`MediaTransport`] as described components: what plays
+//! and what a library shows, each steered by the view's own events.
 
 use crate::component::{Component, Described, Event, ResourceId, SlotType, Source};
 use crate::icons::Icon;
@@ -13,9 +9,7 @@ use crate::widget::{MediaAspect, MediaCard, MediaGrid, MediaSource};
 
 // The `MediaAspect` choice is declared beside the enum, in `media_card.rs`.
 
-/// Cards in a grid: a library, an album's covers, a shelf of books, a set of channels. The cards
-/// reflow into as many columns as fit, every row's text as tall as its tallest so titles line up;
-/// `justified`, they make rows of photos that span the width at each picture's own shape.
+/// Cards in a grid: a library, an album's covers, a shelf of books, a set of channels.
 #[derive(Component, Default)]
 #[component(name = "MediaGrid", role = "Grid")]
 pub struct MediaGridProps {
@@ -30,7 +24,7 @@ pub struct MediaGridProps {
 }
 
 /// One card of a grid: the art (a cover, a thumbnail, a photo) with its title and up to two
-/// meta lines under it. A press opens what it stands for.
+/// meta lines under it.
 #[derive(Component, Default)]
 #[component(
     name = "MediaCard",
@@ -42,16 +36,14 @@ pub struct MediaCardProps {
     /// The card's stable key.
     #[component(key)]
     pub key: String,
-    /// The resource the card stands for: what a press opens. Without one it is a picture
-    /// with a title, which does nothing when pressed.
+    /// The resource the card stands for: what a press opens.
     #[component(required, positional)]
     pub item: Option<ResourceId>,
     /// What the card is called, under its art. Without one it is art only (a photo).
     pub title: Option<String>,
     /// Its art: a picture by its address, loaded as it arrives.
     pub picture: Option<crate::widget::PictureSource>,
-    /// The icon of a kind of thing, on the neutral tile: a podcast, a folder. Without a
-    /// picture the placeholder shows the title's initials.
+    /// The icon of a kind of thing, on the neutral tile: a podcast, a folder.
     pub icon: Option<Icon>,
     /// One line under the title (an artist, a channel, an author). Give two for two lines.
     pub meta: Vec<String>,

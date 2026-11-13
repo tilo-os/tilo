@@ -1,8 +1,4 @@
 //! Compact, shared key/controller/gesture legends.
-//!
-//! This is the component apps use beside menu items and controls. It also has
-//! an immediate paint entry point for shell chrome, keeping the shape language
-//! identical without constructing a temporary retained tree.
 
 use std::collections::HashMap;
 
@@ -25,8 +21,6 @@ use crate::widget::{TaffyTreeExt, Widget};
 mod component;
 pub use component::InputHintProps;
 
-/// Height of a painted hint row; hosts that centre a hint in their own band
-/// (the shortcut recorder) offset by half of this rather than a literal.
 pub(crate) const HEIGHT: f64 = 22.0;
 const CAP_GAP: f64 = 3.0;
 const CAP_PAD_X: f64 = 6.0;
@@ -43,8 +37,8 @@ enum HintShape {
     Gesture,
 }
 
-/// The platform and device families that decide how a binding is labelled:
-/// `⌘` vs `Ctrl`, `A` vs `✕`.
+/// The platform and device families that decide how a binding is labelled: `⌘` vs `Ctrl`,
+/// `A` vs `✕`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LegendConventions {
     pub platform: PlatformConventions,
@@ -53,8 +47,8 @@ pub struct LegendConventions {
 }
 
 impl LegendConventions {
-    /// Label for `environment`'s keyboard and controller, falling back to a
-    /// generic controller when none is connected.
+    /// Label for `environment`'s keyboard and controller, falling back to a generic
+    /// controller when none is connected.
     pub fn new(platform: PlatformConventions, environment: &InteractionEnvironment) -> Self {
         Self {
             platform,
@@ -70,9 +64,7 @@ pub struct InputHint {
     environment: InteractionEnvironment,
     rect: Rect,
     layout_theme: Theme,
-    /// The chord changed since the last frame drew it.
     dirty: bool,
-    /// What it holds changed its size since the layout pass last placed it.
     layout_dirty: bool,
 }
 
@@ -99,7 +91,6 @@ impl InputDeviceGlyph {
         let colors = &theme.tokens.colors;
         let stroke = Stroke::new(1.5);
         let ink = colors.text_primary;
-        // A lift off the ground, not a ramp slot (HIG §9.2).
         let quiet = colors.lift(1.0);
         if matches!(
             family,
@@ -262,8 +253,7 @@ impl InputHint {
             .join(" + ")
     }
 
-    /// Natural width using the real text metrics. Useful to immediate-mode
-    /// hosts that need to align the hint to a trailing edge.
+    /// Natural width using the real text metrics.
     pub fn measure_width(
         binding: &InputBinding,
         conventions: LegendConventions,
@@ -482,8 +472,6 @@ fn paint_token(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, shape: HintShape
         HintShape::Gesture => 11.0,
         HintShape::Keycap => 5.0,
     };
-    // Keycap body is a lift off the ground with an edge derived from it
-    // (HIG §9.2, §9.5) — ramp slots were one fixed grey per theme.
     crate::surface::card(ctx.scene, ctx.transform, rect, radius, colors.lift(1.0));
     let style = token_text_style(theme);
     let (tw, th) = ctx.text.measure_style(label, None, &style);
@@ -571,9 +559,6 @@ impl Widget for InputHint {
         }
     }
 
-    /// The estimate `build_layout` reserved becomes the keycaps' measured
-    /// width, so the hint ends where its last keycap does and a column of
-    /// hints shares one trailing edge.
     fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,

@@ -29,7 +29,6 @@ fn playing() -> TransportState {
     }
 }
 
-/// The player resource the test app publishes: one action per control.
 const PLAYER: &str = "test.player:player";
 
 fn player() -> tilo_actions::ResourceSpec {
@@ -59,7 +58,6 @@ fn player() -> tilo_actions::ResourceSpec {
     player
 }
 
-/// Every action the transport takes, bound to the test app's player.
 fn actions() -> TransportActions {
     let player = player();
     let unit = |id| Some(ActionBinding::unit_for(&player, id).expect("published"));
@@ -84,12 +82,10 @@ fn actions() -> TransportActions {
     }
 }
 
-/// A shell whose band is a transport showing `state`, laid out at `w`.
 fn banded(state: TransportState, w: u32) -> (FrameHarness, TransportFeed) {
     banded_with(state, w, actions())
 }
 
-/// [`banded`], the transport's controls invoking `actions`.
 fn banded_with(
     state: TransportState,
     w: u32,
@@ -119,7 +115,6 @@ fn find<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
         .find_map(|child| find(child, id))
 }
 
-/// The rect of the control `id`, when it is there and laid out.
 fn control(h: &FrameHarness, id: &str) -> Option<Rect> {
     find(h.root::<NavShell>(), id)
         .map(Widget::get_rect)
@@ -131,8 +126,6 @@ fn press(h: &mut FrameHarness, id: &str) {
     h.click_at(rect.center().x, rect.center().y);
 }
 
-/// A wide window shows every control the app declares inline, in the
-/// band across the window's foot, and no More button.
 #[test]
 fn a_wide_transport_shows_its_controls_inline_in_the_band() {
     let (h, _) = banded(playing(), 1400);
@@ -167,7 +160,6 @@ fn a_wide_transport_shows_its_controls_inline_in_the_band() {
     );
 }
 
-/// How each control under the transport invokes what it does.
 fn bindings(h: &FrameHarness) -> HashMap<String, crate::widget::ControlBindingKind> {
     crate::widget::controls::control_action_bindings(band_transport(h))
         .into_iter()
@@ -175,9 +167,6 @@ fn bindings(h: &FrameHarness) -> HashMap<String, crate::widget::ControlBindingKi
         .collect()
 }
 
-/// Each control that steers the player invokes the action the app handed
-/// it, through the action door; the ones that change what the window shows
-/// are view actions of their own. None is a bare callback.
 #[test]
 fn each_control_invokes_the_action_the_app_handed_it() {
     let (h, _) = banded(playing(), 1400);
@@ -214,7 +203,6 @@ fn each_control_invokes_the_action_the_app_handed_it() {
     }
 }
 
-/// A control the app hands no action for is not there.
 #[test]
 fn a_control_without_an_action_is_left_out() {
     let (h, _) = banded_with(
@@ -238,8 +226,6 @@ fn a_control_without_an_action_is_left_out() {
     assert!(control(&h, "transport.repeat").is_some());
 }
 
-/// The app's player stays the truth: a press changes nothing the transport
-/// shows until the app shows the new state.
 #[test]
 fn the_state_follows_its_declaration() {
     let (mut h, feed) = banded(playing(), 1400);
@@ -263,8 +249,6 @@ fn the_state_follows_its_declaration() {
     assert_eq!(named(&h).as_deref(), Some("Pause"));
 }
 
-/// With nothing to play the transport rests: its controls are there,
-/// disabled, and a press asks for nothing.
 #[test]
 fn an_idle_transport_rests() {
     let (mut h, feed) = banded(
@@ -280,9 +264,6 @@ fn an_idle_transport_rests() {
     assert_eq!(control(&h, "transport.like"), None, "left out, not shown");
 }
 
-/// A narrow window folds the transport: the song beside previous, play,
-/// next and mute, with a More button the app answers with its menu under
-/// it, over the scrubber.
 #[test]
 fn a_narrow_transport_folds_the_rest_behind_more() {
     let (mut h, feed) = banded(playing(), 480);
@@ -335,8 +316,6 @@ fn the_art_opens_what_plays() {
     assert_eq!(feed.take_events(), Vec::new(), "a picture opens nothing");
 }
 
-/// A drag across the band skips: leftwards to the next song, rightwards
-/// to the previous one; a short one is a press on what is under it.
 #[test]
 fn a_swipe_across_the_band_skips() {
     let (mut h, feed) = banded(playing(), 1400);
@@ -357,8 +336,6 @@ fn a_swipe_across_the_band_skips() {
     assert_eq!(feed.take_events(), vec![TransportEvent::Next]);
 }
 
-/// Touch parity: a finger dragged across the band claims the drag, so it
-/// swipes as the pointer does instead of scrolling.
 #[test]
 fn a_finger_on_the_band_swipes() {
     let (h, _) = banded(playing(), 1400);
@@ -376,7 +353,6 @@ fn a_finger_on_the_band_swipes() {
     );
 }
 
-/// The transport in the band.
 fn band_transport(h: &FrameHarness) -> &dyn Widget {
     fn walk(widget: &dyn Widget) -> Option<&dyn Widget> {
         if widget.name() == "MediaTransport" {
@@ -387,8 +363,6 @@ fn band_transport(h: &FrameHarness) -> &dyn Widget {
     walk(h.root::<NavShell>()).expect("the transport is in the band")
 }
 
-/// The volume is reachable at every width: where the slider doesn't fit
-/// beside the mute toggle, the speaker's popover holds it.
 #[test]
 fn the_volume_is_reachable_at_every_width() {
     for width in [480, 900] {

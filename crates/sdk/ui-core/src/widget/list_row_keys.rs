@@ -1,6 +1,6 @@
-//! How a focused row answers the keyboard: the arrows arm one of its actions and Enter or Space
-//! runs it, Space toggles a leading checkbox, Delete runs its destructive action, and a key a
-//! command in its menu declares runs that command.
+//! How a focused row answers the keyboard: the arrows arm one of its actions and Enter or
+//! Space runs it, Space toggles a leading checkbox, Delete runs its destructive action, and
+//! a key a command in its menu declares runs that command.
 
 use winit::event::ElementState;
 use winit::event::WindowEvent;
@@ -11,10 +11,8 @@ use super::Leading;
 use super::ListRow;
 
 impl ListRow {
-    /// Arrow keys step through the actions of a focused row; Enter or Space
-    /// runs the armed one, Escape disarms. Space toggles a leading checkbox,
-    /// Delete runs the row's destructive action, and the keys a command in the
-    /// row's menu declares run that command.
+    /// Arrow keys step through the actions of a focused row; Enter or Space runs the armed
+    /// one, Escape disarms.
     pub(super) fn handle_key(
         &mut self,
         event: &WindowEvent,
@@ -55,9 +53,6 @@ impl ListRow {
             {
                 self.toggle_checkbox()
             }
-            // The row's destructive action — the one its swipe reveals, which the app marked
-            // destructive — as choosing it does: it takes something away, and the notice offers
-            // Undo as every destructive action does.
             Key::Named(NamedKey::Delete) => match &mut self.swipe {
                 Some(swipe) if swipe.destructive => {
                     swipe.run();
@@ -67,9 +62,6 @@ impl ListRow {
             },
             _ => false,
         };
-        // A command the row's menu declares a shortcut for runs where the row has the keyboard,
-        // by the keys every other shortcut is matched against: the platform's own command
-        // modifier, and no other modifier held.
         let handled = handled
             || crate::platform::Shortcut::pressed(
                 &event.logical_key,

@@ -1,14 +1,4 @@
 //! The bodies of [`Widget`]'s default methods that walk a widget's children.
-//!
-//! A default method is compiled again for every widget type that keeps it,
-//! in every crate that builds that type's vtable: each app compiled each of
-//! these walks once per toolkit and app widget it boxes, with the iterator
-//! adapters and closures in them. Here they are compiled once, into the
-//! toolkit; a default keeps only the part that names `Self` (asking for its
-//! children, or what it answers itself) and hands that over.
-//!
-//! The functions are not generic and take the children as trait objects, so
-//! every app links them from the shared runtime.
 
 use automerge::ObjId;
 use taffy::{NodeId, TaffyTree};
@@ -147,9 +137,8 @@ pub(super) fn focus_requested(
     }
 }
 
-/// The text-key-action path [`Widget::perform_semantic_action`] decodes: the
-/// key path a `tilo.key-action:` target names, or `None` for any other
-/// target.
+/// The text-key-action path [`Widget::perform_semantic_action`] decodes: the key path a
+/// `tilo.key-action:` target names, or `None` for any other target.
 pub(super) fn key_action_path(target: &str) -> Option<Vec<u64>> {
     // `AccessNode::with_keyed_action_routes` publishes a custom-painted
     // control through the same semantic target that search and agents
@@ -367,8 +356,8 @@ pub(super) fn modal_capture(each: EachChild<'_>) -> Option<Rect> {
     capture
 }
 
-/// Close every modal among `children`, as a widget's own default does: the
-/// children's own dismissals, in turn.
+/// Close every modal among `children`, as a widget's own default does: the children's own
+/// dismissals, in turn.
 pub(super) fn dismiss_presented_modal(children: ChildrenMut<'_>) -> bool {
     let mut dismissed = false;
     for child in children {
@@ -377,8 +366,8 @@ pub(super) fn dismiss_presented_modal(children: ChildrenMut<'_>) -> bool {
     dismissed
 }
 
-/// Whether a widget presenting `capture` or having `children` presents a
-/// modal still drawn: its own, or one of its children's.
+/// Whether a widget presenting `capture` or having `children` presents a modal still drawn:
+/// its own, or one of its children's.
 pub(super) fn presents_modal(capture: Option<Rect>, each: EachChild<'_>) -> bool {
     if capture.is_some() {
         return true;
@@ -412,7 +401,6 @@ pub(super) fn has_transient_feedback(children: Vec<&dyn Widget>) -> bool {
         .any(|child| child.has_transient_feedback())
 }
 
-/// Whether any child answers `dirty`; `None` for a widget without children.
 fn any_child(each: EachChild<'_>, dirty: fn(&dyn Widget) -> bool) -> Option<bool> {
     let mut has_children = false;
     let mut found = false;
@@ -473,7 +461,6 @@ pub(super) fn draw_overlay(
 mod tests {
     use super::*;
 
-    /// A keyed action target decodes to its key path, and nothing else does.
     #[test]
     fn a_key_action_target_decodes_to_its_key_path() {
         assert_eq!(
@@ -486,8 +473,6 @@ mod tests {
         assert_eq!(key_action_path("dialog:1:primary"), None);
     }
 
-    /// A widget without children is clean and counts as laid out anew; with
-    /// children it answers what they answer.
     #[test]
     fn a_childless_widget_is_clean_and_a_container_answers_for_its_children() {
         let none: EachChild<'_> = &|_| {};

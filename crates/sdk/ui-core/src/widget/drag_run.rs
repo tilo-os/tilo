@@ -1,27 +1,6 @@
-//! `DragRun`: a run of items — a dock's icons, a toolbar's tiles, a row of
-//! cards — in which an item can be picked up and moved to another place, and
-//! a resource from elsewhere (an app, a file, a search result) can be dropped
-//! in.
-//!
-//! The gesture is Rust and runs at native refresh: a press starts a candidate,
-//! pointer travel past the drag threshold lifts the item into a ghost, and the
-//! place it would land is shown before it is let go, with an insertion line
-//! across the run. Releasing reports **one** [`DragDrop`]: the key of the item
-//! moved and the item it goes before, or the resource that was dropped and its
-//! place. The owner turns that into one action on its model
-//! (`items.move(item, before: next)`), so a reorder is attributed, permitted
-//! and undone like every other change; the run then shows the item where the
-//! model puts it.
-//!
-//! A host whose run takes drops that start in another widget (a resource
-//! dragged from a search result onto a dock) says what is being dragged with
-//! [`DragRun::set_foreign`]; the run then shows the same insertion line, and
-//! [`DragRun::take_foreign`] answers where it would land when the host's drag
-//! ends.
-//!
-//! A touchscreen holds an item to lift it and then drags; a drag that begins
-//! without the hold scrolls what the run is in. Escape puts a lifted item down
-//! where it was.
+//! `DragRun`: a run of items — a dock's icons, a toolbar's tiles, a row of cards — in which
+//! an item can be picked up and moved to another place, and a resource from elsewhere (an
+//! app, a file, a search result) can be dropped in.
 
 use std::collections::HashMap;
 
@@ -46,17 +25,14 @@ use crate::widget::{Element, TaffyTreeExt, Widget};
 /// Which way a run goes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RunAxis {
-    /// Leading to trailing: a dock, a toolbar.
     #[default]
     Horizontal,
-    /// Top to bottom: a column of items.
     Vertical,
 }
 
 crate::component::choice!(RunAxis, "Axis", { Horizontal => "horizontal", Vertical => "vertical" });
 
 impl RunAxis {
-    /// The pointer's coordinate along this axis.
     fn along(self, point: Point) -> f64 {
         match self {
             Self::Horizontal => point.x,
@@ -67,17 +43,13 @@ impl RunAxis {
 
 /// The part of a run an item belongs to, as a bar or a dock is built: the items that lead
 /// (a bar's mark and menus, a dock's launcher), those in the centre (a bar's clock), those
-/// that trail (the people and the status), and the ones between groups, which push the groups
-/// apart as a `spacer` does. A dock is one compact group at the centre of its edge, so its
-/// items are all `Leading` and its run is packed.
+/// that trail (the people and the status), and the ones between groups, which push the
+/// groups apart as a `spacer` does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RunGroup {
-    /// The run's leading group, packed at the leading edge.
     #[default]
     Leading,
-    /// The run's centre group, centred on the run.
     Center,
-    /// The run's trailing group, packed at the trailing edge.
     Trailing,
     /// The room a group leaves the next: a part of the run that is only a gap.
     Space,
@@ -104,36 +76,22 @@ crate::component::choice!(crate::widget::arrange::Align, "Align", {
     Stretch => "stretch",
 });
 
-/// Where a dropped thing goes: the run that took it, what moved, and the
-/// place it lands at, counted from the leading edge among the run's other
-/// items.
-///
-/// A place, not a neighbour: that is what a collection's `move(x, to: i)`
-/// takes, and it is resolved to the item it then comes before when the action
-/// runs, so concurrent moves converge where each person meant.
+/// Where a dropped thing goes: the run that took it, what moved, and the place it lands at,
+/// counted from the leading edge among the run's other items.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DragDrop {
-    /// The key of the run that took the drop.
     pub run: String,
-    /// What was dropped: the key of the item moved, or the resource dragged in.
     pub moved: String,
-    /// The place it lands at among the run's other items, from 0.
     pub at: i64,
-    /// The key of the item it lands before; `None` for the end of the run.
     pub before: Option<String>,
 }
 
 /// One item of a run.
 pub struct RunItem {
-    /// The stable key the item is known by, and what the run reports moving.
     pub key: String,
-    /// The resource the item stands for, when it is one: what a drop reports.
     pub item: Option<crate::component::ResourceId>,
-    /// The item's own label, for the ghost.
     pub label: String,
-    /// The item's view.
     pub view: Element,
-    /// The part of the run the item belongs to.
     pub group: RunGroup,
 }
 
@@ -146,34 +104,23 @@ impl std::fmt::Debug for RunItem {
     }
 }
 
-/// The keys and ghost content of one item, in the order the model gave them.
 struct Keys {
     key: String,
     label: String,
-    /// The resource the item stands for, when it is one.
     item: Option<crate::component::ResourceId>,
-    /// The part of the run the item belongs to.
     group: RunGroup,
 }
 
-/// A lifted item, from press to release.
 struct Lift {
     key: String,
-    /// The item's rect when it was lifted, and where in it the pointer took
-    /// it.
     rect: Rect,
     grab: Point,
-    /// The pointer's place when the press landed, for the drag threshold.
     start: Point,
-    /// Whether it has travelled far enough to be a drag rather than a click.
     active: bool,
 }
 
-/// What a drag over the run would land on: the item it goes before, and the
-/// line drawn there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Landing {
-    /// The place among the run's other items.
     at: i64,
     before: Option<String>,
 }
@@ -183,46 +130,24 @@ pub struct DragRun {
     id: String,
     name: Option<String>,
     axis: RunAxis,
-    /// Where the items pack in the room the run is given: the whole run's place when it holds
-    /// no groups, the groups' place within it when it does.
     distribute: Distribute,
-    /// Where the items pack across the run.
     align: Align,
-    /// The items' views, in order, built into [`Self::items`] at the first
-    /// layout.
     views: Vec<Element>,
     /// Views after the run's items at its trailing end, which the run never moves: the time
     /// and the device's status beside a taskbar's items.
     trailing: Vec<Element>,
-    /// The items, in order: a `Row` or a `Column` by the axis.
     items: Option<Box<dyn Widget>>,
-    /// The groups of items as [`Self::build_items`] arranged them: for each child of
-    /// [`Self::items`], the items it holds, `None` for the room between two groups. Each
-    /// item's rect is read from the widget `Self::item_rects` reaches through it.
     groups: Vec<Option<Vec<usize>>>,
-    /// Whether the items stand one level down, inside `Self::groups`' children (a grouped
-    /// bar's columns), rather than as the container's own children (a packed run).
     nested: bool,
     keys: Vec<Keys>,
     lift: Option<Lift>,
     cursor: Point,
-    /// What another widget is dragging over the run, and its ghost's label.
     foreign: Option<(DragPayload, String)>,
-    /// Where a foreign drag would land, while it is over the run.
     landing: Option<Landing>,
-    /// What the run dropped since the host last read it, and what to tell the
-    /// owner of each, when the run was built from a described component.
     drops: Vec<DragDrop>,
     reporter: Option<Box<dyn FnMut(&DragDrop)>>,
-    /// Called with the key of an item pressed and let go without moving.
     activated: Option<Box<dyn FnMut(&str)>>,
-    /// What inputs the host has, as the window told the run before its items existed: the
-    /// items are built at the first layout, and a `Widget::set_interaction_environment` on the
-    /// run reaches no child until then. Kept and given to the items as they are built, so a
-    /// bar's or a dock's controls are a finger's target under a coarse pointer, as any
-    /// button's are.
     interaction: crate::interaction::InteractionEnvironment,
-    /// The item whose view a host is changing, in [`SlotViews`]' own terms.
     editing: Option<usize>,
     dirty: bool,
 }
@@ -265,9 +190,7 @@ impl DragRun {
     }
 
     /// Where the run's items pack along it: its leading edge (the default), its centre, its
-    /// trailing edge, or spread between its ends. A run whose items fall in groups packs each
-    /// group at its own edge whatever this says; a dock — one group — is centred by
-    /// `Distribute::Center`.
+    /// trailing edge, or spread between its ends.
     #[must_use]
     pub fn distribute(mut self, distribute: Distribute) -> Self {
         self.distribute = distribute;
@@ -349,7 +272,6 @@ impl DragRun {
             })
             .collect();
         if self.items.is_none() {
-            // Nothing is laid out yet: the views it holds are the ones it takes.
             self.views = views;
         }
         true
@@ -395,7 +317,6 @@ impl DragRun {
         self.reporter = reporter;
     }
 
-    /// The row an item's view stands in, where it stands.
     fn item_row_mut(&mut self, index: usize) -> Option<&mut crate::widget::arrange::Row> {
         let at = self
             .groups
@@ -427,7 +348,6 @@ impl DragRun {
         }
     }
 
-    /// The view of the item at `index`, where it stands.
     fn item_view_mut(&mut self, index: usize) -> Option<&mut Element> {
         if self.items.is_none() {
             return self.views.get_mut(index);
@@ -435,7 +355,6 @@ impl DragRun {
         self.item_row_mut(index)?.child_mut(0)
     }
 
-    /// Show `view` as the view of the item being changed instead of the one it holds.
     fn put_item_view(&mut self, view: Element) {
         let Some(index) = self.editing else {
             return;
@@ -465,9 +384,8 @@ impl DragRun {
         self.lift.as_ref().is_some_and(|lift| lift.active)
     }
 
-    /// What another widget is dragging over this run: `payload`, shown in the
-    /// ghost as `label`. The run then shows where it would land, and
-    /// [`Self::take_foreign`] answers it when the drag ends.
+    /// What another widget is dragging over this run: `payload`, shown in the ghost as
+    /// `label`.
     pub fn set_foreign(&mut self, foreign: Option<(DragPayload, String)>) {
         if self
             .foreign
@@ -487,8 +405,8 @@ impl DragRun {
         self.landing.is_some()
     }
 
-    /// Where the foreign drag over the run would land, once its host ends it:
-    /// the resource and the item it goes before.
+    /// Where the foreign drag over the run would land, once its host ends it: the resource
+    /// and the item it goes before.
     #[must_use]
     pub fn take_foreign(&mut self) -> Option<DragDrop> {
         let (payload, _) = self.foreign.take()?;
@@ -514,23 +432,22 @@ impl DragRun {
         std::mem::take(&mut self.drops)
     }
 
-    /// Each drop goes to `report`, as a described component's event: a host
-    /// that keeps its own drops instead reads them with [`Self::take_drops`].
+    /// Each drop goes to `report`, as a described component's event: a host that keeps its
+    /// own drops instead reads them with [`Self::take_drops`].
     #[must_use]
     pub fn on_drop(mut self, report: impl FnMut(&DragDrop) + 'static) -> Self {
         self.reporter = Some(Box::new(report));
         self
     }
 
-    /// Each item pressed and let go without moving goes to `activated`, by its
-    /// key: the item's view does what its press does.
+    /// Each item pressed and let go without moving goes to `activated`, by its key: the
+    /// item's view does what its press does.
     #[must_use]
     pub fn on_activate(mut self, activated: impl FnMut(&str) + 'static) -> Self {
         self.activated = Some(Box::new(activated));
         self
     }
 
-    /// Send each drop to the reporter, if it has one.
     fn report(&mut self) {
         let Some(mut reporter) = self.reporter.take() else {
             return;
@@ -541,8 +458,6 @@ impl DragRun {
         self.reporter = Some(reporter);
     }
 
-    /// What a lifted item hands another widget when the pointer leaves the
-    /// run, carrying the item's key.
     fn payload_of(&self, key: &str) -> DragPayload {
         DragPayload::Custom {
             kind: ITEM_PAYLOAD.to_owned(),
@@ -590,8 +505,6 @@ impl DragRun {
                 .keys
                 .iter()
                 .any(|keys| matches!(keys.group, RunGroup::Center | RunGroup::Trailing));
-        // One group's items, packed at its edge in its own row, filling the room the run gives
-        // it.
         let pack = |views: &mut Vec<Option<Element>>,
                     indices: Vec<usize>,
                     distribute: Distribute,
@@ -643,8 +556,6 @@ impl DragRun {
                             &mut none
                         },
                     );
-                    // A group that draws nothing at all is its column's room, not a row: an
-                    // empty row would ask for a repaint every frame.
                     let empty = held.is_empty() && !has_fixed;
                     groups.push((!held.is_empty()).then_some(held));
                     if empty {
@@ -658,7 +569,6 @@ impl DragRun {
             RunAxis::Horizontal => {
                 let all: Vec<usize> = (0..self.keys.len()).collect();
                 let (row, held) = pack(&mut views, all, self.distribute, &mut trailing);
-                // The packed row's children are the items themselves, one each.
                 let groups = held.iter().map(|index| Some(vec![*index])).collect();
                 (row, groups, false)
             }
@@ -682,7 +592,6 @@ impl DragRun {
         }
     }
 
-    /// Each item's rect, in order.
     fn item_rects(&self) -> Vec<Rect> {
         let Some(items) = &self.items else {
             return Vec::new();
@@ -722,7 +631,6 @@ impl DragRun {
             .reduce(|band, rect| band.union(rect))
     }
 
-    /// The item under `point`, by its place in the run.
     fn item_at(&self, point: Point) -> Option<usize> {
         self.item_rects()
             .into_iter()
@@ -758,8 +666,6 @@ impl DragRun {
             return None;
         }
         let along = self.axis.along(point);
-        // The items that draw, in the order they stand along the run: a grouped run shows its
-        // centre and trailing groups where their group stands, not where the model lists them.
         let mut shown: Vec<(usize, Rect)> = rects
             .iter()
             .copied()
@@ -775,8 +681,6 @@ impl DragRun {
             .iter()
             .find(|(_, rect)| along < self.axis.along(rect.center()))
             .map(|(index, _)| *index);
-        // The place among the run's other items: where the item it lands before stands once
-        // the lifted one is out of the count.
         let at = match before {
             Some(target) => self
                 .keys
@@ -800,8 +704,6 @@ impl DragRun {
         })
     }
 
-    /// The insertion line for `landing`, across the run: at the leading edge of the item it
-    /// lands before, or past the last item that draws for the end.
     fn line_rect(&self, landing: &Landing, theme: &Theme) -> Option<Rect> {
         let gap = f64::from(theme.tokens.spacing.s2);
         let line = f64::from(theme.tokens.metrics.drag_line_px).max(1.0);
@@ -842,7 +744,6 @@ impl DragRun {
         })
     }
 
-    /// Take the press at `point`: lift the item under it, if there is one.
     fn press(&mut self, point: Point) -> bool {
         let Some(at) = self.item_at(point) else {
             return false;
@@ -862,8 +763,6 @@ impl DragRun {
         true
     }
 
-    /// Follow the pointer while something is lifted: past the threshold the
-    /// drag starts, and the landing it would take moves with it.
     fn travel(&mut self, point: Point) {
         self.cursor = point;
         let Some(lift) = self.lift.as_mut() else {
@@ -883,8 +782,6 @@ impl DragRun {
             .map_or_else(String::new, |keys| keys.label.clone());
         self.landing = self.target_at(point, Some(&key));
         self.dirty = true;
-        // Every other run in the window may take this item now, and this one
-        // shows where it lands.
         crate::widget::drag_bus::publish(crate::widget::drag_bus::InFlight {
             source: self.id.clone(),
             payload: self.payload_of(&key),
@@ -894,7 +791,6 @@ impl DragRun {
         });
     }
 
-    /// Put a lifted item down where it was.
     fn cancel(&mut self) {
         if self.is_lifting() {
             crate::widget::drag_bus::end(None);
@@ -917,16 +813,12 @@ impl DragRun {
             // nothing moves.
             return (None, true);
         }
-        // Let go: another run whose extent holds the pointer takes it, or
-        // nothing does.
         let landed = crate::widget::drag_bus::Landed {
             source: self.id.clone(),
             payload: self.payload_of(&lift.key),
             pointer: self.cursor,
         };
         let Some(landing) = landing else {
-            // Let go outside this run: another run whose extent holds the
-            // pointer takes it, or nothing does.
             crate::widget::drag_bus::end(Some(landed));
             return (None, false);
         };
@@ -943,7 +835,6 @@ impl DragRun {
             }
             None => self.keys.len(),
         };
-        // A place it already holds moves nothing.
         if next == at || next == at.saturating_add(1) {
             return (None, false);
         }
@@ -962,9 +853,6 @@ impl DragRun {
         let colors = &theme.tokens.colors.intent;
         let radius = f64::from(theme.tokens.radii.control);
         let line_px = f64::from(theme.tokens.metrics.drag_line_px).max(1.0);
-        // The line marks where what is dragged would land: the run's own
-        // item while it is lifted, and a resource another widget drags over
-        // it.
         let landing = if self.is_lifting() || self.foreign.is_some() {
             self.landing.as_ref()
         } else {
@@ -981,9 +869,6 @@ impl DragRun {
                 &RoundedRect::from_rect(line, line_px / 2.0),
             );
         }
-        // The ghost, following the pointer where the press took it: the
-        // item's own size while the run's item is lifted, one target while a
-        // resource from elsewhere is over it.
         let (size, grab) = if let (true, Some(lift)) = (self.is_lifting(), self.lift.as_ref()) {
             (lift.rect.size(), lift.grab)
         } else if self.foreign.is_some() && self.landing.is_some() {
@@ -1014,7 +899,6 @@ impl DragRun {
     }
 }
 
-/// The payload kind a run's item travels as.
 pub const ITEM_PAYLOAD: &str = "drag-run-item";
 
 impl Widget for DragRun {
@@ -1024,8 +908,6 @@ impl Widget for DragRun {
         _path: &crate::widget::ModelPath,
     ) -> bool {
         self.report();
-        // A drag from another run that was let go inside this one is a drop
-        // here: one action on the owner's model, as a move of its own is.
         if let Some(landed) = crate::widget::drag_bus::take(&self.id, self.extent()) {
             if let Some(landing) = self.target_at(landed.pointer, None)
                 && let crate::dnd::DragPayload::Custom { kind, blob } = landed.payload
@@ -1056,8 +938,6 @@ impl Widget for DragRun {
             self.items = Some(items);
             self.groups = groups;
             self.nested = nested;
-            // The items are built now, after any input the window gave the run: a coarse
-            // pointer makes their controls a finger's target.
             if let Some(items) = self.items.as_mut() {
                 Widget::set_interaction_environment(&mut **items, self.interaction);
             }
@@ -1120,8 +1000,6 @@ impl Widget for DragRun {
                 self.cursor = point;
                 if self.lift.is_some() {
                     self.travel(point);
-                    // A drag that started cancels the press its item took, so
-                    // letting go does not also activate it.
                     if self.is_lifting() {
                         let away = WindowEvent::CursorLeft {
                             device_id: winit::event::DeviceId::dummy(),
@@ -1150,8 +1028,6 @@ impl Widget for DragRun {
                 button: MouseButton::Left,
                 ..
             } => {
-                // The press is the item's first: a button in it takes the press as any button
-                // does, so letting go without moving presses it.
                 if let Some(items) = &mut self.items {
                     Widget::handle_event(&mut **items, event, ctx);
                 }
@@ -1168,8 +1044,6 @@ impl Widget for DragRun {
                 if let Some(drop) = drop {
                     self.drops.push(drop);
                 }
-                // A press that travelled nowhere is the item's own press: its view takes the
-                // release too, so a button on a run's item works like any button.
                 if !click {
                     *ctx.handled = true;
                     return;
@@ -1235,9 +1109,6 @@ impl Widget for DragRun {
             .collect()
     }
 
-    /// The items are no children until the first layout builds them, so the input the window
-    /// gives the run is kept here and handed to them as they are built (see
-    /// [`Self::interaction`]).
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -1249,8 +1120,6 @@ impl Widget for DragRun {
     }
 }
 
-/// The view of the item a host is changing, where the item stands: the view in the slot its
-/// run gave it, so a part of the bar changes what it shows without the bar being built again.
 impl SlotViews for DragRun {
     fn len(&self) -> usize {
         usize::from(self.editing.is_some())
@@ -1307,7 +1176,6 @@ mod tests {
         }
     }
 
-    /// A run of items of different widths, each in its own group.
     fn bar() -> DragRun {
         DragRun::new("bar")
             .name("Bar")
@@ -1318,8 +1186,6 @@ mod tests {
             .push(group_item("status", 24.0, RunGroup::Trailing))
     }
 
-    /// The bar a person's shell shows is a run: a host taking its parts' changing views in
-    /// place reaches it by its own type, or every tick of the clock builds the bar again.
     #[test]
     fn the_run_answers_its_own_type() {
         let mut run: Element = Box::new(DragRun::new("bar").name("Bar").push(item("a", 24.0)));
@@ -1369,9 +1235,6 @@ mod tests {
         }
     }
 
-    /// A bar's groups stand at their own edges: the leading group at the leading edge, the
-    /// clock in the middle, the people and the status at the trailing edge — each packed at
-    /// its own items' size, the groups' room between them.
     #[test]
     fn a_grouped_run_puts_its_groups_at_their_own_edges() {
         let width = 1280.0;
@@ -1403,8 +1266,6 @@ mod tests {
         );
     }
 
-    /// A dock is one compact group: its items pack together where the run's `distribute`
-    /// says, and `Distribute::Center` centres them.
     #[test]
     fn a_dock_packs_its_items_where_its_distribute_says() {
         let width = 1280.0;
@@ -1458,7 +1319,6 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(trailing, 3, "the trailing column holds what stands beside");
         let a = rects[0];
-        // Dropping past the trailing views lands after the last item, not among them.
         host.drag_at(
             (a.center().x, a.center().y),
             (a.center().x + 400.0, a.center().y),

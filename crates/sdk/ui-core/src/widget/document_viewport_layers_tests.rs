@@ -1,9 +1,8 @@
 //! A pan in a [`DocumentViewport`] drawn as layers
-//! ([`crate::strip_layers::LayerRecording`]) and presented from retained
-//! layer textures, as an app's render worker presents it: the backdrop is
-//! never rasterised again, the content only where the pan uncovered it, the
-//! chrome only where it changed, and every frame captured from the target
-//! equals a full render of the frame.
+//! ([`crate::strip_layers::LayerRecording`]) and presented from retained layer textures, as
+//! an app's render worker presents it: the backdrop is never rasterised again, the content
+//! only where the pan uncovered it, the chrome only where it changed, and every frame
+//! captured from the target equals a full render of the frame.
 
 #![allow(
     clippy::unwrap_used,
@@ -40,7 +39,6 @@ impl AppSurface for Window {
     fn set_cursor(&self, _: winit::window::CursorIcon) {}
 }
 
-/// A tall canvas of coloured cells in a document viewport.
 fn canvas(theme: &Theme) -> App {
     let viewport = DocumentViewport::from_draw(
         400.0,
@@ -69,9 +67,6 @@ fn canvas(theme: &Theme) -> App {
     app
 }
 
-/// A tall sheet of switches in a document viewport: content whose widgets
-/// report exactly what they change, so the frame's damage bounds where the
-/// chrome changed.
 fn sheet(theme: &Theme) -> App {
     let mut column = crate::widget::Column::new().with_intrinsic_height();
     for row in 0..60 {
@@ -99,7 +94,6 @@ fn wheel(app: &mut App, dy: f64) {
     );
 }
 
-/// The output's pixels, RGBA rows.
 fn read(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Vec<u8> {
     let (width, height) = SIZE;
     let row = width * 4;
@@ -145,15 +139,11 @@ fn read(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> 
 #[test]
 fn a_pan_drawn_as_layers_copies_the_content_and_keeps_the_rest() {
     let theme = Theme::dark();
-    // A canvas drawn by a closure reports no damage of its own: its pans
-    // still copy the content, and rasterise the chrome over the window.
     pan_as_layers(&theme, canvas(&theme), false);
     // Widgets bound what changes: the chrome is rasterised only there.
     pan_as_layers(&theme, sheet(&theme), true);
 }
 
-/// Pan `app` frame by frame, drawn as layers and presented from them on the
-/// GPU, checking each frame's work and its capture against a full render.
 fn pan_as_layers(theme: &Theme, mut app: App, bounded: bool) {
     let background = theme.tokens.colors.surfaces.content;
     let mut damage = SurfaceDamage::copying();

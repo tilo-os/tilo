@@ -1,13 +1,11 @@
-//! A window's outer edge, grabbed where the strip would auto-scroll: it
-//! resizes the window and scrolls only when pushed against the display's
-//! edge.
+//! A window's outer edge, grabbed where the strip would auto-scroll: it resizes the window
+//! and scrolls only when pushed against the display's edge.
 
 use super::tests::{drag_edge, edge_event, edge_strip, move_to, rects, relayout_row_owned, widths};
 use super::*;
 
 #[test]
 fn a_window_edge_grabbed_at_the_display_edge_and_held_stays_as_it_is() {
-    // The first window's left edge is the display's left edge.
     let (row, taffy, root) = edge_strip(Some(0), None);
     let before = rects(&row);
     assert!(
@@ -25,7 +23,6 @@ fn a_window_edge_grabbed_at_the_display_edge_and_held_stays_as_it_is() {
     }
     let (mut row, _, _) = relayout_row_owned(row, 2000.0);
     assert_eq!(rects(&row), before, "no window changed while it was held");
-    // Pushed on against the display's edge, it scrolls.
     let edge = Point::new(row.get_rect().x0, from.y);
     assert!(edge_event(&mut row, &taffy, root, false, &move_to(edge)));
     let _ = row.advance_edge_autoscroll(t0 + Duration::from_millis(200));

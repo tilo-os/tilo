@@ -1,12 +1,9 @@
-//! How windows share a strip: a window alone takes the strip at the
-//! default width, and one that opens beside another is placed whole on
-//! screen with it.
+//! How windows share a strip: a window alone takes the strip at the default width, and one
+//! that opens beside another is placed whole on screen with it.
 
 use super::tests::{make_group, relayout_strip, strip_at};
 use super::*;
 
-/// A display `display_px` wide with the desktop's wallpaper gutter at
-/// both ends of the strip, holding one window at the default width.
 fn lone_window_on(display_px: f64) -> GroupRow {
     let mut row = GroupRow::new(vec![make_group(100, &[1])]);
     row.set_leading_inset(STRIP_EDGE_GUTTER_PX);
@@ -25,10 +22,6 @@ fn span_width(row: &GroupRow, index: usize) -> f64 {
     x1 - x0
 }
 
-/// A window alone on its strip takes the strip rather than two thirds
-/// of it beside a third of wallpaper; a window opening beside it brings
-/// it back to two thirds, and closing that one widens it again, also
-/// where the two had to share the display half and half.
 #[test]
 fn a_lone_window_takes_the_strip_until_another_opens_beside_it() {
     // Phase `the_browser_desktop`: 1440 px, 1376 px between the gutters.
@@ -70,7 +63,6 @@ fn a_lone_window_takes_the_strip_until_another_opens_beside_it() {
             row.group_canvas_spans()
         );
     }
-    // Phase `a_1280_display`: the pair shares it half and half.
     {
         let mut row = lone_window_on(1280.0);
         let mut opened = make_group(200, &[2]);
@@ -102,7 +94,6 @@ fn a_lone_window_takes_the_strip_until_another_opens_beside_it() {
             row.group_canvas_spans()
         );
     }
-    // Phase `a_width_the_person_chose_stays`.
     {
         let mut row = lone_window_on(1440.0);
         row.groups[0].set_width(WindowWidth::Fraction(500));
@@ -123,7 +114,6 @@ fn opened_beside(viewport_w: f64, inset: f64) -> GroupRow {
 
 #[test]
 fn a_window_that_opens_beside_another_is_placed_whole_on_screen_with_it() {
-    // Phase `two_windows_share_a_1280_display`.
     {
         let mut row = opened_beside(1280.0, 251.0);
         assert!(
@@ -226,14 +216,10 @@ fn a_window_revealed_while_its_neighbour_narrows_keeps_the_strips_gutter() {
     }
 }
 
-/// A window standing beside a lone one at the default width floats as a card again: the lone
-/// window gives up the card's room and keeps it, standing alone beside the card, rather than
-/// taking the strip back under it.
 #[test]
 fn a_window_floated_from_beside_a_lone_one_leaves_it_clear_of_the_card() {
     let display = 1280.0;
     let mut row = lone_window_on(display);
-    // Beside it, a window narrow enough that both stand at their widths: nothing is shared.
     let mut beside = make_group(200, &[2]);
     beside.set_width(WindowWidth::Fraction(300));
     row.insert_group(beside, 1);

@@ -1,14 +1,10 @@
-//! Windows floating above the desk: a strip's window lifted out of its flow
-//! and shown at a rect of its own, over the other strips and windows.
+//! Windows floating above the desk: a strip's window lifted out of its flow and shown at a
+//! rect of its own, over the other strips and windows.
 //!
-//! A float is the same window the strip holds — its group, tabs and hosts
-//! stay where they were, and only where it is laid out changes. It is laid
-//! out absolutely at its rect, so it is drawn, hit-tested and reported where
-//! it stands on screen, above everything the row draws in its strip; the row
-//! draws it in a pass of its own, after the strips, unclipped.
-//!
-//! Snapping it back is the reverse: the window leaves the float set and is
-//! laid out in its strip again, at the gap it was dropped in.
+//! A float is the same window the strip holds — its group, tabs and hosts stay where they
+//! were, and only where it is laid out changes. It is laid out absolutely at its rect, so
+//! it is drawn, hit-tested and reported where it stands on screen, above everything the row
+//! draws in its strip; the row draws it in a pass of its own, after the strips, unclipped.
 
 use std::collections::HashMap;
 
@@ -26,46 +22,24 @@ use crate::widget::Widget as _;
 use crate::widget::floating_surface::card_radius;
 use crate::widget::primitives::paint_floating_window_card;
 
-/// The size a window takes when it floats: the design's floating window,
-/// smaller than the strip's tile so it reads as lifted over the desk.
 pub const FLOAT_SIZE: (f64, f64) = (640.0, 480.0);
-/// The size a conversation sent from a window floats at: a card as narrow as a list panel, beside
-/// the window it was sent from rather than over it, as the activity cards stand over the desk.
 pub const FLOAT_CARD_SIZE: (f64, f64) = (360.0, 520.0);
-/// The pointer's room above a floating window's bar where it is let go: the
-/// window hangs below and right of the hand, as a carried window does.
 const FLOAT_GRAB: (f64, f64) = (80.0, 14.0);
-/// The room a float's card keeps inside the desk on every side: the band of
-/// the card's own ground round the window and the focus ring drawn outside
-/// that. A float placed to the desk's edge stands this far in, and the strip
-/// makes room for it beside a neighbour, so the whole card it draws — ring and
-/// band — shows on the desk instead of under the bar above it, past the
-/// display, or over the window it opened beside. One step of the spacing
-/// scale, as a card's inset is everywhere else.
 pub const FLOAT_CARD_ROOM: f64 = Spacing::BASE.s2 as f64;
 
-/// Where a float the person moved or let go goes, for the host to keep in
-/// the workspace's record.
+/// Where a float the person moved or let go goes, for the host to keep in the workspace's
+/// record.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FloatAsk {
-    /// Let go off the strip: the window floats at this rect, in the
-    /// surface's coordinates.
     Float { group: u64, at: Rect },
-    /// Let go over the strip: the window snaps back into it at the gap it
-    /// was dropped in (the row has already moved it there), and its float
-    /// place goes.
     Snap { group: u64 },
-    /// The card's collapse was pressed: it folds to its header, or opens from it again.
     Collapse { group: u64 },
 }
 
 impl GroupRow {
-    /// Show the windows of `floats` at their rects, in the surface's
-    /// coordinates, and every other window in its strip. A window that
-    /// leaves the set is back in the strip.
+    /// Show the windows of `floats` at their rects, in the surface's coordinates, and every
+    /// other window in its strip.
     pub fn set_floats(&mut self, mut floats: HashMap<u64, Rect>) {
-        // A float the hand is carrying owns where it stands until it is let
-        // go: the record catches up then, not under the hand.
         let carried = self
             .group_drag
             .filter(|drag| drag.moved)
@@ -103,11 +77,6 @@ impl GroupRow {
             .collect();
         self.floats = floats;
         self.structure_dirty = true;
-        // A window back in its strip takes its share of it again: the one
-        // that stayed grew into the room the float left, so the two tile
-        // the strip rather than one running off its edge. Every window's
-        // width stands where it now belongs from this frame, rather than
-        // sliding there while the strip shows one of them over the other.
         if !back.is_empty() {
             for id in back {
                 self.share_with_neighbour_at_once(id);
@@ -123,9 +92,9 @@ impl GroupRow {
         &self.floats
     }
 
-    /// Each floating window the row just drew whole over what is under it — the card it shows: its
-    /// bar and its body as one window, and the shadow that lifts it, as one rect in the surface's
-    /// coordinates. A float still fading in lets what is under it show, so it is not one yet.
+    /// Each floating window the row just drew whole over what is under it — the card it
+    /// shows: its bar and its body as one window, and the shadow that lifts it, as one rect
+    /// in the surface's coordinates.
     #[must_use]
     pub fn drawn_covers(&self) -> &[(u64, Rect)] {
         &self.drawn_covers
@@ -137,8 +106,8 @@ impl GroupRow {
         self.floats.contains_key(&id)
     }
 
-    /// Each of the row's groups in its order, whether it floats above the
-    /// desk rather than being laid out in its strip.
+    /// Each of the row's groups in its order, whether it floats above the desk rather than
+    /// being laid out in its strip.
     pub(super) fn floating_flags(&self) -> Vec<bool> {
         self.groups
             .iter()
@@ -146,8 +115,7 @@ impl GroupRow {
             .collect()
     }
 
-    /// The floating window whose rect holds screen point `p`, the one on top
-    /// first.
+    /// The floating window whose rect holds screen point `p`, the one on top first.
     #[must_use]
     pub fn float_group_at(&self, p: Point) -> Option<u64> {
         self.groups
@@ -182,8 +150,8 @@ impl GroupRow {
         }
     }
 
-    /// Tell the row which of its floating cards the desk has folded to their header, so their
-    /// collapse controls point the way they fold them ([`FloatAsk::Collapse`]).
+    /// Tell the row which of its floating cards the desk has folded to their header, so
+    /// their collapse controls point the way they fold them ([`FloatAsk::Collapse`]).
     pub fn set_collapsed(&mut self, collapsed: &std::collections::BTreeSet<u64>) {
         let collapsed: std::collections::HashSet<u64> = collapsed.iter().copied().collect();
         if collapsed == self.collapsed_cards {
@@ -196,9 +164,8 @@ impl GroupRow {
         }
     }
 
-    /// The style of the window at `i` when it floats, over its `own`: absolute
-    /// at the float size, placed by [`Self::apply_float_layout`] at the rect
-    /// itself. `None` for a window the strip lays out.
+    /// The style of the window at `i` when it floats, over its `own`: absolute at the float
+    /// size, placed by [`Self::apply_float_layout`] at the rect itself.
     pub(super) fn float_node_style(&self, i: usize, own: &Style) -> Option<Style> {
         let id = self.groups.get(i)?.id;
         let at = self.floats.get(&id)?;
@@ -223,8 +190,8 @@ impl GroupRow {
         })
     }
 
-    /// Lay the floating windows out at their rects: each is absolutely
-    /// placed, so its laid-out rect is its float's origin and size.
+    /// Lay the floating windows out at their rects: each is absolutely placed, so its laid-
+    /// out rect is its float's origin and size.
     pub(super) fn apply_float_layout(&mut self, taffy: &taffy::TaffyTree<()>) {
         let placed: Vec<(u64, Rect)> = self
             .groups
@@ -271,8 +238,8 @@ impl GroupRow {
             .map(|(i, _)| i)
     }
 
-    /// A floating window dragged by its bar: it follows the hand, and over
-    /// the strip the gap it would land in shows as any reorder drag's does.
+    /// A floating window dragged by its bar: it follows the hand, and over the strip the
+    /// gap it would land in shows as any reorder drag's does.
     pub(super) fn carry_float_drag(&mut self, id: u64, start: Point) {
         self.carry_float(id, self.last_cursor - start);
         if self.covers(self.last_cursor) {
@@ -285,8 +252,8 @@ impl GroupRow {
         }
     }
 
-    /// The hand let a window of the strip go where the strip is not: it
-    /// floats where the hand let it go.
+    /// The hand let a window of the strip go where the strip is not: it floats where the
+    /// hand let it go.
     pub(super) fn lift_from_drag(&mut self, id: u64) {
         let at = self.float_rect_at(self.last_cursor);
         self.pending_float = Some(FloatAsk::Float { group: id, at });
@@ -294,9 +261,8 @@ impl GroupRow {
         self.group_reorder_lane = None;
     }
 
-    /// The hand let the floating window `id` go: over the strip it snaps
-    /// back into the gap it was dropped in, else it stays where it is.
-    /// `Some` when the release claims the gesture.
+    /// The hand let the floating window `id` go: over the strip it snaps back into the gap
+    /// it was dropped in, else it stays where it is.
     pub(super) fn put_down_float(&mut self, id: u64, keep: bool) -> bool {
         let Some(from) = self.float_drag_from.take() else {
             return false;
@@ -313,7 +279,6 @@ impl GroupRow {
             }
             self.pending_float = Some(FloatAsk::Snap { group: id });
         } else {
-            // Where the hand carried it, at the size it floats at: a card stays a card.
             let carried = self.floats.get(&id).copied().unwrap_or(from);
             let at = self.keep_float_inside(carried);
             self.floats.insert(id, at);
@@ -323,9 +288,8 @@ impl GroupRow {
         true
     }
 
-    /// The rect a window let go at `p` floats in: the floating size, hung
-    /// from the hand, kept inside the row's display with the room its card
-    /// draws in.
+    /// The rect a window let go at `p` floats in: the floating size, hung from the hand,
+    /// kept inside the row's display with the room its card draws in.
     #[must_use]
     pub fn float_rect_at(&self, p: Point) -> Rect {
         let at = Rect::from_origin_size(
@@ -349,8 +313,8 @@ impl GroupRow {
             .any(|fade| fade.is_moving(now) && fade.is_open())
     }
 
-    /// Draw the floating windows above everything the row draws in its
-    /// strip: unclipped, in their own pass, the one dragged last.
+    /// Draw the floating windows above everything the row draws in its strip: unclipped, in
+    /// their own pass, the one dragged last.
     pub(super) fn draw_floats(
         &mut self,
         scene: &mut Scene,
@@ -370,10 +334,6 @@ impl GroupRow {
             if alpha <= f32::EPSILON {
                 continue;
             }
-            // A float is a card over the desk, as every card the floating layer stacks is: its bar
-            // is the card's header and the window its body, in the card's own material, radius,
-            // hairline and lift — no window outline or focus ring round it, as a song's card has
-            // none.
             let card = self.groups[i].get_rect().union(self.groups[i].bar_rect());
             let radius = card_radius(card, theme);
             if alpha < 1.0 - f32::EPSILON {
@@ -385,8 +345,6 @@ impl GroupRow {
                     &card.inflate(160.0, 160.0),
                 );
             } else {
-                // Drawn whole: the windows under it are drawn around its lift, so none of them reads
-                // through its bar or its body.
                 let tab = self.groups[i].active_tab_id();
                 self.drawn_covers
                     .push((tab, crate::surface::floating_shadow_bounds(card, theme)));
@@ -412,8 +370,9 @@ impl GroupRow {
     }
 }
 
-/// `at` kept inside the desk `area`, clear of its edge by [`FLOAT_CARD_ROOM`]: the card a float
-/// draws round its window — the band of its own ground and the focus ring outside it — stays whole.
+/// `at` kept inside the desk `area`, clear of its edge by [`FLOAT_CARD_ROOM`]: the card a
+/// float draws round its window — the band of its own ground and the focus ring outside it
+/// — stays whole.
 #[must_use]
 pub fn keep_float_inside(area: Rect, at: Rect) -> Rect {
     let room = FLOAT_CARD_ROOM;

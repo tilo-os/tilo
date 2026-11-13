@@ -1,19 +1,4 @@
 //! Find in a document: the [`FindBar`] and the [`Findable`] capability.
-//!
-//! A document-like view (text, code, a PDF, a hex dump, a terminal)
-//! provides [`Findable`]: it runs the query over its own content, reports the matches,
-//! scrolls one into view and paints every match with [`paint_find_match`].
-//! The framework owns the bar: [`FindScope`] places it as a band at the top
-//! of the content it wraps and binds Ctrl+F (⌘F), Enter / Shift+Enter,
-//! F3 / Shift+F3 and Escape. A painted view that lays out its own chrome
-//! hosts a [`FindBar`] directly ([`FindBar::layout`], `draw`, `handle_event`)
-//! and calls [`FindBar::drive`] with itself.
-//!
-//! The bar has a counter ("3 of 12"), Match case and Whole word toggles,
-//! previous/next and one close control, and optionally a replace row, a
-//! text/hex strip and a regular-expression toggle. A view whose engine
-//! finds on its own (a web page) reports its results with
-//! [`FindBar::set_results`] and steps with [`Findable::step`].
 
 use std::collections::HashMap;
 
@@ -38,7 +23,6 @@ use crate::widget::{
     SegmentedFace, TaffyTreeExt, ToggleGroup, Widget,
 };
 
-/// What a find runs over: text, or a byte view's hex digits.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -46,14 +30,10 @@ use crate::widget::{
 pub enum FindMode {
     #[default]
     Text,
-    /// The query is hex bytes (`de ad be ef`), for a byte view.
     Hex,
-    /// The query is a regular expression.
     Regex,
 }
 
-/// The options a find runs under: the bar's chips, the window search's
-/// options.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -64,9 +44,6 @@ pub struct FindOptions {
     pub mode: FindMode,
 }
 
-/// What a document's find offers beyond matching text under Match case and
-/// Whole word: replacing matches, a regular expression, a byte view's hex
-/// digits. The find's options offer just these.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -88,8 +65,8 @@ impl FindAbilities {
         }
     }
 
-    /// What the first [`Findable`] in `root`'s subtree offers; nothing
-    /// beyond matching when there is none.
+    /// What the first [`Findable`] in `root`'s subtree offers; nothing beyond matching when
+    /// there is none.
     #[must_use]
     pub fn of_root(root: &mut dyn Widget) -> Self {
         with_findable(root, &mut |target| Self::of(target)).unwrap_or_default()
@@ -101,8 +78,7 @@ impl FindAbilities {
         *self == Self::default()
     }
 
-    /// `options` as this find can run them: a mode it does not offer falls
-    /// back to text.
+    /// `options` as this find can run them: a mode it does not offer falls back to text.
     #[must_use]
     pub fn allow(self, mut options: FindOptions) -> FindOptions {
         let offered = match options.mode {
@@ -117,8 +93,8 @@ impl FindAbilities {
     }
 }
 
-/// One match, as a span of the findable's own content (a byte range of its
-/// text, or of its bytes in hex mode). The findable interprets it.
+/// One match, as a span of the findable's own content (a byte range of its text, or of its
+/// bytes in hex mode).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FindMatch {
     pub start: usize,
@@ -132,84 +108,53 @@ impl FindMatch {
     }
 }
 
-/// A find a view ran on its own rather than through the window's search: an
-/// action went to a match of `query` (an agent's "go to result"). The
-/// window's search shows it: its field holds the query, and it steps on from
-/// match `current`.
+/// A find a view ran on its own rather than through the window's search: an action went to
+/// a match of `query` (an agent's "go to result").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OwnFind {
     pub query: String,
     pub options: FindOptions,
-    /// The 0-based match the view shows.
     pub current: usize,
 }
 
 /// A view whose content can be searched in place.
 pub trait Findable {
-    /// Every match of `query` under `options`, in reading order, and keep
-    /// them to paint. An empty query clears the matches.
     fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch>;
 
-    /// Make match `index` the current one: scroll it into view and paint it
-    /// emphasised (see [`paint_find_match`]).
     fn reveal(&mut self, index: usize);
 
-    /// Paint match `index` emphasised without moving the view: the content
-    /// changed under the find and the current match kept its place. A view
-    /// that keeps its current match across [`Self::find`] needs nothing.
     fn mark_current(&mut self, _index: usize) {}
 
-    /// What of the view the window's search covers while its options stand
-    /// open over it, in the view's own coordinates (`None`: nothing). A
-    /// view that scrolls reveals its current match clear of it, scrolling
-    /// past its start where the match stands too near it; the search shows
-    /// the current match again whenever the cover changes.
     fn set_find_cover(&mut self, _cover: Option<Rect>) {}
 
-    /// The bar closed: stop painting matches.
     fn clear_find(&mut self) {
         let _ = self.find("", FindOptions::default());
     }
 
-    /// Whether this view can replace text; the bar then offers a replace row.
     fn supports_replace(&self) -> bool {
         false
     }
 
-    /// Replace match `index` with `with`. Returns whether it changed the
-    /// content; an edit goes through the view's own actions, so it is undoable.
     fn replace(&mut self, _index: usize, _with: &str) -> bool {
         false
     }
 
-    /// Replace every match; returns how many changed.
     fn replace_all(&mut self, _with: &str) -> usize {
         0
     }
 
-    /// Whether a replacement this view took is written later, through its
-    /// host's edit path (on its next frame), rather than at once. The find
-    /// then runs again once the content moved, to show the next match.
     fn replaces_later(&self) -> bool {
         false
     }
 
-    /// Whether this view shows bytes, so the bar offers a text/hex mode.
     fn supports_hex(&self) -> bool {
         false
     }
 
-    /// Whether this view can match a regular expression, so the bar offers
-    /// the toggle for it ([`FindMode::Regex`]).
     fn supports_regex(&self) -> bool {
         false
     }
 
-    /// Step to the next (or previous) match in a view whose engine owns the
-    /// matches (a web page). Return `true` when the view stepped itself; it
-    /// then reports the new position with [`FindBar::set_results`]. The
-    /// default `false` lets the bar step through the matches `find`
-    /// returned.
     fn step(&mut self, _forward: bool) -> bool {
         false
     }
@@ -223,23 +168,15 @@ pub trait Findable {
         0
     }
 
-    /// Where a view whose engine finds on its own (see [`Self::step`]) says
-    /// its matches are, when it said so since the last call: `(total,
-    /// current)`, `current` 0-based. The bar's counter follows on its next
-    /// [`FindBar::drive`].
     fn take_engine_results(&mut self) -> Option<(usize, Option<usize>)> {
         None
     }
 
-    /// The find this view ran on its own since the last call ([`OwnFind`]),
-    /// which the window's search takes over: it shows the query and keeps
-    /// the match the view went to.
     fn take_own_find(&mut self) -> Option<OwnFind> {
         None
     }
 }
 
-/// Width of the outline that tells the current match from the others.
 const CURRENT_MATCH_OUTLINE: f64 = 1.5;
 
 /// Paint one match highlight over `rect`, the span of the matched glyphs —
@@ -257,8 +194,6 @@ pub fn paint_find_match(
         return;
     }
     let intent = &theme.tokens.colors.intent;
-    // Exactly the matched glyphs' span: a padded box runs into the glyph
-    // after the match.
     let radius = f64::from(theme.tokens.radii.detail) / 2.0;
     let shape = RoundedRect::from_rect(rect, radius);
     if current {
@@ -289,11 +224,9 @@ pub fn paint_find_match(
     }
 }
 
-/// What the bar asked for since the last [`FindBar::drive`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Pending {
     search: bool,
-    /// The content changed: find again, keeping the current match.
     refresh: bool,
     step: Option<Step>,
     replace: Option<ReplaceRequest>,
@@ -312,7 +245,6 @@ enum ReplaceRequest {
     All,
 }
 
-/// Every clickable part of the bar, in focus order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Part {
     MatchCase,
@@ -328,7 +260,6 @@ enum Part {
 }
 
 impl Part {
-    /// The part's name, from the toolkit's catalogue.
     fn label(self) -> String {
         tr(match self {
             Self::MatchCase => "find-bar-match-case",
@@ -345,27 +276,19 @@ impl Part {
     }
 }
 
-/// A toolkit message in the host's locale.
 fn tr(key: &str) -> String {
     crate::i18n::widget_format(key, &[])
 }
 
-/// What a find over one [`Findable`] has found: how many matches, which is
-/// current, and the query and content they were found for. The [`FindBar`]
-/// keeps one, and so does the window bar's search
-/// ([`crate::widget::WindowSearch`]): one engine, whatever draws the field.
+/// What a find over one [`Findable`] has found: how many matches, which is current, and the
+/// query and content they were found for.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FindSession {
     matches: usize,
     current: Option<usize>,
-    /// The query and options the matches were last found for.
     searched: Option<(String, FindOptions)>,
-    /// The findable's [`Findable::content_revision`] the matches were found in.
     searched_revision: u64,
-    /// The view reports its own results ([`Self::set_results`]).
     engine_results: bool,
-    /// A replacement the view applies later, through its host's edit path:
-    /// the next find, once the content moved, shows the current match.
     reveal_after_edit: bool,
 }
 
@@ -376,15 +299,15 @@ impl FindSession {
         self.matches
     }
 
-    /// `(current, total)`, 1-based current; `None` with no current match.
+    /// `(current, total)` — the counter's numbers, 1-based current.
     #[must_use]
     pub fn position(&self) -> Option<(usize, usize)> {
         self.current
             .map(|current| (current.saturating_add(1), self.matches))
     }
 
-    /// The results of a view whose engine finds on its own: `total`
-    /// matches, `current` the 0-based one shown.
+    /// The results of a view whose engine finds on its own: `total` matches, `current` the
+    /// 0-based one shown.
     pub fn set_results(&mut self, total: usize, current: Option<usize>) {
         self.engine_results = true;
         self.matches = total;
@@ -466,8 +389,6 @@ impl FindSession {
         changed
     }
 
-    /// Run the find; whether it produced results to show (an engine that
-    /// answers later reports through [`Self::set_results`]).
     fn find(
         &mut self,
         target: &mut dyn Findable,
@@ -487,8 +408,8 @@ impl FindSession {
         true
     }
 
-    /// Show the current match again (what covers the view changed);
-    /// whether there was one to show.
+    /// Show the current match again (what covers the view changed); whether there was one
+    /// to show.
     pub fn reveal_current(&self, target: &mut dyn Findable) -> bool {
         if let Some(current) = self.current {
             target.reveal(current);
@@ -499,7 +420,6 @@ impl FindSession {
     /// Make the next (or previous) match current, wrapping, and show it.
     pub fn step(&mut self, target: &mut dyn Findable, forward: bool) {
         if target.step(forward) {
-            // The view's engine steps and reports where it landed.
             return;
         }
         if self.matches == 0 {
@@ -536,8 +456,8 @@ impl FindSession {
     }
 }
 
-/// The find bar: a query field with a match counter, option chips,
-/// previous/next and close, and an optional replace row.
+/// The find bar: a query field with a match counter, option chips, previous/next and close,
+/// and an optional replace row.
 #[crate::component::not_a_component(system, "find in a window is the system's")]
 pub struct FindBar {
     field: SearchField,
@@ -546,10 +466,7 @@ pub struct FindBar {
     replace_row: bool,
     hex_mode: bool,
     regex: bool,
-    /// The band's leading and trailing inset: the host's content edge, so
-    /// the field lines up with the text it finds in.
     inset: Option<(f64, f64)>,
-    /// What the find found.
     session: FindSession,
     pending: Pending,
     rect: Rect,
@@ -557,12 +474,9 @@ pub struct FindBar {
     hover: Option<Part>,
     last_cursor: Point,
     platform: PlatformConventions,
-    /// Which field types: the query (`false`) or the replacement.
     replace_focused: bool,
     focused: bool,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -577,8 +491,6 @@ impl FindBar {
     pub fn new() -> Self {
         Self {
             dirty: true,
-            // The bar has one close control; its fields clear with the
-            // keyboard, not with an X of their own.
             field: SearchField::new()
                 .with_placeholder(&tr("find-bar-placeholder"))
                 .with_count_slot()
@@ -606,8 +518,8 @@ impl FindBar {
         }
     }
 
-    /// Offer the replace row (the bar also offers it whenever its findable
-    /// supports replacing).
+    /// Offer the replace row (the bar also offers it whenever its findable supports
+    /// replacing).
     #[must_use]
     pub fn with_replace(mut self) -> Self {
         self.replace_row = true;
@@ -621,8 +533,8 @@ impl FindBar {
         self
     }
 
-    /// Offer the regular-expression toggle (the bar also offers it whenever
-    /// its findable supports regular expressions).
+    /// Offer the regular-expression toggle (the bar also offers it whenever its findable
+    /// supports regular expressions).
     #[must_use]
     pub fn with_regex(mut self) -> Self {
         self.regex = true;
@@ -655,8 +567,7 @@ impl FindBar {
         }
     }
 
-    /// Line the band's field and controls up with the host's content edge:
-    /// `leading` and `trailing` from the band's edges (default `s3`).
+    /// Line the bar up with the content's edge (see [`FindBar::with_content_inset`]).
     #[must_use]
     pub fn with_content_inset(mut self, leading: f64, trailing: f64) -> Self {
         self.set_content_inset(leading, trailing);
@@ -669,15 +580,14 @@ impl FindBar {
         self.inset = Some((leading.max(0.0), trailing.max(0.0)));
     }
 
-    /// The content under the bar changed (output arrived, a file
-    /// reloaded): find again on the next [`Self::drive`], keeping the
-    /// current match where it still exists.
+    /// The content under the bar changed (output arrived, a file reloaded): find again on
+    /// the next [`Self::drive`], keeping the current match where it still exists.
     pub fn refresh(&mut self) {
         self.pending.refresh = true;
     }
 
-    /// The results of a view whose engine finds on its own: `total`
-    /// matches, `current` the 0-based one shown. The counter follows.
+    /// The results of a view whose engine finds on its own: `total` matches, `current` the
+    /// 0-based one shown.
     pub fn set_results(&mut self, total: usize, current: Option<usize>) {
         self.dirty = true;
         self.session.set_results(total, current);
@@ -728,8 +638,7 @@ impl FindBar {
         self.field.select_all();
     }
 
-    /// Whether the user asked to close the bar since the last
-    /// [`drive`](Self::drive).
+    /// Whether the user asked to close the bar since the last [`drive`](Self::drive).
     #[must_use]
     pub fn close_requested(&self) -> bool {
         self.pending.closed
@@ -791,8 +700,6 @@ impl FindBar {
         } else if pending.search || stale {
             self.session.search(target, &query, self.options, Some(0));
         } else if pending.refresh || self.session.content_moved(target) {
-            // Content changed under the bar: the counter follows, the view
-            // stays where the person is reading.
             self.session.refresh(target, &query, self.options);
         }
         if let Some(step) = pending.step {
@@ -877,7 +784,6 @@ impl FindBar {
         let x0 = rect.x0 + lead;
         let x1 = rect.x1 - trail;
         let y = rect.y0 + pad;
-        // Trailing: previous, next, close as square icon buttons.
         let mut right = x1;
         for part in [Part::Close, Part::Next, Part::Previous] {
             self.parts
@@ -885,8 +791,6 @@ impl FindBar {
             right -= row_h;
         }
         right -= pad;
-        // The option toggles, then the mode strip, right to left. Narrow
-        // bars drop them before they squeeze the field.
         let small_y = y + (row_h - small_h) / 2.0;
         let field_min = 3.0 * row_h * 2.0;
         let mut toggles = Vec::new();
@@ -960,8 +864,6 @@ impl FindBar {
         if self.rect.width() <= 0.0 {
             return;
         }
-        // The band stands on the content surface; a hairline parts it from
-        // the content below, which is the same surface.
         let ground = theme.tokens.colors.surfaces.content;
         crate::surface::separator(
             scene,
@@ -979,7 +881,6 @@ impl FindBar {
                 .draw_child(scene, transform, text, theme, presence);
         }
         let parts = self.parts.clone();
-        // Text / Hex is one segmented strip.
         let modes: Vec<(Part, Rect)> = parts
             .iter()
             .copied()
@@ -1036,8 +937,7 @@ impl FindBar {
         }
     }
 
-    /// Route one event; `node` is the bar's own layout node (its fields
-    /// have none). Returns whether the bar consumed it.
+    /// Route one event; `node` is the bar's own layout node (its fields have none).
     pub fn route(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = ctx.logical(position);
@@ -1239,8 +1139,6 @@ impl Widget for FindBar {
     }
 
     fn accessibility_represents_child(&self, child_index: usize) -> bool {
-        // These manually laid-out fields are published once through this
-        // admitted owner, whose semantic targets route to the real controls.
         child_index == 0 || (self.replace_row && child_index == 1)
     }
 
@@ -1344,8 +1242,6 @@ impl Widget for FindBar {
             } else {
                 &mut self.field
             };
-            // The shared text core owns edits, selection and validation;
-            // unsupported field operations remain explicitly unhandled.
             return field.perform_action(action, &[], state, path);
         }
         if !matches!(action, crate::a11y::Action::Activate) {
@@ -1381,35 +1277,22 @@ pub fn with_findable<R>(
     None
 }
 
-/// Content with find: a [`FindBar`] that Ctrl+F (⌘F) opens as a band at the
-/// top of the content, driving the first [`Findable`] inside it.
-///
-/// Opened from a menu or by a pointer, the band discloses
-/// (`motion::Disclosure`): while it moves it stands over the content, which
-/// keeps the whole scope (its larger extent) and moves with the band's edge
-/// by transform; the content is laid out under the band once, at rest.
-/// Ctrl+F and Escape land at once; the close button collapses the band.
+/// Content with find: a [`FindBar`] that Ctrl+F (⌘F) opens as a band at the top of the
+/// content, driving the first [`Findable`] inside it.
 #[crate::component::not_a_component(system, "find in a window is the system's")]
 pub struct FindScope {
     bar: FindBar,
     content: Element,
     open: bool,
-    /// How much of the band is drawn while it opens or closes.
     disclosure: crate::motion::Disclosure,
-    /// The motion the person allows, from the last theme seen.
     motion: crate::tokens::EffectiveMotion,
-    /// The layout was built with the band on its way: over the content,
-    /// which keeps the whole scope. Built again once it rests.
     laid_sliding: bool,
     structure_dirty: bool,
     rect: Rect,
-    /// The pointer, for which side of the band a press lands on.
     pointer: Point,
     bar_node: Option<NodeId>,
     content_node: Option<NodeId>,
     platform: PlatformConventions,
-    /// What opens the bar; `None` leaves opening to the host
-    /// ([`FindScope::open`]).
     shortcut: Option<crate::platform::Shortcut>,
 }
 
@@ -1432,25 +1315,23 @@ impl FindScope {
         }
     }
 
-    /// Open the bar with `shortcut` instead of Ctrl+F (⌘F): a terminal,
-    /// whose Ctrl+F belongs to the program it runs, uses
-    /// `Shortcut::command("F").shift()`.
+    /// Open the bar with `shortcut` instead of Ctrl+F (⌘F): a terminal, whose Ctrl+F
+    /// belongs to the program it runs, uses `Shortcut::command("F").shift()`.
     #[must_use]
     pub fn with_shortcut(mut self, shortcut: crate::platform::Shortcut) -> Self {
         self.shortcut = Some(shortcut);
         self
     }
 
-    /// No key opens the bar; the host opens it with [`Self::open`] (a menu
-    /// command, its own key handling).
+    /// No key opens the bar; the host opens it with [`Self::open`] (a menu command, its own
+    /// key handling).
     #[must_use]
     pub fn without_shortcut(mut self) -> Self {
         self.shortcut = None;
         self
     }
 
-    /// Line the bar up with the content's edge (see
-    /// [`FindBar::with_content_inset`]).
+    /// Line the bar up with the content's edge (see [`FindBar::with_content_inset`]).
     #[must_use]
     pub fn with_content_inset(mut self, leading: f64, trailing: f64) -> Self {
         self.bar.set_content_inset(leading, trailing);
@@ -1488,8 +1369,8 @@ impl FindScope {
         self.content.as_mut()
     }
 
-    /// Open the bar on `query` and find it, as typing it would: a host's
-    /// "Find…" command with a selection, a capture.
+    /// Open the bar on `query` and find it, as typing it would: a host's "Find…" command
+    /// with a selection, a capture.
     pub fn find(&mut self, query: &str) {
         self.open();
         self.bar.set_query(query);
@@ -1527,9 +1408,6 @@ impl FindScope {
         }
     }
 
-    /// How far below its laid-out place the content is drawn now: as far
-    /// as the band shows while the layout keeps the content at the top of
-    /// the scope. Zero at rest.
     fn content_offset(&self) -> f64 {
         if !self.laid_sliding {
             return 0.0;
@@ -1537,7 +1415,6 @@ impl FindScope {
         self.disclosure.reveal(self.bar.get_rect().height()).height
     }
 
-    /// The layout no longer matches the band: it started or stopped moving.
     fn layout_stale(&self) -> bool {
         self.laid_sliding != self.disclosure.is_sliding()
     }
@@ -1571,9 +1448,6 @@ impl Widget for FindScope {
         self.content.set_platform_conventions(conventions);
     }
 
-    /// Content that changes with no input under an open bar (output
-    /// arriving in a terminal) is found again as it syncs, so the counter
-    /// follows it (see [`Findable::content_revision`]).
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         for child in self.children_mut() {
             child.sync(state, path);
@@ -1591,8 +1465,6 @@ impl Widget for FindScope {
     ) -> NodeId {
         self.motion = theme.motion();
         let mut children = Vec::new();
-        // On its way the band stands over the content, out of the layout:
-        // the content keeps the whole scope and moves by transform.
         self.laid_sliding = self.disclosure.is_sliding();
         self.bar_node = if self.open || self.laid_sliding {
             let node = self.bar.build_layout(taffy, theme, node_map);
@@ -1675,10 +1547,6 @@ impl Widget for FindScope {
             }
             return;
         }
-        // The band opens or closes from the top: the content, laid out once
-        // over the whole scope, follows the band's edge by transform,
-        // clipped to the scope; the band's controls fade in over the second
-        // half.
         let reveal = self.disclosure.reveal(self.bar.get_rect().height());
         let offset = self.content_offset();
         scene.push_layer(
@@ -1710,8 +1578,6 @@ impl Widget for FindScope {
         scene.pop_layer();
     }
 
-    /// Frames while the band opens or closes, and one more to lay it out
-    /// at rest; none after.
     fn needs_animation_frame(&self) -> bool {
         self.disclosure.is_moving()
             || self.layout_stale()
@@ -1736,11 +1602,7 @@ impl Widget for FindScope {
             return;
         }
         if self.open {
-            // Opened since the last layout, the bar has no node of its own
-            // yet; it still takes its keys, under the scope's.
             let bar = self.bar_node.unwrap_or(ctx.node_id);
-            // A press in the band gives the query the keyboard; a press in
-            // the content hands it back and leaves the bar open.
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.pointer = ctx.logical(position);
             }
@@ -1760,16 +1622,11 @@ impl Widget for FindScope {
                     self.bar.set_focus(false);
                 }
             }
-            // While the query has the keyboard, keys are the bar's: one it
-            // has no use for does not reach the content behind it (a
-            // terminal would type it into its program).
             let typing =
                 self.bar.is_focused() && matches!(event, WindowEvent::KeyboardInput { .. });
             self.bar.route(event, &mut ctx.reborrow(ctx.path, bar));
             self.drive();
             if !self.open {
-                // Closed (Escape, the close button): the keyboard goes back
-                // to the content.
                 *ctx.focus_target = self.content_node;
             }
             if *ctx.handled || typing {
@@ -1777,7 +1634,6 @@ impl Widget for FindScope {
             }
         }
         let content = self.content_node.unwrap_or(ctx.node_id);
-        // While the band moves, the content is hit where it is drawn.
         let event = super::event_offset(
             event,
             vello::kurbo::Vec2::new(0.0, self.content_offset()),
@@ -1828,9 +1684,6 @@ mod tests {
     use super::*;
     use crate::testing::Dispatch;
 
-    /// A match highlight paints the matched span and nothing past it: the
-    /// glyph after a match keeps its own ground, the current match's outline
-    /// included.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_match_highlight_paints_exactly_the_matched_span() {
@@ -1875,8 +1728,6 @@ mod tests {
         }
     }
 
-    /// A text a find runs over: case-folding and whole-word aware, keeping
-    /// what it found and which match is current.
     #[derive(Default)]
     struct Doc {
         text: String,
@@ -2116,8 +1967,6 @@ mod tests {
     fn opened_from_a_menu_the_band_discloses_over_content_laid_out_at_its_larger_extent() {
         let mut scope = page_scope();
         lay_out(&mut scope);
-        // A menu item clicked: the host opens the bar. The frame's instant
-        // is held, so the test reads the motion where it starts.
         let _frame = crate::motion::pin_frame();
         crate::motion::note_input(&pointer_press());
         scope.open();
@@ -2149,8 +1998,6 @@ mod tests {
         assert!(!scope.structure_dirty);
         assert_eq!(scope.content.get_rect(), laid);
 
-        // Once it rests, one more frame lays the content out under the
-        // band; then it costs nothing.
         let _settled = crate::motion::testing::settled();
         assert!(!scope.disclosure.is_moving());
         assert!(
@@ -2188,7 +2035,6 @@ mod tests {
         let _ = send(&mut scope, &ctrl_f(), ctrl);
         lay_out(&mut scope);
         let full = scope.bar.get_rect().height();
-        // The close button, pressed.
         let _frame = crate::motion::pin_frame();
         crate::motion::note_input(&pointer_press());
         scope.bar.toggle(Part::Close);
@@ -2394,7 +2240,6 @@ mod host_driven_tests {
     use super::*;
     use crate::testing::Dispatch;
 
-    /// Lines that grow under an open bar, found case-insensitively.
     #[derive(Default)]
     struct Log {
         text: String,
@@ -2420,12 +2265,10 @@ mod host_driven_tests {
         }
     }
 
-    /// A web page: its engine finds and steps on its own.
     #[derive(Default)]
     struct Engine {
         steps: Vec<bool>,
         queries: Vec<String>,
-        /// What the engine said since the bar last asked.
         reported: Option<(usize, Option<usize>)>,
     }
 
@@ -2466,7 +2309,6 @@ mod host_driven_tests {
         );
     }
 
-    /// An editable buffer that reports a revision for every edit.
     struct Buffer(Log, u64);
 
     impl Findable for Buffer {
@@ -2688,8 +2530,6 @@ mod host_driven_tests {
         assert!(quiet.is_open(), "the host opens it");
     }
 
-    /// A document whose host writes a replacement on its next frame, as the
-    /// block editor's does; it forgets its current match on every find.
     #[derive(Default)]
     struct Deferred {
         text: String,
@@ -2697,12 +2537,10 @@ mod host_driven_tests {
         queued: Option<(usize, String)>,
         revision: u64,
         current: Option<usize>,
-        /// Each match scrolled into view, in order.
         revealed: Vec<usize>,
     }
 
     impl Deferred {
-        /// The host's frame: write the queued replacement.
         fn write(&mut self) {
             if let Some((index, with)) = self.queued.take() {
                 let found = self.found[index].clone();

@@ -1,5 +1,5 @@
-//! The persistent control a retained row holds at its trailing edge, and how
-//! it fills the row once it wraps under the text.
+//! The persistent control a retained row holds at its trailing edge, and how it fills the
+//! row once it wraps under the text.
 
 use super::{ListRow, MIN_TEXT_LINES};
 use crate::a11y::Role;
@@ -34,23 +34,15 @@ pub(super) struct Trailing {
     pub(super) element: Element,
     pub(super) band: Option<NodeId>,
     pub(super) node: Option<NodeId>,
-    /// The text band's height, settled from measured line boxes.
     pub(super) band_height: f32,
-    /// The control wrapped under the text.
     pub(super) wrapped: bool,
-    /// The control's own width, while it is not filling the row.
     pub(super) natural: f32,
     /// The margins the control stands in beside the text (the gap before
     /// it and the slot after it): the row's wrap counts them, so the
     /// control stops filling only where it would fit with them.
     pub(super) margins: f32,
-    /// The width the control fills under the text, from the text's edge to
-    /// the row's, where a control beside the text ends.
     pub(super) fill: Option<f32>,
-    /// The control's own minimum width, restored when it stops filling.
     pub(super) own_min: taffy::Dimension,
-    /// Centred on the column a disclosure chevron stands in
-    /// ([`ListRow::trailing_disclosure`]).
     pub(super) on_disclosure_column: bool,
 }
 

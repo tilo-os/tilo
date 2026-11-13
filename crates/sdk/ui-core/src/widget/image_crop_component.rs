@@ -11,9 +11,9 @@ use super::CropSelection;
 use crate::widget::DrawChild;
 use crate::widget::PictureSource;
 
-/// A picture with a crop its four corners set (a scanned page, a photo to trim): drag a corner
-/// to move it, or an edge's arrow keys, and it reports the crop each time it changes. The
-/// picture is letterboxed in its box; the crop is a share of the picture, never of the box.
+/// A picture with a crop its four corners set (a scanned page, a photo to trim): drag a
+/// corner to move it, or an edge's arrow keys, and it reports the crop each time it
+/// changes.
 #[derive(Component, Default)]
 #[component(name = "ImageCropEditor", role = "Group")]
 pub struct ImageCropEditorProps {

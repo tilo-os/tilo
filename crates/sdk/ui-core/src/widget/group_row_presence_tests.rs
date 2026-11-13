@@ -1,5 +1,5 @@
-//! Where a reader is told a peer's caret in a window's text stands, while the strip is panned: it
-//! must be where the window shows the caret.
+//! Where a reader is told a peer's caret in a window's text stands, while the strip is
+//! panned: it must be where the window shows the caret.
 
 use super::tests::{relayout_strip, strip_at};
 use super::*;
@@ -8,8 +8,6 @@ use crate::retained_present::{PanFrame, PanReplay};
 use std::cell::Cell;
 use std::rc::Rc;
 
-/// An app that is one text field, so a peer's caret in it is a node with bounds, and the caret's
-/// drawn geometry is read back after the draw that painted it.
 struct Field {
     input: crate::widget::TextInput,
     drawn: Rc<Cell<Rect>>,
@@ -23,7 +21,6 @@ impl Field {
         Self { input, drawn }
     }
 
-    /// The key a peer's caret in this field is drawn under.
     fn key(field: &str) -> crate::presence::PresenceKey {
         crate::presence::PresenceKey::Widget {
             path: vec![crate::presence::PathSegment::Field(field.into())],
@@ -69,7 +66,6 @@ impl crate::widget::AppWidget for Field {
     }
 }
 
-/// The window `id` holds a field named `field`, and where it drew the caret.
 fn window(id: u64, field: &str, drawn: Rc<Cell<Rect>>) -> WindowGroup {
     let mut group = WindowGroup::new(
         id,
@@ -88,7 +84,6 @@ fn window(id: u64, field: &str, drawn: Rc<Cell<Rect>>) -> WindowGroup {
     group
 }
 
-/// A strip of `count` phone-width windows, the second of them holding a field named `field`.
 fn strip(count: usize, field: &str, drawn: Rc<Cell<Rect>>) -> GroupRow {
     let mut row = strip_at(count, 390.0, 0.0, 1000);
     let tab = row.groups[1].active_tab_id();
@@ -101,8 +96,6 @@ fn strip(count: usize, field: &str, drawn: Rc<Cell<Rect>>) -> GroupRow {
     row
 }
 
-/// One frame, drawn as a host draws it: the frame forgets the carets the one before noted — a
-/// replayed window notes its own again, moved with it.
 fn frame(
     row: &mut GroupRow,
     text: &mut crate::text_render::TextRenderer,
@@ -126,7 +119,6 @@ fn frame(
     row.mark_drawn();
 }
 
-/// Where a reader is told the one peer writing in the strip's text stands.
 fn mark(presence: &crate::presence::PresenceCtx) -> Rect {
     let marks = presence.presence_marks();
     assert_eq!(marks.len(), 1, "one caret for one peer: {marks:?}");
@@ -140,9 +132,6 @@ fn close(a: Rect, b: Rect) -> bool {
         && (a.y1 - b.y1).abs() <= 0.5
 }
 
-/// A strip at rest on a phone shows the window in use; the window the pan left behind is shown by
-/// its last drawing, moved. The peer's caret in it is told where that drawing now shows it, not
-/// where the pan it was drawn at had it.
 #[test]
 fn a_window_replayed_through_a_pan_tells_a_reader_where_its_caret_moved_to() {
     let drawn = Rc::new(Cell::new(Rect::ZERO));
@@ -153,21 +142,17 @@ fn a_window_replayed_through_a_pan_tells_a_reader_where_its_caret_moved_to() {
     presence.set_caret(&Field::key("second"), peer, 0);
     let text = &mut crate::text_render::TextRenderer::new();
 
-    // The frame the strip rested on: every window draws, and the caret is noted in the text.
     frame(&mut row, text, &presence, PanFrame::Drawn);
     let home = drawn.get();
     assert!(home.width() > 0.0, "the window drew a caret: {home:?}");
     assert!(close(mark(&presence), home), "{:?}", mark(&presence));
 
-    // A pan frame keeps each window's drawing: the first draws the windows again.
     row.set_scroll_x_for_test(60.0);
     relayout_strip(&mut row, 390.0);
     frame(&mut row, text, &presence, PanFrame::Replayed);
     let drawn_once = drawn.get();
     assert!(close(mark(&presence), drawn_once), "{:?}", mark(&presence));
 
-    // The strip pans on: the window at rest shows the drawing it kept, moved, and the caret a
-    // reader is told travels with it.
     let before = row.groups[1].get_rect().x0;
     row.set_scroll_x_for_test(120.0);
     relayout_strip(&mut row, 390.0);
@@ -193,7 +178,6 @@ fn a_window_replayed_through_a_pan_tells_a_reader_where_its_caret_moved_to() {
     );
 }
 
-/// The node a reader finds a peer's caret at, and where it says it stands.
 fn mark_bounds(node: &crate::headless::InspectionNode) -> Option<Rect> {
     if node.test_id.as_deref() == Some("presence-mark") {
         return node
@@ -205,8 +189,6 @@ fn mark_bounds(node: &crate::headless::InspectionNode) -> Option<Rect> {
     node.children.iter().find_map(mark_bounds)
 }
 
-/// On a phone the desk is a strip panned to the window in use: a peer's caret in that window's
-/// text is a node where the window drew it, on screen, not at the place it held before the pan.
 #[test]
 fn a_peers_caret_in_a_panned_window_is_a_node_where_the_window_drew_it() {
     let first = Rc::new(Cell::new(Rect::ZERO));

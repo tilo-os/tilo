@@ -1,6 +1,6 @@
-//! What a strip's row tells control hints ([`crate::control_hints`]): where
-//! its windows' bars and edges are, and whether windows lie out of view;
-//! and what the person did with them, as it happens.
+//! What a strip's row tells control hints ([`crate::control_hints`]): where its windows'
+//! bars and edges are, and whether windows lie out of view; and what the person did with
+//! them, as it happens.
 
 use super::GroupRow;
 use crate::control_hints::performed::{self, Performed};
@@ -10,45 +10,18 @@ use vello::kurbo::{Line, Point, Rect};
 /// Where a row's controls are for control hints, in the row's coordinates.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HintPlaces {
-    /// The row's view.
     pub viewport: Rect,
-    /// How many windows the row holds.
     pub windows: usize,
-    /// Windows lie past the view's leading and trailing edge.
     pub beyond: (bool, bool),
-    /// Where the bar under the pointer takes its window, beside its title,
-    /// where the bar is free past it rather than among its buttons.
     pub hovered_bar: Option<Rect>,
-    /// Where the focused window's bar takes it, beside its title,
-    /// where the bar is free past it rather than among its buttons.
     pub focused_bar: Option<Rect>,
-    /// The focused window's edge nearest the pointer that resizes it, as
-    /// the line it is lit along, and which edge it is.
     pub focused_edge: Option<(Line, WindowEdge)>,
-    /// The focused window is asking the person something: a text field of
-    /// it holds the keyboard. No hint points at a window that is being
-    /// answered, where it would stand over the question.
     pub asking: bool,
-    /// The cards standing over the desk — the windows lifted out of the
-    /// strip as floating cards, each whole with its header — as one rect
-    /// each: content no hint may stand over, and no control under which it
-    /// can point.
     pub over: Vec<Rect>,
-    /// Each shown window of the strip, as its whole rect and the content
-    /// below its bar: content no hint may stand over, the window whose bar
-    /// or edge a hint teaches included (it stands beside that spot where
-    /// there is clear space, else in the top bar).
     pub windows_on_desk: Vec<(Rect, Rect)>,
-    /// Where the shown windows' apps stand cards of their own over their
-    /// content (an agent's activity), as one rect each
-    /// ([`crate::presence::interaction_card_slots`]): a place no hint stands
-    /// either, since the app's card may be there whether or not it is now.
     pub app_cards: Vec<Rect>,
 }
 
-/// Whether `window`'s content is asking the person to type: a text field of
-/// its shown tab holds the keyboard (the one control that can, so a window's
-/// tabs are asked at once).
 fn asking_for_input(window: &super::WindowGroup) -> bool {
     window
         .active_host()
@@ -84,17 +57,12 @@ impl GroupRow {
                     && group.bar_grab_hit(self.last_cursor)
             })
             .and_then(|(_, group)| title_grab(group));
-        // A window lifted out of the strip stands over the desk as a card, which is no window of
-        // the strip a hint teaches: its header does not take it as a strip bar does, and its edge
-        // resizes nothing. Pointing a hint there would put it over the card's own content.
         let focused = self
             .groups
             .iter()
             .enumerate()
             .find(|(i, group)| group.focused && shown(*i, group) && !self.is_floating(group.id))
             .map(|(_, group)| group);
-        // A window of the strip stands its app's cards in the top-right corner of its content, and
-        // is content of its own: a hint keeps off both.
         let on_desk: Vec<(Rect, Rect)> = self
             .groups
             .iter()
@@ -107,8 +75,6 @@ impl GroupRow {
                 (rect, content)
             })
             .collect();
-        // The desktop's bar overlays the desk's top edge and the windows stand clear of it: each
-        // window is reported whole with the content below its own bar.
         HintPlaces {
             viewport,
             windows: self
@@ -140,8 +106,8 @@ impl GroupRow {
         }
     }
 
-    /// The pointer moved: resting on a window's bar, where the window can
-    /// be taken, is noted for control hints.
+    /// The pointer moved: resting on a window's bar, where the window can be taken, is
+    /// noted for control hints.
     pub(super) fn note_bar_hover(&self) {
         if self.group_drag.is_none()
             && self.edge_drag.is_none()
@@ -155,11 +121,8 @@ impl GroupRow {
     }
 }
 
-/// How finely a bar is walked for where it takes its window.
 const GRAB_STEP: f64 = 4.0;
 
-/// The stretch of `group`'s bar around `x`, a point that takes the window,
-/// as far as the bar takes it on either side.
 fn grab_stretch(group: &super::WindowGroup, x: f64) -> Rect {
     let bar = group.bar_rect();
     let y = bar.center().y;
@@ -175,7 +138,6 @@ fn grab_stretch(group: &super::WindowGroup, x: f64) -> Rect {
     Rect::new(from, bar.y0, to, bar.y1)
 }
 
-/// Whether the bar takes its window at `p`, clear of its buttons.
 fn free(group: &super::WindowGroup, p: Point) -> bool {
     group.bar_grab_hit(p) && !group.window_control_hit(p)
 }
@@ -185,15 +147,8 @@ fn free(group: &super::WindowGroup, p: Point) -> bool {
 /// the buttons.
 const GRAB_MIN_W: f64 = 32.0;
 
-/// How much of the free bar beside the title a hint points at.
 const TITLE_GRAB_W: f64 = 40.0;
 
-/// Where `group`'s bar takes its window beside its title: the start of the
-/// first free stretch past its tabs (a window of one tab shows it as its
-/// title), wide enough to take hold of, nearer the title than the buttons
-/// further along; on a bar with no such stretch, the title. Most of a bar
-/// is tabs, a location and controls, which a drag does not take the window
-/// by.
 fn title_grab(group: &super::WindowGroup) -> Option<Rect> {
     let bar = group.bar_rect();
     let y = bar.center().y;
@@ -216,7 +171,6 @@ fn title_grab(group: &super::WindowGroup) -> Option<Rect> {
         }
         from = stretch.x1 + GRAB_STEP;
     }
-    // A bar its slots and buttons fill: the title itself, the active tab.
     let active = group.active_tab_id();
     group
         .tabs()
@@ -226,8 +180,6 @@ fn title_grab(group: &super::WindowGroup) -> Option<Rect> {
         .filter(|title| title.area() > 0.0)
 }
 
-/// The edge of `group` nearest `pointer` that a drag resizes and that is in
-/// `viewport`, along the window's body under its bar.
 fn nearest_edge(
     group: &super::WindowGroup,
     viewport: Rect,
@@ -251,8 +203,6 @@ fn nearest_edge(
         .filter(|(line, _)| line.p0.x > viewport.x0 + 1.0 && line.p0.x < viewport.x1 - 1.0)
         .filter(|(line, _)| line.p1.y > line.p0.y)
         .collect();
-    // The trailing edge, the one between windows that a resize most often
-    // takes; the leading one when the pointer rests close by it.
     let near_leading = rect.contains(pointer) && pointer.x < rect.x0 + LEADING_SHARE * rect.width();
     let wanted = if near_leading {
         WindowEdge::Leading
@@ -266,8 +216,6 @@ fn nearest_edge(
         .copied()
 }
 
-/// How far into a window, as a share of its width, the pointer counts as
-/// near its leading edge.
 const LEADING_SHARE: f64 = 0.25;
 
 #[cfg(test)]
@@ -312,10 +260,8 @@ mod tests {
         );
         row.groups[0].focused = true;
         let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-        // A bar the app's buttons fill: the title itself.
         let filled = beside_the_title(&row);
         assert_eq!(filled, row.groups[0].tab_rects()[0], "the title");
-        // A bar with room past its title: the room beside it.
         let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
         for group in &mut row.groups {
             group.bar_mut().set_window_controls(true);
@@ -363,8 +309,6 @@ mod tests {
             );
             assert!(content.contains_rect(first), "{first:?} in {content:?}");
         }
-        // A window lifted out of the strip shows no content of its own here: its card's own corners
-        // are the floating card reported whole, not slots inside it.
         use crate::widget::Widget as _;
         use std::collections::HashMap;
         let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
@@ -386,8 +330,6 @@ mod tests {
     fn a_shown_window_reports_its_content_below_its_own_bar() {
         let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
         row.set_top_overlay_inset(32.0);
-        // Windows come to rest below the bar at once, as they do when the person asks for less
-        // motion: the slide down to it is motion, not geometry.
         let (row, _taffy, _root) =
             relayout_row_owned_with(row, 1200.0, &Theme::dark().with_reduce_motion(true));
         let places = row.hint_places();
@@ -411,9 +353,6 @@ mod tests {
         }
     }
 
-    // A window lifted out of the strip is a card over the desk: its header does not take it as a
-    // strip bar does and its edge resizes nothing, so no hint points at it, and the card it draws
-    // is reported as content no hint may stand over.
     #[test]
     fn a_floating_card_is_no_window_a_hint_points_at() {
         use crate::widget::Widget as _;
@@ -436,7 +375,6 @@ mod tests {
             over[0].contains_rect(row.groups[1].get_rect()),
             "the card whole, header and body, is content no hint may stand over: {over:?}"
         );
-        // The strip window keeps its own place for the hints.
         let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
         row.groups[0].focused = true;
         let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
@@ -444,8 +382,6 @@ mod tests {
         assert!(row.hint_places().over.is_empty());
     }
 
-    /// The move hint's place on `row`'s focused first window, checked to
-    /// stand at its title and clear of every button on its bar.
     fn beside_the_title(row: &GroupRow) -> Rect {
         let group = &row.groups[0];
         let anchor = row.hint_places().focused_bar.expect("a place to take");
@@ -486,7 +422,6 @@ mod asking_tests {
     use crate::widget::TaffyTreeExt as _;
     use crate::widget::app_widget::{AppWidget, IconDescriptor};
 
-    /// A window's content that is (or is not) being typed into.
     struct Field(bool);
 
     impl Widget for Field {
@@ -526,13 +461,10 @@ mod asking_tests {
         row
     }
 
-    // A window whose text field holds the keyboard is being answered: no
-    // hint points at it, where it would stand over the question.
     #[test]
     fn a_window_a_person_is_typing_in_says_so_to_the_hints() {
         assert!(row_whose_window_types(true).hint_places().asking);
         assert!(!row_whose_window_types(false).hint_places().asking);
-        // Nothing focused, nothing asked.
         let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
         let host = row.groups[0].host_for_tab_mut(1).expect("a host");
         host.replace_content(TileContent::App(Box::new(Field(true))));

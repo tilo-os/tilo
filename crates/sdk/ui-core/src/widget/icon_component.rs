@@ -12,17 +12,14 @@ crate::component::choice!(IconSize, "IconSize", {
     Large => "large",
 });
 
-/// One glyph from the icon set, in the theme's ink: a kind of thing beside its name, a status
-/// mark. One that stands on its own says what it means in `description`, read on hover; the
-/// words beside a glyph carry the meaning otherwise.
+/// One glyph from the icon set, in the theme's ink.
 #[derive(Component)]
 #[component(name = "Icon", role = "Image")]
 pub struct IconProps {
     /// The glyph.
     #[component(required, positional)]
     pub icon: Icon,
-    /// How large it is: `regular` beside a row's label unless said, `small` beside a caption,
-    /// `large` beside a title.
+    /// How large it is: `regular` unless said, `small` beside a caption, `large` beside a title.
     pub size: Option<IconSize>,
     /// Recede beside its label, in secondary ink.
     pub secondary: bool,
@@ -30,9 +27,7 @@ pub struct IconProps {
     pub accent: bool,
     /// A status the glyph means, in that status's colour: a passed check, a warning sign.
     pub tone: Option<Tone>,
-    /// What the glyph means, where it stands on its own without words beside it: a mark saying
-    /// why a service cannot be reached. Read on hover; the words a window says in full carry it
-    /// to assistive technology.
+    /// What the glyph means, where it stands without words beside it.
     pub description: Option<String>,
 }
 
@@ -74,7 +69,6 @@ impl Described for IconWidget {
         }
     }
 
-    /// Another glyph, or one inked differently, shows where the icon stands.
     fn set_props(&mut self, props: IconProps) -> bool {
         let tint = match (props.tone, props.accent, props.secondary) {
             (Some(tone), _, _) => super::Tint::Tone(tone),

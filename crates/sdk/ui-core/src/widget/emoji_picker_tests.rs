@@ -9,18 +9,12 @@ use crate::emoji_catalogue::{EmojiCatalogue, EmojiInfo};
 use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release, named_key};
 use crate::workspace_emoji::{Adding, CustomEmoji, EmojiSource, WorkspaceEmoji};
 
-/// A catalogue of two small groups. It names emoji as the real catalogue
-/// does, so another module's tooltip reads the same whichever of the two is
-/// installed (their catalogues share one process).
 struct Fake;
 
 const SMILEYS: &[(&str, &str)] = &[
     ("😀", "grinning face"),
     ("😂", "face with tears of joy"),
     ("👍", "thumbs up"),
-    // Named as the real catalogue names them too, so a tooltip that reads a
-    // name here reads the same whether this fake or the toolkit's own
-    // catalogue is in (the two share the process).
     ("🎉", "party popper"),
     ("🙌", "raising hands"),
     ("🔥", "fire"),
@@ -124,7 +118,6 @@ impl EmojiSource for Source {
     }
 }
 
-/// A window whose workspace has `:party_parrot:` and `:pizza_cat:`.
 struct Window {
     scope: crate::wake::WakeScope,
     chosen: Rc<Cell<usize>>,
@@ -132,7 +125,6 @@ struct Window {
 }
 
 impl Window {
-    /// The picture chosen last settled as `adding`.
     fn settle(&self, adding: Adding) {
         let mut added = self.added.borrow_mut();
         *added = (added.0 + 1, Some(adding));
@@ -227,7 +219,6 @@ fn the_workspace_comes_first_then_the_recents_then_the_group() {
         ],
         "workspace emoji with the add tile, the recents (custom ones too), the group"
     );
-    // The add tile asks the workspace for a picture to add.
     press(&mut picker, &named_key(NamedKey::ArrowRight));
     press(&mut picker, &named_key(NamedKey::ArrowRight));
     assert_eq!(picker.selected(), None, "the add tile is highlighted");
@@ -247,7 +238,6 @@ fn redraw(picker: &mut EmojiPicker) {
     );
 }
 
-/// What the picker's last line says.
 fn footer(picker: &EmojiPicker) -> String {
     let dialog = picker.accessibility().expect("open");
     let last = dialog.children.last().expect("a footer");
@@ -399,7 +389,6 @@ fn moving_an_open_picker_moves_its_grid_and_field_with_it() {
     let mut picker = opened(&theme);
     let before = picker.item_rect(0).expect("the first emoji is in view");
     let from = picker.rect().origin();
-    // A host placing the open picker on every frame, as its window moves.
     picker.place_at(
         Some(Rect::new(500.0, 300.0, 530.0, 330.0)),
         Rect::new(0.0, 0.0, 1280.0, 800.0),
@@ -472,7 +461,6 @@ fn contains(outer: Rect, inner: Rect) -> bool {
     inner.x0 >= outer.x0 && inner.y0 >= outer.y0 && inner.x1 <= outer.x1 && inner.y1 <= outer.y1
 }
 
-/// The skin tones of the emoji the search found, offered.
 fn tones_opened(viewport: Rect, theme: &Theme) -> EmojiPicker {
     let mut picker = EmojiPicker::sheet();
     picker.open_at(None, viewport, theme);
@@ -624,7 +612,6 @@ fn a_touch_presses_and_picks_where_a_mouse_does() {
         [PickerEvent::Picked(":pizza_cat:".into())],
         "lifting the finger picks what it pressed"
     );
-    // A touch the system took back presses nothing.
     let mut picker = opened(&Theme::dark());
     press(&mut picker, &touch(TouchPhase::Started));
     press(&mut picker, &touch(TouchPhase::Cancelled));
@@ -653,9 +640,6 @@ fn a_framed_card_without_a_caret_centres_over_the_display_it_was_given() {
     );
 }
 
-/// A picker that is not up owes its host no frame: the desktop's bar holds one closed all the
-/// time, and a picker asking for frames while closed repainted the bar on every frame of the
-/// session, typing into another window included.
 #[test]
 fn a_closed_picker_rests_until_it_opens() {
     let window = window(false);

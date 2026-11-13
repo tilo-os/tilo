@@ -5,8 +5,7 @@ use crate::icons::Icon;
 
 use super::EmptyState;
 
-/// What a place says while it holds nothing: one sentence, and at most one action that starts
-/// filling it.
+/// What a place says while it holds nothing: a sentence and at most one action.
 #[derive(Component, Default)]
 #[component(name = "EmptyState", role = "Group", label = "title")]
 pub struct EmptyStateProps {
@@ -21,8 +20,7 @@ pub struct EmptyStateProps {
     pub action: Option<String>,
     /// Sit within the content, as a list without rows, rather than fill the window.
     pub inline: bool,
-    /// Something failed: the glyph takes the danger colour, and the message reads as an error
-    /// (a view that could not be shown and why, `shell.md` §6).
+    /// Something failed: the glyph takes the danger colour and the message reads as an error.
     pub error: bool,
     /// The action was pressed.
     #[component(event(press))]
@@ -61,8 +59,6 @@ impl Described for EmptyState {
         if inline { state.inline() } else { state }
     }
 
-    /// What the place says and offers changes where it stands: the sentence, the glyph, the one
-    /// action and its event.
     fn set_props(&mut self, props: EmptyStateProps) -> bool {
         let EmptyStateProps {
             title,

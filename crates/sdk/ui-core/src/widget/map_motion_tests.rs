@@ -1,6 +1,6 @@
-//! A map's pins on their way (`motion::Placed`): a pin the person moves glides from where it
-//! stood to its new place over the frames between, reaches it, and then rests asking for no
-//! frames; a still theme and reduced motion land the pin at once.
+//! A map's pins on their way (`motion::Placed`): a pin the person moves glides from where
+//! it stood to its new place over the frames between, reaches it, and then rests asking for
+//! no frames; a still theme and reduced motion land the pin at once.
 
 use super::*;
 use crate::Theme;
@@ -9,8 +9,6 @@ fn theme() -> Theme {
     Theme::dark()
 }
 
-/// A map of pins, not laid out yet: at its first layout it takes up the lens of a map dropped
-/// in its place.
 fn pins_of(pins: &[(&str, f64)]) -> Map {
     let mut map = Map::new();
     for (key, x) in pins {
@@ -28,21 +26,18 @@ fn pins_of(pins: &[(&str, f64)]) -> Map {
     map
 }
 
-/// A map of pins, laid out in a viewport.
 fn map_of(pins: &[(&str, f64)], viewport: Rect) -> Map {
     let mut map = pins_of(pins);
     lay_out_again(&mut map, viewport);
     map
 }
 
-/// Lay `map` out again: what a camera pan, a pin moved or a viewport change asks of its region.
 fn lay_out_again(map: &mut Map, viewport: Rect) {
     let mut text = crate::font_catalog::fixture_renderer();
     crate::widget::layout::lay_out_detached(map, viewport, &theme(), &mut text)
         .expect("the map lays out");
 }
 
-/// A map drawn once, so its pins' motion begins where the region laid them out.
 fn draw(map: &mut Map) {
     let mut scene = Scene::new();
     let mut text = crate::font_catalog::fixture_renderer();
@@ -60,7 +55,6 @@ fn a_pin_at_its_first_frame_rests_and_asks_for_no_frames() {
     let _frame = crate::motion::pin_frame();
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut map = map_of(&[("one", 100.0)], viewport);
-    // The first draw places it: a pin the map shows at its first frame rests.
     draw(&mut map);
     let now = crate::motion::frame_now();
     assert!(
@@ -85,7 +79,6 @@ fn a_pin_moved_by_the_person_glides_to_its_new_place_and_then_rests() {
     let now = crate::motion::frame_now();
     assert!(map.placed.borrow().contains_key("one"), "the pin is drawn");
 
-    // The person moves the pin: the map lays it out at its new point and draws again.
     crate::motion::note_source(crate::tokens::MotionSource::Pointer);
     map.pins[0].1.x = 400.0;
     map.invalidation.invalidate();
@@ -146,7 +139,6 @@ fn a_pin_shown_by_a_still_theme_lands_at_once() {
         false,
     );
     let now = crate::motion::frame_now();
-    // Show the pin at its place under a still theme: it lands at once and asks for nothing.
     let mut placed = crate::motion::Placed::closed();
     placed.follow(
         Rect::new(100.0, 0.0, 300.0, 120.0),
@@ -165,8 +157,6 @@ fn a_map_built_again_keeps_the_camera_and_the_places_where_they_were_drawn() {
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut old = map_of(&[("one", 100.0)], viewport);
     draw(&mut old);
-    // The person pans the canvas and leaves it there; the places on it change and the map is built
-    // again around them, as a window opening on the canvas does.
     old.set_camera(MapCamera {
         origin: Point::new(40.0, 20.0),
         zoom: 1.0,
@@ -223,7 +213,6 @@ fn the_camera_glides_to_a_place_arriving_past_the_edge_laying_every_place_out_on
         draw(&mut old);
         (old, pins_of(&[("one", 300.0), ("two", 1100.0)]))
     };
-    // The person opened it: the camera glides there, whoever's input came last.
     crate::motion::note_source(crate::tokens::MotionSource::Pointer);
     {
         let _frame = crate::motion::pin_frame_at(start);
@@ -240,7 +229,6 @@ fn the_camera_glides_to_a_place_arriving_past_the_edge_laying_every_place_out_on
         if !Widget::needs_animation_frame(&map) {
             break;
         }
-        // A frame: the motion steps in the update, and the layout lays the places out there.
         Widget::update(&mut map, &doc, &automerge::ROOT);
         lay_out_again(&mut map, viewport);
         draw(&mut map);

@@ -5,8 +5,7 @@ use crate::widget::arrange::{Fit, Length, Page, Slot, Stack};
 use crate::widget::{Decorator, Element, Widget};
 
 /// Content that fills its column above a bar that stays at the column's foot: a
-/// conversation above its composer. The bar stands in the column the content is read at, a
-/// section's gap under the content and the page's gutter at its sides and below.
+/// conversation above its composer.
 #[derive(Component, Default)]
 #[component(name = "Docked", role = "Group")]
 pub struct DockedProps {
@@ -32,9 +31,8 @@ fn slot(element: Element, fit: Fit) -> Slot {
     slot
 }
 
-/// The readable column `node` holds its content in, at any depth: a page bounds what it holds
-/// to a measure, and a list that reads its rows at one keeps it too. Whatever wraps the column
-/// (a scroll around its page, a pane a host reached it in) leaves the column itself to say it.
+/// The readable column `node` holds its content in, at any depth: a page bounds what it
+/// holds to a measure, and a list that reads its rows at one keeps it too.
 fn column_of(node: &dyn Widget) -> Option<Length> {
     node.readable_column()
         .or_else(|| node.children().into_iter().find_map(column_of))
@@ -131,9 +129,9 @@ impl Decorator for Docked {
         "Docked"
     }
 
-    /// A column adds no structure of its own: what changes is what it holds, and a
-    /// change it can carry out in place (a list mounting the rows a scroll brought
-    /// near) stays described, so the window keeps its tree.
+    /// A column adds no structure of its own: what changes is what it holds, and a change
+    /// it can carry out in place (a list mounting the rows a scroll brought near) stays
+    /// described, so the window keeps its tree.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         self.stack.take_structure_change()
     }

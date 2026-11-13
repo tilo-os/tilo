@@ -1,17 +1,5 @@
-//! Reusable **drag-to-reorder** interaction model — the single source of
-//! truth for live-reflow list reordering (weather's saved cities today;
-//! notes, playlists, contacts next).
-//!
-//! Like [`Scrollbar`](crate::widget::scrollbar), this is a pure state
-//! machine, not a widget: it turns `(list geometry, cursor)` into the live
-//! insertion index, per-item reflow shift, and floating ghost rect.
-//! [`DragController::cancel`] just forgets the session, so cancel is a no-op
-//! by construction. A generic `Id` payload lets a caller key
-//! selection/presence to the moving item without the controller
-//! understanding it.
-//!
-//! The reflow math assumes a **uniform** list (one extent + fixed gap per
-//! item) — true of every current adopter.
+//! Drag-to-reorder for a list that reflows as the dragged item moves: one model that a list
+//! drives from its event handler and paints from.
 
 use crate::num::f64_of_usize;
 use vello::kurbo::{Point, Rect, Size};
@@ -28,13 +16,8 @@ pub enum Axis {
 /// a plain click never jitters into a move.
 pub const REORDER_THRESHOLD_PX: f64 = 5.0;
 
-/// Uniform geometry of a reorderable list along the drag axis, in the same
-/// (logical, scroll-adjusted) coordinate space as the cursor.
-///
-/// `origin` is the **leading edge** of item 0, *after* any scroll offset —
-/// exactly where the first slot paints this frame. Rebuild it each frame
-/// from live layout so the insertion index and reflow stay correct while
-/// the list scrolls.
+/// Uniform geometry of a reorderable list along the drag axis, in the same (logical,
+/// scroll-adjusted) coordinate space as the cursor.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ListMetrics {
     pub origin: f64,
@@ -65,29 +48,17 @@ impl ListMetrics {
     }
 }
 
-/// The active (or pending) drag. Held inside [`DragController`]; not
-/// constructed directly.
 #[derive(Clone, Debug)]
 struct Session<Id> {
     id: Id,
-    /// Original index of the grabbed item in the pre-drag list.
     from: usize,
-    /// Pointer offset within the grabbed item at grab time, so the ghost
-    /// keeps the exact point picked up rather than snapping to the cursor.
     grab_offset: f64,
-    /// Pointer position at press (for the drag-start threshold).
     start: Point,
     current: Point,
-    /// Until the pointer crosses the drag-start threshold, there is no
-    /// ghost, no gap, and a release is treated as a plain click.
     active: bool,
-    /// Live target index, recomputed from the ghost's displacement as the
-    /// pointer moves. Equals `from` while the ghost overlaps its own
-    /// original slot (the dead-zone), so a small nudge opens no gap.
     target: usize,
 }
 
-/// The cursor's coordinate along `axis`.
 fn axis_coord(axis: Axis, p: Point) -> f64 {
     match axis {
         Axis::Vertical => p.y,
@@ -148,14 +119,12 @@ impl<Id: Clone> DragController<Id> {
         }
     }
 
-    /// A vertical reorderable list (items stack top-to-bottom, ghost slides
-    /// along Y).
+    /// A vertical reorderable list (items stack top-to-bottom, ghost slides along Y).
     pub fn vertical() -> Self {
         Self::new(Axis::Vertical)
     }
 
-    /// A horizontal reorderable list (items run left-to-right, ghost slides
-    /// along X).
+    /// A horizontal reorderable list (items run left-to-right, ghost slides along X).
     pub fn horizontal() -> Self {
         Self::new(Axis::Horizontal)
     }
@@ -164,7 +133,6 @@ impl<Id: Clone> DragController<Id> {
         self.axis
     }
 
-    /// The cursor's coordinate along this controller's axis.
     fn axis_of(&self, p: Point) -> f64 {
         match self.axis {
             Axis::Vertical => p.y,
@@ -250,8 +218,7 @@ impl<Id: Clone> DragController<Id> {
         self.session.is_some()
     }
 
-    /// Whether the drag has crossed the threshold and is live (ghost + gap
-    /// showing).
+    /// Whether the drag has crossed the threshold and is live (ghost + gap showing).
     pub fn is_active(&self) -> bool {
         self.session.as_ref().is_some_and(|s| s.active)
     }
@@ -272,8 +239,6 @@ impl<Id: Clone> DragController<Id> {
     pub fn dragged_id(&self) -> Option<&Id> {
         self.session.as_ref().filter(|s| s.active).map(|s| &s.id)
     }
-
-    // --- reflow + ghost ------------------------------------------------
 
     /// How far the *non-dragged* item at original index `index` must slide
     /// (signed) to open a one-slot gap at the live target index. `0` for the
@@ -298,7 +263,6 @@ impl<Id: Clone> DragController<Id> {
         } else {
             index.saturating_sub(1)
         };
-        // Index after re-inserting the dragged item at `to`.
         let final_i = if collapsed < to {
             collapsed
         } else {
@@ -357,7 +321,6 @@ mod tests {
         fn nudge_within_own_slot_is_a_dead_zone_no_gap_no_reflow() {
             let m = m4();
             let mut c = DragController::<u32>::vertical();
-            // Grab item 1 at offset 30 (ghost lead = slot_lead(1)).
             c.begin(1, 1, 30.0, Point::new(200.0, 198.0));
             // A nudge that clears the drag-start threshold but keeps the ghost
             // inside item 1's own slot must NOT open a gap.
@@ -386,8 +349,6 @@ mod tests {
             let m = m4(); // pitch 68, slot 1 spans lead 168..236
             let mut c = DragController::<u32>::vertical();
             c.begin(1, 1, 30.0, Point::new(200.0, 198.0)); // grab item 1 at its middle
-            // Just past the neighbour's midpoint downward: ghost lead moves ~0.6
-            // slot, which rounds to a one-slot move → the gap finally opens.
             c.pointer_moved(Point::new(200.0, 198.0 + 0.6 * m.pitch()), &m);
             assert_eq!(
                 c.insertion(),
@@ -428,11 +389,9 @@ mod tests {
             c.begin(7, 1, 30.0, Point::new(200.0, 200.0));
             assert!(c.is_pending(), "press latched");
             assert!(!c.is_active(), "not yet a drag");
-            // A jitter under the threshold does not activate.
             let changed = c.pointer_moved(Point::new(201.0, 202.0), &m4());
             assert!(!changed);
             assert!(!c.is_active());
-            // Release without activating commits nothing (it was a click).
             assert_eq!(c.commit(), None);
         }
 
@@ -440,11 +399,9 @@ mod tests {
             let mut c = DragController::<u32>::vertical();
             // Grab item 0 at its centre (offset 30 within a 60-px item).
             c.begin(0, 0, 30.0, Point::new(200.0, 130.0));
-            // Drag down into slot 2 → live target tracks toward the bottom.
             assert!(c.pointer_moved(Point::new(200.0, 250.0), &m4()));
             assert!(c.is_active(), "cleared the threshold");
             assert_eq!(c.insertion(), Some(2));
-            // Keep dragging past the last item → target follows to the last slot.
             c.pointer_moved(Point::new(200.0, 400.0), &m4());
             assert_eq!(
                 c.insertion(),
@@ -457,7 +414,6 @@ mod tests {
             let mut c = DragController::<u32>::vertical();
             c.begin(0, 0, 30.0, Point::new(200.0, 130.0));
             c.pointer_moved(Point::new(200.0, 400.0), &m4()); // drag item 0 to the end
-            // insertion boundary 4, from 0 → final index 3.
             assert_eq!(c.commit(), Some((0, 3)));
             assert!(!c.is_pending(), "commit clears the session");
         }
@@ -469,14 +425,12 @@ mod tests {
             assert!(c.is_active());
             assert!(c.cancel(), "a live drag was cancelled");
             assert!(!c.is_pending());
-            // A subsequent commit yields nothing — the order is untouched.
             assert_eq!(c.commit(), None);
         }
 
         fn ghost_tracks_cursor_at_grab_offset() {
             let mut c = DragController::<u32>::vertical();
             let m = m4();
-            // Grab item 1 (lead 168) at offset 20 from its top → grab point y=188.
             c.begin(1, 1, 20.0, Point::new(200.0, 188.0));
             c.pointer_moved(Point::new(200.0, 300.0), &m);
             // Ghost leading edge keeps the 20-px grab offset under the cursor.
@@ -514,30 +468,24 @@ mod tests {
     #[test]
     fn reflow_opens_and_repins_the_drop_gap() {
         fn reflow_opens_a_gap_at_the_drop_and_closes_the_hole() {
-            // Drag item 0 to the end (insertion 4 → final index 3).
             let mut c = DragController::<u32>::vertical();
             let m = m4();
             c.begin(0, 0, 30.0, Point::new(200.0, 130.0));
             c.pointer_moved(Point::new(200.0, 400.0), &m);
             let pitch = m.pitch();
-            // The dragged item does not participate in the reflow.
             assert_eq!(c.item_shift(0, &m), 0.0);
-            // Every item below it slides up one slot to fill the vacated hole and
-            // sit above the gap that opens at the tail.
             assert_eq!(c.item_shift(1, &m), -pitch);
             assert_eq!(c.item_shift(2, &m), -pitch);
             assert_eq!(c.item_shift(3, &m), -pitch);
         }
 
         fn reflow_pushes_items_down_when_dropping_above_them() {
-            // Drag the last item (3) to the very top (insertion 0 → final 0).
             let mut c = DragController::<u32>::vertical();
             let m = m4();
             c.begin(9, 3, 30.0, Point::new(200.0, 334.0));
             c.pointer_moved(Point::new(200.0, 100.0), &m);
             assert_eq!(c.insertion(), Some(0));
             let pitch = m.pitch();
-            // Items 0..=2 each slide down one slot to open the gap at the top.
             assert_eq!(c.item_shift(0, &m), pitch);
             assert_eq!(c.item_shift(1, &m), pitch);
             assert_eq!(c.item_shift(2, &m), pitch);
@@ -550,8 +498,6 @@ mod tests {
             c.begin(0, 0, 30.0, Point::new(200.0, 130.0));
             c.pointer_moved(Point::new(200.0, 250.0), &m4());
             assert_eq!(c.insertion(), Some(2));
-            // The list scrolls up 68px under the held drag; item 0's own slot moves
-            // up with it, so the same ghost now points one slot lower.
             let scrolled = ListMetrics::uniform(32.0, 60.0, 8.0, 4);
             c.sync_insertion(&scrolled);
             assert_eq!(

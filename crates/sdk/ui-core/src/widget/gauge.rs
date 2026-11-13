@@ -1,12 +1,5 @@
-//! Gauges: [`ProgressRing`] (a countdown or progress ring with a centred
-//! readout) and [`BarGauge`] (a labelled horizontal bar).
-//!
-//! The ring sweeps clockwise from 12 o'clock (`-π/2`) with a round-capped
-//! arc over a track that registers against the ground and leaves the fill
-//! at least 3:1 against it. Its fill is progress (the inverted fill), a
-//! measured level that turns warning and danger past [`GaugeThresholds`],
-//! or a [`Tone`]. The bar fills a rounded track left to right. Every colour
-//! and size comes from the [`Theme`].
+//! Gauges: [`ProgressRing`] (a countdown or progress ring with a centred readout) and
+//! [`BarGauge`] (a labelled horizontal bar).
 
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
@@ -25,13 +18,9 @@ use crate::tokens::colors::Colors;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{Tone, Widget};
 
-/// Alpha of a gauge's unfilled track, derived against the raised surface
-/// a gauge sits on (HIG §9.5): a declared border at any alpha is three
-/// shades off that surface on the dark palette and the track vanishes.
 const TRACK_ALPHA: u8 = 40;
 const BAR_TRACK_H: f64 = 8.0;
 
-/// The unfilled track colour on the theme's raised surface.
 fn track_color(theme: &Theme, alpha: u8) -> Color {
     crate::widget::data_table::tier_on(theme.tokens.colors.surfaces.raised, alpha)
 }
@@ -39,11 +28,7 @@ fn track_color(theme: &Theme, alpha: u8) -> Color {
 /// Paint options of a [`BarGauge`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GaugeStyle {
-    /// Alpha of the unfilled track against the raised surface. Denser
-    /// dashboards raise it so a thin track still reads next to its fill.
     pub track_alpha: u8,
-    /// Set a bar gauge's label and value at the `xs` step instead of `sm`,
-    /// for a dense grid of small gauges.
     pub compact_labels: bool,
 }
 
@@ -70,16 +55,14 @@ impl GaugeStyle {
     }
 }
 
-/// What an immediate-mode gauge paints: how full it is, in which colour,
-/// and the text around it. Either string may be empty.
+/// What an immediate-mode gauge paints: how full it is, in which colour, and the text
+/// around it.
 #[derive(Clone, Copy, Debug)]
 pub struct GaugeReading<'a> {
     /// Fill fraction, clamped to `0..1` when painted.
     pub frac: f32,
     pub color: Color,
-    /// What is measured — a ring's dim caption, a bar's top-left label.
     pub label: &'a str,
-    /// The readout — a ring's prominent centre text, a bar's right-aligned value.
     pub value: &'a str,
 }
 
@@ -128,29 +111,19 @@ impl GaugeThresholds {
     }
 }
 
-/// How a gauge sources its fill colour.
 #[derive(Clone, Copy, Debug)]
 enum Fillcolor {
-    /// Resolve via [`GaugeThresholds`] against the value (default).
     Threshold(GaugeThresholds),
-    /// A fixed caller-supplied colour, ignoring thresholds.
     Fixed(Color),
-    /// A share with no status (storage by kind, a quota with room): the
-    /// inverted fill.
     Neutral,
 }
 
-/// How large a [`ProgressRing`] is. Each size reads from the theme's
-/// metrics, so it follows the UI scale.
+/// How large a [`ProgressRing`] is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ProgressRingSize {
-    /// Inline beside a line of text, without a readout (a one-time code's
-    /// countdown, a row's upload).
     Small,
-    /// A readout inside the ring: the value and its caption.
     #[default]
     Regular,
-    /// The one hero readout of a screen (a speed test, a flash in progress).
     Large,
 }
 
@@ -162,8 +135,6 @@ impl ProgressRingSize {
         self.diameter_with_readout(theme, false)
     }
 
-    /// The diameter of a ring that shows a readout: a small ring grows to
-    /// hold a numeric caption (a code's seconds left).
     fn diameter_with_readout(self, theme: &Theme, readout: bool) -> f64 {
         if readout && self == Self::Small {
             return f64::from(theme.tokens.metrics.min_pointer_target)
@@ -196,21 +167,13 @@ impl ProgressRingSize {
     }
 }
 
-/// What a ring's fill means.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum RingFill {
-    /// Progress toward done: the inverted fill (the same as a progress bar).
     Progress,
-    /// A measured level that turns warning and danger past `thresholds`.
     Level(GaugeThresholds),
-    /// A status or a person.
     Tone(Tone),
 }
 
-/// The ring's unfilled track on `ground`: a derived step strong enough to
-/// show the ring's whole extent at 3:1 against the ground (a graphical
-/// object, WCAG 1.4.11), and no stronger, so the fill stays the brightest
-/// thing in the ring.
 fn ring_track(ground: Color) -> Color {
     use crate::color::contrast_ratio;
     let mut alpha = RING_TRACK_ALPHA;
@@ -224,12 +187,10 @@ fn ring_track(ground: Color) -> Color {
     track
 }
 
-/// Where the track's strength search starts on its ground.
 const RING_TRACK_ALPHA: u8 = 56;
 const RING_TRACK_STEP: u8 = 4;
 
-/// Immediate-mode progress ring: a countdown or progress with an optional
-/// centred readout.
+/// Immediate-mode progress ring: a countdown or progress with an optional centred readout.
 #[derive(Clone, Copy, Debug)]
 pub struct ProgressRingFace<'a> {
     frac: f64,
@@ -277,14 +238,14 @@ impl<'a> ProgressRingFace<'a> {
         self
     }
 
-    /// A measured level (CPU, disk) that turns warning and danger.
+    /// See [`ProgressRingFace::level`].
     #[must_use]
     pub fn level(mut self, thresholds: GaugeThresholds) -> Self {
         self.fill = RingFill::Level(thresholds);
         self
     }
 
-    /// A fill that means a status or a person.
+    /// See [`ProgressRingFace::tone`].
     #[must_use]
     pub fn tone(mut self, tone: Tone) -> Self {
         self.fill = RingFill::Tone(tone);
@@ -293,8 +254,6 @@ impl<'a> ProgressRingFace<'a> {
 
     fn fill_colour(&self, theme: &Theme) -> Color {
         match self.fill {
-            // The value fill, stepped until it also reads on the ring's
-            // own track, which is stronger than the bar's tinted one.
             RingFill::Progress => {
                 let colors = &theme.tokens.colors;
                 crate::tokens::colors::value_fill_on(
@@ -350,9 +309,6 @@ impl<'a> ProgressRingFace<'a> {
         // accessible name.
         let caption_text = if small { None } else { self.caption };
         let caption_style = theme.text(caption_role);
-        // The text stays inside the ring with `s2` of air (`s1` in a small
-        // ring): the width it may take is the chord of the ring's inner edge
-        // at the top and bottom of the text block, not the diameter.
         let air = if small {
             theme.tokens.spacing.s1 / 2.0
         } else {
@@ -366,8 +322,6 @@ impl<'a> ProgressRingFace<'a> {
             let half = (block_h / 2.0).min(clear);
             2.0 * (clear * clear - half * half).max(0.0).sqrt()
         };
-        // A value too wide for its role at this size steps down to `Label`
-        // before it elides: "3 of 10" reads whole in a regular ring.
         let value_style = self.value.map_or_else(
             || theme.text(value_role).numeric(),
             |v| {
@@ -419,11 +373,8 @@ impl<'a> ProgressRingFace<'a> {
 /// What a state-bound ring shows ([`ProgressRing::from_state`]).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RingReading {
-    /// How full the ring is, `0..=1`.
     pub frac: f64,
-    /// The readout ("23", "42%"); empty for none.
     pub value: String,
-    /// What the value is ("seconds"); `None` keeps the ring's caption.
     pub caption: Option<String>,
 }
 
@@ -436,6 +387,7 @@ impl RingReading {
         }
     }
 
+    /// See [`ProgressRingFace::caption`].
     #[must_use]
     pub fn caption(mut self, caption: impl Into<String>) -> Self {
         self.caption = Some(caption.into());
@@ -443,7 +395,7 @@ impl RingReading {
     }
 }
 
-/// A retained progress ring. See [`ProgressRingFace`].
+/// A retained progress ring.
 pub struct ProgressRing {
     frac: f64,
     value: String,
@@ -452,12 +404,12 @@ pub struct ProgressRing {
     fill: RingFill,
     rect: Rect,
     dirty: bool,
-    /// The readout grew or shrank the ring (a small ring gaining a value).
     layout_dirty: bool,
     source: Option<Box<dyn FnMut() -> Option<RingReading>>>,
 }
 
 impl ProgressRing {
+    /// `frac` is how full the ring is, clamped to `0..=1`.
     pub fn new(frac: f64) -> Self {
         Self {
             frac: if frac.is_finite() {
@@ -476,8 +428,8 @@ impl ProgressRing {
         }
     }
 
-    /// A ring bound to `state`: `read` turns the state into what the ring
-    /// shows, and the ring follows every change on its own.
+    /// A ring bound to `state`: `read` turns the state into what the ring shows, and the
+    /// ring follows every change on its own.
     pub fn from_state<T: 'static>(
         state: &crate::LocalState<T>,
         mut read: impl FnMut(&T) -> RingReading + 'static,
@@ -669,8 +621,8 @@ impl Widget for ProgressRing {
     }
 }
 
-/// Labelled horizontal bar gauge — a rounded track with a left-anchored
-/// fill, a top-left label and a right-aligned value readout.
+/// Labelled horizontal bar gauge — a rounded track with a left-anchored fill, a top-left
+/// label and a right-aligned value readout.
 pub struct BarGauge {
     frac: f32,
     fill: Fillcolor,
@@ -680,8 +632,6 @@ pub struct BarGauge {
     style: GaugeStyle,
     rect: Rect,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -748,8 +698,8 @@ impl BarGauge {
         }
     }
 
-    /// Paint `reading.label` top-left and `reading.value` top-right of
-    /// `rect`, over a track along its bottom filled to `reading.frac`.
+    /// Paint `reading.label` top-left and `reading.value` top-right of `rect`, over a track
+    /// along its bottom filled to `reading.frac`.
     pub fn draw_at(ctx: &mut PaintCtx<'_>, rect: Rect, reading: &GaugeReading<'_>) {
         Self::draw_styled(ctx, rect, reading, &GaugeStyle::default());
     }
@@ -948,8 +898,6 @@ mod tests {
 
     #[test]
     fn gauge_ring_and_bar_paint_tracks_labels_and_threshold_bands() {
-        /// Threshold colour resolution: below `warning` → success, in the
-        /// `[warning, danger)` band → warning, at/above `danger` → danger.
         fn thresholds_pick_semantic_bands() {
             let theme = Theme::dark();
             let t = GaugeThresholds::default(); // warning 0.6, danger 0.85
@@ -998,7 +946,6 @@ mod tests {
             );
         }
 
-        /// A bar gauge with a label + value paints two glyph runs.
         fn bar_label_and_value_paint() {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -1036,8 +983,6 @@ mod tests {
                 "{}: the track shows the ring's extent at only {ratio:.2}:1",
                 theme.name
             );
-            // Progress (the inverted fill) also reads against the track; a
-            // status fill reads against the ground by its hue and tone.
             let progress = ProgressRingFace::new(0.5).fill_colour(&theme);
             let ratio = crate::color::contrast_ratio(progress, track);
             assert!(
@@ -1127,8 +1072,6 @@ mod tests {
         assert_eq!(node.value.as_deref(), Some("42%"));
     }
 
-    /// A span paints its track and its fill even when empty (a dot), and
-    /// the style's track alpha reaches the track.
     #[test]
     fn span_paints_track_and_fill() {
         let theme = Theme::dark();

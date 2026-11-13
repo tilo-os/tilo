@@ -16,7 +16,6 @@ fn justified_rows_span_the_width_and_keep_aspect() {
     for (r, a) in rects.iter().zip(aspects) {
         assert!((r.width() / r.height() - a).abs() < 0.01, "aspect kept");
     }
-    // Every full row ends at the width; rows do not overlap.
     let mut rows: Vec<Vec<Rect>> = Vec::new();
     for r in &rects {
         match rows.last_mut() {
@@ -70,7 +69,6 @@ fn text_blocks_line_up_across_a_row() {
             && (rects[2].height() - rects[1].height()).abs() < 1.0,
         "the row shares its tallest text block: {rects:?}"
     );
-    // Square art, the text under it.
     assert!(rects[0].height() > rects[0].width());
 }
 
@@ -168,10 +166,8 @@ fn a_card_activates_and_its_hover_action_is_its_own() {
     );
     let card = rect(&harness.inspection().root.children[0]);
     let art_centre = Point::new(card.center().x, card.y0 + card.width() / 2.0);
-    // Away from the centred action: opens.
     harness.click_at(card.x0 + 10.0, card.y0 + 10.0);
     assert_eq!(opened.get(), 1);
-    // On the action (shown while hovered): plays, does not open.
     harness.click_at(art_centre.x, art_centre.y);
     assert_eq!((opened.get(), played.get()), (1, 1));
 }
@@ -200,7 +196,6 @@ fn placeholders_and_badges_paint_without_seams() {
         &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
         Rect::new(0.0, 0.0, width, height),
     );
-    // The placeholder is one gradient fill, not a stack of bands.
     let gradients = scene
         .encoding()
         .draw_tags
@@ -231,8 +226,6 @@ fn overlay_badges_paint_legible_ink_in_every_theme() {
                     .tokens
                     .colors
                     .ink_on(live_fill, theme.text_primary, ON_FILL_MIN_CONTRAST);
-            // Material::Floating paints the opaque panel ground when no backdrop
-            // compositor is recording, also under reduced transparency.
             let duration_fill = crate::chrome::panel_ground(&theme);
             for (badge, fill, ink) in [
                 (MediaBadge::Live, live_fill, live_ink),
@@ -447,7 +440,6 @@ fn a_shelf_of_grids_lays_out_at_every_width() {
                     3,
                     MediaAspect::Wide,
                     &crate::arriving::Source::host("Lounge"),
-                    // Asked a while ago: the skeleton shows.
                     crate::time::now() - crate::time::Duration::from_secs(1),
                 ))],
             )));

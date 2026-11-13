@@ -20,8 +20,7 @@ use crate::theme::Theme;
 use crate::widget::DrawChild;
 use crate::widget::{Image, ImageFit, TaffyTreeExt, Widget};
 
-/// Normalized source-image crop edges. Values are always clamped to `0..=1`
-/// with at least 5% width and height.
+/// Normalized source-image crop edges.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CropSelection {
     pub left: f64,
@@ -75,8 +74,6 @@ pub struct ImageCropEditor {
     focused_edge: Edge,
     focused: bool,
 
-    /// Input or a new document value changed what this widget paints: it
-    /// repaints once, and rests after the frame draws it.
     dirty: bool,
 }
 
@@ -103,9 +100,8 @@ impl ImageCropEditor {
         }
     }
 
-    /// Paint into an immediate-mode host while retaining the same interaction
-    /// geometry as the normal [`Widget`] layout path.
-    /// The crop the person set: each edge a share of the picture, `0..=1`.
+    /// Paint into an immediate-mode host while retaining the same interaction geometry as
+    /// the normal [`Widget`] layout path.
     #[must_use]
     pub fn selection(&self) -> CropSelection {
         self.selection.get()
@@ -118,8 +114,6 @@ impl ImageCropEditor {
     }
 
     /// Route input for an immediate-mode host that uses [`Self::paint_at`].
-    /// Returns whether the event belongs to the crop editor. Pointer contact
-    /// focuses it so subsequent arrow keys nudge the active corner.
     pub fn handle_event_at(&mut self, event: &WindowEvent, scale: f64) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {

@@ -5,9 +5,7 @@ use crate::tokens::TextRole;
 
 use super::EditableLabel;
 
-/// A name that is typed over where it stands: a document's title, a tab's name, a list item's.
-/// Reading, it is text; pressed, it is a field whose Enter or click away commits the edit and
-/// whose Escape keeps the name it had.
+/// A name typed over where it stands: a document's title, a tab's name, a list item's.
 #[derive(Component)]
 #[component(name = "EditableLabel", role = "TextInput", label = "placeholder")]
 pub struct EditableLabelProps {
@@ -18,9 +16,9 @@ pub struct EditableLabelProps {
     pub role: TextRole,
     /// What it reads, dimmed, while the value is empty: "Untitled".
     pub placeholder: Option<String>,
-    /// Begin an edit on a press, as a document's title renames in place; else on a double click.
+    /// Begin an edit on a press, as a document's title does; else on a double click.
     pub edit_on_click: bool,
-    /// A blank entry empties the name rather than keeping the one before.
+    /// A blank entry empties the name.
     pub clears_on_blank: bool,
     /// It takes the row's width, eliding a long name.
     pub fill: bool,
@@ -84,7 +82,6 @@ impl Described for EditableLabel {
         editable
     }
 
-    /// A name set elsewhere changes in place; what it is set in builds it again.
     fn set_props(&mut self, props: EditableLabelProps) -> bool {
         if props.role != self.text_role()
             || props.edit_on_click != self.edits_on_a_press()

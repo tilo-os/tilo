@@ -1,5 +1,5 @@
-//! Shared prepaint solve for retained widgets with allocation-dependent styles,
-//! and the small inset helpers every `Style` builder used to spell by hand.
+//! Shared prepaint solve for retained widgets with allocation-dependent styles, and the
+//! small inset helpers every `Style` builder used to spell by hand.
 
 use std::collections::HashMap;
 
@@ -15,19 +15,13 @@ use crate::tokens::TextRole;
 /// What sizes an extent handed to a responsive shell (HIG §9.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExtentSizing {
-    /// A destination list, an overview column, a breakpoint: sized by the
-    /// text it holds, so it grows by [`Theme::responsive_scale`]
-    /// (`ui_scale × text_scale.max(1.0)`).
     Text,
-    /// An icon rail: glyphs, not text, so it follows [`Theme::ui_scale`]
-    /// alone.
     Icon,
 }
 
 /// A breakpoint or pane width **authored at 1×** for a painted app's
-/// [`crate::widget::SidebarDrawer`], resolved against the theme once when
-/// the tree is built. `NavShell` reads its widths from the metrics and
-/// applies the same rule to them.
+/// [`crate::widget::SidebarDrawer`], resolved against the theme once when the tree is
+/// built.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AuthoredExtent {
     px: f64,
@@ -76,8 +70,8 @@ impl AuthoredExtent {
         self.resolve_with(theme.responsive_scale(), f64::from(theme.ui_scale))
     }
 
-    /// [`Self::resolve`] from the two factors, for a helper that caches
-    /// them instead of holding a theme (`SidebarDrawer`).
+    /// [`Self::resolve`] from the two factors, for a helper that caches them instead of
+    /// holding a theme (`SidebarDrawer`).
     #[must_use]
     pub fn resolve_with(&self, responsive_scale: f64, ui_scale: f64) -> f64 {
         self.px
@@ -122,8 +116,8 @@ pub fn insets_all(px: f32) -> taffy::Rect<LengthPercentage> {
     insets(px, px, px, px)
 }
 
-/// Symmetric padding: `horizontal` on left and right, `vertical` on top and
-/// bottom — the toolbar / action-row shape.
+/// Symmetric padding: `horizontal` on left and right, `vertical` on top and bottom — the
+/// toolbar / action-row shape.
 #[must_use]
 pub fn insets_xy(horizontal: f32, vertical: f32) -> taffy::Rect<LengthPercentage> {
     insets(vertical, horizontal, vertical, horizontal)
@@ -190,8 +184,8 @@ pub fn layout_clip() -> Option<vello::kurbo::Rect> {
     LAYOUT_CLIP.with(std::cell::Cell::get)
 }
 
-/// Run `place` (a scroll view placing its content) with `clip` as the
-/// [`layout_clip`], narrowed by any clip already in effect.
+/// Run `place` (a scroll view placing its content) with `clip` as the [`layout_clip`],
+/// narrowed by any clip already in effect.
 pub fn with_layout_clip<T>(clip: vello::kurbo::Rect, place: impl FnOnce() -> T) -> T {
     struct Restore(Option<vello::kurbo::Rect>);
     impl Drop for Restore {
@@ -209,10 +203,9 @@ thread_local! {
     static DEVICE_SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
 }
 
-/// The device pixels per logical pixel of the display a layout is for: every
-/// tree the toolkit solves rounds its edges onto that grid
-/// ([`solve_layout`]), so an edge lands on a device pixel at 1.5 as at 2.
-/// 1 outside a host's layout pass.
+/// The device pixels per logical pixel of the display a layout is for: every tree the
+/// toolkit solves rounds its edges onto that grid ([`solve_layout`]), so an edge lands on a
+/// device pixel at 1.5 as at 2. 1 outside a host's layout pass.
 #[must_use]
 pub fn device_scale() -> f32 {
     DEVICE_SCALE.with(std::cell::Cell::get)
@@ -257,13 +250,11 @@ impl Drop for DeviceScaleGuard {
 }
 
 thread_local! {
-    /// The tree whose widgets are being placed again from the layout they
-    /// were last placed from ([`placing_again`]), by address.
     static PLACING_AGAIN: std::cell::Cell<Option<*const ()>> = const { std::cell::Cell::new(None) };
 }
 
-/// A layout tree by address, to name it to [`placing_again_in`] while the
-/// tree's owner is borrowed to place its widgets.
+/// A layout tree by address, to name it to [`placing_again_in`] while the tree's owner is
+/// borrowed to place its widgets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TreeId(*const ());
 
@@ -290,8 +281,8 @@ pub(crate) fn placing_again_in<T>(tree: TreeId, place: impl FnOnce() -> T) -> T 
     place()
 }
 
-/// Maximum `rect.y1` across a widget subtree, for finding the true bottom
-/// edge when taffy's `content_size` under-reports.
+/// Maximum `rect.y1` across a widget subtree, for finding the true bottom edge when taffy's
+/// `content_size` under-reports.
 pub(crate) fn max_bottom_edge(w: &dyn super::Widget) -> f64 {
     let mut deepest = w.get_rect().y1;
     if w.child_clip_rect().is_some() {
@@ -316,9 +307,8 @@ pub(crate) fn at_a_place(event: &winit::event::WindowEvent) -> bool {
     )
 }
 
-/// From [`Widget::apply_layout`]: whether `taffy` is a tree its widgets are
-/// being placed again from unchanged (`placing_again_in`). A widget that
-/// lays out a tree of its own solves it, so its children are placed anew.
+/// From [`Widget::apply_layout`]: whether `taffy` is a tree its widgets are being placed
+/// again from unchanged (`placing_again_in`).
 #[must_use]
 pub fn placing_again(taffy: &TaffyTree<()>) -> bool {
     PLACING_AGAIN.with(std::cell::Cell::get) == Some(TreeId::of(taffy).0)
@@ -328,11 +318,6 @@ pub fn placing_again(taffy: &TaffyTree<()>) -> bool {
 pub enum WidgetLayoutError {
     #[error(transparent)]
     Taffy(#[from] taffy::TaffyError),
-    /// `still_changing` names the widgets whose style or manual placement
-    /// still changed in the last pass, so the one that oscillates is known;
-    /// `passes` gives each one's solved size over the last passes and
-    /// `available` the space offered, so the geometry that loops can be
-    /// rebuilt in a test.
     #[error(
         "widget layout styles did not settle after eight adjustments in {available}; still \
          changing: {}; solved sizes by pass: {}",
@@ -373,8 +358,7 @@ pub struct SkippedFrames {
 impl SkippedFrames {
     const QUIET: crate::time::Duration = crate::time::Duration::from_secs(60);
 
-    /// Note a frame skipped for `error` at `now`; the line to log, when one
-    /// is due.
+    /// Note a frame skipped for `error` at `now`; the line to log, when one is due.
     pub fn skip(&mut self, error: &WidgetLayoutError, now: crate::time::Instant) -> Option<String> {
         self.unreported = self.unreported.saturating_add(1);
         if self
@@ -432,15 +416,6 @@ pub(crate) type MeasureNode<'a> =
     dyn FnMut(Size<Option<f32>>, Size<AvailableSpace>, NodeId) -> Size<f32> + 'a;
 
 /// Solve `taffy` from `root`, measuring leaves with `measure`.
-///
-/// Taffy's solver is generic over its measure function, so every distinct
-/// closure handed to `compute_layout_with_measure` compiles the whole flexbox,
-/// grid and block solver again (about 200 KB of WebAssembly each). Toolkit
-/// code solves through this one function instead, so the solver is compiled
-/// once.
-///
-/// The solved edges round onto the display's device pixels
-/// ([`device_scale`]), not merely whole logical pixels.
 #[inline(never)]
 pub(crate) fn solve_layout(
     taffy: &mut TaffyTree<()>,
@@ -463,9 +438,6 @@ pub(super) unsafe fn compute_widget_layout_depth(
     text: &mut TextRenderer,
     depth: usize,
 ) -> Result<(), WidgetLayoutError> {
-    // The window's own solve is what it pays for a frame; a probe inside it is
-    // counted apart, and timing it here as well would read as more work than
-    // ran.
     let started = (depth == 0).then(crate::time::now);
     // SAFETY: forwards the caller's exact live-tree ownership contract.
     let settled =
@@ -522,7 +494,6 @@ unsafe fn solve_widget_layout(
             taffy.mark_dirty(node)?;
         }
     }
-    // Measurement enters each measured node's own scope.
     drop(sweep);
     // A region is solved again only when something it reads moved: the
     // allocation it is handed, a measure inside its own subtree, or a revision
@@ -532,16 +503,11 @@ unsafe fn solve_widget_layout(
     let mut reusable = Vec::with_capacity(policies.len());
     let mut regions = HashMap::with_capacity(policies.len());
     for (index, (node, policy, needs_measure)) in policies.iter().enumerate() {
-        // Outermost first: resetting a region dirties the regions inside it.
         let reset = super::manual::reset_region(policy, taffy, *node)?;
-        // A probe solves inside a copy of a tree whose regions may hold what
-        // the window placed, so it solves every region it finds.
         reusable.push(depth == 0 && !reset && !needs_measure);
         regions.insert(*node, index);
     }
     if depth == 0 {
-        // A region that starts its solve again is an input the regions holding
-        // it read too.
         for (index, (node, _, _)) in policies.iter().enumerate() {
             if !reusable[index] {
                 mark_enclosing_regions(taffy, &regions, &mut reusable, *node);
@@ -549,7 +515,6 @@ unsafe fn solve_widget_layout(
         }
     }
     let mut still_changing = Vec::new();
-    // The last passes' solved sizes of the nodes that changed in them.
     let mut recent: std::collections::VecDeque<Vec<(NodeId, String)>> =
         std::collections::VecDeque::new();
     for _ in 0..8 {
@@ -579,15 +544,10 @@ unsafe fn solve_widget_layout(
         })?;
         let mut changed = false;
         for (index, (node, policy, _)) in policies.iter().enumerate() {
-            // What this region was handed last time it solved here: the same
-            // allocation with nothing changed inside its subtree answers the
-            // same, so its placement stands and its policy is not run.
             if reusable[index] && policy.settled_at(taffy.unrounded_layout(*node).size) {
                 crate::profiling::layout_counts::kept();
                 continue;
             }
-            // Descriptor extraction proved admission (including unbound).
-            // Re-enter the same owner's existing lease for the WHOLE policy.
             let binding = bindings.binding_for(*node);
             let Ok(_owner) = binding
                 .as_ref()
@@ -653,7 +613,6 @@ unsafe fn solve_widget_layout(
             .map(|&node| (node, solved_node(taffy, node)))
             .collect(),
     );
-    // Named once it gave up, outside every owner's lease.
     let passes = still_changing
         .iter()
         .map(|&node| {
@@ -680,9 +639,6 @@ unsafe fn solve_widget_layout(
     })
 }
 
-/// Stop keeping the solve of every region whose own subtree holds `node`,
-/// `node`'s own region included: what a region's policy read is its subtree,
-/// and something in it moved.
 fn mark_enclosing_regions(
     taffy: &TaffyTree<()>,
     regions: &HashMap<NodeId, usize>,
@@ -698,9 +654,6 @@ fn mark_enclosing_regions(
     }
 }
 
-/// `node`'s unrounded solved size, its minimum height and its trailing
-/// padding (where a scroll view reserves its bar), for an unsettled layout's
-/// error.
 fn solved_node(taffy: &TaffyTree<()>, node: NodeId) -> String {
     let layout = taffy.unrounded_layout(node);
     let min_height = taffy
@@ -778,8 +731,6 @@ pub(crate) fn settle_widget_composition(
     viewport_changed: bool,
     mut pass: impl FnMut(bool) -> Result<(Option<CompositionGeometry>, bool), WidgetLayoutError>,
 ) -> Result<(), WidgetLayoutError> {
-    // Every pass of this frame reads its motions at one instant: a widget
-    // sized by a motion then measures the same in each pass.
     let _frame = crate::motion::pin_frame();
     let mut previous = None;
     let mut rebuild = false;
@@ -840,9 +791,6 @@ impl CompositionFocus {
     pub(crate) fn capture_live(root: &dyn Widget) -> Option<Self> {
         type Visit<'v> =
             dyn FnMut(&dyn Widget, &Option<crate::bound_dispatch::CallbackBinding>, bool) + 'v;
-        /// Visit every widget a rebuild admits, in tree order, inside its
-        /// binding entry, with the component binding it is admitted under and whether it is a focus target (focused, with no
-        /// focused ancestor).
         fn walk(
             widget: &dyn Widget,
             binding: Option<crate::bound_dispatch::CallbackBinding>,
@@ -895,7 +843,6 @@ impl CompositionFocus {
         }
         let (target, mut focus) = found?;
         let key = focus.key.clone()?;
-        // Then whether another widget of the same owners answers to its key.
         let mut visited = 0_usize;
         let mut ambiguous = false;
         walk(root, None, false, &mut |widget, binding, _| {
@@ -998,8 +945,6 @@ impl CompositionFocus {
                 })
                 .take(2)
                 .count();
-            // A unique named control keeps its identity through delegate/role
-            // changes. Repeated generic names need a unique canonical qualifier.
             let matches = if matches > 1 && focus.semantic_key.is_some() {
                 focus.qualified_semantic = true;
                 nodes
@@ -1044,7 +989,6 @@ impl CompositionFocus {
         bindings: &BoundNodeMap,
         allowed: Option<&[NodeId]>,
     ) -> Option<NodeId> {
-        // Asked of every node: look the order up, do not scan it each time.
         let allowed: Option<std::collections::HashSet<NodeId>> =
             allowed.map(|order| order.iter().copied().collect());
         let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
@@ -1209,7 +1153,6 @@ impl CompositionFocus {
                 mutate_bound_node(bindings, nodes, node, |widget| {
                     if Some(node) != keep && Some(node) != target && widget.is_focused() {
                         widget.set_focus(false);
-                        // Focus leaving is input the component takes up.
                         if let Some(binding) = bindings.binding_ref(node) {
                             binding.note_input();
                         }
@@ -1218,7 +1161,6 @@ impl CompositionFocus {
             };
         }
         if keep.is_some() {
-            // The trap's own focus stays where the person put it.
             return;
         }
         // Compound controls propagate focus into their internal editor. Restore
@@ -1310,8 +1252,6 @@ mod tests {
     use crate::widget::TaffyTreeExt;
     use vello::kurbo::{Point, Rect};
 
-    /// A focusable control that counts how often its accessibility node is
-    /// built: what a rebuild pays per widget to resolve its translated name.
     struct AccessCount {
         built: std::rc::Rc<std::cell::Cell<usize>>,
         focused: bool,
@@ -1346,9 +1286,6 @@ mod tests {
         }
     }
 
-    /// A block of text as wide as the column it stands in, that wraps into more lines the
-    /// narrower it is measured: its height under a min-content constraint is not the height it
-    /// takes at the same width laid out.
     #[test]
     fn a_measure_under_a_min_content_constraint_leaves_no_height_for_a_width_asked_after() {
         use taffy::geometry::Size;
@@ -1403,7 +1340,6 @@ mod tests {
                 height: if narrow { 300.0 } else { 20.0 },
             }
         };
-        // Measured to see how narrow its content goes, then laid out at the width it stands in.
         for available in [
             Size {
                 width: AvailableSpace::MinContent,
@@ -1458,8 +1394,6 @@ mod tests {
         assert!(!focus.ambiguous, "no other control has its name");
         assert_eq!(built.get(), 1, "a named target's own node only");
 
-        // A target known by its semantic key alone is compared with every
-        // other control's, and they share it.
         built.set(0);
         let focus = CompositionFocus::capture_live(&list(Some(None))).unwrap();
         assert_eq!(focus.key.as_deref(), Some("semantic:shared"));
@@ -1520,8 +1454,6 @@ mod tests {
 
     #[test]
     fn authored_extents_and_rounding_resolve_by_sizing() {
-        /// HIG §9.6 in one place: text-sized extents grow by
-        /// `ui_scale × text_scale.max(1.0)`, icon-sized ones by `ui_scale`.
         fn authored_extents_resolve_by_their_sizing() {
             let text = AuthoredExtent::text(760.0);
             let icon = AuthoredExtent::icon(86.0);
@@ -1541,8 +1473,6 @@ mod tests {
             assert_eq!(text.authored(), 760.0);
         }
 
-        /// The authored height holds until the body line outgrows the room it
-        /// left; then the line grows and the authored padding is kept.
         fn text_control_height_keeps_the_authored_height_until_the_line_outgrows_it() {
             let stock = Theme::dark();
             assert_eq!(text_control_height(34.0, &stock), 34.0);
@@ -1579,8 +1509,6 @@ mod tests {
             );
         }
 
-        /// A manual region's fractional allocation, laid out at `scale` device pixels per
-        /// logical pixel.
         fn manual_allocation_at(scale: f64) -> Rect {
             use crate::widget::{Button, Manual};
             let mut widget = Manual::new(|ctx| {
@@ -1713,7 +1641,6 @@ mod tests {
             let result = unsafe {
                 compute_widget_layout(&mut tree, root, available, &nodes, &bindings, &mut text)
             };
-            // The error names the widget that kept changing.
             match result {
                 Err(WidgetLayoutError::DidNotSettle { still_changing, .. }) => {
                     assert_eq!(still_changing, [std::any::type_name::<UnsettledStyles>()])
@@ -2020,8 +1947,6 @@ mod tests {
                 bindings.rebuild(editor.as_ref(), &tree, root, &nodes);
             }
             assert!(editor.blocks()[0].line.is_focused());
-            // The editor owns its lines' layout, so its node is the one focused
-            // node while the line it routes text to holds the caret.
             assert_eq!(
                 nodes
                     .values()
@@ -2121,11 +2046,6 @@ mod tests {
         }
     }
 
-    /// A widget the solver measures answers its request there, whether or not
-    /// a frame draws it. A label in a container nobody shows this frame (a
-    /// shut door's, a folded pane's) has no draw to clear it: one change of
-    /// its text kept it, and its path to the root, re-measuring every frame
-    /// after.
     #[test]
     fn a_label_laid_out_and_never_drawn_answers_its_measure() {
         use crate::widget::{Column, Text};
@@ -2143,7 +2063,6 @@ mod tests {
             width: AvailableSpace::Definite(400.0),
             height: AvailableSpace::Definite(300.0),
         };
-        // What a host does for a frame: solve the sizes, place the boxes.
         let lay_out = |root: &mut Column, tree: &mut TaffyTree<()>| {
             let mut text = crate::font_catalog::fixture_renderer();
             // SAFETY: as above.
@@ -2216,8 +2135,8 @@ pub(super) fn allocation_or_content_size(
 }
 
 /// A linear container's `(rect, paint_rect)` at `origin`: the rect spans
-/// [`allocation_or_content_size`], the paint rect the laid-out box grown to
-/// fit its content.
+/// [`allocation_or_content_size`], the paint rect the laid-out box grown to fit its
+/// content.
 pub(super) fn flow_rects(
     tree: &TaffyTree<()>,
     node: NodeId,

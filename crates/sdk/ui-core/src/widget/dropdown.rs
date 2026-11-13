@@ -1,30 +1,4 @@
 //! [`Dropdown`] — a reusable, CRDT-backed single-select control.
-//!
-//! Closed it reads like a button (the current selection plus a chevron); open it reveals a
-//! scrollable list that composites *on top of* following content through the App's top-layer
-//! [`Widget::draw_overlay`] pass — a real overlay, not an inline expander that shoves siblings
-//! down.
-//!
-//! The chosen value lives in an explicit durable or process-local model: [`Dropdown::new`]
-//! binds a document key, [`Dropdown::from_state`] a typed [`crate::LocalState<String>`], and
-//! `sync` mirrors model changes back without app-owned fan-out.
-//!
-//! Keyboard while focused: Enter/Space/Down open, Up/Down move the highlight, Enter selects and
-//! closes, Esc dismisses. In a list of [`FILTER_MIN_OPTIONS`] or more, printable characters
-//! drive an incremental, case-insensitive substring filter (Backspace edits it); a shorter list
-//! never filters, and letters typed in quick succession arm the first option their name begins
-//! ([`crate::type_ahead`], as every list answers typing).
-//!
-//! Closed, the control is as wide as its widest option (`fill` spans the parent); inside a
-//! [`crate::widget::Section`] or [`crate::widget::FormSection`] the section's choosers share one
-//! width, capped at the theme's chooser width, so a column of trailing dropdowns has two
-//! straight edges. [`DropdownFace`] paints the same closed control for a painted host, paired
-//! with an option [`crate::widget::Popover`]. [`Dropdown::as_menu`] makes it a menu button
-//! instead: an icon opening a list of choices, each a command rather than a value it keeps.
-//!
-//! While open the widget reports [`Widget::wants_pointer_capture`] so its container routes all
-//! events to it exclusively — how the out-of-layout list becomes hit-testable and click-outside
-//! dismissal works.
 
 use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
@@ -63,15 +37,12 @@ const MAX_LIST_HEIGHT: f64 = 240.0;
 const PAD_X: f64 = 10.0;
 const CHEVRON_W: f64 = 30.0;
 
-/// The narrowest a menu button's list opens, so its choices read in full
-/// beside an icon-sized trigger: a utility panel's width.
 fn menu_min_width() -> f64 {
     f64::from(crate::tokens::Metrics::BASE.panel_width_utility)
 }
 
 type SelectionChangeCallback = Box<dyn FnMut(&str)>;
 
-/// The operation type of a chooser's committed selection.
 const CHANGE_DROPDOWN: &str = "tilo.ui.dropdown.change";
 
 #[allow(
@@ -80,62 +51,34 @@ const CHANGE_DROPDOWN: &str = "tilo.ui.dropdown.change";
 )]
 pub struct Dropdown {
     id: String,
-    /// Fluent message id (or, with `name_resolved`, resolved text) spoken
-    /// independently from the selected value.
     accessible_name: Option<String>,
-    /// Stable machine values parallel to the human-readable option labels.
-    /// The legacy constructor uses equal value/label pairs.
     values: Vec<String>,
     options: Vec<String>,
-    /// The heading each option stands under in the open list, parallel to
-    /// `options`: `None` for an option with none.
     groups: Vec<Option<String>>,
-    /// The keys that do what an option does, by its value, shown at the
-    /// row's end so a menu teaches its shortcuts.
     shortcuts: Vec<(String, String)>,
-    /// Where the selected value lives: a document key or process-local state.
     binding: Option<BoxedBinding<String>>,
     on_change: Option<SelectionChangeCallback>,
     action: Option<ActionEmitter<String>>,
-    /// Every committed choice, published as the control's view action
-    /// `change` ([`Self::on_change_view`]) and answered by its own handler.
     change_verb: Option<super::control_verb::ControlVerb<String>>,
     placeholder: String,
 
-    /// Mirror of the bound value. Empty when unset.
     selected: String,
     open: bool,
-    /// An accepted interaction opened this popup, rather than a shot seed.
     interactive_open: bool,
-    /// Incremental substring filter; empty shows every option.
     filter: String,
     filter_selection: Selection,
     filter_composition: QueryComposition,
-    /// What has been typed into an open short list.
     typing: crate::type_ahead::TypeAhead,
-    /// The open list: the options the filter shows, the highlighted one
-    /// armed, scrolled to keep it in view.
     list: SuggestionList,
-    /// The row in the open list each option the filter shows stands in,
-    /// parallel to the filter's matches: a group's heading takes a row of
-    /// its own, so a row is not an option's position.
     rows_at: Vec<usize>,
     query_rect: Rect,
 
-    /// One-shot: align `highlight` to the selected option on the next
-    /// `sync`. Set by the `open()` builder, where `selected` isn't known
-    /// until `sync` reads the document.
     align_highlight_on_sync: bool,
 
-    /// The field: the closed control, below its caption when it has one.
     rect: Rect,
-    /// The whole widget: the caption (if any) above the field.
     outer: Rect,
-    /// A short label stacked above the field ("Level", "Source").
     caption: Option<String>,
-    /// Height the caption takes above the field in the current theme.
     caption_height: f64,
-    /// The field's height and label role.
     control_size: crate::widget::ControlSize,
     is_focused: bool,
     is_hovered: bool,
@@ -144,50 +87,25 @@ pub struct Dropdown {
     /// above the control instead of running off the bottom of the window.
     /// `None` until a paint has reported one (bare harnesses never do).
     viewport: Option<Rect>,
-    /// The theme the field and the open list are placed and measured in, from
-    /// the latest layout or paint; `None` before either.
     theme: Option<Rc<Theme>>,
 
-    /// When `false`: skipped by focus, rejects input, renders dimmed.
-    /// Default `true`.
     enabled: bool,
-    /// A menu button's icon: the control is that icon, and a choice is a
-    /// command it reports rather than a value it shows.
     menu: Option<crate::icons::Icon>,
-    /// What the last painted frame showed, so an unchanged control reports
-    /// no damage.
     drawn: Option<u64>,
 
-    /// Span the parent's width instead of hugging the widest option.
     fill: bool,
-    /// A glyph before the value: what kind of thing the choice is.
     leading_icon: Option<crate::icons::Icon>,
-    /// `accessible_name` is already resolved text, spoken as given.
     name_resolved: bool,
-    /// The field's height in the theme of the latest layout or paint; what
-    /// [`Self::apply_layout_external`] stacks the caption above.
     field_height: f64,
-    /// The label and caption styles of the latest layout, for measuring.
     label_style: TextStyle,
     caption_style: TextStyle,
     theme_caption_height: f64,
-    /// The width measured for the options in the latest layout.
     measured: f64,
-    /// The width the choosers of the enclosing section share, when this
-    /// dropdown is one of them.
     column: Option<ChooserColumn>,
-    /// The widest a shared chooser grows: the theme's chooser width, grown
-    /// with the text.
     chooser_cap: f64,
-    /// Host-owned pointer precision controls direct-touch target geometry.
     interaction: crate::interaction::InteractionEnvironment,
-    /// An option, the placeholder, the caption or the icon changed since the
-    /// last layout, so the measured width may have.
     layout_dirty: bool,
-    /// The list's coming from the field and going back (`motion::Appear`).
     appear: crate::motion::Appearing,
-    /// The pose the list was last drawn in: rows are hit where they are
-    /// drawn while it moves.
     list_pose: crate::motion::Pose,
 }
 
@@ -195,16 +113,13 @@ pub struct Dropdown {
 /// next option starting with it instead.
 pub const FILTER_MIN_OPTIONS: usize = 8;
 
-/// The one width a section's choosers share. Each dropdown offers the width
-/// its own options need; all of them take the widest offer, capped at the
-/// theme's chooser width (a longer value elides). Trailing in their rows,
-/// they then line up on both edges.
+/// The one width a section's choosers share.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ChooserColumn(Rc<Cell<f64>>);
 
 impl ChooserColumn {
-    /// Forget the offers of the previous layout, so a chooser whose options
-    /// got shorter lets the column narrow.
+    /// Forget the offers of the previous layout, so a chooser whose options got shorter
+    /// lets the column narrow.
     pub(crate) fn reset(&self) {
         self.0.set(0.0);
     }
@@ -215,9 +130,8 @@ impl ChooserColumn {
         shared
     }
 
-    /// Enrol `widget` or the value choosers inside it: dropdowns that hug
-    /// their options, without a caption of their own. A nested section keeps
-    /// its own column.
+    /// Enrol `widget` or the value choosers inside it: dropdowns that hug their options,
+    /// without a caption of their own.
     pub(crate) fn join(&self, widget: &mut dyn Widget) {
         if let Some(any) = widget.as_any_mut() {
             if any.is::<crate::widget::Section>() || any.is::<crate::widget::FormSection>() {
@@ -242,8 +156,6 @@ impl Dropdown {
             (!self.fill && self.menu.is_none() && self.caption.is_none()).then(|| column.clone());
     }
 
-    /// The width the control takes for options that need `own`: its own, or
-    /// the section's shared chooser width.
     fn field_width(&self, own: f64) -> f64 {
         let own = own.max(PAD_X + CHEVRON_W);
         self.column.as_ref().map_or(own, |column| {
@@ -257,8 +169,8 @@ impl Dropdown {
     fn effectively_enabled(&self) -> bool {
         self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
     }
-    /// Construct a dropdown over `options`, keeping the chosen value as text
-    /// under the document key `value_path`.
+    /// Construct a dropdown over `options`, keeping the chosen value as text under the
+    /// document key `value_path`.
     pub fn new(options: Vec<String>, value_path: &str) -> Self {
         Self {
             id: String::new(),
@@ -319,7 +231,6 @@ impl Dropdown {
         }
     }
 
-    /// Everything the control's paint depends on.
     fn visual_signature(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -361,9 +272,6 @@ impl Dropdown {
     }
 
     /// Observe selections produced by user interaction.
-    ///
-    /// Model synchronization and [`Self::set_selected`] do not invoke this
-    /// callback.
     #[must_use]
     pub fn on_change(mut self, callback: impl FnMut(&str) + 'static) -> Self {
         if self.action.is_none() {
@@ -381,9 +289,8 @@ impl Dropdown {
     }
 
     /// Run `callback` with each committed selection, the chooser as control
-    /// `tilo.control:<id>`, publishing it as its view action `change`: a
-    /// person's choice, a screen reader's, a script's and an agent's arrive
-    /// through the same action.
+    /// `tilo.control:<id>`, publishing it as its view action `change`: a person's choice, a
+    /// screen reader's, a script's and an agent's arrive through the same action.
     #[must_use]
     pub fn on_change_view(mut self, callback: impl FnMut(&str) + 'static) -> Self {
         if self.action.is_none() {
@@ -427,9 +334,7 @@ impl Dropdown {
         self
     }
 
-    /// Span the parent's width. Without it the control is as wide as its
-    /// widest option and the chevron need, like a [`crate::widget::NumberInput`],
-    /// so it sits in a row or a header's actions beside other controls.
+    /// Span the parent's width.
     #[must_use]
     pub fn fill(mut self) -> Self {
         self.fill = true;
@@ -437,8 +342,7 @@ impl Dropdown {
         self
     }
 
-    /// A glyph before the value that says what the choice is (a source, a
-    /// scope, a calendar).
+    /// A glyph before the value that says what the choice is.
     #[must_use]
     pub fn leading_icon(mut self, icon: crate::icons::Icon) -> Self {
         self.leading_icon = Some(icon);
@@ -480,8 +384,7 @@ impl Dropdown {
         self
     }
 
-    /// Imperatively flip the enabled state. Disabling an open dropdown
-    /// also closes it.
+    /// Imperatively flip the enabled state.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
         if !enabled {
@@ -489,19 +392,17 @@ impl Dropdown {
         }
     }
 
-    /// Start opened. Used for headless `--shots` of the open state; the
-    /// highlight is aligned to the selected option on the first `sync`.
+    /// Start opened.
     #[must_use]
     pub fn open(mut self) -> Self {
         self.open = true;
-        // Open from its first paint: shown at rest, not arriving.
         self.appear.snap(true);
         self.align_highlight_on_sync = true;
         self
     }
 
-    /// Conditionally start opened — convenience for callers that decide
-    /// at build time (e.g. a shot seed).
+    /// Conditionally start opened — convenience for callers that decide at build time (e.g.
+    /// a shot seed).
     #[must_use]
     pub fn open_if(self, cond: bool) -> Self {
         if cond { self.open() } else { self }
@@ -528,8 +429,7 @@ impl Dropdown {
         self
     }
 
-    /// Replace the available options while preserving the current value when
-    /// possible. Useful for embedded hosts whose choices are model-derived.
+    /// Replace the available options while preserving the current value when possible.
     pub fn set_options(&mut self, options: Vec<String>) {
         if self.options != options || self.values != options {
             self.layout_dirty = true;
@@ -576,13 +476,12 @@ impl Dropdown {
         self.layout_dirty = true;
     }
 
-    /// The keys that do what each option does, by value: shown at the
-    /// end of its row (`Ctrl+S`). Options without one show none.
+    /// The keys that do what each option does, by value: shown at the end of its row
+    /// (`Ctrl+S`).
     pub fn set_option_shortcuts<'a>(
         &mut self,
         shortcuts: impl IntoIterator<Item = (&'a str, &'a str)>,
     ) {
-        // A row's keys take their own column: the list is measured again.
         self.layout_dirty = true;
         self.shortcuts = shortcuts
             .into_iter()
@@ -603,26 +502,17 @@ impl Dropdown {
         &self.selected
     }
 
-    /// Start on `selected`: the value the field shows, in the value's ink,
-    /// until its binding reads a stored value. Use this, not a placeholder,
-    /// for a setting's current or default value; a placeholder is a prompt
-    /// for a field with no value.
+    /// Start on `selected`: the value the field shows, in the value's ink, until its
+    /// binding reads a stored value.
     #[must_use]
     pub fn with_selected(mut self, selected: impl Into<String>) -> Self {
-        // Shown, not published: the binding's stored value still wins, and
-        // starting on the current value is not an edit.
         self.selected = selected.into();
         self
     }
 
     /// Set the selected model value programmatically.
-    ///
-    /// A bound [`crate::LocalState`] is updated immediately; this does not
-    /// invoke [`Self::on_change`].
     pub fn set_selected(&mut self, selected: impl Into<String>) {
         let selected = selected.into();
-        // A value outside the options (loaded ahead of them) is measured too,
-        // and an open list shows the chosen row checked.
         if selected != self.selected {
             self.layout_dirty = true;
         }
@@ -682,23 +572,15 @@ impl Dropdown {
         self
     }
 
-    /// Adopt the theme's geometry: the field height, the caption height and
-    /// the styles the width is measured with.
     fn adopt_theme(&mut self, theme: &Theme) {
-        // The open list is measured in the theme's own type — its UI face and
-        // "Always distinguish similar letters" — so a row placed in layout is
-        // as wide as the one painted in it.
         let changed = self.theme.as_ref().is_none_or(|held| {
             held.text_scale.to_bits() != theme.text_scale.to_bits() || held.tokens != theme.tokens
         });
         if changed {
             self.theme = Some(Rc::new(theme.clone()));
-            // Rows measured in the previous type are measured again.
             self.list.forget_width();
         }
         self.field_height = self.control_size.height(theme);
-        // Preserve compact pointer controls; coarse direct input needs real
-        // non-overlapping targets, not inflated neighbouring hit rectangles.
         let touch_minimum =
             if self.interaction.pointer_precision == crate::interaction::PointerPrecision::Coarse {
                 f64::from(self.interaction.minimum_target())
@@ -746,7 +628,6 @@ impl Dropdown {
         self.menu.is_none() && self.options.len() >= FILTER_MIN_OPTIONS
     }
 
-    /// Lay the widget out in `outer`: the caption on top, the field below.
     fn place(&mut self, outer: Rect) {
         self.outer = outer;
         let field_y0 = (outer.y0 + self.caption_height).min(outer.y1);
@@ -761,7 +642,6 @@ impl Dropdown {
         &self.filter
     }
 
-    /// Indices into `self.options` matching the current filter, in order.
     fn filtered(&self) -> Vec<usize> {
         if self.filter.is_empty() {
             (0..self.options.len()).collect()
@@ -781,7 +661,6 @@ impl Dropdown {
         self.filtered().len()
     }
 
-    /// Position of the selected option within `filtered`, or 0.
     fn selected_pos(&self, filtered: &[usize]) -> usize {
         filtered
             .iter()
@@ -793,8 +672,6 @@ impl Dropdown {
             .unwrap_or(0)
     }
 
-    /// The row of the open list the selected option within `filtered` stands
-    /// in, or 0: its position among the matches, past any headings above it.
     fn selected_row(&self, filtered: &[usize]) -> usize {
         self.rows_at
             .get(self.selected_pos(filtered))
@@ -806,7 +683,6 @@ impl Dropdown {
         !self.selected.is_empty() || self.values.contains(&self.selected)
     }
 
-    /// Presentation label for the selected stable value.
     fn selected_label(&self) -> &str {
         self.values
             .iter()
@@ -815,14 +691,9 @@ impl Dropdown {
             .map_or(self.selected.as_str(), String::as_str)
     }
 
-    /// Hand the open list its rows (the options the filter shows, the
-    /// applied one checked, each with its keys, each under its group's
-    /// heading), its anchor and its bounds.
     fn refresh_list(&mut self) {
         let (rows, rows_at) = self.rows_for(&self.filtered());
         self.rows_at = rows_at;
-        // A list that filters keeps room for its empty-result line, so it
-        // keeps its width while a query narrows it.
         let hint =
             (rows.is_empty() || self.supports_filter()).then(|| widget_text("dropdown-no-matches"));
         self.list.set_rows(rows);
@@ -874,21 +745,11 @@ impl Dropdown {
         (rows, at)
     }
 
-    /// The open list's panel.
     fn list_rect(&self) -> Rect {
         self.list.rect().unwrap_or(Rect::ZERO)
     }
 
-    /// Place what the open list holds: the filter field's press target, its
-    /// rows and the panel they show in, measured in the theme's own type. The
-    /// frame's layout places them, and so does every change that moves the
-    /// list — opening it, filtering it, a value it shows — so a frame read
-    /// before it draws (a test, assistive technology, a press on a window that
-    /// has laid out and not yet painted) finds the field and every row where
-    /// they are painted.
     fn place_list(&mut self) {
-        // While a query takes the field it leads with a search glyph, so its
-        // text starts past it.
         let filtering = self.open && self.supports_filter();
         self.query_rect = if filtering {
             content_rect(self.rect, true, &self.label_style)
@@ -896,19 +757,12 @@ impl Dropdown {
             Rect::ZERO
         };
         if !self.open {
-            // A list on its way out is drawn with the rows it closed with:
-            // nothing to place, and nothing to measure for a closed control.
             return;
         }
         self.refresh_list();
         let Some(theme) = self.theme.clone() else {
-            // No layout or paint has given the theme yet (an externally placed
-            // control before its first paint): its rows measure expensive
-            // geometry nothing can read. The first layout after a paint does.
             return;
         };
-        // Rows measured already keep their width: a paint measured them in
-        // this type, and placing them again shapes nothing.
         if !self.list.is_measured() {
             crate::text_render::with_layout_renderer(&theme, |text| {
                 self.list.measure(text, &theme);
@@ -917,16 +771,10 @@ impl Dropdown {
         self.list.place_scroll();
     }
 
-    /// The stable key of the option whose value is `value`.
     fn option_key(value: &str) -> u64 {
         crate::a11y::hash_key(&("dropdown-option", value))
     }
 
-    /// The open list as assistive technology and agents read it: each
-    /// option the filter shows, where it is drawn (rows scrolled out of
-    /// the list have no geometry), the chosen one selected and the
-    /// highlighted one the combobox's active descendant, each choosable through
-    /// [`Widget::perform_action`] by its key.
     fn options_access(&self) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
         let filtered = self.filtered();
@@ -942,9 +790,6 @@ impl Dropdown {
                     .with_name(label.clone())
                     .with_key(Self::option_key(value))
                     .with_position(row.saturating_add(1), total)
-                    // The keyboard stays on the combobox while its list is
-                    // open: the highlighted option is its active descendant,
-                    // announced without taking the tree's focus from it.
                     .with_state(
                         AccessState::new()
                             .selected(self.menu.is_none() && *value == self.selected)
@@ -973,8 +818,6 @@ impl Dropdown {
             return;
         }
         self.typing.type_text(typed, now);
-        // The list is short enough to filter nothing when typing arms an
-        // option, so a row still stands among the options in order.
         let armed = self
             .list
             .highlight()
@@ -988,7 +831,6 @@ impl Dropdown {
         }
     }
 
-    /// Open the list and align highlight + scroll to the current value.
     fn do_open(&mut self) {
         self.open = true;
         self.appear.show(true);
@@ -998,8 +840,6 @@ impl Dropdown {
         self.filter_composition.clear();
         self.typing.reset();
         self.list.clear();
-        // The list hangs from the field at once: opening one moves nothing
-        // else in the window, so no layout pass waits for it.
         self.place_list();
         let filtered = self.filtered();
         self.list.set_highlight(Some(self.selected_row(&filtered)));
@@ -1027,7 +867,6 @@ impl Dropdown {
     }
 
     /// Close the options overlay without changing its selected value.
-    /// A leaving list fades with the rows it showed.
     pub fn close(&mut self) {
         self.open = false;
         self.appear.show(false);
@@ -1036,12 +875,9 @@ impl Dropdown {
         self.filter.clear();
         self.filter_selection = Selection::collapsed(0);
         self.filter_composition.clear();
-        // The query's press target goes with it; the leaving list keeps the
-        // rows it closed with.
         self.place_list();
     }
 
-    /// Store `value` through the binding and mirror it locally.
     fn commit_value(&mut self, value: &str, _state: &AppModel, _root: &ModelPath) {
         if self.menu.is_some() {
             // A menu's choice is a command: reported, never kept. A menu
@@ -1081,7 +917,6 @@ impl Dropdown {
         }
     }
 
-    /// Select the highlighted option (if any) and close.
     fn select_highlighted(&mut self, state: &AppModel, root: &ModelPath) {
         if let Some(value) = self.list.highlighted().map(|row| row.value.clone()) {
             self.commit_value(&value, state, root);
@@ -1089,8 +924,6 @@ impl Dropdown {
         self.close();
     }
 
-    /// `WindowEvent::CursorMoved` — hover tracking, plus (while open)
-    /// following the highlight to the row under the pointer.
     fn on_cursor_moved(&mut self, event: &WindowEvent, pos: Point, ctx: &mut EventCtx<'_>) {
         self.last_cursor = pos;
         // A hover change is a repaint, not consumed input (see `Button`): a
@@ -1098,12 +931,10 @@ impl Dropdown {
         // deliver this move to the sibling the pointer went to, and the
         // sibling's hover — or this one's — would stick.
         self.is_hovered = self.rect.contains(pos);
-        // While open, hovering a row moves the highlight; a held bar thumb follows.
         if self.open {
             if self.scroll_event(event, ctx) || *ctx.handled {
                 return;
             }
-            // The list is hit where it is drawn while it arrives.
             let pos = self.list_pose.to_local(pos);
             if self.list.arm_at(pos) {
                 *ctx.handled = true;
@@ -1111,13 +942,10 @@ impl Dropdown {
         }
     }
 
-    /// Hand `event` to the open list's scroll region.
     fn scroll_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         self.open && self.list.scroll_event(event, ctx)
     }
 
-    /// `WindowEvent::MouseInput { state: Pressed, button: Left }` — select a
-    /// clicked row, close on a click outside the list, or open when closed.
     fn on_left_press(
         &mut self,
         state: &AppModel,
@@ -1128,7 +956,6 @@ impl Dropdown {
     ) {
         let pos = self.last_cursor;
         if self.open {
-            // The list is hit where it is drawn while it arrives.
             let at = self.list_pose.to_local(pos);
             if self.list_rect().contains(at) {
                 if self.list.row_at(at).is_some() {
@@ -1147,7 +974,6 @@ impl Dropdown {
                     self.close();
                 }
             } else {
-                // Click-outside dismissal.
                 self.close();
             }
             *handled = true;
@@ -1158,7 +984,6 @@ impl Dropdown {
         }
     }
 
-    /// `WindowEvent::MouseWheel` off the list: an open dropdown scrolls from the field too.
     fn on_wheel(&mut self, delta: &MouseScrollDelta, handled: &mut bool) {
         let dy = match delta {
             MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * -self.list.row_height(),
@@ -1198,7 +1023,6 @@ impl Dropdown {
                     self.close();
                     *handled = true;
                 }
-                // A menu shows no query to type into.
                 _ if self.menu.is_some() => {}
                 _ if self.options.len() < FILTER_MIN_OPTIONS => {
                     // A short list never filters: a typed letter arms the
@@ -1226,22 +1050,17 @@ impl Dropdown {
                     }
                 }
             }
-        } else {
-            // Closed: Enter / Space / Down (or Up) open the list.
-            if let Key::Named(
-                NamedKey::Enter | NamedKey::Space | NamedKey::ArrowDown | NamedKey::ArrowUp,
-            ) = logical_key
-            {
-                self.do_open();
-                *handled = true;
-            }
+        } else if let Key::Named(
+            NamedKey::Enter | NamedKey::Space | NamedKey::ArrowDown | NamedKey::ArrowUp,
+        ) = logical_key
+        {
+            self.do_open();
+            *handled = true;
         }
     }
 }
 
 impl Dropdown {
-    /// Record the bounds a frame painted in. An open list is placed inside
-    /// them, so a window that moved asks for the layout that puts it there.
     fn note_viewport(&mut self, viewport: Rect) {
         if self.viewport == Some(viewport) {
             return;
@@ -1250,10 +1069,7 @@ impl Dropdown {
         self.layout_dirty |= self.open;
     }
 
-    /// The filter changed: the list shows what it matches, from the top.
     fn filter_edited(&mut self) {
-        // Different rows, and so another list hanging from the field. The
-        // field keeps its width, so nothing else in the window moves.
         self.place_list();
         self.list.set_highlight(Some(0));
         self.list.scroll_px(f64::NEG_INFINITY);
@@ -1300,8 +1116,6 @@ impl Widget for Dropdown {
             && selected != self.selected
         {
             self.selected = selected;
-            // The chosen row of an open list shows checked: what it holds
-            // changed, and nothing else in the window moved.
             self.place_list();
         }
         if self.align_highlight_on_sync {
@@ -1318,17 +1132,6 @@ impl Widget for Dropdown {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The open list is intentionally NOT a taffy child: it paints in the
-        // overlay pass, so it doesn't reserve layout space.
-        //
-        // The control is as wide as its widest option (measured in
-        // `adjust_layout_style`), or the row's width with `fill`. In
-        // both cases it is the item that gives when the row is short of
-        // room, like `TextInput` and unlike fixed-size leaves such as
-        // `Toggle`: with `flex_shrink: 0` a dropdown claimed the whole row
-        // and pushed every later sibling past the edge to zero width. The
-        // floor keeps the chevron slot and padding so a squeezed control is
-        // still a control.
         self.adopt_theme(theme);
         if self.menu.is_some() {
             // A menu button is an icon-only control of its size.
@@ -1347,8 +1150,6 @@ impl Widget for Dropdown {
         } else {
             0.0
         };
-        // Before its options are measured the width is left to `measure`,
-        // which the layout pass asks; afterwards it is pinned to them.
         let width = if self.fill {
             Dimension::percent(1.0)
         } else if self.measured > 0.0 {
@@ -1376,8 +1177,6 @@ impl Widget for Dropdown {
         self.place_list();
     }
 
-    /// The width every option needs, so a parent that measures its children
-    /// (a form row placing a trailing control) reserves exactly that.
     fn measure(
         &mut self,
         known: Size<Option<f32>>,
@@ -1385,8 +1184,6 @@ impl Widget for Dropdown {
         text: &mut TextRenderer,
     ) -> Size<f32> {
         if self.menu.is_some() {
-            // A menu button is the square of its size laid out in
-            // `build_layout`.
             let side = f32_of_f64(self.field_height);
             return Size {
                 width: known.width.unwrap_or(side),
@@ -1450,8 +1247,6 @@ impl Widget for Dropdown {
         if let Some(viewport) = presence.viewport.get() {
             self.note_viewport(viewport);
         }
-        // An externally placed dropdown learns the theme here: its caption
-        // takes the theme's height from now on.
         self.adopt_theme(theme);
         if let Some(icon) = self.menu {
             self.draw_menu_trigger(scene, transform, text_renderer, theme, icon);
@@ -1505,8 +1300,6 @@ impl Widget for Dropdown {
         }
     }
 
-    /// Top-layer pass: paint the open list above all later-drawn
-    /// siblings. The App composites this after the normal `draw` pass.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -1515,9 +1308,6 @@ impl Widget for Dropdown {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The list comes from the field and goes back (`motion::Appear`); a
-        // leaving list is drawn as it was until it has gone, and takes no
-        // input.
         self.appear.follow(self.open, theme.motion());
         if !self.appear.is_drawn() {
             self.list_pose = crate::motion::Pose::REST;
@@ -1526,8 +1316,6 @@ impl Widget for Dropdown {
         if let Some(viewport) = presence.viewport.get() {
             self.note_viewport(viewport);
         }
-        // The list stands where the layout placed it, drawn as it is: the
-        // rows it closed with while it leaves.
         let list = self.list_rect();
         let pose = self.appear.pose(list, self.rect.center());
         self.list_pose = pose;
@@ -1541,14 +1329,12 @@ impl Widget for Dropdown {
         self.appear.is_moving() || self.list.needs_animation_frame()
     }
 
-    /// A glide after a flick scrolls the list as the wheel does.
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         self.list.advance();
         false
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        // Disabled: reject all input — won't open, no selection, no hover.
         if !self.effectively_enabled() {
             return;
         }
@@ -1608,8 +1394,6 @@ impl Widget for Dropdown {
             } if self.open => {
                 self.scroll_event(event, ctx);
             }
-            // A wheel over the list scrolls it as every painted list scrolls;
-            // one elsewhere over an open dropdown goes on scrolling it too.
             WindowEvent::MouseWheel { delta, .. } if self.open => {
                 if !self.scroll_event(event, ctx) {
                     self.on_wheel(delta, ctx.handled);
@@ -1656,7 +1440,6 @@ impl Widget for Dropdown {
         true
     }
     fn set_focus(&mut self, focused: bool) {
-        // Losing focus (e.g. Tab away) dismisses the open list.
         if !focused {
             self.close();
         }
@@ -1726,7 +1509,6 @@ impl Widget for Dropdown {
                 .disabled(!self.is_enabled())
                 .expanded(self.open),
         );
-        // Surface the chosen option's ordinal so the reader can say "2 of 5".
         if let Some(idx) = self.values.iter().position(|value| *value == self.selected) {
             node = node.with_position(idx.saturating_add(1), self.options.len());
         }
@@ -1744,11 +1526,6 @@ impl Widget for Dropdown {
         Some(node)
     }
 
-    /// Accessibility and headless control of the combobox.
-    ///
-    /// Expand/collapse mirrors pointer opening, Activate toggles the popup,
-    /// and `SetValue` selects one exact option through the same model mutation
-    /// path as keyboard or pointer selection.
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -1763,8 +1540,6 @@ impl Widget for Dropdown {
         if self.open {
             self.refresh_list();
         }
-        // One of the open list's options, by its key: chosen as a click on
-        // its row chooses it.
         if let Some(&key) = key_path.last()
             && let Some(row) = self.filtered().iter().position(|&index| {
                 self.values
@@ -1775,7 +1550,6 @@ impl Widget for Dropdown {
             if !self.open || !matches!(action, Action::Activate) {
                 return false;
             }
-            // The option's row, past the group headings above it.
             let row = self.rows_at.get(row).copied().unwrap_or(row);
             self.list.set_highlight(Some(row));
             self.select_highlighted(state.doc(), root);
@@ -1818,13 +1592,10 @@ impl Widget for Dropdown {
         }
     }
 
-    // An open selector is a foreground query/list, so navigation containers
-    // defer Escape and other global shortcuts to it before going back.
     fn modal_capture(&self) -> Option<Rect> {
         self.open.then(|| self.rect.union(self.list_rect()))
     }
 
-    /// While open, grabs every event — see module docs.
     fn wants_pointer_capture(&self) -> bool {
         self.open
     }
@@ -1840,8 +1611,6 @@ impl crate::resources::PublishesResources for Dropdown {
 }
 
 impl crate::widget::ResourceOperations for Dropdown {
-    /// Answer a `change` addressed to this chooser: hand the value to the
-    /// chooser's own handler, whoever chose it.
     fn start_operation(
         &mut self,
         op: &super::ResourceOperation<'_>,
@@ -1922,24 +1691,18 @@ impl crate::widget::controls::ActionControls for Dropdown {
     }
 }
 
-/// The height of a caption stacked above a field: its line and `spacing.s1`.
 fn caption_height_in(style: &TextStyle, gap: f64) -> f64 {
     f64::from(style.line_height_px()) + gap
 }
 
-/// The edge of a leading icon: the label's line, so it grows with the text
-/// scale and stays the label's size.
 fn leading_icon_edge(style: &TextStyle) -> f64 {
     f64::from(style.line_height_px()).round()
 }
 
-/// Between a leading icon and the value.
 fn leading_icon_gap(style: &TextStyle) -> f64 {
     (leading_icon_edge(style) / 3.0).round()
 }
 
-/// The narrowest field that shows each of `labels` beside the padding, the
-/// optional leading icon and the chevron slot.
 fn field_width_for<'s>(
     labels: impl IntoIterator<Item = &'s str>,
     icon: bool,
@@ -1961,8 +1724,6 @@ fn field_width_for<'s>(
     (PAD_X + lead + widest + 0.5 + CHEVRON_W).ceil()
 }
 
-/// Where the value sits inside `field`: after the padding and a leading
-/// icon, before the chevron slot.
 fn content_rect(field: Rect, icon: bool, style: &TextStyle) -> Rect {
     let lead = if icon {
         leading_icon_edge(style) + leading_icon_gap(style)
@@ -1977,15 +1738,11 @@ fn content_rect(field: Rect, icon: bool, style: &TextStyle) -> Rect {
     )
 }
 
-/// One closed dropdown, painted: the shared body of the retained
-/// [`Dropdown`] and the immediate-mode [`DropdownFace`].
 struct FacePaint<'a> {
     outer: Rect,
     field: Rect,
     caption: Option<&'a str>,
     icon: Option<crate::icons::Icon>,
-    /// The value or the placeholder (`true`), or `None` while a filter
-    /// query takes the field.
     label: Option<(&'a str, bool)>,
     size: crate::widget::ControlSize,
     open: bool,
@@ -1994,9 +1751,6 @@ struct FacePaint<'a> {
     disabled: bool,
 }
 
-/// Paint the caption, the field, its leading icon, its value and its
-/// chevron. Where the value stands is the layout's to say: the filter query
-/// takes it from `query_rect`.
 fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) {
     let theme = ctx.theme;
     let style = face.size.label_style(theme);
@@ -2017,8 +1771,6 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) {
     }
     let radius = f64::from(theme.tokens.radii.control);
     let shape = RoundedRect::from_rect(face.field, radius);
-    // Disabled widgets paint their (forced-idle) look under a reduced
-    // group opacity so they read as non-interactive.
     if face.disabled {
         ctx.scene.push_layer(
             Fill::NonZero,
@@ -2028,9 +1780,6 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) {
             &shape,
         );
     }
-    // The field is a Secondary control: the raised face, its lift under the
-    // pointer and while open (HIG §9.2), the derived rest edge, and your
-    // colour as the focus ring.
     let raised = theme.tokens.colors.surfaces.raised;
     let active = (face.open || face.focused) && !face.disabled;
     let bg = if active {
@@ -2046,8 +1795,6 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) {
     } else {
         (1.0, crate::surface::edge_on(raised))
     };
-    // Rest edge and focus ring share one half-pixel-inset outline; the
-    // theme's border stands in for the rest edge.
     if active || !bordered {
         ctx.scene.stroke(
             &Stroke::new(bw),
@@ -2075,15 +1822,11 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) {
     if let Some((label, placeholder)) = face.label
         && !label.is_empty()
     {
-        // The placeholder is the tertiary ink, clearly weaker than a value.
         let color = if placeholder {
             theme.tokens.colors.text_tertiary
         } else {
             theme.text_primary
         };
-        // One line, elided to the room left of the chevron: a max width
-        // handed to `draw_text` wraps instead, and a wrapped second line
-        // lands under the control's bottom edge.
         let room = f32_of_f64(content.width().max(0.0) + 0.5);
         let shown = ctx.text.elide_to_width_style(label, room, &style);
         let (_, th) = ctx.text.measure_style(&shown, None, &style);
@@ -2099,8 +1842,6 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) {
         ctx.scene.pop_layer();
     }
 
-    // The trailing chevron, centred in its slot, from the one icon set; it
-    // grows with the text.
     let edge = (f64::from(theme.tokens.metrics.icon_sm) * f64::from(theme.text_scale.max(1.0)))
         .min(CHEVRON_W - 2.0);
     let slot_center = Point::new(face.field.x1 - CHEVRON_W / 2.0, face.field.center().y);
@@ -2228,8 +1969,8 @@ impl<'a> DropdownFace<'a> {
         }
     }
 
-    /// The narrowest rect that shows every one of `options` (and the
-    /// placeholder) beside the icon and the chevron, and the caption above.
+    /// The narrowest rect that shows every one of `options` (and the placeholder) beside
+    /// the icon and the chevron, and the caption above.
     #[must_use]
     pub fn intrinsic_width<'s>(
         &self,
@@ -2252,8 +1993,8 @@ impl<'a> DropdownFace<'a> {
         field.max(caption)
     }
 
-    /// The field below the caption: what the option list anchors to and
-    /// what a pointer opens.
+    /// The field below the caption: what the option list anchors to and what a pointer
+    /// opens.
     #[must_use]
     pub fn field_rect(&self, theme: &Theme) -> Rect {
         let caption = self.caption_height(theme);
@@ -2265,8 +2006,7 @@ impl<'a> DropdownFace<'a> {
         )
     }
 
-    /// Whether `point` opens the list: the field, grown to the minimum
-    /// pointer target.
+    /// Whether `point` opens the list: the field, grown to the minimum pointer target.
     #[must_use]
     pub fn contains(&self, theme: &Theme, point: Point) -> bool {
         let field = self.field_rect(theme);

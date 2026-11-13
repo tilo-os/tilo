@@ -1642,7 +1642,7 @@
     },
     {
       "name": "DisclosureBand",
-      "doc": "Content a view shows only while something is open (a tile's details under it, a row's section), standing in a column. When the view starts showing it, it unrolls from its top while what follows moves down with its edge; when the view stops, it rolls up. Under reduced motion it lands at once.",
+      "doc": "Content a view shows only while something is open, unrolling from its top.",
       "slots": [
         {
           "name": "content",
@@ -1658,7 +1658,7 @@
     },
     {
       "name": "Docked",
-      "doc": "Content that fills its column above a bar that stays at the column's foot: a conversation above its composer. The bar stands in the column the content is read at, a section's gap under the content and the page's gutter at its sides and below.",
+      "doc": "Content that fills its column above a bar that stays at the column's foot: a conversation above its composer.",
       "slots": [
         {
           "name": "content",
@@ -1678,7 +1678,7 @@
     },
     {
       "name": "DragRun",
-      "doc": "A run of items — a dock's icons, a toolbar's tiles, a row of cards — reordered by dragging one. Each item is one `ui.DragItem`.",
+      "doc": "A run of items — a dock's icons, a toolbar's tiles, a row of cards — reordered by dragging one.",
       "props": [
         {
           "name": "name",
@@ -1704,7 +1704,7 @@
         },
         {
           "name": "distribute",
-          "doc": "Where the run's packed items sit along it: its leading edge (the default), its centre, its trailing edge, or spread between its ends. A run whose items fall in groups packs each group at its own edge; this places a run of one group, such as a dock.",
+          "doc": "Where the run's packed items sit along it: its leading edge (the default), its centre, its trailing edge, or spread between its ends.",
           "type": {
             "option": {
               "choice": {
@@ -1809,7 +1809,7 @@
     },
     {
       "name": "Drawing",
-      "doc": "Shapes drawn with the design system over a box of their own: a ring, a gauge, a small chart, a diagram. Colours are theme roles and widths tokens; a press reports which shape.",
+      "doc": "Shapes drawn with the design system over a box of their own.",
       "props": [
         {
           "name": "shapes",
@@ -1905,7 +1905,7 @@
     },
     {
       "name": "DropZone",
-      "doc": "Where files go: drag them here, or press the button to choose them (an import, a picture to swap, a file to open). At rest it is a dashed edge around a glyph and a title; while a drag hovers it takes your colour.",
+      "doc": "Where files go: dragged here, or chosen with the button.",
       "props": [
         {
           "name": "title",
@@ -1939,7 +1939,7 @@
       "events": [
         {
           "name": "drop",
-          "doc": "Files were dropped: carries their paths, as `List<Text>`.",
+          "doc": "Files were dropped: their paths, as `List<Text>`.",
           "value": {
             "list": "text"
           }
@@ -1957,7 +1957,7 @@
     },
     {
       "name": "Dropdown",
-      "doc": "One of a short list, chosen from a field that opens the list: a project, a sort order, a unit. The chosen one shows in the field; the list filters as it is typed into.",
+      "doc": "One of a short list, chosen from a field that opens it: a project, a sort order, a unit.",
       "props": [
         {
           "name": "options",
@@ -2027,7 +2027,7 @@
     },
     {
       "name": "EditableLabel",
-      "doc": "A name that is typed over where it stands: a document's title, a tab's name, a list item's. Reading, it is text; pressed, it is a field whose Enter or click away commits the edit and whose Escape keeps the name it had.",
+      "doc": "A name typed over where it stands: a document's title, a tab's name, a list item's.",
       "props": [
         {
           "name": "role",
@@ -2059,12 +2059,12 @@
         },
         {
           "name": "edit_on_click",
-          "doc": "Begin an edit on a press, as a document's title renames in place; else on a double click.",
+          "doc": "Begin an edit on a press, as a document's title does; else on a double click.",
           "type": "bool"
         },
         {
           "name": "clears_on_blank",
-          "doc": "A blank entry empties the name rather than keeping the one before.",
+          "doc": "A blank entry empties the name.",
           "type": "bool"
         },
         {
@@ -2100,7 +2100,7 @@
     },
     {
       "name": "EmptyState",
-      "doc": "What a place says while it holds nothing: one sentence, and at most one action that starts filling it.",
+      "doc": "What a place says while it holds nothing: a sentence and at most one action.",
       "props": [
         {
           "name": "title",
@@ -2137,7 +2137,7 @@
         },
         {
           "name": "error",
-          "doc": "Something failed: the glyph takes the danger colour, and the message reads as an error (a view that could not be shown and why, `shell.md` §6).",
+          "doc": "Something failed: the glyph takes the danger colour and the message reads as an error.",
           "type": "bool"
         }
       ],
@@ -2191,7 +2191,7 @@
     },
     {
       "name": "BarGauge",
-      "doc": "A labelled level as a bar: a disk's use, a quota, a battery. Its label stands over the track's start and its readout over its end; the fill turns warning, then danger, as it fills, unless the share has no status.",
+      "doc": "A labelled level as a bar: a disk's use, a quota, a battery.",
       "props": [
         {
           "name": "value",
@@ -2209,7 +2209,7 @@
         },
         {
           "name": "readout",
-          "doc": "The reading over the track's end: \"412 GB of 512 GB\". Unless said, the share as a percentage is announced.",
+          "doc": "The reading over the track's end: \"412 GB of 512 GB\".",
           "type": {
             "option": "text"
           }
@@ -2246,7 +2246,7 @@
     },
     {
       "name": "ProgressRing",
-      "doc": "How full something is, as a ring: a countdown, a download, the one hero reading of a screen (a speed test). A regular or large ring holds its readout and what it measures.",
+      "doc": "How full something is, as a ring: a countdown, a download, the one hero reading of a screen (a speed test).",
       "props": [
         {
           "name": "value",
@@ -2316,7 +2316,7 @@
     },
     {
       "name": "Icon",
-      "doc": "One glyph from the icon set, in the theme's ink: a kind of thing beside its name, a status mark. One that stands on its own says what it means in `description`, read on hover; the words beside a glyph carry the meaning otherwise.",
+      "doc": "One glyph from the icon set, in the theme's ink.",
       "props": [
         {
           "name": "icon",
@@ -2327,7 +2327,7 @@
         },
         {
           "name": "size",
-          "doc": "How large it is: `regular` beside a row's label unless said, `small` beside a caption, `large` beside a title.",
+          "doc": "How large it is: `regular` unless said, `small` beside a caption, `large` beside a title.",
           "type": {
             "option": {
               "choice": {
@@ -2371,7 +2371,7 @@
         },
         {
           "name": "description",
-          "doc": "What the glyph means, where it stands on its own without words beside it: a mark saying why a service cannot be reached. Read on hover; the words a window says in full carry it to assistive technology.",
+          "doc": "What the glyph means, where it stands without words beside it.",
           "type": {
             "option": "text"
           }
@@ -2383,7 +2383,7 @@
     },
     {
       "name": "Image",
-      "doc": "A picture: artwork, a photo, a cover. Its bytes are read from its address as it arrives; a picture that is not here yet keeps its place, and one whose bytes cannot be read shows the error mark, never nothing.",
+      "doc": "A picture: artwork, a photo, a cover, read from its address.",
       "props": [
         {
           "name": "src",
@@ -2403,7 +2403,7 @@
         },
         {
           "name": "fit",
-          "doc": "How it fills its box: `contain` (the whole picture, letterboxed, unless said), `cover` (cropped to fill) or `fill` (stretched to the box).",
+          "doc": "How it fills its box: `contain`, `cover` or `fill`.",
           "type": {
             "option": {
               "choice": {
@@ -2425,7 +2425,7 @@
     },
     {
       "name": "ImageCropEditor",
-      "doc": "A picture with a crop its four corners set (a scanned page, a photo to trim): drag a corner to move it, or an edge's arrow keys, and it reports the crop each time it changes. The picture is letterboxed in its box; the crop is a share of the picture, never of the box.",
+      "doc": "A picture with a crop its four corners set (a scanned page, a photo to trim): drag a corner to move it, or an edge's arrow keys, and it reports the crop each time it changes.",
       "props": [
         {
           "name": "image",
@@ -2481,7 +2481,7 @@
     },
     {
       "name": "ImageViewer",
-      "doc": "A picture to look at closely: scroll to zoom at the pointer, drag to pan, and a reset to the whole picture. It fills its box; the picture is letterboxed inside it.",
+      "doc": "A picture to look at closely: scroll to zoom at the pointer, drag to pan, and a reset to the whole picture.",
       "props": [
         {
           "name": "image",
@@ -2500,7 +2500,7 @@
         },
         {
           "name": "aspect",
-          "doc": "The box's shape: its width over its height, which it stands at before the picture is here. The picture's own shape once it is.",
+          "doc": "The box's shape: its width over its height, which it stands at before the picture is here.",
           "type": {
             "option": "float"
           }
@@ -2513,7 +2513,7 @@
     },
     {
       "name": "InputHint",
-      "doc": "The keys of a shortcut as drawn keycaps, in the person's own keyboard legends (\"Strg\" on a German keyboard, the Command key on a Mac), beside the command it runs. Never a typed string.",
+      "doc": "The keys of a shortcut as drawn keycaps, in the person's own keyboard legends.",
       "props": [
         {
           "name": "keys",
@@ -2531,7 +2531,7 @@
     },
     {
       "name": "Link",
-      "doc": "A hyperlink: primary ink with an underline, opening what it names when pressed, activated by Enter or Space, or from assistive technology. A link that names a resource opens it; one whose view gives it an `activate` acts.",
+      "doc": "A hyperlink: primary ink with an underline, opening what it names when pressed.",
       "props": [
         {
           "name": "url",
@@ -2591,7 +2591,7 @@
     },
     {
       "name": "ListRow",
-      "doc": "A row of a list: what an item is, in one line, with the start of its content under it and a quiet fact on its trailing edge. Pressing it activates it: a list opens what it shows.",
+      "doc": "A row of a list: what an item is, in one line, with the start of its content under it and a quiet fact on its trailing edge.",
       "props": [
         {
           "name": "title",
@@ -2601,7 +2601,7 @@
         },
         {
           "name": "prefix",
-          "doc": "A quiet word before the title, on the same line and in the weaker ink: where an item came from, what it answers. The title shares its line, so a row that says one takes the room left after it.",
+          "doc": "A quiet word before the title, on the same line and in the weaker ink: where an item came from, what it answers.",
           "type": {
             "option": "text"
           }
@@ -2622,7 +2622,7 @@
         },
         {
           "name": "note",
-          "doc": "A line of the row's own under its text: what waits on the item and is not its content, as a proposal about it reads (\"Suggested: move this to the end\"). One line, elided; empty shows nothing.",
+          "doc": "A line of the row's own under its text: what waits on the item and is not its content, as a proposal about it reads (\"Suggested: move this to the end\").",
           "type": {
             "option": "text"
           }
@@ -2636,7 +2636,7 @@
         },
         {
           "name": "meta_tone",
-          "doc": "The tone the trailing fact reads in, where the item it states has one: a day gone by is overdue. The UI host reads it off the day itself, as the one presenter gives it.",
+          "doc": "The tone the trailing fact reads in, where the item it states has one: a day gone by is overdue.",
           "type": {
             "choice": {
               "name": "Tone",
@@ -2673,7 +2673,7 @@
         },
         {
           "name": "tone",
-          "doc": "The tone the mark and the row's checkbox ring read in: the item's priority, a theme role rather than a colour. `Neutral` draws them as the row's quiet ink.",
+          "doc": "The tone the mark and the row's checkbox ring read in: the item's priority, a theme role rather than a colour.",
           "type": {
             "choice": {
               "name": "Tone",
@@ -2701,7 +2701,7 @@
         },
         {
           "name": "motion",
-          "doc": "The pace the row's own motion plays at: its mark coming and going, and the row arriving, leaving and changing places in its list. Unset, the theme's.",
+          "doc": "The pace the row's own motion plays at: its mark coming and going, and the row arriving, leaving and changing places in its list.",
           "type": {
             "option": {
               "choice": {
@@ -2744,7 +2744,7 @@
       "events": [
         {
           "name": "check",
-          "doc": "The checkbox was pressed: what a check is, in the app's words. A task and every step under it are done in one thing to undo; with no `check`, a press changes the bound value.",
+          "doc": "The checkbox was pressed: what a check is, in the app's words.",
           "press": true
         },
         {
@@ -2756,7 +2756,7 @@
       "bindings": [
         {
           "name": "checkbox",
-          "doc": "A checkbox in the leading column, bound to whether the item is done. A press on it asks the row's `check`, when it names one, instead of changing what it is bound to.",
+          "doc": "A checkbox in the leading column, bound to whether the item is done.",
           "type": "bool",
           "merge": "register"
         }
@@ -2769,7 +2769,7 @@
     },
     {
       "name": "ControlRow",
-      "doc": "A selectable row of a short list whose items carry their own controls (a layers panel, each layer's name beside its switches): a press none of its controls took chooses the row, and the chosen row is lifted off the ground it stands on.",
+      "doc": "A selectable row of a short list whose items carry their own controls.",
       "props": [
         {
           "name": "label",
@@ -2835,7 +2835,7 @@
       "events": [
         {
           "name": "drop",
-          "doc": "A resource was dragged onto the map and let go: carries the resource the drag carried, as its address, and where it was let go — its canvas x, then its canvas y. The view decides what to do with it; the shell's canvas places it there.",
+          "doc": "A resource was dragged onto the map and let go: carries the resource the drag carried, as its address, and where it was let go — its canvas x, then its canvas y.",
           "value": "resource",
           "at": {
             "list": "int"
@@ -2843,21 +2843,21 @@
         },
         {
           "name": "press",
-          "doc": "The pointer pressed on the map's empty surface — not on a pin — and let go there, having travelled no further than a click: carries the canvas point under the press, its x then its y, kept apart from a drag and a middle drag. What it reports is where the press landed at the camera the map looks with, so the point is right at any pan or zoom; the view decides what stands there (the shell's canvas opens its caret at it).",
+          "doc": "The pointer pressed on the map's empty surface — not on a pin — and let go there, having travelled no further than a click: carries the canvas point under the press, its x then its y, kept apart from a drag and a middle drag.",
           "value": {
             "list": "int"
           }
         },
         {
           "name": "frame",
-          "doc": "A left drag across the map's empty surface, let go after travelling: carries the dragged rectangle in canvas pixels, its x, its y, its width and its height. The rectangle is drawn as a light outline while the drag lasts (the theme's focus colour, never a colour of its own), and the view lays what it answers into that rectangle.",
+          "doc": "A left drag across the map's empty surface, let go after travelling: carries the dragged rectangle in canvas pixels, its x, its y, its width and its height.",
           "value": {
             "list": "int"
           }
         },
         {
           "name": "context",
-          "doc": "The pointer's right button pressed on the map: carries the key of the pin standing under it — empty text where the press landed on the map's own empty surface — and the canvas point under the pointer, its x then its y. What the view does with it is its own: the shell's canvas opens the pointed place's menu, or the canvas's own for free space (`canvas.md` §1, §6).",
+          "doc": "The pointer's right button pressed on the map: carries the key of the pin standing under it — empty text where the press landed on the map's own empty surface — and the canvas point under the pointer, its x then its y.",
           "value": "text",
           "at": {
             "list": "int"
@@ -2871,7 +2871,7 @@
     },
     {
       "name": "MediaGrid",
-      "doc": "Cards in a grid: a library, an album's covers, a shelf of books, a set of channels. The cards reflow into as many columns as fit, every row's text as tall as its tallest so titles line up; `justified`, they make rows of photos that span the width at each picture's own shape.",
+      "doc": "Cards in a grid: a library, an album's covers, a shelf of books, a set of channels.",
       "props": [
         {
           "name": "size",
@@ -2912,7 +2912,7 @@
     },
     {
       "name": "MediaTransport",
-      "doc": "What is playing and the controls that steer it, as one band: the art and the song, like and lyrics, shuffle, previous, play/pause, next and repeat over the scrubber, the queue and the volume. It stands across the window's foot, under every column.\nA control the view gives no event for is left out: an app that cannot shuffle shows no shuffle. A control the view leaves off changes what the band shows rather than what plays.",
+      "doc": "What is playing and the controls that steer it, as one band: the art and the song, like and lyrics, shuffle, previous, play/pause, next and repeat over the scrubber, the queue and the volume.",
       "props": [
         {
           "name": "title",
@@ -2934,7 +2934,7 @@
         },
         {
           "name": "art",
-          "doc": "Its cover: a picture by its address, loaded as it arrives. Without one the placeholder shows the album's initials.",
+          "doc": "Its cover: a picture by its address, loaded as it arrives.",
           "type": {
             "option": "picture"
           }
@@ -6838,11 +6838,11 @@
     },
     {
       "name": "MediaCard",
-      "doc": "One card of a grid: the art (a cover, a thumbnail, a photo) with its title and up to two meta lines under it. A press opens what it stands for.",
+      "doc": "One card of a grid: the art (a cover, a thumbnail, a photo) with its title and up to two meta lines under it.",
       "props": [
         {
           "name": "item",
-          "doc": "The resource the card stands for: what a press opens. Without one it is a picture with a title, which does nothing when pressed.",
+          "doc": "The resource the card stands for: what a press opens.",
           "type": {
             "option": "resource"
           },
@@ -6865,7 +6865,7 @@
         },
         {
           "name": "icon",
-          "doc": "The icon of a kind of thing, on the neutral tile: a podcast, a folder. Without a picture the placeholder shows the title's initials.",
+          "doc": "The icon of a kind of thing, on the neutral tile: a podcast, a folder.",
           "type": {
             "option": "icon"
           }

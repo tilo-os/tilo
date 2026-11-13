@@ -1,5 +1,4 @@
-//! [`Drawing`] as a described component, and [`Shape`] as the closed set with fields its
-//! `shapes` prop holds (components.md §4.1).
+//! [`Drawing`] as a described component, and [`Shape`] as its closed set of shapes.
 
 use tilo_ui_graph::component::{CaseDescription, EnumDescription, FieldDescription};
 
@@ -7,8 +6,7 @@ use crate::component::{Component, Described, Event, PropType, Type, Value};
 
 use super::{Drawing, Ink, Meaning, Shape, Weight};
 
-/// Shapes drawn with the design system over a box of their own: a ring, a gauge, a small
-/// chart, a diagram. Colours are theme roles and widths tokens; a press reports which shape.
+/// Shapes drawn with the design system over a box of their own.
 #[derive(Component, Default)]
 #[component(name = "Drawing", role = "Image", label = "label")]
 pub struct DrawingProps {

@@ -1,12 +1,8 @@
-//! History data types shared by [`activity_timeline`] and
-//! `history_scrubber`.
+//! History data types shared by [`activity_timeline`] and `history_scrubber`.
 //!
-//! Source-agnostic by design: the producer (today an in-memory iterator
-//! over automerge history, later a signed-op stream) is external, so the
-//! widgets can be unit-tested without touching automerge, Iroh, or the
-//! broker.
-//!
-//! [`activity_timeline`]: crate::widget::activity_timeline
+//! Source-agnostic by design: the producer (today an in-memory iterator over automerge
+//! history, later a signed-op stream) is external, so the widgets can be unit-tested
+//! without touching automerge, Iroh, or the broker.
 
 use crate::time::SystemTime;
 
@@ -15,8 +11,6 @@ use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::{ActionContext, ActionFacet};
 
 pub use collab_types::history::HistoryEntryId;
-/// Who wrote a change, as history names them: data the collab client
-/// resolves below the toolkit.
 pub use collaboration::history_source::authors::{
     AuthorRelation, HistoryAttribution, HistoryAuthor, hue_to_rgb,
 };
@@ -30,10 +24,7 @@ pub use collaboration::history_source::authors::{
 /// string; the widget never sees the ciphertext or pubkey.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RedactionDisplay {
-    /// Producer picks the format (e.g. `"alice@example.com"`); rendered
-    /// verbatim.
     pub redactor_label: String,
-    /// Capped at 512 bytes upstream (`collab_types::MAX_REDACTION_REASON_BYTES`).
     pub reason: String,
     pub redacted_at: SystemTime,
 }
@@ -42,8 +33,6 @@ pub struct RedactionDisplay {
 pub struct HistoryEntry {
     pub id: HistoryEntryId,
     pub author: HistoryAuthor,
-    /// Drives the row's icon glyph and the `[Revert]` chip's visibility
-    /// (see [`EntryKind::is_revertible`]).
     pub entry_kind: EntryKind,
     pub artifact_kind: ArtifactKind,
     pub timestamp: SystemTime,
@@ -59,10 +48,7 @@ pub struct HistoryEntry {
     /// this tick; the widget never cracks them open. `None` when an entry
     /// (Govern ops, pure metadata edits) has no per-entry payload.
     pub diff_payload: Option<Vec<u8>>,
-    /// `None` means "not redacted; render the summary as normal".
     pub redaction: Option<RedactionDisplay>,
-    /// Semantic provenance carried by an action. Legacy/direct CRDT edits
-    /// leave this empty and retain their structural diff summary.
     pub context: Option<ActionContext>,
 }
 
@@ -87,8 +73,8 @@ impl HistoryEntry {
             .is_some_and(|context| context.facets.contains(&genesis_facet()))
     }
 
-    /// Whether this row is a durable effect receipt: external work recorded
-    /// in the activity timeline rather than a document mutation.
+    /// Whether this row is a durable effect receipt: external work recorded in the activity
+    /// timeline rather than a document mutation.
     pub fn is_effect_receipt(&self) -> bool {
         self.context
             .as_ref()
@@ -111,29 +97,18 @@ pub(crate) fn genesis_facet() -> ActionFacet {
 /// switch, without poking at widget internals.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HistoryFilter {
-    /// Empty = all authors. Matching is **case-insensitive** so a
-    /// typeahead "author:alice" filter doesn't depend on the user
-    /// guessing the canonical casing.
     pub authors: Vec<String>,
-    /// Empty = all op classes.
     pub entry_kinds: Vec<EntryKind>,
     /// `None` disables the range. Half-open, matching the convention
     /// used elsewhere in Tilo so two adjacent filters never double-count
     /// a boundary entry.
     pub time_range: Option<(SystemTime, SystemTime)>,
-    /// App id or label, case-insensitive. Empty means every app, including
-    /// legacy entries with no app provenance.
     pub apps: Vec<String>,
-    /// Stable resource kind (`files.entry`, `word-processor.document`, …).
     pub resource_kinds: Vec<String>,
-    /// Stable resource ids or human labels. Values within this lens are OR.
     pub resources: Vec<String>,
-    /// Explicit work-group ids or labels. Values within this lens are OR.
     pub work_groups: Vec<String>,
     /// Selected browse facets. All selected key/value pairs must match.
     pub facets: Vec<ActionFacet>,
-    /// Lets the explorer make legacy/direct edits explicitly browseable
-    /// instead of silently mixing them into semantic lenses.
     pub classification: HistoryClassification,
 }
 
@@ -254,8 +229,6 @@ impl HistoryFilter {
             let Some(context) = entry.context.as_ref() else {
                 return false;
             };
-            // Values within one key are alternatives; separate facet keys
-            // intersect. `path:A OR path:B` plus `file-type:Markdown`.
             if !self.matches_facets(context) {
                 return false;
             }
@@ -312,27 +285,17 @@ impl HistoryFilter {
     }
 }
 
-/// What a history entry did, as the history and activity views mark,
-/// filter and group it. Read from the change itself (its entry and what it
-/// wrote), not from the transport that carried it.
+/// What a history entry did, as the history and activity views mark, filter and group it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum EntryKind {
-    /// Text typed or removed.
     Text,
-    /// Things reordered or moved.
     Move,
-    /// Fields, properties or formatting changed.
     Details,
-    /// A comment or reaction.
     Comment,
     Delete,
-    /// Something deleted brought back.
     Restore,
-    /// Who may do what changed: grants, members, ownership.
     Access,
-    /// History older than a horizon folded away.
     Compaction,
-    /// Something earlier redacted.
     Redaction,
 }
 
@@ -351,7 +314,6 @@ impl EntryKind {
 
     /// Its row glyph: text symbols stay legible without an emoji font.
     #[must_use]
-    /// The icon a history row draws for this kind of change.
     pub fn icon(self) -> crate::icons::Icon {
         use crate::icons::Icon;
         match self {
@@ -377,8 +339,7 @@ impl EntryKind {
             Self::Restore => "\u{21b6}",    // ↶
             Self::Access => "\u{2605}",     // ★
             Self::Compaction => "\u{2702}", // ✂ — history horizon
-            // The ring reads as a compliance seal rather than a lock.
-            Self::Redaction => "\u{229A}", // ⊚ — redaction seal
+            Self::Redaction => "\u{229A}",  // ⊚ — redaction seal
         }
     }
 }
@@ -388,8 +349,6 @@ impl EntryKind {
 /// so the label freshens naturally as `now` advances — no clock plumbing
 /// needed.
 pub fn format_relative_time(ts: SystemTime, now: SystemTime) -> String {
-    // A change that recorded no time carries the epoch: it has no time to
-    // show, not one from decades ago.
     if ts <= SystemTime::UNIX_EPOCH {
         return String::new();
     }
@@ -525,8 +484,6 @@ mod tests {
     #[test]
     fn entry_kind_revertibility_glyphs_and_formatting_helpers() {
         fn entry_kind_revertibility_matches_spec_table() {
-            // Pin the table — a regression that makes Comment revertible
-            // would silently paint a confusing chip on every comment row.
             assert!(EntryKind::Text.is_revertible());
             assert!(EntryKind::Move.is_revertible());
             assert!(EntryKind::Details.is_revertible());
@@ -607,9 +564,6 @@ mod tests {
         }
 
         fn hue_to_rgb_covers_every_sextant() {
-            // Walk every 60-degree boundary so a future regression that
-            // collapses one sextant (e.g. "5" branch falling through to
-            // black) flips the test immediately.
             let hues = [0.0, 60.0, 120.0, 180.0, 240.0, 300.0, 359.9];
             let mut seen: Vec<(u8, u8, u8)> = Vec::new();
             for h in hues {

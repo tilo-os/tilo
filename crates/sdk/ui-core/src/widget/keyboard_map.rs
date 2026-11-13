@@ -1,5 +1,5 @@
-//! A physical keyboard map. Geometry and XKB legends are provided by the
-//! device's native compiler; focused pressed keys are private paint state.
+//! A physical keyboard map. Geometry and XKB legends are provided by the device's native
+//! compiler; focused pressed keys are private paint state.
 use crate::{
     a11y::{AccessNode, AccessState, Role},
     presence::PresenceCtx,
@@ -26,13 +26,10 @@ use winit::{
 /// A key's physical outline and ordered XKB levels, in model coordinates.
 #[derive(Clone, Debug)]
 pub struct KeyboardMapKey {
-    /// Native XKB physical key name (such as AD06), not typed input.
     pub name: String,
-    /// The same native physical identifier delivered by the window backend.
     pub physical: PhysicalKey,
     /// Physical outline in the selected model's coordinate units.
     pub outline: Vec<Point>,
-    /// Compiled legends in native XKB level order.
     pub levels: Vec<String>,
 }
 
@@ -45,9 +42,6 @@ impl KeyboardMapKey {
                 rect.union_pt(*point)
             }
         });
-        // Orthogonal physical models include concave Enter keys. Their
-        // bounding box contains a neighbour's space; the common horizontal
-        // core keeps every fitted legend inside the actual physical outline.
         let middle = (rect.x0 + rect.x1) / 2.0;
         for point in &self.outline {
             if point.x < middle {
@@ -297,8 +291,8 @@ impl KeyboardMap {
         self
     }
 
-    /// Select a physical position for a readable inspector without recording
-    /// whichever key the person happens to press. Unknown positions are rejected.
+    /// Select a physical position for a readable inspector without recording whichever key
+    /// the person happens to press.
     #[must_use]
     pub fn with_inspected_key(mut self, name: &str) -> Self {
         self.inspected_key = self
@@ -430,8 +424,8 @@ impl KeyboardMap {
         self.input.state.lock_recover().keys.contains(&key)
     }
 
-    /// Effective focused-seat symbols for this position, independent of the
-    /// logical key event and preview layout. None means no native observation.
+    /// Effective focused-seat symbols for this position, independent of the logical key
+    /// event and preview layout.
     pub fn active_symbols(
         &self,
         key: PhysicalKey,
@@ -504,8 +498,6 @@ impl KeyboardMap {
         scene.fill(Fill::NonZero, transform, fill, None, &path);
         let rect = key.legend_rect();
         let scale = self.rect.width() / self.model_size.width.max(1.0);
-        // A screen-pixel outline remains visible independently of surface fill
-        // contrast, including high contrast themes and narrow previews.
         scene.stroke(
             &Stroke::new(
                 if self.inspected_key.as_deref() == Some(key.name.as_str()) {
@@ -824,8 +816,6 @@ impl crate::widget::Decorator for KeyboardMapSelection {
 
     fn accessibility(&self) -> Option<AccessNode> {
         let mut root = self.map.accessibility()?;
-        // The map is a group; each painted physical position is the actual
-        // inspection control. These expose the same admitted effect as touch.
         root.children = self
             .map
             .keys

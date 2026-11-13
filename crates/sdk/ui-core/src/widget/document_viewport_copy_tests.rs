@@ -1,7 +1,6 @@
-//! A pan in a [`DocumentViewport`] offers the host a copy of what stays on
-//! screen: presented over the last frame (copies, then damage) as a window
-//! that copies presents it, every frame equals a full render, in dark,
-//! light and high contrast, at 100 % and 200 %.
+//! A pan in a [`DocumentViewport`] offers the host a copy of what stays on screen:
+//! presented over the last frame (copies, then damage) as a window that copies presents it,
+//! every frame equals a full render, in dark, light and high contrast, at 100 % and 200 %.
 
 #![allow(
     clippy::unwrap_used,
@@ -19,7 +18,6 @@ use super::*;
 use crate::app::{App, AppSurface, SurfaceDamage};
 use crate::offscreen::OffscreenRenderer;
 
-/// The window: 640×480 logical pixels at `scale`.
 struct Window {
     scale: f64,
 }
@@ -38,8 +36,6 @@ impl AppSurface for Window {
     fn set_cursor(&self, _: winit::window::CursorIcon) {}
 }
 
-/// A tall sheet of switches in a document viewport: content whose widgets
-/// report exactly what they change.
 fn sheet(theme: &Theme) -> App {
     let mut column = crate::widget::Column::new().with_intrinsic_height();
     for row in 0..60 {
@@ -67,8 +63,6 @@ fn area(rects: &[Rect]) -> f64 {
     rects.iter().map(Rect::area).sum()
 }
 
-/// Pan the sheet `frames` frames of `step` logical pixels, presenting each
-/// frame over the last on the GPU, and check it against a full render.
 fn pan(theme: &Theme, scale: f64, (step, frames): (f64, usize)) -> Run {
     let window = Window { scale };
     let size = window.inner_size();

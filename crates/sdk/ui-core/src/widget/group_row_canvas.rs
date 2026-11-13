@@ -1,17 +1,5 @@
-//! A strip's windows shown on a canvas: each window group at a place of its
-//! own on a 2D surface, seen through a camera that pans and zooms.
-//!
-//! The canvas is another arrangement of the same windows (the desktop's
-//! `workspace-model.md` §6): the row keeps its groups, their tabs and their
-//! hosts, and only where it lays them out changes. Places are canvas pixels;
-//! the camera says which canvas point stands at the row's top-left corner
-//! and how many screen pixels a canvas pixel takes. A window is laid out at
-//! its zoomed size, so what is drawn, hit-tested and damaged is where it is
-//! on screen; a client window keeps its canvas size and is drawn scaled
-//! (the host configures it to [`CanvasView::canvas_size_of`]).
-//!
-//! Panning moves the laid-out windows without restyling them, as a strip's
-//! pan does; zooming or moving a window restyles them in place.
+//! A strip's windows shown on a canvas: each window group at a place of its own on a 2D
+//! surface, seen through a camera that pans and zooms.
 
 use std::collections::HashMap;
 
@@ -22,19 +10,14 @@ use super::GroupRow;
 use crate::num::f32_of_f64;
 use crate::widget::Widget as _;
 
-/// The smallest and largest zoom a canvas is shown at.
 pub const CANVAS_ZOOM_MIN: f64 = 0.2;
 pub const CANVAS_ZOOM_MAX: f64 = 2.0;
 
 /// How a row's windows stand on a canvas, and how much of it shows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CanvasView {
-    /// The canvas point at the row's top-left corner.
     pub origin: Point,
-    /// Screen pixels per canvas pixel.
     pub zoom: f64,
-    /// Each placed window group's rect, in canvas pixels. A group with no
-    /// place yet is not shown until it gets one.
     pub places: HashMap<u64, Rect>,
 }
 
@@ -49,23 +32,21 @@ impl Default for CanvasView {
 }
 
 impl CanvasView {
-    /// Where canvas point `p` is on screen, for a row whose top-left corner
-    /// is at `corner`.
+    /// Where canvas point `p` is on screen, for a row whose top-left corner is at `corner`.
     #[must_use]
     pub fn to_screen(&self, corner: Point, p: Point) -> Point {
         corner + (p - self.origin) * self.zoom
     }
 
-    /// The canvas point under screen point `p`, for a row whose top-left
-    /// corner is at `corner`.
+    /// The canvas point under screen point `p`, for a row whose top-left corner is at
+    /// `corner`.
     #[must_use]
     pub fn to_canvas(&self, corner: Point, p: Point) -> Point {
         self.origin + (p - corner) / self.zoom.max(f64::EPSILON)
     }
 
-    /// The size a window drawn `on_screen` has on the canvas: what its
-    /// client is configured to, so zooming scales its pixels rather than
-    /// resizing it.
+    /// The size a window drawn `on_screen` has on the canvas: what its client is configured
+    /// to, so zooming scales its pixels rather than resizing it.
     #[must_use]
     pub fn canvas_size_of(&self, on_screen: Rect) -> (f64, f64) {
         let zoom = self.zoom.max(f64::EPSILON);
@@ -97,8 +78,6 @@ impl CanvasView {
 impl GroupRow {
     /// Show this row's windows on a canvas (`Some`), or in their strip.
     pub fn set_canvas(&mut self, mut view: Option<CanvasView>) {
-        // A window being carried stays under the hand, whatever place the
-        // host still holds for it.
         if let (Some(drag), Some(was), Some(now)) =
             (self.group_drag, self.canvas.as_ref(), view.as_mut())
             && self.canvas_drag_from.is_some()
@@ -131,8 +110,8 @@ impl GroupRow {
         self.canvas.as_ref()
     }
 
-    /// The window group whose drawn rect holds screen point `p`, while the
-    /// row shows a canvas.
+    /// The window group whose drawn rect holds screen point `p`, while the row shows a
+    /// canvas.
     #[must_use]
     pub fn canvas_group_at(&self, p: Point) -> Option<u64> {
         self.canvas.as_ref()?;
@@ -166,8 +145,7 @@ impl GroupRow {
         }
     }
 
-    /// The hand let window `id` go: kept where it is (`keep`), or back where
-    /// it was.
+    /// The hand let window `id` go: kept where it is (`keep`), or back where it was.
     pub(super) fn put_down_on_canvas(&mut self, id: u64, keep: bool) {
         let Some(from) = self.canvas_drag_from.take() else {
             return;
@@ -220,16 +198,14 @@ impl GroupRow {
         }
     }
 
-    /// Lay the windows out where the canvas has them: the row's corner less
-    /// the camera's origin, zoomed, plus each window's place.
+    /// Lay the windows out where the canvas has them: the row's corner less the camera's
+    /// origin, zoomed, plus each window's place.
     pub(super) fn apply_canvas_layout(&mut self, taffy: &taffy::TaffyTree<()>, view: &CanvasView) {
         let corner = Point::new(self.rect.x0, self.rect.y0);
         let origin = corner - view.origin.to_vec2() * view.zoom;
         self.pan.viewport = self.rect;
         self.pan.inset = 0.0;
         for (group, node) in self.groups.iter_mut().zip(self.node_ids.iter()) {
-            // A window that came to the row while it shows a canvas is
-            // carried as the others are.
             group.set_carriable(true);
             if !view.places.contains_key(&group.id) {
                 continue;
@@ -295,7 +271,6 @@ mod tests {
         assert_eq!(group, 1);
         assert!((place.y0 - 220.0).abs() < 1.0, "{place:?}");
 
-        // Empty canvas: no strip pan, nothing claimed.
         let empty = Point::new(1500.0, 800.0);
         press_at(&mut row, &taffy, root, empty);
         for step in 1..=6 {
@@ -352,7 +327,6 @@ mod tests {
         row.set_canvas(Some(view(Point::new(50.0, -20.0), 0.5, &[(1, place)])));
         relayout_strip(&mut row, 1920.0);
         let rect = row.groups[0].get_rect();
-        // (100 - 50) * 0.5 = 25 across, (100 + 20) * 0.5 = 60 down.
         assert!(
             (rect.x0 - 25.0).abs() < 0.5 && (rect.y0 - 60.0).abs() < 0.5,
             "{rect:?}"

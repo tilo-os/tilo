@@ -1,18 +1,6 @@
-//! The motion of the switches and checkboxes a host paints itself
-//! ([`super::ToggleFace`], [`super::CheckboxFace`]), so a painted switch
-//! slides and a painted box fades exactly as the retained [`super::Toggle`]
-//! and [`super::Checkbox`] do.
-//!
-//! A host keeps one [`FaceMotions`] beside what it paints, asks it for each
-//! control's pose by a key that names the control (not its place, which
-//! moves with a scroll). Each motion asks the frame pump for its own frames
-//! (`motion::want_frames_until`), so a host that reads the motion clock
-//! paints them with nothing more; [`FaceMotions::is_moving`] says whether
-//! any is on its way, and [`FaceMotions::needs_redraw`] whether the host's
-//! paint is stale: one is moving, or the last pose painted was part-way and
-//! the frame at rest has not been painted yet. A click or a finger moves a control; a key, an assistive action
-//! or a value nobody just caused lands. The first value a control is seen
-//! with rests. Settled, nothing asks for frames.
+//! The motion of the switches and checkboxes a host paints itself ([`super::ToggleFace`],
+//! [`super::CheckboxFace`]), so a painted switch slides and a painted box fades exactly as
+//! the retained [`super::Toggle`] and [`super::Checkbox`] do.
 
 use super::checkbox::{CheckGlyph, CheckMotion, CheckPose};
 use super::toggle::{SwitchMotion, SwitchPose};
@@ -22,14 +10,11 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-/// The motions of a host's painted switches and checkboxes, by key. Read
-/// while painting, through a shared reference.
+/// The motions of a host's painted switches and checkboxes, by key.
 #[derive(Debug, Default)]
 pub struct FaceMotions {
     switches: RefCell<HashMap<u64, SwitchMotion>>,
     checks: RefCell<HashMap<u64, CheckMotion>>,
-    /// The last pose painted was part-way: the frame showing every control
-    /// at rest is still owed, though nothing is moving any more.
     painted_moving: Cell<bool>,
 }
 
@@ -54,8 +39,7 @@ impl FaceMotions {
         pose
     }
 
-    /// How to draw the box `key`, checked (or mixed: `glyph`) when
-    /// `marked`, this frame.
+    /// How to draw the box `key`, checked (or mixed: `glyph`) when `marked`, this frame.
     #[track_caller]
     pub fn check(
         &self,
@@ -75,8 +59,6 @@ impl FaceMotions {
         pose
     }
 
-    /// A pose was read for painting at `now`, part-way when `moving`. Once
-    /// a frame paints with nothing moving, the rest frame is drawn.
     fn painted(&self, moving: bool, now: Instant) {
         if moving {
             self.painted_moving.set(true);
@@ -92,8 +74,8 @@ impl FaceMotions {
         self.painted_moving.get() || self.is_moving(now)
     }
 
-    /// Whether any control is still on its way at `now`: the host draws
-    /// frames while it is, and none once everything has settled.
+    /// Whether any control is still on its way at `now`: the host draws frames while it is,
+    /// and none once everything has settled.
     #[track_caller]
     pub fn is_moving(&self, now: Instant) -> bool {
         self.switches

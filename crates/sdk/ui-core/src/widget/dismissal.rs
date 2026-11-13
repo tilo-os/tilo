@@ -1,26 +1,22 @@
-//! How a surface that closes itself (a [`ModalDialog`](super::ModalDialog),
-//! a [`Popover`](super::Popover)) is dismissed: through an action, never a
-//! private callback. The surface either publishes a close control of its own,
-//! a view action of control `<id>.close` that runs the app's handler, or
-//! dismisses through an action the app or host already publishes ("Keep
-//! editing", "Cancel"). Escape, a click outside and the close button all
-//! take that way, so agents and scripts close the surface as a person does.
+//! How a surface that closes itself (a [`ModalDialog`](super::ModalDialog), a
+//! [`Popover`](super::Popover)) is dismissed: through an action, never a private callback.
+//! The surface either publishes a close control of its own, a view action of control
+//! `<id>.close` that runs the app's handler, or dismisses through an action the app or host
+//! already publishes ("Keep editing", "Cancel"). Escape, a click outside and the close
+//! button all take that way, so agents and scripts close the surface as a person does.
 
 use super::activation::{NATIVE_INVOKE, NativeControl};
 use super::{ActionEmitter, ControlBindingMetadata};
 use crate::i18n::widget_text;
 
 pub(crate) struct Dismissal {
-    /// The close control's id, `<surface>.close`, when the surface publishes
-    /// one of its own.
     id: String,
     native: Option<NativeControl>,
     action: ActionEmitter<()>,
 }
 
 impl Dismissal {
-    /// A close control of the surface's own, `<surface>.close`, running
-    /// `handler`.
+    /// A close control of the surface's own, `<surface>.close`, running `handler`.
     pub(crate) fn published(surface: &str, handler: Box<dyn FnMut()>) -> Self {
         let id = format!("{surface}.close");
         let (native, binding) = NativeControl::new(
@@ -74,8 +70,8 @@ impl Dismissal {
         }
     }
 
-    /// Run the handler for the close control's own `invoke`; `None` when the
-    /// operation is not for it.
+    /// Run the handler for the close control's own `invoke`; `None` when the operation is
+    /// not for it.
     pub(crate) fn start(
         &mut self,
         op: &super::ResourceOperation<'_>,
@@ -110,8 +106,8 @@ impl Dismissal {
         self.action.refresh_availability(allowed);
     }
 
-    /// `bindings` with the semantic control at `target` bound to the
-    /// dismissal's action instead.
+    /// `bindings` with the semantic control at `target` bound to the dismissal's action
+    /// instead.
     pub(crate) fn bind(&self, target: String, bindings: &mut Vec<ControlBindingMetadata>) {
         bindings.retain(|binding| binding.control_id != target);
         bindings.push(self.action.metadata(target));

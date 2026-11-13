@@ -1,8 +1,4 @@
 //! [`MediaTransport`] as a described component: what plays and the controls that steer it.
-//!
-//! The app's player is the one truth: the band shows what the view declares and reports what
-//! the person pressed; the view's actions do the rest. It keeps nothing of its own but where
-//! the knob is while a finger holds it.
 
 use crate::component::{Component, Described, Event};
 use crate::widget::{MediaTransport, TransportArt, TransportFeed, TransportRepeat, TransportState};
@@ -12,12 +8,9 @@ use crate::widget::DrawChild;
 
 // The `TransportRepeat` choice is declared beside the enum, in `media_transport.rs`.
 
-/// What is playing and the controls that steer it, as one band: the art and the song, like and
-/// lyrics, shuffle, previous, play/pause, next and repeat over the scrubber, the queue and the
-/// volume. It stands across the window's foot, under every column.
-///
-/// A control the view gives no event for is left out: an app that cannot shuffle shows no
-/// shuffle. A control the view leaves off changes what the band shows rather than what plays.
+/// What is playing and the controls that steer it, as one band: the art and the song, like
+/// and lyrics, shuffle, previous, play/pause, next and repeat over the scrubber, the queue
+/// and the volume.
 #[derive(Component, Default)]
 #[component(name = "MediaTransport", role = "Toolbar", label = "title")]
 pub struct MediaTransportProps {
@@ -28,8 +21,7 @@ pub struct MediaTransportProps {
     pub subtitle: Option<String>,
     /// The subtitle says why it cannot play: it reads as an error.
     pub error: bool,
-    /// Its cover: a picture by its address, loaded as it arrives. Without one the placeholder
-    /// shows the album's initials.
+    /// Its cover: a picture by its address, loaded as it arrives.
     pub art: Option<crate::widget::PictureSource>,
     /// The name the placeholder cover takes its initials and colour from (the album).
     pub art_name: Option<String>,
@@ -147,8 +139,8 @@ fn given(event: &Event) -> Option<Event> {
     }
 }
 
-/// A band driven from a view: what plays as the view declares it, and its controls reporting
-/// the view's events.
+/// A band driven from a view: what plays as the view declares it, and its controls
+/// reporting the view's events.
 pub struct DeclaredTransport {
     band: MediaTransport,
     feed: TransportFeed,

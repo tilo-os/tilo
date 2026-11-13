@@ -1,19 +1,5 @@
-//! `Identified`: a control that runs an app action says which one, however the
-//! window composes around it.
-//!
-//! A hosted window's composition moves a control — a view's "new note" stands
-//! in the bar of the window that has nothing yet and in the columns' header
-//! once it has something — and the person's language renames it. Both change
-//! what the control is called and where it stands, so neither can be what a
-//! test, an agent or assistive technology finds it by. The action it runs does
-//! not change: this decorator publishes its identity
-//! ([`AccessNode::action`](crate::a11y::AccessNode::action)) on the node the
-//! control's widget already describes, from whichever place the composition
-//! draws it.
-//!
-//! The host that builds a window's controls from its view's nodes wraps each
-//! control that runs an app action (or edits a record's field) with this, and
-//! nothing else: a widget that runs none is left as it is.
+//! `Identified`: a control that runs an app action says which one, however the window
+//! composes around it.
 
 use super::{Element, Widget};
 use crate::a11y::AccessNode;
@@ -22,13 +8,12 @@ use crate::a11y::AccessNode;
 #[crate::component::not_a_component(framework, "the host names what a view's control does")]
 pub struct Identified {
     content: Element,
-    /// The action's identity: the record kind and the operation, in ids.
     identity: String,
 }
 
 impl Identified {
-    /// `content`, a control that does `identity`: the action it runs, or the
-    /// field it edits, written as the app's ids name them.
+    /// `content`, a control that does `identity`: the action it runs, or the field it
+    /// edits, written as the app's ids name them.
     #[must_use]
     pub fn new(content: Element, identity: impl Into<String>) -> Self {
         Self {
@@ -60,16 +45,12 @@ impl super::Decorator for Identified {
         self.content.as_mut()
     }
 
-    /// The control's own node, with what it does said of it. Its children are
-    /// the control's: they do whatever they do, not what it does.
     fn accessibility(&self) -> Option<AccessNode> {
         self.content
             .accessibility()
             .map(|node| node.with_action(self.identity.clone()))
     }
 
-    /// Transparent: the widget this stands for is found where it was, so a
-    /// host that keeps its props in step reaches it as it always did.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         self.content.as_any()
     }
@@ -82,9 +63,6 @@ impl super::Decorator for Identified {
         self.content.concrete_type_name()
     }
 
-    /// The control's node, pointed at this widget: what a press, a focus or
-    /// the accessibility tree resolves the node to, and what the tree reads
-    /// the identity from.
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,

@@ -1,13 +1,7 @@
 //! The dialog's own controls as the host reaches them: its close control
-//! ([`ModalDialog::on_dismiss`]) and its footer buttons, each published as
-//! an action of control `<dialog>.<close|primary|secondary|tertiary>`; the
-//! host's custody of the close control's emitter; and the operations that
-//! run them.
-//!
-//! A person's press runs at once, as it always did. An agent's or a
-//! script's arrives as the `invoke` of the published control: Cancel and the
-//! close control are view actions, the primary and third answers effects,
-//! which the host admits under the invoker's grants.
+//! ([`ModalDialog::on_dismiss`]) and its footer buttons, each published as an action of
+//! control `<dialog>.<close|primary|secondary|tertiary>`; the host's custody of the close
+//! control's emitter; and the operations that run them.
 
 use crate::i18n::widget_text;
 use automerge::ObjId;
@@ -16,8 +10,6 @@ use super::{ModalDialog, Slot};
 use crate::widget::Widget;
 use crate::widget::activation::{NATIVE_INVOKE, NativeControl, invoked_control};
 
-/// Every footer slot, with the name its control is published under and its
-/// operation kind.
 const FOOTER: [(Slot, &str, tilo_actions::OperationKind); 3] = [
     (
         Slot::Primary,
@@ -37,14 +29,7 @@ const FOOTER: [(Slot, &str, tilo_actions::OperationKind); 3] = [
 ];
 
 impl<C: Widget + 'static> ModalDialog<C> {
-    /// Fires on Escape, on a scrim click and on the close control. A dialog
-    /// with a dismiss handler and no secondary action shows the close
-    /// control.
-    ///
-    /// Dismissal is the dialog's close control: a view action of control
-    /// `<test id>.close` (the title stands in for a dialog without a test
-    /// id), which every way of dismissing goes through, so agents and
-    /// scripts close the dialog as a person does.
+    /// Fires on Escape, on a scrim click and on the close control.
     #[must_use]
     pub fn on_dismiss<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.set_on_dismiss(Some(Box::new(f)));
@@ -64,9 +49,8 @@ impl<C: Widget + 'static> ModalDialog<C> {
         self.test_id.as_deref().unwrap_or(&self.title)
     }
 
-    /// Dismiss through `binding`, an action the app or host already
-    /// publishes ("Keep editing", "Cancel"), instead of a close control of
-    /// the dialog's own.
+    /// Dismiss through `binding`, an action the app or host already publishes ("Keep
+    /// editing", "Cancel"), instead of a close control of the dialog's own.
     #[must_use]
     pub fn dismiss_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
         self.dismiss = Some(crate::widget::dismissal::Dismissal::through(binding));
@@ -75,16 +59,11 @@ impl<C: Widget + 'static> ModalDialog<C> {
     }
 }
 
-/// The dialog's close control as the host reaches it, compiled once for
-/// every content type: each `ModalDialog<C>` capability forwards here.
 impl ModalDialog<dyn Widget> {
-    /// The published id of the footer control in `slot`.
     fn footer_id(&self, name: &str) -> String {
         format!("{}.{name}", self.test_id.as_deref().unwrap_or(&self.title))
     }
 
-    /// The footer buttons the dialog shows and can take now, with their
-    /// published name and kind.
     fn published_footer(
         &self,
     ) -> impl Iterator<Item = (Slot, &'static str, tilo_actions::OperationKind)> + '_ {
@@ -120,7 +99,6 @@ impl ModalDialog<dyn Widget> {
         crate::widget::start_in_children(self, op, doc, path)
     }
 
-    /// The close control and the footer buttons while the dialog is open.
     fn dismissal_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let close = self
             .dismiss
@@ -162,8 +140,6 @@ impl ModalDialog<dyn Widget> {
             })
     }
 
-    /// The children's controls, with the close control and the footer
-    /// buttons bound to their actions.
     fn dismissal_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         let mut bindings = crate::widget::controls::default_bindings(self);
         for (slot, name, _) in self.published_footer() {
@@ -181,8 +157,6 @@ impl ModalDialog<dyn Widget> {
                 });
             }
         }
-        // The close control stands where the dialog shows it: with no way
-        // out of its own, Escape and the scrim keep their meaning.
         if self.up()
             && self.closable()
             && let Some(dismiss) = &self.dismiss

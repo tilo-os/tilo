@@ -1,10 +1,10 @@
-//! The row's half of resizing windows on a strip: finding the window edge
-//! under the pointer, showing it, and carrying out the drag.
+//! The row's half of resizing windows on a strip: finding the window edge under the
+//! pointer, showing it, and carrying out the drag.
 //!
 //! The model itself is [`crate::widget::edge_resize`]: whose edge a point is
-//! ([`seam_owner`]) and what a drag sets ([`EdgeDrag::resize`]). This file
-//! only feeds it the strip's geometry and applies its answer, so the hover
-//! highlight, the press and every frame of the drag ask the same rule.
+//! ([`seam_owner`]) and what a drag sets ([`EdgeDrag::resize`]). This file only feeds it
+//! the strip's geometry and applies its answer, so the hover highlight, the press and every
+//! frame of the drag ask the same rule.
 
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -24,28 +24,22 @@ use crate::widget::{RESIZE_HANDLE_PX, Widget, WindowGroup};
 /// last window rests: a drag into the gutter only resizes the window.
 pub(super) const RESIZE_AUTOSCROLL_BAND: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 
-/// An edge resize in flight, with its windows named by id: a window may
-/// close or move while the pointer is down.
+/// An edge resize in flight, with its windows named by id: a window may close or move while
+/// the pointer is down.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct RowEdgeDrag {
     drag: EdgeDrag,
     grabbed_id: u64,
     other_id: Option<u64>,
-    /// The lane whose pan the drag holds.
     lane: usize,
     press_x: f64,
     pointer_x: f64,
-    /// The lane's pan when pressed.
     origin_scroll: f64,
-    /// How far the strip has auto-scrolled under a pointer resting at the
-    /// display's edge (positive: its canvas moved left).
     autoscroll: f64,
-    /// The auto-scroll's frame clock.
     edge: EdgeAutoscroll,
 }
 
 impl RowEdgeDrag {
-    /// How far the dragged edge has been carried across the strip's canvas.
     fn travel(&self) -> f64 {
         self.pointer_x - self.press_x + self.autoscroll
     }
@@ -58,11 +52,9 @@ impl GroupRow {
     /// `None` off every edge, on a maximized or fullscreen window, or where
     /// the viewport clips the edge away.
     pub fn edge_grab_at(&self, p: Point) -> Option<EdgeGrab> {
-        // A window's edge on a canvas sizes no strip slot.
         if self.hidden || self.canvas.is_some() || !self.rect.contains(p) {
             return None;
         }
-        // The windows with edges to grab, in strip order: index, lane, rect.
         let shown: Vec<(usize, usize, Rect)> = self
             .groups
             .iter()
@@ -86,8 +78,6 @@ impl GroupRow {
         if !self.pan_of_lane(lane).viewport.contains(p) {
             return None;
         }
-        // A window's `+` sits in its bar at the trailing edge: a press there
-        // opens a tab rather than grabbing the edge.
         if !self.external_navigation
             && shown
                 .iter()
@@ -131,9 +121,6 @@ impl GroupRow {
             let last = shown
                 .get(k.saturating_add(1))
                 .is_none_or(|next| !adjacent(window, next));
-            // An outer edge reaches as far out over the empty canvas as it
-            // does into the window, so it is as easy a target as a seam
-            // without taking any more of the window's content.
             let leading = Rect::new(r.x0 - RESIZE_HANDLE_PX, r.y0, r.x0 + RESIZE_HANDLE_PX, r.y1);
             let trailing = Rect::new(r.x1 - RESIZE_HANDLE_PX, r.y0, r.x1 + RESIZE_HANDLE_PX, r.y1);
             if first && leading.contains(p) {
@@ -152,8 +139,6 @@ impl GroupRow {
         None
     }
 
-    /// The window a Shift+drag on `grab` trades width with: the one across
-    /// the seam, in the same lane. An outer edge has none.
     fn zero_sum_partner(&self, grab: EdgeGrab) -> Option<usize> {
         let other = grab.across(self.groups.len())?;
         (self.lane_index_of(other) == self.lane_index_of(grab.group)
@@ -171,16 +156,12 @@ impl GroupRow {
         self.edge_hover
     }
 
-    /// Another gesture owns the pointer: a tab or window being dragged, the
-    /// strip being panned by hand.
     fn edge_resize_blocked(&self) -> bool {
         self.group_drag.is_some()
             || self.pointer_pan.is_some_and(|pan| pan.engaged)
             || self.groups.iter().any(WindowGroup::drag_in_flight)
     }
 
-    /// Show which window a press at `p` would change: the owner's edge, and
-    /// with Shift held the edge of the window it would trade with.
     fn hover_edge(&mut self, p: Point, shift: bool) {
         let hover = if self.edge_resize_blocked() {
             None
@@ -193,8 +174,8 @@ impl GroupRow {
         }
     }
 
-    /// A window that moved under a still pointer (a drag let go, the strip
-    /// settling) no longer lights an edge the pointer has left.
+    /// A window that moved under a still pointer (a drag let go, the strip settling) no
+    /// longer lights an edge the pointer has left.
     pub(super) fn recheck_edge_hover(&mut self) {
         if self.edge_drag.is_none()
             && let Some((_, shift)) = self.edge_hover
@@ -222,7 +203,6 @@ impl GroupRow {
     }
 
     /// The row's edge-resize input: hover, press, drag, release, cancel.
-    /// Sets `handled` for what it claims.
     pub(super) fn handle_edge_resize(
         &mut self,
         event: &WindowEvent,
@@ -277,8 +257,6 @@ impl GroupRow {
                 self.end_edge_drag(false);
                 *ctx.handled = true;
             }
-            // Focus loss also reaches the apps, so their own input is
-            // cancelled too.
             WindowEvent::Focused(false) if self.edge_drag.is_some() => self.end_edge_drag(false),
             _ => {}
         }
@@ -311,8 +289,6 @@ impl GroupRow {
         let other = other.and_then(|i| window(i, grab.edge.opposite()));
         let lane = self.lane_index_of(grab.group);
         let pan = self.pan_of_lane_mut(lane);
-        // The drag holds the pan from here: a glide or snap in flight stops
-        // where it is, under the pointer.
         let origin_scroll = pan.scroll_x;
         pan.jump_to(origin_scroll);
         pan.absolute = false;
@@ -335,15 +311,12 @@ impl GroupRow {
         self.show_edge_hover();
     }
 
-    /// Put the windows at the widths the drag asks for this frame, and the
-    /// lane's pan where it keeps the grabbed window's opposite edge still.
     fn apply_edge_drag(&mut self) {
         let Some(drag) = self.edge_drag else {
             return;
         };
         let index = |id: u64| self.groups.iter().position(|g| g.id == id);
         let (Some(grabbed), other) = (index(drag.grabbed_id), drag.other_id.map(index)) else {
-            // The window closed under the pointer: nothing left to resize.
             self.edge_drag = None;
             return;
         };
@@ -376,9 +349,6 @@ impl GroupRow {
                 continue;
             };
             let change = group.end_edge_drag(commit);
-            // The stored share resolves to whole pixels on its own grid, a
-            // pixel or two off the live width; a leading-edge push keeps its
-            // trailing edge where it was through that too.
             if id == drag.grabbed_id
                 && drag.drag.mode() == ResizeMode::Push
                 && drag.drag.edge == WindowEdge::Leading
@@ -447,8 +417,7 @@ impl GroupRow {
         true
     }
 
-    /// Whether an edge drag rests in a display-edge band, so the next frame
-    /// auto-scrolls.
+    /// Whether an edge drag rests in a display-edge band, so the next frame auto-scrolls.
     pub(super) fn edge_autoscroll_pending(&self) -> bool {
         self.edge_drag
             .is_some_and(|drag| self.edge_autoscroll_velocity(&drag).abs() >= f64::EPSILON)

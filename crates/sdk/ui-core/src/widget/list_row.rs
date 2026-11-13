@@ -1,29 +1,14 @@
-//! `ListRow`: one row of a content list (a message, a contact, a request, a file, a device), as a
-//! retained widget and as the [`ListRowFace`] immediate painter with identical geometry.
+//! `ListRow`: one row of a content list (a message, a contact, a request, a file, a
+//! device), as a retained widget and as the [`ListRowFace`] immediate painter with
+//! identical geometry.
 //!
-//! A row has up to four columns, each optional except the title:
+//! A row has up to four columns: leading, text, facts and trailing, each optional except the
+//! title.
 //!
-//! | Column | Holds | Set in |
-//! |---|---|---|
-//! | leading | an [`Avatar`](crate::widget::Avatar), a person's or agent's face as presence draws it beside a glyph, an [`Icon`], a short badge (`GET`), a thumbnail, a checkbox, a swatch, in a fixed-width column so a list's titles line up | the leading slot's own geometry |
-//! | text | the title (with tags after it), an optional subtitle, then an optional secondary line of one or two lines | `Body` (`.strong()` when emphasised), `Body`, `Caption` |
-//! | facts | what the item is, in the same order on every row: when (a day and the time of day it is due), who (an avatar), how far (a progress count), how important (a mark); right-aligned on one edge | `Caption.numeric()`, `Caption`, icons |
-//! | trailing | one persistent control, a status dot, a check, a disclosure chevron | — |
-//!
-//! Nothing stands inline after the title: a fact reads in the facts column, whose right edge is the
-//! same on every row of a list, so the facts of a list read as one column down its edge. What a face
-//! paints lives in `paint` beside this file; the rect of each of its columns in `geometry`.
-//!
-//! Hover (or keyboard focus) swaps the facts column for the row's actions. The row height comes from
-//! the measured line boxes of its text, never a constant, so it grows with the text scale. Selection
-//! is the lift (HIG §9.3), and rows sit edge to edge, with no rule between them.
-//!
-//! **One content edge.** The row's text starts on its column's content edge; the hover and
-//! selection lift bleed [`row_bleed`] past it on both sides. A face paints into the row's *outer*
-//! rect (the content edge grown by the bleed); a retained row grows its own layout box by the bleed
-//! when it paints, so its title lines up with the section title above it.
-//!
-//! [`row_bleed`]: crate::chrome::row_bleed
+//! Hover (or keyboard focus) swaps the facts column for the row's actions. The row height
+//! comes from the measured line boxes of its text, never a constant, so it grows with the
+//! text scale. Selection is the lift (HIG §9.3), and rows sit edge to edge, with no rule
+//! between them.
 
 use crate::i18n::widget_text;
 use std::borrow::Cow;
@@ -46,7 +31,6 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, ImageData};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-/// The operation type of a row's leading checkbox turned.
 const CHECK_ROW: &str = "tilo.ui.row.check";
 use crate::widget::avatar::AvatarFace;
 use crate::widget::{
@@ -57,39 +41,16 @@ use crate::widget::{
 /// What sits in a row's leading column.
 #[derive(Clone, Copy)]
 pub enum RowLeading<'a> {
-    /// A person or an account (`AvatarFace::square()` for an account or a
-    /// site).
     Avatar(AvatarFace<'a>),
-    /// A kind of thing (a folder, a device, a setting).
     Icon(Icon),
-    /// A short code that classifies the row: an HTTP method, a file
-    /// extension, a log level. Set in `Caption.strong()` on a quiet pill.
     Badge(&'a str),
-    /// A decoded picture, cover-fitted in a square tile (a document's first
-    /// page, a photo).
     Thumbnail(&'a ImageData),
-    /// Media art at its aspect (a video's frame, an album cover); missing
-    /// art shows the generated placeholder seeded with the title's initials.
     Media(MediaArt<'a>, MediaAspect),
-    /// A selection checkbox (a multi-select list). Hit-test it with
-    /// [`ListRowFace::leading_rect`]. `icon` stands after the box, for a row that is checked off
-    /// and still shows what kind of thing it is (a task and its priority).
     Checkbox { checked: bool, icon: Option<Icon> },
-    /// A colour that is the row's content (a calendar's colour, a label).
     Swatch(Color),
-    /// How strong a radio signal is (a Wi-Fi network): the
-    /// [`SignalMeterFace`](crate::widget::SignalMeterFace) at icon size.
     Signal(crate::widget::SignalLevel),
-    /// A person's or an agent's face as presence draws it (`presence::Face`): their colour, and
-    /// for software the rounded square and the mark. It takes the icon's slot, so a row led by a
-    /// face keeps the text column a row led by a glyph does.
     Face(crate::presence::Face<'a>),
-    /// A painter for a leading mark no other kind covers (a font sample, a
-    /// waveform), given the leading slot.
     Paint(&'a dyn Fn(&mut PaintCtx<'_>, Rect)),
-    /// The room an avatar takes, left empty: a row of a list whose rows show
-    /// avatars that has none (a conversation with no messages yet) keeps its
-    /// text in line with theirs.
     AvatarSpace,
 }
 
@@ -115,19 +76,14 @@ impl std::fmt::Debug for RowLeading<'_> {
     }
 }
 
-/// A status dot on the row's trailing edge, on the title's line; beside a
-/// check or a disclosure chevron it centres with them.
+/// A status dot on the row's trailing edge, on the title's line; beside a check or a
+/// disclosure chevron it centres with them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowStatus<'a> {
-    /// Running, connected, healthy.
     Active,
-    /// Needs attention soon.
     Warning,
-    /// Failed or offline unexpectedly.
     Error,
-    /// Present but inactive.
     Idle,
-    /// A person's presence, in their colour.
     Presence(&'a str),
 }
 
@@ -157,10 +113,8 @@ impl RowStatus<'_> {
 /// How prominent a row's trailing value is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RowValue {
-    /// A figure beside the text (a balance, a temperature in a list).
     #[default]
     Body,
-    /// The row's main figure (a clock's time, a one-time code).
     Title,
 }
 
@@ -180,8 +134,6 @@ pub fn badge_column_width(text: &mut TextRenderer, theme: &Theme, badges: &[&str
         .ceil()
 }
 
-/// The fill a row's lift shows: the selection lift of the content ground
-/// when selected (or pressed), half of it under the pointer, nothing at rest.
 fn row_fill(theme: &Theme, selected: bool, hovered: bool) -> Option<Color> {
     let state = SelectionState::new(selected, hovered, false);
     (selected || hovered).then(|| {
@@ -189,45 +141,27 @@ fn row_fill(theme: &Theme, selected: bool, hovered: bool) -> Option<Color> {
     })
 }
 
-/// The laid-out columns of one row.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct RowGeometry {
-    /// Where the leading column sits.
     leading: Rect,
-    /// Where the title starts (the separator starts here too).
     text_x: f64,
     text_right: f64,
-    /// Where the title's line ends: the facts column narrows it.
     title_right: f64,
-    /// Where the line under the title ends.
     second_right: f64,
-    /// The persistent trailing control's slot.
     trailing: Option<Rect>,
-    /// The avatar in the facts column, where the row shows one.
     avatar: Option<Rect>,
-    /// The trailing value's left edge in the facts column.
     value_right: f64,
-    /// The status dot's centre x.
     dot_x: Option<f64>,
-    /// The face of whoever made a change the person has not seen.
     change: Option<Rect>,
     check: Option<Rect>,
-    /// The disclosure chevron's slot.
     disclosure: Option<Rect>,
-    /// Where the marks in the facts column end (the column's own right edge).
     marks_right: Option<f64>,
-    /// Where a count's pill ends in the facts column.
     count_right: Option<f64>,
-    /// Where the meta's right edge sits in the facts column.
     meta_right: f64,
-    /// Where the meta's room starts: what lies left of it is the text's.
     meta_left: f64,
-    /// Where the facts' line stands in a card, which puts them under the text; a row stands
-    /// them beside it, on the title's line.
     facts_cy: f64,
 }
 
-/// How many marks [`ListRowFace::mark`] keeps on a row's edge.
 pub const MAX_MARKS: usize = 3;
 
 /// How many lines a card's title may take before it is cut with an ellipsis: a card is a small
@@ -239,80 +173,51 @@ pub const CARD_TITLE_LINES: u8 = 3;
 /// widget's own surface and what it says is written once. Asked as a capability, so a widget
 /// wrapped in a host's pane, a context menu or any other decorator still answers.
 pub trait CardBody {
-    /// Show as a card: its own surface, its title wrapped over up to [`CARD_TITLE_LINES`]
-    /// lines, its facts on a line under the title, and a press reporting `activate` — and
-    /// selection, where it is the selected one.
     fn show_as_card(&mut self, selected: bool, activate: crate::component::Event);
 }
 
-/// One mark on a row's edge: an icon in tertiary ink or the row's tone, or a swatch in a
-/// colour that belongs to the item (a task's project, a calendar).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum RowMark {
     Icon(Icon),
     Swatch(Color),
 }
 
-/// Immediate-mode list row. Build one per row per frame, `measure` it for
-/// its height, then `paint` it into the rect you laid out: the row's outer
-/// rect, the list's content edge grown by [`row_bleed`] on both sides.
-///
-/// [`row_bleed`]: crate::chrome::row_bleed
+/// Immediate-mode list row.
 #[derive(Clone, Debug)]
 pub struct ListRowFace<'a> {
     title: &'a str,
-    /// The item of its app's collection the row shows
-    /// ([`ListRow::item`](crate::widget::ListRow::item)).
     item: Option<&'a str>,
-    /// A quiet word before the title, on its line.
     prefix: Option<&'a str>,
     title_lines: u8,
     title_family: Option<&'a FontChoice>,
-    /// The words a search found the row by, marked where the title has them.
     found: &'a [&'a str],
     subtitle: Option<&'a str>,
     secondary: Option<&'a str>,
-    /// The row's secondary line is the row's description, said after its name
-    /// rather than as its value ([`ListRow::description`]).
     described: bool,
     /// The line under the title as separate facts, painted where a secondary line would stand:
     /// facts are their own components, never one string joined by a separator glyph.
     facts: &'a [Fact],
     secondary_lines: u8,
-    /// A line under the text of the row's own: what waits on the item.
     note: Option<&'a str>,
     meta: Option<&'a str>,
     meta_spans: &'a [(&'a str, Tone)],
     value: Option<(&'a str, RowValue)>,
-    /// Who the item is, as a fact: their face in the facts column.
     avatar: Option<AvatarFace<'a>>,
     marks: [Option<RowMark>; MAX_MARKS],
-    /// The tone the row's own mark reads in: an item's priority, a status.
     mark_tone: Tone,
     tags: &'a [(&'a str, ChipStyle)],
     count: Option<usize>,
     leading: Option<RowLeading<'a>>,
     leading_column: Option<f64>,
-    /// Indented one leading column under the row above it.
     nested: bool,
-    /// How many rows over it the row stands: its content indents one
-    /// disclosure gutter per depth, while its lift fills the row.
     depth: u32,
-    /// The column the row keeps in front of its content, inside its own box: where a tree's
-    /// chevron stands ([`ListRowFace::chevron_column`]).
     chevron_column: f64,
     status: Option<RowStatus<'a>>,
     change: Option<RowChange<'a>>,
     struck: bool,
-    /// The title reads in the weaker ink, as a subordinate row of a tree does: not struck
-    /// through, just quiet.
     quiet: bool,
-    /// The title reads in the quietest ink: a row a window shows for where another stands, as
-    /// a tree narrowed to a search shows the branches to what it found.
     faint: bool,
     disclosure: bool,
-    /// How far the chevron has turned towards pointing down, 0 to 1: a row
-    /// that opens in place rather than onto a page.
     disclosure_turn: f64,
     checked: Option<bool>,
     emphasized: bool,
@@ -329,9 +234,6 @@ pub struct ListRowFace<'a> {
     /// least: its rows' controls stand in one column.
     trailing_after: f64,
     interaction: Interaction,
-    /// The rect the lift, separator and focus ring take when it differs from
-    /// the rect the text is laid out in (a retained row whose trailing
-    /// control wrapped under its text).
     frame: Option<Rect>,
     /// The least a row a person presses is tall: the input's minimum for adjacent collection
     /// rows (48 for a finger, as a button's face grows to its target), so a finger never lands
@@ -341,14 +243,8 @@ pub struct ListRowFace<'a> {
     /// (`interaction::InteractionEnvironment::minimum_target`), so a finger on a box is never a
     /// press on the row. Zero where nothing leads with a box.
     check_target: f64,
-    /// Where the leading checkbox is on its way at this frame, from the row's
-    /// [`crate::widget::checkbox::CheckMotion`]; at rest on its value when unset.
     check_pose: Option<crate::widget::checkbox::CheckPose>,
-    /// The row as a card: its own surface, its title wrapped over up to
-    /// [`CARD_TITLE_LINES`] lines, and its facts on a line under the text instead of beside it.
     card: bool,
-    /// The row as a dense row: one quiet line at the caption's size, for a reference that
-    /// stands among content or a list that shows a lot at once.
     dense: bool,
     /// The row's own height, where it is not the list's row height: an outline's row token.
     /// The row stands at it, taller only when what it holds needs more.
@@ -356,8 +252,8 @@ pub struct ListRowFace<'a> {
 }
 
 impl<'a> ListRowFace<'a> {
-    /// Who else is at the item, when the row shows them: the identity its presence dot stands
-    /// for ([`ListRow::presence`]).
+    /// Who else is at the item, when the row shows them: the identity its presence dot
+    /// stands for ([`ListRow::presence`]).
     #[cfg(test)]
     pub(crate) fn presence_identity(&self) -> Option<&'a str> {
         match self.status {
@@ -366,8 +262,8 @@ impl<'a> ListRowFace<'a> {
         }
     }
 
-    /// Whether the row stands in for an item that was removed ([`ListRow::struck`]): its title
-    /// struck through.
+    /// Whether the row stands in for an item that was removed ([`ListRow::struck`]): its
+    /// title struck through.
     #[cfg(test)]
     pub(crate) fn title_struck(&self) -> bool {
         self.struck
@@ -439,17 +335,17 @@ impl<'a> ListRowFace<'a> {
         }
     }
 
-    /// The row as a card: a surface of its own, its title wrapped over up to
-    /// [`CARD_TITLE_LINES`] lines with the facts on a line under the text, in the order they
-    /// read in a row.
+    /// Show the row as a card: a surface of its own, its title wrapped over up to
+    /// [`CARD_TITLE_LINES`] lines, and its facts on a line under the text instead of beside
+    /// it (a board's card).
     #[must_use]
     pub fn card(mut self) -> Self {
         self.card = true;
         self
     }
 
-    /// The row as a dense row: one line at the caption's size, the small glyph, as tall as that
-    /// line and its inset: a quiet reference under content, or a list that shows a lot at once.
+    /// Show the row as a dense row: one quiet line at the caption's size, as tall as that
+    /// line and its inset (a reference under content).
     #[must_use]
     pub fn dense(mut self) -> Self {
         self.dense = true;
@@ -464,15 +360,14 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// How many lines the title may take: [`Self::two_line_title`] sets two, a card sets what
-    /// its title wraps to.
+    /// How many lines the title may take: [`Self::two_line_title`] sets two, a card sets
+    /// what its title wraps to.
     #[must_use]
     pub fn title_lines(mut self, lines: u8) -> Self {
         self.title_lines = lines.clamp(1, CARD_TITLE_LINES);
         self
     }
 
-    /// The metrics this face lays out with: a card's, or a dense row's, where it is one.
     fn metrics(&self, theme: &Theme) -> RowMetrics {
         if self.card {
             RowMetrics::card(theme)
@@ -491,25 +386,24 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// Mark `words`, what a search found the row by, where the title has
-    /// them: each at the start of a word, whatever its case, under the find
-    /// bar's match wash ([`paint_find_match`](crate::widget::paint_find_match)).
+    /// Mark `words`, what a search found the row by, where the title has them: each at the
+    /// start of a word, whatever its case, under the find bar's match wash
+    /// ([`paint_find_match`](crate::widget::paint_find_match)).
     #[must_use]
     pub fn found(mut self, words: &'a [&'a str]) -> Self {
         self.found = words;
         self
     }
 
-    /// A quiet word before the title, on its line and in the weaker ink: where the item came
-    /// from. The title takes the room left after it.
+    /// A quiet word before the title, on its line and in the weaker ink: where the item
+    /// came from.
     #[must_use]
     pub fn prefix(mut self, word: &'a str) -> Self {
         self.prefix = Some(word);
         self
     }
 
-    /// Let the title wrap to two lines before it is elided (a long name in a
-    /// narrow list).
+    /// See [`ListRowFace::two_line_title`].
     #[must_use]
     pub fn two_line_title(mut self) -> Self {
         self.title_lines = 2;
@@ -524,16 +418,16 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// A `Body` line between the title and the secondary text (a message's
-    /// subject under its sender).
+    /// A `Body` line between the title and the secondary text (a message's subject under
+    /// its sender).
     #[must_use]
     pub fn subtitle(mut self, text: &'a str) -> Self {
         self.subtitle = Some(text);
         self
     }
 
-    /// The secondary line under the title (a preview, an address, a path),
-    /// elided to one line.
+    /// The secondary line under the title (a preview, an address, a path), elided to one
+    /// line.
     #[must_use]
     pub fn secondary(mut self, text: &'a str) -> Self {
         self.secondary = Some(text);
@@ -557,40 +451,39 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// Let the secondary text wrap to two lines before it is elided (a
-    /// message preview).
+    /// See [`ListRowFace::two_line_secondary`].
     #[must_use]
     pub fn two_line_secondary(mut self) -> Self {
         self.secondary_lines = 2;
         self
     }
 
-    /// Let the secondary text take up to `lines` lines (one to four): a
-    /// thing whose facts each stand on a line of their own.
+    /// See [`ListRowFace::secondary_lines`].
     #[must_use]
     pub fn secondary_lines(mut self, lines: u8) -> Self {
         self.secondary_lines = lines.clamp(1, 4);
         self
     }
 
-    /// When it happened or is due (a day, with the time of day it is due where the view pairs
-    /// one), in tabular figures: the first fact of the facts column, on the title's line.
+    /// When it happened or is due (a day, with the time of day it is due where the view
+    /// pairs one), in tabular figures: the first fact of the facts column, on the title's
+    /// line.
     #[must_use]
     pub fn meta(mut self, text: &'a str) -> Self {
         self.meta = Some(text);
         self
     }
 
-    /// A meta made of toned figures (`+2.4%` in success, `−0.8%` in danger),
-    /// each made legible on the row's ground and on its lift.
+    /// A meta made of toned figures (`+2.4%` in success, `−0.8%` in danger), each made
+    /// legible on the row's ground and on its lift.
     #[must_use]
     pub fn meta_spans(mut self, spans: &'a [(&'a str, Tone)]) -> Self {
         self.meta_spans = spans;
         self
     }
 
-    /// A figure among the facts (how far a branch got, a temperature), between who it is and
-    /// how important it is.
+    /// A figure among the facts (how far a branch got, a temperature), between who it is
+    /// and how important it is.
     #[must_use]
     pub fn value(mut self, text: &'a str) -> Self {
         self.value = Some((text, RowValue::Body));
@@ -604,18 +497,15 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// Who the item is, as a fact in the facts column: their face, between when it is due and
-    /// how far it has got. A row led by an avatar ([`RowLeading::Avatar`]) is a row that _is_
-    /// the person (a contact); a row that is something a person is on shows them here.
+    /// Who the item is, as a fact in the facts column: their face, between when it is due
+    /// and how far it has got.
     #[must_use]
     pub fn avatar(mut self, avatar: AvatarFace<'a>) -> Self {
         self.avatar = Some(avatar);
         self
     }
 
-    /// A mark on the row's edge, after every other fact (starred, pinned, shared, how much it
-    /// matters), in tertiary ink or the row's own tone. Each call adds one more, in order, up
-    /// to [`MAX_MARKS`]; later ones are ignored. Star, pin and bookmark are filled.
+    /// See [`ListRowFace::mark`].
     #[must_use]
     pub fn mark(mut self, icon: Icon) -> Self {
         self.push_mark(RowMark::Icon(icon));
@@ -630,9 +520,8 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// A colour the item carries (its project, its calendar), as a small
-    /// swatch among the marks after the title. It counts as one of the
-    /// [`MAX_MARKS`].
+    /// A colour the item carries (its project, its calendar), as a small swatch among the
+    /// marks after the title.
     #[must_use]
     pub fn swatch_mark(mut self, color: Color) -> Self {
         self.push_mark(RowMark::Swatch(color));
@@ -652,8 +541,7 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// How many items the row stands for (the messages in a thread, a branch's open steps), in
-    /// a quiet pill among the facts, after the figure.
+    /// See [`ListRowFace::count`].
     #[must_use]
     pub fn count(mut self, count: usize) -> Self {
         self.count = Some(count);
@@ -683,17 +571,14 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// The column the row keeps in front of its content, inside its own box: a tree's chevron
-    /// stands there and the row's content starts past it, while the row's lift still fills from
-    /// the box's own edge.
+    /// See [`ListRowFace::chevron_column`].
     #[must_use]
     pub fn chevron_column(mut self, px: f64) -> Self {
         self.chevron_column = px.max(0.0);
         self
     }
 
-    /// Indent the row's content `depth` steps in, one disclosure gutter each, as a
-    /// subtree's rows stand under their parents.
+    /// See [`ListRowFace::depth`].
     #[must_use]
     pub fn depth(mut self, depth: u32) -> Self {
         self.depth = depth;
@@ -714,8 +599,8 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// The row reads as subordinate to the rows around it: its title in the weaker ink, as an
-    /// outline's quieter branch does.
+    /// The row reads as subordinate to the rows around it: its title in the weaker ink, as
+    /// an outline's quieter branch does.
     #[must_use]
     pub fn quiet(mut self, quiet: bool) -> Self {
         self.quiet = quiet;
@@ -750,9 +635,9 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// A trailing chevron for a row that opens in place, turned `turn` of
-    /// the way (0 closed, 1 open) from pointing at the row's end to
-    /// pointing down — [`crate::motion::Disclose`]'s `turn`.
+    /// A trailing chevron for a row that opens in place, turned `turn` of the way (0
+    /// closed, 1 open) from pointing at the row's end to pointing down —
+    /// [`crate::motion::Disclose`]'s `turn`.
     #[must_use]
     pub fn disclosure_turned(mut self, turn: f64) -> Self {
         self.disclosure = true;
@@ -760,8 +645,7 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// One choice of a single-choice list: a trailing check on the chosen
-    /// row. Every row of the list reserves the check's slot.
+    /// See [`ListRowFace::checked`].
     #[must_use]
     pub fn checked(mut self, checked: bool) -> Self {
         self.checked = Some(checked);
@@ -781,16 +665,15 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// Which neighbours are selected with this row: a run of selected rows
-    /// is one lift with no notch.
+    /// Which neighbours are selected with this row: a run of selected rows is one lift with
+    /// no notch.
     #[must_use]
     pub fn joined(mut self, join: RowJoin) -> Self {
         self.join = join;
         self
     }
 
-    /// Draw the inset separator along the bottom edge. It hides when this
-    /// row or `next_selected` (the row below) is selected.
+    /// Draw the inset separator along the bottom edge.
     #[must_use]
     pub fn separator(mut self, next_selected: bool) -> Self {
         self.separator = true;
@@ -798,8 +681,7 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// Actions shown in place of the meta while the row is hovered or
-    /// focused. Hit-test them with [`Self::action_rects`].
+    /// Actions shown in place of the meta while the row is hovered or focused.
     #[must_use]
     pub fn actions(mut self, actions: &'a [RowAction<'a>]) -> Self {
         self.actions = actions;
@@ -813,25 +695,24 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// Show the actions without hover: a selected row under a touch pointer,
-    /// which has no hover.
+    /// Show the actions without hover: a selected row under a touch pointer, which has no
+    /// hover.
     #[must_use]
     pub fn reveal_actions(mut self, reveal: bool) -> Self {
         self.reveal_actions = reveal;
         self
     }
 
-    /// The row slid `offset` logical pixels toward its leading edge,
-    /// revealing `action` behind its trailing edge.
+    /// The row slid `offset` logical pixels toward its leading edge, revealing `action`
+    /// behind its trailing edge.
     #[must_use]
     pub fn swiped(mut self, action: SwipeAction<'a>, offset: f64) -> Self {
         self.swipe = Some((action, offset.max(0.0)));
         self
     }
 
-    /// Reserve `width` at the trailing edge for one persistent control (a
-    /// switch, a button, a small progress ring) the host lays out itself in
-    /// [`Self::trailing_rect`]. Separators keep their full width.
+    /// Reserve `width` at the trailing edge for one persistent control (a switch, a button,
+    /// a small progress ring) the host lays out itself in [`Self::trailing_rect`].
     #[must_use]
     pub fn trailing_width(mut self, width: f64) -> Self {
         self.trailing_width = Some(width.max(0.0));
@@ -866,13 +747,10 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// The number of lines under the title.
     fn untitled(&self) -> bool {
         self.title.trim().is_empty()
     }
 
-    /// The title as the row shows and speaks it: an item nobody has named yet shows a muted
-    /// placeholder, so its row stays visible and pressable until it has one.
     fn shown_title(&self) -> Cow<'_, str> {
         if self.untitled() {
             Cow::Owned(widget_text("list-row-untitled"))
@@ -881,10 +759,8 @@ impl<'a> ListRowFace<'a> {
         }
     }
 
-    /// The name a row is announced by: its badge, then its title.
     fn spoken_name(&self) -> String {
         let title = self.shown_title();
-        // The row says its quiet word and its badge before its title, as it draws them there.
         let mut name = String::new();
         if let Some(RowLeading::Badge(badge)) = &self.leading {
             name.push_str(badge);
@@ -898,9 +774,9 @@ impl<'a> ListRowFace<'a> {
         name
     }
 
-    /// The row's accessibility node: a list item named by its badge and
-    /// title, with the subtitle, secondary line, meta, value, count, tags
-    /// and status as its value, and one button child per action.
+    /// The row's accessibility node: a list item named by its badge and title, with the
+    /// subtitle, secondary line, meta, value, count, tags and status as its value, and one
+    /// button child per action.
     pub fn accessibility(&self, rect: Rect, action_target: impl Into<String>) -> AccessNode {
         let spans: String = self
             .meta_spans
@@ -909,14 +785,12 @@ impl<'a> ListRowFace<'a> {
             .collect::<Vec<_>>()
             .join(" ");
         let count = self.count.map(|count| count.to_string());
-        // Separate facts read as their own words on the line under the title.
         let facts: String = self
             .facts
             .iter()
             .map(|fact| fact.text.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        // A toned meta draws as spans of its own words: the row says it once.
         let meta = self.meta.filter(|_| self.meta_spans.is_empty());
         // A description explains the row after its name, and the secondary
         // line is how it is painted: said once, never counted as a value too.
@@ -965,9 +839,6 @@ impl<'a> ListRowFace<'a> {
             node = node.with_value(value.join(", "));
         }
         if !self.actions.is_empty() {
-            // Each action is a button of its own, addressed as
-            // `<row>/action/<index>`; the keyboard reaches them through the
-            // row (the arrow keys), so they are not tab stops.
             node = node.with_children(
                 self.actions
                     .iter()
@@ -985,18 +856,12 @@ impl<'a> ListRowFace<'a> {
     }
 }
 
-/// The colour a row's leading avatar is drawn in where it has one of its own,
-/// instead of the one its identity derives.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum AvatarTint {
-    /// A colour chosen outright: an agent's keeper picked it.
     Colour(Color),
-    /// One of the presence palette's hues, named by the caller: an agent's
-    /// client, warm for one and cool for another.
     Hue(PresenceHue),
 }
 
-/// Owned form of [`RowLeading`] for the retained row.
 enum Leading {
     Avatar {
         name: String,
@@ -1005,10 +870,8 @@ enum Leading {
         square: bool,
         glyph: Option<Icon>,
         tint: Option<AvatarTint>,
-        /// Software: the agent's own face ([`AvatarFace::agent`]).
         agent: bool,
     },
-    /// The room an avatar takes, left empty ([`RowLeading::AvatarSpace`]).
     AvatarSpace,
     Icon(Icon),
     Badge(String),
@@ -1021,14 +884,12 @@ enum Leading {
     Checkbox {
         checked: bool,
         on_toggle: Box<dyn FnMut(bool)>,
-        /// A glyph after the box: what kind of thing the row is.
         icon: Option<Icon>,
     },
     Swatch(Color),
     Signal(crate::widget::SignalLevel),
 }
 
-/// Who a row is about, as a fact in its facts column ([`ListRow::avatar`]): their face.
 struct FactAvatar {
     name: String,
     identity: String,
@@ -1048,7 +909,6 @@ impl FactAvatar {
     }
 }
 
-/// What a retained hover action runs.
 enum ActionHandler {
     Callback(Box<dyn FnMut()>),
     Bound(ActionEmitter<()>),
@@ -1085,13 +945,10 @@ struct OwnedSwipe {
     label: String,
     destructive: bool,
     on_activate: Option<Box<dyn FnMut()>>,
-    /// What releasing the swipe past the threshold presses, when the view bound it: the row
-    /// answers for it as it does for its other actions.
     press: crate::widget::Press,
 }
 
 impl OwnedSwipe {
-    /// Run it: the action the view bound, or the row's own callback.
     fn run(&mut self) {
         if !self.press.is_none() {
             self.press.run();
@@ -1101,14 +958,12 @@ impl OwnedSwipe {
     }
 }
 
-/// Distance past which a released swipe completes, as a share of the row.
 const SWIPE_COMMIT: f64 = 0.4;
 
 /// The narrowest a row's text may get, in line boxes of its title, before
 /// its trailing control wraps under it.
 const MIN_TEXT_LINES: u8 = 8;
 
-/// An unseen change a retained row shows ([`ListRow::change`]).
 struct Changed {
     identity: String,
     name: String,
@@ -1117,18 +972,14 @@ struct Changed {
     show: Option<Box<dyn FnMut()>>,
 }
 
-/// The change a retained row shows, as [`ListRow::shown_change`] reads it: who made it, what
-/// they are called, what they did (the sentence under the title), and what assistive
+/// The change a retained row shows, as [`ListRow::shown_change`] reads it: who made it,
+/// what they are called, what they did (the sentence under the title), and what assistive
 /// technology hears of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShownChange<'a> {
-    /// Who made the change.
     pub identity: &'a str,
-    /// What they are called.
     pub name: &'a str,
-    /// What they did, in words.
     pub said: &'a str,
-    /// Who changed it and in which run, as the row's tooltip and assistive technology say it.
     pub spoken: &'a str,
 }
 
@@ -1136,63 +987,39 @@ pub struct ShownChange<'a> {
 /// activates it (pointer, Enter/Space, or assistive technology).
 pub struct ListRow {
     title: String,
-    /// The item of its app's collection the row shows, when it shows one: the
-    /// identity an action naming the item is found by, unlike its title.
     item: Option<String>,
-    /// A quiet word before the title, on its line: where an item came from.
     prefix: Option<String>,
-    /// Whether a layout pass has built the row.
     laid_out: bool,
-    /// Whether the last paint cut the title short; the tooltip then shows it
-    /// in full.
     title_elided: bool,
     two_line_title: bool,
     title_family: Option<FontChoice>,
     subtitle: Option<String>,
     secondary: Option<String>,
-    /// How many lines the secondary text may take.
     secondary_line_count: u8,
-    /// A line under the text of the row's own: what waits on the item.
     note: Option<String>,
     meta: Option<String>,
     meta_spans: Vec<(String, Tone)>,
     value: Option<(String, RowValue)>,
     mark: Option<Icon>,
-    /// The tone the row's mark and its checkbox ring read in: an item's priority.
     mark_tone: Tone,
     tags: Vec<(String, ChipStyle)>,
     count: Option<usize>,
-    /// Who the row is about, as a fact in the facts column.
     avatar: Option<FactAvatar>,
     leading: Option<Leading>,
     leading_column: Option<f64>,
     nested: bool,
-    /// How many rows over it the row stands, indenting its content one
-    /// disclosure gutter each ([`ListRowFace::depth`]).
     depth: u32,
-    /// The column the row keeps in front of its content, inside its own box: where the tree's
-    /// chevron stands ([`ListRowFace::chevron_column`]).
     chevron_column: f64,
-    /// Every badge of the row's list, measured into `leading_column` at
-    /// layout.
     column_badges: Option<std::rc::Rc<[String]>>,
     pub(crate) shared_leading: Option<f64>,
-    /// Set by the list: the room every row of it keeps after its trailing
-    /// control.
     pub(crate) shared_after_trailing: Option<f64>,
     leading_tooltip: Option<String>,
     tooltip: Option<String>,
-    /// What a reader hears of the row beyond its name and value; it is not
-    /// shown to the pointer.
     description: Option<String>,
     status: Option<(StatusKind, String)>,
-    /// An unseen change of what the row shows ([`Self::change`]).
     change: Option<Changed>,
-    /// It stands for a removed item ([`Self::struck`]).
     struck: bool,
-    /// Its title reads in the weaker ink ([`Self::quiet`]).
     quiet: bool,
-    /// Its title reads in the quietest ink ([`Self::faint`]).
     faint: bool,
     disclosure: bool,
     checked: Option<bool>,
@@ -1204,55 +1031,29 @@ pub struct ListRow {
     actions: Vec<OwnedAction>,
     hovered_action: Option<usize>,
     armed_action: Option<usize>,
-    /// The list this row stands in has something painted over it: its tooltip stays away.
     tooltips_suppressed: bool,
-    /// A press on one of the row's own controls (a hover action, the
-    /// leading checkbox); a press on the row itself is the activation's.
     pressed_part: crate::pointer_replay::HeldPress<RowPart>,
-    /// The commands the row's menu offers with a declared shortcut
-    /// (`key: "Ctrl+Enter"`), and the keys each answers: pressed where the
-    /// row has the keyboard, they run it as choosing it in the menu does.
     shortcuts: Vec<(crate::platform::Shortcut, std::rc::Rc<dyn Fn()>)>,
     swipe: Option<OwnedSwipe>,
     swipe_origin: Option<(u64, f64)>,
     swipe_offset: f64,
     trailing: Option<Trailing>,
     activation: Activation,
-    /// The leading checkbox's own state, published as the row's view action
-    /// `check` ([`ListRow::checkbox_view`]) and answered by the row.
     check_verb: Option<super::control_verb::ControlVerb<bool>>,
-    /// The value a described row's leading checkbox is bound to, followed so
-    /// a check made elsewhere shows in the row.
     check_binding: Option<crate::widget::binding::BoxedBinding<bool>>,
-    /// The action a described row's `check` runs when it is an action the
-    /// app publishes: a press on the box is the action's own route, which an
-    /// agent's invocation of it lands on too.
     check_action: Option<crate::widget::ActionEmitter<()>>,
     environment: crate::interaction::InteractionEnvironment,
     metrics: Option<RowMetrics>,
     theme: Option<Theme>,
     rect: Rect,
     dirty: bool,
-    /// The pace the row's own motion plays at (its mark, its coming and going in a list).
     feel: crate::motion::Feel,
-    /// How far the leading checkbox's fill and mark have come: a row's checkbox is painted in
-    /// the row, so the row keeps the motion ([`crate::widget::checkbox::CheckMotion`]).
     check: crate::widget::checkbox::CheckMotion,
-    /// Where that motion is this frame, for the face it draws.
     check_pose: Option<crate::widget::checkbox::CheckPose>,
-    /// A host that builds the row anew for what it shows now: the one built
-    /// in its place goes on from its mark (`motion::keep`).
     hand_on: crate::motion::HandOn<KeptRow>,
-    /// The row is a card ([`ListRowFace::card`]): its own surface, its facts on a line under
-    /// its text.
     card: bool,
-    /// How many lines the title wraps to in a card at the width it was last measured in: a
-    /// card is as tall as its title needs, so its height is measured, not fixed.
     card_lines: u8,
-    /// The row is a dense row ([`ListRowFace::dense`]): one quiet line at the caption's size.
     dense: bool,
-    /// The row's own height ([`ListRowFace::row_height`]), where it is not the list's row
-    /// height.
     row_height: Option<f64>,
 }
 
@@ -1270,8 +1071,6 @@ impl ListRow {
         Self::new_owned(id.into(), title.into())
     }
 
-    /// [`Self::new`] once its text is owned: one copy in the toolkit
-    /// rather than one in every app that calls the generic constructor.
     fn new_owned(id: String, title: String) -> Self {
         Self {
             title,
@@ -1346,7 +1145,6 @@ impl ListRow {
         }
     }
 
-    /// The metrics the row lays out with: a card's, or a dense row's, where it is one.
     fn metrics(&self, theme: &Theme) -> RowMetrics {
         if self.card {
             RowMetrics::card(theme)
@@ -1357,8 +1155,8 @@ impl ListRow {
         }
     }
 
-    /// Show the row as a dense row: one quiet line at the caption's size, as tall as that line
-    /// and its inset (a reference under content).
+    /// Show the row as a dense row: one quiet line at the caption's size, as tall as that
+    /// line and its inset (a reference under content).
     #[must_use]
     pub fn dense(mut self) -> Self {
         self.set_dense();
@@ -1387,8 +1185,8 @@ impl ListRow {
     }
 
     /// Show the row as a card: a surface of its own, its title wrapped over up to
-    /// [`CARD_TITLE_LINES`] lines, and its facts on a line under the text instead of beside it
-    /// (a board's card).
+    /// [`CARD_TITLE_LINES`] lines, and its facts on a line under the text instead of beside
+    /// it (a board's card).
     #[must_use]
     pub fn card(mut self) -> Self {
         self.set_card();
@@ -1408,16 +1206,16 @@ impl ListRow {
         self.card
     }
 
-    /// Have a press on the row (or Enter or Space while it has the keyboard) report `event`:
-    /// what a component's card does when it opens what it stands for.
+    /// Have a press on the row (or Enter or Space while it has the keyboard) report
+    /// `event`: what a component's card does when it opens what it stands for.
     pub fn set_activate(&mut self, event: crate::component::Event) {
         let label = self.title.clone();
         self.activation.set_event(event, &label);
         self.dirty = true;
     }
 
-    /// The commands the row's menu offers with the keys they declare: pressing one while the
-    /// row has the keyboard runs it, as choosing it in the menu does.
+    /// The commands the row's menu offers with the keys they declare: pressing one while
+    /// the row has the keyboard runs it, as choosing it in the menu does.
     #[must_use]
     pub fn shortcuts(
         mut self,
@@ -1494,8 +1292,8 @@ impl ListRow {
     }
 
     /// Say which item of its collection the row shows
-    /// ([`AccessNode::item`](crate::a11y::AccessNode::item)): a task's issue,
-    /// a note's block. An action naming that item is drawn on this row.
+    /// ([`AccessNode::item`](crate::a11y::AccessNode::item)): a task's issue, a note's
+    /// block.
     #[must_use]
     pub fn item(mut self, item: impl Into<String>) -> Self {
         self.item = Some(item.into()).filter(|item| !item.is_empty());
@@ -1538,8 +1336,7 @@ impl ListRow {
         self
     }
 
-    /// The tone the row's mark and its checkbox ring read in
-    /// ([`ListRowFace::mark_tone`]).
+    /// The tone the row's mark and its checkbox ring read in ([`ListRowFace::mark_tone`]).
     #[must_use]
     pub fn mark_tone(mut self, tone: Tone) -> Self {
         self.mark_tone = tone;
@@ -1564,8 +1361,7 @@ impl ListRow {
     }
 
     /// A person's avatar in the leading column: the row _is_ the person (a contact, an
-    /// account). Something a person is on shows them as a fact instead
-    /// ([`ListRowFace::avatar`]), on its facts column.
+    /// account).
     #[must_use]
     pub fn avatar(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
         self.leading = Some(Leading::Avatar {
@@ -1590,17 +1386,16 @@ impl ListRow {
         self
     }
 
-    /// The room an avatar takes, left empty ([`RowLeading::AvatarSpace`]): for
-    /// a row without one in a list whose rows show avatars.
+    /// The room an avatar takes, left empty ([`RowLeading::AvatarSpace`]): for a row
+    /// without one in a list whose rows show avatars.
     #[must_use]
     pub fn avatar_space(mut self) -> Self {
         self.leading = Some(Leading::AvatarSpace);
         self
     }
 
-    /// An app without artwork of its own in the leading avatar: its glyph on
-    /// the neutral square, the mark the shell shows for it
-    /// ([`AvatarFace::glyph`]).
+    /// An app without artwork of its own in the leading avatar: its glyph on the neutral
+    /// square, the mark the shell shows for it ([`AvatarFace::glyph`]).
     #[must_use]
     pub fn avatar_glyph(mut self, icon: Icon) -> Self {
         if let Some(Leading::Avatar { glyph, .. }) = &mut self.leading {
@@ -1634,9 +1429,9 @@ impl ListRow {
         self
     }
 
-    /// Tint the leading avatar in `hue`, one of the presence palette's
-    /// colours, instead of the hue its identity derives: what an agent's
-    /// client looks like (warm for one, cool for another), in every theme.
+    /// Tint the leading avatar in `hue`, one of the presence palette's colours, instead of
+    /// the hue its identity derives: what an agent's client looks like (warm for one, cool
+    /// for another), in every theme.
     #[must_use]
     pub fn avatar_hue(mut self, hue: PresenceHue) -> Self {
         if let Some(Leading::Avatar { tint, .. }) = &mut self.leading {
@@ -1645,8 +1440,8 @@ impl ListRow {
         self
     }
 
-    /// Play the row's own motion — its mark, its coming and going in a list — at `feel` rather
-    /// than the theme's pace.
+    /// Play the row's own motion — its mark, its coming and going in a list — at `feel`
+    /// rather than the theme's pace.
     #[must_use]
     pub fn with_feel(mut self, feel: crate::motion::Feel) -> Self {
         self.feel = feel;
@@ -1661,10 +1456,9 @@ impl ListRow {
         }
     }
 
-    /// [`Self::checkbox`] published as the row's view action `check`: a
-    /// press on the box, Space on the focused row, a screen reader's toggle,
-    /// a script's and an agent's all reach `on_toggle` through the same
-    /// action. The row's control is `id` ([`Self::new`]).
+    /// [`Self::checkbox`] published as the row's view action `check`: a press on the box,
+    /// Space on the focused row, a screen reader's toggle, a script's and an agent's all
+    /// reach `on_toggle` through the same action.
     #[must_use]
     pub fn checkbox_view(mut self, checked: bool, on_toggle: impl FnMut(bool) + 'static) -> Self {
         let control = self.activation.id().to_owned();
@@ -1683,8 +1477,7 @@ impl ListRow {
         self
     }
 
-    /// See [`ListRowFace::leading_column`]. A [`crate::widget::Section`]
-    /// equalises the badge column of consecutive rows on its own.
+    /// See [`ListRowFace::leading_column`].
     #[must_use]
     pub fn leading_column(mut self, width: f64) -> Self {
         self.leading_column = Some(width);
@@ -1722,21 +1515,16 @@ impl ListRow {
         self
     }
 
-    /// What the pointer resting on the row shows, where no part of it (the
-    /// leading badge, an action, a title cut short) says more.
+    /// What the pointer resting on the row shows, where no part of it (the leading badge,
+    /// an action, a title cut short) says more.
     #[must_use]
     pub fn tooltip(mut self, tooltip: impl Into<String>) -> Self {
         self.tooltip = Some(tooltip.into());
         self
     }
 
-    /// What a reader hears of the row beyond its name and value — a task's
-    /// status beside its reference, say. It stays out of the pointer's way:
-    /// the row explains itself to a reader, not on hover.
-    ///
-    /// A [`secondary`](Self::secondary) line carries the same words on screen
-    /// where it is the row's explanation of itself: the row then speaks it as
-    /// its description, not also as its value.
+    /// What a reader hears of the row beyond its name and value — a task's status beside
+    /// its reference, say.
     #[must_use]
     pub fn description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
@@ -1767,7 +1555,8 @@ impl ListRow {
         self
     }
 
-    /// The row stands for a removed item: its title struck through ([`ListRowFace::struck`]).
+    /// The row stands for a removed item: its title struck through
+    /// ([`ListRowFace::struck`]).
     #[must_use]
     pub fn struck(mut self) -> Self {
         self.struck = true;
@@ -1782,17 +1571,18 @@ impl ListRow {
         self
     }
 
-    /// The row reads as one a window shows for where another stands ([`ListRowFace::faint`]).
+    /// The row reads as one a window shows for where another stands
+    /// ([`ListRowFace::faint`]).
     #[must_use]
     pub fn faint(mut self) -> Self {
         self.faint = true;
         self
     }
 
-    /// A change `identity` (called `name`) made to what the row shows and the person has not
-    /// seen: their face on the trailing edge and their colour faintly under the row, at its own
-    /// height, and `said` as a line under the row's title; `spoken` (who, in which run) on hover
-    /// and to assistive technology; pressing the face runs `show`.
+    /// A change `identity` (called `name`) made to what the row shows and the person has
+    /// not seen: their face on the trailing edge and their colour faintly under the row, at
+    /// its own height, and `said` as a line under the row's title; `spoken` (who, in which
+    /// run) on hover and to assistive technology; pressing the face runs `show`.
     #[must_use]
     pub fn change(
         mut self,
@@ -1816,8 +1606,8 @@ impl ListRow {
         self
     }
 
-    /// The change the row shows, while the person has not seen it: who made it, what they are
-    /// called and what they did, as the row draws them.
+    /// The change the row shows, while the person has not seen it: who made it, what they
+    /// are called and what they did, as the row draws them.
     #[must_use]
     pub fn shown_change(&self) -> Option<ShownChange<'_>> {
         let change = self.change.as_ref()?;
@@ -1829,8 +1619,9 @@ impl ListRow {
         })
     }
 
-    /// Hide this row's tooltip while something the host paints covers the list it stands in:
-    /// the list keeps the flag over every row it mounts ([`crate::widget::VirtualList`]).
+    /// Hide this row's tooltip while something the host paints covers the list it stands
+    /// in: the list keeps the flag over every row it mounts
+    /// ([`crate::widget::VirtualList`]).
     pub(crate) fn suppress_tooltips(&mut self, suppressed: bool) {
         self.tooltips_suppressed = suppressed;
     }
@@ -1842,6 +1633,7 @@ impl ListRow {
         self
     }
 
+    /// A trailing chevron: activating the row opens a page.
     #[must_use]
     pub fn disclosure(mut self) -> Self {
         self.disclosure = true;
@@ -1863,6 +1655,7 @@ impl ListRow {
         }
     }
 
+    /// Unread or otherwise new: the title takes the strong weight.
     #[must_use]
     pub fn emphasized(mut self, emphasized: bool) -> Self {
         self.emphasized = emphasized;
@@ -1889,17 +1682,8 @@ impl ListRow {
         }
     }
 
-    /// One persistent control at the trailing edge: a [`Toggle`], a
-    /// [`Button`], a [`ToggleGroup`], a small [`ProgressRing`] or a
-    /// [`Badge`]. The row reserves its width, keeps it reachable by keyboard
-    /// and assistive technology, and moves it under the text when the row is
-    /// too narrow for both.
-    ///
-    /// [`Toggle`]: crate::widget::Toggle
-    /// [`Button`]: crate::widget::Button
-    /// [`ToggleGroup`]: crate::widget::ToggleGroup
-    /// [`ProgressRing`]: crate::widget::ProgressRing
-    /// [`Badge`]: crate::widget::Badge
+    /// One persistent control at the trailing edge: a [`Toggle`], a [`Button`], a
+    /// [`ToggleGroup`], a small [`ProgressRing`] or a [`Badge`].
     #[must_use]
     pub fn trailing(mut self, control: Element) -> Self {
         self.trailing = Some(Trailing {
@@ -1918,12 +1702,9 @@ impl ListRow {
         self
     }
 
-    /// [`Self::trailing`] for an icon button that opens what the row is
-    /// about while the row itself does something else (a network row that
-    /// connects, its chevron opening the network's page). The button is
-    /// centred on the column a [`Self::disclosure`] chevron stands in, so it
-    /// lines up with the chevrons of the rows around it; its target keeps
-    /// its own size, reaching into the row's bleed.
+    /// [`Self::trailing`] for an icon button that opens what the row is about while the row
+    /// itself does something else (a network row that connects, its chevron opening the
+    /// network's page).
     #[must_use]
     pub fn trailing_disclosure(self, button: Element) -> Self {
         let mut row = self.trailing(button);
@@ -1944,9 +1725,8 @@ impl ListRow {
         self.trailing.as_ref().is_some_and(|t| t.wrapped)
     }
 
-    /// Set by the list the row sits in ([`crate::widget::Section`]): whether
-    /// a separator runs under the row and whether the row below is
-    /// selected, which hides it.
+    /// Set by the list the row sits in ([`crate::widget::Section`]): whether a separator
+    /// runs under the row and whether the row below is selected, which hides it.
     #[cfg(test)]
     pub(crate) fn separator_state(&self) -> (bool, bool) {
         (self.separator, self.next_selected)
@@ -2033,8 +1813,8 @@ impl ListRow {
         self
     }
 
-    /// Swiping the row toward its leading edge reveals `icon`; releasing
-    /// past the threshold runs `on_activate`.
+    /// Swiping the row toward its leading edge reveals `icon`; releasing past the threshold
+    /// runs `on_activate`.
     #[must_use]
     pub fn swipe_action(
         mut self,
@@ -2053,8 +1833,8 @@ impl ListRow {
         self
     }
 
-    /// Swiping the row toward its leading edge reveals `icon`; releasing past the threshold runs
-    /// `binding` as its action, as [`Self::action_binding`] runs a trailing action.
+    /// Swiping the row toward its leading edge reveals `icon`; releasing past the threshold
+    /// runs `binding` as its action, as [`Self::action_binding`] runs a trailing action.
     #[must_use]
     pub fn swipe_binding(
         mut self,
@@ -2088,8 +1868,8 @@ impl ListRow {
     }
 
     /// Publish activation as a zero-argument effect, as
-    /// [`Button::on_effect`](crate::widget::Button::on_effect) does: the
-    /// closure keeps working and the row is discoverable and agent-driveable.
+    /// [`Button::on_effect`](crate::widget::Button::on_effect) does: the closure keeps
+    /// working and the row is discoverable and agent-driveable.
     #[must_use]
     pub fn on_effect(mut self, f: impl FnMut() + 'static) -> Self {
         let label = self.title.clone();
@@ -2123,17 +1903,14 @@ impl ListRow {
         (self.selected && !self.environment.supports_hover()) || self.armed_action.is_some()
     }
 
-    /// The rect the row paints in: its layout box grown by the bleed.
     fn outer(&self) -> Rect {
         if self.card {
-            // A card is its own surface: nothing of it paints past its box.
             return self.rect;
         }
         let bleed = self.metrics.as_ref().map_or(0.0, |m| m.bleed);
         self.rect.inflate(bleed, 0.0)
     }
 
-    /// The band the text is laid out in, as an outer rect.
     fn text_band(&self) -> Rect {
         let outer = self.outer();
         match &self.trailing {
@@ -2162,8 +1939,6 @@ impl ListRow {
             self.with_face(|face| {
                 let geo = face.geometry(band, metrics, text, theme);
                 let content_right = band.x1 - metrics.bleed;
-                // What stands in the facts column, from the edge inwards: any of them, the
-                // leftmost is where the column's content begins.
                 let mut facts_left = content_right;
                 if let Some(right) = geo.marks_right {
                     facts_left = facts_left.min(right - face.marks_width(metrics));
@@ -2236,9 +2011,6 @@ impl ListRow {
         if self.answers_pointer() {
             face.min_target = f64::from(self.environment.minimum_collection_row());
         }
-        // The box a row leads with is a control of its own: its press reaches the target the
-        // person's pointer needs, as a button's does, while the row keeps its height and the
-        // box its size.
         if matches!(self.leading, Some(Leading::Checkbox { .. })) {
             face.check_target = f64::from(self.environment.minimum_target());
         }
@@ -2270,8 +2042,6 @@ impl ListRow {
                 .secondary(secondary)
                 .secondary_lines(self.secondary_line_count);
         }
-        // A description is the row's own explanation, and the secondary line
-        // paints it: the row says those words once, after its name.
         face.described = self.description.is_some();
         if let Some(note) = &self.note {
             face = face.note(note);
@@ -2323,8 +2093,6 @@ impl ListRow {
                         Some(glyph) => avatar.glyph(*glyph),
                         None => avatar,
                     };
-                    // Its own tint, after the glyph, which asks for the
-                    // neutral square.
                     let avatar = match tint {
                         Some(AvatarTint::Colour(colour)) => avatar.presence(*colour),
                         Some(AvatarTint::Hue(hue)) => avatar.hue(*hue),
@@ -2360,9 +2128,6 @@ impl ListRow {
                 Leading::Signal(level) => RowLeading::Signal(*level),
             });
         }
-        // A row checked off is done with: its title strikes through and mutes, as a removed
-        // item's does. The box follows the value it is bound to, so a check shows in the row
-        // itself, whoever made it and wherever its row stands.
         face = face.struck(
             self.struck || matches!(&self.leading, Some(Leading::Checkbox { checked: true, .. })),
         );
@@ -2411,15 +2176,12 @@ impl ListRow {
         f(&face)
     }
 
-    /// Whether the row itself acts: it activates, offers hover actions or
-    /// carries a selection checkbox.
     fn answers_pointer(&self) -> bool {
         self.activation.is_bound()
             || !self.actions.is_empty()
             || matches!(self.leading, Some(Leading::Checkbox { .. }))
     }
 
-    /// The indices into `self.actions` of the actions shown, in order.
     fn shown_actions(&self) -> Vec<usize> {
         self.actions
             .iter()
@@ -2429,8 +2191,8 @@ impl ListRow {
             .collect()
     }
 
-    /// Where the row's hover actions sit, in the order it shows them: what a host presses to
-    /// reach them from a script or a test.
+    /// Where the row's hover actions sit, in the order it shows them: what a host presses
+    /// to reach them from a script or a test.
     pub(crate) fn action_rects(&self) -> Vec<Rect> {
         let (Some(metrics), Some(theme)) = (&self.metrics, &self.theme) else {
             return Vec::new();
@@ -2441,8 +2203,6 @@ impl ListRow {
         })
     }
 
-    /// Where the row's actions stand, in the order it holds them, whether or not it shows them:
-    /// assistive technology reaches one without hovering the row.
     fn action_slots(&self) -> Vec<Rect> {
         let (Some(metrics), Some(theme)) = (&self.metrics, &self.theme) else {
             return Vec::new();
@@ -2470,7 +2230,6 @@ impl ListRow {
             || self.change_hit().is_some_and(|rect| rect.contains(point))
     }
 
-    /// Where the face of an unseen change sits, when the row shows one that does something.
     fn change_hit(&self) -> Option<Rect> {
         self.change.as_ref()?.show.as_ref()?;
         let theme = self.theme.as_ref()?;
@@ -2609,8 +2368,6 @@ impl CardBody for ListRow {
 }
 
 impl Widget for ListRow {
-    /// An item of its list, saying its title; the page's list styles it
-    /// as chosen or not from what the row says it is.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("li");
         cx.selected(self.selected);
@@ -2692,12 +2449,8 @@ impl Widget for ListRow {
         let column_gap = metrics.column_gap;
         let pad_y = metrics.pad_y;
         let min_text = f64::from(MIN_TEXT_LINES) * f64::from(metrics.title.line_height_px());
-        // The control stands in the slot the face reserves for it, inside
-        // the columns that follow it, not over them.
         let after_trailing = self.with_face(|face| face.after_trailing(&metrics));
         self.metrics = Some(metrics);
-        // Geometry outside a draw (hit-testing actions, measuring) reads the
-        // theme the row was last laid out in.
         self.theme = Some(theme.clone());
         if let Some(badges) = &self.column_badges {
             let badges: Vec<&str> = badges.iter().map(String::as_str).collect();
@@ -2749,8 +2502,6 @@ impl Widget for ListRow {
         let child = trailing.element.build_layout(taffy, theme, node_map);
         if let Ok(style) = taffy.style(child) {
             let mut style = style.clone();
-            // A row of controls (a slider and its mute button) is as wide as
-            // what it holds, not the whole row: it trails the text.
             if style.size.width == percent(1.0_f32) {
                 style.size.width = auto();
             }
@@ -2830,8 +2581,6 @@ impl Widget for ListRow {
             taffy::AvailableSpace::Definite(w) => w,
             _ => 0.0,
         });
-        // A card's title wraps at the width it is offered, so its height follows the lines it
-        // takes here rather than a count fixed when the row was built.
         if self.card {
             let lines = self
                 .with_face(|face| face.card_title_lines(f64::from(width), text_renderer, &theme));
@@ -2872,11 +2621,7 @@ impl Widget for ListRow {
         }
         let mut child_origin = rect.origin();
         if wrapped {
-            // Under the text, on the text's edge rather than the row's.
             let theme = self.theme.clone();
-            // The line's gap before a control beside the text does not
-            // apply under it: the control starts on the text's edge and
-            // keeps inside the row.
             let shift = theme.map_or(0.0, |theme| {
                 let band_rect = self.text_band();
                 let m = self.metrics(&theme);
@@ -2888,10 +2633,6 @@ impl Widget for ListRow {
             let room = rect.width()
                 - f64::from(child_layout.location.x)
                 - f64::from(child_layout.size.width);
-            // Taffy rounds every layout box onto the display's device pixels; a control placed
-            // here by hand takes the same grid, or its edge lands between two device pixels (a
-            // text band's fractional inset at a large text scale put a button's left edge at
-            // 39.596 at 1.5x).
             let scale = f64::from(crate::widget::device_scale());
             child_origin.x = ((child_origin.x + shift.min(room)) * scale).round() / scale;
         } else if trailing.on_disclosure_column
@@ -3002,8 +2743,6 @@ impl Widget for ListRow {
             use crate::pointer_replay::{PressAt, Release};
             let cursor = self.activation.cursor();
             let rects = self.action_rects();
-            // The row's own control under the pointer, named across a
-            // rebuild by the row's id.
             let over = rects
                 .iter()
                 .position(|r| r.contains(cursor))
@@ -3091,7 +2830,6 @@ impl Widget for ListRow {
             .zip(shown)
             .find(|(r, _)| r.contains(point))
             .and_then(|(r, index)| self.actions.get(index).map(|a| (r, a.label.clone())));
-        // A title cut short reads in full where it is pointed at.
         action
             .or_else(|| {
                 let band = self.text_band();
@@ -3128,8 +2866,6 @@ impl Widget for ListRow {
         !self.activation.state.disabled
     }
 
-    /// An action on the row itself, or on one of its action buttons (its
-    /// children in the accessibility tree, by position).
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -3193,8 +2929,6 @@ impl Widget for ListRow {
                 .is_some_and(|t| t.element.is_layout_dirty())
     }
 
-    // The control (child 1, after the band's stand-in) is the row's own: its
-    // caption names it, and what explains the row explains the control.
     fn accessibility_child_name(&self, child_index: usize) -> Option<String> {
         if child_index != 1 || self.trailing.is_none() {
             return None;
@@ -3224,8 +2958,6 @@ impl Widget for ListRow {
         (!words.is_empty()).then(|| words.join(", "))
     }
 
-    // In the order of the row's layout nodes: the text band's stand-in,
-    // then the control.
     fn children(&self) -> Vec<&dyn Widget> {
         self.trailing
             .iter()
@@ -3282,9 +3014,6 @@ impl Widget for ListRow {
         if let Some(description) = &self.description {
             node.description = Some(description.clone());
         }
-        // The face numbers the actions it shows; address each by its place
-        // among all the row's actions, as its binding is, and say where it
-        // shows so a pointer or an agent can reach it.
         let rects = self.action_slots();
         for ((child, index), rect) in node
             .children
@@ -3295,14 +3024,9 @@ impl Widget for ListRow {
             child.action_target = Some(format!("{id}/action/{index}"));
             child.bounds = Some(rect.into());
         }
-        // The check box is a control of its own at `<row>/check`: a reader, a
-        // script and an agent reach it there, and an action on this item rests
-        // its mark on the box rather than on the row's middle.
         if let Some(Leading::Checkbox { checked, .. }) = &self.leading
             && let Some(rect) = self.leading_hit()
         {
-            // Named for what it does to this item, apart from the row's own name, so a tool
-            // that presses controls by name reaches the box and not the row's activation.
             let mut args = fluent::FluentArgs::new();
             args.set("title", node.name.clone().unwrap_or_default());
             node.children.push(
@@ -3320,7 +3044,6 @@ impl Widget for ListRow {
         Some(node)
     }
 
-    /// Run the action a button child of the row's node was addressed by.
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -3406,9 +3129,6 @@ impl crate::widget::ResourceOperations for ListRow {
 
 impl crate::resources::PublishesResources for ListRow {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        // The row is one resource however many verbs it publishes: a host
-        // keeps one spec per id, so a second spec under the same id would
-        // shadow the first and the verb it holds would answer nothing.
         let mut resource = self.activation.native_resources().into_iter().next();
         if let Some(verb) = &self.check_verb {
             let mut verb = verb.resource();

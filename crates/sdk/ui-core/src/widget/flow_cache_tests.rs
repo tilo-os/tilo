@@ -9,7 +9,6 @@ use crate::widget::{Chip, Column, Tooltip};
 use taffy::{Size, Style};
 use vello::kurbo::Rect;
 
-/// One frame of `widget` at `at`: sync, layout, draw.
 fn frame_at(frame: &mut ShotFrame, widget: &mut dyn Widget, at: crate::time::Instant) -> Scene {
     with_monotonic_time(at, || {
         frame.sync(widget);
@@ -76,8 +75,6 @@ fn a_leaf_changed_by_a_setter_repaints() {
     );
 }
 
-/// Paints a width it reads from outside itself, and keeps no flag of its
-/// own: what it draws is whatever it was handed last.
 struct Readout {
     width: Rc<Cell<f32>>,
     rect: Rect,
@@ -105,8 +102,6 @@ impl Widget for Readout {
         _theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
-        // The width stands outside this widget: the drawing depends on
-        // readings no flag of its own reports.
         crate::outside_paint::note();
         let width = f64::from(self.width.get());
         scene.fill(
@@ -156,8 +151,6 @@ fn a_cache_that_read_outside_state_repaints_once_input_arrives() {
     );
 }
 
-/// Paints a width it holds itself and keeps no flag of its own: the sync
-/// pass hands it a changed document, and nothing in the tree marks it.
 struct Gauge {
     value: Rc<Cell<f32>>,
     rect: Rect,

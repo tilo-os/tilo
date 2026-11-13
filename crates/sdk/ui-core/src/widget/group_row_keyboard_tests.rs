@@ -1,12 +1,11 @@
-//! Keys reach the window with the keyboard, never a window beside it: each
-//! app reads every key it is handed as its own, as a window of its own does.
+//! Keys reach the window with the keyboard, never a window beside it: each app reads every
+//! key it is handed as its own, as a window of its own does.
 
 use super::*;
 use crate::headless::FrameHarness;
 use std::cell::Cell;
 use std::rc::Rc;
 
-/// An app that takes every key it is handed, as Chat does.
 struct EveryKey {
     keys: Rc<Cell<u32>>,
     focused: bool,
@@ -55,8 +54,6 @@ impl crate::widget::AppWidget for EveryKey {
     }
 }
 
-/// Two windows side by side, each an app that takes every key; the second
-/// is the focused window. Each window's control holds the keyboard as given.
 fn two_windows(holds: [bool; 2]) -> (FrameHarness, [Rc<Cell<u32>>; 2]) {
     let keys = [Rc::new(Cell::new(0)), Rc::new(Cell::new(0))];
     let groups = (0..2u64)
@@ -102,8 +99,6 @@ fn a_letter_reaches_the_focused_window_not_the_one_before_it() {
 
 #[test]
 fn a_letter_follows_the_focused_control_into_its_window() {
-    // The control holding the keyboard is the first window's, before the
-    // desktop has moved its own focus there.
     let (mut harness, [first, second]) = two_windows([true, false]);
     harness.key("r");
     assert_eq!(first.get(), 1);

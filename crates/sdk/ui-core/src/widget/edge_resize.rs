@@ -1,31 +1,16 @@
 //! Resizing windows from their edges: which edge an edge drag changes, and how.
 //!
-//! The strip is infinitely wide, so a resize is never zero-sum unless the person asks for it.
-//! Every pointer path goes through the same few rules: [`crate::widget::GroupRow`]'s hover, press
-//! and drag for a window on a strip, [`crate::widget::FloatingWindow`]'s for a free one.
-//!
-//! - [`seam_owner`] — **who owns an edge on a strip.** Every window owns both edges; the seam
-//!   between two is split down the middle, except that the focused window owns the whole seam.
-//!   Hovering shows that owner's edge before anything is pressed.
-//! - [`RectEdge::at`] — **which sides a point on a free rect grabs**: a side, the bottom or a
-//!   corner, never the top where the title bar drags.
-//! - [`EdgeDrag::resize`] and [`RectEdge::resize`] — **what a drag does** on `dragged_span`: the
-//!   grabbed side follows the pointer 1:1 and its *opposite* holds still, so everything beyond is
-//!   pushed away or pulled along at its own size. On a strip, Shift+drag is zero-sum between the
-//!   two windows sharing that seam. A limit (the app's minimum, a client's maximum) stops the edge;
-//!   nothing else is resized to make up for it.
-//!
-//! This is a design rule, not a tuning: `docs/architecture/window-management.md` ("Resizing a
-//! window") is its contract.
+//! The strip is infinitely wide, so a resize is never zero-sum unless the person asks for
+//! it. Every pointer path goes through the same few rules: [`crate::widget::GroupRow`]'s
+//! hover, press and drag for a window on a strip, [`crate::widget::FloatingWindow`]'s for a
+//! free one.
 
 use vello::kurbo::{Point, Rect};
 
 /// One of a window's two vertical edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowEdge {
-    /// The left edge (the start of a left-to-right strip).
     Leading,
-    /// The right edge.
     Trailing,
 }
 
@@ -40,8 +25,7 @@ impl WindowEdge {
     }
 }
 
-/// A window edge a pointer can grab: the strip's `group`-th window, and
-/// which of its edges.
+/// A window edge a pointer can grab: the strip's `group`-th window, and which of its edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EdgeGrab {
     pub group: usize,
@@ -49,9 +33,9 @@ pub struct EdgeGrab {
 }
 
 impl EdgeGrab {
-    /// The window on the other side of this edge, if the edge is a seam:
-    /// `count` windows in the run, so the first window's leading edge and
-    /// the last one's trailing edge have none.
+    /// The window on the other side of this edge, if the edge is a seam: `count` windows in
+    /// the run, so the first window's leading edge and the last one's trailing edge have
+    /// none.
     #[must_use]
     pub fn across(self, count: usize) -> Option<usize> {
         match self.edge {
@@ -61,8 +45,8 @@ impl EdgeGrab {
     }
 }
 
-/// The two windows either side of a seam, as laid out on screen: the
-/// strip's `left`-th window and the one after it.
+/// The two windows either side of a seam, as laid out on screen: the strip's `left`-th
+/// window and the one after it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Seam {
     pub left: usize,
@@ -72,14 +56,7 @@ pub struct Seam {
     pub right_focused: bool,
 }
 
-/// **The seam rule**: whose edge a point `x` on the seam between two windows
-/// is.
-///
-/// Every window owns both of its edges, and the seam is split between the
-/// two windows, the half nearest each being that window's edge. The window
-/// the person is working in (focused) owns the whole seam: the seam is about
-/// two grab zones plus the gap, too small to aim at halves reliably, and
-/// "resize the thing I have open" is the person's own model of it.
+/// **The seam rule**: whose edge a point `x` on the seam between two windows is.
 #[must_use]
 pub fn seam_owner(seam: &Seam, x: f64) -> EdgeGrab {
     let left = EdgeGrab {
@@ -112,9 +89,6 @@ pub enum ResizeMode {
 /// The widths a window may take, in logical px.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WidthLimits {
-    /// The app's real minimum: a Tilo app's compact layout, a client's
-    /// `xdg_toplevel` min-size hint, the strip's floor for apps that say
-    /// nothing.
     pub min: f64,
     /// A client's `xdg_toplevel` max-size hint; unbounded otherwise.
     pub max: f64,
@@ -149,9 +123,8 @@ fn dragged_span(
     }
 }
 
-/// The edge of a free rect (a floating window, a picture in a document) that
-/// a drag grabbed: which side of each axis moves. Absent on an axis the edge
-/// leaves alone, so a side edge moves one axis and a corner both.
+/// The edge of a free rect (a floating window, a picture in a document) that a drag
+/// grabbed: which side of each axis moves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RectEdge {
     pub x: Option<WindowEdge>,
@@ -182,9 +155,8 @@ impl RectEdge {
         (edge.x.is_some() || edge.y.is_some()).then_some(edge)
     }
 
-    /// `rect` after this edge was carried `by`: each grabbed side follows the
-    /// pointer and its opposite side holds still, down to `minimum` on each
-    /// axis.
+    /// `rect` after this edge was carried `by`: each grabbed side follows the pointer and
+    /// its opposite side holds still, down to `minimum` on each axis.
     #[must_use]
     pub fn resize(self, rect: Rect, by: vello::kurbo::Vec2, minimum: vello::kurbo::Size) -> Rect {
         let mut out = rect;
@@ -218,20 +190,14 @@ pub struct DraggedWindow {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EdgeDrag {
     pub edge: WindowEdge,
-    /// The window whose edge was grabbed.
     pub grabbed: DraggedWindow,
-    /// The window across the seam a Shift+drag trades width with. `None` for
-    /// a plain drag, and for a Shift+drag on an outer edge, which has no one
-    /// to trade with and so pushes like a plain one.
     pub zero_sum_with: Option<DraggedWindow>,
 }
 
 /// What a drag sets for one pointer position.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EdgeResize {
-    /// The grabbed window's width.
     pub width: f64,
-    /// The width of [`EdgeDrag::zero_sum_with`], when there is one.
     pub other_width: Option<f64>,
     /// How far the strip has to pan (positive: its canvas moves left) so the
     /// grabbed window's opposite edge stays where it was on screen. Layout
@@ -267,10 +233,6 @@ impl EdgeDrag {
         let grabbed = self.grabbed;
         let Some(other) = self.zero_sum_with else {
             let limits = grabbed.limits;
-            // The strip lays a window out from its start, so a leading-edge
-            // drag is the same rule measured from the other side: the width
-            // moves the other way, and the pan is how far that edge left the
-            // place the strip gave it.
             let signed = match self.edge {
                 WindowEdge::Trailing => travel,
                 WindowEdge::Leading => -travel,
@@ -294,9 +256,6 @@ impl EdgeDrag {
                 pan,
             };
         };
-        // The seam moves; the window left of it grows by what the right one
-        // loses. Both limits bound the one travel, so whichever binds first
-        // stops the seam, and neither window is pushed past its own.
         let (left, right) = match self.edge {
             WindowEdge::Trailing => (grabbed, other),
             WindowEdge::Leading => (other, grabbed),
@@ -371,9 +330,6 @@ mod tests {
                 "inside the right grip"
             );
         }
-        // Phase `focus_wins_the_whole_seam`: grabbing Files' left edge, between
-        // Files and a terminal, resizes Files when Files is the one in use,
-        // however close to the terminal the pointer lands.
         {
             let files_on_the_right = seam(false, true);
             for x in [594.0, 600.0, 603.0, 604.0, 613.0] {
@@ -415,9 +371,6 @@ mod tests {
             assert_eq!(r.pan, 0.0, "the leading edge is laid out where it was");
             assert_eq!(drag.resize(-40.0).width, 460.0);
         }
-        // Phase `leading_edge_grows_left_and_the_strip_pans_to_hold_the_right_edge`:
-        // dragging Files' left edge left grows Files leftwards; the terminal
-        // slides left at its own width and Files' right edge does not move.
         {
             let drag = EdgeDrag {
                 edge: WindowEdge::Leading,
@@ -450,8 +403,6 @@ mod tests {
             assert_eq!(r.width + r.other_width.unwrap(), 1200.0, "zero-sum");
             assert_eq!(r.pan, 0.0, "both outer edges stay put");
         }
-        // Phase `leading_edge_with_shift`: the seam moves the same way, so
-        // the window left of it is the one that gains.
         {
             let drag = EdgeDrag {
                 edge: WindowEdge::Leading,
@@ -532,8 +483,6 @@ mod tests {
     fn one_axis_moves_its_grabbed_side_and_holds_the_other() {
         let free = f64::INFINITY;
         {
-            // The grabbed side follows the pointer 1:1 and the opposite side
-            // stays exactly where it was.
             assert_eq!(
                 dragged_span(100.0, 600.0, WindowEdge::Trailing, 40.0, 280.0, free),
                 (100.0, 640.0)

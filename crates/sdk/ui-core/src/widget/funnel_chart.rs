@@ -55,7 +55,6 @@ struct StageGeometry {
     index: usize,
     path: BezPath,
     bounds: Rect,
-    /// The stage's narrower and wider edge.
     narrow_width: f64,
     wide_width: f64,
     conversion: f64,
@@ -199,10 +198,7 @@ impl FunnelMarks {
         }
         output
     }
-    /// A stage's name, and its value under it where there is room: inside
-    /// the stage where both fit its narrower edge, otherwise beside the
-    /// funnel on the leading side, shortened to the room there and dropped
-    /// (the tooltip names the stage) only where not even a short name fits.
+    /// A stage's name and its value: inside the stage where both fit, otherwise beside the funnel.
     fn draw_stage_label(
         &self,
         scene: &mut Scene,
@@ -228,7 +224,6 @@ impl FunnelMarks {
             (f64::from(w), f64::from(h))
         });
         let bounds = geometry.bounds;
-        // The narrower of the stage's two edges is the room inside it.
         let narrow = geometry.narrow_width;
         let inside_ink = theme
             .tokens
@@ -261,7 +256,6 @@ impl FunnelMarks {
             }
             return;
         }
-        // Beside the stage, trailing-aligned to its leading edge at its middle.
         let edge = bounds.center().x - narrow.max(geometry.wide_width) / 2.0;
         let room = edge - pad - self.frame.rect.x0 - pad;
         let Some((name, w, _)) =
