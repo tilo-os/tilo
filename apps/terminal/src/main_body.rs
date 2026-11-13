@@ -2501,14 +2501,11 @@ impl TerminalWidget {
 
     #[cfg(feature = "samples")]
     pub(crate) fn stage_scenario(&mut self, name: &str) {
-        // The staged output is an open session's: a capture has no process
-        // behind it, but only the ended scenario shows the session closed.
         self.session_disconnected.store(false, Ordering::Release);
         if let Some((target, environments)) = crate::scenarios::target(name) {
             self.show_target(target, environments);
         }
         if name == "held" {
-            // The session's marks are read with its key, as a live session's are.
             let key = crate::runs::new_key();
             self.runs.marks = Some(crate::runs::Marks::new(key.clone()));
             self.feed(&crate::scenarios::held(&key));
@@ -2701,11 +2698,6 @@ impl Widget for TerminalWidget {
         // framework's, so nothing here fills the widget.
         let cell_style = theme.text(TextRole::Code);
         self.palette = Self::grid_palette(theme);
-        // Refresh the body geometry from the theme and re-derive the inner grid
-        // rect (inside the padding) — the same
-        // `grid_content_rect` `set_geometry` and pointer hit-testing use, so the
-        // grid origin is single-sourced. `set_geometry` and hit-testing read the
-        // cached metrics — neither sees a `Theme`.
         self.refresh_chrome_metrics(theme);
 
         // `char_w` must be the advance of the drawn style, or colour runs smear over each other.
@@ -4392,11 +4384,8 @@ impl TerminalWidget {
             crate::i18n::t("terminal-find-scrollback"),
             || {},
         ));
-        // This preference is useful secondary chrome, but never at the cost
-        // of an unreachable context menu. A 160px-high embedded/narrow pane
-        // can fit the copy/paste/selection/process essentials, not another
-        // row plus separator; its keyboard shortcut and desktop-sized menu
-        // still expose the toggle.
+        // The bell toggle is secondary chrome, but never at the cost of an unreachable menu: a 160px pane
+        // fits the essentials, and its shortcut exposes the toggle.
         if self.rect.height() >= 180.0 {
             menu.push(MenuItem::separator());
             self.menu_rows.copy_on_select = Some(menu.items().len());
