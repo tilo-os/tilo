@@ -2174,6 +2174,10 @@ readers = ["crates/system/tilo-cli/src/aliases.rs", "crates/system/tilo-cli/src/
 # sdk-python check, which carries uv and the SDK's locked dependencies. The integration test is
 # gated with it and skips unless an API server is named by TILO_TEST_API_URL and TILO_TEST_KEY.
 [[covered]]
+suite = "sdk/python/tests/test_host.py"
+check = "sdk-python"
+
+[[covered]]
 suite = "sdk/python/tests/test_integration.py"
 check = "sdk-python"
 

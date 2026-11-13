@@ -105,9 +105,11 @@ and carries no secret: invite the person first (`ws.members.invite`).
 
 ## Errors
 
-A refusal is an exception carrying the host's reason and its next steps (`Refused`,
+A refusal is an exception carrying the API's reason and its next steps (`Refused`,
 `.next_steps`). An action that asks the person first raises `AskPending` with a link to
-the ask. A wrong path or argument names what's valid, as tilolang's errors do.
+the ask. A wrong path or argument names what's valid, as tilolang's errors do. A call the API
+will not run because the workspace's app publishes another surface than the generated types were
+written for raises `SurfaceChanged`, which says to run `tilo sdk gen`.
 
 ## Keys
 

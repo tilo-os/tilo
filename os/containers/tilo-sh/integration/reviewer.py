@@ -32,7 +32,7 @@ counter = itertools.count(1)
 
 
 async def role_in(key: str, workspace: str) -> str | None:
-    client = AsyncTilo(key=key, door=DOOR)
+    client = AsyncTilo(key=key, url=DOOR)
     try:
         listed = await client.workspaces.list()
         return next((row.role for row in listed if row.id == workspace), None)

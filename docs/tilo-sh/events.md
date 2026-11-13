@@ -1,8 +1,8 @@
 # Webhooks and events
 
 A backend that waits for something to happen should not poll for it. Tilo answers a **watch**: a stream of what
-happened in a workspace, from a cursor, one long call at a time. There are no webhooks yet: nothing calls
-your server. A watch is what exists, and this page is about it.
+happened in a workspace, from a cursor. There are no webhooks yet: nothing calls your server. A watch is what
+exists, and this page is about it.
 
 ## The stream
 
@@ -14,10 +14,10 @@ your server. A watch is what exists, and this page is about it.
 | `run` | An invocation starting or finishing: `started`, `succeeded`, `failed` or `cancelled`, with its invocation id, path and run |
 | `presence` | Who is in the workspace, and their agents, whenever that changes |
 
-Each answer carries a `cursor`. Asking again from it continues where you stopped, so a caller that keeps its
-cursor sees each event once. `wait_ms` is how long a call holds when nothing happens: 25 seconds by
-default, 60 at most. A watch is a long poll, not a push: one call at a time, through the same session
-every other call takes, and the next call starts where the last stopped.
+The stream is the workspace's `events` route of the [API](../developers/api.md): server-sent events, its
+answers named `change`, `run` and `presence`. Each event's `id` is a cursor: reconnecting with
+`Last-Event-ID` resumes after it, so a caller that keeps its cursor sees each event once. A comment line
+every 15 seconds keeps an idle connection open.
 
 `path` narrows change events to one record and what is under it, which is what a page or a job usually
 wants.
@@ -47,7 +47,7 @@ async def main() -> None:
     await workspace.do("notes#create-page", title="Arrivals", markdown="- 09:40 Jane Doe\n")
 
     event = await asyncio.wait_for(watcher, timeout=30)
-    print("kind:", event.kind, "path:", event.path, "phase:", event.phase, "run:", event.run)
+    print("kind:", event.kind, "path:", event.path, "phase:", event.phase, "run:", event.title)
     await tilo.aclose()
 
 

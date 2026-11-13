@@ -1,15 +1,16 @@
 """A visa startup's backend, one agent per applicant, end to end.
 
 The backend holds one server key (`TILO_API_KEY`, all workspaces, no
-expiry) at an API server (`TILO_API_URL`). It makes a workspace per applicant,
-puts an applicant's passport and application form into theirs and mints a
-key that reaches that workspace alone. The applicant's agent, with only that
-key, fills the form in PDF Viewer and writes a cover letter in Writer. The
-backend then invites the startup's ops person, another person, as a
-reviewer of Jane's workspace: they follow the link, sign in, and with a key
-of their own read what the agent did, who did it, and take it back.
+expiry) and sends the API's calls to it (`TILO_API_URL`). It makes a
+workspace per applicant, puts an applicant's passport and application form
+into theirs and mints a key that reaches that workspace alone. The
+applicant's agent, with only that key, fills the form in PDF Viewer and writes
+a cover letter in Writer. The backend then invites the startup's ops person,
+another person, as a reviewer of Jane's workspace: they follow the link, sign
+in, and with a key of their own read what the agent did, who did it, and take
+it back.
 
-    TILO_API_URL=https://mcp.tilo.sh TILO_API_KEY=tilo_sk_… python3 visa_proof.py
+    TILO_API_URL=https://api.tilo.sh TILO_API_KEY=tilo_sk_… python3 visa_proof.py
 
 The run prints the reviewer's invitation, then the links to the form and the
 letter the agent changed, which open them in their apps for the reviewer, and
@@ -164,7 +165,7 @@ def values_of(fields: list[FormFieldRow]) -> dict[str, Any]:
 
 
 async def refused(call: Any) -> str:
-    """How the door refused `call`: an HTTP status, or a refusal's code."""
+    """How the API refused `call`: an HTTP status, or a refusal's code."""
     try:
         await call
     except ProtocolError as error:
@@ -174,11 +175,16 @@ async def refused(call: Any) -> str:
     return "allowed"
 
 
+def beyond(refusal: str) -> bool:
+    """Whether `refusal` is the API saying the key does not reach that far."""
+    return any(refusal.startswith(code) for code in ("beyond_scope", "forbidden", "not_permitted"))
+
+
 async def reviewer_accepts(link: str) -> dict[str, Any]:
     """The reviewer follows `link` and makes a key of their own: `{key, person, joined}`."""
     invitee = os.environ.get("TILO_INVITEE")
     if not invitee:
-        print(f"Reviewer: open {link}, sign in, then create a key at the door.", flush=True)
+        print(f"Reviewer: open {link}, sign in, then create a key.", flush=True)
         key = (await asyncio.to_thread(input, "The reviewer's key: ")).strip()
         return {"key": key, "person": None, "joined": {"role": "editor"}}
 
@@ -225,8 +231,8 @@ async def make_workspaces(backend: AsyncTilo) -> list[Any]:
 
 
 async def main() -> int:
-    door = os.environ.get("TILO_API_URL", "https://mcp.tilo.sh")
-    say("Door", door)
+    url = os.environ.get("TILO_API_URL", "https://api.tilo.sh")
+    say("API", url)
     backend = AsyncTilo()
 
     made = await make_workspaces(backend)
@@ -236,8 +242,8 @@ async def main() -> int:
     say("2. The backend puts Jane's documents into her workspace and mints her agent's key")
     ws = backend.workspace(jane.id)
     passport_bytes, form_bytes = passport_png(), application_pdf()
-    passport = await ws.files.upload(passport_bytes, name="passport.png")
-    application = await ws.files.upload(form_bytes, name="application.pdf")
+    passport = await ws.files.upload(passport_bytes)
+    application = await ws.files.upload(form_bytes)
     say("   uploaded", f"passport.png {passport}, application.pdf {application}")
     check(passport.startswith("tilo.content:") and application.startswith("tilo.content:"), "both are content")
     minted = await ws.keys.mint(name="Jane Doe's agent")
@@ -247,7 +253,7 @@ async def main() -> int:
     check(minted.token and minted.token != backend.transport.key, "it is a key of its own")
 
     say("3. Jane's agent, with only the minted key, fills the form and writes the letter")
-    agent = AsyncTilo(key=minted.token, door=door)
+    agent = AsyncTilo(key=minted.token, url=url)
     aws = agent.workspace(jane.id)
     check(await aws.files.download(passport) == passport_bytes, "the agent reads the passport the backend put there")
     async with aws.run(RUN_TITLE) as run:
@@ -275,7 +281,7 @@ async def main() -> int:
         exported = await aws.do("word-processor#export-content", format="docx")
         letter_ref = content_in(exported)
         check(letter_ref, f"Writer exports the letter as content ({letter_ref})")
-    check(run.invocations, f"the run grouped the agent's {len(run.invocations)} calls")
+    check(run.runs, f"the run grouped the agent's {len(run.runs)} calls")
     form_link = await aws.link(FORM)
     say("   links", ", ".join(run.links))
     check(form_link in run.links, f"the run hands over the link to the form it filled ({form_link})")
@@ -290,12 +296,16 @@ async def main() -> int:
     check(elsewhere != "allowed", f"another applicant's workspace refuses it ({elsewhere})")
     upload_elsewhere = await refused(agent.workspace(other.id).files.upload(b"x"))
     check(upload_elsewhere != "allowed", f"it puts nothing into another applicant's workspace ({upload_elsewhere})")
-    account = await refused(agent.workspaces.list())
-    check(account.startswith("forbidden"), f"the account refuses it: no listing ({account})")
+    listed = await agent.workspaces.list()
+    say("   listed", ", ".join(workspace.name for workspace in listed))
+    check(
+        [workspace.id for workspace in listed] == [jane.id],
+        f"the account lists Jane's workspace alone ({[workspace.name for workspace in listed]})",
+    )
     creating = await refused(agent.workspaces.create("Applicant: Mallory"))
-    check(creating.startswith("forbidden"), f"the account refuses it: no new workspace ({creating})")
+    check(beyond(creating), f"the account refuses it: no new workspace ({creating})")
     minting = await refused(agent.keys.mint(jane.id, name="escalated"))
-    check(minting.startswith("forbidden"), f"it mints no keys ({minting})")
+    check(beyond(minting), f"it mints no keys ({minting})")
 
     say("4b. The backend invites its ops person, another person, as Jane's reviewer")
     invitation = await ws.members.invite(role="editor", email=REVIEWER_EMAIL)
@@ -317,7 +327,7 @@ async def main() -> int:
         all(member.name != "Jane Doe's agent" for member in members),
         "no key of the account's names a person in the members list",
     )
-    reviewer = AsyncTilo(key=accepted["key"], door=door)
+    reviewer = AsyncTilo(key=accepted["key"], url=url)
 
     say("4c. The reviewer, with their own key, finds Jane's workspace by name and reads the filled form and who filled it")
     listed = await reviewer.workspaces.list()
@@ -373,13 +383,13 @@ async def main() -> int:
     check(gone in ("401", "403"), f"the agent's open session ends with its key ({gone})")
     if REVOKE_SERVER_KEY:
         second = await ws.keys.mint(name="Jane Doe's second agent")
-        sws = AsyncTilo(key=second.token, door=door).workspace(jane.id)
+        sws = AsyncTilo(key=second.token, url=url).workspace(jane.id)
         await sws.ls()
         own = (await backend.keys.list())[0]
         await backend.keys.revoke(own.grant)
         check(await refused(backend.workspaces.list()) == "401", "the server key is refused")
         check(await refused(sws.ls()) == "401", "the session of a key it minted ended with it")
-        fresh = AsyncTilo(key=second.token, door=door).workspace(jane.id)
+        fresh = AsyncTilo(key=second.token, url=url).workspace(jane.id)
         check(await refused(fresh.ls()) == "401", "the key it minted is refused")
 
     for client in (agent, reviewer, backend):

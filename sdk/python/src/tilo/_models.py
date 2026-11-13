@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
+from typing import Any
 
 from ._errors import ProtocolError
 
@@ -17,24 +18,12 @@ def _int(value: Any) -> int | None:
 
 
 @dataclass(frozen=True)
-class Host:
-    """A host workspaces can be created on."""
-
-    name: str
-    default: bool = False
-
-    @classmethod
-    def of(cls, raw: Mapping[str, Any]) -> Host:
-        return cls(name=str(raw.get("name") or ""), default=bool(raw.get("default")))
-
-
-@dataclass(frozen=True)
 class WorkspaceInfo:
     """One of the person's workspaces, as the account lists them.
 
-    `role` is the part they take in it: `owner` for one of their own, else the
-    role they were invited with (`viewer`, `commenter`, `editor`,
-    `moderator`). It is `""` when the door did not say.
+    `host` is the host that keeps it, when one said. `role` is the part they
+    take in it: `owner` for one of their own, else the role they were invited
+    with (`viewer`, `commenter`, `editor`). It is `""` when the API did not say.
     """
 
     id: str
@@ -54,10 +43,9 @@ class WorkspaceInfo:
 
 @dataclass(frozen=True)
 class WorkspaceList:
-    """The account's workspaces and the hosts to create them on."""
+    """The workspaces a key reaches, wherever they are hosted."""
 
     workspaces: Sequence[WorkspaceInfo] = ()
-    hosts: Sequence[Host] = ()
 
     @classmethod
     def of(cls, raw: Mapping[str, Any]) -> WorkspaceList:
@@ -66,10 +54,7 @@ class WorkspaceList:
                 WorkspaceInfo.of(item)
                 for item in raw.get("workspaces") or []
                 if isinstance(item, Mapping)
-            ],
-            hosts=[
-                Host.of(item) for item in raw.get("hosts") or [] if isinstance(item, Mapping)
-            ],
+            ]
         )
 
     def named(self, id_or_name: str) -> WorkspaceInfo | None:
@@ -94,7 +79,8 @@ class WorkspaceList:
 class Key:
     """A key as the account lists it: a grant, its scope, its expiry (`None`
     for a key that lasts until revoked), when it was last used and which
-    device of the person approved it."""
+    device of the person approved it. `token` is the secret itself, which only
+    the answer that made the key gives: a listed key carries none."""
 
     grant: str
     name: str = ""
@@ -102,9 +88,10 @@ class Key:
     kind: str = ""
     created_at_ms: int | None = None
     expires_at_ms: int | None = None
-    token: str = ""
     last_used_at_ms: int | None = None
     created_by: str | None = None
+    browser_pages: bool = False
+    token: str = ""
 
     @classmethod
     def of(cls, raw: Mapping[str, Any]) -> Key:
@@ -115,18 +102,14 @@ class Key:
             kind=str(raw.get("kind") or ""),
             created_at_ms=_int(raw.get("created_at_ms")),
             expires_at_ms=_int(raw.get("expires_at_ms")),
-            token=str(raw.get("token") or raw.get("key") or ""),
             last_used_at_ms=_int(raw.get("last_used_at_ms")),
             created_by=(
                 str(raw["created_by"]) if raw.get("created_by") is not None else None
             ),
+            browser_pages=bool(raw.get("browser_pages")),
+            # A key being approved answers `key`; a listed one answers no secret.
+            token=str(raw.get("token") or raw.get("key") or ""),
         )
-
-    def client(self, door: str | None = None) -> Any:
-        """A client of this key, for code that hands one to an agent."""
-        from ._client import AsyncTilo
-
-        return AsyncTilo(key=self.token, door=door)
 
 
 @dataclass(frozen=True)
@@ -210,20 +193,20 @@ class MintedKey:
             expires_at_ms=_int(raw.get("expires_at_ms")),
         )
 
-    def client(self, door: str | None = None) -> Any:
+    def client(self, url: str | None = None) -> Any:
         """A client of this key, for code that hands one to an agent."""
         from ._client import AsyncTilo
 
-        return AsyncTilo(key=self.token, door=door)
+        return AsyncTilo(key=self.token, url=url)
 
 
 @dataclass(frozen=True)
 class Invitation:
     """An invitation into a workspace: the link that brings one person in.
 
-    Following `link` signs them in (with a passkey, or by approving an
-    agent) and lands them in the workspace as `role`. The door sends no mail:
-    with an `email`, `sent` is false and `next` says to hand the link over.
+    Following `link` signs them in (with a passkey, or by approving an agent)
+    and lands them in the workspace as `role`. No mail is sent: with an
+    `email`, `sent` is false and `next` says to hand the link over.
     """
 
     link: str
@@ -297,7 +280,7 @@ class Row:
 
 @dataclass
 class Listing:
-    """What `tilo_ls` answered: a resource's rows and actions, and a cursor."""
+    """What a listing answered: a resource's rows and actions, and a cursor."""
 
     path: str = ""
     kind: str = ""
@@ -384,14 +367,19 @@ class Person:
 
 @dataclass(frozen=True)
 class Event:
-    """One thing `tilo_watch` told: a change, a run starting or finishing, presence."""
+    """One thing the workspace's stream told: a change, a run, presence.
+
+    `kind` is the stream's event name; `raw` its data as the API gives it. A
+    change names `title` (the run it was a step of), a run names `run` (its
+    invocation) and `title`, and both name `group` (the run a client opened).
+    """
 
     kind: str
     raw: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def of(cls, raw: Mapping[str, Any]) -> Event:
-        return cls(kind=str(raw.get("kind") or ""), raw=raw)
+    def of(cls, kind: str, data: Mapping[str, Any]) -> Event:
+        return cls(kind=kind, raw=dict(data))
 
     @property
     def path(self) -> str | None:
@@ -414,24 +402,24 @@ class Event:
         return _text(self.raw.get("by"))
 
     @property
+    def title(self) -> str | None:
+        """The run's title: the words the client that made it opened it with."""
+        return _text(self.raw.get("title"))
+
+    @property
     def run(self) -> str | None:
-        """The agent run the change was a step of, by its title, when it was one."""
+        """The invocation a run event is about."""
         return _text(self.raw.get("run"))
 
     @property
-    def run_id(self) -> str | None:
-        """The agent run's id: the one its client opened it under."""
-        return _text(self.raw.get("run_id"))
+    def group(self) -> str | None:
+        """The run a client opened: every call carrying its id is one step."""
+        return _text(self.raw.get("group"))
 
     @property
     def phase(self) -> str | None:
         """How a run stands: `started`, `succeeded`, `failed` or `cancelled`."""
         return _text(self.raw.get("phase"))
-
-    @property
-    def invocation_id(self) -> str | None:
-        """The invocation a run event follows."""
-        return _text(self.raw.get("invocation_id"))
 
     @property
     def undone(self) -> bool:
@@ -455,7 +443,7 @@ class Event:
 
 @dataclass(frozen=True)
 class ProgramAnswer:
-    """What the `tilo` tool answered: a program's output and the steps it took."""
+    """What a tilolang program answered: its output and the steps it took."""
 
     status: str
     output: Sequence[str] = ()

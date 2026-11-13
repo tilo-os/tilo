@@ -2,8 +2,8 @@
 # The developer documentation's code examples, run against a local Tilo.
 #
 # The examples reach a host the way the published ones reach tilo.sh: the api-on-relay example
-# of tilo-agent-participant serves one on loopback and runs each program with TILO_API_URL and
-# TILO_API_KEY set. That example and the tilo command sh examples run are built by the
+# of tilo-agent-participant serves one on loopback and runs each program with TILO_API_URL,
+# TILO_API_KEY and TILO_INVITEE set. That example and the tilo command sh examples run are built by the
 # docs-examples-build check, whose outputs this script is handed.
 #
 # The Python and TypeScript environments come from the ci-sdk image, offline, as the sdk-python

@@ -1,15 +1,15 @@
-# The SDK's wire
+# MCP's typed answers
 
-The Python and TypeScript SDKs and the `tilo` CLI talk to the same endpoints as MCP
-(`docs/developers/sdk.md`): `https://mcp.tilo.sh/mcp` for the account and
-`https://mcp.tilo.sh/w/<workspace>/mcp` for one workspace. They call the same tools agents
-call — `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status`, `tilo` — plus
-`tilo_watch`, which a model does not need. What differs is the answer: a model reads compact
-text, a program reads typed JSON.
+An MCP client that asks for typed answers gets the same calls a model makes, answered as
+JSON instead of agent text: `https://mcp.tilo.sh/mcp` for the account and
+`https://mcp.tilo.sh/w/<workspace>/mcp` for one workspace, with the tools `tilo_ls`,
+`tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status`, `tilo` and `tilo_watch`. The
+`tilo` command reads them this way for the account and a workspace; the SDKs are clients of
+[the API](api.md) instead, which answers the same values over `/v1`.
 
 There is no second API. Every structured answer is made by the call that answers text, from
-the same read of the same app, and names what the text names: the same paths, the same
-invocation ids, the same errors.
+the same read of the same app, and names what the text names: the same paths, the same run
+ids, the same errors.
 
 ## Asking for typed answers
 

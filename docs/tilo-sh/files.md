@@ -11,8 +11,8 @@ An upload answers a reference that starts `tilo.content:` — for bytes you uplo
 tilo.content:30d6761d0551dba00b292649ccd90c63a27057c20f0f3ff24da14e5977442ab5
 ```
 
-The same bytes uploaded twice are one file, because the name is the hash. A name you pass along with the
-bytes is your own label, kept beside the reference rather than sent. One upload takes at most 64 MiB.
+The same bytes uploaded twice are one file, because the name is the hash. An action that puts the file
+somewhere takes the name it goes by as an argument of its own. One upload takes at most 64 MiB.
 
 ## Actions take the reference
 

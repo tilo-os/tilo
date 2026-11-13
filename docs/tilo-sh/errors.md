@@ -1,7 +1,7 @@
 # Errors
 
-Every call either answers or raises one of these. Both SDKs raise the same set, with the same fields; the
-command exits non-zero and prints the same words.
+Every call either answers or raises one of these. Both SDKs raise the same set, with the same fields, and
+the command exits non-zero and prints the same words.
 
 ## What a call can raise
 
@@ -14,9 +14,12 @@ command exits non-zero and prints the same words.
 | …because it was revoked | `KeyRevoked` | `KeyRevoked` | `revoked_at_ms` (`revokedAtMs`) |
 | …because it expired | `KeyExpired` | `KeyExpired` | `expired_at_ms` (`expiredAtMs`) |
 | The call itself was malformed, or the answer was not the typed one | `ProtocolError` | `ProtocolError` | `message`, `status`, `code` |
+| The app's surface moved past the generated types | `SurfaceChanged` | `SurfaceChanged` | `code` is `surface_changed`; run `tilo sdk gen` |
+| The server speaks another major version of the API | `UnsupportedVersion` | `ProtocolError` | `version`, and the one this SDK speaks (`api_version_unsupported`) |
 
 `RateLimited` is a `Refused`; `KeyRevoked` and `KeyExpired` are `KeyRefused`s, and `KeyRefused` is a
-`ProtocolError` with HTTP status 401. So catching the parent catches its cases.
+`ProtocolError` with HTTP status 401. So catching the parent catches its cases. `SurfaceChanged` is a
+`Refused` and `UnsupportedVersion` is a `ProtocolError`.
 
 ## Refused
 
@@ -29,7 +32,8 @@ naming a path.
 | `invalid_arguments` | A parameter is missing or the wrong type; `next_steps` names the action's parameters |
 | `unknown_action` | The path names no action of that resource |
 | `not_found` | No such workspace, resource or key, or one that is not yours |
-| `forbidden` | The key reaches this workspace but not that: another workspace's, or an account call |
+| `beyond_scope` | The key reaches one workspace and this is another one, or an account call |
+| `forbidden` | The key reaches this workspace but may not do this in it |
 | `rate_limited` | The host is busy with the person's changes; nothing ran |
 | `no_payment_method` | The account's plan does not include it yet; `next_steps` says what adds it |
 
@@ -37,10 +41,10 @@ Nothing ran when a refusal is raised, unless the app says otherwise in its steps
 
 ## AskPending
 
-The action asked the person first and has not run. `invocation_id` names the ask; `url` is where the person
-answers it when the host says (a hosted workspace asks them on their own device instead); `question` is
-what they are being asked. `ask.wait()` follows the invocation until they decide, and answers its result.
-[Approvals](approvals.md) is the whole story.
+The action asked the person first and has not run. `invocation_id` is the run the ask belongs to; `url` is
+where the person answers it when the API says (a hosted workspace asks them on their own device instead);
+`question` is what they are being asked. `ask.wait()` follows the run until they decide, and answers its
+result. [Approvals](approvals.md) is the whole story.
 
 ## RateLimited
 
@@ -58,6 +62,18 @@ catching it means "still busy after a minute".
 | `KeyRefused` | `invalid_token` | The host never issued this key: mistyped, or from another host |
 
 A request with no key at all raises `ProtocolError` saying to set `TILO_API_KEY`.
+
+## SurfaceChanged
+
+A call made through generated types names the app surface those types were written for, and a workspace
+whose app publishes another one refuses it rather than running it. `message` names both, and
+`tilo sdk gen` writes the types again.
+
+## An API of another version
+
+Every answer names the API's major version (`Tilo-Api-Version`), and a server on another major than the SDK
+speaks is refused before anything else is read: Python raises `UnsupportedVersion`, and TypeScript a
+`ProtocolError` whose code is `api_version_unsupported`.
 
 ## ProtocolError
 

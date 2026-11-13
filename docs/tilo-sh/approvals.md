@@ -18,19 +18,20 @@ allow runs once.
 
 ## How a call waits
 
-A call that needs a person answers **pending**, not failed: it has not run, and it says what the person is
-being asked. Both SDKs raise that as `AskPending`, carrying the question and the invocation's id.
+A call that needs a person answers **pending**, not failed: it has not run, and it answers the run it
+waits under and what the person is being asked. Both SDKs raise that as `AskPending`, carrying the question
+and the run.
 
-Nothing has happened yet. Ask again with the same invocation id and the same arguments and the question
-is put to the person again; the same id never runs the action twice. When they allow it, that call runs
-and answers `ok`. When they refuse, it answers `failed`, and nothing ran.
+Nothing has happened yet. The run answers its question as it stands, and the same action asked again under
+the same idempotency key puts the question to the person again rather than running it twice. When they
+allow it, the run answers `ok`. When they refuse, it answers `failed`, and nothing ran.
 
 A person answers on their own device: their Tilo asks them, with what the action would do.
 
 ## Asking for a key
 
-Asking for a key is the clearest case, because the answer is the key itself. The call answers as soon as
-the ask exists; `ask.wait()` follows the invocation until the person decides, and answers the key.
+Asking for a key is the clearest case, because the answer is the key itself. Nothing is made yet: the call
+raises `AskPending` with a link to show the person, and waiting on it is the key once they approve it.
 
 ```python example=ask-for-key
 from tilo import AskPending, Tilo
@@ -42,8 +43,10 @@ try:
     print("a key was made without asking anyone")
 except AskPending as ask:
     print("waiting for the person at", ask.url)
-    print("invocation:", ask.invocation_id)
-    # ask.wait() follows it until they decide, and answers the key.
+    print("ask:", ask.invocation_id)
+    # ask.wait() follows the approval until they decide, and answers the key.
+    key = ask.wait()
+    print("the key is", key.grant)
 ```
 
 ```typescript example=ask-for-key
