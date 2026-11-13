@@ -344,7 +344,6 @@ mod tests {
             .replace("&amp;", "&")
     }
 
-    #[test]
     fn colouring_never_changes_the_text() {
         let samples = [
             (
@@ -371,7 +370,6 @@ mod tests {
         }
     }
 
-    #[test]
     fn tokens_get_their_classes() {
         let html = highlight("python", "def f(x):\n    return \"s\"  # c\n");
         assert!(html.contains("<span class=\"k\">def</span>"), "{html}");
@@ -395,9 +393,27 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_hash_inside_a_shell_word_is_not_a_comment() {
         let shell = highlight("sh", "tilo do pdf-viewer#read-form-fields\n");
         assert!(!shell.contains("class=\"c\""), "{shell}");
+    }
+
+    #[test]
+    fn code_is_coloured_by_token_without_changing_its_text() {
+        let cases: [(&str, fn()); 3] = [
+            (
+                "colouring never changes the text",
+                colouring_never_changes_the_text,
+            ),
+            ("tokens get their classes", tokens_get_their_classes),
+            (
+                "a hash inside a shell word is not a comment",
+                a_hash_inside_a_shell_word_is_not_a_comment,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
     }
 }

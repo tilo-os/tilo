@@ -289,7 +289,6 @@ mod tests {
         Book::load(dir).unwrap()
     }
 
-    #[test]
     fn a_book_becomes_pages_markdown_search_and_llms_txt() {
         let dir = tempfile::tempdir().unwrap();
         let book = book(
@@ -324,7 +323,6 @@ mod tests {
         build(&book, &out, &Options::default()).unwrap();
     }
 
-    #[test]
     fn a_link_to_a_missing_page_or_heading_fails_the_build() {
         let dir = tempfile::tempdir().unwrap();
         let book = book(
@@ -336,6 +334,24 @@ mod tests {
             .to_string();
         assert!(error.contains("/docs/gone/: no such page"), "{error}");
         assert!(error.contains("no heading #nowhere"), "{error}");
+    }
+
+    #[test]
+    fn a_book_builds_its_site_or_fails_on_a_broken_link() {
+        let cases: [(&str, fn()); 2] = [
+            (
+                "a book becomes pages markdown search and llms txt",
+                a_book_becomes_pages_markdown_search_and_llms_txt,
+            ),
+            (
+                "a link to a missing page or heading fails the build",
+                a_link_to_a_missing_page_or_heading_fails_the_build,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
     }
 
     #[test]

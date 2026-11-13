@@ -195,7 +195,6 @@ mod tests {
 
     const PAGE: &str = "---\nid: \"files\"\nslug: \"files\"\nurl: \"/docs/files/\"\ntitle: \"Files\"\nnav: \"Files\"\ndescription: \"Put files in.\"\nsource: \"docs/tilo-sh/files.md\"\nsourceUrl: \"https://example/src\"\nsection: \"Guides\"\norder: 3\n---\n\n# Files\n\nBody.\n";
 
-    #[test]
     fn a_page_is_its_front_matter_and_its_body() {
         let page = parse_page(Path::new("files.md"), PAGE).unwrap();
         assert_eq!(page.title, "Files");
@@ -205,9 +204,26 @@ mod tests {
         assert_eq!(page.markdown_url("/docs/"), "/docs/files.md");
     }
 
-    #[test]
     fn a_page_without_its_fields_is_refused() {
         let error = parse_page(Path::new("x.md"), "---\nid: \"x\"\n---\nBody").unwrap_err();
         assert!(error.to_string().contains("missing field"), "{error}");
+    }
+
+    #[test]
+    fn a_page_is_its_front_matter_and_body_or_is_refused_without_its_fields() {
+        let cases: [(&str, fn()); 2] = [
+            (
+                "a page is its front matter and its body",
+                a_page_is_its_front_matter_and_its_body,
+            ),
+            (
+                "a page without its fields is refused",
+                a_page_without_its_fields_is_refused,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
     }
 }

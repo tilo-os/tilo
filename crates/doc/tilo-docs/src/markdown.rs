@@ -323,7 +323,6 @@ fn callout(kind: BlockQuoteKind) -> (&'static str, &'static str) {
 mod tests {
     use super::*;
 
-    #[test]
     fn the_title_is_left_to_the_layout_and_headings_get_ids() {
         let page = render(
             "# Files\n\nLead.\n\n## Put a file in\n\n### `tilo_do` and you\n\n## Put a file in\n",
@@ -351,7 +350,6 @@ mod tests {
         assert_eq!(inline.text, "Run tilo keys revoke <grant>), then stop.");
     }
 
-    #[test]
     fn one_examples_blocks_become_tabs_in_a_fixed_order() {
         let page = render(
             "```typescript example=create\nconst a = 1;\n```\n\n```python example=create\na = 1\n```\n\n```python example=other\nb = 2\n```\n",
@@ -370,7 +368,6 @@ mod tests {
         assert_eq!(page.html.matches("class=\"code\"").count(), 2);
     }
 
-    #[test]
     fn plain_blocks_stand_alone() {
         let page = render("```sh\nuv add tilo\n```\n\n```sh\ntilo login\n```\n");
         assert_eq!(
@@ -381,7 +378,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn alerts_become_callouts_and_tables_scroll() {
         let page =
             render("> [!WARNING]\n> Deleting is final.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n");
@@ -391,6 +387,29 @@ mod tests {
             )
         );
         assert!(page.html.contains("<div class=\"table-wrap\"><table>"));
+    }
+
+    #[test]
+    fn markdown_renders_headings_code_blocks_callouts_and_tables() {
+        let cases: [(&str, fn()); 4] = [
+            (
+                "the title is left to the layout and headings get ids",
+                the_title_is_left_to_the_layout_and_headings_get_ids,
+            ),
+            (
+                "one examples blocks become tabs in a fixed order",
+                one_examples_blocks_become_tabs_in_a_fixed_order,
+            ),
+            ("plain blocks stand alone", plain_blocks_stand_alone),
+            (
+                "alerts become callouts and tables scroll",
+                alerts_become_callouts_and_tables_scroll,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
     }
 
     #[test]

@@ -44,5 +44,8 @@ mod tests {
         assert_eq!(slugger.id("`tilo_do`"), "tilo_do");
         assert_eq!(slugger.id("Notes"), "notes");
         assert_eq!(slugger.id("Notes"), "notes-1");
+        assert_eq!(slugger.id("Notes"), "notes-2");
+        assert_eq!(slugger.id("Über uns"), "über-uns");
+        assert_eq!(slugger.id(""), "");
     }
 }
