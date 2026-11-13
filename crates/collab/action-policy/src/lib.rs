@@ -47,7 +47,7 @@ mod workspace;
 
 pub use acting::{Invocation, admit_invocation, answer_at, asker_of, granted_to};
 pub use admission::{Admission, Asker, Invoked, Reach, Refused, admit};
-pub use decide::{Authority, Basis, Decision, Party, Verdict, decide};
+pub use decide::{Authority, Basis, Cap, Decision, Party, Verdict, decide};
 pub use describe::{Ids, Labels, describe, describe_node, sentences};
 pub use door::{DoorError, DoorPolicy, ListingPolicy};
 pub use earlier::EarlierIds;

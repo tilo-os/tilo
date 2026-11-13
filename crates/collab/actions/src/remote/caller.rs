@@ -449,20 +449,12 @@ impl Caller {
     /// own device gives the agent it handed its session to.
     #[must_use]
     pub fn granted(&self, workspace: &str) -> Vec<tilo_action_policy::Grant> {
-        let mut granted = match (&self.principal, self.acting_for.clone()) {
+        match (&self.principal, self.acting_for.clone()) {
             (CallerPrincipal::Agent(agent), Some(person)) if self.session_delegated => {
                 tilo_action_policy::roles::agent_grants(workspace, agent, &person, &[])
             }
             _ => Vec::new(),
-        };
-        if self.foreign {
-            granted.extend(
-                tilo_action_policy::roles::foreign_device_bound()
-                    .iter()
-                    .cloned(),
-            );
         }
-        granted
     }
 
     /// The run this caller's actions are part of, as the host that admitted it

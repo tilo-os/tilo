@@ -1025,7 +1025,7 @@ fn may_make_a_note(
     projection: &collab_types::action_authority::AppActionAuthorityProjection,
 ) -> Answer {
     projection
-        .authority(&collab_types::action_authority::foreign_device_bound())
+        .authority()
         .decide(
             &projection.app_node().action("new-note"),
             ActionKind::Undoable,

@@ -351,7 +351,7 @@ fn a_grant_to_a_role_reaches_every_higher_role() {
         Answer::Allow,
         alice(),
     );
-    let mut policy = workspace.clone();
+    let mut policy = workspace;
     policy.grants.push(shared);
     let edits = |person: &str| {
         Authority::person(policy.party(person))
@@ -1414,9 +1414,11 @@ fn the_agent_default_reads_and_changes_but_asks_outside() {
 #[test]
 fn a_foreign_device_never_governs() {
     let workspace = workspace_with_members(&[]);
-    let bound = roles::foreign_device_bound();
-    let authority = Authority::person(workspace.party(ALICE))
-        .bounded_by(Party::new(vec![Grantee::ForeignDevice], bound.iter()));
+    let authority = Authority::person(
+        workspace
+            .party(ALICE)
+            .capped(tilo_action_policy::Cap::FOREIGN_DEVICE),
+    );
     assert_eq!(
         authority.decide(&send(), ActionKind::Outside, &cx()).answer,
         Answer::Ask

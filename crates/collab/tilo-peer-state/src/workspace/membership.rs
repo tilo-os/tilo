@@ -19,7 +19,7 @@
 use std::collections::BTreeMap;
 
 use automerge::AutoCommit;
-use tilo_action_policy::{Context, Role, WorkspacePolicy, roles, roles::governance};
+use tilo_action_policy::{Context, Role, WorkspacePolicy, roles::governance};
 
 use super::{GovernanceRow, WorkspaceGovernance, governance_of};
 use crate::members::{MembershipOpCommand, SignedMembershipOp};
@@ -211,8 +211,7 @@ fn rows_permitted(
     let wanted = crate::workspace::policy_of(after, workspace);
     let actor = op.person();
     let foreign = op.author.capabilities.foreign && !held.is_owner(&actor);
-    let bound = roles::foreign_device_bound();
-    let authority = held.person_on_device(&actor, foreign, bound);
+    let authority = held.person_on_device(&actor, foreign);
     let cx = Context::at(op.at_ns / 1_000_000);
     let writer = (actor.as_str(), &authority, &cx);
     let (before, written) = (governance_of(Some(at)), governance_of(Some(after)));
@@ -286,11 +285,10 @@ pub fn invitation_admits(
         return Err(refused("it is for another workspace".into()));
     }
     let issuer = hex::encode(grant.issuer.user_public_key);
-    let bound = roles::foreign_device_bound();
     // The owner grants itself anything, from any device of theirs, so the
     // foreign-device bound does not narrow what they invite.
     let foreign = grant.issuer.capabilities.foreign && !policy.is_owner(&issuer);
-    let authority = policy.person_on_device(&issuer, foreign, bound);
+    let authority = policy.person_on_device(&issuer, foreign);
     policy
         .check_invite(
             &issuer,

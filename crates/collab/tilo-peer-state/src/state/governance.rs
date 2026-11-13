@@ -1257,11 +1257,10 @@ impl super::StatePeer {
     /// admission through an invitation is written by.
     fn require_inviter(&self, key: &dyn DeviceSigner, now: SystemTime) -> Result<(), String> {
         let member = self.inviter(key, now)?;
-        let bound = tilo_action_policy::roles::foreign_device_bound();
         member
             .policy
             .check_action(
-                &member.authority(bound),
+                &member.authority(),
                 tilo_action_policy::roles::governance::INVITE,
                 &tilo_action_policy::Context::at_time(now),
                 false,
@@ -1279,12 +1278,11 @@ impl super::StatePeer {
         now: SystemTime,
     ) -> Result<(), String> {
         let member = self.inviter(key, now)?;
-        let bound = tilo_action_policy::roles::foreign_device_bound();
         member
             .policy
             .check_invite(
                 &member.person,
-                &member.authority(bound),
+                &member.authority(),
                 role,
                 &tilo_action_policy::Context::at_time(now),
                 false,

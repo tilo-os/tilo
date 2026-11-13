@@ -31,10 +31,10 @@ impl<'a> Authority<'a> {
     /// every node of its tree allows it.
     ///
     /// A person is decided by their grants and their role's; from a device that
-    /// is not theirs, by the foreign-device bound too (`granted`, see
-    /// [`crate::Standing::on_foreign_device`]). An agent or bot by
-    /// the grants naming it in the workspace and the ones its person gave it
-    /// (`granted`). An automation by what the people it runs for gave it.
+    /// is not theirs, by what such a device may do at most
+    /// ([`crate::Cap::FOREIGN_DEVICE`]). An agent or bot by the grants naming
+    /// it in the workspace and the ones its person gave it (`granted`). An
+    /// automation by what the people it runs for gave it.
     #[must_use]
     pub fn of_acting(
         acting: &'a crate::Acting,
@@ -43,7 +43,6 @@ impl<'a> Authority<'a> {
     ) -> Self {
         let mut people: usize = 0;
         let mut person_parts = Vec::new();
-        let mut foreign_parts = Vec::new();
         let mut others = Vec::new();
         // The work an acting was caused by: grants naming that issue decide for
         // every node of the tree, as the agent's own do.
@@ -58,16 +57,13 @@ impl<'a> Authority<'a> {
                 Actor::Member(member) => match member {
                     MemberId::Person(person) => {
                         people = people.saturating_add(1);
-                        person_parts.push(with_work(
-                            policy.party(person).with_grants(granted),
-                            work.as_ref(),
-                        ));
-                        if node.foreign_device {
-                            foreign_parts.push(with_work(
-                                policy.party_of(Grantee::ForeignDevice).with_grants(granted),
-                                work.as_ref(),
-                            ));
-                        }
+                        let party =
+                            with_work(policy.party(person).with_grants(granted), work.as_ref());
+                        person_parts.push(if node.foreign_device {
+                            party.capped(crate::Cap::FOREIGN_DEVICE)
+                        } else {
+                            party
+                        });
                     }
                     MemberId::Agent(_) | MemberId::Bot(_) => {
                         others.push(with_work(
@@ -81,7 +77,7 @@ impl<'a> Authority<'a> {
                 }
             }
         }
-        let mut parts = person_parts.into_iter().chain(foreign_parts).chain(others);
+        let mut parts = person_parts.into_iter().chain(others);
         Self {
             person: parts.next().unwrap_or_default(),
             bounds: parts.collect(),
@@ -354,21 +350,15 @@ mod tests {
         let policy = policy();
         let foreign = Acting::person("owner").on_foreign_device(true);
         assert_eq!(
-            answer(
-                &foreign,
-                &policy,
-                roles::foreign_device_bound(),
-                ActionKind::Outside
-            ),
+            answer(&foreign, &policy, &[], ActionKind::Outside),
             Answer::Ask
         );
         let invite = roles::governance_action(WORKSPACE, roles::governance::INVITE);
-        let verdict: Verdict<'_> = Authority::of_acting(
-            &foreign,
-            &policy,
-            roles::foreign_device_bound(),
-        )
-        .decide(&invite, roles::GOVERNANCE_KIND, &Context::at_secs(1));
+        let verdict: Verdict<'_> = Authority::of_acting(&foreign, &policy, &[]).decide(
+            &invite,
+            roles::GOVERNANCE_KIND,
+            &Context::at_secs(1),
+        );
         assert_eq!(verdict.answer, Answer::Deny, "never governs a workspace");
         assert_eq!(
             answer(&Acting::person("owner"), &policy, &[], ActionKind::Undoable),

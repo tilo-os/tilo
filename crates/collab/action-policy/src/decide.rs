@@ -9,6 +9,8 @@ use crate::{ActionKind, Answer, Context, Grant, GrantId, Grantee, Level, Lifetim
 pub enum Basis<'g> {
     /// The most specific live grant covering the node and kind.
     Grant(&'g Grant),
+    /// The cap the code puts on the party, below what its grants allow.
+    Capped(Answer),
     /// The party owns the workspace the node is in.
     Owner,
     /// No live grant covers the node and kind.
@@ -109,6 +111,44 @@ pub struct Party<'g> {
     /// workspace, a role's rule on comments) speaks for the role, not for a
     /// decision about them.
     pub held_off: Vec<&'g Grant>,
+    /// A cap the code puts on this party, below whatever its grants allow.
+    pub cap: Option<Cap>,
+}
+
+/// What a device or a piece of software may do at most, whatever its grants
+/// say: the code's rule about the thing acting, not a grant anyone gave.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cap {
+    /// What it may do to the workspace's content.
+    pub content: Answer,
+    /// What it may do outside the workspace.
+    pub outside: Answer,
+    /// What it may do to the workspace's own resource (its governance).
+    pub governance: Answer,
+}
+
+impl Cap {
+    /// A device that is not the person's: it reads and changes content, asks
+    /// before reaching outside, and never governs.
+    pub const FOREIGN_DEVICE: Self = Self {
+        content: Answer::Allow,
+        outside: Answer::Ask,
+        governance: Answer::Deny,
+    };
+
+    /// What this cap answers for `kind` at `node` in the workspace it governs.
+    fn answer(self, node: &TreePath, kind: ActionKind) -> Answer {
+        if node.id_at(Level::Kind) == Some(crate::roles::ROOM_KIND) {
+            return match kind {
+                ActionKind::Read => Answer::Allow,
+                ActionKind::Undoable | ActionKind::Outside => self.governance,
+            };
+        }
+        match kind {
+            ActionKind::Read | ActionKind::Undoable => self.content,
+            ActionKind::Outside => self.outside,
+        }
+    }
 }
 
 impl<'g> Party<'g> {
@@ -119,7 +159,15 @@ impl<'g> Party<'g> {
             grants: grants.into_iter().collect(),
             owns: Vec::new(),
             held_off: Vec::new(),
+            cap: None,
         }
+    }
+
+    /// The same party, capped by `cap`.
+    #[must_use]
+    pub const fn capped(mut self, cap: Cap) -> Self {
+        self.cap = Some(cap);
+        self
     }
 
     #[must_use]
@@ -166,6 +214,24 @@ impl<'g> Party<'g> {
 
     #[must_use]
     pub fn decide(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
+        let held = self.decide_grants(node, kind, cx);
+        match self.cap {
+            Some(cap) => {
+                let answer = cap.answer(node, kind);
+                if answer < held.answer {
+                    Decision {
+                        answer,
+                        basis: Basis::Capped(answer),
+                    }
+                } else {
+                    held
+                }
+            }
+            None => held,
+        }
+    }
+
+    fn decide_grants(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
         // A member's own record is that person's alone, whatever the workspace's
         // grants or owner say ([`crate::member_record`]). A delegation, known
         // by no person, is decided by its grants as anywhere else.
@@ -405,6 +471,11 @@ impl<'g> Verdict<'g> {
             .unwrap_or(0);
         let reason = match self.parts.get(index).map(|part| part.basis) {
             Some(Basis::Owner) => "the person owns the workspace".to_owned(),
+            Some(Basis::Capped(answer)) => format!(
+                "{} may do at most \"{answer}\" with {} here",
+                who(index),
+                self.kind.phrase()
+            ),
             Some(Basis::Grant(grant)) => format!(
                 "{} give {} on {} the answer \"{}\" (grant {})",
                 who(index),

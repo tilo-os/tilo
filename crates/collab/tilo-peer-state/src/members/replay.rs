@@ -491,7 +491,6 @@ fn effect(
         return Ok(policy.clone());
     };
     let person = op.person();
-    let bound = roles::foreign_device_bound();
     let cx = Context::at(op.at_ns / 1_000_000);
     let mut next = policy.clone();
     let foreign = op.author.capabilities.foreign && !next.is_owner(&person);
@@ -502,7 +501,7 @@ fn effect(
         // workspace's grants do not allow may still be the member's by their
         // own rule: a share, its end, or a saved set they assign.
         let mut after = next.clone();
-        let authority = next.person_on_device(&person, foreign, bound);
+        let authority = next.person_on_device(&person, foreign);
         next = match after.apply(&person, &authority, change.clone(), &cx, false) {
             Ok(()) => after,
             Err(refusal) => crate::workspace::share::members_own(

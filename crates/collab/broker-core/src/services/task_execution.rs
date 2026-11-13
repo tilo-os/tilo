@@ -92,7 +92,7 @@ impl NativeTaskActionRequirement {
         looked: Option<&tilo_action_policy::turn::Looked>,
         now: tilo_clock::time::SystemTime,
     ) -> Result<(), String> {
-        use tilo_action_policy::{Answer, Authority, Context, roles};
+        use tilo_action_policy::{Answer, Authority, Context};
         let node = tilo_actions::action_node(
             &policy.node(),
             &self.app,
@@ -120,9 +120,8 @@ impl NativeTaskActionRequirement {
                 .with_grants(policy.grants_of(&issue)),
         )
         .decide(&node, self.need.kind, &cx);
-        let foreign = roles::foreign_device_bound();
         let starter = policy
-            .person_on_device(&run.starter, false, foreign)
+            .person_on_device(&run.starter, false)
             .decide(&node, self.need.kind, &cx)
             .answer;
         if !policy.is_member(&run.starter) || starter == Answer::Deny {

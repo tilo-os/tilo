@@ -218,7 +218,7 @@ fn assert_foreign(peer: &StatePeer, source: [u8; 32], now: SystemTime, role: Rol
     assert!(!legacy.allows(&invite, ActionKind::Undoable, now));
 }
 #[test]
-fn a_foreign_device_acts_with_at_most_the_workspace_bound() {
+fn a_foreign_device_acts_with_at_most_what_such_a_device_may() {
     let (mut peer, source, now) = fixture();
     let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
     let workspace = peer.core.workspace_doc.as_mut().unwrap();
@@ -237,25 +237,12 @@ fn a_foreign_device_acts_with_at_most_the_workspace_bound() {
             .allows(&content, ActionKind::Undoable, now)
     );
 
-    // The workspace narrows what a foreign device may do to reading.
-    let workspace_id = peer.workspace_id().to_owned();
-    put_grant(
-        &mut peer,
-        &Grant::new(
-            "foreign-device-read",
-            Grantee::ForeignDevice,
-            TreePath::workspace(&workspace_id),
-            KindSet::UNDOABLE.union(KindSet::OUTSIDE),
-            Answer::Deny,
-            Grantee::person(person.as_str()),
-        ),
-    );
-    assert_foreign(&peer, source, now, Role::Owner);
+    // Reaching outside the workspace still asks first, whoever holds it.
     assert!(
         !peer
             .permissions(source, now)
             .unwrap()
-            .allows(&content, ActionKind::Undoable, now)
+            .allows(&content, ActionKind::Outside, now)
     );
     assert!(
         peer.check_document_read(source, "app", "record", now)

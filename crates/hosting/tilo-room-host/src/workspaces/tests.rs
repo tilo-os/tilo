@@ -859,8 +859,8 @@ async fn legacy_window_write_respects_current_member_grants() {
             .checked_add(5000)
             .unwrap();
         let read_only = Grant::new(
-            "legacy-window-read-only-foreign",
-            Grantee::ForeignDevice,
+            "legacy-window-read-only-owner",
+            Grantee::person(hex::encode(cert.user_public_key)),
             tilo_action_policy::TreePath::workspace(&created.workspace),
             KindSet::UNDOABLE,
             Answer::Deny,
@@ -880,23 +880,10 @@ async fn legacy_window_write_respects_current_member_grants() {
         workspaces
             .legacy_writer_role(&created.workspace, foreign.device_public_key)
             .await,
-        None,
-        "ownership must not bypass a current grant denying changes from foreign devices"
+        Some(Role::Owner),
+        "ownership is structural: no grant narrows the owner, and a device of \
+         theirs that is not the workspace's is still held to what such a device may do"
     );
-    // Expiration is an authorized transition and must be observed without restart.
-    tilo_test_env::within("the current read-only grant expires", async {
-        loop {
-            if workspaces
-                .legacy_writer_role(&created.workspace, foreign.device_public_key)
-                .await
-                == Some(Role::Owner)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await;
     drop(workspaces);
     crate::workspaces::fixtures::TestHost::shutdown(relay).await;
 }

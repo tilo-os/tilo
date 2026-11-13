@@ -83,7 +83,6 @@ fn a_grantee_keeps_its_bytes() {
         (Grantee::task("t"), &[0x02, 0x01, b't']),
         (Grantee::shortcut("s"), &[0x03, 0x01, b's']),
         (Grantee::app("x"), &[0x04, 0x01, b'x']),
-        (Grantee::ForeignDevice, &[0x05]),
     ];
     for (grantee, golden) in cases {
         match grantee {
@@ -91,8 +90,7 @@ fn a_grantee_keeps_its_bytes() {
             | Grantee::Role(_)
             | Grantee::Task(_)
             | Grantee::Shortcut(_)
-            | Grantee::App(_)
-            | Grantee::ForeignDevice => stored_as!(grantee, golden),
+            | Grantee::App(_) => stored_as!(grantee, golden),
         }
     }
 }

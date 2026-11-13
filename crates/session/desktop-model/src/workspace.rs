@@ -523,13 +523,8 @@ impl Workspace {
     /// from a device that is not theirs, in a workspace this machine does not
     /// govern (the caller decides `foreign` accordingly).
     #[must_use]
-    pub fn person_authority_on<'a>(
-        &'a self,
-        user: &str,
-        foreign: bool,
-        foreign_bound: &'a [Grant],
-    ) -> Authority<'a> {
-        self.policy.person_on_device(user, foreign, foreign_bound)
+    pub fn person_authority_on(&self, user: &str, foreign: bool) -> Authority<'_> {
+        self.policy.person_on_device(user, foreign)
     }
 
     /// The authority of `subject` acting on its own (an app, or an agent no

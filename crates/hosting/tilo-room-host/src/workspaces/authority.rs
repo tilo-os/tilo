@@ -249,8 +249,7 @@ fn decide_by_governance(
             "the device's certificate names another person than the room admitted",
         ));
     }
-    let bound = roles::foreign_device_bound();
-    let authority = member.authority(bound);
+    let authority = member.authority();
     let cx = Context::at_time(system_time(now));
     // No person witnessed an approval here: an answer that asks first is a
     // refusal, never a pass.

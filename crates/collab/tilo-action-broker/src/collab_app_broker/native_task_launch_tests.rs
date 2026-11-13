@@ -634,19 +634,6 @@ async fn a_capped_authenticated_task_cannot_activate_outside_its_connection_ceil
     tokio::task::LocalSet::new()
         .run_until(Box::pin(async {
             let (f, mut launches) = fixture();
-            put_grant(
-                &f,
-                tilo_action_policy::Grant::new(
-                    "foreign-writer-denied",
-                    tilo_action_policy::Grantee::ForeignDevice,
-                    tilo_action_policy::TreePath::workspace(workspace_id().to_string()).app(WRITER),
-                    tilo_action_policy::KindSet::UNDOABLE,
-                    tilo_action_policy::Answer::Deny,
-                    tilo_action_policy::Grantee::person(hex::encode(
-                        f.native.certificate.user_public_key,
-                    )),
-                ),
-            );
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
@@ -837,7 +824,7 @@ async fn a_terminal_activation_receipt_rechecks_the_authenticated_connection_cei
         f.state.invocation_subscribers.lock().unwrap().remove(&210);
         drop(writer);
         put_grant(&f, tilo_action_policy::Grant::new(
-            "foreign-writer-denied-after-close", tilo_action_policy::Grantee::ForeignDevice,
+            "foreign-writer-denied-after-close", tilo_action_policy::Grantee::agent("scribe"),
             tilo_action_policy::TreePath::workspace(workspace_id().to_string()).app(WRITER),
             tilo_action_policy::KindSet::UNDOABLE, tilo_action_policy::Answer::Deny,
             tilo_action_policy::Grantee::person(hex::encode(f.native.certificate.user_public_key)),
@@ -863,20 +850,6 @@ async fn activation_rechecks_original_caller_and_live_policy_after_custody() {
         .run_until(Box::pin(async {
             for change in ["connection", "policy", "workspace", "broker", "run"] {
                 let (f, mut launches) = fixture();
-                put_grant(
-                    &f,
-                    tilo_action_policy::Grant::new(
-                        "foreign-writer-barrier-denied",
-                        tilo_action_policy::Grantee::ForeignDevice,
-                        tilo_action_policy::TreePath::workspace(workspace_id().to_string())
-                            .app(WRITER),
-                        tilo_action_policy::KindSet::UNDOABLE,
-                        tilo_action_policy::Answer::Deny,
-                        tilo_action_policy::Grantee::person(hex::encode(
-                            f.native.certificate.user_public_key,
-                        )),
-                    ),
-                );
                 f.approve();
                 let agent = f.channel(100, true);
                 let run = delivered(&agent).await;

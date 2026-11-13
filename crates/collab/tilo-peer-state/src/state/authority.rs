@@ -4,7 +4,7 @@
 
 use super::{
     ActionKind, Answer, Authority, AutoCommit, DeviceCert, Ed25519PublicKey, GovernedIdentity,
-    Grant, MembershipError, Principal, Role, Route, SignedOp, StatePeer, SystemTime, TreePath,
+    MembershipError, Principal, Role, Route, SignedOp, StatePeer, SystemTime, TreePath,
     WorkspacePolicy, backend, err, held_units, now_ns, record_kind, record_surface, workspace,
     workspace_host_actor,
 };
@@ -48,22 +48,20 @@ impl MemberAuthority {
         standing_of(self.policy, self.person, self.foreign, self.delegate)
     }
 
-    /// The member's authority, held to `foreign_bound` on a foreign device.
+    /// The member's authority, capped on a foreign device.
     #[must_use]
-    pub fn authority<'a>(&'a self, foreign_bound: &'a [Grant]) -> Authority<'a> {
+    pub fn authority(&self) -> Authority<'_> {
         backend::access::member_authority(
             &self.policy,
             &self.person,
             self.foreign,
             self.delegate.as_ref(),
-            foreign_bound,
         )
     }
     /// Whether the member may perform an action of `kind` at `node` at `now`.
     #[must_use]
     pub fn allows(&self, node: &TreePath, kind: ActionKind, now: SystemTime) -> bool {
-        let bound = tilo_action_policy::roles::foreign_device_bound();
-        self.authority(bound)
+        self.authority()
             .decide(node, kind, &tilo_action_policy::Context::at_time(now))
             .answer
             == Answer::Allow
@@ -110,11 +108,10 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<(), String> {
         let member = self.membership(key.device_public_key(), now)?;
-        let bound = tilo_action_policy::roles::foreign_device_bound();
         member
             .policy
             .check_action(
-                &member.authority(bound),
+                &member.authority(),
                 action,
                 &tilo_action_policy::Context::at_time(now),
                 false,

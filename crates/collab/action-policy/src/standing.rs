@@ -103,12 +103,10 @@ impl Standing {
     }
 
     /// The same standing, from a device that is not the person's: what such a
-    /// device may do applies.
+    /// device may do applies ([`crate::Cap::FOREIGN_DEVICE`]).
     #[must_use]
     pub fn on_foreign_device(mut self) -> Self {
         self.acting.foreign_device = true;
-        self.granted
-            .extend(roles::foreign_device_bound().iter().cloned());
         self
     }
 

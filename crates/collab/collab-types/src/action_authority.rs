@@ -135,21 +135,11 @@ impl AppActionAuthorityProjection {
         self.policy.node().app(&self.app_id)
     }
 
-    /// The person's authority, bounded on a foreign device.
+    /// The person's authority, capped on a foreign device.
     #[must_use]
-    pub fn authority<'a>(
-        &'a self,
-        foreign_bound: &'a [tilo_action_policy::Grant],
-    ) -> Authority<'a> {
-        self.policy
-            .person_on_device(&self.person, self.foreign, foreign_bound)
+    pub fn authority(&self) -> Authority<'_> {
+        self.policy.person_on_device(&self.person, self.foreign)
     }
-}
-
-/// The grants every foreign device is held to, before a room narrows them.
-#[must_use]
-pub fn foreign_device_bound() -> Vec<tilo_action_policy::Grant> {
-    roles::foreign_device_bound().to_vec()
 }
 
 #[cfg(test)]
@@ -311,19 +301,18 @@ mod tests {
                 .iter()
                 .any(|grant| grant.id.as_str() == "settings")
         );
-        let bound = foreign_device_bound();
         let node = projection.app_node().action("buy");
         let cx = Context::at(0);
         assert_eq!(
             projection
-                .authority(&bound)
+                .authority()
                 .decide(&node, ActionKind::Undoable, &cx)
                 .answer,
             Answer::Allow
         );
         assert_eq!(
             projection
-                .authority(&bound)
+                .authority()
                 .decide(&node, ActionKind::Outside, &cx)
                 .answer,
             Answer::Deny
@@ -343,12 +332,11 @@ mod tests {
             Answer::Allow,
             Grantee::person("person-a"),
         ));
-        let bound = foreign_device_bound();
         let cx = Context::at(0);
         let invite = roles::governance_action("room-a", roles::governance::INVITE);
         assert_eq!(
             projection
-                .authority(&bound)
+                .authority()
                 .decide(&invite, ActionKind::Undoable, &cx)
                 .answer,
             Answer::Deny
@@ -356,7 +344,7 @@ mod tests {
         let content = projection.app_node().action("buy");
         assert_eq!(
             projection
-                .authority(&bound)
+                .authority()
                 .decide(&content, ActionKind::Undoable, &cx)
                 .answer,
             Answer::Allow,
@@ -364,7 +352,7 @@ mod tests {
         );
         assert_eq!(
             projection
-                .authority(&bound)
+                .authority()
                 .decide(&content, ActionKind::Outside, &cx)
                 .answer,
             Answer::Ask,

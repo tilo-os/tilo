@@ -149,8 +149,6 @@ pub enum Grantee {
     /// A Shortcut run for a person.
     Shortcut(String),
     App(String),
-    /// A person working from a device that is not one of theirs.
-    ForeignDevice,
 }
 
 impl Grantee {
@@ -252,7 +250,6 @@ impl fmt::Display for Grantee {
             Self::Task(id) => write!(f, "task {id}"),
             Self::Shortcut(id) => write!(f, "Shortcut {id}"),
             Self::App(id) => write!(f, "app {id}"),
-            Self::ForeignDevice => f.write_str("a device that is not theirs"),
         }
     }
 }

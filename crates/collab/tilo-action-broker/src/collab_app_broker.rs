@@ -13017,16 +13017,11 @@ pub mod tests {
         };
         assert_eq!(changes(&admitted, &tree), Answer::Allow);
 
-        tree.workspaces[0].deny(
-            crate::test_support::Grantee::ForeignDevice,
-            &crate::test_support::TreePath::root(),
-            crate::test_support::KindSet::UNDOABLE,
-        );
         let admitted = admit_verified_join(&tree, &route, foreign).unwrap();
         assert_eq!(
             changes(&admitted, &tree),
-            Answer::Deny,
-            "the workspace bounds devices that are not their owner's further"
+            Answer::Allow,
+            "a device that is not the person's still changes the workspace's content"
         );
     }
 

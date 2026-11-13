@@ -451,23 +451,15 @@ impl WorkspacePolicy {
     }
 
     /// `person`'s authority from one of their devices: their own, and from a
-    /// device that is not theirs (`foreign`), held to `foreign_bound` and to
-    /// the workspace's grants for such devices too.
+    /// device that is not theirs (`foreign`), held to what such a device may
+    /// do at most.
     #[must_use]
-    pub fn person_on_device<'a>(
-        &'a self,
-        person: &str,
-        foreign: bool,
-        foreign_bound: &'a [Grant],
-    ) -> Authority<'a> {
-        let authority = Authority::person(self.party(person));
+    pub fn person_on_device(&self, person: &str, foreign: bool) -> Authority<'_> {
+        let party = self.party(person);
         if foreign {
-            authority.bounded_by(
-                Party::new(vec![Grantee::ForeignDevice], foreign_bound)
-                    .with_grants(self.grants_of(&Grantee::ForeignDevice)),
-            )
+            Authority::person(party.capped(crate::Cap::FOREIGN_DEVICE))
         } else {
-            authority
+            Authority::person(party)
         }
     }
 

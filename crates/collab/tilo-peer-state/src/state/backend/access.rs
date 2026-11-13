@@ -1,6 +1,6 @@
 //! Shared current authority decisions.
 use super::{Role, SystemTime};
-use tilo_action_policy::{ActionKind, Answer, Authority, Grant, WorkspacePolicy};
+use tilo_action_policy::{ActionKind, Answer, Authority, WorkspacePolicy};
 
 /// Whether `authority` may read the record `record` of `app` in `workspace`.
 pub(in crate::state) fn document_read(
@@ -35,9 +35,8 @@ pub(in crate::state) fn member_authority<'a>(
     person: &'a str,
     foreign: bool,
     delegate: Option<&'a crate::state::ActingAs>,
-    foreign_bound: &'a [Grant],
 ) -> Authority<'a> {
-    let authority = policy.person_on_device(person, foreign, foreign_bound);
+    let authority = policy.person_on_device(person, foreign);
     match delegate {
         Some(delegation) => authority.also_as(
             policy
@@ -57,8 +56,7 @@ pub(in crate::state) fn check_document_read(
     (workspace, app, record): (&str, &str, &str),
     now: SystemTime,
 ) -> Result<(), String> {
-    let bound = tilo_action_policy::roles::foreign_device_bound();
-    let authority = member_authority(policy, person, foreign, delegate, bound);
+    let authority = member_authority(policy, person, foreign, delegate);
     if document_read(&authority, workspace, app, record, now) {
         Ok(())
     } else {

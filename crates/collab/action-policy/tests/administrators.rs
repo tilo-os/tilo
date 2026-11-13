@@ -134,8 +134,7 @@ fn an_administrator_never_hands_out_or_reaches_above_their_role() {
 #[test]
 fn an_administrator_governs_nothing_from_a_foreign_device_or_through_an_agent() {
     let workspace = workspace(&[(CAROL, Role::Editor)], CAROL);
-    let bound = roles::foreign_device_bound();
-    let foreign = workspace.person_on_device(CAROL, true, bound);
+    let foreign = workspace.person_on_device(CAROL, true);
     let delegation = roles::agent_grants("r", "scribe", CAROL, &[]);
     let acting = Acting::agent("scribe").acting_for(Acting::person(CAROL));
     let agent = Authority::of_acting(&acting, &workspace, &delegation);

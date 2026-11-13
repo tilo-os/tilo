@@ -15,7 +15,7 @@ use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{StatePeer, SystemTime, err};
 use crate::workspace_membership::SettingsChange;
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, roles};
+use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime};
 use tilo_desktop_model::projection;
 use tilo_user_identity::DeviceCert;
 
@@ -30,8 +30,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
-        let bound = roles::foreign_device_bound();
-        let authority = member.authority(bound);
+        let authority = member.authority();
         let seconds = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());

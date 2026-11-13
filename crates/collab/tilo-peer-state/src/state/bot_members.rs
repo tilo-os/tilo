@@ -10,10 +10,7 @@
 use super::facades::PeerGovernance;
 use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::{
-    Context, Grant, GrantId, WorkspacePolicy, bot,
-    roles::{self, governance},
-};
+use tilo_action_policy::{Context, Grant, GrantId, WorkspacePolicy, bot, roles::governance};
 use tilo_automation::program::{parse_program, program_hash};
 use tilo_user_identity::DeviceCert;
 
@@ -170,7 +167,6 @@ impl StatePeer {
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
         let cx = Context::at_time(now);
-        let bound = roles::foreign_device_bound();
         let id = install.installation.id.as_str().to_owned();
         let workspace = self.core.workspace.clone();
         let grants = program_grants(&workspace, install, &member.policy, &cx)?;
@@ -181,7 +177,7 @@ impl StatePeer {
                 if install.installation.installed_by != member.person {
                     return Err("a bot is installed by the person installing it".into());
                 }
-                let authority = member.authority(bound);
+                let authority = member.authority();
                 member
                     .policy
                     .check_action(&authority, governance::INSTALL_BOT, &cx, false)
@@ -222,7 +218,7 @@ impl StatePeer {
                 } else {
                     governance::INSTALL_BOT
                 };
-                let authority = member.authority(bound);
+                let authority = member.authority();
                 member
                     .policy
                     .check_action(&authority, action, &cx, false)
@@ -612,15 +608,9 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<super::MemberAuthority, String> {
         let member = self.membership(caller.device_public_key, now)?;
-        let bound = roles::foreign_device_bound();
         member
             .policy
-            .check_action(
-                &member.authority(bound),
-                action,
-                &Context::at_time(now),
-                false,
-            )
+            .check_action(&member.authority(), action, &Context::at_time(now), false)
             .map_err(|refusal| refusal.to_string())?;
         Ok(member)
     }
@@ -726,8 +716,7 @@ impl StatePeer {
             .map_err(|error| error.to_string())?
             .user_public_key;
         let cx = Context::at_time(now);
-        let bound = roles::foreign_device_bound();
-        let authority = member.authority(bound);
+        let authority = member.authority();
         let old = self.bot_grants(id, now)?;
         let mut reissued = Vec::with_capacity(old.len());
         for grant in &old {
