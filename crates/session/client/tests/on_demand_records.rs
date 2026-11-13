@@ -24,6 +24,7 @@ use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 use crate::support::{
     enrol, hears, ready, route, say, start_host, start_peer, wait_for, workspace,
 };
+use collab_types::WorkspaceId;
 
 fn record(record: String) -> DocumentRoute {
     DocumentRoute { record, ..route() }
@@ -175,7 +176,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     // The reader opens the earlier part and the archive: their history
     // arrives, and then their changes.
     reader
-        .send(Cmd::OpenRecordAt(workspace(), part(0)))
+        .send(Cmd::OpenRecordAt(workspace(), part(WorkspaceId::from_u128(0))))
         .unwrap();
     reader
         .send(Cmd::OpenRecordAt(workspace(), archive.clone()))

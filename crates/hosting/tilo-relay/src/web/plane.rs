@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn a_member_hears_every_participant_of_its_workspace() {
-        let grant = Grant::new(7, "ws-1", peer([1; 32]), false);
+        let grant = Grant::new(WorkspaceId::from_u128(7), "ws-1", peer([1; 32]), false);
         assert_eq!(grant.subscription_prefix(), Some(grant.scope.as_str()));
         assert!(grant.current(Direction::Subscribe, &names([2; 32]).path()));
         assert!(grant.current(Direction::Publish, &names([1; 32]).path()));
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn a_browser_environment_publishes_its_window_and_hears_nobody() {
-        let grant = Grant::new(7, "ws-1", peer([1; 32]), true);
+        let grant = Grant::new(WorkspaceId::from_u128(7), "ws-1", peer([1; 32]), true);
         assert_eq!(
             grant.publication(),
             Some(names([1; 32]).path().as_str()),

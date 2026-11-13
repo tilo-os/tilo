@@ -2247,7 +2247,7 @@ mod tests {
         assert!(!places_workspaces(&cert(4, 5), &host));
     }
 
-    fn status(workspaces: &[(u64, bool)]) -> PeerStatus {
+    fn status(workspaces: &[(WorkspaceId, bool)]) -> PeerStatus {
         PeerStatus {
             phase: TransportPhase::Connected,
             authenticated: true,
@@ -2259,7 +2259,7 @@ mod tests {
     #[test]
     fn workspaces_not_admitted_within_the_timeout_are_overdue_once_subscribed() {
         let since = 1_000;
-        let waiting = status(&[(1, true), (2, false)]);
+        let waiting = status(&[(WorkspaceId::from_u128(1), true), (WorkspaceId::from_u128(2), false)]);
         assert_eq!(
             admission_state(&waiting, None, since + ADMISSION_TIMEOUT_MS),
             Admission::Waiting
@@ -2272,7 +2272,7 @@ mod tests {
             admission_state(&waiting, Some(since), since + ADMISSION_TIMEOUT_MS),
             Admission::Overdue
         );
-        let admitted = status(&[(1, true), (2, true)]);
+        let admitted = status(&[(WorkspaceId::from_u128(1), true), (WorkspaceId::from_u128(2), true)]);
         assert_eq!(
             admission_state(&admitted, Some(since), since + ADMISSION_TIMEOUT_MS),
             Admission::Admitted
@@ -2310,20 +2310,20 @@ mod tests {
     #[test]
     fn a_plane_that_was_not_reached_is_named_in_the_channel_diagnostics() {
         let mut planes = plane::Planes::default();
-        planes.later(7, 12_000);
+        planes.later(WorkspaceId::from_u128(7), 12_000);
         assert_eq!(
             planes.describe(),
             "plane 7: not joined. No live plane was reached; asking again at 12000"
         );
-        assert_eq!(planes.missed(7), 1);
-        assert_eq!(planes.missed(7), plane::MISSES_BEFORE_NOTE);
-        planes.refused(7, 60_000);
+        assert_eq!(planes.missed(WorkspaceId::from_u128(7)), 1);
+        assert_eq!(planes.missed(WorkspaceId::from_u128(7)), plane::MISSES_BEFORE_NOTE);
+        planes.refused(WorkspaceId::from_u128(7), 60_000);
         assert_eq!(
             planes.describe(),
             "plane 7: not joined. The workspace does not admit this page's plane; asking again \
              at 60000"
         );
-        assert_eq!(planes.missed(7), 1, "an answer starts the count again");
+        assert_eq!(planes.missed(WorkspaceId::from_u128(7)), 1, "an answer starts the count again");
     }
 }
 

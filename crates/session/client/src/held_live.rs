@@ -141,7 +141,7 @@ mod tests {
             let (done, receipt) = crate::answer();
             receipts.push(receipt);
             held.hold_outbound(
-                1,
+                WorkspaceId::from_u128(1),
                 record("r"),
                 Waiting::Seal {
                     workspace_id: WorkspaceId::from_u128(1),
@@ -165,14 +165,14 @@ mod tests {
                 frame: vec![9],
             },
         );
-        let released: Vec<_> = held.release(1, record("r"), [7; 16]).collect();
+        let released: Vec<_> = held.release(WorkspaceId::from_u128(1), record("r"), [7; 16]).collect();
         assert_eq!(released.len(), PER_KEY + 1);
         assert!(matches!(released.last(), Some(Waiting::Receive { .. })));
         assert!(matches!(
             released.first(),
             Some(Waiting::Seal { frame, .. }) if frame == &[1]
         ));
-        assert_eq!(held.release(1, record("r"), [7; 16]).count(), 0);
+        assert_eq!(held.release(WorkspaceId::from_u128(1), record("r"), [7; 16]).count(), 0);
         for frame in released {
             frame.drop_frame();
         }

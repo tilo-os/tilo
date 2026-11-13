@@ -43,6 +43,7 @@ use tilo_relay::workspaces::{
 };
 use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig};
 use tilo_relay_protocol::delegation::{Delegate, DelegateScope, Delegation};
+use tilo_relay_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, device_endpoint};

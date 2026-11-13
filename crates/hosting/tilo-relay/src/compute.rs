@@ -1348,7 +1348,7 @@ mod tests {
             device: [3; 32],
             role: DeviceRole::AlwaysOnServer,
             services: ServiceCapabilities::personal_server(),
-            workspaces: BTreeSet::from([7]),
+            workspaces: BTreeSet::from([WorkspaceId::from_u128(7)]),
             apps: BTreeSet::from(["so.tilo.video-editor".into()]),
             accelerators: BTreeSet::from([ComputeAccelerator::Gpu]),
             priority: 0,
@@ -1585,7 +1585,13 @@ mod tests {
             let executor = make_executor(root.path(), &mut job, content.clone(), sandbox);
 
             let result = executor
-                .execute([2; 32], 7, &job, 200, CaptureCancellation::default())
+                .execute(
+                    [2_u8; 32],
+                    WorkspaceId::from_u128(7),
+                    &job,
+                    200,
+                    CaptureCancellation::default(),
+                )
                 .unwrap();
             let expected = *blake3::hash(b"rendered").as_bytes();
             assert_eq!(
@@ -1597,7 +1603,13 @@ mod tests {
             assert_eq!(content.get(expected).unwrap(), Some(b"rendered".to_vec()));
             assert_eq!(launches.load(Ordering::Acquire), 1);
             assert_eq!(
-                executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
+                executor.execute(
+                    [2_u8; 32],
+                    WorkspaceId::from_u128(7),
+                    &job,
+                    200,
+                    CaptureCancellation::default(),
+                ),
                 Err(ComputeExecutionError::Replay)
             );
             assert_eq!(launches.load(Ordering::Acquire), 1);
@@ -1618,11 +1630,19 @@ mod tests {
             let launches = Arc::clone(&sandbox.launches);
             let executor = make_executor(root.path(), &mut job, MemoryContent::default(), sandbox);
             assert_eq!(
-                executor.execute([9; 32], 7, &job, 200, CaptureCancellation::default()),
+                executor.execute(
+                    [9_u8; 32],
+                    WorkspaceId::from_u128(7), &job, 200, CaptureCancellation::default()),
                 Err(ComputeExecutionError::RouteMismatch)
             );
             assert_eq!(
-                executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
+                executor.execute(
+                    [2_u8; 32],
+                    WorkspaceId::from_u128(7),
+                    &job,
+                    200,
+                    CaptureCancellation::default(),
+                ),
                 Err(ComputeExecutionError::GpuUnavailable)
             );
             assert_eq!(launches.load(Ordering::Acquire), 0);
@@ -1630,7 +1650,13 @@ mod tests {
             job.limits.gpu = false;
             job.arguments.push("/host/path".into());
             assert_eq!(
-                executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
+                executor.execute(
+                    [2_u8; 32],
+                    WorkspaceId::from_u128(7),
+                    &job,
+                    200,
+                    CaptureCancellation::default(),
+                ),
                 Err(ComputeExecutionError::Admission(
                     ComputeError::RequesterArgumentsForbidden
                 ))
@@ -1649,7 +1675,13 @@ mod tests {
             let launches = Arc::clone(&sandbox.launches);
             let executor = make_executor(root.path(), &mut job, content, sandbox);
             assert_eq!(
-                executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
+                executor.execute(
+                    [2_u8; 32],
+                    WorkspaceId::from_u128(7),
+                    &job,
+                    200,
+                    CaptureCancellation::default(),
+                ),
                 Err(ComputeExecutionError::InputDigestMismatch)
             );
             assert!(matches!(
@@ -1675,7 +1707,9 @@ mod tests {
                 FakeSandbox::success(false),
             );
             assert_eq!(
-                executor.execute([2; 32], 7, &second, 200, CaptureCancellation::default()),
+                executor.execute(
+                    [2_u8; 32],
+                    WorkspaceId::from_u128(7), &second, 200, CaptureCancellation::default()),
                 Err(ComputeExecutionError::InputsTooLarge)
             );
         }
@@ -1695,7 +1729,9 @@ mod tests {
             let cancellation = CaptureCancellation::default();
             cancellation.cancel();
             let result = executor
-                .execute([2; 32], 7, &cancelled_job, 200, cancellation)
+                .execute(
+                    [2_u8; 32],
+                    WorkspaceId::from_u128(7), &cancelled_job, 200, cancellation)
                 .unwrap();
             assert_eq!(result.lifecycle.phase, ComputeJobPhase::Cancelled);
             assert_eq!(result.lifecycle.sequence, 2);
@@ -1721,7 +1757,7 @@ mod tests {
             let result = executor
                 .execute(
                     [2; 32],
-                    7,
+                    WorkspaceId::from_u128(7),
                     &timeout_job,
                     200,
                     CaptureCancellation::default(),
@@ -1753,7 +1789,13 @@ mod tests {
                 sandbox,
             );
             assert_eq!(
-                executor.execute([2; 32], 7, &job, 200, CaptureCancellation::default()),
+                executor.execute(
+                    [2_u8; 32],
+                    WorkspaceId::from_u128(7),
+                    &job,
+                    200,
+                    CaptureCancellation::default(),
+                ),
                 Err(ComputeExecutionError::PackageDigestMismatch)
             );
             assert_eq!(launches.load(Ordering::Acquire), 0);
@@ -1780,7 +1822,13 @@ mod tests {
                 },
             );
             let result = executor
-                .execute([2; 32], 7, &job, 200, CaptureCancellation::default())
+                .execute(
+                    [2_u8; 32],
+                    WorkspaceId::from_u128(7),
+                    &job,
+                    200,
+                    CaptureCancellation::default(),
+                )
                 .unwrap();
             assert_eq!(
                 result.lifecycle.phase,

@@ -17,6 +17,7 @@ use tilo_identity_host::certification_ceremony::pairing_code;
 use tilo_identity_host::device_fleet::{DeviceFleet, DeviceFleetStore};
 use tilo_identity_host::enrollment::{Certifier, DeviceRole, NonceStore, Redemption};
 use tilo_relay::HomePeerRegistration;
+use tilo_relay_protocol::WorkspaceId;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, decode_enrollment_token, verify_device_cert,
     verify_device_cert_at, verify_enrollment_token,
@@ -1964,7 +1965,7 @@ struct ApprovalOptions<'a> {
     timeout: u64,
     workspace_cache: &'a std::path::Path,
     acl: &'a std::path::Path,
-    relay_workspace_ids: &'a [u64],
+    relay_workspace_ids: &'a [WorkspaceId],
     expected_device: Option<&'a str>,
     expected_service: Option<&'a str>,
     kind: EnrollmentKind,
@@ -1999,7 +2000,7 @@ struct ApprovalIdentity {
     /// This device's certificate, the issuer of the tokens it mints.
     issuer_cert: DeviceCert,
     user_public_key: [u8; 32],
-    relay_workspace_ids: Vec<u64>,
+    relay_workspace_ids: Vec<WorkspaceId>,
 }
 
 struct SelectedNearby {

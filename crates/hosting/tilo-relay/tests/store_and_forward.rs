@@ -123,7 +123,7 @@ async fn b_connects_and_drains_queue(
                 delta,
                 ..
             } => {
-                assert_eq!(workspace_id, 5);
+                assert_eq!(workspace_id, WorkspaceId::from_u128(5));
                 got_payloads.push(delta);
             }
             Envelope::Ready {
@@ -131,7 +131,7 @@ async fn b_connects_and_drains_queue(
                 pending_deltas,
                 records_when_opened: false,
             } => {
-                assert_eq!(workspace_id, 5);
+                assert_eq!(workspace_id, WorkspaceId::from_u128(5));
                 assert_eq!(pending_deltas, 2);
                 got_ready = true;
             }

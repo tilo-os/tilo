@@ -208,7 +208,13 @@ fn a_session_whose_workspace_the_relay_does_not_let_it_into_opens_nothing() {
     // Another workspace of the site's person, which this environment is not placed in: the relay
     // refuses the entry, so no window is ever opened on the record the material names.
     let other = "11111111-2222-4333-8444-555555555555";
-    let (handed, _root) = material(&site, other, 77, RECORD, &person);
+    let (handed, _root) = material(
+        &site,
+        other,
+        tilo_desktop_model::WorkspaceId::from_u128(77),
+        RECORD,
+        &person,
+    );
 
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     crate::common::probe_app(&mut home, BROWSER, "Browser");

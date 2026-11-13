@@ -71,7 +71,7 @@ fn a_record_sent_before_the_pages_admission_is_read_once_it_is_admitted() {
         governor,
     } = late_admission_at(web_time::SystemTime::now());
     let workspace_id = bootstrap.workspace_id;
-    let workspace = bootstrap.room.clone();
+    let workspace = bootstrap.workspace_id.to_string();
     let host = bootstrap.host.clone();
     let config = PeerConfig {
         host: tilo_relay_client::Host::through(

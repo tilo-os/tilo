@@ -24,7 +24,9 @@ use collab_types::WorkspaceId;
 /// The collaborator's own room, governed natively on this host.
 const GOVERNED: u64 = 801;
 /// The owner's room, bound on demand by the owner's first subscribe.
-const OWNERS: u64 = 802;
+fn owners() -> tilo_relay_protocol::WorkspaceId {
+    tilo_relay_protocol::WorkspaceId::from_u128(802)
+}
 /// A room nobody bound yet.
 const UNBOUND: u64 = 803;
 
@@ -69,12 +71,12 @@ async fn home_host() -> HomeHost {
     let laptop = connect(&host.relay, laptop).await;
     assert!(
         matches!(
-            subscribe(&laptop, OWNERS).await,
+            subscribe(&laptop, owners()).await,
             Some(Envelope::Ready { .. })
         ),
         "the owner's first device binds and enters the owner's room"
     );
-    assert!(members(host.state.path(), OWNERS).contains(&laptop_key));
+    assert!(members(host.state.path(), owners()).contains(&laptop_key));
     host
 }
 
@@ -135,14 +137,14 @@ async fn cross_user_device_is_not_auto_enrolled_into_same_owner_room() {
 
     // The owner's room does not enrol him, and does not remember him.
     assert!(matches!(
-        subscribe(&bob, OWNERS).await,
+        subscribe(&bob, owners()).await,
         Some(Envelope::NotAuthorised {
-            workspace_id: OWNERS,
+            workspace_id: _,
             ..
         })
     ));
     assert!(
-        !members(host.state.path(), OWNERS).contains(&bob_key),
+        !members(host.state.path(), owners()).contains(&bob_key),
         "a cross-user device was persisted into the owner's room"
     );
 
@@ -172,9 +174,9 @@ async fn owner_device_still_auto_enrols_on_home_host() {
     let phone_key = phone.device_pubkey();
     let phone = connect(&host.relay, phone).await;
     assert!(matches!(
-        subscribe(&phone, OWNERS).await,
+        subscribe(&phone, owners()).await,
         Some(Envelope::Ready {
-            workspace_id: OWNERS,
+            workspace_id: _,
             ..
         })
     ));
@@ -184,13 +186,13 @@ async fn owner_device_still_auto_enrols_on_home_host() {
     let tablet_key = tablet.device_pubkey();
     let tablet = connect(&host.relay, tablet).await;
     assert!(matches!(
-        subscribe(&tablet, OWNERS).await,
+        subscribe(&tablet, owners()).await,
         Some(Envelope::Ready {
-            workspace_id: OWNERS,
+            workspace_id: _,
             ..
         })
     ));
-    let kept = members(host.state.path(), OWNERS);
+    let kept = members(host.state.path(), owners());
     assert!(
         kept.contains(&phone_key) && kept.contains(&tablet_key),
         "a home host keeps its own devices in the workspace's one record"

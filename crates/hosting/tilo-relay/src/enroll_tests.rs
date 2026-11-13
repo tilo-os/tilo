@@ -718,7 +718,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             label: other_cert.device_label.clone(),
             user_public_key: hex::encode(other_cert.user_public_key),
             device_cert: Some(other_cert),
-            relay_workspace_ids: vec![7],
+            relay_workspace_ids: vec![WorkspaceId::from_u128(7)],
         };
         tilo_files::native::atomic::write_creating_parent(
             &tilo_relay::home_peer_registry_path(identity_root.path()),
@@ -760,7 +760,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             label: cert.device_label.clone(),
             user_public_key: hex::encode(cert.user_public_key),
             device_cert: Some(cert),
-            relay_workspace_ids: vec![7],
+            relay_workspace_ids: vec![WorkspaceId::from_u128(7)],
         };
         let registry = |registration: &HomePeerRegistration| {
             tilo_relay::checked_home_peers(&serde_json::to_vec(&[registration]).unwrap())
@@ -1460,7 +1460,7 @@ fn pairing_exchange_is_private_single_use_and_resumable() {
         let dir = tempfile::tempdir().unwrap();
         let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let cert = payload(&root).cert;
-        register_home_peer(dir.path(), &cert, [8; 32], &[2, 9], None).unwrap();
+        register_home_peer(dir.path(), &cert, [8_u8; 32], &[tilo_relay_protocol::WorkspaceId::from_u128(2), tilo_relay_protocol::WorkspaceId::from_u128(9)], None).unwrap();
         let json: serde_json::Value = serde_json::from_slice(
             &std::fs::read(tilo_relay::home_peer_registry_path(dir.path())).unwrap(),
         )
@@ -1486,7 +1486,7 @@ fn pairing_exchange_is_private_single_use_and_resumable() {
         let path = tilo_relay::home_peer_registry_path(dir.path());
         tilo_files::native::atomic::write_creating_parent(&path, b"not json").unwrap();
         let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        assert!(register_home_peer(dir.path(), &payload(&root).cert, [8; 32], &[2], None).is_err());
+        assert!(register_home_peer(dir.path(), &payload(&root).cert, [8_u8; 32], &[tilo_relay_protocol::WorkspaceId::from_u128(2)], None).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"not json");
     }
     // Phase `dropped_response_can_be_retried_with_the_same_authenticated_ack`.

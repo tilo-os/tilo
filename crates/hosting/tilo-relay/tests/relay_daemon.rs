@@ -70,7 +70,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         )
         .await
         .unwrap();
-        let a_session = RelayCoeditSession::join(a_client, 19, a_key).unwrap();
+        let a_session = RelayCoeditSession::join(a_client, WorkspaceId::from_u128(19), a_key).unwrap();
         assert!(matches!(
             tilo_test_env::within("a message on a_session", a_session.recv()).await,
             Some(tilo_relay::Inbound::Ready { pending: 0, .. })
@@ -208,7 +208,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         // Both devices the host enrolled are members of the workspace's one
         // record, so a restart admits them without any second list.
         assert_eq!(
-            tilo_relay::store::WorkspaceStore::open(state.path(), 9, true)
+            tilo_relay::store::WorkspaceStore::open(state.path(), WorkspaceId::from_u128(9), true)
                 .unwrap()
                 .load_membership()
                 .unwrap()
@@ -299,7 +299,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
                 delta,
                 ..
             } => {
-                assert_eq!(workspace_id, 42);
+                assert_eq!(workspace_id, WorkspaceId::from_u128(42));
                 assert_eq!(delta, payload);
             }
             other => panic!("expected Delta, got {other:?}"),
@@ -355,13 +355,14 @@ async fn wait_for_ready_with_pending(
     loop {
         match tokio::time::timeout(tilo_test_env::hang_bound(), b_again.recv()).await {
             Ok(Some(Envelope::Ready {
-                workspace_id: WorkspaceId::from_u128(9),
+                workspace_id: ws,
                 pending_deltas,
                 records_when_opened: false,
-            })) => {
+            })) if ws == WorkspaceId::from_u128(9) => {
                 assert!(pending_deltas >= 1);
                 break;
             }
+            Ok(Some(Envelope::Ready { .. })) => {}
             Ok(Some(Envelope::Delta { .. })) => {}
             Ok(None) => {
                 let snapshot = metrics.snapshot();

@@ -13,7 +13,9 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, client_endpoint, spawn_relay};
 
-const WS: u64 = 12;
+fn ws() -> tilo_relay_protocol::WorkspaceId {
+    tilo_relay_protocol::WorkspaceId::from_u128(12)
+}
 
 async fn subscribed(
     addr: iroh_base::EndpointAddr,
@@ -31,7 +33,7 @@ async fn subscribed(
     .await
     .expect("connect");
     client
-        .send(Envelope::Subscribe { workspace_id: WS })
+        .send(Envelope::Subscribe { workspace_id: ws() })
         .unwrap();
     let ready = tilo_test_env::within("ready timeout", client.recv()).await;
     assert!(
@@ -43,7 +45,7 @@ async fn subscribed(
 
 fn piece(to: [u8; 32], frame: Vec<u8>) -> Envelope {
     Envelope::RecordContent {
-        workspace_id: WS,
+        workspace_id: ws(),
         to_device_public_key: to,
         // A sender cannot choose who it claims to be.
         from_device_public_key: [0xEE; 32],
@@ -65,7 +67,7 @@ async fn a_piece_reaches_only_the_device_it_is_addressed_to() {
     let b = user.enrol("desktop", DeviceCapabilities::member());
     let c = user.enrol("phone", DeviceCapabilities::member());
     let members = [a.device_pubkey(), b.device_pubkey(), c.device_pubkey()];
-    let relay = Box::pin(spawn_relay(&user, host, &[WS], &members)).await;
+    let relay = Box::pin(spawn_relay(&user, host, &[ws()], &members)).await;
     let addr = relay.relay.node_addr();
     let a_client = subscribed(addr.clone(), &user, &a).await;
     let b_client = subscribed(addr.clone(), &user, &b).await;

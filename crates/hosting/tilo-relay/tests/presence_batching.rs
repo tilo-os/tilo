@@ -42,7 +42,9 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestRelay, TestUser, client_endpoint, publisher, spawn_relay};
 
-const WORKSPACE: u64 = 710;
+fn workspace() -> tilo_relay_protocol::WorkspaceId {
+    tilo_relay_protocol::WorkspaceId::from_u128(710)
+}
 const ROOM: &str = "5e11f00d-7110-4625-8000-000000000710";
 const MOVES: u32 = 60;
 
@@ -79,7 +81,7 @@ impl Member {
             .unwrap();
         send.write_all(
             &encode_state(&Envelope::Subscribe {
-                workspace_id: WORKSPACE,
+                workspace_id: workspace(),
             })
             .unwrap(),
         )
@@ -246,12 +248,12 @@ async fn presence_reaches_a_member_in_order() {
     let relay = Box::pin(spawn_relay(
         &user,
         user.enrol("relay", DeviceCapabilities::host()),
-        &[WORKSPACE],
+        &[workspace()],
         &members,
     ))
     .await;
     let mut member = Member::open(&relay, &reader).await;
-    let publisher = publisher(&relay, &user, &author, WORKSPACE).await;
+    let publisher = publisher(&relay, &user, &author, workspace()).await;
 
     let user_hex = hex::encode(user.user_pk);
     let before = session_bytes(&relay, reader.device_pubkey());
@@ -364,7 +366,7 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
     let relay = Box::pin(spawn_relay(
         &user,
         user.enrol("relay", DeviceCapabilities::host()),
-        &[WORKSPACE],
+        &[workspace()],
         &members,
     ))
     .await;
@@ -373,7 +375,7 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
     let body = doc.get(ROOT, "body").unwrap().unwrap().1;
 
     let mut member = Member::open(&relay, &reader).await;
-    let publisher = publisher(&relay, &user, &author, WORKSPACE).await;
+    let publisher = publisher(&relay, &user, &author, workspace()).await;
 
     let mut writes = Vec::new();
     let mut delta_first = 0usize;
@@ -458,11 +460,11 @@ async fn a_clients_resting_pointer_arrives_without_another_message() {
     let relay = Box::pin(spawn_relay(
         &user,
         user.enrol("relay", DeviceCapabilities::host()),
-        &[WORKSPACE],
+        &[workspace()],
         &members,
     ))
     .await;
-    let publisher = publisher(&relay, &user, &author, WORKSPACE).await;
+    let publisher = publisher(&relay, &user, &author, workspace()).await;
     let user_hex = hex::encode(user.user_pk);
 
     let mut member = Member::open(&relay, &reader).await;

@@ -24,14 +24,16 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use crate::common::{TestDevice, TestUser, client_endpoint, spawn_relay, spawn_relay_serving_apps};
 use collab_types::WorkspaceId;
 
-const WS: u64 = 11;
+fn ws() -> tilo_relay_protocol::WorkspaceId {
+    tilo_relay_protocol::WorkspaceId::from_u128(11)
+}
 
 async fn subscribed(
     addr: iroh_base::EndpointAddr,
     user: &TestUser,
     device: &TestDevice,
 ) -> RelayClient {
-    subscribed_in(addr, user, device, WS).await
+    subscribed_in(addr, user, device, ws()).await
 }
 
 async fn subscribed_in(
@@ -77,7 +79,7 @@ fn frame(message: RemoteActionMessage) -> Vec<u8> {
 
 fn directed(to: [u8; 32], frame: Vec<u8>) -> Envelope {
     Envelope::RemoteAction {
-        workspace_id: WS,
+        workspace_id: ws(),
         version: REMOTE_ACTION_ENVELOPE_VERSION,
         to_device_public_key: to,
         // A sender cannot choose who it claims to be.
@@ -125,7 +127,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         let b = user.enrol("desktop", DeviceCapabilities::member());
         let c = user.enrol("phone", DeviceCapabilities::member());
         let members = [a.device_pubkey(), b.device_pubkey(), c.device_pubkey()];
-        let relay = Box::pin(spawn_relay(&user, host, &[WS], &members)).await;
+        let relay = Box::pin(spawn_relay(&user, host, &[ws()], &members)).await;
         let addr = relay.relay.node_addr();
         let a_client = subscribed(addr.clone(), &user, &a).await;
         let b_client = subscribed(addr.clone(), &user, &b).await;
@@ -163,7 +165,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         let relay = Box::pin(spawn_relay(
             &user,
             host,
-            &[WS],
+            &[ws()],
             &[a.device_pubkey(), b.device_pubkey()],
         ))
         .await;
@@ -232,7 +234,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         let relay = Box::pin(spawn_relay_serving_apps(
             &user,
             host,
-            &[WS],
+            &[ws()],
             &[a.device_pubkey()],
             Arc::new(ActionHostPlane::new(SharedHost(Arc::clone(&actions)))),
         ))
@@ -302,7 +304,7 @@ async fn removed_member_session_ends_without_serving_an_action() {
     let relay = Box::pin(spawn_relay_serving_apps(
         &user,
         host,
-        &[WS],
+        &[ws()],
         &[a.device_pubkey(), b.device_pubkey()],
         Arc::new(ActionHostPlane::new(SharedHost(Arc::clone(&actions)))),
     ))
@@ -315,7 +317,7 @@ async fn removed_member_session_ends_without_serving_an_action() {
     // that end rather than racing a send against it; the refusal of a frame
     // that arrives before the audit is covered at the handler by
     // `peer::private_transport_tests::removed_member_remote_action_is_refused`.
-    crate::common::admit_members(&relay.relay, WS, &[a.device_pubkey()], &relay.state_root).await;
+    crate::common::admit_members(&relay.relay, ws(), &[a.device_pubkey()], &relay.state_root).await;
     while tilo_test_env::within("removed member's session to end", b_client.recv())
         .await
         .is_some()
@@ -346,7 +348,7 @@ async fn remote_action_to_removed_target_is_refused() {
     let relay = Box::pin(spawn_relay(
         &user,
         host,
-        &[WS],
+        &[ws()],
         &[a.device_pubkey(), c.device_pubkey()],
     ))
     .await;
@@ -354,7 +356,7 @@ async fn remote_action_to_removed_target_is_refused() {
     let a_client = subscribed(addr.clone(), &user, &a).await;
     let c_client = subscribed(addr, &user, &c).await;
 
-    crate::common::admit_members(&relay.relay, WS, &[a.device_pubkey()], &relay.state_root).await;
+    crate::common::admit_members(&relay.relay, ws(), &[a.device_pubkey()], &relay.state_root).await;
     a_client
         .send(directed(
             c.device_pubkey(),

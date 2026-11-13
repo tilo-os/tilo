@@ -1606,7 +1606,7 @@ mod tests {
                     capability_json: "[]".into(),
                     authority: None,
                     principals: Vec::new(),
-                    relay_workspace_ids: vec![42],
+                    relay_workspace_ids: vec![WorkspaceId::from_u128(42)],
                 }],
             };
             std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
@@ -1827,7 +1827,7 @@ mod tests {
                     capability_json: "[]".into(),
                     authority: None,
                     principals: Vec::new(),
-                    relay_workspace_ids: vec![0],
+                    relay_workspace_ids: vec![WorkspaceId::from_u128(0)],
                 }],
             };
             std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
@@ -1862,7 +1862,7 @@ mod tests {
             let discovered = crate::client::RelayClient::discover_content_endpoint(
                 &client_endpoint,
                 relay.node_addr(),
-                0,
+                WorkspaceId::from_u128(0),
                 user.public_key,
                 host.public_key,
                 client_cert.clone(),
@@ -1876,7 +1876,7 @@ mod tests {
             let registration = crate::client::RelayClient::discover_content_peer(
                 &client_endpoint,
                 relay.node_addr(),
-                0,
+                WorkspaceId::from_u128(0),
                 user.public_key,
                 host.public_key,
                 client_cert.clone(),
@@ -1893,7 +1893,7 @@ mod tests {
             let auto_bound = crate::client::RelayClient::discover_content_peer(
                 &client_endpoint,
                 relay.node_addr(),
-                99,
+                WorkspaceId::from_u128(99),
                 user.public_key,
                 host.public_key,
                 client_cert.clone(),
@@ -1903,13 +1903,20 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(auto_bound.endpoint, filesystem);
-            assert!(relay.sessions.workspaces.lock().await.contains_key(&99));
+            assert!(
+                relay
+                    .sessions
+                    .workspaces
+                    .lock()
+                    .await
+                    .contains_key(&WorkspaceId::from_u128(99))
+            );
             let wrong_device = [0x55; 32];
             assert!(
                 crate::client::RelayClient::discover_content_endpoint(
                     &client_endpoint,
                     relay.node_addr(),
-                    0,
+                    WorkspaceId::from_u128(0),
                     user.public_key,
                     wrong_device,
                     // The client certificate remains valid; only the enrolled host

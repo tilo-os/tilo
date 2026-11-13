@@ -545,7 +545,9 @@ fn cmd_status(config: &std::path::Path) -> anyhow::Result<()> {
         .into_iter()
         .flatten()
         .flatten()
-        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u64>().ok())
+        .filter_map(|entry| {
+            tilo_relay_protocol::WorkspaceId::parse(&entry.file_name().to_string_lossy())
+        })
         .collect();
     durable.sort_unstable();
     durable.dedup();

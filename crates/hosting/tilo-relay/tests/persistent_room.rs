@@ -11,6 +11,7 @@ use std::time::Duration;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent, VERSION};
 use tilo_session_client::{Cmd, Outbox};
 use tilo_test_env::SpawnUnderEnvLock as _;
+use tilo_relay_protocol::WorkspaceId;
 
 struct Workspace {
     child: Child,

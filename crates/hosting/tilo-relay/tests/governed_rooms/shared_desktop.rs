@@ -71,7 +71,7 @@ fn person(user: &TestUser) -> String {
 
 /// The windows on the room's desktop as its governor follows them, as
 /// `(tab, group)` in order; empty while it holds none.
-async fn windows(relay: &Relay, room: &str) -> Vec<(u64, u64)> {
+async fn windows(relay: &Relay, room: &str) -> Vec<(tilo_relay_protocol::WorkspaceId, u64)> {
     let Some(bytes) = relay
         .workspaces()
         .unwrap()

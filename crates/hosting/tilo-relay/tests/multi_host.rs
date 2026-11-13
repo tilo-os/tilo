@@ -103,13 +103,13 @@ async fn fail_p2_over_from_relay1(
     c2_r1.close().await;
     // Polls for up to 30 s; only a hang uses the whole budget.
     for _ in 0..1500 {
-        if !relay1.relay.is_subscribed(3, &p2_pubkey).await {
+        if !relay1.relay.is_subscribed(WorkspaceId::from_u128(3), &p2_pubkey).await {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(
-        !relay1.relay.is_subscribed(3, &p2_pubkey).await,
+        !relay1.relay.is_subscribed(WorkspaceId::from_u128(3), &p2_pubkey).await,
         "relay1 never noticed p2 disconnect"
     );
 }
@@ -156,7 +156,7 @@ async fn p2_returns_and_drains(
                 assert_eq!(redelivered, 1, "an already-delivered delta repeated");
             }
             Envelope::Ready {
-                workspace_id: WorkspaceId::from_u128(3),
+                workspace_id: _,
                 pending_deltas,
                 records_when_opened: false,
             } if pending_deltas == 1 || pending_deltas == 2 => ready = true,

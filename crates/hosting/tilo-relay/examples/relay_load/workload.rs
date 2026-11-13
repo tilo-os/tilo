@@ -417,7 +417,9 @@ impl Room {
         )
         .map_err(|error| anyhow!("{error}"))?;
         Ok(Self {
-            workspace_id: 592_000_u64.saturating_add(u64::try_from(index)?),
+            workspace_id: WorkspaceId::from_u128(
+                592_000_u128.saturating_add(u128::try_from(index)?),
+            ),
             uuid,
             members,
             seed,

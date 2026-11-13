@@ -96,7 +96,7 @@ async fn connect_and_subscribe(
     user: &TestUser,
     a: &crate::common::TestDevice,
     b: &crate::common::TestDevice,
-    ws: u64,
+    ws: tilo_relay_protocol::WorkspaceId,
 ) -> (RelayClient, RelayClient) {
     let ep_a = client_endpoint().await;
     let a_client = RelayClient::connect(
@@ -139,7 +139,7 @@ async fn connect_and_subscribe(
                     records_when_opened: false,
                 } if w == ws
             ),
-            "{who} expected Ready(WS,0), got {env:?}"
+            "{who} expected Ready(ws(),0), got {env:?}"
         );
     }
     (a_client, b_client)
@@ -149,7 +149,7 @@ async fn connect_and_subscribe(
 /// Unsubscribe was fully applied — B is no longer a subscriber, so
 /// the next delta is guaranteed to be store-and-forwarded rather
 /// than racing a half-torn-down live channel.
-async fn take_b_offline(b_client: &RelayClient, ws: u64) {
+async fn take_b_offline(b_client: &RelayClient, ws: tilo_relay_protocol::WorkspaceId) {
     b_client
         .send(Envelope::Unsubscribe { workspace_id: ws })
         .unwrap();
@@ -162,7 +162,7 @@ async fn reconnect_b_and_catch_up(
     addr: iroh_base::EndpointAddr,
     user: &TestUser,
     b: &crate::common::TestDevice,
-    ws: u64,
+    ws: tilo_relay_protocol::WorkspaceId,
     doc_a: &mut AutoCommit,
     doc_b: &mut AutoCommit,
 ) {
@@ -195,7 +195,7 @@ async fn reconnect_b_and_catch_up(
                 records_when_opened: false,
             } if w == ws && pending_deltas >= 1
         ),
-        "B expected Ready(WS) counting its catch-up replay, got {ready:?}"
+        "B expected Ready(ws()) counting its catch-up replay, got {ready:?}"
     );
 
     assert_eq!(
@@ -221,7 +221,9 @@ fn count_delta_files(dir: &std::path::Path) -> usize {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_devices_converge_through_host_with_offline_store_forward() {
-    const WS: u64 = 7;
+    fn ws() -> tilo_relay_protocol::WorkspaceId {
+    tilo_relay_protocol::WorkspaceId::from_u128(7)
+}
 
     let user = TestUser::fresh("Alice");
     let host_dev = user.enrol("home-server", DeviceCapabilities::host());
@@ -232,14 +234,14 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     let host = Box::pin(spawn_relay(
         &user,
         host_dev,
-        &[WS],
+        &[ws()],
         &[a.device_pubkey(), b.device_pubkey()],
     ))
     .await;
     let addr = host.relay.node_addr();
 
     // Both devices dial the host, subscribe, and drain their initial Ready acks.
-    let (a_client, b_client) = connect_and_subscribe(addr.clone(), &user, &a, &b, WS).await;
+    let (a_client, b_client) = connect_and_subscribe(addr.clone(), &user, &a, &b, ws()).await;
 
     let mut doc_a = AutoCommit::new();
     doc_a.put(ROOT, "title", "hello from A").unwrap();
@@ -247,7 +249,7 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     assert!(!d1.is_empty(), "first incremental must carry the edit");
     a_client
         .send(Envelope::Delta {
-            workspace_id: WS,
+            workspace_id: ws(),
             author_device_public_key: a.device_pubkey(),
             authored_at_ns: 1,
             delta: d1.clone(),
@@ -273,7 +275,7 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     let ghost = tokio::time::timeout(Duration::from_millis(300), a_client.recv()).await;
     assert!(ghost.is_err(), "author must not receive its own delta");
 
-    take_b_offline(&b_client, WS).await;
+    take_b_offline(&b_client, ws()).await;
     drop(b_client); // B's device is now fully offline.
 
     // ---- Offline edit: A edits again; delta must persist for B. ----
@@ -282,7 +284,7 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     assert!(!d2.is_empty());
     a_client
         .send(Envelope::Delta {
-            workspace_id: WS,
+            workspace_id: ws(),
             author_device_public_key: a.device_pubkey(),
             authored_at_ns: 2,
             delta: d2.clone(),
@@ -297,7 +299,7 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     let pending_dir = host
         .state_root
         .join("workspaces")
-        .join(WS.to_string())
+        .join(ws().to_string())
         .join("pending")
         .join(&b_hex);
     let mut queued = count_delta_files(&pending_dir);
@@ -310,7 +312,7 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
         "A's offline edit must be store-and-forwarded to disk for B"
     );
 
-    reconnect_b_and_catch_up(addr, &user, &b, WS, &mut doc_a, &mut doc_b).await;
+    reconnect_b_and_catch_up(addr, &user, &b, ws(), &mut doc_a, &mut doc_b).await;
 
     // Queue drains after delivery. The drain follows the delivered flush on
     // the host's persistence turn, so it may land just after B has applied
