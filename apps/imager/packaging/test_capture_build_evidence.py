@@ -121,7 +121,7 @@ class CaptureBuildEvidenceTests(unittest.TestCase):
                          'apps/imager/packaging/qualify-capture-release.py',
                          'tools/ci/native-stores.sh', 'tools/ci/native-store-autoclear.py', 'tools/ci/native-store-virtio.py',
                          'tools/apps/pack-runtime-package.sh', 'tools/apps/stage_sdk_services.py',
-                         'scripts/headless-examples/_control.py',
+                         'scripts/headless-examples/real_apps.py',
                          'scripts/browser/cef-lock.json', 'scripts/browser/build-host.py',
                          'tools/apps/browser_runtime_release.py', 'tools/apps/app_package_isa.py'}
             names.update(QUALIFIER.FIXTURE_FILES)
@@ -159,12 +159,12 @@ print(json.dumps({'reason':'build-finished','success':True}))
             self.assertEqual(list(invocations[0].glob('role-*.json')), [])
             self.assertEqual(list(invocations[0].glob('producer-*.json')), [])
             before = json.loads((invocations[0] / 'source-before.json').read_text())
-            self.assertIn('scripts/headless-examples/_control.py', before)
+            self.assertIn('tools/ci/native-stores.sh', before)
             for name in ('capture-service.json', 'desktop-catalog.json', 'release-catalog.json'):
                 self.assertEqual(before['apps/imager/' + name],
                                  PRODUCER.facts(root / 'apps/imager' / name))
-            self.assertEqual(before['scripts/headless-examples/_control.py'],
-                             PRODUCER.facts(root / 'scripts/headless-examples/_control.py'))
+            self.assertEqual(before['tools/ci/native-stores.sh'],
+                             PRODUCER.facts(root / 'tools/ci/native-stores.sh'))
 
 
 if __name__ == '__main__':
