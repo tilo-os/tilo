@@ -62,6 +62,10 @@ pub(super) struct LayoutRuntime {
     /// rebuild before the next layout pass, runtime-spawned widgets have no
     /// `NodeId` and `apply_layout` skips them.
     pub(super) structure_dirty: bool,
+    /// The tree was built since it was last solved. A fresh taffy tree holds
+    /// no layout at all, so the next pass solves it whatever rebuilt it: the
+    /// frame, or a sync or input that rebuilt it between frames.
+    pub(super) unsolved: bool,
     /// Set when the root's widgets report a change they carry out in place
     /// ([`crate::widget::StructureChange::Children`]): the next layout pass
     /// remounts their children in the retained tree instead of rebuilding
@@ -130,6 +134,7 @@ impl LayoutRuntime {
             history_nodes: HistoryNodes::default(),
             layout_dirty: true,
             structure_dirty: false,
+            unsolved: true,
             remount: false,
             remounts: 0,
             last_frame_size: None,

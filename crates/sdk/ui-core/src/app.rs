@@ -2469,6 +2469,7 @@ impl App {
         // Fresh controls have not seen where the pointer is.
         self.input.pointer_replay.mark_unsettled();
         self.layout.taffy = TaffyTree::new();
+        self.layout.unsolved = true;
         self.component_close_reports.extend(
             crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
         );

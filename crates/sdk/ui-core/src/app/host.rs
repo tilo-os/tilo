@@ -713,6 +713,7 @@ fn lay_out_window(
         unsafe { CompositionFocus::capture(app.focused_node, &app.layout.node_map, &app.bindings) }
     };
     let must_compute = structure_rebuilt
+        || app.layout.unsolved
         || app.layout.structure_dirty
         || app.layout.remount
         || viewport_changed
@@ -825,6 +826,7 @@ fn lay_out_window(
                     &mut app.text_renderer,
                 )?;
             }
+            app.layout.unsolved = false;
             t_compute_us = t_compute_us.saturating_add(start.elapsed().as_micros());
         }
         let start = crate::time::now();
