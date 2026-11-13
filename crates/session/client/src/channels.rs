@@ -27,7 +27,7 @@ use tilo_clock::time::UNIX_EPOCH;
 
 use crate::plane::{Cmd, RosterDevice, Topic, topic_of};
 
-use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
+use collab_types::Ed25519PublicKey;
 use neighbour_wire::NeighbourMsg;
 #[cfg(target_os = "linux")]
 use tilo_broker_core::collab_core::{BrokerChannels, BrokerGates};
@@ -581,14 +581,11 @@ impl OwnerDirectory {
 }
 
 impl ChannelDirectory for OwnerDirectory {
-    /// The member devices the workspace's governance lets read `channel` at `now` (Unix seconds):
-    /// the same projection the workspace's doors apply to the record, so a person's device is in a
-    /// channel exactly when it may read the record that channel carries.
+    /// The devices that hold the workspace's keys at `now` (Unix seconds): every device of its
+    /// members.
     fn allowed_devices(
         &self,
         workspace: ModelWorkspaceId,
-        channel: ChannelId,
-        route: Option<&ChannelRoute>,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
         let at = UNIX_EPOCH.checked_add(tilo_channels::policy_instant(now))?;
@@ -596,40 +593,21 @@ impl ChannelDirectory for OwnerDirectory {
         let readers = self
             .owner
             .with_current(workspace, |view| {
-                Ok(view
-                    .channel_readers(at, channel, route)?
-                    .map(|mut readers| {
-                        if reader {
-                            readers.insert(view.workspace_host().device_public_key);
-                            readers.insert(view.device().device_public_key);
-                        }
-                        readers
-                    }))
+                let mut readers = view.key_holders(at)?;
+                if reader {
+                    readers.insert(view.workspace_host().device_public_key);
+                    readers.insert(view.device().device_public_key);
+                }
+                Ok(readers)
             })
             // A workspace whose governance cannot be read says nothing of who reads it.
-            .ok()
-            .flatten()?;
+            .ok()?;
         Some(
             readers
                 .into_iter()
                 .map(Ed25519PublicKey::from_bytes)
                 .collect(),
         )
-    }
-
-    /// The scope the record on `route` seals under: the workspace's participants while they all may
-    /// read it, the record's own channel when a Read Deny narrows its readers, so a unit's group
-    /// holds exactly the devices its record's policy names.
-    fn unit_scope(
-        &self,
-        workspace: ModelWorkspaceId,
-        route: &ChannelRoute,
-        now: u64,
-    ) -> Option<ChannelId> {
-        let at = UNIX_EPOCH.checked_add(tilo_channels::policy_instant(now))?;
-        self.owner
-            .with_current(workspace, |view| view.unit_scope(at, route))
-            .ok()
     }
 
     /// A workspace entered while hosted elsewhere is its host's: the host answers whether a channel
@@ -784,7 +762,7 @@ mod tests {
             workspace: workspace.to_string(),
             frame: Box::new(collab_types::MlsGovernanceFrame {
                 version: collab_types::MLS_GOVERNANCE_VERSION,
-                channel: ChannelId::new(),
+                channel: collab_types::ChannelId::new(),
                 previous_frame_digest: [0; 32],
                 epoch: 1,
                 action: collab_types::MlsGovernanceAction::Genesis,
@@ -876,7 +854,7 @@ mod tests {
             workspace: workspace.to_string(),
             frame: Box::new(collab_types::MlsGovernanceFrame {
                 version: collab_types::MLS_GOVERNANCE_VERSION,
-                channel: ChannelId::new(),
+                channel: collab_types::ChannelId::new(),
                 previous_frame_digest: [0; 32],
                 epoch,
                 action: collab_types::MlsGovernanceAction::Genesis,

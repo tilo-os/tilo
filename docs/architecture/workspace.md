@@ -285,51 +285,29 @@ second record of who belongs.
   reads the whole history locally. It grows with membership changes, never
   with content.
 
-**One group per reader set.** A group belongs to a key scope, not to a
-record: `workspace_scope(workspace)` is one MLS group and one content keyring
-for every storage unit whose readers are the workspace's participants. A unit
-— one record's channel — seals under its scope's keys while its payload still
-names the unit, so content stays bound to the record and artifact it was
-written for and every stored and wire format is unchanged. Membership is
-still decided per record: a Read Deny on a record, on its app or on a pattern
-over it narrows that unit's readers, and the unit is then carried by a group
-of its own whose key no denied device ever gets.
+**One group per workspace.** Every record of a workspace seals under the
+workspace's one MLS group and its content keys. A payload still names its
+record, so content stays bound to the record and artifact it was written for.
+A membership or device change costs one commit, however many records the
+workspace holds.
 
-**One genesis per channel, created once.** A group starts from one genesis,
-and whoever holds its state and sees none creates it; everyone else waits,
-asks, and joins by the Welcome that admits it — a page included, which never
-creates a group it was not admitted to. The page learns which group carries a
-unit from its replica of the workspace's governance, the same decision a
-device makes: the workspace's scope, read by the workspace's participants, or
-the unit's own group when a Read Deny narrows it. A scope's request names no
-record — every participant may read it — while a narrowed unit's request names
-the record, so its participants can decide Read on it. Two geneses made at
-once reconcile like two commits: every device keeps the group whose genesis
-has the lower digest, and a device in the other starts over and joins the
-winner by Welcome, whose bundle brings the keys its writes were sealed under.
-Learning it needs the scope's frame only: a page that held a per-record group
-for the unit leaves it unused, for no participant seals under it any more, and
-the scope's Welcome carries that group's older content keys along. A record's
-cleartext writes stay the base its sealed writes are changes over: a device
-joining after the seal takes that base in from the host's replay, while a live
-cleartext write is refused.
+**Read permission is not a key boundary.** Every device that holds the
+workspace's keys can decrypt every record in it. A grant that denies Read on a
+record, an app or a pattern hides the resource in the UI and keeps a device
+from asking for it through the action API, but it is not a security boundary:
+data that must stay away from some members belongs in another workspace, or in
+a person's personal resources.
 
-What a scope buys is that membership costs what the *reader set* costs, not
-what the workspace holds: one admission, one removal and one commit per scope,
-however many units it carries. Before scopes, every record had a group, so a
-workspace of a thousand records paid about two seconds and 3 MiB of
-governance frames to admit one device, and repeated it on every change, on
-every device.
-
-Units sealed before scopes keep their groups. A device that holds one reads
-its history as before, merging that group's keys with the scope's; new
-content for those units seals under the scope, so a device has to hold both.
-The holder of an old group hands its content keys to the scope — the scope's
-next commit carries them to every member, and every admission after that
-passes them on in the joiner's key history — so a device that never held the
-old group reads the unit's whole history as soon as the scope has them, with
-no holder of the old group online. A unit a Read Deny narrows keeps a group
-of its own and is never handed to the broader scope.
+**One genesis, created once.** The group starts from one genesis. Whoever
+holds its state and sees none creates it; everyone else waits, asks, and
+joins by the Welcome that admits it. A page never creates a group it was not
+admitted to. Two geneses made at once reconcile like two commits: every
+device keeps the group whose genesis has the lower digest, and a device in
+the other starts over and joins the winner by Welcome, whose bundle brings
+the keys its writes were sealed under. A record's cleartext writes stay the
+base its sealed writes are changes over: a device joining after the seal
+takes that base in from the host's replay, while a live cleartext write is
+refused.
 
 A store never enters the group and never holds a key. It keeps and forwards
 sealed ops, and refuses ones that are not signed by a member's device. To
@@ -522,7 +500,7 @@ on the device. A user joining a workspace of 1000 records paid about two
 seconds and 3 MiB before reading anything, and every membership change after
 that repeated it — once per channel, on every device.
 
-**One key scope per reader set** (one MLS group carrying every unit whose
+**One group per workspace** (one MLS group carrying every unit whose
 readers are the same devices, three devices), by the units it carries:
 
 | units | join | per unit | join bytes | removal | removal bytes |

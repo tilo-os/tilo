@@ -500,29 +500,6 @@ impl StatePeer {
             now,
         )
     }
-    /// [`Self::check_document_read`] under `policy`, the workspace's current
-    /// policy, which a caller deciding many devices builds once rather than
-    /// once for each of them.
-    pub(crate) fn check_document_read_under(
-        &self,
-        policy: &WorkspacePolicy,
-        device: [u8; 32],
-        app: &str,
-        record: &str,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        let member = self
-            .member(&device, now)
-            .map_err(|error| error.to_string())?;
-        backend::access::check_document_read(
-            policy,
-            &member.person,
-            member.foreign,
-            member.delegate.as_ref(),
-            (&self.core.workspace, app, record),
-            now,
-        )
-    }
     pub fn has_governance(&self) -> bool {
         self.core.workspace_doc.is_some()
     }

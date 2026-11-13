@@ -26,7 +26,7 @@ use std::{
 };
 
 use channel_crypto::VaultKey;
-use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
+use collab_types::{ChannelRoute, Ed25519PublicKey};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::channel_encryption::{
@@ -285,36 +285,19 @@ impl ChannelDirectory for Directory {
     fn allowed_devices(
         &self,
         workspace: WorkspaceId,
-        channel: ChannelId,
-        route: Option<&ChannelRoute>,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
         let at =
             UNIX_EPOCH.checked_add(tilo_action_broker::channel_encryption::policy_instant(now))?;
         let state = lock(&self.states).get(&workspace.to_string())?.clone();
         // Governance that cannot be read says nothing of who reads it.
-        let readers = state
-            .governance()
-            .channel_readers(at, channel, route)
-            .ok()
-            .flatten()?;
+        let readers = state.governance().key_holders(at).ok()?;
         Some(
             readers
                 .into_iter()
                 .map(Ed25519PublicKey::from_bytes)
                 .collect(),
         )
-    }
-    fn unit_scope(
-        &self,
-        workspace: WorkspaceId,
-        route: &ChannelRoute,
-        now: u64,
-    ) -> Option<ChannelId> {
-        let at =
-            UNIX_EPOCH.checked_add(tilo_action_broker::channel_encryption::policy_instant(now))?;
-        let state = lock(&self.states).get(&workspace.to_string())?.clone();
-        state.governance().unit_scope(at, route).ok()
     }
 }
 
@@ -413,12 +396,7 @@ mod tests {
             channels
                 .link
                 .directory
-                .allowed_devices(
-                    tilo_desktop_model::WorkspaceId::new(),
-                    collab_types::ChannelId(uuid::Uuid::new_v4()),
-                    None,
-                    0,
-                )
+                .allowed_devices(tilo_desktop_model::WorkspaceId::new(), 0)
                 .is_none()
         );
     }

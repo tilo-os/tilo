@@ -9,13 +9,8 @@
 const LAG: u64 = 5;
 
 /// The channel's epoch as `device` holds it.
-fn epoch_of(
-    device: &mut Device,
-    workspace_id: WorkspaceId,
-    channel: ChannelId,
-    now: Instant,
-) -> u64 {
-    ready_epoch(&device.service.access(workspace_id, channel, now)).expect("a member holds keys")
+fn epoch_of(device: &mut Device, workspace_id: WorkspaceId, now: Instant) -> u64 {
+    ready_epoch(&device.service.access(workspace_id, now)).expect("a member holds keys")
 }
 
 /// Wait, in simulated time, until `device` holds `channel`'s keys or
@@ -24,13 +19,12 @@ fn time_to_keys(
     devices: &mut [&mut Device],
     who: usize,
     workspace_id: WorkspaceId,
-    channel: ChannelId,
     now: &mut Instant,
     limit: Duration,
 ) -> Option<Duration> {
     let started = *now;
     while now.duration_since(started) < limit {
-        if ready_epoch(&devices[who].service.access(workspace_id, channel, *now)).is_some() {
+        if ready_epoch(&devices[who].service.access(workspace_id, *now)).is_some() {
             return Some(now.duration_since(started));
         }
         run(devices, now, 1);
@@ -63,13 +57,13 @@ fn seeded_channel(
         .collect();
     create(&mut devices[0], workspace_id, channel, *now);
     for device in devices.iter_mut().skip(1) {
-        device.service.access(workspace_id, channel, *now);
+        device.service.access(workspace_id, *now);
     }
     let mut all: Vec<&mut Device> = devices.iter_mut().collect();
     run(&mut all, now, 12);
     for device in &mut devices {
         assert!(
-            ready_epoch(&device.service.access(workspace_id, channel, *now)).is_some(),
+            ready_epoch(&device.service.access(workspace_id, *now)).is_some(),
             "every seeded member holds the channel's keys"
         );
     }
@@ -83,7 +77,7 @@ fn seeded_channel(
 fn a_newcomer_behind_on_an_earlier_admission_is_kept_waiting_only_for_its_policy() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = ChannelId::new();
+    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     let dirs: Vec<_> = (0..40).map(|_| tempfile::tempdir().unwrap()).collect();
     let policy = Policy::readers([1, 2]);
     let mut now = Instant::now();
@@ -100,20 +94,12 @@ fn a_newcomer_behind_on_an_earlier_admission_is_kept_waiting_only_for_its_policy
     // An earlier guest, admitted under the members' policy.
     policy.allowed.lock().unwrap().insert(public(10));
     let mut earlier = device(&workspace, workspace_id, 10, 10, &policy, dirs[10].path());
-    earlier.service.access(workspace_id, channel, now);
+    earlier.service.access(workspace_id, now);
     {
         let mut all: Vec<&mut Device> = members.iter_mut().collect();
         all.push(&mut earlier);
         assert!(
-            time_to_keys(
-                &mut all,
-                2,
-                workspace_id,
-                channel,
-                &mut now,
-                Duration::from_secs(20)
-            )
-            .is_some()
+            time_to_keys(&mut all, 2, workspace_id, &mut now, Duration::from_secs(20)).is_some()
         );
     }
 
@@ -123,8 +109,8 @@ fn a_newcomer_behind_on_an_earlier_admission_is_kept_waiting_only_for_its_policy
     policy.allowed.lock().unwrap().insert(public(11));
     let late = Policy::readers([1, 2, 11]);
     let mut newcomer = device(&workspace, workspace_id, 11, 11, &late, dirs[11].path());
-    newcomer.service.access(workspace_id, channel, now);
-    let before = epoch_of(&mut members[0], workspace_id, channel, now);
+    newcomer.service.access(workspace_id, now);
+    let before = epoch_of(&mut members[0], workspace_id, now);
     let mut all: Vec<&mut Device> = members.iter_mut().collect();
     all.push(&mut earlier);
     all.push(&mut newcomer);
@@ -135,12 +121,11 @@ fn a_newcomer_behind_on_an_earlier_admission_is_kept_waiting_only_for_its_policy
         &mut all,
         3,
         workspace_id,
-        channel,
         &mut now,
         Duration::from_secs(120),
     )
     .map(|_| now.duration_since(started));
-    let commits = epoch_of(&mut members[0], workspace_id, channel, now) - before;
+    let commits = epoch_of(&mut members[0], workspace_id, now) - before;
     eprintln!("newcomer behind on an earlier admission: keys after {waited:?}, {commits} commits");
     let waited = waited.expect("the newcomer is admitted");
     assert!(
@@ -163,7 +148,7 @@ fn a_newcomer_behind_on_an_earlier_admission_is_kept_waiting_only_for_its_policy
 fn a_welcome_the_view_never_backs_is_given_up_on_and_asked_for_again() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = ChannelId::new();
+    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     let dirs: Vec<_> = (0..40).map(|_| tempfile::tempdir().unwrap()).collect();
     let policy = Policy::readers([1, 2, 9]);
     let mut now = Instant::now();
@@ -177,26 +162,18 @@ fn a_welcome_the_view_never_backs_is_given_up_on_and_asked_for_again() {
         &mut now,
     );
     let mut stranger = device(&workspace, workspace_id, 9, 9, &policy, dirs[9].path());
-    stranger.service.access(workspace_id, channel, now);
+    stranger.service.access(workspace_id, now);
     {
         let mut all: Vec<&mut Device> = members.iter_mut().collect();
         all.push(&mut stranger);
         assert!(
-            time_to_keys(
-                &mut all,
-                2,
-                workspace_id,
-                channel,
-                &mut now,
-                Duration::from_secs(20)
-            )
-            .is_some()
+            time_to_keys(&mut all, 2, workspace_id, &mut now, Duration::from_secs(20)).is_some()
         );
     }
     policy.allowed.lock().unwrap().insert(public(11));
     let view = Policy::readers([1, 2, 11]);
     let mut newcomer = device(&workspace, workspace_id, 11, 11, &view, dirs[11].path());
-    newcomer.service.access(workspace_id, channel, now);
+    newcomer.service.access(workspace_id, now);
     let mut all: Vec<&mut Device> = members.iter_mut().collect();
     all.push(&mut stranger);
     all.push(&mut newcomer);
@@ -246,15 +223,8 @@ fn a_welcome_the_view_never_backs_is_given_up_on_and_asked_for_again() {
 
     let started = now;
     policy.allowed.lock().unwrap().remove(&public(9));
-    let waited = time_to_keys(
-        &mut all,
-        3,
-        workspace_id,
-        channel,
-        &mut now,
-        Duration::from_secs(60),
-    )
-    .map(|_| now.duration_since(started));
+    let waited = time_to_keys(&mut all, 3, workspace_id, &mut now, Duration::from_secs(60))
+        .map(|_| now.duration_since(started));
     eprintln!("newcomer once the members left the stranger out: keys after {waited:?}");
     let waited = waited.expect("the newcomer is admitted by an honest commit");
     assert!(
@@ -272,7 +242,7 @@ fn a_welcome_the_view_never_backs_is_given_up_on_and_asked_for_again() {
 fn twenty_guests_in_two_crowds_with_lagging_views_hold_their_keys_without_asking_again() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = ChannelId::new();
+    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     let dirs: Vec<_> = (0..64).map(|_| tempfile::tempdir().unwrap()).collect();
     let policy = Policy::readers([1, 2, 3]);
     let mut now = Instant::now();
@@ -306,7 +276,7 @@ fn twenty_guests_in_two_crowds_with_lagging_views_hold_their_keys_without_asking
             )
         })
         .collect();
-    let before = epoch_of(&mut members[0], workspace_id, channel, now);
+    let before = epoch_of(&mut members[0], workspace_id, now);
     let started = now;
     let mut held = vec![None; guests.len()];
     // Guest `i` hears of guest `j` after `(i * 7 + j * 3) % 21` quarter
@@ -315,7 +285,7 @@ fn twenty_guests_in_two_crowds_with_lagging_views_hold_their_keys_without_asking
         // The first crowd asks at once, the second a second later.
         for (i, guest) in arrived.iter_mut().enumerate() {
             if quarter == if i < 10 { 0 } else { 4 } {
-                guest.service.access(workspace_id, channel, now);
+                guest.service.access(workspace_id, now);
             }
         }
         for (i, view) in views.iter().enumerate() {
@@ -332,8 +302,7 @@ fn twenty_guests_in_two_crowds_with_lagging_views_hold_their_keys_without_asking
             device.service.pump(&device.endpoint, now, 1_000);
         }
         for (i, guest) in arrived.iter_mut().enumerate() {
-            if held[i].is_none()
-                && ready_epoch(&guest.service.access(workspace_id, channel, now)).is_some()
+            if held[i].is_none() && ready_epoch(&guest.service.access(workspace_id, now)).is_some()
             {
                 held[i] = Some(now.duration_since(started));
             }
@@ -342,7 +311,7 @@ fn twenty_guests_in_two_crowds_with_lagging_views_hold_their_keys_without_asking
             break;
         }
     }
-    let commits = epoch_of(&mut members[0], workspace_id, channel, now) - before;
+    let commits = epoch_of(&mut members[0], workspace_id, now) - before;
     eprintln!("twenty guests in two crowds: keys after {held:?}, {commits} commits");
     let slowest = held
         .iter()
@@ -370,7 +339,7 @@ fn twenty_guests_in_two_crowds_with_lagging_views_hold_their_keys_without_asking
 fn a_guest_arriving_just_after_a_device_left_holds_its_keys_within_seconds() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = ChannelId::new();
+    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     let dirs: Vec<_> = (0..40).map(|_| tempfile::tempdir().unwrap()).collect();
     // Seed 3 is the device that leaves; seed 4 stays (its person's other
     // device, when seed 3 is revoked).
@@ -398,8 +367,8 @@ fn a_guest_arriving_just_after_a_device_left_holds_its_keys_within_seconds() {
         &guest_view,
         dirs[30].path(),
     );
-    guest.service.access(workspace_id, channel, now);
-    let before = epoch_of(&mut members[0], workspace_id, channel, now);
+    guest.service.access(workspace_id, now);
+    let before = epoch_of(&mut members[0], workspace_id, now);
     let started = now;
     let waited = {
         let mut all: Vec<&mut Device> = members.iter_mut().collect();
@@ -410,13 +379,12 @@ fn a_guest_arriving_just_after_a_device_left_holds_its_keys_within_seconds() {
             &mut all,
             4,
             workspace_id,
-            channel,
             &mut now,
             Duration::from_secs(120),
         )
         .map(|_| now.duration_since(started))
     };
-    let commits = epoch_of(&mut members[0], workspace_id, channel, now) - before;
+    let commits = epoch_of(&mut members[0], workspace_id, now) - before;
     eprintln!("guest just after a device left: keys after {waited:?}, {commits} commits");
     let waited = waited.expect("the guest is admitted");
     assert!(
@@ -430,8 +398,8 @@ fn a_guest_arriving_just_after_a_device_left_holds_its_keys_within_seconds() {
     let mut all: Vec<&mut Device> = members.iter_mut().collect();
     all.push(&mut guest);
     run(&mut all, &mut now, 6);
-    let guest_epoch = ready_epoch(&guest.service.access(workspace_id, channel, now)).unwrap();
-    let removed_epoch = ready_epoch(&members[2].service.access(workspace_id, channel, now));
+    let guest_epoch = ready_epoch(&guest.service.access(workspace_id, now)).unwrap();
+    let removed_epoch = ready_epoch(&members[2].service.access(workspace_id, now));
     assert!(
         removed_epoch.is_none_or(|epoch| epoch < guest_epoch),
         "the removed device holds no key of the epoch the guest is in: {removed_epoch:?} vs {guest_epoch}"

@@ -41,7 +41,7 @@ impl Doorway for Workspaces {
                     })
                 };
                 if let Some(again) = again {
-                    return self.with_desktop_scope(&entering.workspace, again).await;
+                    return self.with_host(&entering.workspace, again).await;
                 }
             }
             // A device that is a member already — a `tilo mcp` restarted, a
@@ -53,7 +53,7 @@ impl Doorway for Workspaces {
             if entering.through == Through::Door
                 && let Some(member) = self.member_already(cert, &entering.workspace).await
             {
-                return self.with_desktop_scope(&entering.workspace, member).await;
+                return self.with_host(&entering.workspace, member).await;
             }
             // A further device of someone the workspace has in it — a second
             // tab, a new computer of theirs — is theirs, not a newcomer's:
@@ -117,10 +117,7 @@ impl Doorway for Workspaces {
                 self.key_arrival(&entering.workspace, cert, access).await;
                 crate::timing::event("entry.keys", keying, 0);
             }
-            let scoping = crate::timing::start();
-            let entered = self.with_desktop_scope(&entering.workspace, entered).await;
-            crate::timing::event("entry.desktop_scope", scoping, 0);
-            entered
+            self.with_host(&entering.workspace, entered).await
         })
     }
 }
@@ -365,10 +362,9 @@ impl Workspaces {
         });
     }
 
-    /// `entered`, with the group that seals `workspace`'s shared desktop as
-    /// its governance decides it now, and this host's signed address for the
-    /// workspace, where a desktop takes it in.
-    async fn with_desktop_scope(&self, workspace: &str, entered: Entered) -> Entered {
+    /// `entered`, with this host's signed address for the workspace, where a
+    /// desktop takes it in.
+    async fn with_host(&self, workspace: &str, entered: Entered) -> Entered {
         let Entered::Admitted {
             workspace: uuid,
             workspace_id,
@@ -379,29 +375,18 @@ impl Workspaces {
         else {
             return entered;
         };
-        let (desktop_scope, host) = match self.workspace(workspace).await {
+        let host = match self.workspace(workspace).await {
             Ok(governed) => {
-                use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
-                let route = collab_types::ChannelRoute::new(DESKTOP_APP, DESKTOP_RECORD);
-                let governed = governed.lock().await;
-                let scope = governed
-                    .peer()
-                    .governance()
-                    .unit_scope(tilo_clock::wall(), &route)
-                    .ok();
-                let hint = self.transport_hint(&governed);
-                drop(governed);
-                let host = hint.ok().and_then(|hint| postcard::to_stdvec(&hint).ok());
-                (scope, host)
+                let hint = self.transport_hint(&*governed.lock().await);
+                hint.ok().and_then(|hint| postcard::to_stdvec(&hint).ok())
             }
-            Err(_) => (None, None),
+            Err(_) => None,
         };
         Entered::Admitted {
             workspace: uuid,
             workspace_id,
             name,
             role,
-            desktop_scope,
             host,
         }
     }
@@ -420,7 +405,6 @@ fn entered(reply: JoinReply) -> Entered {
             workspace_id,
             name,
             role,
-            desktop_scope: None,
             host: None,
         },
         JoinReply::Refused(reason) => Entered::Refused(refused(reason)),

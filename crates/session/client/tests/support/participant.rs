@@ -256,11 +256,7 @@ async fn admit(
             continue;
         };
         let message = postcard::from_bytes::<NeighbourMsg>(&data);
-        let Ok(
-            NeighbourMsg::MlsAccessRequest { request, .. }
-            | NeighbourMsg::MlsRoutedAccessRequest { request, .. },
-        ) = message
-        else {
+        let Ok(NeighbourMsg::MlsAccessRequest { request, .. }) = message else {
             continue;
         };
         if request.verify().is_err() {

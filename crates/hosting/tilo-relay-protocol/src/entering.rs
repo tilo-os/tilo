@@ -195,14 +195,6 @@ pub enum Entered {
         name: String,
         /// What the person may do there.
         role: Role,
-        /// The channel group whose keys seal the workspace's shared desktop
-        /// record, as the workspace's governance decides it now: the
-        /// workspace's own group ([`collab_types::workspace_scope`]) while
-        /// everyone in it may read the desktop, or the record's own group.
-        /// The device opens the desktop with those keys before the governance
-        /// that decides it arrives; once it holds the governance, that
-        /// decides. `None` when the governance names neither.
-        desktop_scope: Option<collab_types::ChannelId>,
         /// The host's own signed address for the workspace (a
         /// `tilo_workspace_join::TransportHint`, postcard): where a device that
         /// keeps the workspace's state itself (a desktop) takes it in, by the

@@ -2022,10 +2022,13 @@ impl Task {
     /// Take up `route`'s keys when the engine holds newer ones than the
     /// session; answers whether the route has keys.
     fn read_keys(&mut self, route: &DocumentRoute) -> bool {
+        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
+            return false;
+        };
         if self.keys_of(route).is_none() {
             return false;
         }
-        let change = self.channels.channel_change(unit(route));
+        let change = self.channels.workspace_change(workspace);
         let installed = match self.route_keys.get(route) {
             Some(RouteKeys::Engine(held)) => *held == change,
             Some(RouteKeys::Handed) => true,

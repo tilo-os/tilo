@@ -162,23 +162,6 @@ pub struct GovernedAccess {
     /// whether or not a device of theirs is listed now.
     pub member_user_roots: Vec<[u8; 32]>,
 }
-/// Who a Read Deny keeps out of a workspace's record channels; see
-/// [`PeerGovernance::withheld_record_readers`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RecordReaders {
-    /// Every device a record's channel admits where nothing withholds it from
-    /// the record: the workspace's member devices.
-    pub readers: BTreeSet<[u8; 32]>,
-    /// Each channel whose record the caller can name, and the devices that
-    /// may not read that record (possibly none).
-    pub withheld: std::collections::HashMap<collab_types::ChannelId, BTreeSet<[u8; 32]>>,
-    /// The devices kept out of every channel whose record the caller cannot
-    /// name: every device [`Self::readers`] lists. Such a channel may be any
-    /// record, a member's own (`member:<root>:<kind>`, read by that person
-    /// alone) included, so no one is admitted to it until a device names its
-    /// record.
-    pub unrouted: BTreeSet<[u8; 32]>,
-}
 #[derive(Clone, Debug, Default)]
 #[expect(
     clippy::struct_excessive_bools,

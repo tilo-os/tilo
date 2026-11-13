@@ -679,8 +679,8 @@ fn call_keys(
         .as_ref()
         .and_then(tilo_channels::ChannelKeyProvider::get)
         .ok_or(Issue::Unavailable)?;
-    let keys = match access.access(workspace_id, channel).0 {
-        tilo_channels::ChannelAccess::Ready(keys) => Some(keys),
+    let keys = match access.access(workspace_id).0 {
+        tilo_channels::ChannelAccess::Ready(keys) => Some(keys.for_unit(channel)),
         tilo_channels::ChannelAccess::Waiting => None,
         _ => return Err(Issue::Unavailable),
     };
@@ -1257,9 +1257,9 @@ impl Shared {
             .admitted
             .as_ref()
             .map(|admitted| LiveRoster::new(admitted(&self.workspace)));
-        let (granted, _) = self.access.access(self.workspace_id, self.channel);
+        let (granted, _) = self.access.access(self.workspace_id);
         let keys = match granted {
-            tilo_channels::ChannelAccess::Ready(keys) => Some(keys),
+            tilo_channels::ChannelAccess::Ready(keys) => Some(keys.for_unit(self.channel)),
             // Keys still on their way keep a joining call joining.
             tilo_channels::ChannelAccess::Waiting => None,
             // A channel this device may no longer read, or has no store for,

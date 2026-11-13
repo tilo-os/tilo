@@ -362,48 +362,26 @@ impl Joined {
         Arc::clone(&self.governance_wake)
     }
 
-    /// The member devices `workspace`'s governance lets read `channel` at `now`
-    /// (Unix seconds): the projection the channel's group follows.
-    pub(super) fn channel_readers(
+    /// The devices that hold `workspace`'s keys at `now` (Unix seconds), as
+    /// its governance decides it; `None` while it cannot be read.
+    pub(super) fn key_holders(
         &self,
         workspace: WorkspaceId,
-        channel: collab_types::ChannelId,
-        route: Option<&collab_types::ChannelRoute>,
         now: u64,
     ) -> Option<std::collections::BTreeSet<collab_types::Ed25519PublicKey>> {
         let at = std::time::SystemTime::UNIX_EPOCH
             .checked_add(tilo_action_broker::channel_encryption::policy_instant(now))
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        let readers = self
+        let holders = self
             .owner
-            .with_current(workspace, |view| view.channel_readers(at, channel, route))
-            // Governance that cannot be read says nothing of who reads.
-            .ok()
-            .flatten()?;
+            .with_current(workspace, |view| view.key_holders(at))
+            .ok()?;
         Some(
-            readers
+            holders
                 .into_iter()
                 .map(collab_types::Ed25519PublicKey::from_bytes)
                 .collect(),
         )
-    }
-
-    /// The scope `route`'s record seals under, as `workspace`'s governance
-    /// decides it at `now` (Unix seconds), or `None` while governance cannot
-    /// be read: a guessed scope could hand a device keys its record's policy
-    /// withholds.
-    pub(super) fn unit_scope(
-        &self,
-        workspace: WorkspaceId,
-        route: &collab_types::ChannelRoute,
-        now: u64,
-    ) -> Option<collab_types::ChannelId> {
-        let at = std::time::SystemTime::UNIX_EPOCH
-            .checked_add(tilo_action_broker::channel_encryption::policy_instant(now))
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        self.owner
-            .with_current(workspace, |view| view.unit_scope(at, route))
-            .ok()
     }
 
     fn invited_workspace(&self, invitation: &str) -> Result<WorkspaceId, String> {

@@ -6,7 +6,7 @@
 fn a_workspace_admits_the_readers_its_directory_names_and_no_one_else() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = ChannelId::new();
+    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     // The identity's two devices, not the outsider's.
     let policy = Policy::default();
     policy.allowed.lock().unwrap().insert(public(1));
@@ -23,13 +23,13 @@ fn a_workspace_admits_the_readers_its_directory_names_and_no_one_else() {
     let mut now = Instant::now();
     assert!(
         matches!(
-            first.service.access(workspace_id, channel, now),
+            first.service.access(workspace_id, now),
             ChannelAccess::Waiting
         ),
         "a channel is taken up once its readers are named"
     );
     assert!(matches!(
-        outsider.service.access(workspace_id, channel, now),
+        outsider.service.access(workspace_id, now),
         ChannelAccess::Unavailable
     ));
 
@@ -40,7 +40,7 @@ fn a_workspace_admits_the_readers_its_directory_names_and_no_one_else() {
         ready_epoch(&access).is_some(),
         "the founding device is handed the channel's keys: {access:?}"
     );
-    second.service.access(workspace_id, channel, now);
+    second.service.access(workspace_id, now);
     run(&mut [&mut first, &mut second], &mut now, 5);
     assert!(
         second

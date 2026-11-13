@@ -37,22 +37,13 @@ impl Gates {
         }
     }
 
-    /// The gate governing `channel`, one of `workspace`'s channels: the unit's own when it has a
-    /// group of its own (a record whose readers the policy narrows, or one whose group was made
-    /// before key scopes), and the workspace's key scope's otherwise, since a unit seals under its
-    /// scope's keys while naming its own channel.
+    /// The gate governing every record of `workspace`: its group's.
     #[must_use]
-    pub fn gate_for(
-        &self,
-        workspace: &str,
-        channel: ChannelId,
-    ) -> Option<channel_crypto::ChannelGate> {
+    pub fn gate_for(&self, workspace: &str) -> Option<channel_crypto::ChannelGate> {
         let gates = self.0.lock().ok()?;
-        gates.get(&channel).copied().or_else(|| {
-            gates
-                .get(&collab_types::workspace_scope(workspace))
-                .copied()
-        })
+        gates
+            .get(&collab_types::workspace_scope(workspace))
+            .copied()
     }
 
     /// A route with no gate has not been opened encrypted on this device yet. Once its gate closes
@@ -66,7 +57,7 @@ impl Gates {
         channel: ChannelId,
         encryption: Option<&EncryptionMetadata>,
     ) -> bool {
-        self.gate_for(workspace, channel)
+        self.gate_for(workspace)
             .is_none_or(|gate| gate.accepts(encryption, channel))
     }
 
@@ -80,7 +71,7 @@ impl Gates {
         channel: ChannelId,
         encryption: Option<&EncryptionMetadata>,
     ) -> collab_types::inbound::OpAdmission {
-        channel_crypto::admission(self.gate_for(workspace, channel), true, channel, encryption)
+        channel_crypto::admission(self.gate_for(workspace), true, channel, encryption)
     }
 }
 

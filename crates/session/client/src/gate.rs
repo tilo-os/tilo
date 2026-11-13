@@ -84,7 +84,6 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         // requests are how a reader obtains keys.
         | NeighbourMsg::MlsGovernance { .. }
         | NeighbourMsg::MlsAccessRequest { .. }
-        | NeighbourMsg::MlsRoutedAccessRequest { .. }
         | NeighbourMsg::MlsChannelUnfounded { .. } => {
             Some((TreePath::root(), ActionKind::Read))
         }
@@ -420,22 +419,6 @@ mod tests {
                 Some(read()),
             ),
             (
-                NeighbourMsg::MlsRoutedAccessRequest {
-                    room: WORKSPACE.into(),
-                    request: Box::new(MlsAccessRequestV1 {
-                        version: 1,
-                        channel,
-                        device: Ed25519PublicKey::from_bytes([2; 32]),
-                        key_package: Vec::new(),
-                        issued_at: 0,
-                        signature: Signature::from_bytes([0xCD; 64]),
-                    }),
-                    route: Box::new(collab_types::ChannelRoute::new("so.tilo.notes", "notes")),
-                    delivery: 0,
-                },
-                Some(read()),
-            ),
-            (
                 NeighbourMsg::SurfaceKeyframeRequest {
                     peer: 1,
                     surface: 7,
@@ -478,7 +461,7 @@ mod tests {
             table.len(),
             "one message per variant, none repeated"
         );
-        assert_eq!(table.len(), 30, "every NeighbourMsg variant has an entry");
+        assert_eq!(table.len(), 29, "every NeighbourMsg variant has an entry");
         for (message, expected) in &table {
             assert_eq!(required_workspace_action(message), *expected, "{message:?}");
             // A retired generation is never admitted as a workspace's traffic.

@@ -252,3 +252,8 @@ reason = "a device that is not the person's is no longer a grantee: what such a 
 file = "crates/collab/neighbour-wire/src/offer.rs"
 enum = "Decline"
 reason = "the offer is one round on a live connection, answered inside the asking device's deadline: nothing keeps an answer, so an answer written by an older build is never read back"
+
+[[break]]
+file = "crates/collab/neighbour-wire/src/lib.rs"
+enum = "NeighbourMsg"
+reason = "a workspace has one MLS group, so an access request names no record and the routed request is gone; the peer protocol version is bumped, and stored formats change with the code"

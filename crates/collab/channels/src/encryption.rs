@@ -1,12 +1,12 @@
-//! End-to-end encryption of collaboration channels on this device: one MLS group per channel, whose
-//! members are exactly the devices the workspace's access policy lets read the route
-//! ([`ChannelDirectory::allowed_devices`]), and every participant commits the group to that policy.
+//! End-to-end encryption of workspaces on this device: one MLS group per workspace, whose members are
+//! exactly the devices that hold the workspace's keys ([`ChannelDirectory::allowed_devices`]), and
+//! every participant commits the group to that set. Every record of the workspace seals under the
+//! group's content keys; read permission inside a workspace is not a key boundary.
 //!
 //! [`ChannelEncryption::pump`] runs the protocol over the workspace transport: inbound frames
 //! advance the group and access requests wait for the next commit, frames the transport did not take
 //! are published again, and two geneses made at once resolve to one without losing what was sealed
-//! under the other ([`channel_crypto::peer`]). A device that cannot name a channel's record cannot
-//! tell who may read it, so it commits nothing there and only follows participants that can.
+//! under the other ([`channel_crypto::peer`]).
 //!
 //! Every change registers the channel's gate ([`ChannelGates`]: plaintext and another channel's
 //! ciphertext are refused on every ingress path) and is announced
@@ -217,13 +217,10 @@ pub enum InboundChannelGovernance {
         workspace: WorkspaceId,
         frame: Box<collab_types::MlsGovernanceFrame>,
     },
-    /// A device asking a channel's participants for membership, with the
-    /// route of the channel's record when the device sent it
-    /// ([`NeighbourMsg::MlsRoutedAccessRequest`]).
+    /// A device asking the workspace's participants for membership.
     AccessRequest {
         workspace: WorkspaceId,
         request: Box<collab_types::MlsAccessRequestV1>,
-        route: Option<Box<ChannelRoute>>,
     },
     /// The workspace's host carries no genesis of `channel`, which `device`
     /// asked for ([`NeighbourMsg::MlsChannelUnfounded`]).
@@ -244,21 +241,8 @@ impl InboundChannelGovernance {
             } => WorkspaceId::parse(&workspace).map(|workspace| Self::Frame { workspace, frame }),
             NeighbourMsg::MlsAccessRequest {
                 workspace, request, ..
-            } => WorkspaceId::parse(&workspace).map(|workspace| Self::AccessRequest {
-                workspace,
-                request,
-                route: None,
-            }),
-            NeighbourMsg::MlsRoutedAccessRequest {
-                room: workspace,
-                request,
-                route,
-                ..
-            } => WorkspaceId::parse(&workspace).map(|workspace| Self::AccessRequest {
-                workspace,
-                request,
-                route: Some(route),
-            }),
+            } => WorkspaceId::parse(&workspace)
+                .map(|workspace| Self::AccessRequest { workspace, request }),
             NeighbourMsg::MlsChannelUnfounded {
                 workspace,
                 channel,
@@ -284,55 +268,18 @@ pub trait GovernanceTransport {
 
 /// The access policy inputs this service needs from the workspace model.
 pub trait ChannelDirectory: collab_types::signer::MaybeSendSync {
-    /// Every device that may read `channel`, one of `workspace`'s channels, at
-    /// wall-clock `now` (seconds since the Unix epoch). A channel is one
-    /// record's, so a Read Deny on that record, on its app or on any pattern
-    /// covering it takes its person's devices out of this channel and no
-    /// other: no participant then hands them the record's key, and a device
-    /// already holding it is removed in a new epoch.
+    /// Every device that holds `workspace`'s keys at wall-clock `now` (seconds since the Unix
+    /// epoch): the devices of its members that read and run work there. `None` while this device
+    /// cannot tell: the workspace's governance is unknown here, and it then admits and removes no
+    /// one.
     ///
-    /// `route` is the channel's record when this device knows it: proven
-    /// against the channel ([`ChannelRoute::proves`]), from a device's routed
-    /// request or this device's own endpoint. Without it the directory names
-    /// the record only from grants naming it. `None` for a channel it cannot
-    /// name: it may be a member's own record, so who reads it is unknown, and
-    /// this device admits and removes no one.
-    ///
-    /// A device takes part in a channel exactly when this names it: a
-    /// workspace's host has no place in its channels that its membership
-    /// does not give it.
-    ///
-    /// A personal cluster ([`collab_types::personal_cluster`]) has no record grants:
-    /// its channels are read by the devices of the identity it derives from
-    /// (certified, not revoked), and a directory holding that identity
-    /// answers them for every channel. A channel is then taken up once the
-    /// directory can name its readers.
+    /// A personal cluster ([`collab_types::personal_cluster`]) is read by the devices of the
+    /// identity it derives from (certified, not revoked).
     fn allowed_devices(
         &self,
         workspace: WorkspaceId,
-        channel: ChannelId,
-        route: Option<&ChannelRoute>,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>>;
-    /// The key scope the storage unit on `route` seals under in `workspace`:
-    /// [`collab_types::workspace_scope`] while every device that may read the
-    /// workspace may read the record too, the record's own channel when the
-    /// policy narrows its readers ([`Self::allowed_devices`] then names the
-    /// narrower set for that channel). The unit's keys come from this scope's
-    /// group; content stays bound to the unit's own channel.
-    ///
-    /// `None` (the default) when this directory cannot decide it: the
-    /// workspace's governance is unknown, and a guessed scope could hand a
-    /// device keys the record's policy withholds.
-    fn unit_scope(
-        &self,
-        workspace: WorkspaceId,
-        route: &ChannelRoute,
-        now: u64,
-    ) -> Option<ChannelId> {
-        let _ = (workspace, route, now);
-        None
-    }
     /// The [`tilo_identity_host::policy_change`] epoch (or a test's own) when
     /// every write to what [`Self::allowed_devices`] reads is announced and
     /// its expiries can be timed: groups then re-check on announcements and
@@ -373,7 +320,7 @@ pub trait ChannelDirectory: collab_types::signer::MaybeSendSync {
 pub const VAULT_SECRET_APP: &str = "so.tilo.collaboration.mls";
 
 /// Where a host keeps this device's channel state: the peers of each
-/// workspace's channels and the route of each channel's record. A desktop keeps
+/// workspace's group. A desktop keeps
 /// it in its channels directory ([`ChannelsDir`]); a page keeps it in its store.
 pub trait ChannelState: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     /// Make the store ready for the state a channel writes: a directory that
@@ -387,14 +334,6 @@ pub trait ChannelState: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     }
     /// The peers of `workspace`'s channels.
     fn peers(&self, workspace: WorkspaceId) -> Arc<dyn channel_crypto::PeerStates>;
-    /// The route kept for `channel`, only if it still proves to be `channel`'s
-    /// in `workspace`: a damaged or swapped route names no record rather than a
-    /// wrong one, and the channel is then decided as one whose record is
-    /// unknown, which withholds more, never less.
-    fn route(&self, workspace: WorkspaceId, channel: ChannelId) -> Option<ChannelRoute>;
-    /// Keep `route` as `channel`'s in `workspace`, when this device takes part
-    /// in it.
-    fn keep_route(&self, workspace: WorkspaceId, channel: ChannelId, route: &ChannelRoute);
     /// Every channel this store holds peers for, so a service registers their
     /// gates before the first op after a restart. A store that cannot list
     /// them answers none: its channels open as an endpoint asks about them.
@@ -422,7 +361,7 @@ pub trait ChannelState: std::fmt::Debug + collab_types::signer::MaybeSendSync {
 }
 
 /// A desktop's channels directory: a directory per workspace under the state
-/// root, one `.peer` and one `.route` file per channel in it.
+/// root, one `.peer` file in it.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub struct ChannelsDir {
@@ -442,11 +381,6 @@ impl ChannelsDir {
     fn workspace_dir(&self, workspace: WorkspaceId) -> PathBuf {
         self.state.join(workspace.to_string()).join(CHANNELS_DIR)
     }
-
-    fn route_path(&self, workspace: WorkspaceId, channel: ChannelId) -> PathBuf {
-        self.workspace_dir(workspace)
-            .join(format!("{}.route", channel.0))
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -464,40 +398,6 @@ impl ChannelState for ChannelsDir {
         match std::fs::remove_dir_all(self.state.join(workspace.to_string())) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),
             _ => Ok(()),
-        }
-    }
-
-    fn route(&self, workspace: WorkspaceId, channel: ChannelId) -> Option<ChannelRoute> {
-        let path = self.route_path(workspace, channel);
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
-            Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "channel route cannot be read");
-                return None;
-            }
-        };
-        let route = match postcard::from_bytes::<ChannelRoute>(&bytes) {
-            Ok(route) => route,
-            Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "channel route does not decode");
-                return None;
-            }
-        };
-        if !route.proves(&workspace.to_string(), channel) {
-            tracing::warn!(path = %path.display(), "channel route names another channel");
-            return None;
-        }
-        Some(route)
-    }
-
-    fn keep_route(&self, workspace: WorkspaceId, channel: ChannelId, route: &ChannelRoute) {
-        let path = self.route_path(workspace, channel);
-        let saved = postcard::to_allocvec(route)
-            .map_err(std::io::Error::other)
-            .and_then(|bytes| tilo_files::native::atomic::write_private(&path, &bytes));
-        if let Err(error) = saved {
-            tracing::warn!(%error, "channel route could not be saved");
         }
     }
 
@@ -631,9 +531,6 @@ struct Founding {
 struct PeerEntry {
     workspace: WorkspaceId,
     peer: ChannelPeer,
-    /// The channel's record, once proven: decides Read on the record, and
-    /// goes with every access request so other participants can too.
-    route: Option<ChannelRoute>,
     /// The request this device asks with while it waits, re-sent on `retry`.
     request: Option<MlsAccessRequestV1>,
     /// A request whose signature the device's custody has not answered yet.
@@ -692,10 +589,6 @@ struct Unopened {
     /// whenever the policy inputs announce a change. `Some` after a failed
     /// open: retried on its own backoff.
     retry: Option<Backoff>,
-    /// The record an endpoint asked about, when it knew one: a record's
-    /// channel is named from its record, so the re-check that waits for the
-    /// policy asks with it.
-    route: Option<ChannelRoute>,
 }
 
 impl Unopened {
@@ -705,15 +598,13 @@ impl Unopened {
         Self {
             workspace,
             retry: Some(retry),
-            route: None,
         }
     }
 
-    fn unnamed(workspace: WorkspaceId, route: Option<ChannelRoute>) -> Self {
+    fn unnamed(workspace: WorkspaceId) -> Self {
         Self {
             workspace,
             retry: None,
-            route,
         }
     }
 }
@@ -756,15 +647,6 @@ pub struct ChannelEncryption {
     /// Channels whose frames arrived while this device took no part in
     /// them: they have a group, so this device never creates one.
     groups_seen: std::collections::HashSet<ChannelId>,
-    /// The key scope carrying each storage unit this device knows the route
-    /// of, by the unit's own channel. A unit seals under its scope's keys
-    /// while naming its own channel, so a payload's channel is turned back
-    /// into its group here.
-    units: HashMap<ChannelId, ChannelId>,
-    /// The key scope a workspace's host named for a storage unit as this
-    /// device entered ([`Self::scope_told`]), by the unit's own channel: what
-    /// the unit seals under until the governance here names its scope.
-    told: HashMap<ChannelId, ChannelId>,
     /// The policy epoch the last pass read, while the directory announces
     /// its changes: a request that went unanswered under the policy before
     /// it is asked again at once when it moves, rather than waiting out a
@@ -774,7 +656,7 @@ pub struct ChannelEncryption {
 }
 
 impl ChannelEncryption {
-    /// Forget `workspace`, deleted: its channels' groups, keys and routes,
+    /// Forget `workspace`, deleted: its group and keys,
     /// here and in the store.
     ///
     /// # Errors
@@ -793,10 +675,6 @@ impl ChannelEncryption {
             self.registered.remove(channel);
             self.groups_seen.remove(channel);
         }
-        self.units
-            .retain(|unit, scope| !channels.contains(unit) && !channels.contains(scope));
-        self.told
-            .retain(|unit, scope| !channels.contains(unit) && !channels.contains(scope));
         self.store
             .as_ref()
             .map_or(Ok(()), |store| store.state.forget(workspace))
@@ -820,18 +698,6 @@ impl ChannelEncryption {
                     tracing::warn!(%error, %workspace, "channel state could not be opened");
                 }
             }
-        }
-        // The scope each unit seals under now, read again from the policy
-        // rather than remembered: a unit whose state was kept from before key
-        // scopes keeps it for reading while new content seals under the scope.
-        let routes: Vec<(WorkspaceId, ChannelRoute)> = service
-            .peers
-            .values()
-            .filter_map(|entry| Some((entry.workspace, entry.route.clone()?)))
-            .collect();
-        let wall = tilo_clock::unix_now();
-        for (workspace, route) in routes {
-            service.resolve_scope(workspace, &route, wall);
         }
         Ok(service)
     }
@@ -864,8 +730,6 @@ impl ChannelEncryption {
             unopened: HashMap::new(),
             registered: HashMap::new(),
             groups_seen: std::collections::HashSet::new(),
-            units: HashMap::new(),
-            told: HashMap::new(),
             policy_epoch: None,
         }
     }
@@ -875,104 +739,35 @@ impl ChannelEncryption {
         self.generation
     }
 
-    /// The [`Self::generation`] at which `channel`'s keys or access last
-    /// changed; 0 while they never did in this service. A storage unit
-    /// changes when the scope carrying it does, so asking by the unit's
-    /// channel answers with the later of its own change (its readers named,
-    /// say) and its scope's: a unit told once of its own still hears every
-    /// epoch its scope moves to after.
-    pub fn channel_change(&self, channel: ChannelId) -> u64 {
-        let own = self.changed.get(&channel).copied().unwrap_or(0);
-        let scope = self
-            .units
-            .get(&channel)
-            .filter(|scope| **scope != channel)
-            .and_then(|scope| self.changed.get(scope))
+    /// The [`Self::generation`] at which `workspace`'s keys or access last
+    /// changed; 0 while they never did in this service.
+    pub fn workspace_change(&self, workspace: WorkspaceId) -> u64 {
+        self.changed
+            .get(&Self::workspace_scope(workspace))
             .copied()
-            .unwrap_or(0);
-        own.max(scope)
+            .unwrap_or(0)
     }
 
-    /// The key scope that carries every unit of `workspace` whose readers
-    /// are the workspace's participants.
+    /// The group that carries every record of `workspace`.
     fn workspace_scope(workspace: WorkspaceId) -> ChannelId {
         collab_types::workspace_scope(&workspace.to_string())
     }
 
-    /// The scope the storage unit on `route` seals under in `workspace`,
-    /// remembered so a payload naming only the unit finds its group, or
-    /// `None` while this device cannot decide it
-    /// ([`ChannelDirectory::unit_scope`]).
-    fn resolve_scope(
-        &mut self,
-        workspace: WorkspaceId,
-        route: &ChannelRoute,
-        wall: u64,
-    ) -> Option<ChannelId> {
-        let unit = route.channel(&workspace.to_string());
-        // The governance here decides; before it arrives, what the host named
-        // as this device entered.
-        let scope = match self.directory.unit_scope(workspace, route, wall) {
-            Some(scope) => {
-                self.told.remove(&unit);
-                scope
-            }
-            None => *self.told.get(&unit)?,
-        };
-        self.units.insert(unit, scope);
-        Some(scope)
-    }
-
-    /// The group that carries `unit`'s keys here: the scope its route named,
-    /// or else the unit's own group when this device holds one (a record
-    /// whose readers policy narrows, or one whose group was made before key
-    /// scopes), or else the workspace's scope.
-    fn scope_here(&self, workspace: WorkspaceId, unit: ChannelId) -> ChannelId {
-        self.units
-            .get(&unit)
-            .copied()
-            .or_else(|| self.takes_part_in(workspace, unit).then_some(unit))
-            .unwrap_or_else(|| Self::workspace_scope(workspace))
-    }
-
-    /// Whether this device holds the state of `channel`, one of `workspace`'s
-    /// groups.
-    fn takes_part_in(&self, workspace: WorkspaceId, channel: ChannelId) -> bool {
-        self.peers
-            .get(&channel)
-            .is_some_and(|entry| entry.workspace == workspace)
-    }
-
-    /// What an endpoint of this device may do with `channel` in `workspace`.
-    /// The first call for a route starts taking part in its channel: this
-    /// device asks the participants for access, and creates the group when
-    /// no genesis arrives. The caller has already decided the endpoint may
-    /// read the route.
-    pub fn access(
-        &mut self,
-        workspace: WorkspaceId,
-        channel: ChannelId,
-        now: Instant,
-    ) -> ChannelAccess {
-        self.access_routed(workspace, channel, None, now)
-    }
-
-    fn access_routed(
-        &mut self,
-        workspace: WorkspaceId,
-        channel: ChannelId,
-        route: Option<&ChannelRoute>,
-        now: Instant,
-    ) -> ChannelAccess {
+    /// What an endpoint of this device may do with `workspace`'s group. The
+    /// first call starts taking part in it: this device asks the participants
+    /// for access, and creates the group when no genesis arrives. The caller
+    /// has already decided the endpoint may read the workspace.
+    pub fn access(&mut self, workspace: WorkspaceId, now: Instant) -> ChannelAccess {
+        let channel = Self::workspace_scope(workspace);
         if self.store.is_none() {
-            self.note_unopened(channel, Unopened::unnamed(workspace, route.cloned()));
+            self.note_unopened(channel, Unopened::unnamed(workspace));
             return ChannelAccess::NoSecretStore;
         }
         if !self.peers.contains_key(&channel) {
-            match self.start_peer(workspace, channel, route, now) {
+            match self.start_peer(workspace, channel, now) {
                 Ok(true) => self.queued = true,
                 Ok(false) => {
-                    self.note_unopened(channel, Unopened::unnamed(workspace, route.cloned()));
+                    self.note_unopened(channel, Unopened::unnamed(workspace));
                     return ChannelAccess::Unavailable;
                 }
                 Err(error) => {
@@ -983,11 +778,6 @@ impl ChannelEncryption {
             }
         }
         self.unopened.remove(&channel);
-        // Learned before it is founded: who may read the channel is read from
-        // its record, and the request this device sends carries the route.
-        if let Some(route) = route {
-            self.learn_route(workspace, channel, route);
-        }
         let Some(entry) = self.peers.get_mut(&channel) else {
             return ChannelAccess::Unavailable;
         };
@@ -1009,21 +799,18 @@ impl ChannelEncryption {
                 ChannelAccess::Removed
             }
         };
-        // The read that first wants a channel wakes the pass that asks for
+        // The read that first wants a group wakes the pass that asks for
         // it: a peer another member's access request opened is nobody's
-        // wanted channel until then, and the pump would park with the
-        // request never sent.
+        // wanted group until then, and the pump would park with the request
+        // never sent.
         if !was_wanted {
             self.queued = true;
         }
         access
     }
 
-    /// [`Self::access`] for the channel of `route`'s record in `workspace`,
-    /// remembering the route: this device then decides Read on the record
-    /// itself, and sends the route with its access request. The answer's
-    /// channel is the record's own; its keys are the ones the record's key
-    /// scope carries, named for the record.
+    /// [`Self::access`] for `route`'s record in `workspace`: the workspace
+    /// group's keys, bound to the record's storage unit.
     pub fn access_record(
         &mut self,
         workspace: WorkspaceId,
@@ -1031,149 +818,14 @@ impl ChannelEncryption {
         now: Instant,
     ) -> (ChannelId, ChannelAccess) {
         let unit = route.channel(&workspace.to_string());
-        let Some(scope) = self.resolve_scope(workspace, route, tilo_clock::unix_now()) else {
-            // Nothing here names the scope, and a guessed one could hand a
-            // device keys the record's policy withholds.
-            self.note_unopened(unit, Unopened::unnamed(workspace, Some(route.clone())));
-            return (unit, ChannelAccess::Unavailable);
-        };
-        // A unit with readers of its own is carried by its own group, whose
-        // record this device decides Read on; the workspace's scope is read
-        // by the workspace's participants, and needs no route.
-        let routed = (scope == unit).then_some(route);
-        let access = self.access_routed(workspace, scope, routed, now);
-        (unit, self.for_unit(workspace, unit, scope, access))
+        (unit, Self::for_unit(unit, self.access(workspace, now)))
     }
 
-    /// [`Self::access`] for the group carrying the storage unit `unit`, whose
-    /// route this caller does not have: the scope is the one learned for it,
-    /// its own group here, or the workspace's scope. The answer's keys are
-    /// named for the unit.
-    fn access_unit(
-        &mut self,
-        workspace: WorkspaceId,
-        unit: ChannelId,
-        now: Instant,
-    ) -> ChannelAccess {
-        let scope = self.scope_here(workspace, unit);
-        let access = self.access_routed(workspace, scope, None, now);
-        self.for_unit(workspace, unit, scope, access)
-    }
-
-    /// `access`, the answer for the group `scope`, as the storage unit `unit`
-    /// uses it: its keys named for the unit, with the keys of a group the
-    /// unit had before key scopes merged in, so its whole history opens.
-    fn for_unit(
-        &self,
-        workspace: WorkspaceId,
-        unit: ChannelId,
-        scope: ChannelId,
-        access: ChannelAccess,
-    ) -> ChannelAccess {
-        let ChannelAccess::Ready(keys) = access else {
-            return access;
-        };
-        let mut keys = keys.for_unit(unit);
-        if scope != unit
-            && let Some(own) = self.existing_keys(workspace, unit)
-            && let Ok(merged) = keys.clone().with_earlier(&own)
-        {
-            keys = merged;
-        }
-        ChannelAccess::Ready(keys)
-    }
-
-    /// Make the content keys of legacy per-record groups available under the
-    /// key scope that now carries their units. A device that holds such a
-    /// group hands its keys to the scope's members with the scope's next
-    /// commit, and every later admission passes them on, so a device that
-    /// joined after key scopes reads the unit's whole history and the holders
-    /// of the old group can go offline once one of them has done it.
-    ///
-    /// Only units the workspace's scope carries: one a Read Deny narrows is
-    /// sealed under a group of its own, whose keys no denied device gets, and
-    /// those are never handed to the broader scope. A unit whose record this
-    /// device has not learned the readers of waits for a policy re-check,
-    /// which resolves it.
-    fn hand_over_legacy_keys(&mut self, wall: u64, recheck: bool) {
-        // Handing keys over is a commit, which a reader leaves to participants.
-        if self.reads_only() {
-            return;
-        }
-        let mut handing = Vec::new();
-        let mut unresolved = Vec::new();
-        for (unit, entry) in &self.peers {
-            let scope = Self::workspace_scope(entry.workspace);
-            if *unit == scope {
-                continue;
-            }
-            match self.units.get(unit) {
-                Some(carried) if *carried == scope => handing.push((*unit, scope)),
-                Some(_) => {}
-                None => {
-                    if let Some(route) = &entry.route {
-                        unresolved.push((*unit, entry.workspace, route.clone()));
-                    }
-                }
-            }
-        }
-        if recheck {
-            for (unit, workspace, route) in unresolved {
-                let scope = self.resolve_scope(workspace, &route, wall);
-                if scope == Some(Self::workspace_scope(workspace)) {
-                    handing.push((unit, Self::workspace_scope(workspace)));
-                }
-            }
-        }
-        let mut adopted = Vec::new();
-        for (unit, scope) in handing {
-            let [Some(scope_entry), Some(unit_entry)] =
-                self.peers.get_disjoint_mut([&scope, &unit])
-            else {
-                continue;
-            };
-            if scope_entry.workspace != unit_entry.workspace
-                || !matches!(scope_entry.peer.access(), Access::Ready { .. })
-            {
-                continue;
-            }
-            let Some(keys) = unit_entry.peer.keyring() else {
-                continue;
-            };
-            if scope_entry.peer.adopt(keys) {
-                // The scope's commit is due now: it is what hands the keys out.
-                scope_entry.dirty = true;
-                adopted.push(scope);
-            }
-        }
-        for scope in adopted {
-            self.bump(scope);
-        }
-    }
-
-    /// Keep `route`, proven to be `channel`'s in `workspace`, with the channel's
-    /// state, durably, and re-check the channel's readers with it.
-    fn learn_route(&mut self, workspace: WorkspaceId, channel: ChannelId, route: &ChannelRoute) {
-        if !route.proves(&workspace.to_string(), channel) {
-            return;
-        }
-        let Some(store) = &self.store else {
-            return;
-        };
-        let mut learned = false;
-        if let Some(entry) = self.peers.get_mut(&channel)
-            && entry.workspace == workspace
-            && entry.route.is_none()
-        {
-            entry.route = Some(route.clone());
-            entry.dirty = true;
-            learned = true;
-            store.state.keep_route(workspace, channel, route);
-        }
-        // The scope a unit seals under is read from its record, so a route
-        // that arrives after the channel was opened resolves it now.
-        if learned {
-            self.resolve_scope(workspace, route, tilo_clock::unix_now());
+    /// `access` as the storage unit `unit` uses it: its keys bound to the unit.
+    fn for_unit(unit: ChannelId, access: ChannelAccess) -> ChannelAccess {
+        match access {
+            ChannelAccess::Ready(keys) => ChannelAccess::Ready(keys.for_unit(unit)),
+            access => access,
         }
     }
 
@@ -1188,11 +840,6 @@ impl ChannelEncryption {
                     known.retry = None;
                 } else if known.retry.is_none() {
                     known.retry = entry.retry;
-                }
-                // An endpoint that asks with its record hands it over for
-                // the re-check that needs it.
-                if known.route.is_none() {
-                    known.route = entry.route;
                 }
             }
             _ => {
@@ -1213,18 +860,7 @@ impl ChannelEncryption {
         for (channel, entry) in &mut self.unopened {
             match &mut entry.retry {
                 None => {
-                    // A record's channel is named from its record, so the
-                    // re-check asks with the route its endpoint gave; only a
-                    // channel asked about without one opens on a directory
-                    // that names its readers by channel alone.
-                    let opens = stored
-                        && takes_part(
-                            &*self.directory,
-                            device,
-                            entry.workspace,
-                            *channel,
-                            entry.route.as_ref(),
-                        );
+                    let opens = stored && takes_part(&*self.directory, device, entry.workspace);
                     if recheck && opens {
                         changed.push((*channel, true));
                     }
@@ -1269,55 +905,26 @@ impl ChannelEncryption {
     }
 
     /// `unit`'s keys as this device holds them, opening, joining or creating
-    /// nothing: `None` when this device takes part in no group that could
-    /// carry `unit` of `workspace`, `Some(Err(_))` when it does and holds none
-    /// of its keys yet. `scope` is the scope its route named, when the caller
-    /// has one.
+    /// nothing: `None` when this device takes part in no group of
+    /// `workspace`, `Some(Err(_))` when it does and holds none of its keys
+    /// yet.
     pub(crate) fn record_keys(
         &self,
         workspace: WorkspaceId,
         unit: ChannelId,
-        scope: Option<ChannelId>,
     ) -> Option<Result<ChannelContentKeys, String>> {
-        let scope = scope.unwrap_or_else(|| self.scope_here(workspace, unit));
-        if let Some(keys) = self.unit_keys(workspace, unit, scope) {
-            return Some(Ok(keys));
+        if let Some(keys) = self.existing_keys(workspace, Self::workspace_scope(workspace)) {
+            return Some(Ok(keys.for_unit(unit)));
         }
-        // The directory names a channel's readers only for a device that may
-        // read it: an unnameable scope is no group of this device's.
         if self.store.is_none()
             || self
                 .directory
-                .allowed_devices(workspace, scope, None, tilo_clock::unix_now())
+                .allowed_devices(workspace, tilo_clock::unix_now())
                 .is_none()
         {
             return None;
         }
         Some(Err("this device holds no channel keys yet".into()))
-    }
-
-    /// The keys that open `unit` here: those of the group carrying it, named
-    /// for the unit, with the keys of a group the unit had before key scopes
-    /// merged in. `None` while neither is here yet.
-    fn unit_keys(
-        &self,
-        workspace: WorkspaceId,
-        unit: ChannelId,
-        scope: ChannelId,
-    ) -> Option<ChannelContentKeys> {
-        let held = self.existing_keys(workspace, scope);
-        let own = (scope != unit)
-            .then(|| self.existing_keys(workspace, unit))
-            .flatten();
-        match (held, own) {
-            (Some(held), Some(own)) => {
-                let keys = held.for_unit(unit);
-                Some(keys.clone().with_earlier(&own).unwrap_or(keys))
-            }
-            (Some(held), None) => Some(held.for_unit(unit)),
-            (None, Some(own)) => Some(own.for_unit(unit)),
-            (None, None) => None,
-        }
     }
 
     fn device(&self) -> Option<Ed25519PublicKey> {
@@ -1422,9 +1029,6 @@ impl ChannelEncryption {
             .is_some_and(|due| due <= now);
         let channels: Vec<ChannelId> = self.peers.keys().copied().collect();
         let mut reconciled = false;
-        // Before the groups reconcile, so the hand-over commit is written in
-        // this pass.
-        self.hand_over_legacy_keys(wall, reconcile_due);
         if policy_moved {
             self.ask_waiting_now(now);
         }
@@ -1629,12 +1233,8 @@ impl ChannelEncryption {
             InboundChannelGovernance::Frame { workspace, frame } => {
                 self.receive_frame(workspace, *frame, now, wall);
             }
-            InboundChannelGovernance::AccessRequest {
-                workspace,
-                request,
-                route,
-            } => {
-                self.receive_request(workspace, *request, route.as_deref(), now, wall);
+            InboundChannelGovernance::AccessRequest { workspace, request } => {
+                self.receive_request(workspace, *request, now, wall);
             }
         }
     }
@@ -1672,12 +1272,7 @@ impl ChannelEncryption {
             let Some(entry) = self.peers.get(&channel) else {
                 continue;
             };
-            let allowed = self.directory.allowed_devices(
-                entry.workspace,
-                channel,
-                entry.route.as_ref(),
-                wall,
-            );
+            let allowed = self.directory.allowed_devices(entry.workspace, wall);
             let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
                 continue;
             };
@@ -1706,9 +1301,8 @@ impl ChannelEncryption {
         wall: u64,
     ) {
         let channel = frame.channel;
-        if let Some(entry) = self.peers.get(&channel)
-            && entry.workspace != workspace
-        {
+        // A workspace has one group: a frame of any other is refused.
+        if channel != Self::workspace_scope(workspace) {
             return;
         }
         if !self.peers.contains_key(&channel) {
@@ -1737,12 +1331,7 @@ impl ChannelEncryption {
             self.receive_frame(workspace, frame, now, wall);
             return;
         }
-        let Some(route) = self.peers.get(&channel).map(|entry| entry.route.clone()) else {
-            return;
-        };
-        let allowed = self
-            .directory
-            .allowed_devices(workspace, channel, route.as_ref(), wall);
+        let allowed = self.directory.allowed_devices(workspace, wall);
         let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
             return;
         };
@@ -1837,25 +1426,19 @@ impl ChannelEncryption {
         &mut self,
         workspace: WorkspaceId,
         request: MlsAccessRequestV1,
-        route: Option<&ChannelRoute>,
         now: Instant,
         wall: u64,
     ) {
         let channel = request.channel;
-        // A reader admits no one.
-        if self.reads_only() {
-            return;
-        }
-        // A route that is not the channel's is a forgery: the request goes
-        // with it, rather than being decided as if it named no record.
-        if route.is_some_and(|route| !route.proves(&workspace.to_string(), channel)) {
+        // A reader admits no one, and a workspace has one group.
+        if self.reads_only() || channel != Self::workspace_scope(workspace) {
             return;
         }
         if !self.peers.contains_key(&channel)
             && request.verify().is_ok()
             && self
                 .directory
-                .allowed_devices(workspace, channel, route, wall)
+                .allowed_devices(workspace, wall)
                 .is_some_and(|allowed| {
                     allowed.contains(&request.device)
                         && self
@@ -1866,7 +1449,7 @@ impl ChannelEncryption {
             // A device the policy allows asks for a channel this device may
             // read and holds nothing of: it creates the group if no genesis
             // arrives. Outsiders cannot make it mint state.
-            match self.start_peer(workspace, channel, route, now) {
+            match self.start_peer(workspace, channel, now) {
                 Ok(true) => {
                     if let Some(entry) = self.peers.get_mut(&channel) {
                         entry.wanted = false;
@@ -1878,9 +1461,6 @@ impl ChannelEncryption {
                     return;
                 }
             }
-        }
-        if let Some(route) = route {
-            self.learn_route(workspace, channel, route);
         }
         let Some(entry) = self
             .peers
@@ -1903,22 +1483,16 @@ impl ChannelEncryption {
     }
 
     fn reconcile(&mut self, channel: ChannelId, now: Instant, wall: u64) {
-        let Some((workspace, route)) = self
-            .peers
-            .get(&channel)
-            .map(|entry| (entry.workspace, entry.route.clone()))
-        else {
+        let Some(workspace) = self.peers.get(&channel).map(|entry| entry.workspace) else {
             return;
         };
-        let allowed = self
-            .directory
-            .allowed_devices(workspace, channel, route.as_ref(), wall);
+        let allowed = self.directory.allowed_devices(workspace, wall);
         let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
             return;
         };
         entry.dirty = false;
-        // Without the channel's record this device cannot tell who may read
-        // it: it commits nothing, and removes no one; nor does a reader.
+        // While this device cannot tell who holds the workspace's keys it
+        // commits nothing and removes no one; nor does a reader.
         let Some(allowed) = allowed.filter(|_| store.role == Role::Participant) else {
             entry.turn_at = None;
             return;
@@ -2071,20 +1645,11 @@ impl ChannelEncryption {
         };
         entry.retry.fired(now, REQUEST_LONGEST);
         tracing::debug!(workspace = %entry.workspace, channel = %channel.0, device = ?request.device, issued = request.issued_at, "channel access asked");
-        // Routed when the record is known, so participants decide Read on it.
         self.delivery = self.delivery.wrapping_add(1);
-        let message = match entry.route.clone() {
-            Some(route) => NeighbourMsg::MlsRoutedAccessRequest {
-                room: entry.workspace.to_string(),
-                request: Box::new(request),
-                route: Box::new(route),
-                delivery: self.delivery,
-            },
-            None => NeighbourMsg::MlsAccessRequest {
-                workspace: entry.workspace.to_string(),
-                request: Box::new(request),
-                delivery: self.delivery,
-            },
+        let message = NeighbourMsg::MlsAccessRequest {
+            workspace: entry.workspace.to_string(),
+            request: Box::new(request),
+            delivery: self.delivery,
         };
         let _ = transport.publish(message);
     }
@@ -2097,10 +1662,11 @@ impl ChannelEncryption {
         &mut self,
         workspace: WorkspaceId,
         channel: ChannelId,
-        route: Option<&ChannelRoute>,
         now: Instant,
     ) -> channel_crypto::Result<bool> {
-        if !takes_part(&*self.directory, self.device(), workspace, channel, route) {
+        if channel != Self::workspace_scope(workspace)
+            || !takes_part(&*self.directory, self.device(), workspace)
+        {
             return Ok(false);
         }
         if self.open_peer(workspace, channel, now)? {
@@ -2128,7 +1694,7 @@ impl ChannelEncryption {
         if entry.peer.knows_group() || self.groups_seen.contains(&channel) || self.reads_only() {
             return;
         }
-        let (workspace, route) = (entry.workspace, entry.route.clone());
+        let workspace = entry.workspace;
         let hosted = self.directory.hosts(workspace);
         let due = if entry.wanted {
             hosted || entry.founding.answered
@@ -2137,7 +1703,7 @@ impl ChannelEncryption {
         };
         let reads = self
             .directory
-            .allowed_devices(workspace, channel, route.as_ref(), wall)
+            .allowed_devices(workspace, wall)
             .zip(self.device())
             .is_some_and(|(allowed, device)| allowed.contains(&device));
         let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
@@ -2219,10 +1785,6 @@ impl ChannelEncryption {
         peer: ChannelPeer,
         now: Instant,
     ) {
-        let route = self
-            .store
-            .as_ref()
-            .and_then(|store| store.state.route(workspace, channel));
         let gate = peer.gate();
         let found_at = now
             .checked_add(found_after(&peer.device(), channel))
@@ -2232,7 +1794,6 @@ impl ChannelEncryption {
             PeerEntry {
                 workspace,
                 peer,
-                route,
                 request: None,
                 signing: None,
                 retry: Backoff::now(now, REQUEST_FIRST),
@@ -2299,11 +1860,9 @@ fn takes_part(
     directory: &dyn ChannelDirectory,
     device: Option<Ed25519PublicKey>,
     workspace: WorkspaceId,
-    channel: ChannelId,
-    route: Option<&ChannelRoute>,
 ) -> bool {
     directory
-        .allowed_devices(workspace, channel, route, tilo_clock::unix_now())
+        .allowed_devices(workspace, tilo_clock::unix_now())
         .zip(device)
         .is_some_and(|(allowed, device)| allowed.contains(&device))
 }
@@ -2355,11 +1914,6 @@ impl ChannelKeyAccess {
         }
     }
 
-    /// See [`ChannelEncryption::scope_told`].
-    pub fn scope_told(&self, workspace: WorkspaceId, route: &ChannelRoute, scope: ChannelId) {
-        self.run(|service| service.scope_told(workspace, route, scope));
-    }
-
     /// Forget `workspace`, deleted ([`ChannelEncryption::forget_workspace`]).
     ///
     /// # Errors
@@ -2390,40 +1944,15 @@ impl ChannelKeyAccess {
         route: &ChannelRoute,
     ) -> Option<Result<ChannelContentKeys, String>> {
         let unit = route.channel(&workspace.to_string());
-        self.run(|service| {
-            let scope = service
-                .directory
-                .unit_scope(workspace, route, tilo_clock::unix_now());
-            service.record_keys(workspace, unit, scope)
-        })
-        .unwrap_or_else(|| Some(Err("the channel service is unavailable".into())))
+        self.run(|service| service.record_keys(workspace, unit))
+            .unwrap_or_else(|| Some(Err("the channel service is unavailable".into())))
     }
 
     /// See [`ChannelEncryption::access`]; also returns the service's
-    /// generation, which changes whenever any channel's keys or access do.
-    pub fn access(&self, workspace: WorkspaceId, channel: ChannelId) -> (ChannelAccess, u64) {
+    /// generation, which changes whenever any group's keys or access do.
+    pub fn access(&self, workspace: WorkspaceId) -> (ChannelAccess, u64) {
         let Some((access, generation, queued)) = self.run(|service| {
-            let access = service.access(workspace, channel, tilo_clock::now());
-            (
-                access,
-                service.generation(),
-                std::mem::take(&mut service.queued),
-            )
-        }) else {
-            return (ChannelAccess::Unavailable, 0);
-        };
-        if queued && let Some(wake) = &self.wake {
-            wake();
-        }
-        (access, generation)
-    }
-
-    /// The keys of the group carrying the storage unit `unit`, as
-    /// [`Self::access`] has them for a group, opened or joined when this
-    /// device takes part and asked for when it does not.
-    fn access_unit(&self, workspace: WorkspaceId, unit: ChannelId) -> (ChannelAccess, u64) {
-        let Some((access, generation, queued)) = self.run(|service| {
-            let access = service.access_unit(workspace, unit, tilo_clock::now());
+            let access = service.access(workspace, tilo_clock::now());
             (
                 access,
                 service.generation(),
@@ -2491,8 +2020,6 @@ impl ChannelKeyAccess {
         route: &ChannelRoute,
         now: Instant,
     ) -> (ChannelId, ChannelAccess, u64) {
-        // As `ChannelEncryption::access_record` asks: the route only when it
-        // is the channel's.
         let Some((channel, access, generation, queued)) = self.run(|service| {
             let (channel, access) = service.access_record(workspace, route, now);
             (
@@ -2538,10 +2065,10 @@ impl ChannelKeyAccess {
         let metadata = envelope.encryption.ok_or("the write is not sealed")?;
         let ciphertext =
             collab_types::sealed_ciphertext(envelope).map_err(|error| error.to_string())?;
-        let (ChannelAccess::Ready(keys), _) = self.access_unit(workspace, metadata.channel) else {
+        let (ChannelAccess::Ready(keys), _) = self.access(workspace) else {
             return Err("this device holds no key for the write's channel".into());
         };
-        Ok((keys, metadata, ciphertext))
+        Ok((keys.for_unit(metadata.channel), metadata, ciphertext))
     }
 
     /// The payload a renewal of `envelope`, a sealed write of this device
@@ -2558,9 +2085,10 @@ impl ChannelKeyAccess {
         let retention = metadata
             .retention()
             .ok_or("the write is not sealed with a content key")?;
-        let (ChannelAccess::Ready(keys), _) = self.access_unit(workspace, metadata.channel) else {
+        let (ChannelAccess::Ready(keys), _) = self.access(workspace) else {
             return Err("this device holds no key for the write's channel".into());
         };
+        let keys = keys.for_unit(metadata.channel);
         let plaintext = keys
             .open_content(envelope.artifact, &metadata, &envelope.payload)
             .map_err(|error| error.to_string())?;
@@ -2630,11 +2158,11 @@ impl ChannelKeyAccess {
         self.inner.lock().map_or(0, |service| service.generation())
     }
 
-    /// See [`ChannelEncryption::channel_change`].
-    pub fn channel_change(&self, channel: ChannelId) -> u64 {
+    /// See [`ChannelEncryption::workspace_change`].
+    pub fn workspace_change(&self, workspace: WorkspaceId) -> u64 {
         self.inner
             .lock()
-            .map_or(0, |service| service.channel_change(channel))
+            .map_or(0, |service| service.workspace_change(workspace))
     }
 
     /// Wakes whenever any channel's keys or access change; `None` when the
@@ -2699,25 +2227,25 @@ impl ChannelKeyProvider {
     /// Wait until any channel's keys or this device's access to them may have
     /// changed since `after`, the value the previous wait returned (or
     /// [`Self::generation`] read before looking at the keys), and return the
-    /// value to wait from next. As [`Self::channel_changed`], for every
-    /// channel at once.
+    /// value to wait from next. As [`Self::workspace_changed`], for every
+    /// workspace at once.
     pub async fn changed(&self, after: u64) -> u64 {
         self.changed_where(after, ChannelKeyAccess::generation)
             .await
     }
 
-    /// Wait until `channel`'s keys or this device's access to them may have
+    /// Wait until `workspace`'s keys or this device's access to them may have
     /// changed since `after`, the value the previous wait returned (0 at
     /// first), and return the value to wait from next.
     ///
-    /// Resolves at once when the channel changed since `after`; otherwise
+    /// Resolves at once when the workspace changed since `after`; otherwise
     /// when it next changes, or when the service is installed, replaced or
     /// goes away. It reports only that this one channel changed, nothing
     /// about its keys or any other channel: the endpoint then asks the
     /// identity service, which checks the device's trust and the person's
     /// role on every answer. Costs no wakeup while nothing changes.
-    pub async fn channel_changed(&self, channel: ChannelId, after: u64) -> u64 {
-        self.changed_where(after, |access| access.channel_change(channel))
+    pub async fn workspace_changed(&self, workspace: WorkspaceId, after: u64) -> u64 {
+        self.changed_where(after, |access| access.workspace_change(workspace))
             .await
     }
 
@@ -2805,14 +2333,13 @@ impl ChannelKeyProvider {
         route: &ChannelRoute,
         wait: Duration,
     ) -> Option<Result<ChannelContentKeys, String>> {
-        let channel = route.channel(&workspace.to_string());
         let deadline = tilo_clock::now()
             .checked_add(wait)
             .unwrap_or_else(Instant::now);
         loop {
             let access = self.get()?;
             // Read before the ask: a change between the two is no wait at all.
-            let after = access.channel_change(channel);
+            let after = access.workspace_change(workspace);
             let (state, _) = access.access_record(workspace, route);
             match state {
                 ChannelAccess::Ready(keys) => return Some(Ok(keys)),
@@ -2828,7 +2355,7 @@ impl ChannelKeyProvider {
             if remaining.is_zero() {
                 return Some(Err(not_ready(wait)));
             }
-            let changed = tokio::time::timeout(remaining, self.channel_changed(channel, after));
+            let changed = tokio::time::timeout(remaining, self.workspace_changed(workspace, after));
             if changed.await.is_err() {
                 return Some(Err(not_ready(wait)));
             }

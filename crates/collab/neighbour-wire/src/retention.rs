@@ -70,9 +70,7 @@ pub fn standalone(msg: &NeighbourMsg) -> bool {
                 && envelope.kind == collab_types::OpKind::Compaction
                 && !collab_types::is_compaction_segment(envelope)
         }
-        NeighbourMsg::MlsAccessRequest { .. }
-        | NeighbourMsg::MlsRoutedAccessRequest { .. }
-        | NeighbourMsg::IdentityHello { .. } => true,
+        NeighbourMsg::MlsAccessRequest { .. } | NeighbourMsg::IdentityHello { .. } => true,
         _ => false,
     }
 }
@@ -138,12 +136,6 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
         }
         NeighbourMsg::MlsAccessRequest { request, .. } => {
             let mut route = b"mls-access\0".to_vec();
-            route.extend_from_slice(request.channel.0.as_bytes());
-            route.extend_from_slice(request.device.as_bytes());
-            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
-        }
-        NeighbourMsg::MlsRoutedAccessRequest { request, .. } => {
-            let mut route = b"mls-routed-access\0".to_vec();
             route.extend_from_slice(request.channel.0.as_bytes());
             route.extend_from_slice(request.device.as_bytes());
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
@@ -380,18 +372,6 @@ mod tests {
         assert_eq!(kind, Retention::Checkpoint);
         assert_ne!(mine, retention(&request(&other), false).unwrap().0);
         assert_ne!(mine, first.0);
-        // The routed form is kept beside the plain one, per device too.
-        let routed = |key: &ed25519_dalek::SigningKey| NeighbourMsg::MlsRoutedAccessRequest {
-            room: "workspace".into(),
-            request: Box::new(MlsAccessRequestV1::signed(channel, vec![1], 1, key).unwrap()),
-            route: Box::new(collab_types::ChannelRoute::new("app", "record")),
-            delivery: 0,
-        };
-        let (routed_mine, kind) = retention(&routed(&device), false).unwrap();
-        assert_eq!(kind, Retention::Checkpoint);
-        assert!(standalone(&routed(&device)));
-        assert_ne!(routed_mine, mine);
-        assert_ne!(routed_mine, retention(&routed(&other), false).unwrap().0);
     }
 
     fn host_persists_state_but_never_late_session_actions() {

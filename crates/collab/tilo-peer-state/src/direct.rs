@@ -759,14 +759,9 @@ impl DirectSync {
     /// group at once instead of waiting to hear of one. A genesis made beside
     /// the one the answer names is resolved by the channel's members.
     fn answer_request(&self, message: &NeighbourMsg) {
-        let (NeighbourMsg::MlsAccessRequest {
+        let NeighbourMsg::MlsAccessRequest {
             workspace, request, ..
-        }
-        | NeighbourMsg::MlsRoutedAccessRequest {
-            room: workspace,
-            request,
-            ..
-        }) = message
+        } = message
         else {
             return;
         };

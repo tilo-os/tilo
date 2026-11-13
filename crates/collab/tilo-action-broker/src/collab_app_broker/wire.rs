@@ -720,13 +720,10 @@ impl JoinedChannel {
                 let keys = services.channel_keys.clone().ok_or_else(|| {
                     BrokerError::unimplemented("this host has no channel service to follow".into())
                 })?;
-                let channel = collab_types::document_channel_id(
-                    &route.app_id,
-                    &route.cluster_id,
-                    &route.record_id,
-                );
+                let workspace = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)
+                    .ok_or_else(|| BrokerError::failed("the route names no workspace".into()))?;
                 Ok(Box::pin(async move {
-                    keys.channel_changed(channel, after).await
+                    keys.workspace_changed(workspace, after).await
                 }))
             }
         }

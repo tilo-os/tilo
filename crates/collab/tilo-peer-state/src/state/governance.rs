@@ -3,8 +3,8 @@
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, GovernedMember, Grant,
-    GrantId, Grantee, MembershipError, ROOT, ReadDoc, RecordReaders, RevocationList, Role,
-    SystemTime, Transactable, administrator_grant_id, err, governed_map, now_ns, workspace,
+    GrantId, Grantee, MembershipError, ROOT, ReadDoc, RevocationList, Role, SystemTime,
+    Transactable, administrator_grant_id, err, governed_map, now_ns, workspace,
 };
 use crate::join::WorkspaceId;
 use collab_types::signer::DeviceSigner;
@@ -176,172 +176,11 @@ impl PeerGovernance<'_> {
             .is_ok()
     }
 
-    /// The devices that may read `channel` at `now`: the projection of the
-    /// workspace's membership a channel's MLS group follows. `channel` is the
-    /// workspace's key scope ([`collab_types::workspace_scope`]) — read by
-    /// every participant — or one unit's own channel, a record whose readers
-    /// a Read Deny narrows. `route` is that record when the caller knows it
-    /// ([`Self::withheld_record_readers`]). `None` when neither `route` nor a
-    /// grant names the record: who may read it is then unknown, not no one.
-    pub fn channel_readers(
-        self,
-        now: SystemTime,
-        channel: collab_types::ChannelId,
-        route: Option<&collab_types::ChannelRoute>,
-    ) -> Result<Option<BTreeSet<[u8; 32]>>, String> {
-        // The scope that carries the units whose readers are the workspace's
-        // participants is read by exactly them: it is named by the workspace
-        // itself, so every participant can decide it without knowing a record.
-        if channel == collab_types::workspace_scope(&self.peer.core.workspace) {
-            let access = self.peer.governance().governed_access(now)?;
-            return Ok(Some(access.member_devices.into_iter().collect()));
-        }
-        // Only the asked channel's record is decided: a frame on one record's
-        // channel never pays for every record the workspace's grants name.
+    /// The devices that hold the workspace's keys at `now`: every device of
+    /// its members. The workspace's one MLS group follows this set.
+    pub fn key_holders(self, now: SystemTime) -> Result<BTreeSet<[u8; 32]>, String> {
         let access = self.peer.governance().governed_access(now)?;
-        let policy = self.governed_policy()?;
-        let workspace = self.peer.core.workspace.as_str();
-        let Some((app, record)) = collab_types::named_records(&policy.grants, workspace)
-            .chain(route.map(|route| (route.app.as_str(), route.record.as_str())))
-            .find(|(app, record)| {
-                collab_types::document_channel_id(app, workspace, record) == channel
-            })
-        else {
-            return Ok(None);
-        };
-        let withheld = self.withheld_from(&access, &policy, now, app, record);
-        Ok(Some(
-            access
-                .member_devices
-                .into_iter()
-                .filter(|device| !withheld.contains(device))
-                .collect(),
-        ))
-    }
-
-    /// The key scope the storage unit on `route` seals under: the workspace's
-    /// ([`collab_types::workspace_scope`]) while every device that may read
-    /// the workspace may read the record too, the record's own channel when a
-    /// Read Deny (or the record being a person's own) narrows its readers.
-    /// The two reader sets never share a key: a narrowed record's group holds
-    /// only the devices its own policy admits.
-    pub fn unit_scope(
-        self,
-        now: SystemTime,
-        route: &collab_types::ChannelRoute,
-    ) -> Result<collab_types::ChannelId, String> {
-        let access = self.peer.governance().governed_access(now)?;
-        let policy = self.governed_policy()?;
-        let withheld = self.withheld_from(&access, &policy, now, &route.app, &route.record);
-        Ok(if withheld.is_empty() {
-            collab_types::workspace_scope(&self.peer.core.workspace)
-        } else {
-            collab_types::document_channel_id(&route.app, &self.peer.core.workspace, &route.record)
-        })
-    }
-
-    /// The governed member devices a Read Deny keeps out of a record's
-    /// channel, as every participant of the channel admits them.
-    ///
-    /// A channel is one record's, and its id a hash of the record's route,
-    /// so a participant decides a channel by its record when it can name it: a
-    /// record the workspace's grants name ([`collab_types::named_records`]), or one
-    /// of `routes`, the routes devices proved to it
-    /// ([`collab_types::ChannelRoute::proves`]). For each such record
-    /// [`RecordReaders::withheld`] lists every device of
-    /// [`Self::governed_access`] that may not read it
-    /// ([`StatePeer::check_document_read`](crate::StatePeer::check_document_read), the decision every door applies), so a
-    /// Deny on the record, on its app or on any pattern over it withholds its
-    /// key, and the workspace's other records are unaffected.
-    ///
-    /// A channel whose record the caller cannot name may be any record, a
-    /// member's own included, which only that person reads
-    /// ([`collab_types::member_record`]); its id does not say whose. So
-    /// [`RecordReaders::unrouted`] lists every member device: such a channel
-    /// admits no one until a device names its record.
-    pub fn withheld_record_readers(
-        self,
-        now: SystemTime,
-        routes: &[collab_types::ChannelRoute],
-    ) -> Result<RecordReaders, String> {
-        let access = self.peer.governance().governed_access(now)?;
-        let policy = self.governed_policy()?;
-        let workspace = self.peer.core.workspace.as_str();
-        let mut records: BTreeSet<(&str, &str)> =
-            collab_types::named_records(&policy.grants, workspace).collect();
-        records.extend(
-            routes
-                .iter()
-                .map(|route| (route.app.as_str(), route.record.as_str())),
-        );
-        let withheld = records
-            .into_iter()
-            .map(|(app, record)| {
-                (
-                    collab_types::document_channel_id(app, workspace, record),
-                    self.withheld_from(&access, &policy, now, app, record),
-                )
-            })
-            .collect();
-        // Every channel whose record the node cannot name may be any record, a
-        // member's own included: no device is admitted to it until a device
-        // names its record.
-        let readers: BTreeSet<[u8; 32]> = access.member_devices.iter().copied().collect();
-        let unrouted = readers.clone();
-        Ok(RecordReaders {
-            readers,
-            withheld,
-            unrouted,
-        })
-    }
-
-    /// The devices of `access` that may not read `app`'s `record` at `now`
-    /// under `policy`, the workspace's current policy, built once by the
-    /// caller for every device it decides.
-    fn withheld_from(
-        self,
-        access: &GovernedAccess,
-        policy: &tilo_action_policy::WorkspacePolicy,
-        now: SystemTime,
-        app: &str,
-        record: &str,
-    ) -> BTreeSet<[u8; 32]> {
-        // Only a grant below the workspace or a member's own record (read
-        // by that person alone) can decide a record otherwise than the
-        // workspace: a record neither covers is read by every member.
-        let node = collab_types::document_node(&self.peer.core.workspace, app, record);
-        let covered = collab_types::member_record(record).is_some()
-            || policy
-                .grants
-                .iter()
-                .any(|grant| grant.node.len() > 1 && grant.node.covers(&node));
-        if !covered {
-            return BTreeSet::new();
-        }
-        // A member's own record is that person's alone, whatever the grants
-        // say: a device of anyone else is withheld without deciding it, so a
-        // workspace of hundreds of people decides each such record for one
-        // person's devices, not for everyone's.
-        let theirs = collab_types::member_record(record)
-            .and_then(|(person, _)| <[u8; 32]>::try_from(hex::decode(person).ok()?).ok());
-        access
-            .member_devices
-            .iter()
-            .copied()
-            .filter(|device| {
-                if let Some(person) = theirs
-                    && self
-                        .peer
-                        .certificate(device, now)
-                        .is_ok_and(|cert| cert.user_public_key != person)
-                {
-                    return true;
-                }
-                self.peer
-                    .check_document_read_under(policy, *device, app, record, now)
-                    .is_err()
-            })
-            .collect()
+        Ok(access.member_devices.into_iter().collect())
     }
 
     /// The workspace's people and grants as its governance records them: its

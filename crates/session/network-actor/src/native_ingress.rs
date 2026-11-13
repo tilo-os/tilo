@@ -820,12 +820,6 @@ mod tests {
             request: request(),
             delivery: 0,
         };
-        let routed = NeighbourMsg::MlsRoutedAccessRequest {
-            room: "workspace".into(),
-            request: request(),
-            route: Box::new(collab_types::ChannelRoute::new("app", "record")),
-            delivery: 0,
-        };
         // A member's ask for a record's content reaches its host the same way:
         // the host answers it, or hands it to the member keeping it.
         let want = NeighbourMsg::RecordContentWant {
@@ -835,7 +829,7 @@ mod tests {
             hash: "ab".repeat(32),
             have: Vec::new(),
         };
-        for message in [genesis, asking, routed, want] {
+        for message in [genesis, asking, want] {
             assert_eq!(carried(&message), Some(Carried::Link), "{}", message.kind());
         }
     }

@@ -364,18 +364,14 @@ impl Replicas {
         ))
     }
 
-    /// The devices that read the group carrying `route`'s keys, as the
+    /// The devices that hold the keys of `route`'s workspace, as the
     /// channels' directory names them; `None` while the workspace's
-    /// governance does not answer for the route.
+    /// governance does not answer.
     pub(crate) fn participants(&self, route: &DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> {
         use tilo_channels::ChannelDirectory as _;
         let workspace = WorkspaceId::parse(&route.cluster_id)?;
-        let directory = crate::channels::OwnerDirectory::reader(self.owner());
-        let now = tilo_clock::unix_now();
-        let named = collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str());
-        let scope = directory.unit_scope(workspace, &named, now)?;
-        let routed = (scope == named.channel(&route.cluster_id)).then_some(&named);
-        directory.allowed_devices(workspace, scope, routed, now)
+        crate::channels::OwnerDirectory::reader(self.owner())
+            .allowed_devices(workspace, tilo_clock::unix_now())
     }
 
     /// One line per workspace for diagnostics: the host it was joined through.

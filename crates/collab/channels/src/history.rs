@@ -75,7 +75,7 @@ impl ChannelKeyAccess {
     ) -> Result<Vec<u8>, String> {
         let metadata = envelope.encryption.ok_or("the write is not sealed")?;
         let keys = self
-            .run(|service| service.record_keys(workspace, metadata.channel, None))
+            .run(|service| service.record_keys(workspace, metadata.channel))
             .ok_or("channel service unavailable")?
             .ok_or("this device holds no existing key for the history's channel")??;
         HistoryKeys(keys).open(envelope)

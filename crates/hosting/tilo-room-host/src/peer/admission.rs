@@ -362,7 +362,7 @@ fn carries_channel_access(envelope: &Envelope) -> bool {
     };
     matches!(
         postcard::from_bytes::<NeighbourMsg>(&body),
-        Ok(NeighbourMsg::MlsAccessRequest { .. } | NeighbourMsg::MlsRoutedAccessRequest { .. })
+        Ok(NeighbourMsg::MlsAccessRequest { .. })
     )
 }
 
@@ -380,10 +380,6 @@ fn device_checkpoint_steps(delta: &[u8]) -> (&'static str, &'static str) {
         Ok(NeighbourMsg::MlsAccessRequest { .. }) => (
             "state.checkpoint.request.persist",
             "state.checkpoint.request.publish",
-        ),
-        Ok(NeighbourMsg::MlsRoutedAccessRequest { .. }) => (
-            "state.checkpoint.routed_request.persist",
-            "state.checkpoint.routed_request.publish",
         ),
         Ok(NeighbourMsg::MlsGovernance { .. }) => (
             "state.checkpoint.commit.persist",

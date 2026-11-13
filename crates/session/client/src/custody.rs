@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use collab_types::{ChannelId, ChannelRoute};
+use collab_types::ChannelId;
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity_host::custody::HostIdentity;
@@ -177,14 +177,13 @@ struct Stored {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SavedChannels {
     peers: BTreeMap<(WorkspaceId, [u8; 16]), Vec<u8>>,
-    routes: BTreeMap<(WorkspaceId, [u8; 16]), ChannelRoute>,
     /// Writes held until their route's keys arrive.
     held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
 }
 
 /// Tags stored channel state of this format: state of an earlier format does not open, and the
 /// device asks for its channels again.
-const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v5";
+const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v6";
 
 impl StoredChannels {
     /// What `store` kept.
@@ -236,23 +235,6 @@ impl tilo_channels::ChannelState for StoredChannels {
         })
     }
 
-    fn route(&self, workspace: WorkspaceId, channel: ChannelId) -> Option<ChannelRoute> {
-        let route = (self.0.saved.lock_recover().routes)
-            .get(&(workspace, channel.0.into_bytes()))
-            .cloned()?;
-        route
-            .proves(&workspace.to_string(), channel)
-            .then_some(route)
-    }
-
-    fn keep_route(&self, workspace: WorkspaceId, channel: ChannelId, route: &ChannelRoute) {
-        self.change(|saved| {
-            saved
-                .routes
-                .insert((workspace, channel.0.into_bytes()), route.clone());
-        });
-    }
-
     fn held(&self) -> Vec<(WorkspaceId, Vec<ChannelId>)> {
         let mut held: BTreeMap<WorkspaceId, Vec<ChannelId>> = BTreeMap::new();
         for (workspace, channel) in self.0.saved.lock_recover().peers.keys() {
@@ -293,9 +275,6 @@ impl channel_crypto::PeerStates for StoredPeers {
         self.stored.change(|saved| {
             saved
                 .peers
-                .remove(&(self.workspace, channel.0.into_bytes()));
-            saved
-                .routes
                 .remove(&(self.workspace, channel.0.into_bytes()));
         });
         Ok(())

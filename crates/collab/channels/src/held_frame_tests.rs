@@ -11,7 +11,7 @@
 fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let channel = ChannelId::new();
+    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     // The founder and a member read the channel under the workspace's
     // governance; the late device's own copy has heard of the member but not
     // of the founder yet.
@@ -33,7 +33,7 @@ fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
         "the founding device is handed the channel's keys: {created:?}"
     );
     assert!(matches!(
-        late.service.access(workspace_id, channel, now),
+        late.service.access(workspace_id, now),
         ChannelAccess::Waiting
     ));
     run(&mut [&mut founder, &mut member, &mut late], &mut now, 1);
@@ -92,14 +92,14 @@ fn a_device_founds_a_channel_once_the_host_says_it_has_no_group() {
         .silent
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let workspace_id = WorkspaceId::new();
-    let channel = ChannelId::new();
+    let channel = collab_types::workspace_scope(&workspace_id.to_string());
     let policy = Policy::readers([1]);
     let dir = tempfile::tempdir().unwrap();
     let mut entered = device(&workspace, workspace_id, 0, 1, &policy, dir.path());
     let mut now = Instant::now();
 
     assert!(matches!(
-        entered.service.access(workspace_id, channel, now),
+        entered.service.access(workspace_id, now),
         ChannelAccess::Waiting
     ));
     run(&mut [&mut entered], &mut now, 30);
@@ -113,13 +113,13 @@ fn a_device_founds_a_channel_once_the_host_says_it_has_no_group() {
         .store(false, std::sync::atomic::Ordering::SeqCst);
     let asked = now;
     while matches!(
-        entered.service.access(workspace_id, channel, now),
+        entered.service.access(workspace_id, now),
         ChannelAccess::Waiting
     ) {
         run(&mut [&mut entered], &mut now, 1);
     }
     assert!(
-        ready_epoch(&entered.service.access(workspace_id, channel, now)).is_some(),
+        ready_epoch(&entered.service.access(workspace_id, now)).is_some(),
         "a host that carries no genesis leaves the channel to this device to found"
     );
     assert!(

@@ -1444,7 +1444,7 @@ struct AskedForAChannel {
 
 /// Start a relay certified with `capabilities`, create a workspace on it, admit
 /// a member device of the person, and hand the workspace that device's MLS
-/// access request for a fresh record channel, as its runtime sends one.
+/// access request for the workspace's group, as its runtime sends one.
 async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedForAChannel {
     a_member_asks_for_a_channel_through(capabilities, super::Carried::Unkept).await
 }
@@ -1466,10 +1466,7 @@ async fn a_member_asks_for_a_channel_through(
     member.capabilities = DeviceCapabilities::member();
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
     admit_view_reader(&workspaces, &created.workspace, &key, &member).await;
-    // The device names the record it asks for: a channel nobody named may
-    // be anyone's own record and admits no one.
-    let route = collab_types::ChannelRoute::new("so.tilo.notes", "tab:0000000000000001");
-    let channel = route.channel(&created.workspace);
+    let channel = collab_types::workspace_scope(&created.workspace);
     let vault = channel_crypto::VaultKey::new([3; 32]);
     let member_dir = dir.path().join("member");
     std::fs::create_dir_all(&member_dir).unwrap();
@@ -1483,10 +1480,9 @@ async fn a_member_asks_for_a_channel_through(
     .access_request_now(1, false, &vault)
     .unwrap()
     .expect("a member waiting for the channel asks for it");
-    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
-        room: created.workspace.clone(),
+    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::MlsAccessRequest {
+        workspace: created.workspace.clone(),
         request: Box::new(request),
-        route: Box::new(route),
         delivery: 1,
     })
     .unwrap();
@@ -1518,11 +1514,11 @@ impl AskedForAChannel {
                         |message| {
                             matches!(
                                 message,
-                                neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
-                                    room,
+                                neighbour_wire::NeighbourMsg::MlsAccessRequest {
+                                    workspace,
                                     request,
                                     ..
-                                } if room == self.workspace && request.channel == self.channel
+                                } if workspace == self.workspace && request.channel == self.channel
                             )
                         },
                     )

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
+use collab_types::{ChannelId, Ed25519PublicKey};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::WorkspaceId;
@@ -53,18 +53,7 @@ impl GovernanceTransport for Endpoint {
                 InboundChannelGovernance::Frame { workspace, frame }
             }
             NeighbourMsg::MlsAccessRequest { request, .. } => {
-                InboundChannelGovernance::AccessRequest {
-                    workspace,
-                    request,
-                    route: None,
-                }
-            }
-            NeighbourMsg::MlsRoutedAccessRequest { request, route, .. } => {
-                InboundChannelGovernance::AccessRequest {
-                    workspace,
-                    request,
-                    route: Some(route),
-                }
+                InboundChannelGovernance::AccessRequest { workspace, request }
             }
             _ => return false,
         };
@@ -119,16 +108,9 @@ pub struct Policy {
     /// The instants groups asked to be announced at, in order; the
     /// test announces them itself when it moves the wall clock there.
     pub announce_at: Arc<Mutex<Vec<u64>>>,
-    /// Devices kept out of one channel alone: a Read Deny on its record.
-    pub withheld: Arc<Mutex<HashMap<ChannelId, BTreeSet<Ed25519PublicKey>>>>,
-    /// Devices kept out of every record of an app: a Read Deny on the
-    /// app. A channel whose route a device does not know may be any
-    /// app's, so they are kept out of it too (a production directory
-    /// keeps everyone out of a channel whose record it cannot name).
-    pub withheld_apps: Arc<Mutex<HashMap<String, BTreeSet<Ed25519PublicKey>>>>,
-    /// Channels whose record no grant names: without a route the
-    /// directory cannot tell who reads them.
-    pub unnamed: Arc<Mutex<std::collections::HashSet<ChannelId>>>,
+    /// The workspace's governance is not known here: the directory names no
+    /// one.
+    pub unknown: Arc<std::sync::atomic::AtomicBool>,
     /// The device hosts the workspace ([`ChannelDirectory::hosts`]).
     pub hosted: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -148,14 +130,8 @@ pub struct Directory {
 }
 
 impl ChannelDirectory for Directory {
-    fn allowed_devices(
-        &self,
-        _: WorkspaceId,
-        channel: ChannelId,
-        route: Option<&ChannelRoute>,
-        now: u64,
-    ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        if route.is_none() && self.policy.unnamed.lock().unwrap().contains(&channel) {
+    fn allowed_devices(&self, _: WorkspaceId, now: u64) -> Option<BTreeSet<Ed25519PublicKey>> {
+        if self.policy.unknown.load(Ordering::SeqCst) {
             return None;
         }
         let mut allowed = self.policy.allowed.lock().unwrap().clone();
@@ -168,26 +144,7 @@ impl ChannelDirectory for Directory {
                 .filter(|(_, until)| now < **until)
                 .map(|(device, _)| *device),
         );
-        if let Some(withheld) = self.policy.withheld.lock().unwrap().get(&channel) {
-            allowed.retain(|device| !withheld.contains(device));
-        }
-        for (app, withheld) in self.policy.withheld_apps.lock().unwrap().iter() {
-            if route.is_none_or(|route| &route.app == app) {
-                allowed.retain(|device| !withheld.contains(device));
-            }
-        }
         Some(allowed)
-    }
-    /// Each channel of these tests is a reader set of its own: the fixture
-    /// narrows every record, so its keys never leave the devices its policy
-    /// names for it.
-    fn unit_scope(
-        &self,
-        workspace: WorkspaceId,
-        route: &ChannelRoute,
-        _: u64,
-    ) -> Option<ChannelId> {
-        Some(route.channel(&workspace.to_string()))
     }
     fn hosts(&self, _: WorkspaceId) -> bool {
         self.policy.hosted.load(Ordering::SeqCst)

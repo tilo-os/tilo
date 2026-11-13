@@ -46,7 +46,6 @@ impl tilo_channels::GovernanceTransport for HostGovernance {
             NeighbourMsg::MlsAccessRequest {
                 workspace, request, ..
             } => (workspace, request.channel),
-            NeighbourMsg::MlsRoutedAccessRequest { room, request, .. } => (room, request.channel),
             // A reader commits nothing.
             _ => return false,
         };

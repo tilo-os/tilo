@@ -90,27 +90,12 @@ struct Directory {
 }
 
 impl ChannelDirectory for Directory {
-    /// The member devices the workspace's governance lets read the channel's
-    /// record.
     fn allowed_devices(
         &self,
         workspace: WorkspaceId,
-        channel: collab_types::ChannelId,
-        route: Option<&collab_types::ChannelRoute>,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        self.joined.channel_readers(workspace, channel, route, now)
-    }
-
-    /// The scope the record on `route` seals under, as its governance decides
-    /// it: the workspace's, or the record's own when its readers are narrowed.
-    fn unit_scope(
-        &self,
-        workspace: WorkspaceId,
-        route: &collab_types::ChannelRoute,
-        now: u64,
-    ) -> Option<collab_types::ChannelId> {
-        self.joined.unit_scope(workspace, route, now)
+        self.joined.key_holders(workspace, now)
     }
 
     /// A workspace joined through another device's host is that host's to

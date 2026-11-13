@@ -1,18 +1,15 @@
 //! A device's channels as it enters a workspace through its door
 //! ([`tilo_relay_protocol::entering`]-style entries): before it holds anything
-//! of the workspace's governance, it asks for the keys of the workspace's own
-//! group, and learns which group seals a record from its host's answer.
+//! of the workspace's governance, it asks for the keys of the workspace's
+//! group.
 //!
-//! Neither decides anything the governance would: the request is one the
-//! group's participants judge against the workspace's policy, as every
-//! member's, and a group this device follows before it can name the channel's
-//! readers is followed as MLS checks it, as any whose record it cannot name
-//! ([`ChannelPeer::follow`]). The scope the host named for a record holds only
-//! until the governance here names one itself.
+//! This decides nothing the governance would: the request is one the group's
+//! participants judge against the workspace's policy, as every member's, and
+//! the group is followed as MLS checks it ([`ChannelPeer::follow`]).
 
 use super::{
-    Access, Arc, ChannelEncryption, ChannelId, ChannelPeer, ChannelRoute, Instant,
-    MlsAccessRequestV1, REQUEST_LONGEST, WorkspaceId,
+    Access, Arc, ChannelEncryption, ChannelId, ChannelPeer, Instant, MlsAccessRequestV1,
+    REQUEST_LONGEST, WorkspaceId,
 };
 
 /// The entry's access request ([`ChannelEncryption::entry_request`]): signed already, or
@@ -125,19 +122,6 @@ impl ChannelEncryption {
             entry.retry.fired(now, REQUEST_LONGEST);
         }
         request
-    }
-
-    /// Take `scope` as the group sealing `route`'s record in `workspace`,
-    /// as the workspace's host named it, until the governance here names one
-    /// ([`super::ChannelDirectory::unit_scope`]). Only the workspace's own
-    /// group or the record's own channel can be named.
-    pub fn scope_told(&mut self, workspace: WorkspaceId, route: &ChannelRoute, scope: ChannelId) {
-        let unit = route.channel(&workspace.to_string());
-        if scope != unit && scope != Self::workspace_scope(workspace) {
-            return;
-        }
-        self.told.insert(unit, scope);
-        self.bump(unit);
     }
 }
 

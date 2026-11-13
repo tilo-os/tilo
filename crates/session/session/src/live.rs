@@ -887,13 +887,16 @@ async fn reconcile(
     endpoint: Endpoint,
     relay: Arc<Relay>,
 ) {
-    let channel = scope_of(workspace).channel_id();
     let mut after = 0;
     loop {
         Arc::clone(&shared)
             .settle(workspace, &endpoint, &relay)
             .await;
-        after = shared.engine.keys().channel_changed(channel, after).await;
+        after = shared
+            .engine
+            .keys()
+            .workspace_changed(workspace, after)
+            .await;
     }
 }
 

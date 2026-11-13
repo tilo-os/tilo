@@ -74,40 +74,22 @@ history.
   paged in newest-first through the existing scrollback request.
   `collab_types::history::HistoryPager` issues pages as a view nears its
   oldest loaded op, or until an older version or search hit is reached.
-- **Granularity: per reader set.** A group belongs to a *key scope*
-  (`collab_types::workspace_scope`), not to a record: one MLS group and one
-  content keyring for every storage unit whose readers are the same devices.
-  A unit seals under its scope's keys while its payload still names the unit
+- **Granularity: per workspace.** A workspace has one MLS group and one
+  content keyring for every record in it. A record seals under the
+  workspace's keys while its payload still names the record
   (`ChannelContentKeys::for_unit`), so content stays bound to its record and
-  artifact and every stored and wire format is unchanged. Membership is
-  decided per record: a Read Deny on a record, its app or any pattern over it
-  narrows its readers, and such a unit is carried by a group of its own (its
-  channel id is the scope), which the denied devices never join.
+  artifact. Read permission inside a workspace is not a key boundary: every
+  device holding the workspace's keys can open every record.
 
-  Keys per reader set is what makes the cost of membership independent of how
-  much a workspace holds, which `benches/per_channel.rs` measures. With a
-  group per channel, admitting one device costs about 1.9 ms and 3.1 KiB of
-  governance frames per channel and removing one about 0.8 ms and 700 B, flat
-  at 1, 10, 100 and 1000 channels: a workspace of a thousand records pays
-  about two seconds and 3 MiB to join, and repeats it on every change. One
-  group per reader set pays that once (`key_scope_join` and
-  `key_scope_removal` rows, constant in the number of units), while each
-  unit's own seal and open (`unit_content`) is what it always was.
+  One group per workspace is what makes the cost of membership independent of
+  how much a workspace holds, which `benches/per_channel.rs` measures. With a
+  group per record, admitting one device costs about 1.9 ms and 3.1 KiB of
+  governance frames per record and removing one about 0.8 ms and 700 B: a
+  workspace of a thousand records would pay about two seconds and 3 MiB to
+  join, and again on every change. One group pays that once, while each
+  record's own seal and open (`unit_content`) costs the same.
   `benches/instructions.rs` gives the group operations in CPU instructions,
   which do not vary with the machine.
-
-  Migration: units sealed before key scopes keep their own group, and a
-  device that holds it reads their history as it always did — the scope's
-  keys are merged with that group's when both are here
-  (`ChannelContentKeys::with_earlier`). New content for those units seals
-  under the scope, so the device has to hold both. A holder of an old group
-  hands its content keys to the scope (`ChannelPeer::adopt`): the scope's
-  next commit carries them to every member, and every admission afterwards
-  passes them on in the joiner's key history, so a device that never held the
-  old group reads the unit's whole history at once — through that commit, or
-  through its own admission — and no holder of the old group has to be online
-  for it. A unit a Read Deny narrows is carried by a group of its own and its
-  keys are never handed to the broader scope.
 
 ### Security properties
 
@@ -241,8 +223,8 @@ plaintext path.
   change and every new request. Invites, removals, role changes that end
   reading, and device enrolment or revocation all become commits.
 - **Governance transport.** Frames and access requests travel on the
-  workspace's topic (`NeighbourMsg::MlsGovernance`, `MlsAccessRequest`,
-  `MlsRoutedAccessRequest`) to every member. Workspace hosts retain each
+  workspace's topic (`NeighbourMsg::MlsGovernance`, `MlsAccessRequest`) to
+  every member. Workspace hosts retain each
   channel's geneses, its newest frame (and the copy with join material for
   the devices it adds) and each device's newest request, so a device that is
   offline still gets its Welcome. A frame the transport did not take is
@@ -366,15 +348,10 @@ If the lost machine was the workspace's governor, see the known limits above.
 
 - **External commit / external join.** Only Welcome-based joins are
   supported.
-- **Below-record reads.** Admission is per record: a participant learns which
-  record a channel carries from a grant naming it or from the route a device
-  proves with its access request (`NeighbourMsg::MlsRoutedAccessRequest`), and
-  admits a device, or a service member, only while the same read decision
-  allows that record; a channel whose record it cannot name is withheld from
-  everyone, as it may be a member's own record. A Deny below a
-  record (an item, a field) still binds only honest clients and doors: one key
-  opens the whole record, so against a modified client the record is the
-  confidentiality boundary.
+- **Reads inside a workspace.** Admission is per workspace: a Deny on a
+  record, an app or anything below a record binds only honest clients and
+  doors. Against a modified client the workspace is the confidentiality
+  boundary.
 - **Multiple ciphersuites / negotiation.** There is one fixed suite.
 
 ## Cipher suite
