@@ -699,9 +699,9 @@ impl CameraApp {
             .as_ref()
             .filter(|media_id| crate::media::is_media_id(media_id))
             .cloned();
-        let address_key = media.as_deref().and_then(|id| {
-            thumbnail::ThumbKey::of_address(id.strip_prefix(crate::media::MEDIA_PREFIX)?, size)
-        });
+        let address_key = media
+            .as_deref()
+            .and_then(|id| thumbnail::ThumbKey::of_address(&crate::media::address(id)?, size));
         let request = match (&cap.path, media) {
             (Some(path), _) => {
                 let key = address_key.or_else(|| {
