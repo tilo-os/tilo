@@ -43,9 +43,8 @@ fn object_identity(dir: &Dir, name: &Path) -> Result<DestinationIdentity, String
     Ok(output_identity(&metadata))
 }
 
-/// Take back only the admitted output, through directory descriptors. A
-/// same-filesystem rename captures the object before its identity is checked
-/// again; a concurrent replacement is restored, never sent to Trash.
+/// Take back only the admitted output, through directory descriptors; a
+/// concurrent replacement is restored, never sent to Trash.
 #[cfg(target_os = "linux")]
 pub fn compensate(
     to: &str,
@@ -269,6 +268,7 @@ pub fn compensate(
 /// Admit only an existing, symlink-free local directory outside sync mounts.
 ///
 /// # Errors
+///
 /// Refuses symlinks, sync-mount aliases, missing directories and I/O failures.
 pub fn pin_destination<'a>(
     folder: &str,
@@ -289,8 +289,6 @@ fn independent_folder<'a>(
         if folder.starts_with(mount) || destination.starts_with(&canonical) {
             return Err("import into a local folder outside synced accounts".into());
         }
-        // Also reject aliases (such as bind mounts) whose paths differ but
-        // whose directory identity is an ancestor of the destination.
         if let Ok(mounted) = anchored_folder(&canonical) {
             let mounted = identity(&mounted).map_err(|error| error.to_string())?;
             for ancestor in destination.ancestors() {
@@ -320,7 +318,6 @@ pub fn execute(
     execute_at(&socket, consent, cancel, progress, mounts)
 }
 
-/// Execute an admitted import against a chosen host service socket.
 pub fn execute_at(
     socket: &Path,
     consent: ImportConsent,
@@ -328,8 +325,8 @@ pub fn execute_at(
     progress: impl Fn(TransferProgress),
     mounts: &[PathBuf],
 ) -> Outcome {
-    // No client is opened and no provider request is made without consuming
-    // the host-issued permit. Source and destination come only from that grant.
+    // No client is opened without consuming the host's permit; source and
+    // destination come only from that grant.
     let payload = consent.into_payload();
     let account = payload.account.as_str();
     let entries = payload.entries.as_slice();
@@ -447,8 +444,8 @@ fn request(
     }
 }
 
-// Never recursively remove a staging path. Every removable object has a
-// descriptor-derived receipt; unexpected children make the whole stage guarded.
+/// Never recursively remove a staging path: every removable object has a
+/// descriptor-derived receipt.
 struct StagedObject {
     parent: Dir,
     name: PathBuf,
@@ -551,9 +548,8 @@ impl ImportStage {
     fn cleanup(&mut self, parent: &Dir) -> Result<(), String> {
         let result = (|| {
             self.validate(parent)?;
-            // Capture each known leaf before checking its receipt again. A
-            // replacement is restored, never unlinked. Directories are removed
-            // only when empty, so concurrently added user files always survive.
+            // Capture each known leaf before checking its receipt again: a replacement is
+            // restored, never unlinked, and directories are removed only when empty.
             for object in self.objects.iter().rev() {
                 let captured = PathBuf::from(format!(".cleanup-{}", uuid::Uuid::new_v4()));
                 rename_at(&object.parent, &object.name, &object.parent, &captured)
@@ -582,8 +578,7 @@ impl ImportStage {
                     return Err(format!("{error} (restore: {restored:?})"));
                 }
             }
-            // Capture the empty container too: never remove a replacement at
-            // its old name, even when it happens to be empty.
+            // Capture the empty container too: never remove a replacement at its old name.
             let captured = PathBuf::from(format!(".cloud-import-guard-{}", uuid::Uuid::new_v4()));
             rename_at(parent, &self.name, parent, &captured).map_err(|error| error.to_string())?;
             if !same_object(&object_identity(parent, &captured)?, &self.expected) {
@@ -614,9 +609,9 @@ struct Worker<'a, F> {
     active: HashSet<String>,
 }
 
-// Keep associations on imported files, but dots in folder names are ordinary
-// characters. Reserve suffix bytes before trimming so even a full-size source
-// name can be published without weakening no-replace collision handling.
+// Dots in folder names are ordinary characters here; reserve the suffix bytes
+// before trimming, so even a full-size source name publishes without
+// weakening no-replace collision handling.
 fn collision_name(entry: &ImportEntry, index: u32) -> PathBuf {
     if index == 0 {
         return PathBuf::from(&entry.name);
@@ -690,11 +685,10 @@ impl<F: Fn(TransferProgress)> Worker<'_, F> {
         });
         match result {
             Ok(receipt) => {
-                // The payload has moved out; only the empty private container remains.
                 stage.objects.clear();
                 if let Err(error) = stage.cleanup(parent) {
-                    // Keep the committed receipt even if a third party populated the
-                    // now-empty container. Nothing in it is ours to delete.
+                    // Keep the committed receipt even if a third party filled the now-empty
+                    // container: nothing in it is ours to delete.
                     self.status.failed.push(error);
                 }
                 Ok(receipt)
@@ -749,7 +743,6 @@ impl<F: Fn(TransferProgress)> Worker<'_, F> {
                 } else {
                     None
                 };
-                // Hold descriptors, not mutable pathnames, throughout provider I/O.
                 let metadata = if let Some(file) = &file {
                     file.metadata()
                 } else {
@@ -772,7 +765,6 @@ impl<F: Fn(TransferProgress)> Worker<'_, F> {
                 });
                 let result = if let Some(mut file) = file {
                     let result = self.read(client, entry, &mut file);
-                    // Even a partial write belongs to this open file, not a replacement.
                     objects
                         .get_mut(slot)
                         .ok_or("missing staged cloud output")?
@@ -918,8 +910,8 @@ impl<F: Fn(TransferProgress)> Worker<'_, F> {
     }
 }
 
-// Always release a session, including provider failures and cancellation. The
-// server's CloseRead is idempotent. A disconnected service also releases its reads.
+// Always release a session, including provider failures and cancellation;
+// CloseRead is idempotent.
 struct ReadSession<'a> {
     client: &'a mut CloudClient,
     account: &'a str,
