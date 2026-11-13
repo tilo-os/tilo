@@ -1732,6 +1732,17 @@ impl AppearanceDevicePrefs {}
 impl ui::storage::SettingsSchema for AppearancePrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("appearance");
     ui::settings_codec!();
+
+    /// A page follows the light or dark its browser and system show until the
+    /// person picks a theme, so what it shows them chosen there is Automatic;
+    /// the person's own computer starts dark.
+    fn defaults_on(device: ui::storage::DeviceClass) -> Self {
+        let mut prefs = Self::default();
+        if device == ui::storage::DeviceClass::Web {
+            settings_store::day_schedule::AUTOMATIC_MODE.clone_into(&mut prefs.mode);
+        }
+        prefs
+    }
 }
 
 #[ui::tilo_resource::resource(

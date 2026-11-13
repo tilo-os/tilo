@@ -4,9 +4,12 @@
 //! of every page through their browser and system: less motion, more
 //! contrast. A change to either draws every mount again in the new theme.
 //!
-//! A person who has chosen neither light nor dark gets the browser's, so a
-//! page is light on a light system from its first frame, whichever way the
-//! mount shows it.
+//! A person who has chosen neither light nor dark, or chose Automatic, gets
+//! the browser's, so a page is light on a light system from its first frame,
+//! whichever way the mount shows it. Settings shows them Automatic chosen
+//! there (the appearance section's default on a page), which on a page is
+//! following the system; the themes chosen for light and for dark still show
+//! in their mode.
 
 use std::cell::Cell;
 
@@ -40,8 +43,8 @@ pub(crate) fn follow_browser_scheme() {
     }
 }
 
-/// `settings` with light or dark from the browser (`dark`) when they name
-/// neither: no mode and no theme for one.
+/// `settings` with light or dark from the browser (`dark`) when they leave it
+/// open: no mode, or Automatic.
 pub(crate) fn with_browser_scheme(
     mut settings: serde_json::Map<String, serde_json::Value>,
     dark: bool,
@@ -50,9 +53,10 @@ pub(crate) fn with_browser_scheme(
         .entry("appearance")
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
     if let Some(appearance) = appearance.as_object_mut()
-        && !["mode", "dark_theme", "light_theme"]
-            .iter()
-            .any(|key| appearance.contains_key(*key))
+        && appearance
+            .get("mode")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(settings_store::day_schedule::is_automatic)
     {
         appearance.insert(
             "mode".into(),
@@ -242,6 +246,38 @@ mod tests {
         assert_ne!(generation(), before, "a change draws the mounts again");
     }
 
+    /// On a fresh page Settings shows Automatic chosen, and the page draws what Automatic means
+    /// there: the system's light or dark. A Dark tile ringed over a light page told the person a
+    /// choice the page did not draw.
+    #[test]
+    fn what_settings_shows_chosen_on_a_page_is_what_the_page_draws() {
+        use ui::storage::{DeviceClass, SettingsSchema as _};
+        let fresh = settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Web);
+        assert_eq!(fresh.theme_choice(), "Automatic");
+        let mut chosen = settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Web);
+        chosen.choose_theme("Automatic");
+        let chosen = serde_json::json!({"appearance": {"mode": chosen.mode}});
+        for dark in [false, true] {
+            let untouched = from_settings(&serde_json::Map::new(), Some(dark));
+            assert_eq!(untouched.document.is_dark(), dark, "it follows the system");
+            let automatic = from_settings(chosen.as_object().unwrap(), Some(dark));
+            assert_eq!(automatic.document.is_dark(), dark, "so does choosing it");
+        }
+        let dark_theme = serde_json::json!({"appearance": {"mode": "dark"}});
+        assert!(
+            from_settings(dark_theme.as_object().unwrap(), Some(false))
+                .document
+                .is_dark(),
+            "Dark, chosen, is dark on a light system"
+        );
+        assert_eq!(
+            settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Native)
+                .theme_choice(),
+            "Dark",
+            "the person's own computer starts dark, and says so"
+        );
+    }
+
     #[test]
     fn the_browser_scheme_decides_only_what_the_person_left_open() {
         let mode = |settings: serde_json::Value, dark| {
@@ -263,11 +299,19 @@ mod tests {
         );
         assert_eq!(
             mode(
-                serde_json::json!({"appearance": {"light_theme": "nord"}}),
-                true
+                serde_json::json!({"appearance": {"mode": "automatic"}}),
+                false
             ),
-            serde_json::Value::Null,
-            "a theme chosen for one mode is a choice too"
+            "light",
+            "Automatic follows the system"
+        );
+        assert_eq!(
+            mode(
+                serde_json::json!({"appearance": {"light_theme": "nord"}}),
+                false
+            ),
+            "light",
+            "a theme chosen for one mode shows when the system is in that mode"
         );
         let light = ui::Theme::configured_from(&with_browser_scheme(serde_json::Map::new(), false));
         let dark = ui::Theme::configured_from(&with_browser_scheme(serde_json::Map::new(), true));

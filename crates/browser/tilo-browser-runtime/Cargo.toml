@@ -185,5 +185,7 @@ hex.workspace = true
 # (src/kept_settings.rs).
 tilo-app = { version = "0.1.0", path = "../../sdk/tilo-app", features = ["test-support"] }
 settings-sections = { version = "0.1.0", path = "../../system/settings-sections" }
+# Which appearance mode follows the system (src/page_theme.rs).
+settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 settings = { path = "../../../apps/settings", default-features = false }
 tilo-test-env = { path = "../../dev/test-env" }
