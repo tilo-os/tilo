@@ -168,6 +168,7 @@ mod tests {
             generic_name: Some("Editor".into()),
             comment: None,
             keywords: vec!["gedit".into()],
+            category: None,
             kind: HostAppKind::System,
         }
     }
