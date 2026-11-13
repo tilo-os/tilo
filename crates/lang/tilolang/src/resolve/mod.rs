@@ -359,6 +359,7 @@ impl Env {
                         text: d.text.clone(),
                     }),
                     place: p.place,
+                    label: p.label.clone(),
                     entry: p.entry,
                 })
                 .collect()
@@ -796,6 +797,9 @@ impl Resolver<'_> {
             for p in &v.fields {
                 if let Some(d) = &p.default {
                     self.err("E028", d.span, format!("`.{}` is a variant's field, which takes no default; only an action's parameter does", p.name.name));
+                }
+                if p.label.is_some() {
+                    self.err("E057", p.name.span, format!("`.{}` is a variant's field, and a value nothing gives: only an action's parameter says what a person reads where they give it", p.name.name));
                 }
                 if fields.iter().any(|x| x.name == p.name.name) {
                     self.err(
@@ -1404,16 +1408,19 @@ impl Resolver<'_> {
         Ty::Record(key)
     }
 
-    /// Checks the parameters a view supplies (`above: Option<Task> (above)`): only an action's,
-    /// starting right after its subject, each optional and with no default, and each a place a
-    /// view knows (`above`).
-    fn places(&mut self, written: &[ast::Param], params: &[ParamInfo], kind: CKind, _span: Span) {
+    /// Checks what a parameter says of itself besides its name, written in one place after its
+    /// type: a place a view supplies (`above: Option<Task> (above)`, only an action's, starting
+    /// right after its subject, each optional and with no default, and each a place a view knows)
+    /// or its label (`saved: Bool (label: "On the Watch later list")`, only where a person gives
+    /// the parameter, never where a view does).
+    fn supplied(&mut self, written: &[ast::Param], params: &[ParamInfo], kind: CKind, _span: Span) {
         let mut in_run = true;
         for (i, p) in written.iter().enumerate() {
             let Some(place) = &p.place else {
                 if i > 0 {
                     in_run = false;
                 }
+                self.label(p, kind);
                 continue;
             };
             if kind != CKind::Action {
@@ -1441,6 +1448,20 @@ impl Resolver<'_> {
         }
     }
 
+    /// A parameter's label (`saved: Bool (label: "On the Watch later list")`) is what a person
+    /// reads where they give it, so only an action's parameters write one, and it is the words
+    /// of the value as they read it ("On the Watch later list"), never its name again.
+    fn label(&mut self, p: &ast::Param, kind: CKind) {
+        let Some(label) = &p.label else { return };
+        if kind != CKind::Action {
+            self.err("E057", p.name.span, format!("`{}` is a parameter of the {}; a label says what a person gives, and only an action's parameters are given to one", p.name.name, kind.word()));
+            return;
+        }
+        if label.trim().is_empty() {
+            self.err("E057", p.name.span, format!("`{}` has an empty label; say what the parameter holds as the person reads it, as `label: \"On the Watch later list\"`, or leave it out and let its name read", p.name.name));
+        }
+    }
+
     /// The parameters of a callable. A view's may be a collection, a set or a map, as a field
     /// is: a view is handed it live (views are components, and these are their props).
     ///
@@ -1463,6 +1484,7 @@ impl Resolver<'_> {
                 ty,
                 default: None,
                 place: action && p.place.is_some(),
+                label: if action { p.label.clone() } else { None },
                 entry: false,
             });
         }
@@ -1546,7 +1568,7 @@ impl Resolver<'_> {
             }
             let ast_params = params;
             let params = self.params(params, kind == CKind::View, kind == CKind::Action);
-            self.places(ast_params, &params, kind, name.span);
+            self.supplied(ast_params, &params, kind, name.span);
             if kind == CKind::Action {
                 let at = self.env.callables.len();
                 defaults.extend(
@@ -1638,7 +1660,7 @@ impl Resolver<'_> {
                 .iter()
                 .find(|a| a.name.name == callable.name)
                 .and_then(|a| a.params.get(index))
-                .and_then(|p| p.default.as_ref());
+                .and_then(|p| p.default.as_deref());
             let (Some(written), Some(param)) = (written, callable.params.get_mut(index)) else {
                 continue;
             };
@@ -2235,7 +2257,7 @@ fn at_rest(
             .iter()
             .skip(1)
             .find(|p| &p.name.name == name)
-            .and_then(|p| p.default.as_ref())
+            .and_then(|p| p.default.as_deref())
             .and_then(deeper),
         ExprKind::Field { base, name } => {
             let ExprKind::Ident(base) = &base.kind else {

@@ -191,8 +191,7 @@ pub fn action_type(
         .map(|param| {
             // What the parameter is called where a person gives it (a form, a consent sheet).
             let key = tilolang::messages::param_key(&action.id, &param.name);
-            let source = tilolang::messages::label(&param.name);
-            published_param(meta, param).titled(words.word(&key, &[], &source))
+            published_param(meta, param).titled(words.word(&key, &[], &param.words()))
         })
         .collect();
     let (app, kind, id) = (meta.app.clone(), kind.to_owned(), action.id.clone());

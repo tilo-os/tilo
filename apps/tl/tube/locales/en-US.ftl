@@ -199,7 +199,7 @@ d-yw4tuoq4 = Watch later
     .w-remove-from-watch-later = Remove from Watch later
     .w-watch-later = Watch later
 
-d-yw4tuoq4-saved = Saved
+d-yw4tuoq4-saved = On the Watch later list
 
 d-6ux63onw = Play
     .doc = Plays the video, whether or not it was played before.

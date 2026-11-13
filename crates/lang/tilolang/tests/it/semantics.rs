@@ -401,6 +401,37 @@ fn an_apps_own_say_action_and_the_words_marker_stand_side_by_side() {
     );
 }
 
+/// What a parameter is called where a person gives it is the message its key holds: its
+/// `label:` when its name in words would read as something else beside the value, and its name
+/// in words otherwise. Its name is still the name its argument is recorded by (i18n.md §2).
+#[test]
+fn a_parameters_label_is_what_a_person_reads_and_its_name_records_the_argument() {
+    let c = compile(
+        "type Video {\n    title: Text\n    watch_later: Bool\n}\ntype Tube {\n    videos: Collection<Video>\n}\nroot Tube\ndefault view tube for Tube\n/// Keeps the video to watch later, or takes it off the list.\naction watch_later(v: Video, saved: Bool (label: \"On the Watch later list\") = not v.watch_later, at: Int = 0) {\n    v.watch_later = saved\n}\nview tube(t: Tube) {\n    for v in t.videos {\n        button(watch_later(v))\n    }\n}",
+    );
+    crate::common::validate(&c.wasm);
+    let action = tilolang::messages::key_of(c.ids.get("watch_later").expect("the action"));
+    let source = tilolang::messages::source_catalogue(&c.meta);
+    assert!(
+        source.contains(&format!("{action}-saved = On the Watch later list")),
+        "the label is the words a person reads: {source}"
+    );
+    assert!(
+        source.contains(&format!("{action}-at = At")),
+        "a parameter nothing labels reads its name in words: {source}"
+    );
+    let params = &c
+        .meta
+        .actions
+        .iter()
+        .find(|a| a.name == "watch_later")
+        .expect("the action")
+        .params;
+    assert_eq!(params[1].name, "saved", "the argument keeps its name");
+    assert_eq!(params[1].words(), "On the Watch later list");
+    assert_eq!(params[2].words(), "At");
+}
+
 // A list's rows are a view of their own (`<view>~row<n>`), and a component called in a row that
 // declares `state` keeps it there: the host binds the state by the id the row's
 // body reads (`<row view id>:<component>.<state>`), so the row's view meta carries it.

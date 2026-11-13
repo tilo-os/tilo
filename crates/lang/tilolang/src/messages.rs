@@ -272,7 +272,7 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
             named(
                 &mut out,
                 &param_key(&action.id, &param.name),
-                &label(&param.name),
+                &param.words(),
                 "",
             );
         }

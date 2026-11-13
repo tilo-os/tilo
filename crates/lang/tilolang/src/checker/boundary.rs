@@ -270,6 +270,7 @@ impl Checker<'_> {
             ty: elem.clone(),
             default: None,
             place: false,
+            label: None,
             entry: false,
         }];
         params.extend(captures.iter().map(|(name, _, ty)| ParamInfo {
@@ -277,6 +278,7 @@ impl Checker<'_> {
             ty: ty.clone(),
             default: None,
             place: false,
+            label: None,
             entry: false,
         }));
         params.push(ParamInfo {
@@ -284,6 +286,7 @@ impl Checker<'_> {
             ty: Ty::Text,
             default: None,
             place: false,
+            label: None,
             entry: false,
         });
         // View state the body uses is passed by value; `set(...)` and `bind:` still name the

@@ -827,6 +827,10 @@ measures it in, read as one with `Duration(n)`.
   the subject as an `if` does; over another argument it is read where the action is applied
   with it, `button(move_to(b, card, col))`. `button(pin(n))` reads its `label:`, `icon:` and
   `on:` with the arguments it applies, as the view draws: Pin turns into Unpin, toggled.
+- A parameter whose name in words would read as something else beside its value says what it
+  holds: `saved: Bool (label: "On the Watch later list") = not v.watch_later` is "On the Watch
+  later list" where a form or a consent sheet asks for it. Its name is still the name the
+  argument is recorded by, so a label never changes what is invoked.
 - An action says what it did, as history reads it after who did it: `did: "moved this"` or
   `did: "added a subtask"`. A history row is then one sentence in a person's terms — "Ana
   moved this", "You added a subtask" — rather than a label beside a paragraph about the

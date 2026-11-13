@@ -268,7 +268,7 @@ action like(v: Video, liked: Bool = not v.liked) (
 }
 
 /// Keeps the video to watch later, or takes it off the list.
-action watch_later(v: Video, saved: Bool = not v.watch_later) (
+action watch_later(v: Video, saved: Bool (label: "On the Watch later list") = not v.watch_later) (
     label: if v.watch_later { "Remove from Watch later" } else { "Watch later" },
     icon: .bookmark,
     on: v.watch_later,

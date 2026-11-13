@@ -532,6 +532,22 @@ pub struct ParamMeta {
     /// (`crate::entry`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub entry: bool,
+    /// What the parameter is called where a person gives it, when the name in words does not
+    /// say what it holds (`saved: Bool (label: "On the Watch later list")`). It is the words the
+    /// catalogue's message for it carries (`d-<action>-<name>`), which a translation replaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl ParamMeta {
+    /// What the parameter is called where a person gives it: its `label:` in the words the app
+    /// wrote, else its name in words.
+    #[must_use]
+    pub fn words(&self) -> String {
+        self.label
+            .clone()
+            .unwrap_or_else(|| crate::messages::label(&self.name))
+    }
 }
 
 /// How an action parameter's default is computed.
