@@ -686,9 +686,8 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         .with_current(workspace, |view| {
             let role = view
                 .peer()
-                .permissions(device.device_public_key, SystemTime::now())
-                .map_err(|error| error.to_string())?
-                .role;
+                .role(&device.device_public_key, SystemTime::now())
+                .map_err(|error| error.to_string())?;
             assert_eq!(
                 role,
                 collab_types::Role::Editor,

@@ -44,12 +44,11 @@ fn unchanged_permission_queries_share_policy_data_across_peer_clones() {
             .clone()
             .permissions(cert.device_public_key, now)
             .unwrap();
-        assert_eq!(actual.role, expected.role);
         assert_eq!(
             serde_json::to_vec(&actual.policy).unwrap(),
             serde_json::to_vec(&expected.policy).unwrap()
         );
-        assert_eq!(actual.person, expected.person);
+        assert_eq!(actual.person_id(), expected.person_id());
     }
     assert!(
         crate::workspace::POLICY_READS.with(std::cell::Cell::get) <= 1,
@@ -66,12 +65,11 @@ fn admitted_immutable_certificate_does_not_repeat_signature_checks_per_permissio
             .clone()
             .permissions(cert.device_public_key, now)
             .unwrap();
-        assert_eq!(actual.role, expected.role);
         assert_eq!(
             serde_json::to_vec(&actual.policy).unwrap(),
             serde_json::to_vec(&expected.policy).unwrap()
         );
-        assert_eq!(actual.person, expected.person);
+        assert_eq!(actual.person_id(), expected.person_id());
     }
     assert_eq!(
         crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
@@ -167,7 +165,7 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     )
     .unwrap();
     assert_eq!(
-        peer.permissions(cert.device_public_key, now).unwrap().role,
+        peer.role(&cert.device_public_key, now).unwrap(),
         collab_types::Role::Editor
     );
     let workspace_node = TreePath::workspace(workspace_id);
@@ -207,7 +205,7 @@ fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
         Err(MembershipError::NoMembership)
     ));
     assert_eq!(
-        old.permissions(cert.device_public_key, now).unwrap().role,
+        old.role(&cert.device_public_key, now).unwrap(),
         collab_types::Role::Editor
     );
 }
@@ -562,9 +560,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .unwrap()
     );
     assert_eq!(
-        peer.permissions(guest_cert.device_public_key, now)
-            .unwrap()
-            .role,
+        peer.role(&guest_cert.device_public_key, now).unwrap(),
         collab_types::Role::Editor
     );
     let access = peer.governance().governed_access(now).unwrap();
@@ -709,10 +705,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .unwrap()
     );
     assert_eq!(
-        restored
-            .permissions(guest_cert.device_public_key, now)
-            .unwrap()
-            .role,
+        restored.role(&guest_cert.device_public_key, now).unwrap(),
         collab_types::Role::Commenter
     );
     assert!(
@@ -727,10 +720,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .unwrap()
     );
     assert_eq!(
-        restored
-            .permissions(guest_cert.device_public_key, now)
-            .unwrap()
-            .role,
+        restored.role(&guest_cert.device_public_key, now).unwrap(),
         collab_types::Role::Viewer
     );
     restored
@@ -2628,9 +2618,7 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
             .unwrap()
     );
     assert_eq!(
-        peer.permissions(guest_cert.device_public_key, now)
-            .unwrap()
-            .role,
+        peer.role(&guest_cert.device_public_key, now).unwrap(),
         collab_types::Role::Editor
     );
 }

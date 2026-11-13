@@ -53,9 +53,12 @@ impl Workspaces {
         let member = governed.peer().permissions(device.device_public_key, at)?;
         let cx = Context::at_time(at);
         let device_key = hex::encode(device.device_public_key);
+        let person = member
+            .person_id()
+            .ok_or_else(|| CollaborationError::new("the caller is no person's device"))?;
         let grants = share::share_grants(
             &member.policy,
-            (&member.person, &device_key, &member.authority(), &cx),
+            (person, &device_key, &member.authority(), &cx),
             share,
             node,
             access,
@@ -104,11 +107,10 @@ impl Workspaces {
         let mut governed = state.lock().await;
         let member = governed.peer().permissions(device.device_public_key, at)?;
         let cx = Context::at_time(at);
-        let ids = share::ended_by(
-            &member.policy,
-            (&member.person, &member.authority(), &cx),
-            share,
-        );
+        let person = member
+            .person_id()
+            .ok_or_else(|| CollaborationError::new("the caller is no person's device"))?;
+        let ids = share::ended_by(&member.policy, (person, &member.authority(), &cx), share);
         if ids.is_empty() {
             return Ok(0);
         }

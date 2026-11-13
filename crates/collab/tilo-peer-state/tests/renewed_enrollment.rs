@@ -194,9 +194,11 @@ impl Admitted {
             .with_current(joined, |view| {
                 Ok(view
                     .peer()
-                    .permissions(self.desk_key.verifying_key().to_bytes(), tilo_clock::wall())
-                    .ok()
-                    .map(|member| member.role))
+                    .role(
+                        &self.desk_key.verifying_key().to_bytes(),
+                        tilo_clock::wall(),
+                    )
+                    .ok())
             })
             .unwrap();
         assert_eq!(role, Some(collab_types::Role::Editor), "the same member");

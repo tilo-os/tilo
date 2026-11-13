@@ -1634,6 +1634,7 @@ impl Workspaces {
         let governed = governed.lock().await;
         let now = tilo_clock::wall();
         let member = governed.peer().permissions(device, now).ok()?;
+        let role = governed.peer().role(&device, now).ok()?;
         drop(governed);
         member
             .allows(
@@ -1641,7 +1642,7 @@ impl Workspaces {
                 tilo_action_policy::ActionKind::Undoable,
                 now,
             )
-            .then_some(member.role)
+            .then_some(role)
     }
 
     /// Workspace UUIDs, each sent after a governance decision on that workspace was
@@ -2881,8 +2882,8 @@ pub(crate) fn member_bootstrap(
     use tilo_peer_state::join::{JoinBootstrap, JoinTransportResponse, OwnerBootstrapV1};
     let now = tilo_clock::wall();
     let role = peer
-        .permissions(device.device_public_key, now)
-        .map_or(collab_types::Role::Viewer, |authority| authority.role);
+        .role(&device.device_public_key, now)
+        .unwrap_or(collab_types::Role::Viewer);
     // The replay after the bootstrap carries the workspace's governance, and
     // with it every member's certificate: the roster names only what the
     // device holds before that governance, or could not take from it.

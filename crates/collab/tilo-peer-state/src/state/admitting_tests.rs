@@ -103,9 +103,7 @@ fn an_administrator_admits_an_owners_invitation_and_an_editor_does_not() {
             .unwrap()
     );
     assert_eq!(
-        peer.permissions(guest.1.device_public_key, now)
-            .unwrap()
-            .role,
+        peer.role(&guest.1.device_public_key, now).unwrap(),
         Role::Viewer
     );
     let governance = received(&peer);
@@ -308,9 +306,7 @@ fn any_participant_admits_a_members_further_device() {
             .unwrap()
     );
     assert_eq!(
-        peer.permissions(further.device_public_key, now)
-            .unwrap()
-            .role,
+        peer.role(&further.device_public_key, now).unwrap(),
         Role::Viewer
     );
     assert!(
@@ -402,9 +398,7 @@ fn a_workspace_forgets_an_expired_page_devices_row_and_keeps_admitted_ones() {
         assert!(after.contains_key(&hex::encode(kept)));
     }
     assert_eq!(
-        peer.permissions(member.1.device_public_key, later)
-            .unwrap()
-            .role,
+        peer.role(&member.1.device_public_key, later).unwrap(),
         Role::Viewer
     );
 }

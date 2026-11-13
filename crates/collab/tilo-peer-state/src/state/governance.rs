@@ -3,8 +3,8 @@
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, GovernedMember, Grant,
-    GrantId, Grantee, MembershipError, ROOT, ReadDoc, RevocationList, Role, SystemTime,
-    Transactable, administrator_grant_id, err, governed_map, now_ns, workspace,
+    GrantId, Grantee, MembershipError, ROOT, ReadDoc, RevocationList, Role, Standing, SystemTime,
+    Transactable, administrator_grant_id, err, governed_map, now_ns, person_of, workspace,
 };
 use crate::join::WorkspaceId;
 use collab_types::signer::DeviceSigner;
@@ -1068,11 +1068,7 @@ impl PeerGovernanceMut<'_> {
 impl super::StatePeer {
     /// The current member writing with `key`, as its own device's authority
     /// holds it: what inviting is decided by.
-    fn inviter(
-        &self,
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Result<super::MemberAuthority, String> {
+    fn inviter(&self, key: &dyn DeviceSigner, now: SystemTime) -> Result<Standing, String> {
         let device = key.device_public_key();
         self.require_member_writer(key, now)?;
         self.membership(device, now)
@@ -1106,7 +1102,7 @@ impl super::StatePeer {
         member
             .policy
             .check_invite(
-                &member.person,
+                person_of(&member)?,
                 &member.authority(),
                 role,
                 &tilo_action_policy::Context::at_time(now),

@@ -42,7 +42,7 @@ fn the_owner_s_own_device_is_answered_the_strongest_collaborator_role() {
     let (peer, _, key, cert, now) = crate::admission_tests::seeded();
     let membership = proof(&peer, &cert, &key, now);
     assert_eq!(
-        peer.permissions(cert.device_public_key, now).unwrap().role,
+        peer.role(&cert.device_public_key, now).unwrap(),
         Role::Owner
     );
     assert_eq!(

@@ -8,6 +8,7 @@ use crate::{
     Acting, ActionKind, Answer, Authority, Context, Grant, TreePath, Verdict, WorkspacePolicy,
     roles,
 };
+use tilo_clock::time::SystemTime;
 
 /// Who made a change and what they may do.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,5 +159,11 @@ impl Standing {
     #[must_use]
     pub fn answer(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Answer {
         self.verdict(node, kind, cx).answer
+    }
+
+    /// Whether this standing may take `kind` at `node` at `now`.
+    #[must_use]
+    pub fn allows(&self, node: &TreePath, kind: ActionKind, now: SystemTime) -> bool {
+        self.answer(node, kind, &Context::at_time(now)) == Answer::Allow
     }
 }

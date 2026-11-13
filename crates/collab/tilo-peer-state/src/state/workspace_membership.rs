@@ -1,5 +1,5 @@
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
-use super::{StatePeer, SystemTime};
+use super::{StatePeer, SystemTime, person_of};
 use crate::workspace_membership::WorkspaceMembershipCommand;
 use collab_types::signer::DeviceSigner;
 use tilo_action_policy::{Change, Grantee, Role, TreePath, roles};
@@ -167,7 +167,7 @@ impl StatePeer {
         let device = hex::encode(caller.device_public_key);
         let grants = crate::workspace::share::share_grants(
             &member.policy,
-            (&member.person, &device, &authority, &cx),
+            (person_of(&member)?, &device, &authority, &cx),
             share,
             node,
             access,
@@ -196,7 +196,7 @@ impl StatePeer {
         let cx = tilo_action_policy::Context::at_time(now);
         let ended = crate::workspace::share::ended_by(
             &member.policy,
-            (&member.person, &authority, &cx),
+            (person_of(&member)?, &authority, &cx),
             share,
         );
         if ended.is_empty() {
@@ -223,9 +223,9 @@ impl StatePeer {
             WorkspaceMembershipCommand::Revoke { grant } => Change::Revoke(grant.clone()),
             _ => return Err("not a governance grant command".into()),
         };
-        let mut checked = member.policy.clone();
+        let mut checked = (*member.policy).clone();
         checked
-            .apply(&member.person, &authority, change, &cx, false)
+            .apply(person_of(&member)?, &authority, change, &cx, false)
             .map_err(|refusal| refusal.to_string())?;
         match command {
             WorkspaceMembershipCommand::Grant { grant } => {

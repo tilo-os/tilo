@@ -1013,7 +1013,6 @@ impl Engine {
             author = Some(
                 view.peer()
                     .permissions(device, now)
-                    .map(tilo_peer_state::MemberAuthority::standing)
                     .map_err(|error| error.to_string())?,
             );
             let mut seal = sealed.map(|keys| {

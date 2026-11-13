@@ -1,20 +1,20 @@
 //! Exact-source discovery using the governor's already-owned channel state.
 use super::{GovernedWorkspace, StatePeer, SystemTime, Workspaces};
+use tilo_action_policy::Standing;
 use tilo_actions::remote::{Caller, CallerPrincipal};
 use tilo_agent_participant::workspace_actions::{ViewDocument, ViewReadPolicy};
-use tilo_peer_state::MemberAuthority;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::WorkspaceId;
 
 const MAX_VIEW_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 
 impl GovernedWorkspace {
-    /// The authority `caller` holds here now: only a person on a device this
+    /// The standing `caller` holds here now: only a person on a device this
     /// workspace certified, whose certificate is current and whose membership
     /// it still records. A revoked device, a removed member and a stranger hold
     /// none. What a member may do with what they find is decided per action, by
-    /// this authority.
-    fn admitted(&self, caller: &Caller) -> Option<MemberAuthority> {
+    /// this standing.
+    fn admitted(&self, caller: &Caller) -> Option<Standing> {
         if !matches!(caller.principal(), CallerPrincipal::Person(_)) {
             return None;
         }
@@ -39,7 +39,7 @@ impl GovernedWorkspace {
     /// `caller`'s standing across the workspace now and its sandbox: what
     /// every record's policy holds before the record's own read is checked.
     fn workspace_policy(&self, caller: &Caller) -> Option<ViewReadPolicy> {
-        let standing = self.admitted(caller)?.standing();
+        let standing = self.admitted(caller)?;
         let sandbox = self.peer().governance().governed_sandbox().ok()?;
         Some(ViewReadPolicy {
             workspace: self.workspace().to_owned(),

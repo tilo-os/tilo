@@ -207,9 +207,7 @@ fn text(peer: &StatePeer, key: &str) -> Option<String> {
 }
 
 fn role(peer: &StatePeer, device: [u8; 32]) -> Option<collab_types::Role> {
-    peer.permissions(device, SystemTime::now())
-        .ok()
-        .map(|member| member.role)
+    peer.role(&device, SystemTime::now()).ok()
 }
 
 /// What every scenario here starts from: Alice's relay governing a room her

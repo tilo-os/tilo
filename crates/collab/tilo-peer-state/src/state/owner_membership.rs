@@ -29,8 +29,8 @@ impl StatePeer {
             .map_err(|error| error.to_string())?;
         // A device the workspace admitted and then removed is refused as removed,
         // not as a stranger.
-        match self.permissions(cert.device_public_key, now) {
-            Ok(member) => Ok(member.role),
+        match self.role(&cert.device_public_key, now) {
+            Ok(role) => Ok(role),
             Err(MembershipError::NoMembership) if self.has_governed_admission(cert) => {
                 Err("member has been removed".into())
             }

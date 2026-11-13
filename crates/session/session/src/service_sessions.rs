@@ -77,7 +77,7 @@ impl ServiceSessions {
                 .peer()
                 .permissions(certificate.device_public_key, now)
                 .map_err(|error| error.to_string())?;
-            if member.person != context.person() {
+            if member.person_id() != Some(context.person()) {
                 return Err("This person left the workspace".into());
             }
             // Reading the app's own record here is what the broker itself asks of a join: the

@@ -80,12 +80,10 @@ fn a_replica_from_the_roster_beside_governance_holds_what_the_whole_roster_gives
     for member in &members {
         assert_eq!(
             from_short
-                .permissions(member.device_public_key, now)
-                .map(|authority| authority.role)
+                .role(&member.device_public_key, now)
                 .map_err(|error| error.to_string()),
             from_whole
-                .permissions(member.device_public_key, now)
-                .map(|authority| authority.role)
+                .role(&member.device_public_key, now)
                 .map_err(|error| error.to_string()),
         );
     }

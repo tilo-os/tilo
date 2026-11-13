@@ -176,10 +176,11 @@ mod tests {
                     Ok(authority
                         .policy
                         .grants
-                        .into_iter()
+                        .iter()
                         .filter(|grant| {
                             grant.grantee == tilo_action_policy::Grantee::agent("scribe")
                         })
+                        .cloned()
                         .collect())
                 },
             )

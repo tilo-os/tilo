@@ -422,7 +422,7 @@ impl Workspaces {
             .peer()
             .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
             .ok()
-            .map(|permissions| permissions.policy)
+            .map(|permissions| (*permissions.policy).clone())
     }
 
     /// The role `user` holds in `workspace` as one of its members now: `None`

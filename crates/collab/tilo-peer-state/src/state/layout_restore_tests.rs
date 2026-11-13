@@ -55,10 +55,7 @@ fn a_state_stored_before_the_compact_governance_opens_brought_up() {
     assert!(restored.governance_brought_up());
     for guest in &guests {
         assert_eq!(
-            restored
-                .permissions(guest.device_public_key, now)
-                .unwrap()
-                .role,
+            restored.role(&guest.device_public_key, now).unwrap(),
             Role::Editor,
             "a guest the door let in stays in"
         );

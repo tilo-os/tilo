@@ -1064,10 +1064,11 @@ impl Host for Hosting {
             .with_current(identity, |view| {
                 view.peer()
                     .permissions(*device.as_bytes(), now)
-                    .map(|member| member.person)
                     .map_err(|error| error.to_string())
+                    .map(|member| member.person_id().map(str::to_owned))
             })
             .ok()
+            .flatten()
     }
 
     fn heard(&self, event: &Event, client: &SessionClient) -> bool {

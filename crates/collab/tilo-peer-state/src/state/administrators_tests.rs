@@ -47,7 +47,10 @@ fn an_administrator_governs_and_an_editor_does_not() {
     assert!(is_administrator(&peer, user, now));
     assert_eq!(governs(&peer, editor.device_public_key, now), EVERY);
     let held = peer.permissions(editor.device_public_key, now).unwrap();
-    assert_eq!(held.policy.role_of(&held.person), Some(Role::Editor));
+    assert_eq!(
+        held.policy.role_of(held.person_id().unwrap()),
+        Some(Role::Editor)
+    );
 
     // Setting a role takes the standing back with the grant.
     peer.governance_mut()
@@ -183,9 +186,7 @@ fn an_administrators_own_device_changes_a_role_and_an_editors_cannot() {
             .unwrap()
     );
     assert_eq!(
-        peer.permissions(editor.device_public_key, now)
-            .unwrap()
-            .role,
+        peer.role(&editor.device_public_key, now).unwrap(),
         Role::Viewer
     );
     assert!(!is_administrator(&peer, user, now));
@@ -231,9 +232,7 @@ fn a_members_membership_command_is_signed_by_their_own_device_and_decided_by_the
             .unwrap()
     );
     assert_eq!(
-        peer.permissions(editor.device_public_key, now)
-            .unwrap()
-            .role,
+        peer.role(&editor.device_public_key, now).unwrap(),
         Role::Viewer
     );
 }

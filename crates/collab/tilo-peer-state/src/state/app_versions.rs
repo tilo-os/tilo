@@ -15,7 +15,7 @@ use tilo_action_policy::roles::governance;
 use tilo_user_identity::DeviceCert;
 
 use super::facades::PeerGovernance;
-use super::{StatePeer, SystemTime, err, now_ns};
+use super::{StatePeer, SystemTime, err, now_ns, person_of};
 use crate::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
 
 /// The governed map that keeps the workspace's app versions, by app id.
@@ -100,7 +100,7 @@ impl StatePeer {
                 false,
             )
             .map_err(|refusal| refusal.to_string())?;
-        Ok(member.person)
+        Ok(person_of(&member)?.to_owned())
     }
 
     /// Write or remove the version of `app` in one governed commit.

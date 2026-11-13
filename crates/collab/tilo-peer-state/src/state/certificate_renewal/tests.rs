@@ -157,9 +157,7 @@ fn a_renewed_certificate_takes_the_place_of_the_expired_one_and_keeps_the_role()
     assert!(peer.certificates().contains(&renewed));
     assert!(!peer.certificates().contains(&held));
     assert_eq!(
-        peer.permissions(device.verifying_key().to_bytes(), now)
-            .unwrap()
-            .role,
+        peer.role(&device.verifying_key().to_bytes(), now).unwrap(),
         Role::Editor,
         "the same member, with the same role"
     );

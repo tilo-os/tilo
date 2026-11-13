@@ -47,6 +47,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tilo_action_policy::{Actor, MemberId};
 use tilo_actions::remote::{
     ActionHost, Caller, InvocationReceipt, InvocationState, ReceiptStatus, RemoteActionFrame,
     RemoteActionMessage, UpdateMark,
@@ -643,22 +644,19 @@ impl ActionPlane {
         let certificate = certificate.ok_or(ActionHostError::NotPermitted)?;
         // The device is its own principal when its person delegated it: an
         // agent is the agent, a bot the bot, never the person.
-        let caller = match authority
-            .delegate
-            .and_then(|delegation| delegation.grantee())
-        {
-            Some(tilo_action_policy::Grantee::Member(tilo_action_policy::MemberId::Agent(
-                agent,
-            ))) => Caller::delegated_agent(agent, certificate.user_public_key, source),
-            Some(tilo_action_policy::Grantee::Member(tilo_action_policy::MemberId::Bot(
-                installation,
-            ))) => Caller::bot(installation, certificate.user_public_key, source),
+        let caller = match &authority.acting.by {
+            Actor::Member(MemberId::Agent(agent)) => {
+                Caller::delegated_agent(agent.clone(), certificate.user_public_key, source)
+            }
+            Actor::Member(MemberId::Bot(installation)) => {
+                Caller::bot(installation.clone(), certificate.user_public_key, source)
+            }
             _ => Caller::authenticated(certificate.user_public_key, source),
         };
         Ok((
             caller
                 .in_workspace(action.workspace.clone())
-                .from_foreign_device(authority.foreign),
+                .from_foreign_device(authority.acting.foreign_device),
             action.workspace.clone(),
         ))
     }

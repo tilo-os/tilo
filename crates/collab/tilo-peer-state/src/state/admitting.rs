@@ -3,10 +3,10 @@
 use super::{
     AcceptedCheckpoint, ActionKind, AdmissionError, AdmissionReport, ArtifactKind, AutoCommit,
     BTreeMap, Document, DocumentAdmission, DocumentMutation, DroppedInput, Duration,
-    Ed25519PublicKey, Held, InboundState, InputDisposition, MemberAuthority, MissingPrerequisite,
-    NeighbourMsg, OpKind, ReceiveOutcome, Route, SignedOp, StatePeer, SystemTime, backend,
-    empty_genesis, empty_genesis_op, err, peer_handle, sealed_compaction, sealed_history,
-    workspace,
+    Ed25519PublicKey, Held, InboundState, InputDisposition, MissingPrerequisite, NeighbourMsg,
+    OpKind, ReceiveOutcome, Route, SignedOp, Standing, StatePeer, SystemTime, backend,
+    empty_genesis, empty_genesis_op, err, peer_handle, person_of, sealed_compaction,
+    sealed_history, workspace,
 };
 use crate::document;
 
@@ -214,7 +214,7 @@ impl StatePeer {
             tilo_desktop_model::shared_record::guard::may_write(
                 &app_id,
                 &record_id,
-                &member.person,
+                person_of(&member)?,
             )
             .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
         }
@@ -628,7 +628,7 @@ impl StatePeer {
         &self,
         doc: &AutoCommit,
         before: &[automerge::ChangeHash],
-        member: &MemberAuthority,
+        member: &Standing,
         now: SystemTime,
     ) -> Result<(), AdmissionError> {
         use tilo_desktop_model::ownership::act_node;
@@ -645,7 +645,7 @@ impl StatePeer {
             doc,
             before,
             &tilo_desktop_model::shared_record::guard::Writer {
-                person: &member.person,
+                person: person_of(member)?,
                 members: members.as_ref(),
                 allows: &allows,
             },

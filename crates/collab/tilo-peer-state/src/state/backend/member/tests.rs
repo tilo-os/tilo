@@ -65,11 +65,12 @@ fn fixture() -> (StatePeer, [u8; 32], SystemTime) {
 fn current_member_rechecks_removal() {
     let (mut peer, source, now) = fixture();
     let expected = peer.permissions(source, now).unwrap();
-    assert_eq!(expected.role, Role::Editor);
+    assert_eq!(peer.role(&source, now).unwrap(), Role::Editor);
     // A blocked member is no longer current.
-    let block = expected
-        .policy
-        .block(&expected.person, Grantee::person("a different person"));
+    let block = expected.policy.block(
+        expected.person_id().unwrap(),
+        Grantee::person("a different person"),
+    );
     put_grant(&mut peer, &block);
     assert!(peer.permissions(source, now).is_err());
 }
@@ -212,8 +213,8 @@ fn make_foreign(peer: &mut StatePeer, source: &[u8; 32]) {
 }
 fn assert_foreign(peer: &StatePeer, source: [u8; 32], now: SystemTime, role: Role) {
     let legacy = peer.permissions(source, now).unwrap();
-    assert_eq!(legacy.role, role);
-    assert!(legacy.foreign);
+    assert_eq!(peer.role(&source, now).unwrap(), role);
+    assert!(legacy.acting.foreign_device);
     let invite = roles::governance_action(peer.workspace_id(), roles::governance::INVITE);
     assert!(!legacy.allows(&invite, ActionKind::Undoable, now));
 }
@@ -224,7 +225,7 @@ fn a_foreign_device_acts_with_at_most_what_such_a_device_may() {
     let workspace = peer.core.workspace_doc.as_mut().unwrap();
     workspace.put(ROOT, "owner", person.as_str()).unwrap();
     workspace.commit();
-    assert_eq!(peer.permissions(source, now).unwrap().role, Role::Owner);
+    assert_eq!(peer.role(&source, now).unwrap(), Role::Owner);
 
     make_foreign(&mut peer, &source);
     assert_foreign(&peer, source, now, Role::Owner);
@@ -257,12 +258,12 @@ fn a_foreign_device_is_not_bounded_in_the_workspace_made_on_it() {
     workspace.put(ROOT, "owner", person.as_str()).unwrap();
     workspace.commit();
     make_foreign(&mut peer, &source);
-    assert!(peer.permissions(source, now).unwrap().foreign);
+    assert!(peer.permissions(source, now).unwrap().acting.foreign_device);
 
     peer.core.origin = source;
     let member = peer.permissions(source, now).unwrap();
-    assert_eq!(member.role, Role::Owner);
-    assert!(!member.foreign);
+    assert_eq!(peer.role(&source, now).unwrap(), Role::Owner);
+    assert!(!member.acting.foreign_device);
 }
 /// Read is a kind like any other: a Deny on Read below the workspace answers Deny
 /// for exactly the nodes under it, the most specific grant winning, while the
@@ -332,7 +333,7 @@ fn another_member_neither_reads_nor_writes_a_members_own_record() {
     let own = collab_types::member_record_id(&person, "chat.drafts");
     let member = peer.permissions(source, now).unwrap();
     assert_eq!(
-        member.role,
+        peer.role(&source, now).unwrap(),
         Role::Owner,
         "the owner, who reads everything else"
     );
@@ -363,7 +364,7 @@ fn another_member_neither_reads_nor_writes_a_members_own_record() {
     workspace.commit();
     put_member(&mut peer, &person, Role::Viewer);
     let viewer = peer.permissions(source, now).unwrap();
-    assert_eq!(viewer.role, Role::Viewer);
+    assert_eq!(peer.role(&source, now).unwrap(), Role::Viewer);
     let own_node = collab_types::document_node(&workspace_id, "so.tilo.chat", &own);
     assert!(viewer.allows(&own_node, ActionKind::Undoable, now));
 }

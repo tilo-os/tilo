@@ -15,7 +15,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Grant, GrantId, Grantee, TreePath, WorkspacePolicy,
+    ActionKind, Answer, Grant, GrantId, Grantee, Standing, TreePath, WorkspacePolicy,
 };
 use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -102,7 +102,6 @@ pub(crate) use durable::{
 mod receiving;
 mod records;
 mod sealing;
-pub use authority::MemberAuthority;
 
 #[expect(
     clippy::needless_pass_by_value,
@@ -110,6 +109,12 @@ pub use authority::MemberAuthority;
 )]
 fn err(error: impl ToString) -> String {
     error.to_string()
+}
+/// The person a member's standing is for.
+pub(crate) fn person_of(standing: &Standing) -> Result<&str, String> {
+    standing
+        .person_id()
+        .ok_or_else(|| "the standing is for no person".to_owned())
 }
 pub(crate) fn now_ns(now: SystemTime) -> u64 {
     now.duration_since(SystemTime::UNIX_EPOCH)

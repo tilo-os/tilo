@@ -362,9 +362,8 @@ impl Workspaces {
         let mut workspace = state.lock().await;
         let at = system_time(now);
         let member = workspace.peer().permissions(device.device_public_key, at)?;
-        if member.foreign
-            || member.delegate.is_some()
-            || member.person != hex::encode(device.user_public_key)
+        if member.acting.delegated()
+            || member.person_id() != Some(hex::encode(device.user_public_key).as_str())
         {
             return Err(CollaborationError::new("only a person names themself"));
         }
@@ -1189,13 +1188,13 @@ impl Workspaces {
     ) -> Result<JoinReply, CollaborationError> {
         let role = workspace
             .peer()
-            .permissions(device, system_time(now))
+            .role(&device, system_time(now))
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         Ok(JoinReply::Admitted {
             workspace: workspace.workspace().to_owned(),
             workspace_id: workspace.workspace_id(),
             name: workspace.record.name.clone(),
-            role: match role.role {
+            role: match role {
                 collab_types::role::Role::Moderator => Role::Moderator,
                 collab_types::role::Role::Commenter => Role::Commenter,
                 collab_types::role::Role::Viewer => Role::Viewer,

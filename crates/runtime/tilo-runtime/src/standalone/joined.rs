@@ -325,7 +325,9 @@ impl Joined {
                 .peer()
                 .permissions(cert.device_public_key, SystemTime::now())
                 .map_err(|error| error.to_string())?
-                .person;
+                .person_id()
+                .ok_or("the device acts for no person")?
+                .to_owned();
             let document = view.peer().admitted_workspace().ok_or("no admitted room")?;
             let mut workspace = Workspace::in_workspace(
                 WorkspaceSlot::of_workspace(view.workspace_id()),

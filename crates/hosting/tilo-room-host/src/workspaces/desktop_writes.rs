@@ -207,9 +207,11 @@ impl Workspaces {
             .peer()
             .permissions(author, now)
             .map_err(|error| error.to_string())?;
+        let person = member
+            .person_id()
+            .ok_or("the writer is no person's device")?;
         // A person's view of the layout is theirs to write: every member reads it.
-        guard::may_write(&app_id, &record_id, &member.person)
-            .map_err(|refusal| refusal.to_string())?;
+        guard::may_write(&app_id, &record_id, person).map_err(|refusal| refusal.to_string())?;
         if !guard::is_shared_desktop(&app_id, &record_id) {
             // Nothing of the workspace's own layout is judged where this record holds none: what a
             // view names is the person's, and it is theirs alone.
@@ -236,7 +238,7 @@ impl Workspaces {
             .decide(
                 &mutation,
                 &guard::Writer {
-                    person: &member.person,
+                    person,
                     members: members.as_ref(),
                     allows: &allows,
                 },

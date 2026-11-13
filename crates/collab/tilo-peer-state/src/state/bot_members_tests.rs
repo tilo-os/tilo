@@ -843,7 +843,9 @@ fn the_owner_asks_for_a_directory_bot_and_takes_the_request_back() {
         governor
             .permissions(owner_device.device_public_key, now)
             .unwrap()
-            .person,
+            .person_id()
+            .unwrap()
+            .to_owned(),
         "the request names who asked"
     );
     assert_eq!(
