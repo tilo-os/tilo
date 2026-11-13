@@ -93,10 +93,6 @@ pub(crate) fn devices(value: Option<serde_json::Value>) -> Result<Vec<DeviceView
     let listed: Vec<FleetDevice> =
         serde_json::from_value(value.unwrap_or(serde_json::Value::Array(Vec::new())))
             .map_err(|_| "the device list the host answered is not readable".to_string())?;
-    views(listed)
-}
-
-pub(crate) fn views(listed: Vec<FleetDevice>) -> Result<Vec<DeviceView>, String> {
     listed
         .into_iter()
         .map(|device| {

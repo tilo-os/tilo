@@ -104,14 +104,6 @@ impl Page<'_> {
         } else {
             t("mesh-add-device")
         };
-        let add_device = Box::new(
-            self.bind_invocation(
-                Button::new("device_mesh.approve_personal_device", &personal_label)
-                    .with_enabled(!pairing),
-                DeviceMeshEffect::AddPersonalDevice,
-            ),
-        );
-
         let mut items = Vec::new();
         for entry in self.device_entries() {
             items.push(row(Box::new(
@@ -156,15 +148,22 @@ impl Page<'_> {
         } else {
             t("mesh-pair-home")
         };
-        items.push(setting_row_described(
-            &t("mesh-home-nas"),
-            &t("mesh-home-caption"),
-            Box::new(self.bind_invocation(
-                Button::new("device_mesh.approve_enrollment", &home_label).with_enabled(!pairing),
-                DeviceMeshEffect::PairHomeServer,
-            )),
-        ));
-        items.push(note(&t("mesh-personal-caption")));
+        let pair_home = self.bind_invocation(
+            Button::new("device_mesh.approve_enrollment", &home_label).with_enabled(!pairing),
+            DeviceMeshEffect::PairHomeServer,
+        );
+        items.push(row(Box::new(
+            ui::widget::Row::new()
+                .push(Box::new(pair_home))
+                .push(Box::new(ui::widget::Spacer::new())),
+        )));
+        let add_device = Box::new(
+            self.bind_invocation(
+                Button::new("device_mesh.approve_personal_device", &personal_label)
+                    .with_enabled(!pairing),
+                DeviceMeshEffect::AddPersonalDevice,
+            ),
+        );
         if let Some(status) = self.status.pairing_shown() {
             items.push(note(&status));
         }

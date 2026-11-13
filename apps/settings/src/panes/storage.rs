@@ -574,18 +574,9 @@ impl StorageModel {
     }
 
     fn poll_other_devices(&mut self) -> bool {
-        let Some(others) = self.others.as_mut() else {
-            return false;
-        };
-        let arrived = others.poll();
-        let changed = arrived.listed.is_some() || !arrived.summaries.is_empty();
-        if let Some(listed) = &arrived.listed {
-            self.fleet.keep_listed(listed);
-        }
-        for device in arrived.summaries {
-            self.fleet.adopt(device);
-        }
-        changed
+        self.others
+            .as_mut()
+            .is_some_and(|others| others.poll(&mut self.fleet))
     }
 
     fn refresh_sync(&mut self) {

@@ -1,104 +1,129 @@
 //! The storage summaries of the person's other devices, each asked of the
-//! device itself. The host's device list names the person's devices; each one
-//! that is neither this device nor revoked is asked for its `storage-summary`
-//! through the host's own-device route, which carries Settings' own action to
-//! that device and brings its answer back.
+//! device itself. The session's reading of the person's devices
+//! (`session:devices`, the list Sync between devices and Quick Settings show)
+//! names them; each one that is not this device is asked for its
+//! `storage-summary` through the host's own-device route, which carries
+//! Settings' own action to that device and brings its answer back.
 
 use runtime_fs::storage::ResidencySummary;
+use ui::collaboration::SessionResource;
 use ui::tilo_actions::remote::own_device;
 use ui::tilo_resource::Resource as _;
 
-use crate::device_fleet::{self, DeviceView};
+use crate::panes::device_mesh::{self, PersonalDevice};
 
-use super::{DeviceResidency, StorageEffect};
+use super::{DeviceResidency, Fleet, StorageEffect};
 
 struct Asked {
-    key: [u8; 32],
+    id: String,
     call: ui::InvocationCall,
 }
 
 pub(super) struct OtherDevices {
     remote: ui::RemoteActions,
-    list_call: Option<ui::InvocationCall>,
-    fleet: Vec<DeviceView>,
+    /// The session's devices, followed: the window is woken at each reading.
+    followed: Option<SessionResource>,
+    /// The person's other devices as last read.
+    others: Vec<PersonalDevice>,
     asked: Vec<Asked>,
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(super) struct Arrived {
-    pub listed: Option<Vec<String>>,
-    pub summaries: Vec<DeviceResidency>,
 }
 
 impl OtherDevices {
     pub(super) fn new(remote: ui::RemoteActions) -> Self {
+        let followed = device_mesh::follow_devices()
+            .inspect_err(|error| {
+                tracing::warn!(
+                    target: "tilo::settings",
+                    %error,
+                    "the session's devices are not followed"
+                );
+            })
+            .ok();
         Self {
             remote,
-            list_call: None,
-            fleet: Vec::new(),
+            followed,
+            others: Vec::new(),
             asked: Vec::new(),
         }
     }
 
-    /// Ask again, unless a round is still running.
+    /// Ask every other device again that is not still answering.
     pub(super) fn refresh(&mut self) {
-        if self.list_call.is_none() && self.asked.is_empty() {
-            self.list_call = Some(device_fleet::list(&self.remote));
-        }
+        ask(&self.remote, &mut self.asked, &self.others);
     }
 
-    pub(super) fn poll(&mut self) -> Arrived {
-        let mut arrived = Arrived::default();
-        if self.list_call.is_none() && self.asked.is_empty() {
-            return arrived;
+    /// Take in the newest reading and the answers that came; `true` when
+    /// `fleet` changed.
+    pub(super) fn poll(&mut self, fleet: &mut Fleet) -> bool {
+        let mut changed = false;
+        if let Some(devices) = self
+            .followed
+            .as_ref()
+            .and_then(device_mesh::newest_devices)
+            .and_then(Result::ok)
+        {
+            let others: Vec<PersonalDevice> =
+                devices.into_iter().filter(|device| !device.local).collect();
+            let fresh: Vec<PersonalDevice> = others
+                .iter()
+                .filter(|device| newly_reachable(&self.others, device))
+                .cloned()
+                .collect();
+            ask(&self.remote, &mut self.asked, &fresh);
+            let listed: Vec<String> = others.iter().map(|device| device.id.clone()).collect();
+            fleet.keep_listed(&listed);
+            self.others = others;
+            changed = true;
+        }
+        if self.asked.is_empty() {
+            return changed;
         }
         self.remote.poll();
-        if let Some(answer) = self.list_call.as_ref().and_then(device_fleet::settled) {
-            self.list_call = None;
-            if let Ok(devices) = answer.and_then(|output| device_fleet::devices(output.value)) {
-                self.asked = asked_of(&devices)
-                    .map(|device| Asked {
-                        key: device.key,
-                        call: ask(&self.remote, &device.key),
-                    })
-                    .collect();
-                arrived.listed = Some(
-                    asked_of(&devices)
-                        .map(|device| hex::encode(device.key))
-                        .collect(),
-                );
-                self.fleet = devices;
-            }
-        }
-        let fleet = &self.fleet;
+        let others = &self.others;
         self.asked
-            .retain(|asked| match device_fleet::settled(&asked.call) {
+            .retain(|asked| match crate::device_fleet::settled(&asked.call) {
                 None => true,
                 Some(Ok(output)) => {
-                    arrived
-                        .summaries
-                        .extend(residency_of(fleet, &asked.key, output.value));
+                    if let Some(device) = residency_of(others, &asked.id, output.value) {
+                        fleet.adopt(device);
+                        changed = true;
+                    }
                     false
                 }
                 Some(Err(_)) => false,
             });
-        arrived
+        changed
     }
 }
 
-fn asked_of(fleet: &[DeviceView]) -> impl Iterator<Item = &DeviceView> {
-    fleet
+/// Ask each of `devices` for its summary that is not still answering.
+fn ask(remote: &ui::RemoteActions, asked: &mut Vec<Asked>, devices: &[PersonalDevice]) {
+    for device in devices {
+        if !asked.iter().any(|known| known.id == device.id) {
+            asked.push(Asked {
+                id: device.id.clone(),
+                call: remote.invoke(
+                    own_device::target(),
+                    summary_request(&device.id).argument(),
+                    None,
+                ),
+            });
+        }
+    }
+}
+
+/// Whether `device` is to be asked now: it was not listed before, or it
+/// just came online or nearby, so it can answer where it could not.
+fn newly_reachable(before: &[PersonalDevice], device: &PersonalDevice) -> bool {
+    before
         .iter()
-        .filter(|device| !device.current && !device.revoked)
+        .find(|known| known.id == device.id)
+        .is_none_or(|known| !(known.online || known.nearby) && (device.online || device.nearby))
 }
 
-fn ask(remote: &ui::RemoteActions, key: &[u8; 32]) -> ui::InvocationCall {
-    remote.invoke(own_device::target(), summary_request(key).argument(), None)
-}
-
-fn summary_request(key: &[u8; 32]) -> own_device::Invocation {
+fn summary_request(id: &str) -> own_device::Invocation {
     own_device::Invocation {
-        device: hex::encode(key),
+        device: id.to_owned(),
         app: <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID.to_owned(),
         resource: crate::resource::Settings::KIND.to_owned(),
         action: StorageEffect::STORAGE_SUMMARY.id.to_owned(),
@@ -107,14 +132,14 @@ fn summary_request(key: &[u8; 32]) -> own_device::Invocation {
 }
 
 fn residency_of(
-    fleet: &[DeviceView],
-    key: &[u8; 32],
+    others: &[PersonalDevice],
+    id: &str,
     value: Option<serde_json::Value>,
 ) -> Option<DeviceResidency> {
-    let device = asked_of(fleet).find(|device| &device.key == key)?;
+    let device = others.iter().find(|device| device.id == id)?;
     let summary: ResidencySummary = serde_json::from_value(value?).ok()?;
     Some(DeviceResidency {
-        key: hex::encode(device.key),
+        key: device.id.clone(),
         label: device.label.clone(),
         current: false,
         summary,
@@ -123,19 +148,17 @@ fn residency_of(
 
 #[cfg(test)]
 mod tests {
-    use super::{asked_of, residency_of, summary_request};
-    use crate::device_fleet::DeviceView;
+    use super::{newly_reachable, residency_of, summary_request};
+    use crate::panes::device_mesh::PersonalDevice;
     use runtime_fs::storage::{ResidencySplit, ResidencySummary, WorkspaceResidency};
 
-    fn device(key: u8, label: &str, current: bool, revoked: bool) -> DeviceView {
-        DeviceView {
+    fn device(id: &str, label: &str, local: bool, online: bool) -> PersonalDevice {
+        PersonalDevice {
+            id: id.into(),
             label: label.into(),
-            key: [key; 32],
-            fingerprint: String::new(),
-            current,
-            revoked,
-            kind: ui::tilo_actions::remote::identity_admin::KeyKind::Device,
-            ..crate::device_fleet::DeviceView::default()
+            online,
+            nearby: false,
+            local,
         }
     }
 
@@ -153,46 +176,43 @@ mod tests {
         .unwrap()
     }
 
-    /// Only the person's other devices are asked: not this one, not a
-    /// revoked one.
+    /// A device is asked when it first appears and again when it comes
+    /// back online, not at every reading.
     #[test]
-    fn only_other_unrevoked_devices_are_asked() {
-        let fleet = [
-            device(1, "This", true, false),
-            device(2, "Laptop", false, false),
-            device(3, "Lost phone", false, true),
-        ];
-        let asked: Vec<_> = asked_of(&fleet).map(|device| device.key[0]).collect();
-        assert_eq!(asked, [2]);
+    fn a_device_is_asked_again_when_it_comes_back() {
+        let asked = |before: bool, now: (&str, bool)| {
+            newly_reachable(
+                &[device("bb", "", false, before)],
+                &device(now.0, "", false, now.1),
+            )
+        };
+        assert!(
+            asked(false, ("cc", false)),
+            "a device listed for the first time"
+        );
+        assert!(!asked(false, ("bb", false)), "a device still offline");
+        assert!(asked(false, ("bb", true)), "a device that came back online");
+        assert!(!asked(true, ("bb", true)), "a device that stayed online");
     }
 
-    /// An answer is taken in only for a device the list names as one of
+    /// An answer is taken in only for a device the session lists as one of
     /// the person's other devices; one from any other key is ignored.
     #[test]
-    fn an_answer_from_a_key_outside_the_fleet_is_ignored() {
-        let fleet = [
-            device(1, "This", true, false),
-            device(2, "Laptop", false, false),
-            device(3, "Lost phone", false, true),
-        ];
-        let card = residency_of(&fleet, &[2; 32], Some(summary())).expect("a fleet device");
+    fn an_answer_from_a_device_outside_the_list_is_ignored() {
+        let others = [device("bb", "Laptop", false, true)];
+        let card = residency_of(&others, "bb", Some(summary())).expect("a listed device");
         assert_eq!(card.label, "Laptop");
-        assert_eq!(card.key, hex::encode([2; 32]));
+        assert_eq!(card.key, "bb");
         assert!(!card.current);
         assert_eq!(card.summary.workspaces[0].split.only_here_bytes, 7);
-        for key in [[9; 32], [1; 32], [3; 32]] {
-            assert!(
-                residency_of(&fleet, &key, Some(summary())).is_none(),
-                "{key:?} is not one of the person's other devices"
-            );
-        }
-        assert!(residency_of(&fleet, &[2; 32], Some(serde_json::json!("x"))).is_none());
-        assert!(residency_of(&fleet, &[2; 32], None).is_none());
+        assert!(residency_of(&others, "zz", Some(summary())).is_none());
+        assert!(residency_of(&others, "bb", Some(serde_json::json!("x"))).is_none());
+        assert!(residency_of(&others, "bb", None).is_none());
     }
 
     #[test]
     fn the_request_asks_the_device_for_settings_own_summary() {
-        let request = summary_request(&[2; 32]);
+        let request = summary_request(&hex::encode([2; 32]));
         assert_eq!(request.app, "so.tilo.settings");
         assert_eq!(request.device, hex::encode([2; 32]));
         let checked = request.check().expect("a valid own-device invocation");

@@ -926,6 +926,22 @@ pub struct PersonalDevice {
     pub local: bool,
 }
 
+/// Follow the session's reading of the person's devices. Nothing waits for it: the window is
+/// woken at each reading.
+pub(crate) fn follow_devices() -> Result<ui::collaboration::SessionResource, String> {
+    ui::collaboration::SessionResource::follow(SESSION_DEVICES, ui::WakeHandle::new())
+}
+
+/// The newest reading `followed` brought since it was last asked; `None` when none came.
+pub(crate) fn newest_devices(
+    followed: &ui::collaboration::SessionResource,
+) -> Option<Result<Vec<PersonalDevice>, String>> {
+    let reading = followed.latest()?;
+    Some(reading.and_then(|reading| {
+        devices_in(&reading).ok_or_else(|| "the reading does not read".to_owned())
+    }))
+}
+
 /// The person's devices `reading` lists; `None` when it does not read.
 fn devices_in(reading: &str) -> Option<Vec<PersonalDevice>> {
     let reading: SessionDevices = serde_json::from_str(reading).ok()?;
@@ -945,22 +961,8 @@ impl MeshRead {
     fn of(config_path: PathBuf, devices: bool, now: SystemTime) -> Self {
         let (config, status) = match RelayConfig::load(&config_path) {
             Ok(config) => (config, MeshStatus::Ready),
-            Err(tilo_relay_protocol::config::ConfigError::Io(error))
-                if error.kind() == std::io::ErrorKind::NotFound
-                    && config_path.parent().is_some_and(|dir| !dir.is_dir()) =>
-            {
-                tracing::warn!(
-                    target: "tilo::settings",
-                    config = %config_path.display(),
-                    "this device's sync settings are not visible from here"
-                );
-                let config = RelayConfig {
-                    work: WorkSetting::none(),
-                    services: tilo_relay_protocol::ServiceCapabilities::default(),
-                    ..RelayConfig::default()
-                };
-                (config, MeshStatus::ConfigUnreadable)
-            }
+            // No sync settings file: this device was never set up to sync, whether or not the
+            // directory that would hold it exists.
             Err(tilo_relay_protocol::config::ConfigError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
             {
@@ -1154,7 +1156,7 @@ impl DeviceMeshModel {
     /// window is woken at each reading, and the list shows that it is being read until the first
     /// one lands.
     fn follow_personal_devices(&mut self) {
-        match ui::collaboration::SessionResource::follow(SESSION_DEVICES, ui::WakeHandle::new()) {
+        match follow_devices() {
             Ok(followed) => self.session_devices = Some(followed),
             Err(error) => {
                 tracing::warn!(
@@ -1169,14 +1171,10 @@ impl DeviceMeshModel {
 
     /// Take in the session's newest reading of the person's devices.
     fn take_personal_devices(&mut self) {
-        let Some(reading) = self
-            .session_devices
-            .as_ref()
-            .and_then(ui::collaboration::SessionResource::latest)
-        else {
+        let Some(reading) = self.session_devices.as_ref().and_then(newest_devices) else {
             return;
         };
-        if let Ok(Some(devices)) = reading.map(|reading| devices_in(&reading)) {
+        if let Ok(devices) = reading {
             self.changed |= self.personal_devices_unavailable;
             self.personal_devices_unavailable = false;
             if self.personal_devices.as_ref() != Some(&devices) {
@@ -2059,11 +2057,12 @@ mod tests {
     }
 
     #[test]
-    fn invisible_relay_state_is_unreadable_not_unconfigured() {
+    fn a_device_without_sync_settings_is_unconfigured_not_unreadable() {
         let dir = tempfile::tempdir().unwrap();
-        let hidden = dir.path().join("etc-tilo").join("relay.toml");
-        let pane = DeviceMeshModel::with_path(&hidden);
-        assert_eq!(pane.status, MeshStatus::ConfigUnreadable);
+        let absent = dir.path().join("etc-tilo").join("relay.toml");
+        let pane = DeviceMeshModel::with_path(&absent);
+        assert_eq!(pane.status, MeshStatus::NotConfigured);
+        assert!(pane.status.settings_trouble_shown().is_none());
         let config = RelayConfig {
             state_root: dir.path().join("missing").join("tilo-relay"),
             ..RelayConfig::default()
