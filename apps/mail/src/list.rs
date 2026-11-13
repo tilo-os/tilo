@@ -25,35 +25,40 @@ use ui::widget::{
     ScrollRegion, SwipeAction, TaffyTreeExt, Widget,
 };
 
+use crate::i18n::CATALOG;
 use crate::model::{Folder, MessageId};
 use crate::state::{CtxAction, Intent, MailState, Shared};
 use crate::util::{format_relative, local_minutes};
 
-/// What the list says when it has no rows.
-pub(crate) fn zero_state(
-    has_messages: bool,
-    has_accounts: bool,
-    folder: Folder,
-) -> (Icon, &'static str, Option<&'static str>) {
-    if !has_accounts {
-        (
-            Icon::Mail,
-            "No account yet",
-            Some("Add an account to send and receive mail."),
-        )
-    } else if !has_messages {
-        (Icon::Inbox, "Nothing has arrived yet", None)
-    } else {
-        let title = match folder {
-            Folder::Inbox => "Your inbox is empty",
-            Folder::Starred => "No starred messages",
-            Folder::Drafts => "No drafts",
-            Folder::Sent => "No sent messages",
-            Folder::Archive => "Nothing archived",
-            Folder::Junk => "No junk",
-            Folder::Trash => "Trash is empty",
+/// What the list says when it has no rows: why it is empty, and — while no
+/// mail has ever arrived — the account its mail would come from, so an empty
+/// mailbox still leads somewhere.
+pub(crate) struct ZeroState {
+    icon: Icon,
+    title: String,
+    /// The account route's label: the pill the list paints and presses.
+    action: Option<String>,
+}
+
+/// The empty list for `folder`, given whether mail has ever arrived.
+pub(crate) fn zero_state(has_messages: bool, folder: Folder) -> ZeroState {
+    if !has_messages {
+        return ZeroState {
+            icon: Icon::Inbox,
+            title: crate::i18n::t("mail-zero-nothing-yet"),
+            action: Some(crate::i18n::t("mail-zero-account-settings")),
         };
-        (folder.icon(), title, None)
+    }
+    ZeroState {
+        icon: folder.icon(),
+        title: CATALOG.t_args(
+            "mail-zero-folder",
+            &[(
+                "folder",
+                ui::i18n::ArgValue::Text(crate::i18n::t(folder.message())),
+            )],
+        ),
+        action: None,
     }
 }
 
@@ -247,6 +252,9 @@ pub struct MessageList {
     hovered_presented: Option<Rect>,
     /// The first fetch's placeholder step the last frame painted.
     arriving_step: Option<ui::arriving::Step>,
+    /// The account route's pill on the empty list as last painted: the one
+    /// control that leads out of a mailbox no mail has arrived in.
+    zero_action: Option<Rect>,
 }
 
 impl MessageList {
@@ -267,6 +275,7 @@ impl MessageList {
             hovered_drawing: None,
             hovered_presented: None,
             arriving_step: None,
+            zero_action: None,
         }
     }
 
@@ -703,22 +712,21 @@ fn paint_unread_dot(ctx: &mut PaintCtx<'_>, face: &ListRowFace<'_>, row: Rect) {
 }
 
 /// The empty list's face: why there is nothing here, and what to do next.
-fn paint_zero_state(ctx: &mut PaintCtx<'_>, r: Rect, state: &MailState) {
-    let (icon, title, message) = zero_state(
-        !state.mailbox.messages.is_empty(),
-        !state.accounts.is_empty(),
-        state.folder,
-    );
+/// Returns the account route's pill, when the state offers one, so a press on
+/// it reaches the same place the window's Add account does.
+fn paint_zero_state(ctx: &mut PaintCtx<'_>, r: Rect, state: &MailState) -> Option<Rect> {
+    let zero = zero_state(!state.mailbox.messages.is_empty(), state.folder);
     EmptyState::paint(
         ctx,
         r,
         &EmptyStateContent {
-            icon: Some(icon),
-            message,
-            ..EmptyStateContent::new(title)
+            icon: Some(zero.icon),
+            title: &zero.title,
+            action_label: zero.action.as_deref(),
+            ..EmptyStateContent::new("")
         },
         Point::new(-1.0, -1.0),
-    );
+    )
 }
 
 impl Widget for MessageList {
@@ -750,6 +758,7 @@ impl Widget for MessageList {
         let state = shared.borrow();
         self.theme = theme.clone();
         self.region.set_viewport(r, theme);
+        self.zero_action = None;
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
         if state.outbox_open {
             // The outbox is a place of its own: what waits to leave, and why
@@ -774,7 +783,7 @@ impl Widget for MessageList {
         if rows.is_empty() {
             self.slots.clear();
             self.region.set_content_size(r.width(), 0.0);
-            paint_zero_state(&mut ctx, r, &state);
+            self.zero_action = paint_zero_state(&mut ctx, r, &state);
             return;
         }
 
@@ -894,7 +903,16 @@ impl Widget for MessageList {
             } => {
                 let held = ctx.modifiers.state();
                 let picking = held.control_key() || held.super_key() || held.shift_key();
-                if let Some(point) = self.pointer
+                let route = self
+                    .pointer
+                    .filter(|point| self.zero_action.is_some_and(|pill| pill.contains(*point)));
+                if route.is_some() {
+                    self.shared
+                        .borrow_mut()
+                        .push_intent(Intent::AccountSettings);
+                    *ctx.handled = true;
+                    self.dirty = true;
+                } else if let Some(point) = self.pointer
                     && picking
                     && self.pick(point, held.shift_key())
                 {
@@ -1137,13 +1155,19 @@ mod tests {
 
     #[test]
     fn every_empty_list_says_one_thing() {
-        let (_, title, message) = zero_state(false, false, Folder::Inbox);
-        assert_eq!(title, "No account yet");
-        assert!(message.is_some());
+        let nothing_yet = zero_state(false, Folder::Inbox);
+        assert_eq!(nothing_yet.title, crate::i18n::t("mail-zero-nothing-yet"));
+        assert!(
+            nothing_yet.action.is_some(),
+            "a mailbox no mail has arrived in offers its account route"
+        );
         for folder in Folder::ALL {
-            let (_, title, message) = zero_state(true, true, folder);
-            assert!(message.is_none(), "{folder:?} needs one sentence");
-            assert!(title.chars().next().is_some_and(char::is_uppercase));
+            let empty = zero_state(true, folder);
+            assert!(
+                empty.action.is_none(),
+                "{folder:?} is a folder of a working mailbox, not an account to fix"
+            );
+            assert!(empty.title.chars().next().is_some_and(char::is_uppercase));
         }
     }
 }

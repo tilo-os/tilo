@@ -172,6 +172,9 @@ pub enum Intent {
     /// Ask the app-owned modal layer to confirm an all-Trash bulk purge. The
     /// selection remains local; no purge action is authored until confirmed.
     ConfirmBulkPurge,
+    /// Go to where accounts are added and changed: the account route an empty
+    /// mailbox offers.
+    AccountSettings,
 }
 
 /// A message waiting to leave in an account's outbox: who it goes to, what it

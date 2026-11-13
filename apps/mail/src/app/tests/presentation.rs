@@ -139,3 +139,60 @@ fn presentation_state_stays_local() {
         );
     }
 }
+
+/// A window with no account is the person's whole way into Mail: it must name
+/// the account route, in the language the person reads, and activating that
+/// named control must reach Settings' External Accounts — the same door the
+/// pill and the window bar's Add account take.
+#[test]
+fn a_fresh_window_offers_adding_an_account() {
+    fn route_named(node: &ui::a11y::AccessNode, action: &str) -> Option<String> {
+        if node.action_target.as_deref() == Some(action) && node.role == ui::a11y::Role::Button {
+            return node.name.clone();
+        }
+        node.children
+            .iter()
+            .find_map(|child| route_named(child, action))
+    }
+
+    let mut mail = MailApp::new_first_run();
+    let mut doc = crate::resource::TestMail::doc();
+    mail.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+    mail.sync(&doc, &automerge::ROOT);
+    mail.layout_for_test(1100.0, 780.0);
+    let window = mail
+        .accessibility()
+        .expect("a fresh Mail window has semantics");
+    assert_eq!(
+        route_named(&window, ACCOUNT_ROUTE).as_deref(),
+        Some("Open External accounts"),
+        "the window's own tree names the account route, not only its page"
+    );
+    assert!(
+        mail.perform_semantic_action(
+            ACCOUNT_ROUTE,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ),
+        "the named control activates"
+    );
+    assert_eq!(
+        mail.opened_links,
+        ["settings://external_accounts"],
+        "and takes the person where an account is added"
+    );
+
+    // The same window read in German names the route in German.
+    crate::i18n::CATALOG.set_locale("de-DE");
+    let mut german = MailApp::new_first_run();
+    german.layout_for_test(1100.0, 780.0);
+    let window = german
+        .accessibility()
+        .expect("a fresh Mail window has semantics");
+    assert_eq!(
+        route_named(&window, ACCOUNT_ROUTE).as_deref(),
+        Some("Externe Konten öffnen"),
+    );
+    crate::i18n::CATALOG.set_locale("en-US");
+}

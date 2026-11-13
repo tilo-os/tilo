@@ -60,6 +60,8 @@ mod tests {
                 "mail-compose-prompt-add",
                 "mail-compose-prompt-cancel",
                 "mail-contact-write",
+                "mail-zero-nothing-yet",
+                "mail-zero-account-settings",
                 "mail-a11y-bulk-select",
                 "mail-a11y-bulk-done",
                 "mail-a11y-preview-unread",

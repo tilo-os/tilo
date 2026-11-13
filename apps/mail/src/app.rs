@@ -287,6 +287,11 @@ fn engine_error_text(context: &str, message: &str, account: &str) -> String {
 /// Accounts, the one account editor.
 const ACCOUNT_SETTINGS_LINK: &str = "settings://external_accounts";
 
+/// The account route's one action: the onboarding page's pill, the empty
+/// list's pill and the window bar's Add account all lead there, whether a
+/// person presses it or assistive technology activates it.
+const ACCOUNT_ROUTE: &str = "mail.add-account";
+
 /// The scheme of the activation URIs Mail's notifications carry.
 const NOTIFICATION_SCHEME: &str = "tilo-mail";
 /// The one tag new-mail notifications share: a newer one replaces the last.
@@ -788,7 +793,7 @@ impl MailApp {
                 .with_icon(Icon::Mail)
                 .with_message(CATALOG.t("mail-first-run-hint"))
                 .with_action(CATALOG.t("mail-first-run-action"))
-                .with_action_id("mail.add-account"),
+                .with_action_id(ACCOUNT_ROUTE),
             first_run_node: None,
             compose: Box::new(ComposeWindow::new(ComposeFormat::default())),
             shortcuts: MailShortcutsOverlay::new(),
@@ -1556,6 +1561,7 @@ impl MailApp {
                             Some("Permanent deletion requires an all-Trash selection".into());
                     }
                 }
+                Intent::AccountSettings => self.open_account_settings(),
             }
         }
         self.dirty = true;
@@ -3963,6 +3969,12 @@ impl MailApp {
             );
         }
         children.extend(messages);
+        // An empty mailbox no mail has arrived in offers the one thing a
+        // person can do there: its account's settings, where the account is
+        // added, checked and fixed.
+        if total == 0 && state.mailbox.messages.is_empty() {
+            children.push(Self::account_route_node());
+        }
         let mut list = AccessNode::new(Role::List)
             .with_name(name)
             .with_children(children);
@@ -4564,9 +4576,7 @@ impl Widget for MailApp {
             return self.menu.accessibility();
         }
         if self.is_first_run() {
-            // `first_run` remains a real child widget, which supplies the
-            // onboarding action and its existing activation path.
-            return Some(AccessNode::new(Role::Window).with_name(crate::i18n::t("mail-title")));
+            return Some(self.empty_window_accessibility());
         }
 
         let st = self.shared.borrow();
@@ -4668,6 +4678,10 @@ impl Widget for MailApp {
         if let Some(raw) = target.strip_prefix("mail.outbox:") {
             self.shared.borrow_mut().select_queued(raw);
             self.dirty = true;
+            return true;
+        }
+        if target == ACCOUNT_ROUTE {
+            self.open_account_settings();
             return true;
         }
 
@@ -5969,6 +5983,9 @@ use ui::i18n::ArgValue;
 
 #[path = "mailroom_rows.rs"]
 mod mailroom_rows;
+
+#[path = "app/empty.rs"]
+mod empty;
 
 #[cfg(test)]
 mod tests;

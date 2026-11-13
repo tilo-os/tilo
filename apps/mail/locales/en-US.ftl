@@ -8,6 +8,12 @@ mail-first-run-title = No email account yet
 mail-first-run-hint = Add an email account in Settings, under External accounts.
 mail-first-run-action = Open External accounts
 
+## The empty message list: what is not here, and the account its mail would
+## come from while none has arrived. { $folder } is the folder's own name.
+mail-zero-nothing-yet = Nothing has arrived yet
+mail-zero-account-settings = Open account settings
+mail-zero-folder = No messages in { $folder }
+
 ## Compose window
 mail-compose-label-to = To
 mail-compose-label-cc = Cc

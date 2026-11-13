@@ -5,6 +5,12 @@ mail-first-run-title = Noch kein E-Mail-Konto
 mail-first-run-hint = Füge in den Einstellungen unter Externe Konten ein E-Mail-Konto hinzu.
 mail-first-run-action = Externe Konten öffnen
 
+## Die leere Nachrichtenliste: was nicht da ist, und das Konto, aus dem die
+## Post käme, solange keine angekommen ist. { $folder } ist der Ordnername.
+mail-zero-nothing-yet = Noch keine Post eingegangen
+mail-zero-account-settings = Kontoeinstellungen öffnen
+mail-zero-folder = Keine Nachrichten in { $folder }
+
 ## Fenster zum Schreiben
 mail-compose-label-to = An
 mail-compose-label-cc = Cc
