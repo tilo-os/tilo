@@ -29,6 +29,8 @@ use tilolang_tilo::instance::record::InstanceRecord;
 use ui::headless::FrameHarness;
 use ui::tilo_actions::{ActionContext, ActionInvoker, ActorKind};
 
+use crate::settle::{self, Woken};
+
 const TASKS: &str = "so.tilo.lang.tasks";
 const RUN: &str = "issue-7@8000000000000001";
 
@@ -327,6 +329,8 @@ struct Hosted {
     window: FrameHarness,
     sent: Rc<RefCell<Vec<CollabRequest>>>,
     inbox: Rc<RefCell<VecDeque<CollabEvent>>>,
+    /// What wakes the host when its work off the frame is ready to be taken in.
+    woken: Arc<Woken>,
     next: u64,
 }
 
@@ -351,14 +355,15 @@ impl Hosted {
         let _ = manager.poll();
         let record =
             InstanceRecord::new(automerge::AutoCommit::new(), manager, route.clone(), "ada");
-        let wake: tilolang_tilo::background::Waker = Arc::new(|| {});
+        let woken = Arc::new(Woken::default());
+        let wake: tilolang_tilo::background::Waker = woken.waker();
         let mut host = TilolangHost::new(None, Arc::clone(&wake));
         let kept = host.kept(TASKS).unwrap();
         let (ours, theirs) = Channel::pair().unwrap();
         let hosted = HostedInstance::with_record(
             Spec::new(TASKS, route.cluster_id.to_string(), 1, "ada"),
             record,
-            Arc::new(bundle.clone()),
+            Arc::new(bundle),
             &kept,
             Box::new(ChannelTransport::new(ours).unwrap()),
             &Rc::new(Phrases::new("en-US")),
@@ -376,6 +381,7 @@ impl Hosted {
             window,
             sent,
             inbox,
+            woken,
             next: 0,
         }
     }
@@ -404,61 +410,59 @@ impl Hosted {
             actor: invoker.map_or_else(|| "ada".to_owned(), |invoker| invoker.actor.clone()),
             context: ambient.cloned().map(Box::new),
         });
-        for _ in 0..2000 {
-            self.host.turn();
-            self.window.relayout();
-            let answered = self
-                .sent
-                .borrow()
-                .iter()
-                .rev()
-                .find_map(|request| match request {
-                    CollabRequest::UpdateInvocation {
-                        id: answered,
-                        update,
-                    } if *answered == id => Some(update.clone()),
-                    _ => None,
-                });
-            match answered {
-                Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. }) => return,
-                Some(other) => panic!("`{action}` on `{resource}` answered {other:?}"),
-                None => std::thread::sleep(std::time::Duration::from_millis(1)),
-            }
-        }
-        panic!("`{action}` on `{resource}` was never answered");
-    }
-
-    /// The published descriptors.
-    fn published(&self) -> Vec<(String, String, String)> {
-        self.host
-            .instances()
-            .next()
-            .map(|hosted| {
-                hosted
-                    .published()
+        let sent = Rc::clone(&self.sent);
+        settle::until(
+            &mut self.host,
+            &self.woken,
+            || settle::framed(&mut self.window),
+            &format!("`{action}` on `{resource}` is answered"),
+            |_| {
+                let answered = sent
+                    .borrow()
                     .iter()
-                    .map(|d| {
-                        (
-                            d.address.resource.clone(),
-                            d.address.action.clone(),
-                            d.action_label.clone(),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+                    .rev()
+                    .find_map(|request| match request {
+                        CollabRequest::UpdateInvocation {
+                            id: answered,
+                            update,
+                        } if *answered == id => Some(update.clone()),
+                        _ => None,
+                    });
+                match answered {
+                    Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. }) => Some(()),
+                    Some(other) => panic!("`{action}` on `{resource}` answered {other:?}"),
+                    None => None,
+                }
+            },
+        );
     }
+}
+
+/// The published descriptors of the instance `host` runs: its resource, action and label.
+fn published(host: &TilolangHost) -> Vec<(String, String, String)> {
+    host.instances()
+        .next()
+        .map(|hosted| {
+            hosted
+                .published()
+                .iter()
+                .map(|d| {
+                    (
+                        d.address.resource.clone(),
+                        d.address.action.clone(),
+                        d.action_label.clone(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl Window for Hosted {
     fn settle(&mut self) {
-        for _ in 0..40 {
-            let changed = self.host.turn();
-            self.window.relayout();
-            if !changed {
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-        }
+        settle::settle(&mut self.host, &self.woken, || {
+            settle::framed(&mut self.window)
+        });
     }
 
     fn record(&self) -> String {
@@ -467,41 +471,37 @@ impl Window for Hosted {
     }
 
     fn root(&mut self) -> String {
-        for _ in 0..400 {
-            let root = self
-                .published()
-                .into_iter()
-                .find(|(resource, _, label)| {
-                    resource.starts_with(&format!("tl:{TASKS}:")) && label == "New task"
-                })
-                .map(|(resource, _, _)| resource);
-            if let Some(root) = root {
-                return root;
-            }
-            self.host.turn();
-            self.window.relayout();
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        panic!("the root is published: {:?}", self.published());
+        settle::until(
+            &mut self.host,
+            &self.woken,
+            || settle::framed(&mut self.window),
+            "the root is published",
+            |host| {
+                published(host)
+                    .into_iter()
+                    .find(|(resource, _, label)| {
+                        resource.starts_with(&format!("tl:{TASKS}:")) && label == "New task"
+                    })
+                    .map(|(resource, _, _)| resource)
+            },
+        )
     }
 
     fn action(&mut self, resource: &str, name: &str) -> String {
         let want = name.to_owned();
-        for _ in 0..400 {
-            let found = self
-                .published()
-                .into_iter()
-                .find_map(|(published, action, _)| {
-                    (published == resource && action == want).then_some(action)
-                });
-            if let Some(action) = found {
-                return action;
-            }
-            self.host.turn();
-            self.window.relayout();
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        panic!("{resource} publishes `{name}`: {:?}", self.published());
+        settle::until(
+            &mut self.host,
+            &self.woken,
+            || settle::framed(&mut self.window),
+            &format!("{resource} publishes `{name}`"),
+            |host| {
+                published(host)
+                    .into_iter()
+                    .find_map(|(published, action, _)| {
+                        (published == resource && action == want).then_some(action)
+                    })
+            },
+        )
     }
 
     fn run(

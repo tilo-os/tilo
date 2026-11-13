@@ -1026,6 +1026,32 @@ impl TilolangHost {
                 .iter()
                 .any(|running| running.hosted.owes_a_frame())
     }
+
+    /// What [`Self::owes_work`] owes, in words: each app whose instance is opening, each app
+    /// whose change is being applied, and each window whose frame is coming. What a caller that
+    /// waited longer than it may says of the host it left.
+    #[must_use]
+    pub fn owed(&self) -> Vec<String> {
+        let mut owed: Vec<String> = self
+            .opening
+            .iter()
+            .map(|opening| format!("{} opening", opening.app))
+            .collect();
+        owed.extend(
+            self.appliers
+                .iter()
+                .map(|applier| format!("{} applying a change", applier.spec().app)),
+        );
+        for running in &self.running {
+            if running.hosted.owes_a_frame() {
+                owed.push(format!(
+                    "a frame for {}",
+                    running.hosted.record().route().app_id
+                ));
+            }
+        }
+        owed
+    }
 }
 
 /// Say each request in `events`, which reached the instance of `app` before its route was

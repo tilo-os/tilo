@@ -41,6 +41,8 @@ use tilolang_tilo::runtime::store::Store as _;
 use ui::headless::FrameHarness;
 use ui::widget::Widget;
 
+use crate::settle::{self, Woken};
+
 #[path = "hosted/chunks.rs"]
 mod chunks;
 
@@ -79,55 +81,12 @@ const TODAY: &str = "so.tilo.lang.today";
 /// The notebook whose notes are signed: what a workspace of a person's own looks like.
 const SIGNED: &str = "so.tilo.lang.signed";
 const VIEWPORT: (u32, u32) = (1280, 800);
-/// The turns in a row that change nothing before a window is taken to be at rest.
-const QUIET_TURNS: u32 = 20;
-/// The longest a settle waits for the host to be woken by the work it has off its frames.
+/// The longest a cost measurement waits for the host to be woken by the work it has off its
+/// frames.
 const WAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 type Sent = Rc<RefCell<Vec<CollabRequest>>>;
 type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
-
-/// What wakes the host: work it does off its frames (an index built from the record, the whole
-/// search index read) is ready to be taken in. A session's settle waits on it instead of taking
-/// frames until the work happens to be done.
-#[derive(Default)]
-struct Woken {
-    woken: Mutex<bool>,
-    signal: std::sync::Condvar,
-}
-
-impl Woken {
-    /// The host's waker: what the background work calls when its result waits.
-    fn waker(self: &Arc<Self>) -> tilolang_tilo::background::Waker {
-        let woken = Arc::clone(self);
-        Arc::new(move || woken.mark())
-    }
-
-    fn mark(&self) {
-        *self
-            .woken
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-        self.signal.notify_all();
-    }
-
-    /// Wait until the host is woken, at most `timeout`: the frames have nothing to take in
-    /// until then.
-    fn wait(&self, timeout: std::time::Duration) {
-        let (mut woken, _) = self
-            .signal
-            .wait_timeout_while(
-                self.woken
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-                timeout,
-                |woken| !*woken,
-            )
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Taken in, and the next work's wake reads again.
-        *woken = false;
-    }
-}
 
 /// The broker's end of the instance's connection.
 struct Broker {
@@ -262,8 +221,9 @@ impl Window {
         Self::Live(Box::new(app))
     }
 
-    /// The live window's frames, as its surface runs them, until it is at rest.
-    fn live_frame(app: &mut ui::App) {
+    /// The live window's frames, as its surface runs them, until it is at rest; whether it owes
+    /// another.
+    fn live_frame(app: &mut ui::App) -> bool {
         // The wake's input is all handled, as the window's event loop says once it is.
         app.input_handled(INPUT.with(std::cell::Cell::get));
         for _ in 0..3 {
@@ -272,6 +232,7 @@ impl Window {
                 break;
             }
         }
+        app.unsettled()
     }
 
     /// `event` as the live window's surface delivers it. A quick hand's events (and
@@ -285,9 +246,10 @@ impl Window {
         app.surface_input(&Region, event, false);
     }
 
-    fn frame(&mut self) {
+    /// The window's frame, and whether it owes another.
+    fn frame(&mut self) -> bool {
         match self {
-            Self::Harness(window) => window.relayout(),
+            Self::Harness(window) => settle::framed(window),
             Self::Live(app) => Self::live_frame(app),
         }
     }
@@ -442,6 +404,16 @@ struct Session {
     woken: Arc<Woken>,
     /// The broker's end of the instance's connection.
     broker: Box<dyn std::any::Any>,
+}
+
+/// Whether `host`'s instance reads the workspace's indexes: until then it shows the platform's
+/// loading state. An index being built answers from its first step, so this is reached before
+/// the whole workspace is read.
+fn index_ready(host: &TilolangHost) -> bool {
+    host.instances()
+        .next()
+        .and_then(|hosted| hosted.instance().host())
+        .is_some_and(|host| host.index_answers())
 }
 
 impl Session {
@@ -676,50 +648,52 @@ impl Session {
         published
     }
 
-    /// The host's frames and the window's, until neither has anything left to do. It reports
-    /// nothing: a turn here waits on work the instance does off the frame, and how many turns
-    /// that wait took is the machine's, not the window's. What a test counts of an interaction
-    /// is the work it did (`StoreStats`, `ReadStats`), and what it holds is the state it left —
+    /// The host's frames and the window's, until the host owes nothing: an instance opening, a
+    /// change being applied and a window with a frame coming all leave the window showing what
+    /// the workspace held before them. It reports nothing: how many turns the wait took is the
+    /// machine's, not the window's. What a test counts of an interaction is the work it did
+    /// (`StoreStats`, `ReadStats`), and what it holds is the state it left —
     /// `FrameHarness::frame_schedule` says whether the window came to rest.
     fn settle(&mut self) {
-        // An index built off the frame is what the window waits for: this is how long the wait
-        // is given before the frames are taken to be at rest.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        let mut quiet = 0_u32;
-        while quiet < QUIET_TURNS {
-            let changed = self.host.turn();
-            self.window.frame();
-            // The window reads what the first step of a build holds while the rest of the
-            // workspace is derived off the frame: at rest only once the store has read all of it.
-            let waiting = (!self.index_whole() || self.search_index_pending())
-                && std::time::Instant::now() < deadline;
-            if changed || waiting {
-                quiet = 0;
-            } else {
-                quiet = quiet.saturating_add(1);
-            }
-            if !changed {
-                if waiting {
-                    // What the window waits for is read beside its frames, and the host is woken
-                    // when it is done: wait on that wake, as a session's loop waits, instead of
-                    // taking frames until the work happens to be finished.
-                    self.woken.wait(WAKE_WAIT);
-                } else {
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
-            }
-        }
+        settle::settle(&mut self.host, &self.woken, || self.window.frame());
     }
 
-    /// Whether the window's instance reads the workspace's indexes: until then it shows the
-    /// platform's loading state. An index being built answers from its first step, so this is
-    /// reached before the whole workspace is read.
-    fn index_ready(&self) -> bool {
-        self.host
-            .instances()
-            .next()
-            .and_then(|hosted| hosted.instance().host())
-            .is_some_and(|host| host.index_answers())
+    /// The host's frames until it owes nothing, the window not drawn: what its instance answers
+    /// before the window's next frame.
+    fn settle_host(&mut self) {
+        settle::settle(&mut self.host, &self.woken, || false);
+    }
+
+    /// The window's frames until its instance reads the workspace's indexes: what its load
+    /// does before it opens the root, over the indexes it found.
+    fn wait_index(&mut self) {
+        settle::until(
+            &mut self.host,
+            &self.woken,
+            || self.window.frame(),
+            "the window reads the workspace's index",
+            |host| index_ready(host).then_some(()),
+        );
+    }
+
+    /// Close the window and let the host end its instance, as the session's loop does when a
+    /// person closes one: the index the window built reaches the disk, and the workspace's
+    /// index is there for the next window to open over.
+    fn close(self) {
+        let Self {
+            mut host,
+            window,
+            woken,
+            ..
+        } = self;
+        drop(window);
+        settle::until(
+            &mut host,
+            &woken,
+            || false,
+            "the window's instance ends",
+            |host| host.instances().next().is_none().then_some(()),
+        );
     }
 
     /// Whether the instance is still reading the whole of the workspace's search index off the
@@ -729,38 +703,6 @@ impl Session {
             .instances()
             .next()
             .is_some_and(Hosted::index_pending)
-    }
-
-    /// The window's frames until its instance reads the workspace's indexes: what its load
-    /// does before it opens the root, over the indexes it found.
-    fn wait_index(&mut self) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        while !self.index_ready() && std::time::Instant::now() < deadline {
-            let changed = self.host.turn();
-            self.window.frame();
-            if !changed {
-                self.woken.wait(std::time::Duration::from_millis(50));
-            }
-        }
-        assert!(self.index_ready(), "the window reads the workspace's index");
-    }
-
-    /// Close the window and let the host end its instance, as the session's loop does when a
-    /// person closes one: the index the window built reaches the disk, and the workspace's
-    /// index is there for the next window to open over.
-    fn close(self) {
-        let Self {
-            mut host, window, ..
-        } = self;
-        drop(window);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while host.instances().next().is_some() && std::time::Instant::now() < deadline {
-            host.turn();
-        }
-        assert!(
-            host.instances().next().is_none(),
-            "the window's instance ends with its window"
-        );
     }
 
     /// Whether the window's store has read the whole workspace: until it has, the lists it shows
@@ -1266,10 +1208,7 @@ fn typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
         if round % 3 == 2 {
             session.settle();
         } else {
-            for _ in 0..20 {
-                session.host.turn();
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            session.settle_host();
         }
         session.window.type_text("Note title");
         session.settle();

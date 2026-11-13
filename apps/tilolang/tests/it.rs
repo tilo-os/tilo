@@ -24,6 +24,7 @@ mod history_window;
 mod marks;
 mod narrow;
 mod opening;
+mod settle;
 mod support;
 mod sync;
 mod workspaces;

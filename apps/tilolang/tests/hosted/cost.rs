@@ -1314,7 +1314,7 @@ fn show_rows(session: &mut Session) -> u64 {
             session.woken.wait(std::time::Duration::from_millis(10));
         }
     }
-    let ready = session.index_ready();
+    let ready = index_ready(&session.host);
     let view = session.hosted().view();
     panic!(
         "the window never showed the workspace's rows: index ready {ready}, view {}, lists {:?}",
