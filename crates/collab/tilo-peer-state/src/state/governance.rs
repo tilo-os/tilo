@@ -9,6 +9,7 @@ use super::{
 };
 use collab_types::signer::DeviceSigner;
 use tilo_action_policy::Change;
+use crate::join::WorkspaceId;
 
 impl PeerGovernance<'_> {
     /// The sandbox capabilities the workspace's governance grants its apps.
@@ -485,7 +486,7 @@ impl PeerGovernance<'_> {
     /// challenge cannot be signed.
     pub fn membership_challenge(
         self,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         host: &DeviceCert,
         device_cert: &DeviceCert,
         request_id: [u8; 32],
@@ -513,7 +514,6 @@ impl PeerGovernance<'_> {
             }
         }
         crate::join::MembershipChallenge::new(
-            &self.peer.core.workspace,
             workspace_id,
             host,
             device_cert,
@@ -700,7 +700,7 @@ impl PeerGovernanceMut<'_> {
                     .map_err(tilo_user_identity::DisplayNameError::reason)
             })
             .transpose()?;
-        if redemption.join().grant().room != self.peer.core.workspace {
+        if redemption.join().grant().workspace_id.to_string() != self.peer.core.workspace {
             return Err("invitation is not for this workspace".into());
         }
         self.peer.require_inviter(key, now)?;

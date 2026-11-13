@@ -22,6 +22,7 @@ use tilo_relay_protocol::refusal::WORKSPACE_DELETED;
 
 use super::Workspaces;
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::WorkspaceId;
 
 /// The extension of the marker of a workspace this host deleted.
 pub(super) const DELETED: &str = "deleted";
@@ -94,7 +95,7 @@ impl Workspaces {
         crate::workspace_io::evict(&self.inner.host.workspaces, workspace_id).await;
         drop(governed);
         self.forget_deleted(workspace, workspace_id);
-        tracing::info!(%workspace, workspace_id, "governed room deleted");
+        tracing::info!(%workspace, workspace_id = %workspace_id, "governed workspace deleted");
         let _ = self
             .inner
             .deletions
@@ -107,7 +108,7 @@ impl Workspaces {
     /// deleted here: whoever asks for it is told so
     /// ([`WORKSPACE_DELETED`]), the same on every lane.
     #[must_use]
-    pub fn deleted(&self, workspace_id: u64) -> bool {
+    pub fn deleted(&self, workspace_id: WorkspaceId) -> bool {
         self.inner.direct.deleted(workspace_id)
     }
 
@@ -116,14 +117,14 @@ impl Workspaces {
     /// than its record (the content its members posted, app workers acting
     /// in it) lets go of it on hearing.
     #[must_use]
-    pub fn deletions(&self) -> tokio::sync::broadcast::Receiver<(String, u64)> {
+    pub fn deletions(&self) -> tokio::sync::broadcast::Receiver<(String, WorkspaceId)> {
         self.inner.deletions.subscribe()
     }
 
     /// Forget everything this host keeps of `workspace` (`workspace_id`),
     /// deleted: who owns it and what it took, who it listed, and its files. Its
     /// door went with its governance.
-    fn forget_deleted(&self, workspace: &str, workspace_id: u64) {
+    fn forget_deleted(&self, workspace: &str, workspace_id: WorkspaceId) {
         if let Some(own) = self.own()
             && let Err(error) = own.forget(workspace)
         {
@@ -159,7 +160,7 @@ pub(super) fn passed_over(
     match path.extension().and_then(|extension| extension.to_str()) {
         Some(DELETED) => {
             if let Some(workspace_id) =
-                stem.and_then(|stem| tilo_relay_protocol::room_workspace_id(stem).ok())
+                stem.and_then(tilo_relay_protocol::WorkspaceId::parse)
             {
                 direct.delete(workspace_id);
             }
@@ -193,16 +194,16 @@ pub(super) fn remove_files(dir: &Path, workspace: &str) {
         });
     let mut paths: Vec<_> = beside.collect();
     paths.push(dir.join(workspace).with_extension("room"));
-    if let (Some(state), Ok(workspace_id)) = (
+    if let (Some(state), Some(workspace_id)) = (
         dir.parent(),
-        tilo_relay_protocol::room_workspace_id(workspace),
+        tilo_relay_protocol::WorkspaceId::parse(workspace),
     ) {
         paths.push(state.join("workspaces").join(workspace_id.to_string()));
         paths.push(
             state
                 .join("store")
                 .join("workspaces")
-                .join(format!("{workspace_id:016x}")),
+                .join(workspace_id.to_string()),
         );
     }
     for path in paths {

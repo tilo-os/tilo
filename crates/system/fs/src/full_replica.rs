@@ -44,33 +44,10 @@ pub struct HomePeerBundle {
     /// Shell and relay workspace shards backed by this filesystem workspace: a
     /// desktop may attach one tree to several collaboration workspaces, so this
     /// mapping is authoritative for relay binding.
-    #[serde(default, with = "relay_workspace_ids_serde")]
-    pub relay_workspace_ids: Vec<u64>,
+    #[serde(default)]
+    pub relay_workspace_ids: Vec<collab_types::WorkspaceId>,
 }
 
-mod relay_workspace_ids_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S>(ids: &[u64], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        ids.iter()
-            .map(u64::to_string)
-            .collect::<Vec<_>>()
-            .serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Vec::<String>::deserialize(deserializer)?
-            .into_iter()
-            .map(|value| value.parse().map_err(serde::de::Error::custom))
-            .collect()
-    }
-}
 
 /// The one configuration file installed on a home peer: Tilo has one global Files
 /// namespace and one certified transport identity per device, so several filesystem
@@ -587,7 +564,10 @@ mod tests {
                 capability_json: "[]".into(),
                 authority: None,
                 principals: Vec::new(),
-                relay_workspace_ids: vec![7, 8],
+                relay_workspace_ids: vec![
+                        collab_types::WorkspaceId::from_u128(7),
+                        collab_types::WorkspaceId::from_u128(8),
+                    ],
             };
             let one = HomePeerSet {
                 status_file: std::path::PathBuf::from("/tmp/status"),
@@ -601,7 +581,7 @@ mod tests {
             assert!(validate_home_peer_set(&many).is_err());
         }
         {
-            let high = (i64::MAX as u64) + 42;
+            let high = collab_types::WorkspaceId::from_u128((i64::MAX as u128) + 42);
             let bundle = HomePeerSet {
                 status_file: std::path::PathBuf::from("/tmp/status"),
                 workspaces: vec![HomePeerBundle {

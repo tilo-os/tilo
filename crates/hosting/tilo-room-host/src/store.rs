@@ -48,6 +48,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tilo_relay_protocol::WorkspaceId;
 
 #[cfg(test)]
 pub(crate) use tilo_relay_store::thread_fsyncs;
@@ -153,7 +154,7 @@ pub struct RetainOutcome {
 #[derive(Clone)]
 pub struct WorkspaceStore {
     root: PathBuf,
-    workspace_id: u64,
+    workspace_id: WorkspaceId,
     pinned: bool,
     /// Shared by every handle on `root`: the captures whose retained frames
     /// are listed but not yet pinned, and the collections that wait for
@@ -198,7 +199,7 @@ impl WorkspaceStore {
     ///
     /// Returns an error if any of the workspace's on-disk directories
     /// can't be created.
-    pub fn open(state_root: &Path, workspace_id: u64, pinned: bool) -> Result<Self, StoreError> {
+    pub fn open(state_root: &Path, workspace_id: WorkspaceId, pinned: bool) -> Result<Self, StoreError> {
         Self::open_with_payloads(
             state_root,
             workspace_id,
@@ -216,7 +217,7 @@ impl WorkspaceStore {
     /// The same as [`Self::open`].
     pub fn open_with_payloads(
         state_root: &Path,
-        workspace_id: u64,
+        workspace_id: WorkspaceId,
         pinned: bool,
         payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
     ) -> Result<Self, StoreError> {
@@ -251,7 +252,7 @@ impl WorkspaceStore {
         &self.root
     }
 
-    pub fn workspace_id(&self) -> u64 {
+    pub fn workspace_id(&self) -> WorkspaceId {
         self.workspace_id
     }
 
