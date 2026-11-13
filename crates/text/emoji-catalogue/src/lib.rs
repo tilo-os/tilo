@@ -1,13 +1,12 @@
-//! The emoji catalogue (`emoji`) handed to the toolkit's shared emoji
-//! picker and reaction strip ([`ui::emoji_catalogue::CATALOGUE`]).
+//! The emoji catalogue (`emoji`) handed to the toolkit's shared emoji picker and
+//! reaction strip ([`ui::emoji_catalogue::CATALOGUE`]).
 //!
-//! The toolkit does not link the catalogue: it is about half a megabyte of
-//! names and keywords that only programs showing a picker need. Every
-//! program that does (Chat, a document app with reactions, the shell that
-//! paints window bars) calls [`offer`] before its first frame. Natively the
-//! catalogue then comes from its engine library (`tilo-emoji-engine`) where
-//! the app is built thin; in the browser desktop it stays in the module of
-//! the app that offers it.
+//! The toolkit does not link the catalogue: it is about half a megabyte of names
+//! and keywords that only programs showing a picker need. Every program that
+//! does (Chat, a document app with reactions, the shell that paints window bars)
+//! calls [`offer`] before its first frame. Natively the catalogue then comes
+//! from its engine library (`tilo-emoji-engine`) where the app is built thin; in
+//! the browser desktop it stays in the module of the app that offers it.
 
 /// Hand the catalogue to the toolkit's picker and strip, in whichever
 /// language the interface speaks when they ask. Calling it again is free,
@@ -17,12 +16,9 @@ pub fn offer() {
     OFFERED.call_once(|| ui::emoji_catalogue::CATALOGUE.install(shared_catalogue));
 }
 
-/// One locale's catalogue as the picker reads it.
 struct Shared(&'static emoji::Catalogue);
 
 fn shared_catalogue(tag: &str) -> &'static dyn ui::emoji_catalogue::EmojiCatalogue {
-    // One small wrapper per locale ever asked for (a handful), kept for the
-    // process like the catalogues themselves.
     static SHARED: std::sync::Mutex<Vec<&'static Shared>> = std::sync::Mutex::new(Vec::new());
     let catalogue = emoji::Catalogue::for_locale(tag);
     let mut shared = SHARED
