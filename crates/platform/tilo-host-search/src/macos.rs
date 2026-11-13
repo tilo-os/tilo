@@ -13,10 +13,8 @@ use objc2_app_kit::NSApplication;
 use objc2_core_spotlight::{CSSearchableItemActionType, CSSearchableItemActivityIdentifier};
 use objc2_foundation::{NSString, NSUserActivity};
 
-/// The runtime's native socket chosen results go to.
 static SOCKET: OnceLock<PathBuf> = OnceLock::new();
 
-/// The entry a Spotlight user activity asks to open, if it is one.
 pub(crate) fn activity_entry(activity: &NSUserActivity) -> Option<String> {
     // SAFETY: both keys are immutable framework constants.
     let (action, key) = unsafe {
@@ -33,8 +31,6 @@ pub(crate) fn activity_entry(activity: &NSUserActivity) -> Option<String> {
     Some(id.to_string())
 }
 
-/// `application:continueUserActivity:restorationHandler:`, added to the
-/// application delegate's class.
 unsafe extern "C-unwind" fn continue_activity(
     _delegate: *mut AnyObject,
     _selector: Sel,
@@ -53,9 +49,8 @@ unsafe extern "C-unwind" fn continue_activity(
     Bool::YES
 }
 
-/// The delegate is the windowing library's, which must stay the delegate, so
-/// the continuation is added to its class rather than set as a new delegate;
-/// a delegate that already continues activities keeps doing so.
+/// Added to the windowing library's delegate class, which must stay the
+/// delegate; a delegate that already continues activities keeps doing so.
 pub(crate) fn forward_to_runtime() {
     let (Some(mtm), Some(profile)) = (
         MainThreadMarker::new(),
