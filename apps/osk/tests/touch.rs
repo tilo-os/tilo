@@ -24,10 +24,13 @@ impl Keyboard {
         Self::with_layout("qwerty", VIEWPORT)
     }
 
+    /// A keyboard built on the geometric decoder. `OskWidget::new()` is
+    /// `new_with_swipe_model(default_swipe_model())`, and its default model
+    /// parses the word list too: building on the model the tests want parses
+    /// it once instead of twice and leaves the same keyboard.
     fn with_layout(layout: &str, viewport: (u32, u32)) -> Self {
         Self::with_widget(
-            OskWidget::new()
-                .with_swipe_model(Box::new(GeometricSwipeModel::english()))
+            OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
                 .with_active_layout(layout),
             viewport,
         )
@@ -215,7 +218,14 @@ fn fast_alternating_thumbs_drop_no_keys() {
 
 #[test]
 fn one_finger_alone_on_the_keys_swipes_a_word() {
-    let mut kb = Keyboard::new();
+    // The swipe is decoded by a model swapped into a default keyboard, the way
+    // a host replaces the decoder.
+    let mut kb = Keyboard::with_widget(
+        OskWidget::new()
+            .with_swipe_model(Box::new(GeometricSwipeModel::english()))
+            .with_active_layout("qwerty"),
+        VIEWPORT,
+    );
     let path = path_through("quick");
     kb.down(1, path[0]);
     for p in &path[1..] {
