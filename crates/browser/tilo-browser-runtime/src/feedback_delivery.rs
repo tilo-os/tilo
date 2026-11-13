@@ -93,7 +93,7 @@ pub(crate) fn configure(
             return Err("feedback delivery already configured".into());
         }
         let mut connection = Connection {
-            events: peer.events(),
+            events: peer.events_where(|event| matches!(event, Event::Remote(_))),
             peer,
             reporter,
             owner,

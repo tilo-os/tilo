@@ -1695,3 +1695,16 @@ fn desktop_value(doc: &AutoCommit) -> Option<serde_json::Value> {
     tilo_desktop_model::shared_record::read(doc, None)
         .and_then(|desktop| serde_json::to_value(desktop).ok())
 }
+
+/// The events replication reads: what lands in, is refused from, opens or arrives for a
+/// workspace's records.
+pub(crate) fn takes(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::HostReady { .. }
+            | Event::Landed { .. }
+            | Event::RecordContent { .. }
+            | Event::Refused { .. }
+            | Event::RecordOpened { .. }
+    )
+}

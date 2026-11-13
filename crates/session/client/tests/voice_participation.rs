@@ -13,20 +13,20 @@
 
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
-use tilo_session_client::{Cmd, Event, Link, Outbox, VoiceEvent};
+use tilo_session_client::{Cmd, Event, Events, Outbox, VoiceEvent};
 
 use crate::call::{GovernedCall, native, operate};
 use crate::support::{ready, start_peer, wait_for};
 
 /// The next call event of `peer` that `pick` accepts.
 async fn voice<T>(
-    peer: &Link,
+    events: &Events,
     pending: &mut Vec<Event>,
     what: &str,
     mut pick: impl FnMut(&VoiceEvent) -> Option<T>,
 ) -> T {
     wait_for(what, || {
-        pending.extend(peer.drain());
+        pending.extend(events.drain());
         let found = pending
             .iter()
             .enumerate()
@@ -65,16 +65,22 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
         workspace.host.cert.clone(),
         page.key.clone(),
     );
+    let events = peer.events();
     peer.send(Cmd::Join(workspace_id)).unwrap();
     ready(&[&peer]).await;
     let mut pending = Vec::new();
 
     // The workspace lists its call: active, on the chat's voice channel, empty.
     peer.send(Cmd::VoiceCalls(workspace_id)).unwrap();
-    let calls = voice(&peer, &mut pending, "the call list", |event| match event {
-        VoiceEvent::Calls { result, .. } => Some(result.clone()),
-        _ => None,
-    })
+    let calls = voice(
+        &events,
+        &mut pending,
+        "the call list",
+        |event| match event {
+            VoiceEvent::Calls { result, .. } => Some(result.clone()),
+            _ => None,
+        },
+    )
     .await
     .unwrap();
     assert_eq!(calls.len(), 1);
@@ -104,7 +110,7 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     .await;
     peer.send(Cmd::VoiceJoin(workspace_id, workspace.call.call))
         .unwrap();
-    let bob = voice(&peer, &mut pending, "Bob's grant", granted).await;
+    let bob = voice(&events, &mut pending, "Bob's grant", granted).await;
     assert_eq!(bob.participants.len(), 2);
     assert_eq!(alice_alone.participants.len(), 1);
     let alice = native(&workspace.owner, |envelope| match envelope {
@@ -117,7 +123,7 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     // new one, so the list naming Bob may follow one with Alice alone.
     peer.send(Cmd::VoiceCalls(workspace_id)).unwrap();
     let listed = voice(
-        &peer,
+        &events,
         &mut pending,
         "the call list with Bob",
         |event| match event {
@@ -133,7 +139,7 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     // A dropped session resumes the same participation: the host keeps Bob
     // in the call and answers the resumed join with his grant.
     peer.send(Cmd::Reconnect).unwrap();
-    let resumed = voice(&peer, &mut pending, "Bob's resumed grant", granted).await;
+    let resumed = voice(&events, &mut pending, "Bob's resumed grant", granted).await;
     assert_eq!(resumed.participation, bob.participation);
     assert_eq!(resumed.participants.len(), 2);
 
@@ -149,7 +155,7 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     // Bob joins again; when Alice ends the call his session reports it ended.
     peer.send(Cmd::VoiceJoin(workspace_id, workspace.call.call))
         .unwrap();
-    voice(&peer, &mut pending, "Bob's second grant", granted).await;
+    voice(&events, &mut pending, "Bob's second grant", granted).await;
     operate(
         &workspace.owner,
         workspace_id,
@@ -162,7 +168,7 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     .await
     .unwrap();
     let reason = voice(
-        &peer,
+        &events,
         &mut pending,
         "the end of Bob's call",
         |event| match event {
@@ -174,7 +180,7 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     assert!(reason.contains("ended"), "{reason}");
     peer.send(Cmd::VoiceCalls(workspace_id)).unwrap();
     let ended = voice(
-        &peer,
+        &events,
         &mut pending,
         "the call list after the end",
         |event| match event {

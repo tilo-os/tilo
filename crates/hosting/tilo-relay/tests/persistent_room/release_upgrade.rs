@@ -136,11 +136,13 @@ async fn back_in(
     let (key, cert) = person.device();
     let link = page(host, key, cert, &host_cert);
     let workspace_id = workspace_id(seed);
+    let events = link.events();
     link.send(Cmd::Join(workspace_id)).unwrap();
     wait_for(
         &format!("{} to be back in the Lounge", person.name),
         || {
-            link.drain()
+            events
+                .drain()
                 .iter()
                 .any(|event| matches!(event, Event::HostReady { ws, .. } if *ws == workspace_id))
                 .then_some(())
@@ -390,9 +392,10 @@ async fn the_member_reads_what_they_wrote(plain: std::net::SocketAddr, seed: &Se
     let (key, cert) = reader.device();
     let link = page(host, key, cert, &host_cert);
     let workspace_id = workspace_id(seed);
+    let events = link.events();
     link.send(Cmd::Join(workspace_id)).unwrap();
     link.send(Cmd::OpenRoute(route.clone())).unwrap();
-    let chat = reads_the_chat(&link, workspace_id, &route).await;
+    let chat = reads_the_chat(&link, &events, workspace_id, &route).await;
     let channels = {
         use tilo_resource::Resource as _;
         chat::Chat::read(&chat).map(|chat| {
@@ -431,6 +434,7 @@ async fn the_member_reads_what_they_wrote(plain: std::net::SocketAddr, seed: &Se
 /// landed: what the host sent, read whether or not this build's Chat reads it.
 async fn reads_the_chat(
     link: &tilo_session_client::Link,
+    events: &tilo_session_client::Events,
     workspace_id: tilo_relay_protocol::WorkspaceId,
     route: &tilo_peer_state::document_frame::DocumentRoute,
 ) -> automerge::AutoCommit {
@@ -439,7 +443,7 @@ async fn reads_the_chat(
     wait_for(
         "the chat to land",
         || {
-            for event in link.drain() {
+            for event in events.drain() {
                 match &event {
                     Event::HostReady { ws, .. } if *ws == workspace_id => ready = true,
                     Event::Landed { route: landed, .. } if landed == route => {

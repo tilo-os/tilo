@@ -614,6 +614,7 @@ fn unenrolled_owner_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::
 async fn assert_page_reads_the_chat(
     who: &str,
     visiting: &tilo_session_client::Link,
+    heard: &tilo_session_client::Events,
     workspace_id: WorkspaceId,
     route: &tilo_peer_state::document_frame::DocumentRoute,
     channels: &[&str],
@@ -626,7 +627,7 @@ async fn assert_page_reads_the_chat(
     wait_for(
         &format!("{who}'s page to read the chat's channels {channels:?}"),
         || {
-            for event in visiting.drain() {
+            for event in heard.drain() {
                 match &event {
                     Event::HostReady { ws: at, .. } if *at == workspace_id => {
                         ready = true;
@@ -970,17 +971,35 @@ async fn persons_read_the_room_and_are_refused(
     let (host, host_cert, route) = chat_route(plain, cluster).await;
 
     let visiting = page(host.clone(), visiting_key, visiting_cert, &host_cert);
+
+    let visiting_heard = visiting.events();
     visiting.send(Cmd::Join(workspace_id)).unwrap();
     visiting.send(Cmd::OpenRoute(route.clone())).unwrap();
-    assert_page_reads_the_chat("Ana", &visiting, workspace_id, &route, &["general"]).await;
+    assert_page_reads_the_chat(
+        "Ana",
+        &visiting,
+        &visiting_heard,
+        workspace_id,
+        &route,
+        &["general"],
+    )
+    .await;
 
     // Another person holds the listing's default role, a viewer's: they read
     // the room and write nothing.
     let writer = page(host.clone(), writing_key, writing_cert, &host_cert);
+    let writer_heard = writer.events();
     writer.send(Cmd::Join(workspace_id)).unwrap();
     writer.send(Cmd::OpenRoute(route.clone())).unwrap();
-    let mut chat =
-        assert_page_reads_the_chat("Ben", &writer, workspace_id, &route, &["general"]).await;
+    let mut chat = assert_page_reads_the_chat(
+        "Ben",
+        &writer,
+        &writer_heard,
+        workspace_id,
+        &route,
+        &["general"],
+    )
+    .await;
     writer
         .write(route.clone(), &edit(&mut chat, "a viewer's edit"))
         .unwrap();
@@ -1003,6 +1022,8 @@ async fn persons_read_the_room_and_are_refused(
     assert!(!committed, "the viewer's write was committed: {refused:?}");
 
     let other = page(host, sibling_key, sibling_cert, &host_cert);
+
+    let other_heard = other.events();
     other.send(Cmd::Join(workspace_id)).unwrap();
     let refused = wait_for(
         "the sibling device to be refused",
@@ -1017,7 +1038,7 @@ async fn persons_read_the_room_and_are_refused(
     )
     .await;
     assert!(
-        !other
+        !other_heard
             .drain()
             .iter()
             .any(|event| matches!(event, Event::HostReady { .. })),
@@ -1039,10 +1060,18 @@ async fn an_editor_page_writes_and_is_committed(
 ) {
     let (host, host_cert, route) = chat_route(plain, cluster).await;
     let editor = page(host, editor_key, editor_cert, &host_cert);
+    let editor_heard = editor.events();
     editor.send(Cmd::Join(workspace_id)).unwrap();
     editor.send(Cmd::OpenRoute(route.clone())).unwrap();
-    let mut chat =
-        assert_page_reads_the_chat("editor", &editor, workspace_id, &route, &["general"]).await;
+    let mut chat = assert_page_reads_the_chat(
+        "editor",
+        &editor,
+        &editor_heard,
+        workspace_id,
+        &route,
+        &["general"],
+    )
+    .await;
     editor
         .write(route.clone(), &edit(&mut chat, "an editor's edit"))
         .unwrap();
@@ -1117,9 +1146,18 @@ fn a_persistent_room_reopens_after_hard_stops() {
             record: tilo_relay::room_bots::workspace_record(&catalogue, CHAT),
         };
         let visiting = page(host, key, cert, &host_cert);
+        let visiting_heard = visiting.events();
         visiting.send(Cmd::Join(workspace_id)).unwrap();
         visiting.send(Cmd::OpenRoute(route.clone())).unwrap();
-        assert_page_reads_the_chat("visiting", &visiting, workspace_id, &route, &["general"]).await;
+        assert_page_reads_the_chat(
+            "visiting",
+            &visiting,
+            &visiting_heard,
+            workspace_id,
+            &route,
+            &["general"],
+        )
+        .await;
         visiting.close();
     });
     room.stop();

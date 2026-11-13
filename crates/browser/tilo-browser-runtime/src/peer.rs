@@ -1596,6 +1596,28 @@ fn own_revocations(
     Ok(revocations)
 }
 
+/// The events [`WasmPeer::take_durable_events`] reads.
+fn is_durable(event: &Event) -> bool {
+    matches!(event, Event::Landed { .. })
+}
+
+/// The events [`WasmPeer::take_live_events`] reads.
+fn is_live(event: &Event) -> bool {
+    matches!(event, Event::LivePlane { .. } | Event::Live { .. })
+}
+
+/// The events [`WasmPeer::take_voice_events`] reads: a page that never takes them (it has no
+/// call open) keeps none of them.
+fn is_voice(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Voice(_)
+            | Event::CallAudio { .. }
+            | Event::CallPicture { .. }
+            | Event::CallDemand { .. }
+    )
+}
+
 /// A running certified peer.
 #[wasm_bindgen]
 pub struct WasmPeer {
@@ -1779,7 +1801,10 @@ impl WasmPeer {
                 crate::replication::Kept::InPage,
             ),
         };
-        let replication = RefCell::new(Some((handle.events(), replication_store)));
+        let replication = RefCell::new(Some((
+            handle.events_where(crate::replication::takes),
+            replication_store,
+        )));
         let listeners: Rc<RefCell<Vec<Function>>> = Rc::default();
         let changed = Arc::new(tokio::sync::Notify::new());
         handle.on_change({
@@ -1808,9 +1833,9 @@ impl WasmPeer {
             device_key,
             reporter_cert,
             owner_cert,
-            durable_events: handle.events(),
-            live_events: handle.events(),
-            voice_events: handle.events(),
+            durable_events: handle.events_where(is_durable),
+            live_events: handle.events_where(is_live),
+            voice_events: handle.events_where(is_voice),
             voice_workspaces: RefCell::default(),
             handle,
             device,

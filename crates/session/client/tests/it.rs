@@ -17,6 +17,10 @@
 // is that worker, as the relay host's own is.
 tilo_automerge_isolate::test_worker!();
 
+// The bytes the process holds, for the tests that bound what a session keeps while it runs.
+#[global_allocator]
+static ALLOCATOR: tilo_test_env::held::Held = tilo_test_env::held::Held;
+
 #[path = "support/participant.rs"]
 mod participant;
 

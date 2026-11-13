@@ -16,7 +16,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
-use tilo_session_client::{Cmd, Event, Link, Outbox, VoiceEvent};
+use tilo_session_client::{Cmd, Event, Events, Link, Outbox, VoiceEvent};
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::WorkspaceId;
@@ -125,12 +125,13 @@ fn call_operation(body: &[u8]) -> Option<CallOperation> {
 struct Page {
     workspace: String,
     peer: Link,
+    heard: Events,
 }
 
 impl Page {
     fn events(&self) -> Value {
         let events: Vec<Value> = self
-            .peer
+            .heard
             .drain()
             .into_iter()
             .filter_map(|event| match event {
@@ -317,14 +318,16 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
     let governed = crate::call::GovernedCall::start().await;
     let (_, bob_device) = governed.invite("bob-browser").await;
     let page_device = bob_device.cert.device_public_key;
+    let peer = crate::support::start_peer(
+        governed.iroh(),
+        bob_device.cert,
+        governed.host.cert.clone(),
+        bob_device.key,
+    );
     let page = Arc::new(Page {
         workspace: governed.cluster_id.clone(),
-        peer: crate::support::start_peer(
-            governed.iroh(),
-            bob_device.cert,
-            governed.host.cert.clone(),
-            bob_device.key,
-        ),
+        heard: peer.events(),
+        peer,
     });
     page.peer.send(Cmd::Join(governed.workspace_id)).unwrap();
     crate::support::ready(&[&page.peer]).await;

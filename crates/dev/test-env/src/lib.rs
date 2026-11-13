@@ -23,6 +23,7 @@ pub mod disk_sync;
 pub mod environment;
 mod fixture;
 pub mod hang;
+pub mod held;
 pub mod idle;
 pub mod net;
 mod own_process;

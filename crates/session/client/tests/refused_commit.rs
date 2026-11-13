@@ -18,7 +18,7 @@ use collab_types::{DocumentMutation, document_channel_id};
 use tilo_app::prelude::*;
 use tilo_relay::member_limits::MemberLimitsConfig;
 use tilo_relay_protocol::refusal::{PLAIN_TOO_FAST, plain_reason};
-use tilo_session_client::{Cmd, Event, Link, Outbox};
+use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
@@ -65,7 +65,7 @@ enum Answer {
     },
 }
 
-async fn answer(peer: &Link) -> Answer {
+async fn answer(peer: &Link, events: &Events) -> Answer {
     let receipt = std::sync::Mutex::new(peer.barrier().unwrap());
     let answered = wait_for("the host's answer to the commit", || {
         let answered = receipt.lock().unwrap().try_recv().ok();
@@ -75,7 +75,8 @@ async fn answer(peer: &Link) -> Answer {
     if answered.is_ok() {
         return Answer::Committed;
     }
-    peer.drain()
+    events
+        .drain()
         .into_iter()
         .find_map(|event| match event {
             Event::Refused {
@@ -183,6 +184,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
         workspace(),
     )
     .await;
+    let events = peer.events();
     peer.send(Cmd::InstallChannelKeys(
         route.clone(),
         creator.content_keys().unwrap(),
@@ -204,7 +206,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
             DocumentMutation::Incremental(app.read_document(|doc| doc.clone().save_after(&heads)))
         };
         peer.write(route.clone(), &mutation).unwrap();
-        if let Answer::Refused { changes, reason } = answer(&peer).await {
+        if let Answer::Refused { changes, reason } = answer(&peer, &events).await {
             refused = Some((pinned, changes, reason));
             break;
         }

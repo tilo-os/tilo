@@ -325,7 +325,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
     // the workspace's own chat rather than founding a second one. What the
     // member holds is read by the member's own page, so a document the agent
     // wrote there is seen as it lands.
-    let _ = member.drain();
+    let member_heard = member.events();
     control.message("Open the workspace's chat").unwrap();
     run_task(&mut agent, &control);
     let task = control.info().tasks.last().cloned().unwrap();
@@ -338,7 +338,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         "the agent holds the chat the member made, with their channel: {}",
         held.body()
     );
-    let founded = member
+    let founded = member_heard
         .drain()
         .into_iter()
         .filter(|event| {
@@ -364,7 +364,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         "channel": channel_id, "text": "the agent's message"
     });
     let arguments = arguments.as_object().unwrap().clone();
-    let _ = member.drain();
+    let _ = member_heard.drain();
     wait_for("the agent's message posted", || {
         let posted = agent.invoke(&chat_route, &post, &arguments);
         agent.pump();
@@ -395,7 +395,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         "the agent's message to reach the member in the newest part",
         || {
             agent.pump();
-            written_parts.extend(parts_written(member.drain()));
+            written_parts.extend(parts_written(member_heard.drain()));
             let done = !written_parts.is_empty();
             async move { done.then_some(()) }
         },

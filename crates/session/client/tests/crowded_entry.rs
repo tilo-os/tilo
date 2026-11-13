@@ -1078,6 +1078,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         std::sync::Arc::new(MemoryPeerStore::default()),
         entry,
     );
+    let events = page.events();
     page.send(Cmd::Join(place.workspace_id)).unwrap();
     page.send(Cmd::OpenRoute(place.desktop.clone())).unwrap();
     let (mut connected, mut admitted, mut ready, mut keyed_desktop, mut desktop_doc) =
@@ -1107,7 +1108,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         if keyed_desktop.is_none() && keyed(&page, place.desktop) {
             keyed_desktop = Some(started.elapsed());
         }
-        for event in page.drain() {
+        for event in events.drain() {
             match &event {
                 Event::Landed {
                     route,
@@ -1153,7 +1154,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         .unwrap();
     let (mut note, mut opened) = (false, None);
     while !note || opened.is_none() || when_opened.is_none() {
-        for event in page.drain() {
+        for event in events.drain() {
             match event {
                 Event::Landed {
                     route,
@@ -1200,7 +1201,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         .unwrap();
     let (mut part, mut answered) = (false, None);
     while !part || answered.is_none() {
-        for event in page.drain() {
+        for event in events.drain() {
             match event {
                 Event::Landed {
                     route,

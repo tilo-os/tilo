@@ -14,7 +14,7 @@
 use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
 use collab_types::DocumentMutation;
 use tilo_relay_protocol::workspaces::WorkspacesRequest;
-use tilo_session_client::{Cmd, Event, Link, Outbox};
+use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
@@ -22,7 +22,7 @@ use crate::support::{
 };
 
 /// How many members' writes landed in `peer`'s replica since the last count.
-fn landed(peer: &Link) -> usize {
+fn landed(peer: &Events) -> usize {
     peer.drain()
         .into_iter()
         .filter(|event| {
@@ -57,11 +57,17 @@ async fn resumed(peer: &Link) {
 /// Have `author` publish `marker` into `doc` and return how many writes landed
 /// in `peer`'s replica before it: the workspace delivers in commit order, so
 /// anything replayed on the new session arrives ahead of the marker.
-async fn before_marker(peer: &Link, author: &Link, doc: &mut AutoCommit, marker: &str) -> usize {
+async fn before_marker(
+    peer: &Link,
+    heard: &Events,
+    author: &Link,
+    doc: &mut AutoCommit,
+    marker: &str,
+) -> usize {
     author.write(route(), &say(doc, marker)).unwrap();
     hears(peer, &route(), marker).await;
     settled(peer).await;
-    landed(peer)
+    landed(heard)
         .checked_sub(1)
         .expect("the marker itself landed")
 }
@@ -97,6 +103,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
         host_device.cert.clone(),
         observer.key,
     );
+    let observer_heard = observer.events();
     author
         .join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
@@ -128,13 +135,13 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     crate::support::durable(&author).await;
     holds(&observer, &route(), &doc).await;
     settled(&observer).await;
-    assert_eq!(landed(&observer), HISTORY + 1);
+    assert_eq!(landed(&observer_heard), HISTORY + 1);
 
     // A new session: nothing retained is replayed.
     settled(&observer).await;
     observer.send(Cmd::Reconnect).unwrap();
     resumed(&observer).await;
-    let replayed = before_marker(&observer, &author, &mut doc, "after").await;
+    let replayed = before_marker(&observer, &observer_heard, &author, &mut doc, "after").await;
     assert_eq!(replayed, 0, "replayed {replayed} documents");
 
     // A restarted host honours positions it issued before, and replays what
@@ -158,18 +165,19 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     // and have the edit sent twice.
     observer.send(Cmd::Retry).unwrap();
     resumed(&observer).await;
-    let replayed = before_marker(&observer, &author, &mut doc, "back").await;
+    let replayed = before_marker(&observer, &observer_heard, &author, &mut doc, "back").await;
     assert_eq!(replayed, 1, "only the edit made while away is replayed");
     hears(&observer, &route(), "missed").await;
 
     // A peer without a position (a fresh page) still gets everything.
     let fresh = enrol(&root, "tablet", DeviceCapabilities::member());
     let fresh = start_peer(host.iroh(), fresh.cert, host_device.cert.clone(), fresh.key);
+    let fresh_heard = fresh.events();
     fresh
         .join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
     fresh.send(Cmd::OpenRoute(route())).unwrap();
     holds(&fresh, &route(), &doc).await;
     settled(&fresh).await;
-    assert_eq!(landed(&fresh), HISTORY + 4);
+    assert_eq!(landed(&fresh_heard), HISTORY + 4);
 }

@@ -158,6 +158,7 @@ async fn chat_read_by_guest(
         ..chat.clone()
     };
     let opened = Instant::now();
+    let events = page.events();
     page.send(Cmd::Join(workspace_id)).unwrap();
     page.send(Cmd::OpenRoute(chat.clone())).unwrap();
     page.send(Cmd::OpenRecordAt(workspace_id, head.clone()))
@@ -166,7 +167,7 @@ async fn chat_read_by_guest(
     let (mut shown, mut answered, mut refusals) = (false, false, Vec::new());
     let mut quiet_since = Instant::now();
     loop {
-        for event in page.drain() {
+        for event in events.drain() {
             match event {
                 Event::Landed { route, .. } if route == *chat => {
                     quiet_since = Instant::now();

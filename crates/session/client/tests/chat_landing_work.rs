@@ -162,6 +162,7 @@ async fn guest_takes_in(
     let landed_before = *page.engine().arrivals().watching().borrow();
     let opened = Instant::now();
     page.send(Cmd::Join(workspace_id)).unwrap();
+    let events = page.events();
     for route in [chat, part] {
         page.send(Cmd::OpenRoute(route.clone())).unwrap();
     }
@@ -174,7 +175,7 @@ async fn guest_takes_in(
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let mut landed = std::collections::BTreeSet::new();
-        for event in page.drain() {
+        for event in events.drain() {
             match event {
                 Event::Landed { route, .. } if route == *chat || route == *part => {
                     landed.insert(route.record.clone());

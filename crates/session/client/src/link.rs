@@ -214,6 +214,10 @@ impl PeerStatus {
 }
 
 type Queue = Arc<Mutex<VecDeque<Event>>>;
+/// Which events a consumer's queue takes: a consumer is handed only the events it reads, so a
+/// session that hears a busy workspace (its members' presence, many times a second) keeps none
+/// of them for a consumer that would throw them away.
+pub type Takes = fn(&Event) -> bool;
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// What a session reports to everyone holding its [`Link`]: its status, the events it heard, and
@@ -222,7 +226,7 @@ pub struct Reports(Mutex<Reported>);
 
 struct Reported {
     status: PeerStatus,
-    queues: Vec<Weak<Mutex<VecDeque<Event>>>>,
+    queues: Vec<(Weak<Mutex<VecDeque<Event>>>, Takes)>,
     wakes: Vec<Wake>,
     /// Wakes that last as long as their consumer's event queue (an asker's), dropped
     /// with it.
@@ -294,11 +298,13 @@ impl Reports {
     pub fn emit(&self, event: &Event) {
         let wakes = {
             let mut reported = self.lock();
-            reported.queues.retain(|queue| {
+            reported.queues.retain(|(queue, takes)| {
                 let Some(queue) = queue.upgrade() else {
                     return false;
                 };
-                queue.lock_recover().push_back(event.clone());
+                if takes(event) {
+                    queue.lock_recover().push_back(event.clone());
+                }
                 true
             });
             reported.wakes_now()
@@ -337,16 +343,17 @@ impl Reports {
             .push((Arc::downgrade(&events.0), wake));
     }
 
-    /// A new, independent event queue.
-    fn events(&self) -> Events {
+    /// A new, independent queue of the events `takes` takes.
+    fn events(&self, takes: Takes) -> Events {
         let queue: Queue = Arc::new(Mutex::new(VecDeque::new()));
-        self.lock().queues.push(Arc::downgrade(&queue));
+        self.lock().queues.push((Arc::downgrade(&queue), takes));
         Events(queue)
     }
 }
 
-/// One consumer's view of the session's events: every event produced after it was created,
-/// independent of other consumers.
+/// One consumer's view of the session's events: every event it takes produced after it was
+/// created, independent of other consumers. It holds what it took until drained, so a consumer
+/// drains it as long as it holds it, and drops it once it stops reading.
 pub struct Events(Queue);
 
 impl Events {
@@ -367,8 +374,6 @@ pub struct Link {
     /// This device's replicas of its workspaces, and what reads their records.
     engine: Arc<Engine>,
     reports: Arc<Reports>,
-    /// This link's own event queue, which [`Self::drain`] reads.
-    events: Arc<Events>,
 }
 
 impl Link {
@@ -379,12 +384,10 @@ impl Link {
         engine: Arc<Engine>,
         reports: Arc<Reports>,
     ) -> Self {
-        let events = Arc::new(reports.events());
         Self {
             outbox,
             engine,
             reports,
-            events,
         }
     }
 
@@ -551,17 +554,17 @@ impl Link {
             .unwrap_or_default()
     }
 
-    /// Take every event produced since the last call on this link's own queue, which its clones
-    /// share. Other consumers use [`Self::events`].
-    #[must_use]
-    pub fn drain(&self) -> Vec<Event> {
-        self.events.drain()
-    }
-
-    /// A new, independent event queue.
+    /// A new, independent queue of every event the session produces from now on. A link keeps
+    /// no queue of its own: what nobody reads is not kept.
     #[must_use]
     pub fn events(&self) -> Events {
-        self.reports.events()
+        self.reports.events(|_| true)
+    }
+
+    /// A new, independent queue of the events `takes` takes, from now on.
+    #[must_use]
+    pub fn events_where(&self, takes: Takes) -> Events {
+        self.reports.events(takes)
     }
 
     /// Call `wake` whenever status or events change.
@@ -609,7 +612,7 @@ impl From<&Link> for Arc<dyn tilo_session_core::remote::RemoteSession> {
         Arc::new(Asking {
             outbox: Arc::clone(&link.outbox),
             reports: Arc::clone(&link.reports),
-            events: link.events(),
+            events: link.events_where(|event| matches!(event, Event::Remote(_))),
         })
     }
 }

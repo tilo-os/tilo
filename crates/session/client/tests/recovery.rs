@@ -104,6 +104,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
         host_device.cert.clone(),
         browser.key.clone(),
     );
+    let events = peer.events();
     peer.join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
     // Wait for the join's own `Ready` event, not a ready phase: the join
@@ -112,7 +113,8 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
     // for, and the session marks the workspace ready before it emits the
     // event. Either way that `Ready` would land after the drain below.
     wait_for("the workspace's Ready", || async {
-        peer.drain()
+        events
+            .drain()
             .iter()
             .any(|event| {
                 matches!(event, Event::HostReady { ws: workspace_id, .. } if *workspace_id == workspace())
@@ -123,11 +125,11 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
     ready(&[&peer]).await;
     // Any status change bumps the generation (each envelope's contact
     // time does); a reconnect is what subscribes the workspace anew.
-    let _ = peer.drain();
+    let _ = events.drain();
     peer.send(Cmd::Retry).unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(
-        !peer
+        !events
             .drain()
             .iter()
             .any(|event| matches!(event, Event::HostReady { .. })),

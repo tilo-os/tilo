@@ -14,7 +14,7 @@
 )]
 
 use std::collections::BTreeMap;
-use tilo_session_client::{Cmd, Event, Link, Outbox};
+use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
@@ -52,15 +52,24 @@ impl Author {
 
 /// What landed in a page's replica, by record: how many writes, and the records
 /// it opened.
-#[derive(Default)]
 struct Received {
+    events: Events,
     documents: BTreeMap<String, usize>,
     opened: Vec<(String, u32)>,
 }
 
 impl Received {
-    fn take(&mut self, peer: &Link) {
-        for event in peer.drain() {
+    /// What lands in `peer`'s replica from now on.
+    fn of_page(peer: &Link) -> Self {
+        Self {
+            events: peer.events(),
+            documents: BTreeMap::new(),
+            opened: Vec::new(),
+        }
+    }
+
+    fn take(&mut self) {
+        for event in self.events.drain() {
             match event {
                 Event::Landed {
                     route,
@@ -87,9 +96,9 @@ impl Received {
 }
 
 /// Take `peer`'s events until `done` holds.
-async fn until(what: &str, peer: &Link, received: &mut Received, done: impl Fn(&Received) -> bool) {
+async fn until(what: &str, received: &mut Received, done: impl Fn(&Received) -> bool) {
     wait_for(what, || {
-        received.take(peer);
+        received.take();
         let finished = done(received);
         async move { finished.then_some(()) }
     })
@@ -160,14 +169,14 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     reader
         .join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
-    let (mut at_early, mut at_reader) = (Received::default(), Received::default());
+    let (mut at_early, mut at_reader) = (Received::of_page(&early), Received::of_page(&reader));
     for (page, received) in [(&early, &mut at_early), (&reader, &mut at_reader)] {
-        until("the eager records", page, received, |received| {
+        until("the eager records", received, |received| {
             received.of(&note) > 0 && received.of(&part(1)) > 0
         })
         .await;
         ready(&[page]).await;
-        received.take(page);
+        received.take();
         assert_eq!(received.of(&part(0)), 0, "an earlier part waits");
         assert_eq!(received.of(&archive), 0, "an on-demand record waits");
     }
@@ -182,7 +191,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
         .unwrap();
     // The host's answer comes once it sent the history; the history opens
     // once a participant admitted the page to each record.
-    until("the opened records", &reader, &mut at_reader, |received| {
+    until("the opened records", &mut at_reader, |received| {
         received.opened.len() == 2 && received.of(&part(0)) > 0 && received.of(&archive) > 0
     })
     .await;
@@ -212,7 +221,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
         // The new part opens once a participant admitted the page to it; a
         // change that reached a page it should not have would have opened
         // by then too.
-        until("the marker and the new part", page, received, |received| {
+        until("the marker and the new part", received, |received| {
             received.of(&note) == 2 && received.of(&part(1)) == 2 && received.of(&part(2)) > 0
         })
         .await;
@@ -221,7 +230,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     }
     hears(&reader, &part(0), "an edit").await;
     hears(&reader, &archive, "filed").await;
-    at_early.take(&early);
+    at_early.take();
     assert!(
         at_early.of(&part(0)) == 0 && at_early.of(&archive) == 0,
         "a page that opened neither record gets none of their changes"
@@ -231,12 +240,12 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     let late = peer(late);
     late.join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
-    let mut at_late = Received::default();
-    until("the new head", &late, &mut at_late, |received| {
+    let mut at_late = Received::of_page(&late);
+    until("the new head", &mut at_late, |received| {
         received.of(&note) > 0 && received.of(&part(2)) > 0
     })
     .await;
     ready(&[&late]).await;
-    at_late.take(&late);
+    at_late.take();
     assert!(at_late.of(&part(1)) == 0 && at_late.of(&part(0)) == 0);
 }
