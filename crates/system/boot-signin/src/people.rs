@@ -97,56 +97,61 @@ fn shown(raw: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn people_parse_with_their_kind_of_secret() {
-        let people = parse(
-            r#"[
+    tilo_test_env::scenario! {
+        /// `parse`: what `boot-people` printed.
+        fn the_people_list_parses_into_bounded_people;
+
+        phase people_parse_with_their_kind_of_secret;
+        {
+            let people = parse(
+                r#"[
               {"uid":1000,"name":"anna","display_name":"Anna Example","factors":["tpm","recovery"],"secret":"pin"},
               {"uid":1001,"name":"ben","display_name":"","factors":["passphrase","recovery"]},
               {"uid":1002,"name":"cleo","display_name":"Cleo","factors":["tpm","pin"]}
             ]"#,
-        );
-        assert_eq!(
-            people,
-            vec![
-                Person {
-                    uid: 1000,
-                    name: "anna".into(),
-                    display_name: "Anna Example".into(),
-                    secret: SecretKind::Pin,
-                },
-                Person {
-                    uid: 1001,
-                    name: "ben".into(),
-                    display_name: "ben".into(),
-                    secret: SecretKind::Password,
-                },
-                Person {
-                    uid: 1002,
-                    name: "cleo".into(),
-                    display_name: "Cleo".into(),
-                    secret: SecretKind::Pin,
-                },
-            ]
-        );
-    }
+            );
+            assert_eq!(
+                people,
+                vec![
+                    Person {
+                        uid: 1000,
+                        name: "anna".into(),
+                        display_name: "Anna Example".into(),
+                        secret: SecretKind::Pin,
+                    },
+                    Person {
+                        uid: 1001,
+                        name: "ben".into(),
+                        display_name: "ben".into(),
+                        secret: SecretKind::Password,
+                    },
+                    Person {
+                        uid: 1002,
+                        name: "cleo".into(),
+                        display_name: "Cleo".into(),
+                        secret: SecretKind::Pin,
+                    },
+                ]
+            );
+        }
 
-    #[test]
-    fn unreadable_lists_and_nameless_people_list_nobody() {
-        assert!(parse("").is_empty());
-        assert!(parse("null").is_empty());
-        assert!(parse("{\"uid\":1}").is_empty());
-        assert!(parse(r#"[{"uid":1000,"name":"\n"}]"#).is_empty());
-    }
+        phase unreadable_lists_and_nameless_people_list_nobody;
+        {
+            assert!(parse("").is_empty());
+            assert!(parse("null").is_empty());
+            assert!(parse("{\"uid\":1}").is_empty());
+            assert!(parse(r#"[{"uid":1000,"name":"\n"}]"#).is_empty());
+        }
 
-    #[test]
-    fn names_are_one_bounded_line() {
-        let long = "x".repeat(200);
-        let people = parse(&format!(
-            r#"[{{"uid":1000,"name":"anna","display_name":"Anna\ntilo-signin-end{long}"}}]"#
-        ));
-        let display = &people.first().expect("one person").display_name;
-        assert!(!display.contains('\n'));
-        assert_eq!(display.chars().count(), NAME_LIMIT);
+        phase names_are_one_bounded_line;
+        {
+            let long = "x".repeat(200);
+            let people = parse(&format!(
+                r#"[{{"uid":1000,"name":"anna","display_name":"Anna\ntilo-signin-end{long}"}}]"#
+            ));
+            let display = &people.first().expect("one person").display_name;
+            assert!(!display.contains('\n'));
+            assert_eq!(display.chars().count(), NAME_LIMIT);
+        }
     }
 }

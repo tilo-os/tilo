@@ -383,211 +383,216 @@ mod tests {
         }
     }
 
-    #[test]
-    fn nobody_to_sign_in_leaves_the_screen_untouched() {
-        let mut auth = FakeAuth::default();
-        let mut screen = FakeScreen::default();
-        assert_eq!(run(&mut auth, &mut screen), Exit::NothingToTry);
-        assert!(screen.seen.is_empty());
-        assert_eq!(screen.finished, None);
-    }
+    tilo_test_env::scenario! {
+        /// `run`: the sign-in from the first question to its exit.
+        fn the_sign_in_flow_asks_checks_and_hands_over;
 
-    #[test]
-    fn one_person_types_their_pin_once() {
-        let mut auth = FakeAuth {
-            people: vec![person(1000, "Anna", SecretKind::Pin)],
-            right: vec![(1000, "123456")],
-            ..FakeAuth::default()
-        };
-        let mut screen = FakeScreen::with(vec![Step::Type("123456")]);
-        assert_eq!(run(&mut auth, &mut screen), Exit::Unlocked);
-        assert_eq!(screen.seen, ["ask Anna PIN []", "checking Anna"]);
-        assert_eq!(screen.finished, Some(true));
-        assert_eq!(auth.tries, [(1000, "123456".to_owned())]);
-    }
+        phase nobody_to_sign_in_leaves_the_screen_untouched;
+        {
+            let mut auth = FakeAuth::default();
+            let mut screen = FakeScreen::default();
+            assert_eq!(run(&mut auth, &mut screen), Exit::NothingToTry);
+            assert!(screen.seen.is_empty());
+            assert_eq!(screen.finished, None);
+        }
 
-    #[test]
-    fn wrong_entries_say_so_with_the_tries_left_or_the_wait() {
-        let mut auth = FakeAuth {
-            people: vec![person(1000, "Anna", SecretKind::Pin)],
-            right: vec![(1000, "123456")],
-            limits: VecDeque::from([
-                Limit {
+        phase one_person_types_their_pin_once;
+        {
+            let mut auth = FakeAuth {
+                people: vec![person(1000, "Anna", SecretKind::Pin)],
+                right: vec![(1000, "123456")],
+                ..FakeAuth::default()
+            };
+            let mut screen = FakeScreen::with(vec![Step::Type("123456")]);
+            assert_eq!(run(&mut auth, &mut screen), Exit::Unlocked);
+            assert_eq!(screen.seen, ["ask Anna PIN []", "checking Anna"]);
+            assert_eq!(screen.finished, Some(true));
+            assert_eq!(auth.tries, [(1000, "123456".to_owned())]);
+        }
+
+        phase wrong_entries_say_so_with_the_tries_left_or_the_wait;
+        {
+            let mut auth = FakeAuth {
+                people: vec![person(1000, "Anna", SecretKind::Pin)],
+                right: vec![(1000, "123456")],
+                limits: VecDeque::from([
+                    Limit {
+                        tries_left: Some(9),
+                        wait_seconds: None,
+                    },
+                    Limit {
+                        tries_left: Some(1),
+                        wait_seconds: None,
+                    },
+                    Limit::default(),
+                    Limit {
+                        tries_left: Some(0),
+                        wait_seconds: Some(7200),
+                    },
+                ]),
+                ..FakeAuth::default()
+            };
+            let mut screen = FakeScreen::with(vec![
+                Step::Type("1"),
+                Step::Type("2"),
+                Step::Type("3"),
+                Step::Type("4"),
+                Step::Type("123456"),
+            ]);
+            assert_eq!(run(&mut auth, &mut screen), Exit::Unlocked);
+            let asked: Vec<&String> = screen
+                .seen
+                .iter()
+                .filter(|line| line.starts_with("ask"))
+                .collect();
+            assert_eq!(
+                asked,
+                [
+                    "ask Anna PIN []",
+                    "ask Anna PIN [Incorrect PIN. 9 tries left.]",
+                    "ask Anna PIN [Incorrect PIN. 1 try left.]",
+                    "ask Anna PIN [Incorrect PIN. Try again.]",
+                    "ask Anna PIN [Too many failed attempts. Try again in 2 hours.]",
+                ]
+            );
+        }
+
+        phase an_entry_already_tried_is_not_tried_again;
+        {
+            let mut auth = FakeAuth {
+                people: vec![person(1000, "Anna", SecretKind::Password)],
+                right: vec![(1000, "correct horse")],
+                limits: VecDeque::from([Limit {
                     tries_left: Some(9),
                     wait_seconds: None,
-                },
-                Limit {
-                    tries_left: Some(1),
-                    wait_seconds: None,
-                },
-                Limit::default(),
-                Limit {
-                    tries_left: Some(0),
-                    wait_seconds: Some(7200),
-                },
-            ]),
-            ..FakeAuth::default()
-        };
-        let mut screen = FakeScreen::with(vec![
-            Step::Type("1"),
-            Step::Type("2"),
-            Step::Type("3"),
-            Step::Type("4"),
-            Step::Type("123456"),
-        ]);
-        assert_eq!(run(&mut auth, &mut screen), Exit::Unlocked);
-        let asked: Vec<&String> = screen
-            .seen
-            .iter()
-            .filter(|line| line.starts_with("ask"))
-            .collect();
-        assert_eq!(
-            asked,
-            [
-                "ask Anna PIN []",
-                "ask Anna PIN [Incorrect PIN. 9 tries left.]",
-                "ask Anna PIN [Incorrect PIN. 1 try left.]",
-                "ask Anna PIN [Incorrect PIN. Try again.]",
-                "ask Anna PIN [Too many failed attempts. Try again in 2 hours.]",
-            ]
-        );
-    }
+                }]),
+                ..FakeAuth::default()
+            };
+            let mut screen = FakeScreen::with(vec![
+                Step::Type("wrong"),
+                Step::Type("wrong"),
+                Step::Type("correct horse"),
+            ]);
+            assert_eq!(run(&mut auth, &mut screen), Exit::Unlocked);
+            assert_eq!(
+                auth.tries,
+                [
+                    (1000, "wrong".to_owned()),
+                    (1000, "correct horse".to_owned())
+                ]
+            );
+            let asks: Vec<&str> = screen
+                .seen
+                .iter()
+                .map(String::as_str)
+                .filter(|line| line.starts_with("ask"))
+                .collect();
+            assert_eq!(
+                asks,
+                [
+                    "ask Anna Password []",
+                    "ask Anna Password [Incorrect password. 9 tries left.]",
+                    "ask Anna Password [You already tried that password. 9 tries left.]",
+                ]
+            );
+        }
 
-    #[test]
-    fn an_entry_already_tried_is_not_tried_again() {
-        let mut auth = FakeAuth {
-            people: vec![person(1000, "Anna", SecretKind::Password)],
-            right: vec![(1000, "correct horse")],
-            limits: VecDeque::from([Limit {
-                tries_left: Some(9),
-                wait_seconds: None,
-            }]),
-            ..FakeAuth::default()
-        };
-        let mut screen = FakeScreen::with(vec![
-            Step::Type("wrong"),
-            Step::Type("wrong"),
-            Step::Type("correct horse"),
-        ]);
-        assert_eq!(run(&mut auth, &mut screen), Exit::Unlocked);
-        assert_eq!(
-            auth.tries,
-            [
-                (1000, "wrong".to_owned()),
-                (1000, "correct horse".to_owned())
-            ]
-        );
-        let asks: Vec<&str> = screen
-            .seen
-            .iter()
-            .map(String::as_str)
-            .filter(|line| line.starts_with("ask"))
-            .collect();
-        assert_eq!(
-            asks,
-            [
-                "ask Anna Password []",
-                "ask Anna Password [Incorrect password. 9 tries left.]",
-                "ask Anna Password [You already tried that password. 9 tries left.]",
-            ]
-        );
-    }
+        phase an_entry_refused_during_a_wait_is_tried_again_after_it;
+        {
+            let mut auth = FakeAuth {
+                people: vec![person(1000, "Anna", SecretKind::Pin)],
+                limits: VecDeque::from([Limit {
+                    tries_left: None,
+                    wait_seconds: Some(30),
+                }]),
+                ..FakeAuth::default()
+            };
+            let mut screen = FakeScreen::with(vec![Step::Type("123456"), Step::Type("123456")]);
+            let exit = run(&mut auth, &mut screen);
+            assert_eq!(auth.tries.len(), 2, "the second entry reached the check");
+            assert_eq!(exit, Exit::OtherWays);
+            assert_eq!(
+                screen.seen.get(2).map(String::as_str),
+                Some("ask Anna PIN [Too many failed attempts. Try again in 1 minute.]")
+            );
+        }
 
-    #[test]
-    fn an_entry_refused_during_a_wait_is_tried_again_after_it() {
-        let mut auth = FakeAuth {
-            people: vec![person(1000, "Anna", SecretKind::Pin)],
-            limits: VecDeque::from([Limit {
-                tries_left: None,
-                wait_seconds: Some(30),
-            }]),
-            ..FakeAuth::default()
-        };
-        let mut screen = FakeScreen::with(vec![Step::Type("123456"), Step::Type("123456")]);
-        let exit = run(&mut auth, &mut screen);
-        assert_eq!(auth.tries.len(), 2, "the second entry reached the check");
-        assert_eq!(exit, Exit::OtherWays);
-        assert_eq!(
-            screen.seen.get(2).map(String::as_str),
-            Some("ask Anna PIN [Too many failed attempts. Try again in 1 minute.]")
-        );
-    }
+        phase several_people_pick_themselves_and_an_empty_entry_goes_back;
+        {
+            let mut auth = FakeAuth {
+                people: vec![
+                    person(1000, "Anna", SecretKind::Pin),
+                    person(1001, "Ben", SecretKind::Password),
+                ],
+                right: vec![(1001, "hunter22")],
+                ..FakeAuth::default()
+            };
+            let mut screen = FakeScreen::with(vec![
+                Step::Pick(Pick::Person(0)),
+                Step::Empty,
+                Step::Pick(Pick::Person(1)),
+                Step::Type("hunter22"),
+            ]);
+            assert_eq!(run(&mut auth, &mut screen), Exit::Unlocked);
+            assert_eq!(
+                screen.seen,
+                [
+                    "pick 2 from 0",
+                    "ask Anna PIN [] several",
+                    "pick 2 from 0",
+                    "ask Ben Password [] several",
+                    "checking Ben",
+                ]
+            );
+            assert_eq!(auth.tries, [(1001, "hunter22".to_owned())]);
+        }
 
-    #[test]
-    fn several_people_pick_themselves_and_an_empty_entry_goes_back() {
-        let mut auth = FakeAuth {
-            people: vec![
-                person(1000, "Anna", SecretKind::Pin),
-                person(1001, "Ben", SecretKind::Password),
-            ],
-            right: vec![(1001, "hunter22")],
-            ..FakeAuth::default()
-        };
-        let mut screen = FakeScreen::with(vec![
-            Step::Pick(Pick::Person(0)),
-            Step::Empty,
-            Step::Pick(Pick::Person(1)),
-            Step::Type("hunter22"),
-        ]);
-        assert_eq!(run(&mut auth, &mut screen), Exit::Unlocked);
-        assert_eq!(
-            screen.seen,
-            [
-                "pick 2 from 0",
-                "ask Anna PIN [] several",
-                "pick 2 from 0",
-                "ask Ben Password [] several",
-                "checking Ben",
-            ]
-        );
-        assert_eq!(auth.tries, [(1001, "hunter22".to_owned())]);
-    }
+        phase other_ways_in_end_the_sign_in;
+        {
+            let mut one = FakeAuth {
+                people: vec![person(1000, "Anna", SecretKind::Pin)],
+                ..FakeAuth::default()
+            };
+            let mut empty = FakeScreen::with(vec![Step::Empty]);
+            assert_eq!(run(&mut one, &mut empty), Exit::OtherWays);
+            assert_eq!(empty.finished, Some(false));
 
-    #[test]
-    fn other_ways_in_end_the_sign_in() {
-        let mut one = FakeAuth {
-            people: vec![person(1000, "Anna", SecretKind::Pin)],
-            ..FakeAuth::default()
-        };
-        let mut empty = FakeScreen::with(vec![Step::Empty]);
-        assert_eq!(run(&mut one, &mut empty), Exit::OtherWays);
-        assert_eq!(empty.finished, Some(false));
+            let mut cancelled = FakeScreen::with(vec![Step::Unavailable]);
+            assert_eq!(run(&mut one, &mut cancelled), Exit::OtherWays);
 
-        let mut cancelled = FakeScreen::with(vec![Step::Unavailable]);
-        assert_eq!(run(&mut one, &mut cancelled), Exit::OtherWays);
+            let mut several = FakeAuth {
+                people: vec![
+                    person(1000, "Anna", SecretKind::Pin),
+                    person(1001, "Ben", SecretKind::Pin),
+                ],
+                ..FakeAuth::default()
+            };
+            let mut picked = FakeScreen::with(vec![Step::Pick(Pick::OtherWays)]);
+            assert_eq!(run(&mut several, &mut picked), Exit::OtherWays);
+            assert_eq!(picked.finished, Some(false));
+            assert!(several.tries.is_empty());
+        }
 
-        let mut several = FakeAuth {
-            people: vec![
-                person(1000, "Anna", SecretKind::Pin),
-                person(1001, "Ben", SecretKind::Pin),
-            ],
-            ..FakeAuth::default()
-        };
-        let mut picked = FakeScreen::with(vec![Step::Pick(Pick::OtherWays)]);
-        assert_eq!(run(&mut several, &mut picked), Exit::OtherWays);
-        assert_eq!(picked.finished, Some(false));
-        assert!(several.tries.is_empty());
-    }
+        phase a_secret_that_cannot_be_tried_hands_over_to_the_existing_prompts;
+        {
+            let mut auth = FakeAuth {
+                people: vec![person(1000, "Anna", SecretKind::Pin)],
+                cannot_try: true,
+                ..FakeAuth::default()
+            };
+            let mut screen = FakeScreen::with(vec![Step::Type("123456")]);
+            assert_eq!(run(&mut auth, &mut screen), Exit::NothingToTry);
+            assert_eq!(screen.finished, Some(false));
+        }
 
-    #[test]
-    fn a_secret_that_cannot_be_tried_hands_over_to_the_existing_prompts() {
-        let mut auth = FakeAuth {
-            people: vec![person(1000, "Anna", SecretKind::Pin)],
-            cannot_try: true,
-            ..FakeAuth::default()
-        };
-        let mut screen = FakeScreen::with(vec![Step::Type("123456")]);
-        assert_eq!(run(&mut auth, &mut screen), Exit::NothingToTry);
-        assert_eq!(screen.finished, Some(false));
-    }
-
-    #[test]
-    fn waits_read_in_minutes_then_hours() {
-        assert_eq!(wait(1), "1 minute");
-        assert_eq!(wait(61), "2 minutes");
-        assert_eq!(wait(89 * 60), "89 minutes");
-        assert_eq!(wait(90 * 60), "2 hours");
-        assert_eq!(wait(7200), "2 hours");
-        assert_eq!(wait(0), "1 minute");
+        phase waits_read_in_minutes_then_hours;
+        {
+            assert_eq!(wait(1), "1 minute");
+            assert_eq!(wait(61), "2 minutes");
+            assert_eq!(wait(89 * 60), "89 minutes");
+            assert_eq!(wait(90 * 60), "2 hours");
+            assert_eq!(wait(7200), "2 hours");
+            assert_eq!(wait(0), "1 minute");
+        }
     }
 }

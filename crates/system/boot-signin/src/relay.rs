@@ -274,106 +274,111 @@ esac
         buffer[..n].to_vec()
     }
 
-    #[test]
-    fn an_empty_answer_goes_back_to_signing_in() {
-        let _serial = crate::test_support::serial();
-        let fixture = Fixture::new("\n");
-        let _socket = fixture.ask(
-            "a",
-            "cryptsetup:/dev/vda3",
-            "Please enter passphrase for disk root:",
-        );
-        assert_eq!(fixture.relay().run(), Relayed::Back);
-        assert_eq!(
-            fixture.read("prompts"),
-            "--prompt=Please enter passphrase for disk root:\n",
-            "the question is systemd-cryptsetup's, word for word"
-        );
-        assert_eq!(
-            fixture.read("messages"),
-            format!("--text={OTHER_WAYS_ON}\n--text={OTHER_WAYS_OFF}\n")
-        );
-    }
+    tilo_test_env::scenario! {
+        /// `Relay`: the volume's own questions, asked through Plymouth.
+        fn the_relay_passes_plymouth_answers_to_the_attaching_program;
 
-    #[test]
-    fn answers_reach_the_attaching_program_until_it_is_done() {
-        let _serial = crate::test_support::serial();
-        let mut fixture = Fixture::new("not it\nPIN-1234\n");
-        let passphrase = fixture.ask(
-            "a",
-            "cryptsetup:/dev/vda3",
-            "Please enter passphrase for disk root:",
-        );
-        let pin_socket = std::thread::scope(|scope| {
-            let relay = relay(&fixture.plymouth, fixture.dir.path(), fixture.attach.id());
-            let running = scope.spawn(move || relay.run());
-            assert_eq!(received(&passphrase), b"+not it");
-            fs::remove_file(fixture.dir.path().join("ask/ask.a")).unwrap();
-            let pin = fixture.ask("b", "", "Please enter security token PIN:");
-            assert_eq!(received(&pin), b"+PIN-1234");
-            fs::remove_file(fixture.dir.path().join("ask/ask.b")).unwrap();
-            let _ = fixture.attach.kill();
-            let _ = fixture.attach.wait();
-            assert_eq!(running.join().unwrap(), Relayed::Done);
-            pin
-        });
-        drop(pin_socket);
-    }
+        phase an_empty_answer_goes_back_to_signing_in;
+        {
+            let _serial = crate::test_support::serial();
+            let fixture = Fixture::new("\n");
+            let _socket = fixture.ask(
+                "a",
+                "cryptsetup:/dev/vda3",
+                "Please enter passphrase for disk root:",
+            );
+            assert_eq!(fixture.relay().run(), Relayed::Back);
+            assert_eq!(
+                fixture.read("prompts"),
+                "--prompt=Please enter passphrase for disk root:\n",
+                "the question is systemd-cryptsetup's, word for word"
+            );
+            assert_eq!(
+                fixture.read("messages"),
+                format!("--text={OTHER_WAYS_ON}\n--text={OTHER_WAYS_OFF}\n")
+            );
+        }
 
-    #[test]
-    fn a_question_answered_elsewhere_leaves_the_screen_and_others_are_ignored() {
-        let _serial = crate::test_support::serial();
-        let mut fixture = Fixture::new("wait\n");
-        let other = fixture.dir.path().join("sck.other");
-        let _other = UnixDatagram::bind(&other).unwrap();
-        fs::write(
-            fixture.dir.path().join("ask/ask.0"),
-            format!(
-                "[Ask]\nPID=1\nSocket={}\nNotAfter=0\nMessage=Other disk\nId=cryptsetup:/dev/vdb1\n",
-                other.display()
-            ),
-        )
-        .unwrap();
-        let _socket = fixture.ask("a", "cryptsetup:/dev/vda3", "Passphrase:");
-        std::thread::scope(|scope| {
-            let relay = relay(&fixture.plymouth, fixture.dir.path(), fixture.attach.id());
-            let running = scope.spawn(move || relay.run());
+        phase answers_reach_the_attaching_program_until_it_is_done;
+        {
+            let _serial = crate::test_support::serial();
+            let mut fixture = Fixture::new("not it\nPIN-1234\n");
+            let passphrase = fixture.ask(
+                "a",
+                "cryptsetup:/dev/vda3",
+                "Please enter passphrase for disk root:",
+            );
+            let pin_socket = std::thread::scope(|scope| {
+                let relay = relay(&fixture.plymouth, fixture.dir.path(), fixture.attach.id());
+                let running = scope.spawn(move || relay.run());
+                assert_eq!(received(&passphrase), b"+not it");
+                fs::remove_file(fixture.dir.path().join("ask/ask.a")).unwrap();
+                let pin = fixture.ask("b", "", "Please enter security token PIN:");
+                assert_eq!(received(&pin), b"+PIN-1234");
+                fs::remove_file(fixture.dir.path().join("ask/ask.b")).unwrap();
+                let _ = fixture.attach.kill();
+                let _ = fixture.attach.wait();
+                assert_eq!(running.join().unwrap(), Relayed::Done);
+                pin
+            });
+            drop(pin_socket);
+        }
+
+        phase a_question_answered_elsewhere_leaves_the_screen_and_others_are_ignored;
+        {
+            let _serial = crate::test_support::serial();
+            let mut fixture = Fixture::new("wait\n");
+            let other = fixture.dir.path().join("sck.other");
+            let _other = UnixDatagram::bind(&other).unwrap();
+            fs::write(
+                fixture.dir.path().join("ask/ask.0"),
+                format!(
+                    "[Ask]\nPID=1\nSocket={}\nNotAfter=0\nMessage=Other disk\nId=cryptsetup:/dev/vdb1\n",
+                    other.display()
+                ),
+            )
+            .unwrap();
+            let _socket = fixture.ask("a", "cryptsetup:/dev/vda3", "Passphrase:");
+            std::thread::scope(|scope| {
+                let relay = relay(&fixture.plymouth, fixture.dir.path(), fixture.attach.id());
+                let running = scope.spawn(move || relay.run());
+                for _ in 0..500 {
+                    if fixture.read("asked").trim() == "1" {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                fs::remove_file(fixture.dir.path().join("ask/ask.a")).unwrap();
+                std::thread::sleep(Duration::from_millis(100));
+                let _ = fixture.attach.kill();
+                let _ = fixture.attach.wait();
+                assert_eq!(running.join().unwrap(), Relayed::Done);
+            });
+            assert_eq!(fixture.read("prompts"), "--prompt=Passphrase:\n");
+        }
+
+        phase an_attach_that_ended_is_done_before_its_parent_collects_it;
+        {
+            let _serial = crate::test_support::serial();
+            let mut fixture = Fixture::new("");
+            fixture.attach.kill().unwrap();
             for _ in 0..500 {
-                if fixture.read("asked").trim() == "1" {
+                if !running(fixture.attach.id()) {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            fs::remove_file(fixture.dir.path().join("ask/ask.a")).unwrap();
-            std::thread::sleep(Duration::from_millis(100));
-            let _ = fixture.attach.kill();
-            let _ = fixture.attach.wait();
-            assert_eq!(running.join().unwrap(), Relayed::Done);
-        });
-        assert_eq!(fixture.read("prompts"), "--prompt=Passphrase:\n");
-    }
-
-    #[test]
-    fn an_attach_that_ended_is_done_before_its_parent_collects_it() {
-        let _serial = crate::test_support::serial();
-        let mut fixture = Fixture::new("");
-        fixture.attach.kill().unwrap();
-        for _ in 0..500 {
-            if !running(fixture.attach.id()) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
+            assert!(Path::new(&format!("/proc/{}", fixture.attach.id())).exists());
+            assert_eq!(fixture.relay().run(), Relayed::Done);
         }
-        assert!(Path::new(&format!("/proc/{}", fixture.attach.id())).exists());
-        assert_eq!(fixture.relay().run(), Relayed::Done);
-    }
 
-    #[test]
-    fn without_plymouth_answering_the_agent_steps_aside() {
-        let _serial = crate::test_support::serial();
-        let fixture = Fixture::new("");
-        fs::write(&fixture.plymouth.program, "#!/bin/bash\nexit 1\n").unwrap();
-        let _socket = fixture.ask("a", "cryptsetup:/dev/vda3", "Passphrase:");
-        assert_eq!(fixture.relay().run(), Relayed::SteppedAside);
+        phase without_plymouth_answering_the_agent_steps_aside;
+        {
+            let _serial = crate::test_support::serial();
+            let fixture = Fixture::new("");
+            fs::write(&fixture.plymouth.program, "#!/bin/bash\nexit 1\n").unwrap();
+            let _socket = fixture.ask("a", "cryptsetup:/dev/vda3", "Passphrase:");
+            assert_eq!(fixture.relay().run(), Relayed::SteppedAside);
+        }
     }
 }
