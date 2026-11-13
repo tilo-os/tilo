@@ -42,6 +42,9 @@
 //! - [`hang`] waits for workers, daemons, sockets and events against one
 //!   workspace-wide bound that only catches a hang: [`wait_until`],
 //!   [`wait_for`], [`recv`] and [`within`].
+//! - [`relay`] is a packet relay on this machine's loopback, so a test's iroh
+//!   endpoint takes it as home instead of asking the person's relays out on
+//!   the internet.
 //! - [`idle`] counts how often idle threads wake: one thread of the test
 //!   process, or every thread of a process tree the test spawned.
 //! - [`require_isolated_desktop`] refuses to go on when a test binary was
@@ -116,6 +119,8 @@ pub mod hang;
 pub mod idle;
 pub mod net;
 mod own_process;
+#[cfg(feature = "iroh-relay")]
+pub mod relay;
 pub mod requested_allocations;
 pub mod scenario;
 #[cfg(target_os = "linux")]

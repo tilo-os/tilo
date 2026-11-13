@@ -210,8 +210,9 @@ mod tests {
     /// the gate, its relays held back until woken. The relay handed back is
     /// the test's own, a loopback server that answers a home relay
     /// connection the moment the gate lets one through.
-    async fn session() -> (Gate, Reachability, iroh_relay::server::Server) {
-        let (server, relays) = crate::test_support::local_relay().await;
+    async fn session() -> (Gate, Reachability, tilo_test_env::relay::Relay) {
+        let relay = tilo_test_env::relay::relay().await;
+        let relays = relay.relays();
         let gate = collaborating();
         let endpoint = iroh::Endpoint::builder(presets::Minimal)
             .address_lookup(gate.clone())
@@ -228,7 +229,7 @@ mod tests {
             tokio::runtime::Handle::current(),
             Some(Duration::from_millis(300)),
         );
-        (gate, reachability, server)
+        (gate, reachability, relay)
     }
 
     async fn until(what: &str, mut ready: impl FnMut() -> bool) {

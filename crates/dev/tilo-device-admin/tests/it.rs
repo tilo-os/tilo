@@ -4,7 +4,6 @@
 use std::path::Path;
 use std::time::Duration;
 
-use iroh_relay::server::{RelayConfig, Server, ServerConfig};
 use tilo_device_admin::dial::{Dialer, Failure, Options};
 use tilo_device_admin::handshake::{Refusal, Untrusted};
 use tilo_device_admin::net::Relays;
@@ -43,10 +42,8 @@ async fn the_route_admits_the_owners_administrator_alone() {
         cert
     }
 
-    let mut config = ServerConfig::default();
-    config.relay = Some(RelayConfig::new((std::net::Ipv4Addr::LOCALHOST, 0)));
-    let relay = Server::spawn(config).await.unwrap();
-    let url = format!("http://{}", relay.http_addr().unwrap());
+    let served = tilo_test_env::relay::relay().await;
+    let url = served.url().to_string();
     let relays = Relays::choose(Some(&url)).unwrap();
 
     let person = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);

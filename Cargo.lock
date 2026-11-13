@@ -18754,6 +18754,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-clock",
+ "tilo-test-env",
  "tilo-user-identity",
  "tokio",
  "workspace-hack",
@@ -19013,7 +19014,6 @@ version = "0.1.0"
 dependencies = [
  "data-encoding",
  "iroh",
- "iroh-relay",
  "n0-future",
  "serde_json",
  "settings-store",
@@ -19278,7 +19278,6 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-blobs",
- "iroh-relay",
  "irpc",
  "libc",
  "moka",
@@ -22140,6 +22139,8 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "getrandom 0.4.3",
+ "iroh",
+ "iroh-relay",
  "libc",
  "serde_json",
  "tempfile",

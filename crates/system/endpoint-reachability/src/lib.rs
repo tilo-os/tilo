@@ -570,7 +570,8 @@ mod tests {
     /// so the address stops naming it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_woken_endpoint_names_its_home_relay_within_the_wait() {
-        let (_server, own) = super::test_support::local_relay().await;
+        let relay = tilo_test_env::relay::relay().await;
+        let own = relay.relays();
         let relays = RelayMap::empty();
         let endpoint = iroh::Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Custom(relays.clone()))
@@ -626,41 +627,5 @@ mod tests {
         })
         .await;
         endpoint.close().await;
-    }
-}
-
-/// A relay of a test's own, for tests that need a home relay to appear.
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support {
-    #![allow(
-        clippy::expect_used,
-        reason = "a test fixture that cannot start fails the test that needs it"
-    )]
-
-    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
-
-    /// A relay on loopback and a map naming it. It offers no QUIC address
-    /// discovery, so a net report needs only its HTTP probe: an endpoint
-    /// picks it as its home relay in a fraction of a second, where a probe
-    /// waiting on QAD that never answers takes about three.
-    ///
-    /// # Panics
-    ///
-    /// If the loopback relay cannot start.
-    pub async fn local_relay() -> (Server, iroh::RelayMap) {
-        let mut config = ServerConfig::default();
-        config.relay = Some(RelayConfig::new((std::net::Ipv4Addr::LOCALHOST, 0)));
-        let server = Server::spawn(config)
-            .await
-            .expect("a loopback relay starts");
-        let url: iroh::RelayUrl = format!(
-            "http://{}",
-            server.http_addr().expect("the relay serves HTTP")
-        )
-        .parse()
-        .expect("a loopback relay URL");
-        let mut relay = iroh::RelayConfig::from(url);
-        relay.quic = None;
-        (server, std::iter::once(relay).collect())
     }
 }
