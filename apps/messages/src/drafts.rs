@@ -89,64 +89,68 @@ mod tests {
         }))
     }
 
-    #[test]
-    fn a_draft_is_kept_per_conversation_and_cleared_when_it_is_blank() {
-        let mut ada = Replica::<MessageDrafts>::new().as_author("u_ada");
-        ada.apply_action(&keep("signal:a1:+15550100", "see you at 8"))
-            .expect("a draft is kept");
-        ada.apply_action(&keep("sms:a2:+15550100", "on my way"))
-            .expect("a draft is kept");
-        let state = ada.state().expect("the record is readable");
-        assert_eq!(
-            state.drafts.len(),
-            2,
-            "two transports are two conversations"
-        );
-        assert_eq!(
-            state.drafts.get("signal:a1:+15550100").map(String::as_str),
-            Some("see you at 8")
-        );
-        ada.apply_action(&keep("signal:a1:+15550100", "   "))
-            .expect("a draft is cleared");
-        let state = ada.state().expect("the record is readable");
-        assert!(!state.drafts.contains_key("signal:a1:+15550100"));
-        assert!(state.drafts.contains_key("sms:a2:+15550100"));
-    }
+    tilo_test_env::scenario! {
+        fn drafts_are_kept_dropped_and_keyed_per_route;
 
-    #[test]
-    fn a_dropped_draft_is_gone_and_the_others_stay() {
-        let mut ada = Replica::<MessageDrafts>::new().as_author("u_ada");
-        ada.apply_action(&keep("signal:a1:+15550100", "half a thought"))
-            .expect("a draft is kept");
-        ada.apply_action(&stamped(MessageDraftsAction::DropDraft(
-            drafts::DropDraft {
-                conversation: "signal:a1:+15550100".into(),
-            },
-        )))
-        .expect("a draft is dropped");
-        assert!(
-            ada.state()
-                .expect("the record is readable")
-                .drafts
-                .is_empty()
-        );
-    }
+        phase a_draft_is_kept_per_conversation_and_cleared_when_it_is_blank;
+        {
+            let mut ada = Replica::<MessageDrafts>::new().as_author("u_ada");
+            ada.apply_action(&keep("signal:a1:+15550100", "see you at 8"))
+                .expect("a draft is kept");
+            ada.apply_action(&keep("sms:a2:+15550100", "on my way"))
+                .expect("a draft is kept");
+            let state = ada.state().expect("the record is readable");
+            assert_eq!(
+                state.drafts.len(),
+                2,
+                "two transports are two conversations"
+            );
+            assert_eq!(
+                state.drafts.get("signal:a1:+15550100").map(String::as_str),
+                Some("see you at 8")
+            );
+            ada.apply_action(&keep("signal:a1:+15550100", "   "))
+                .expect("a draft is cleared");
+            let state = ada.state().expect("the record is readable");
+            assert!(!state.drafts.contains_key("signal:a1:+15550100"));
+            assert!(state.drafts.contains_key("sms:a2:+15550100"));
+        }
 
-    #[test]
-    fn a_key_names_one_route_of_one_person() {
-        let route = crate::view::Choice {
-            service: "signal".into(),
-            account: "a1".into(),
-            recipient: "+15550100".into(),
-            association: "e1".into(),
-            scope: "s1".into(),
-            revision: "r1".into(),
-        };
-        assert_eq!(key(&route), key(&route.clone()));
-        let rereviewed = crate::view::Choice {
-            revision: "r2".into(),
-            ..route.clone()
-        };
-        assert_ne!(key(&route), key(&rereviewed));
+        phase a_dropped_draft_is_gone_and_the_others_stay;
+        {
+            let mut ada = Replica::<MessageDrafts>::new().as_author("u_ada");
+            ada.apply_action(&keep("signal:a1:+15550100", "half a thought"))
+                .expect("a draft is kept");
+            ada.apply_action(&stamped(MessageDraftsAction::DropDraft(
+                drafts::DropDraft {
+                    conversation: "signal:a1:+15550100".into(),
+                },
+            )))
+            .expect("a draft is dropped");
+            assert!(
+                ada.state()
+                    .expect("the record is readable")
+                    .drafts
+                    .is_empty()
+            );
+        }
+
+        phase a_key_names_one_route_of_one_person;
+        {
+            let route = crate::view::Choice {
+                service: "signal".into(),
+                account: "a1".into(),
+                recipient: "+15550100".into(),
+                association: "e1".into(),
+                scope: "s1".into(),
+                revision: "r1".into(),
+            };
+            assert_eq!(key(&route), key(&route.clone()));
+            let rereviewed = crate::view::Choice {
+                revision: "r2".into(),
+                ..route.clone()
+            };
+            assert_ne!(key(&route), key(&rereviewed));
+        }
     }
 }
