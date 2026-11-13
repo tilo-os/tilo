@@ -1,8 +1,8 @@
 //! The identity of a DRM device node.
 //!
 //! A GPU is named to the kernel by the numbers of its device node
-//! (`/dev/dri/renderD128`), and that is the identity a compositor and a
-//! process handing it frames agree on: one GPU's memory is not another's.
+//! (`/dev/dri/renderD128`); that is the identity a compositor and a process
+//! handing it frames agree on.
 
 use std::path::Path;
 
@@ -20,7 +20,6 @@ pub fn device_numbers(path: &Path) -> Option<(u32, u32)> {
     Some((libc::major(device), libc::minor(device)))
 }
 
-/// No DRM device nodes here, so no path names a GPU.
 #[cfg(not(target_os = "linux"))]
 #[must_use]
 pub fn device_numbers(_path: &Path) -> Option<(u32, u32)> {

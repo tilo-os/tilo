@@ -1,11 +1,10 @@
-//! Explicit platform clock evidence, separate from relative Instant offsets.
+//! The platform's own clock readings, kept apart from relative `Instant` offsets.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HostClockBracket {
     pub lo_s: f64,
     pub hi_s: f64,
 }
 
-/// Whether ordinary Wayland frames can be joined to the kernel monotonic clock.
 pub const SUPPORTS_WAYLAND_TIMING: bool = cfg!(target_os = "linux");
 
 /// Whether this target's compositor can report presentation through Metal's
@@ -20,7 +19,8 @@ pub const CLOCK_NAME: &str = if cfg!(target_os = "macos") {
     "unavailable"
 };
 
-/// Called only under an explicit native diagnostic observer, not normal unprofiled input.
+/// Called only under an explicit native diagnostic observer, not normal
+/// unprofiled input.
 pub fn sample<T>(instant: impl FnOnce() -> T) -> (T, Option<HostClockBracket>) {
     sample_with(host_seconds, instant)
 }

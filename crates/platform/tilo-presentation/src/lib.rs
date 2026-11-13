@@ -41,10 +41,9 @@ pub fn key_stamp(event: &WindowEvent) -> Option<(u32, u32)> {
     None
 }
 
-/// What the desktop said about the window's frame: `Some(true)` where the
-/// desktop draws it (KDE, X11 window managers), `Some(false)` where it asks
-/// the app to (GNOME on Wayland), and `None` until it says, or on a target
-/// whose desktops always draw it.
+/// What the desktop said about the window's frame: `Some(true)` where it draws
+/// it (KDE, X11 window managers), `Some(false)` where it asks the app to (GNOME
+/// on Wayland), `None` until it says or where desktops always draw it.
 pub fn desktop_draws_frame(window: &Window) -> Option<bool> {
     #[cfg(target_os = "linux")]
     {
