@@ -22,7 +22,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Serve org.freedesktop.secrets on the session bus.
     Serve {
         /// Where the device identity lives instead of `/var/lib/tilo`, and
         /// where one is created when absent. Only development builds have
@@ -31,9 +30,7 @@ enum Command {
         #[arg(long, hide = true)]
         identity_root: Option<std::path::PathBuf>,
     },
-    /// Whether the store is open, and what it imported.
     Status,
-    /// The applications that use the store.
     Apps {
         #[command(subcommand)]
         action: Apps,
@@ -47,17 +44,19 @@ enum Command {
 
 #[derive(Subcommand)]
 enum Apps {
-    /// List them, one per line or as JSON.
     List {
         #[arg(long)]
         json: bool,
     },
-    /// Let an application use the store again.
-    Allow { id: String },
-    /// Stop an application using the store. Its items stay.
-    Revoke { id: String },
-    /// Remove an application, its items and its record.
-    Forget { id: String },
+    Allow {
+        id: String,
+    },
+    Revoke {
+        id: String,
+    },
+    Forget {
+        id: String,
+    },
 }
 
 #[tokio::main]
@@ -121,7 +120,6 @@ async fn serve(identity_root: Option<std::path::PathBuf>) -> Result<(), String> 
         .await
         .map_err(|e| format!("publishing objects: {e}"))?;
 
-    // Before the name is ours: GNOME Keyring may still hold it.
     match migrate::migrate_once(&store, &GnomeKeyring::from_environment()).await {
         Outcome::Imported(count) => info!("imported {count} items from the older keyring"),
         Outcome::AlreadyDone => {}

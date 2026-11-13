@@ -65,16 +65,13 @@ async fn a_locked_keyring_is_retried_and_an_unlocked_one_imported_exactly_once()
         Ok(vec![legacy("chrome", b"changed")]),
     ]);
 
-    // A fingerprint login: locked, nothing recorded.
     assert_eq!(
         migrate_once(&store, &source).await,
         Outcome::Deferred("the login keyring is locked".into())
     );
     assert!(store.migration().unwrap().is_none());
 
-    // The first password login imports.
     assert_eq!(migrate_once(&store, &source).await, Outcome::Imported(2));
-    // Every later start leaves it alone, without even asking the keyring.
     assert_eq!(migrate_once(&store, &source).await, Outcome::AlreadyDone);
     let restarted = Store::new(dir.path().join("vault"), Box::new(Fixed));
     assert_eq!(
@@ -100,7 +97,6 @@ async fn a_locked_keyring_is_retried_and_an_unlocked_one_imported_exactly_once()
             .expose(),
         b"one"
     );
-    // Imported items did not displace what applications keep themselves.
     restarted
         .create_item(
             &system,

@@ -1,67 +1,26 @@
 //! Who is asking: the application identity every secret is attributed to.
 //!
-//! An identity is never a name the caller supplies. It is derived from what
-//! the kernel and the package system say about the calling process, or, for
-//! a sandboxed app that reaches the store through the desktop portal, from
-//! the compositor's own authenticated record of that app. The forms:
-//!
-//! | Form | Means |
-//! |---|---|
-//! | `sandbox:<package id>` | a sandboxed app the portal vouched for |
-//! | `flatpak:<app id>` | a Flatpak, by its cgroup scope and `.flatpak-info` |
-//! | `binary:<path>` | a root-owned, non-writable executable of the image |
-//! | `local-process:<path>` | any other executable the person runs |
-//!
 //! A `local-process:` caller can use the store, and sees only what it made
 //! itself: it cannot read what the system's own programs keep there.
-//!
-//! # A caller the kernel will not show
-//!
-//! The executable is read from `/proc/<pid>/exe`. A process that loaded the
-//! device key made itself non-dumpable (`tilo_user_identity::persist`), and
-//! the kernel refuses that link of a non-dumpable process to every other
-//! process of the user (`EACCES`); the compositor is one. Such a caller may
-//! prove, on its own bus connection, that it holds the device key, and name
-//! its executable (`so.tilo.Secrets1.ProveCaller`,
-//! `tilo_seal::secret_service::CallerKey`). The named executable then
-//! stands in for the link, for that connection only, and is classified
-//! exactly as a link read from `/proc` would be. It is consulted only while
-//! the kernel refuses the link: a caller whose link is readable is always
-//! named by it.
-//!
-//! This is no weaker than reading the link. Whoever can make the proof holds
-//! the device key, and the device key with the person's salt is what the
-//! store's own key derives from: such a process can already open the store's
-//! file, whatever program it claims to be. The proof is bound to a fresh
-//! challenge and to the prover's unique bus name, which the bus never hands
-//! to another connection, so one seen on the bus cannot be replayed. What a
-//! same-user process can set (its `comm`, its cgroup, which a delegated user
-//! manager lets it join, its environment) is never used.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// The longest identity accepted or recorded.
 const MAX_ID_BYTES: usize = 1024;
 
-/// The program asking, in one of the forms of the module docs.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct CallerId(String);
 
-/// How far an identity is trusted with the store's shared contents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trust {
-    /// Part of the image, a package or a portal-vouched sandbox.
     System,
-    /// Anything else the person runs.
     Local,
 }
 
 impl CallerId {
-    /// A sandboxed app the portal vouched for.
     #[must_use]
     pub fn sandbox(package: &str) -> Option<Self> {
         Self::checked(format!("sandbox:{package}"))
@@ -118,7 +77,6 @@ impl fmt::Display for CallerId {
     }
 }
 
-/// Why a process could not be given an identity.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum UnknownCaller {
     #[error("the caller's process cannot be examined")]
@@ -282,7 +240,6 @@ pub fn trusted_managers() -> Vec<CallerId> {
     .collect()
 }
 
-/// The `/proc` the service reads, overridable only in tests.
 #[must_use]
 pub fn proc_root() -> PathBuf {
     PathBuf::from("/proc")
@@ -414,7 +371,6 @@ mod tests {
         let refused = || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
         let gone = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
         let shell = Path::new("/usr/bin/shell");
-        // Non-dumpable and proven: the proven executable.
         assert_eq!(executable(refused(), Some(shell)), Ok(shell.to_path_buf()));
         // Non-dumpable and unproven: refused, as before.
         assert_eq!(executable(refused(), None), Err(UnknownCaller::Unreadable));
