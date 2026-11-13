@@ -1,42 +1,19 @@
-//! The file-chooser and URI-opening vocabulary: requests, outcomes and the
-//! URI → path rule every backend shares.
+//! The file-chooser and URI-opening vocabulary: requests, outcomes and the URI
+//! to path rule every backend shares.
 //!
-//! # Why this is shared
+//! An app never draws its own file picker and never keys open or save off an
+//! environment variable: it goes through the portal, so the host desktop
+//! provides the chooser. On Tilo the picker is also where the per-workspace
+//! sandbox file-access prompt lives, which makes this module the file-access
+//! security boundary; a per-app copy would be a second, drifting definition of
+//! which URIs may become paths. The URI mapping goes through
+//! [`url::Url::to_file_path`], never a prefix strip that turns a remote host
+//! into a relative path.
 //!
-//! Per the Tilo HIG an app must **never draw its own file picker and never key
-//! open/save off an environment variable**: it goes through the portal so the
-//! *host desktop* provides the chooser — on GNOME the user sees GNOME's file
-//! dialog; on Tilo the compositor implements the portal backend and renders
-//! Tilo's picker. Windows uses the host's Open, Save, and folder dialogs.
-//! On Tilo, the picker is also where the per-workspace sandbox
-//! file-access prompt lives, which makes this module **the file-access
-//! security boundary**. A per-app copy of it is not merely duplicated code: it
-//! is a second, independently-drifting definition of which URIs are allowed to
-//! become paths the app then reads or writes.
-//!
-//! One such drift was live: mapping URIs with `uri.strip_prefix("file://")`
-//! instead of [`url::Url::to_file_path`] turns `file://evil-host/etc/passwd`
-//! into the **relative** path `evil-host/etc/passwd` — silently resolved
-//! against the process's working directory, from a URI that explicitly named
-//! a *remote host*. This module validates the host explicitly before converting
-//! the URL; see `file_uris_resolve_only_to_local_normalised_paths`.
-//!
-//! # Threading contract
-//!
-//! The portal round-trip is asynchronous and opens a real host window, so it
-//! must **never** run on the UI thread. [`PickRequest::send`] hands the request
-//! to the current host's [`crate::FilePicker`], which answers over an
-//! [`std::sync::mpsc`] channel — the Linux portal from the app runtime, the
-//! macOS panels from the main run loop, the Windows dialogs from a COM
-//! apartment on a worker, the browser from a promise. The app drains that
-//! channel once per frame; the UI thread never blocks. Tests answer requests
-//! through a recording host (`ui::host::HostServices::recording`).
-//!
-//! # Backends
-//!
-//! The crate selects the backend per target (see the crate docs). The pure
-//! URI→path mapping ([`map_uris`], [`map_uri`]) and the channel types are the
-//! same everywhere, so the security rule stays under test on every target.
+//! The round trip opens a real host window, so it never runs on the UI thread:
+//! [`PickRequest::send`] hands the request to the host's [`crate::FilePicker`],
+//! which answers over an [`std::sync::mpsc`] channel the app drains once per
+//! frame.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: portal and file dialogs block on their own thread"
@@ -49,12 +26,7 @@ pub use uri::open_uri_scoped;
 #[cfg(any(test, feature = "test-support"))]
 pub use uri::{ScopedUriFixture, scoped_uri_fixture};
 
-/// Custody of a delayed host effect. A scoped chooser or URI request carries
-/// the caller that asked for it, and the worker rechecks that caller
-/// immediately before the host effect runs; an expired caller never reaches
-/// the effect.
 pub trait EffectGate: Send + 'static {
-    /// Run `effect` only while the original caller is still admitted.
     fn with_effect<R>(&self, effect: impl FnOnce() -> Result<R, String>) -> Result<R, String>;
 }
 
@@ -65,46 +37,28 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
-/// The result of a **single-file** portal interaction (open, or a Save
-/// destination), delivered back to the UI thread over a channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PortalOutcome {
-    /// The user picked this local path. A `/var/workspace/...` pick resolves
-    /// through the FUSE mount and hydrates on read exactly like a local file.
     Opened(PathBuf),
-    /// The user dismissed the picker without choosing anything.
     Cancelled,
-    /// The portal was unavailable or errored (no desktop portal running, a
-    /// non-local URI, a D-Bus failure). Carries a human-readable reason.
     Failed(String),
 }
 
-/// The result of a **multi-select** portal open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MultiOutcome {
-    /// The user picked one or more local paths, in the order the portal
-    /// returned them. Never empty.
     Selected(Vec<PathBuf>),
-    /// The user dismissed the picker without choosing anything.
     Cancelled,
-    /// The portal was unavailable or errored. Carries a human-readable reason.
     Failed(String),
 }
 
-/// A pending single-file request: the receiver the UI thread drains each
-/// frame. `Some(rx)` means a picker is in flight; `None` means idle.
 pub type PortalChannel = Receiver<PortalOutcome>;
 
-/// Outcome of asking the desktop to open a path with an appropriate app, or
-/// reveal its containing directory. The request is fire-and-observe: callers
-/// drain this channel without ever blocking the UI thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchOutcome {
     Opened,
     Failed(String),
 }
 
-/// A pending desktop-open request.
 pub type LaunchChannel = Receiver<LaunchOutcome>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,9 +67,6 @@ pub(crate) enum LaunchKind {
     Reveal,
 }
 
-/// Open a local file, or reveal its containing folder, through the XDG
-/// `OpenURI` portal. The portal receives an already-open descriptor rather than
-/// a string path, preserving the same capability boundary as file choosing.
 #[derive(Debug, Clone)]
 pub struct LaunchRequest {
     pub(crate) path: PathBuf,
@@ -146,55 +97,29 @@ impl LaunchRequest {
         self
     }
 
-    /// Hand the request to the current host's [`crate::FilePicker`].
     pub fn send(self) -> LaunchChannel {
         crate::current_picker().launch(self)
     }
 
-    /// The path to open, or whose containing folder to reveal.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// Whether this reveals the containing folder rather than opening the
-    /// path itself.
     pub fn is_reveal(&self) -> bool {
         self.kind == LaunchKind::Reveal
     }
 
-    /// The name of the worker thread a native launcher runs on.
     pub fn worker_name(&self) -> &str {
         &self.thread_name
     }
 }
 
-/// Hand a URI (a web page, a `mailto:` draft, a `settings:` pane) to the
-/// current host's [`crate::UriOpener`].
-///
-/// On the native desktop, Unix builds with the `portal` feature go through the
-/// XDG `OpenURI` portal: inside the app sandbox there is no host `xdg-open` to
-/// spawn, and the portal is where the desktop applies its own handler choice
-/// and policy. Other native builds use the platform opener (`ShellExecute` on
-/// Windows).
-///
-/// Blocks until the handler is launched or the request is refused, so call it
-/// from a worker thread; [`open_uri_detached`] is the fire-and-forget form.
-///
-/// # Errors
-/// Returns invalid input for a URI containing NUL (which native APIs would
-/// otherwise silently truncate), and the host's error when it cannot parse or
-/// refuses the request.
 pub fn open_uri(uri: &str) -> std::io::Result<()> {
     open_uri_with(&*crate::current_opener(), uri)
 }
 
-/// Non-blocking [`open_uri`]: the outcome arrives on the returned channel,
-/// which the UI thread drains like any other portal result. The request runs
-/// through the host's [`tilo_rt::background::Background`]; a host that refuses
-/// background work reports it as a failed launch.
 pub fn send_open_uri(uri: &str) -> LaunchChannel {
     let (tx, rx) = std::sync::mpsc::channel();
-    // Resolve the host here: a scoped host is only visible on this thread.
     let opener = crate::current_opener();
     let uri = uri.to_string();
     let refused = tx.clone();
@@ -213,8 +138,6 @@ pub fn send_open_uri(uri: &str) -> LaunchChannel {
     rx
 }
 
-/// [`open_uri`] through the host's [`tilo_rt::background::Background`]. A launch
-/// failure is logged, not surfaced.
 pub fn open_uri_detached(uri: &str) {
     let opener = crate::current_opener();
     let uri = uri.to_string();
@@ -229,12 +152,6 @@ pub fn open_uri_detached(uri: &str) {
     }
 }
 
-/// [`open_uri`] through an opener the caller resolved itself, for work that
-/// runs away from the thread whose host it belongs to: resolve
-/// `ui::host::current().opener` there, then call this on the worker.
-///
-/// # Errors
-/// As [`open_uri`].
 pub fn open_uri_with(opener: &dyn crate::UriOpener, uri: &str) -> std::io::Result<()> {
     if uri.contains('\0') {
         return Err(std::io::Error::new(
@@ -245,9 +162,6 @@ pub fn open_uri_with(opener: &dyn crate::UriOpener, uri: &str) -> std::io::Resul
     opener.open(uri)
 }
 
-/// A file selected by the portal and opened by its worker before the result is
-/// handed to the UI. The descriptor, rather than the path used to obtain it,
-/// is the authority to read the selected file.
 #[derive(Debug)]
 pub struct OpenedFile {
     file: File,
@@ -255,44 +169,28 @@ pub struct OpenedFile {
 }
 
 impl OpenedFile {
-    /// The name shown to the user. This is deliberately separate from the
-    /// descriptor: consumers must not recover a path and reopen it.
     #[must_use]
     pub fn display_name(&self) -> &str {
         &self.display_name
     }
 
-    /// Consume this portal result and transfer its already-open descriptor.
     #[must_use]
     pub fn into_file(self) -> File {
         self.file
     }
 }
 
-/// The result of a single-file portal open which retains the selected
-/// descriptor. Unlike [`PortalOutcome`], this is specifically for consumers
-/// that must hand an exact, already-open file to another security boundary.
 #[derive(Debug)]
 pub enum OpenFileOutcome {
-    /// The portal worker opened a regular local file without following the
-    /// final path component, and retained its display name separately. From
-    /// [`PickRequest::send_save_file`] the file is open for writing.
     Opened(OpenedFile),
-    /// The user dismissed the picker without choosing anything.
     Cancelled,
-    /// The portal was unavailable, returned an invalid URI, or the selected
-    /// path could not safely be opened.
     Failed(String),
 }
 
-/// A pending descriptor-retaining portal open, drained by the UI thread.
 pub type OpenFileChannel = Receiver<OpenFileOutcome>;
 
-/// A pending multi-select request: the receiver the UI thread drains each
-/// frame.
 pub type MultiChannel = Receiver<MultiOutcome>;
 
-/// Where a wallpaper is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WallpaperTarget {
     Background,
@@ -300,14 +198,8 @@ pub enum WallpaperTarget {
     Both,
 }
 
-/// The outcome of asking the desktop to use a picture as the wallpaper. The
-/// desktop previews it and asks the user to confirm; `Err` carries why it did
-/// not happen, including the user declining.
 pub type WallpaperChannel = Receiver<Result<(), String>>;
 
-/// Ask the desktop's Wallpaper portal to use `file`, an already-open picture
-/// (typically from [`PickRequest::send_open_file`]), for `target`. Never
-/// blocks: the D-Bus round trip runs on the app runtime.
 pub fn send_set_wallpaper(file: File, target: WallpaperTarget) -> WallpaperChannel {
     #[cfg(target_os = "linux")]
     {
@@ -324,10 +216,6 @@ pub fn send_set_wallpaper(file: File, target: WallpaperTarget) -> WallpaperChann
     }
 }
 
-/// One entry in the chooser's file-type dropdown.
-///
-/// Globs and MIME types are both accepted because the portal backends differ
-/// in which they honour; supplying both is the portable choice.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileFilter {
     pub(crate) name: String,
@@ -336,7 +224,6 @@ pub struct FileFilter {
 }
 
 impl FileFilter {
-    /// A filter labelled `name` in the chooser's type dropdown.
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -344,11 +231,6 @@ impl FileFilter {
         }
     }
 
-    /// Match files by shell glob, e.g. `*.png`.
-    /// The globs this filter offers, so an app can assert that its chooser
-    /// advertises everything it can open — a filter narrower than
-    /// the reader behind it hides a user's file with no way to discover the
-    /// app would have taken it.
     #[must_use]
     pub fn globs(&self) -> &[String] {
         &self.globs
@@ -360,20 +242,16 @@ impl FileFilter {
         self
     }
 
-    /// Match files by MIME type, e.g. `application/pdf`.
     #[must_use]
     pub fn mimetype(mut self, m: &str) -> Self {
         self.mimetypes.push(m.to_string());
         self
     }
 
-    /// The "All files" escape hatch every picker should offer, so the user is
-    /// never trapped by a file with an unusual MIME type.
     pub fn all_files() -> Self {
         Self::new("All files").glob("*")
     }
 
-    /// The MIME types this filter offers.
     #[must_use]
     pub fn mimetypes(&self) -> &[String] {
         &self.mimetypes
@@ -384,18 +262,10 @@ impl FileFilter {
     }
 }
 
-/// Names the directory a session nobody sits at (a provider's guest) saves
-/// into: a Save chooser answers there under its suggested name, and an Open
-/// chooser is refused, since no one is present to choose. Whether the app may
-/// write there is still its file grants'.
 pub const SAVE_DIRECTORY_ENV: &str = "TILO_SAVE_DIRECTORY";
 
-/// Standard `FileChooser` `choices` identifier carrying an explicit writable
-/// directory request through the XDG frontend (which filters unknown options).
-/// The backend acknowledges it only after the destination chooser is accepted.
 pub const WRITABLE_DIRECTORY_CHOICE: &str = "tilo-writable-directory";
 
-/// Which chooser to open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickKind {
     Open { multiple: bool },
@@ -403,12 +273,6 @@ pub enum PickKind {
     Save { suggested_name: String },
 }
 
-/// A portal file-chooser request, built up and then [`send`](PickRequest::send)
-/// on a worker thread.
-///
-/// The per-app delta between what used to be nine hand-written copies of this
-/// module is exactly what this struct captures: a title, an accept label, a
-/// filter set, and a worker-thread name.
 #[derive(Debug, Clone)]
 pub struct PickRequest {
     pub(crate) title: String,
@@ -422,31 +286,18 @@ pub struct PickRequest {
 }
 
 impl PickRequest {
-    /// A single-file open chooser.
     pub fn open(title: &str, accept_label: &str) -> Self {
         Self::new(title, accept_label, PickKind::Open { multiple: false })
     }
 
-    /// A multi-select open chooser: the user may pick arbitrarily many files
-    /// at once and every local one comes back.
     pub fn open_multiple(title: &str, accept_label: &str) -> Self {
         Self::new(title, accept_label, PickKind::Open { multiple: true })
     }
 
-    /// Pick one existing folder. Directory authority still comes from the
-    /// desktop portal; callers should not invent a path or build a private
-    /// filesystem browser.
     pub fn directory(title: &str, accept_label: &str) -> Self {
         Self::new(title, accept_label, PickKind::Directory)
     }
 
-    /// Pick one existing destination folder with explicit write consent.
-    ///
-    /// The title and accept label describe the destination operation, not consent.
-    /// The portal host must display its own explicit read/write wording before
-    /// confirmation. A document portal exports only the selected directory;
-    /// the native shell chooser instead requires existing workspace write access.
-    /// Cancellation grants nothing; workspace/default grants are never widened.
     pub fn writable_directory(title: &str, accept_label: &str) -> Self {
         Self {
             writable_directory: true,
@@ -454,14 +305,10 @@ impl PickRequest {
         }
     }
 
-    /// Whether this directory request explicitly asks for write authority.
-    /// Hosts must preserve this distinction or refuse the request, never silently
-    /// substitute a read-only directory selection.
     pub fn is_writable_directory(&self) -> bool {
         self.writable_directory
     }
 
-    /// A Save chooser, seeding the filename field with `suggested_name`.
     pub fn save(title: &str, accept_label: &str, suggested_name: &str) -> Self {
         Self::new(
             title,
@@ -485,9 +332,6 @@ impl PickRequest {
         }
     }
 
-    /// Suggest the folder shown when the host chooser opens. This is a
-    /// navigation hint, never a file-access grant. Hosts may ignore it;
-    /// callers must still validate the actual chosen directory.
     #[must_use]
     pub fn initial_directory(mut self, directory: impl Into<PathBuf>) -> Self {
         self.initial_directory = Some(directory.into());
@@ -498,40 +342,28 @@ impl PickRequest {
         self.initial_directory.as_deref()
     }
 
-    /// Bound the total contents returned across all chosen files. Oversized
-    /// selections fail without reading their full contents into memory.
-    /// Applies to `send_contents`, not path or descriptor requests. With no
-    /// override, the host's existing contents policy applies.
     #[must_use]
     pub fn max_contents_bytes(mut self, limit: usize) -> Self {
         self.max_contents_bytes = Some(limit);
         self
     }
 
-    /// The requested aggregate contents budget, when explicitly bounded.
     pub fn contents_byte_limit(&self) -> Option<usize> {
         self.max_contents_bytes
     }
 
-    /// Name the worker thread, so a stuck picker is identifiable in a
-    /// backtrace or `top -H`. Pickers that run on a dedicated thread (the
-    /// Windows dialogs) use it; the Unix portal's D-Bus requests run on the
-    /// shared app runtime instead.
     #[must_use]
     pub fn thread_name(mut self, name: &str) -> Self {
         self.thread_name = name.to_string();
         self
     }
 
-    /// Add a file-type filter. Order is the dropdown order; the first is the
-    /// default.
     #[must_use]
     pub fn filter(mut self, f: FileFilter) -> Self {
         self.filters.push(f);
         self
     }
 
-    /// Append the "All files" escape hatch.
     #[must_use]
     pub fn all_files(self) -> Self {
         self.filter(FileFilter::all_files())
@@ -545,18 +377,14 @@ impl PickRequest {
         matches!(self.kind, PickKind::Open { multiple: true })
     }
 
-    /// Whether this opens existing files (single or multi-select).
     pub fn is_open(&self) -> bool {
         matches!(self.kind, PickKind::Open { .. })
     }
 
-    /// The filter dropdown labels, in order. Lets an app assert on the chooser
-    /// it configured without opening one.
     pub fn filter_names(&self) -> Vec<&str> {
         self.filters.iter().map(FileFilter::name).collect()
     }
 
-    /// The filename this request seeds a Save dialog with, if it is one.
     pub fn suggested_name(&self) -> Option<&str> {
         match &self.kind {
             PickKind::Save { suggested_name } => Some(suggested_name.as_str()),
@@ -564,44 +392,30 @@ impl PickRequest {
         }
     }
 
-    /// The chooser's accept-button label.
     pub fn accept_label(&self) -> &str {
         &self.accept_label
     }
 
-    /// The file-type filters, in dropdown order.
     pub fn filters(&self) -> &[FileFilter] {
         &self.filters
     }
 
-    /// Whether this chooses a folder rather than files.
     pub fn is_directory(&self) -> bool {
         matches!(self.kind, PickKind::Directory)
     }
 
-    /// The chooser kind this request opens.
     pub fn kind(&self) -> &PickKind {
         &self.kind
     }
 
-    /// The name of the worker thread a native picker runs on, when it runs
-    /// on one (see [`Self::thread_name`]).
     pub fn worker_name(&self) -> &str {
         &self.thread_name
     }
 
-    /// Hand the request to the current host's [`crate::FilePicker`].
-    /// The UI thread is never blocked: the native picker runs the D-Bus
-    /// round-trip and the host dialog entirely on a worker. A multi-select
-    /// request should go through [`send_multiple`](Self::send_multiple)
-    /// instead, so every pick is delivered.
     pub fn send(self) -> PortalChannel {
         crate::current_picker().pick(self)
     }
 
-    /// Retain the original admitted caller through the actual chooser. The
-    /// caller is rechecked on a worker immediately before the host picker
-    /// runs; an expired caller never reaches the chooser effect.
     pub fn send_scoped(self, scope: impl EffectGate) -> PortalChannel {
         #[cfg(any(test, feature = "test-support"))]
         if let Some(backend) = scoped_picker_fixture_backend() {
@@ -615,88 +429,52 @@ impl PickRequest {
         })
     }
 
-    /// Open one selected regular file on the portal worker and deliver its
-    /// descriptor to the UI. This is intentionally a separate outcome path so
-    /// normal path-based open/save callers retain their existing API.
-    ///
-    /// This is valid only for a single-file Open request. Calling it for Save
-    /// or multi-select requests reports a normal failed outcome.
     pub fn send_open_file(self) -> OpenFileChannel {
         crate::current_picker().open_file(self)
     }
 
-    /// Save counterpart of [`send_open_file`](Self::send_open_file): the
-    /// destination the user chose, created and open for writing. Android's
-    /// chooser creates a document with no path the app may write, so a Save
-    /// there must come through here; hosts that answer Save with a path
-    /// refuse it. Valid only for a Save request.
     pub fn send_save_file(self) -> OpenFileChannel {
         crate::current_picker().save_file(self)
     }
 
-    /// Multi-select counterpart of [`send`](Self::send).
     pub fn send_multiple(self) -> MultiChannel {
         crate::current_picker().pick_multiple(self)
     }
 
-    /// Deliver the chosen files' contents instead of paths, for callers that
-    /// only read what the user picked. Works where no local path exists (a
-    /// browser page). Open requests only; multi-select delivers every file.
     pub fn send_contents(self) -> ContentsChannel {
         crate::current_picker().pick_contents(self)
     }
 
-    /// Save `bytes` where the user chooses. Save requests only. A browser
-    /// page shows its own Save dialog where it has one, else downloads them
-    /// under the suggested name.
     pub fn send_save_contents(self, bytes: Vec<u8>) -> SaveChannel {
         crate::current_picker().save_contents(self, bytes)
     }
 
-    /// Ask where to save now and write later, for bytes the app produces
-    /// after the choice: [`SaveDestination::write`] stores them. Works on
-    /// every host, a browser page included. Save requests only.
     pub fn send_save_destination(self) -> DestinationChannel {
         crate::current_picker().save_destination(self)
     }
 }
 
-/// One chosen file's contents, as [`PickRequest::send_contents`] delivers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickedContents {
-    /// The name shown to the user; never a path to reopen.
     pub name: String,
-    /// The MIME type the host reported, when it did.
     pub media_type: Option<String>,
     pub bytes: Vec<u8>,
-    /// Where the chosen file is on this device, when the host chose one
-    /// with a path: for recognising the same file chosen again, never for
-    /// showing. `None` where files have no paths (a browser page).
     pub location: Option<std::path::PathBuf>,
 }
 
-/// A file dropped on a window whose host hands files over rather than
-/// paths (a browser page).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dropped {
     Contents(PickedContents),
-    /// A file the host did not read, so the app can say why it took none
-    /// of it: only its name and size were looked at.
     NotRead {
-        /// The name shown to the user.
         name: String,
-        /// Its size in bytes.
         size: u64,
-        /// Why it was not read.
         why: NotRead,
     },
 }
 
-/// Why a host did not read a dropped file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotRead {
     TooLarge,
-    /// One more than a drop hands over at once.
     TooMany,
 }
 
@@ -705,11 +483,6 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Run `run`, the dispatch of the `WindowEvent::DroppedFile` that names a
-/// file dropped on the window, while `dropped` is that file. A host whose
-/// files have no path to read (a browser page) reads the dropped file first
-/// (or says why it did not) and hands it along this way, for that dispatch
-/// only.
 pub fn dropping<R>(dropped: Dropped, run: impl FnOnce() -> R) -> R {
     struct Restore(Option<Dropped>);
     impl Drop for Restore {
@@ -722,26 +495,19 @@ pub fn dropping<R>(dropped: Dropped, run: impl FnOnce() -> R) -> R {
     run()
 }
 
-/// The file the `WindowEvent::DroppedFile` being handled names, where it
-/// has no path to read it from (a browser page): taken once. `None` where
-/// the event's path is the file, as on a desktop.
 pub fn dropped() -> Option<Dropped> {
     DROPPED.with_borrow_mut(Option::take)
 }
 
-/// The result of [`PickRequest::send_contents`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContentsOutcome {
-    /// The chosen files, in the host's order. Never empty.
     Picked(Vec<PickedContents>),
     Cancelled,
     Failed(String),
 }
 
-/// A pending contents pick, drained by the UI thread.
 pub type ContentsChannel = Receiver<ContentsOutcome>;
 
-/// The result of [`PickRequest::send_save_contents`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SaveOutcome {
     Saved,
@@ -749,20 +515,15 @@ pub enum SaveOutcome {
     Failed(String),
 }
 
-/// A pending contents save, drained by the UI thread.
 pub type SaveChannel = Receiver<SaveOutcome>;
 
 const CHOOSER_GONE: &str = "The file chooser closed before you chose. Try again.";
 
-/// A path-based picker's pending answer.
 pub(crate) enum PickedPaths {
     One(PortalChannel),
     Many(MultiChannel),
 }
 
-/// The paths a path-based picker answered, read on the
-/// host's [`tilo_rt::background::Background`]: the default
-/// [`crate::FilePicker::pick_contents`] for hosts with local files.
 pub(crate) fn read_picked(
     paths: Option<PickedPaths>,
     max_contents_bytes: Option<usize>,
@@ -850,9 +611,6 @@ fn read_contents(path: &Path, limit: Option<usize>) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// Write `bytes` to the path a Save chooser answers, on the
-/// host's [`tilo_rt::background::Background`]: the default
-/// [`crate::FilePicker::save_contents`] for hosts with local files.
 pub(crate) fn write_picked(destination: Option<PortalChannel>, bytes: Vec<u8>) -> SaveChannel {
     let (tx, rx) = std::sync::mpsc::channel();
     let Some(destination) = destination else {
@@ -882,8 +640,6 @@ pub(crate) fn write_picked(destination: Option<PortalChannel>, bytes: Vec<u8>) -
     rx
 }
 
-/// Run one scoped chooser request on a background worker, checking the
-/// original caller's effect scope there immediately before `pick`.
 fn scoped_pick_worker(
     scope: impl EffectGate,
     pick: impl FnOnce() -> PortalOutcome + Send + 'static,
@@ -904,16 +660,6 @@ fn scoped_pick_worker(
     receiver
 }
 
-/// Spawn the portal worker. The UI may have moved on (window closed) by the
-/// time it finishes, so a dead channel is ignored by the closure itself.
-///
-/// If the OS can't spawn the thread, `work` (and whatever sender it closed
-/// over) is simply dropped: the caller's receiver observes a closed
-/// channel, the same outward signal it must already handle for a worker
-/// that spawned but whose send lost the race with a dropped receiver.
-///
-/// Windows dialogs and the Android Storage Access Framework answer on a
-/// worker; the Unix XDG portal uses the shared app runtime instead.
 #[cfg(any(windows, target_os = "android"))]
 pub fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
     let _ = std::thread::Builder::new()
@@ -921,32 +667,10 @@ pub fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
         .spawn(work);
 }
 
-// ---------------------------------------------------------------------------
-// URI → path mapping. Compiled unconditionally: this is the security rule, and
-// it stays under test whether or not the `portal` feature is on.
-// ---------------------------------------------------------------------------
-
-/// Map one portal-returned URI to a local path, or `None` if it does not name
-/// a file on this machine.
-///
-/// Builds on [`url::Url::to_file_path`], which is already much stricter than a
-/// `strip_prefix("file://")`: it requires the `file` scheme, rejects a URI
-/// naming any host other than the empty host or `localhost`, and requires an
-/// absolute path.
-///
-/// It is not strict enough on its own, though. `to_file_path` percent-decodes
-/// each segment and then joins, so a segment the portal presented as a single
-/// **file name** can decode into several path components: `a%2Fb.txt` becomes
-/// `a/b.txt`, and `%2E%2E` becomes a parent-directory hop. A chosen name would
-/// then reach outside the directory the user actually browsed. So we also
-/// require that the decoded path has exactly as many components as the URI had
-/// segments, and that none of them is `..` or `.`.
 #[cfg(any(unix, windows))]
 pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
     use std::path::Component;
 
-    // Windows URL conversion also accepts UNC hosts. A remote share is not
-    // a local selection and must not silently cross this boundary.
     if !matches!(uri.host_str(), None | Some("" | "localhost")) {
         return None;
     }
@@ -961,8 +685,6 @@ pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
         return None;
     }
 
-    // No parent/current-directory hops: the portal returns resolved picks, so
-    // one appearing here came from an escape in a file name.
     if path
         .components()
         .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
@@ -970,14 +692,11 @@ pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
         return None;
     }
 
-    // One URI segment must yield exactly one path component. An escaped
-    // separator would make the decoded path longer than the URI it came from.
     let segments = uri.path_segments()?.filter(|s| !s.is_empty()).count();
     let components = path
         .components()
         .filter(|c| matches!(c, Component::Normal(_)))
         .count();
-    // A Windows drive is a URI segment but a Prefix, not a Normal component.
     #[cfg(windows)]
     let components = components.checked_add(1)?;
     if components != segments {
@@ -987,19 +706,12 @@ pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
     Some(path)
 }
 
-/// A host without a native filesystem has no local paths: every URI stays
-/// remote.
 #[cfg(not(any(unix, windows)))]
 #[must_use]
 pub fn to_local_path(_uri: &url::Url) -> Option<PathBuf> {
     None
 }
 
-/// Map the portal's returned URIs for a **single-file** interaction: the first
-/// local `file://` path wins, an empty list is a cancel, and a URI that is not
-/// a local file is a failure.
-///
-/// Pure, so the channel/threading contract can be tested without a portal.
 pub fn map_uri(uris: &[url::Url]) -> PortalOutcome {
     let Some(uri) = uris.first() else {
         return PortalOutcome::Cancelled;
@@ -1010,13 +722,6 @@ pub fn map_uri(uris: &[url::Url]) -> PortalOutcome {
     }
 }
 
-/// Map the portal's returned URIs for a **multi-select** open: every local
-/// `file://` path is collected, an empty list is a cancel, and a selection
-/// with no local file at all is a failure.
-///
-/// A mixed selection keeps the local entries and drops the rest — the user
-/// asked for those files, and refusing all of them because one was remote
-/// would be surprising.
 pub fn map_uris(uris: &[url::Url]) -> MultiOutcome {
     if uris.is_empty() {
         return MultiOutcome::Cancelled;
@@ -1031,9 +736,6 @@ pub fn map_uris(uris: &[url::Url]) -> MultiOutcome {
     MultiOutcome::Selected(paths)
 }
 
-/// Turn an already validated portal URI into a descriptor-retaining outcome.
-/// This runs on the portal worker, immediately after the picker returns, so
-/// no UI-frame delay can turn an accepted path into a later reopen.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) fn open_selected_uri(uri: &url::Url) -> OpenFileOutcome {
     let Some(path) = to_local_path(uri) else {
@@ -1053,7 +755,6 @@ fn display_name(path: &Path) -> String {
     file_name_of(path)
 }
 
-/// The file name `path` shows the person.
 pub(crate) fn file_name_of(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -1061,10 +762,6 @@ pub(crate) fn file_name_of(path: &Path) -> String {
         .unwrap_or_else(|| "selected file".to_string())
 }
 
-/// The one temporary file beside a Save destination an app may write and
-/// then rename over it: `<folder>/.<name>.tilo-save`. A Seatbelt-confined
-/// macOS app is granted exactly this name with the destination, and nothing
-/// else in the folder. `None` for a path that names no file.
 pub fn save_sibling(destination: &Path) -> Option<PathBuf> {
     let name = destination.file_name()?;
     let mut sibling = std::ffi::OsString::from(".");
@@ -1073,9 +770,6 @@ pub fn save_sibling(destination: &Path) -> Option<PathBuf> {
     Some(destination.with_file_name(sibling))
 }
 
-/// Replace the Save destination `destination` with `bytes` atomically:
-/// write [`save_sibling`], flush it to disk, and rename it over the
-/// destination, so a crash leaves the old file or the new one.
 pub fn replace_saved(destination: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
     let sibling = save_sibling(destination).ok_or_else(|| {
@@ -1093,17 +787,6 @@ pub fn replace_saved(destination: &Path, bytes: &[u8]) -> std::io::Result<()> {
     written
 }
 
-/// Open a chosen local path without following its final component and verify
-/// the resulting descriptor is a regular file. Checking metadata on the open
-/// descriptor, rather than the path, keeps the type check bound to exactly
-/// what is handed to the caller.
-///
-/// Android's SAF view path also opens an already-chosen local file this way
-/// before handing the descriptor to the system viewer.
-///
-/// # Errors
-/// Returns when the path cannot be opened without following a final symlink,
-/// or when the opened descriptor is not a regular file.
 #[cfg(unix)]
 pub fn open_regular_file(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -1121,8 +804,6 @@ pub fn open_regular_file(path: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
-/// Bind the type and reparse checks to the opened Windows handle, so a link
-/// cannot be substituted between validation and opening the selected file.
 #[cfg(windows)]
 pub fn open_regular_file(path: &Path) -> std::io::Result<File> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
@@ -1144,9 +825,6 @@ pub fn open_regular_file(path: &Path) -> std::io::Result<File> {
 }
 
 impl OpenedFile {
-    /// Wrap a file a host has already opened and checked. The native picker
-    /// opens without following the final path component and verifies a
-    /// regular file; another host must uphold the same rule.
     #[must_use]
     pub fn new(file: File, display_name: impl Into<String>) -> Self {
         Self {
@@ -1157,7 +835,6 @@ impl OpenedFile {
 }
 
 impl PortalOutcome {
-    /// The chosen path, if the interaction produced one.
     pub fn path(&self) -> Option<&Path> {
         match self {
             PortalOutcome::Opened(p) => Some(p.as_path()),
@@ -1263,8 +940,6 @@ mod tests {
 
     #[test]
     fn a_rejected_host_never_yields_a_relative_path() {
-        // Independent of the enum: whatever we hand back must never be a path
-        // that would resolve against the working directory.
         for s in [
             "file://evil-host.example.com/etc/passwd",
             "file://192.0.2.1/srv/secret",
@@ -1281,8 +956,6 @@ mod tests {
 
     #[test]
     fn localhost_is_the_local_machine() {
-        // `file://localhost/...` is the spec's spelling of "this machine" and
-        // is equivalent to an empty host.
         assert_eq!(
             map_uri(&[u("file://localhost/home/alice/a.mkv")]),
             PortalOutcome::Opened(local_path("/home/alice/a.mkv"))
@@ -1295,7 +968,6 @@ mod tests {
             map_uri(&[u("file:///home/alice/My%20Clip.mp4")]),
             PortalOutcome::Opened(local_path("/home/alice/My Clip.mp4"))
         );
-        // Multi-byte UTF-8 escapes must survive too.
         assert_eq!(
             map_uri(&[u("file:///home/alice/%C3%A9t%C3%A9%20caf%C3%A9.mp3")]),
             PortalOutcome::Opened(local_path("/home/alice/été café.mp3"))
@@ -1308,7 +980,6 @@ mod tests {
 
     #[test]
     fn a_plus_in_a_path_stays_a_plus() {
-        // `+` means space only in query strings, not in a path component.
         assert_eq!(
             map_uri(&[u("file:///home/alice/my+song.mp3")]),
             PortalOutcome::Opened(local_path("/home/alice/my+song.mp3"))
@@ -1317,8 +988,6 @@ mod tests {
 
     #[test]
     fn an_escaped_separator_does_not_become_a_new_path_component() {
-        // A bare `to_file_path` maps this to `/home/alice/a/b.txt` — one URI
-        // segment silently becoming two path components.
         assert_eq!(
             to_local_path(&u("file:///home/alice/a%2Fb.txt")),
             None,
@@ -1332,8 +1001,6 @@ mod tests {
 
     #[test]
     fn a_parent_hop_hidden_inside_one_segment_is_rejected() {
-        // The URI has three segments, the decoded path would have five: what
-        // the portal presented as one file name would climb two levels.
         for s in [
             "file:///home/alice/%2E%2E%2F%2E%2E%2Fetc/shadow",
             "file:///var/workspace/%2E%2E%2Fetc/shadow",
@@ -1345,10 +1012,6 @@ mod tests {
 
     #[test]
     fn a_dot_dot_segment_is_resolved_by_uri_normalisation_not_smuggled() {
-        // `%2E%2E` as a whole segment is not an escape hatch: RFC 3986 path
-        // normalisation happens when the URI is *parsed*, so the URI's own
-        // path is already `/etc/shadow`. Whether the app may read it is the
-        // sandbox's question, not this module's.
         let uri = u("file:///home/alice/%2E%2E/%2E%2E/etc/shadow");
         assert_eq!(
             to_local_path(&uri),
@@ -1360,7 +1023,6 @@ mod tests {
 
     #[test]
     fn ordinary_nested_paths_still_resolve() {
-        // The hardening must not reject the everyday case it sits next to.
         for (uri, want) in [
             ("file:///a.txt", "/a.txt"),
             (
@@ -1488,8 +1150,6 @@ mod tests {
             }
         };
         assert_eq!(opened.display_name(), "original-installer.msi");
-        // A later path-based reopen would observe these replacement bytes;
-        // the portal outcome instead keeps the descriptor it already opened.
         std::fs::remove_file(&path).unwrap();
         std::fs::write(&path, b"replacement bytes").unwrap();
         let mut contents = String::new();
@@ -1562,8 +1222,6 @@ mod tests {
         );
     }
 }
-// A fixture is selected only by the current test UI thread. The selected Arc is
-// retained by this exact dispatched request, never looked up on the worker.
 #[cfg(any(test, feature = "test-support"))]
 type ScopedPickerBackend = std::sync::Arc<dyn Fn(PickRequest) -> PortalOutcome + Send + Sync>;
 #[cfg(any(test, feature = "test-support"))]
@@ -1574,9 +1232,6 @@ thread_local! {
 pub struct ScopedPickerFixture {
     _owner_thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
-/// Select a test backend for scoped chooser requests on this exact UI thread.
-/// Dispatch retains the backend even after the guard leaves scope; all real
-/// effect checks still run immediately before invoking it on the worker.
 #[cfg(any(test, feature = "test-support"))]
 pub fn scoped_picker_fixture(backend: ScopedPickerBackend) -> Result<ScopedPickerFixture, String> {
     SCOPED_PICKER_FIXTURE.with(|current| {

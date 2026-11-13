@@ -2,15 +2,10 @@
 use super::EffectGate;
 use std::sync::mpsc::Receiver;
 
-/// Dispatch one URI effect without blocking the UI thread. The original
-/// admitted caller is rechecked on the worker immediately before the host's
-/// [`crate::UriOpener`] runs. Apps retain their own URL policy (for
-/// example, allowed link schemes).
 pub fn open_uri_scoped(uri: String, scope: impl EffectGate) -> Receiver<Result<(), String>> {
     let (sender, receiver) = std::sync::mpsc::channel();
     #[cfg(any(test, feature = "test-support"))]
     let backend = SCOPED_URI_FIXTURE.with(|current| current.borrow().clone());
-    // Resolve the host on the dispatching thread: services are scoped per thread.
     let opener = crate::current_opener();
     let failed = sender.clone();
     let spawned =

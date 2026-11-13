@@ -33,13 +33,9 @@ use crate::portal::{
 };
 use crate::{FilePicker, answered};
 
-/// The service's name: its socket is `<runtime>/tilo/services/chooser.sock`.
 pub const SERVICE: &str = "chooser";
-/// Where the launcher tells the app its connection's descriptor number.
 pub const FD_ENV: &str = "TILO_SVC_CHOOSER_FD";
-/// Version of the launcher's first frame and of [`Request`]/[`Reply`].
 pub const PROTOCOL: u16 = 1;
-/// Longest frame either side accepts.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 const NOBODY: &str = "nobody is at this computer to choose a file; name the file instead";
@@ -51,20 +47,15 @@ const OUT_OF_TURN: &str = "the session's shell answered out of turn";
 const CLOSED: &str = "The file chooser closed before you chose. Try again.";
 const UNREACHABLE: &str = "The file chooser didn't open. Try again.";
 const CHOOSER_OUT_OF_TURN: &str = "The file chooser gave an answer that doesn't fit. Try again.";
-/// How long a link waits for the shell, which answers once its compositor
-/// has dispatched the link (a frame, unless the session is wedged).
 const LINK_ANSWER: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// The launcher's first frame on a new connection: who the app is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Handshake {
     pub protocol: u16,
     pub app_id: String,
-    /// The room the app was launched into.
     pub workspace_id: String,
 }
 
-/// Which chooser a [`Request::Pick`] opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PickMode {
@@ -76,7 +67,6 @@ pub enum PickMode {
     Save,
 }
 
-/// One entry of the chooser's file-type control.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Filter {
     pub name: String,
@@ -100,12 +90,9 @@ pub const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
 pub const CONTENT_CHUNK_BYTES: u32 = 8192;
 pub const MAX_CONTENT_FILES: usize = 16;
 
-/// App → shell.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
-    /// Show a chooser; answered by [`Reply::Picked`], [`Reply::Cancelled`],
-    /// [`Reply::Nobody`] or [`Reply::Failed`].
     Pick {
         id: u64,
         mode: PickMode,
@@ -114,13 +101,11 @@ pub enum Request {
         title: String,
         #[serde(default)]
         accept_label: String,
-        /// The filename a Save chooser starts with.
         #[serde(default)]
         suggested_name: Option<String>,
         #[serde(default)]
         filters: Vec<Filter>,
     },
-    /// Owner selection for contents; the app supplies no filesystem path.
     PickContents {
         id: u64,
         multiple: bool,
@@ -138,55 +123,34 @@ pub enum Request {
         id: u64,
         grant: FilePortalGrant,
     },
-    /// Open `path` in the app that owns its type; answered by
-    /// [`Reply::Opened`] or [`Reply::Failed`].
     Open {
         id: u64,
         path: PathBuf,
     },
-    /// Open `uri` in the app that claims its scheme; answered by
-    /// [`Reply::Opened`], [`Reply::Unclaimed`] or [`Reply::Failed`].
     OpenUri {
         id: u64,
         uri: String,
     },
-    /// Show the shell's app chooser: the installed apps, each with its
-    /// icon, to choose one for `purpose` (what the app will do with it, in
-    /// the person's words). Answered by [`Reply::AppChosen`],
-    /// [`Reply::Cancelled`], [`Reply::Nobody`] or [`Reply::Failed`].
     ChooseApp {
         id: u64,
         purpose: String,
     },
-    /// Retired: an app asked to hear when its workspace had an identity
-    /// selected. A workspace's identity is the person the device's
-    /// certificate names, so nothing asks this and no shell answers it; it
-    /// stays so a message an older build wrote still reads.
     AwaitIdentity {
         id: u64,
     },
-    /// Retired: an app asked the shell to show its identity chooser. There
-    /// is nothing to choose; kept for the same reason as
-    /// [`Self::AwaitIdentity`].
     ChooseIdentity {
         id: u64,
     },
 }
 
-/// The app the person chose in the shell's app chooser.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChosenApp {
-    /// The app's id: a Tilo app's package id, or a host app's desktop-file
-    /// id. Its windows announce it, or one of [`Self::window_ids`].
     pub id: String,
-    /// The name the person knows the app by.
     pub name: String,
-    /// Every id the app's windows may announce, [`Self::id`] among them.
     #[serde(default)]
     pub window_ids: Vec<String>,
 }
 
-/// Shell → app. Every reply names the request it answers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Reply {
@@ -209,14 +173,12 @@ pub enum Reply {
     Cancelled {
         id: u64,
     },
-    /// Nobody is at the computer to choose.
     Nobody {
         id: u64,
     },
     Opened {
         id: u64,
     },
-    /// No app this session knows opens the link; the app's own opener may.
     Unclaimed {
         id: u64,
     },
@@ -224,13 +186,10 @@ pub enum Reply {
         id: u64,
         reason: String,
     },
-    /// The person chose `app` ([`Request::ChooseApp`]).
     AppChosen {
         id: u64,
         app: ChosenApp,
     },
-    /// Retired: the answer to [`Request::AwaitIdentity`], which nothing asks.
-    /// Kept so a message an older shell wrote still reads.
     IdentitySelected {
         id: u64,
     },
@@ -269,7 +228,6 @@ type Answer = Box<dyn FnOnce(Reply) + Send>;
 
 struct Connection {
     writer: Mutex<UnixStream>,
-    /// `None` once the shell hung up: every later request fails at once.
     pending: Mutex<Option<HashMap<u64, Answer>>>,
     next_id: AtomicU64,
 }
@@ -356,8 +314,6 @@ fn read_replies(connection: &Connection, stream: UnixStream) {
     connection.close();
 }
 
-/// One connection to the session shell, which its choosers and its link
-/// opener share. The connection closes when the last of them is dropped.
 #[derive(Clone)]
 pub struct ShellLink(Arc<LinkInner>);
 
@@ -375,8 +331,6 @@ impl Drop for LinkInner {
 }
 
 impl ShellLink {
-    /// Talk to the shell over `stream`, a connection the launcher opened and
-    /// named.
     pub fn connect(stream: UnixStream) -> std::io::Result<Self> {
         let reader = stream.try_clone()?;
         let connection = Arc::new(Connection {
@@ -391,9 +345,6 @@ impl ShellLink {
         Ok(Self(Arc::new(LinkInner { connection })))
     }
 
-    /// The shell's choosers. When the shell answers that nobody is at the
-    /// computer, `unattended` answers instead (a Save into the save
-    /// directory); without one, the request fails.
     #[must_use]
     pub fn picker(&self, unattended: Option<Arc<dyn FilePicker>>) -> Arc<dyn FilePicker> {
         Arc::new(ShellChooser {
@@ -402,9 +353,6 @@ impl ShellLink {
         })
     }
 
-    /// Links opened by the shell, in the app that claims their scheme;
-    /// `elsewhere` opens the ones it answers no app claims, and every link
-    /// once the shell is gone.
     #[must_use]
     pub fn opener(&self, elsewhere: Arc<dyn crate::UriOpener>) -> Arc<dyn crate::UriOpener> {
         Arc::new(ShellOpener {
@@ -413,9 +361,6 @@ impl ShellLink {
         })
     }
 
-    /// Ask the shell to show its app chooser for `purpose`; `chosen` hears
-    /// the app the person chose, `None` when they chose none, on the
-    /// connection's reader thread.
     pub fn choose_app(
         &self,
         purpose: &str,
@@ -440,9 +385,6 @@ impl ShellLink {
         &self.0.connection
     }
 
-    /// The connection the launcher handed this process at [`FD_ENV`], or
-    /// `None` when it was handed none (the app runs outside Tilo, or the
-    /// session's shell serves no choosers). The descriptor is adopted once.
     pub fn inherited() -> Option<Self> {
         static INHERITED: OnceLock<Option<ShellLink>> = OnceLock::new();
         INHERITED
@@ -459,10 +401,6 @@ impl ShellLink {
     }
 }
 
-/// [`ShellLink::picker`] over a new connection on `stream`.
-///
-/// # Errors
-/// As [`ShellLink::connect`].
 pub fn picker(
     stream: UnixStream,
     unattended: Option<Arc<dyn FilePicker>>,
@@ -470,20 +408,14 @@ pub fn picker(
     Ok(ShellLink::connect(stream)?.picker(unattended))
 }
 
-/// [`ShellLink::picker`] over the [inherited](ShellLink::inherited)
-/// connection.
 pub fn inherited_picker(unattended: Option<Arc<dyn FilePicker>>) -> Option<Arc<dyn FilePicker>> {
     ShellLink::inherited().map(|link| link.picker(unattended))
 }
 
-/// [`ShellLink::opener`] over the [inherited](ShellLink::inherited)
-/// connection.
 pub fn inherited_opener(elsewhere: Arc<dyn crate::UriOpener>) -> Option<Arc<dyn crate::UriOpener>> {
     ShellLink::inherited().map(|link| link.opener(elsewhere))
 }
 
-/// Take ownership of `fd` if it is an open socket. A stale variable naming
-/// a number this process uses for something else is left alone.
 fn adopt_socket(fd: RawFd) -> Option<UnixStream> {
     if fd <= 2 {
         return None;
@@ -549,7 +481,6 @@ impl crate::UriOpener for ShellOpener {
     }
 }
 
-/// A channel whose one outcome wakes the event loop that asked.
 fn channel<T: Send + 'static>() -> (impl FnOnce(T) + Send, std::sync::mpsc::Receiver<T>) {
     let (tx, rx) = std::sync::mpsc::channel();
     let wake = tilo_rt::wake::WakeHandle::new();
@@ -618,8 +549,6 @@ fn pick_request(request: &PickRequest) -> impl FnOnce(u64) -> Request + use<> {
 }
 
 impl ShellChooser {
-    /// Ask the shell, answering from the unattended picker when nobody is
-    /// there to choose.
     fn pick_with<T: Send + 'static>(
         &self,
         request: PickRequest,
@@ -889,7 +818,6 @@ mod tests {
         tilo_test_env::hang_bound()
     }
 
-    /// A stand-in shell: reads each request and answers with `respond`.
     fn shell(respond: impl Fn(Request) -> Reply + Send + 'static) -> UnixStream {
         let (app, shell) = UnixStream::pair().unwrap();
         std::thread::spawn(move || {

@@ -1,16 +1,10 @@
 //! Choosers for an app Seatbelt confines (macOS).
 //!
-//! A panel the app opened itself would run inside its sandbox: it would show
-//! the disk, and the app could then open nothing it picked. So the runtime
-//! that launched the app shows the panel instead, outside the sandbox, and
-//! answers every picked path with a sandbox extension — the kernel-signed
-//! token App Sandbox's own panels hand out. Consuming it lets exactly that
-//! path through the app's profile, for the rest of the process's life. The
-//! app says what kind of chooser it wants; it never names a path, so it can
-//! be granted only what the person picked.
-//!
-//! One request and one answer per line over the socket the runtime passes in
-//! [`PICKER_FD_ENV`], each an `application/x-www-form-urlencoded` record.
+//! A panel the app opened itself would run inside its sandbox: it would show the
+//! disk, and the app could then open nothing it picked. So the runtime that
+//! launched the app shows the panel outside the sandbox and answers every picked
+//! path with a sandbox extension token, which admits exactly that path to the
+//! app's profile.
 
 use std::ffi::{CStr, CString, c_char};
 use std::io::{self, BufRead, BufReader, Write};
@@ -26,14 +20,10 @@ use crate::portal::{
     OpenFileOutcome, PickKind, PickRequest, PortalChannel, PortalOutcome, open_selected_uri,
 };
 
-/// The inherited socket to the runtime's chooser, as a descriptor number.
 pub const PICKER_FD_ENV: &str = "TILO_FILE_PICKER_FD";
 
-/// The extension class a confined app's profile admits, for reading and
-/// writing what was picked (App Sandbox's user-selected read-write).
 pub const EXTENSION_CLASS: &str = "com.apple.app-sandbox.read-write";
 
-/// The longest request or answer line either side reads.
 const MAX_LINE: u64 = 64 * 1024;
 
 unsafe extern "C" {
@@ -45,8 +35,6 @@ unsafe extern "C" {
     fn sandbox_extension_consume(token: *const c_char) -> i64;
 }
 
-/// What the chooser answered: the picked paths, each with the extension
-/// token that opens it to the app, or why there are none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
     Picked(Vec<Picked>),
@@ -54,15 +42,12 @@ pub enum Answer {
     Failed(String),
 }
 
-/// One picked path and the extension tokens that open it: its own, and for a
-/// Save destination also that of [`crate::portal::save_sibling`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Picked {
     pub path: PathBuf,
     pub tokens: Vec<String>,
 }
 
-/// `request` as one line.
 pub fn encode_request(request: &PickRequest) -> String {
     let mut record = url::form_urlencoded::Serializer::new(String::new());
     match &request.kind {
@@ -85,11 +70,6 @@ pub fn encode_request(request: &PickRequest) -> String {
     record.finish()
 }
 
-/// The request `line` encodes.
-///
-/// # Errors
-///
-/// `InvalidData` for a line that names no chooser kind this crate shows.
 pub fn decode_request(line: &str) -> io::Result<PickRequest> {
     let mut kind = None;
     let (mut title, mut accept, mut name) = (String::new(), String::new(), String::new());
@@ -120,7 +100,6 @@ pub fn decode_request(line: &str) -> io::Result<PickRequest> {
 }
 
 impl Answer {
-    /// This answer as one line.
     pub fn encode(&self) -> String {
         let mut record = url::form_urlencoded::Serializer::new(String::new());
         match self {
@@ -145,7 +124,6 @@ impl Answer {
         record.finish()
     }
 
-    /// The answer `line` encodes.
     pub fn decode(line: &str) -> io::Result<Self> {
         let mut outcome = None;
         let mut reason = String::new();
@@ -191,12 +169,9 @@ fn read_line(reader: &mut impl BufRead) -> io::Result<Option<String>> {
     Ok(Some(line))
 }
 
-/// Issue the extension that opens `path` to a confined app.
 pub fn issue_extension(path: &Path) -> io::Result<String> {
     let class = CString::new(EXTENSION_CLASS).map_err(|_| invalid("extension class"))?;
     let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| invalid("path has a NUL"))?;
-    // SAFETY: both arguments are NUL-terminated strings that outlive the
-    // call; a non-null result is a malloc'd C string this function frees.
     unsafe {
         let token = sandbox_extension_issue_file(class.as_ptr(), path.as_ptr(), 0);
         if token.is_null() {
@@ -210,20 +185,12 @@ pub fn issue_extension(path: &Path) -> io::Result<String> {
 
 fn consume_extension(token: &str) -> io::Result<()> {
     let token = CString::new(token).map_err(|_| invalid("token has a NUL"))?;
-    // SAFETY: `token` is a NUL-terminated string that outlives the call.
     if unsafe { sandbox_extension_consume(token.as_ptr()) } < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
 }
 
-/// Serve one confined app's chooser requests on `stream` until the app
-/// closes it. Each request is shown by `show` (which answers the picked
-/// paths, or `None` when the person cancelled); every picked path is
-/// answered with its extension token. A Save destination that does not exist
-/// yet is created empty first, and it is granted with its one
-/// [`crate::portal::save_sibling`], so the app can save by writing that and
-/// renaming it over the destination; nothing else in the folder is granted.
 pub fn serve(
     stream: UnixStream,
     show: impl Fn(&PickRequest) -> Result<Option<Vec<PathBuf>>, String>,
@@ -285,10 +252,6 @@ fn create_destination(path: &Path) -> io::Result<()> {
         .map(drop)
 }
 
-/// The chooser helper's whole life: read one request from stdin, show its
-/// panel modally, and write the picked paths (with no tokens: the runtime
-/// that asked grants them) to stdout. Run it as the main thread of a process
-/// of its own; the runtime has no run loop to show a panel on.
 pub fn run_chooser_helper() -> io::Result<()> {
     let line = read_line(&mut io::stdin().lock())?
         .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "no chooser request"))?;
@@ -313,14 +276,10 @@ pub fn run_chooser_helper() -> io::Result<()> {
     stdout.write_all(b"\n")
 }
 
-/// The question the runtime asks the person, once, before a confined app
-/// first captures from a device: already in the person's language, since
-/// the runtime resolves it from its catalogue before showing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Consent {
     pub message: String,
     pub detail: String,
-    /// The allowing button; the refusing one comes first and is the default.
     pub allow: String,
     pub deny: String,
 }
@@ -356,9 +315,6 @@ impl Consent {
     }
 }
 
-/// The consent helper's whole life: read one [`Consent`] from stdin, ask it
-/// in a native alert, and write `allow` or `deny` to stdout. Like
-/// [`run_chooser_helper`], the main thread of a process of its own.
 pub fn run_consent_helper() -> io::Result<()> {
     let line = read_line(&mut io::stdin().lock())?
         .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "no consent question"))?;
@@ -377,8 +333,6 @@ pub fn run_consent_helper() -> io::Result<()> {
     )
 }
 
-/// Ask `consent` through the helper `command` runs ([`run_consent_helper`]).
-/// Anything but a clear `allow` is a refusal.
 pub fn ask_consent_in_helper(
     mut command: std::process::Command,
     consent: &Consent,
@@ -390,7 +344,6 @@ pub fn ask_consent_in_helper(
         .spawn()
         .map_err(|error| format!("the consent prompt could not start: {error}"))?;
     if let Some(mut stdin) = child.stdin.take() {
-        // A helper that exits without reading is a refusal, not an error.
         let _ = writeln!(stdin, "{}", consent.encode());
     }
     let output = child
@@ -399,12 +352,6 @@ pub fn ask_consent_in_helper(
     Ok(String::from_utf8_lossy(&output.stdout).trim() == "allow")
 }
 
-/// Show `request` through the chooser helper `command` runs
-/// ([`run_chooser_helper`]): the `show` a runtime passes to [`serve`].
-///
-/// # Errors
-///
-/// The helper could not run, or answered nothing a chooser answers.
 pub fn show_in_helper(
     mut command: std::process::Command,
     request: &PickRequest,
@@ -436,8 +383,6 @@ pub fn show_in_helper(
     }
 }
 
-/// The chooser of an app whose runtime passed it one ([`PICKER_FD_ENV`]).
-/// The descriptor is taken once, by the first call.
 pub(crate) fn from_env() -> Option<Arc<ConfinedFilePicker>> {
     static PICKER: std::sync::OnceLock<Option<Arc<ConfinedFilePicker>>> =
         std::sync::OnceLock::new();
@@ -446,8 +391,6 @@ pub(crate) fn from_env() -> Option<Arc<ConfinedFilePicker>> {
 
 fn take_env() -> Option<ConfinedFilePicker> {
     let fd: i32 = std::env::var(PICKER_FD_ENV).ok()?.parse().ok()?;
-    // SAFETY: fstat on any number is safe; it only reports whether it names
-    // an open descriptor.
     let open = unsafe {
         let mut stat: libc::stat = std::mem::zeroed();
         libc::fstat(fd, &raw mut stat) == 0
@@ -455,21 +398,17 @@ fn take_env() -> Option<ConfinedFilePicker> {
     if !open {
         return None;
     }
-    // SAFETY: the runtime passed this descriptor for this purpose alone, and
-    // nothing else in the process claims it.
     let stream = UnixStream::from(unsafe { OwnedFd::from_raw_fd(fd) });
     Some(ConfinedFilePicker {
         runtime: Arc::new(Mutex::new(BufReader::new(stream))),
     })
 }
 
-/// [`crate::FilePicker`] for a confined app: the runtime shows every chooser.
 pub(crate) struct ConfinedFilePicker {
     runtime: Arc<Mutex<BufReader<UnixStream>>>,
 }
 
 impl ConfinedFilePicker {
-    /// Ask the runtime, off the calling thread, and deliver `finish(answer)`.
     fn ask<T: Send + 'static>(
         &self,
         request: &PickRequest,
@@ -512,8 +451,6 @@ fn exchange(runtime: &Mutex<BufReader<UnixStream>>, line: &str) -> io::Result<An
     )
 }
 
-/// Consume every picked path's token; a path the app cannot be granted is
-/// not handed to it.
 fn granted(answer: Answer) -> Answer {
     let Answer::Picked(picked) = answer else {
         return answer;
