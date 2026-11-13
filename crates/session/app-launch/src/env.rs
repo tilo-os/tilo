@@ -63,6 +63,8 @@ const FORWARDED: &[&str] = &[
     // How much an app (and the connector the system runs for one) logs, as the session's own
     // log says: a development session's log is all a connector without a window has.
     "RUST_LOG",
+    // Where an app's panic was, when the session's log asks for it: the launcher hands it on.
+    "RUST_BACKTRACE",
     // A run promised the product's font catalog, and the catalog itself: a
     // package installed outside the build directory cannot find it beside its
     // own executable.
