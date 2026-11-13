@@ -86,9 +86,11 @@ view desktop_frame(
 /// holds its own actions, and the frame puts its controls at that header's end, so a window has
 /// one bar, never the shell's stacked on the app's. A foreign window stands in its well, under
 /// the frame's own bar naming the place. The controls stay the shell's, so a press there never
-/// reaches the app. `lists`: the desk's bar lists the window's actions (`bar_lists_actions`), so
-/// the frame tells the window's bar to keep its title and the shell's controls alone, the actions
-/// standing once in the desk's bar's menu.
+/// reaches the app. The frame tells the window's bar to keep its title and the shell's controls
+/// alone (`lists_actions`), the window's own actions standing in the shell's one menu: the frame's
+/// `Window actions` where the desk's bar lists none, else the desk's bar
+/// (`bar_lists_actions`). `lists`: the desk's bar already lists them, so the frame's menu gives
+/// way, and every action stands once.
 view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool, lists: Bool) {
     ui.WindowFrame(
         name: place_title(p),
