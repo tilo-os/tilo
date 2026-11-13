@@ -752,11 +752,11 @@ fn shared_snapshot_keeps_stream_tab_and_focus_but_applies_real_closes() {
     let mut local = handle.read(Clone::clone);
     let strip = &mut local.workspaces[0].strips[0];
     let stream = strip.window_groups[2].tabs[0].id;
-    strip.window_groups[2].tabs[0].tile = tilo_desktop_model::TileContent::PeerWindow {
-        app_id: "so.tilo.terminal".into(),
-        label: "Terminal".into(),
+    // A window this desk keeps to itself: the person's own Settings.
+    strip.window_groups[2].tabs[0].tile = tilo_desktop_model::TileContent::LocalApp {
+        app_id: "so.tilo.settings".into(),
+        label: "Settings".into(),
         note: String::new(),
-        missing: None,
     };
     let removed = strip.window_groups[1].tabs[0].id;
     handle.replace_tree(local.clone());

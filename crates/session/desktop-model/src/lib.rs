@@ -53,7 +53,7 @@ pub use ids::{
     FileId, GroupId, IdMinter, MintIds, PEER_ID_COUNTER_MASK, PEER_ID_SALT_SHIFT, StripId, TabId,
     TabRef, WorkspaceId, WorkspaceSlot, compose_id, counter_of, mint_in_namespace, peer_salt_of,
 };
-pub use layout::{MissingApp, Strip, Tab, TileContent, WindowGroup};
+pub use layout::{Strip, Tab, TileContent, WindowGroup};
 pub use partition::{Display, OutputPartition};
 pub use receipt::WorkspaceEffectReceipt;
 pub use shared_surfaces::SharedSurfaces;

@@ -35,7 +35,6 @@ fn window_reading(tab: &Tab, at: Standing<'_>, handle: &DesktopHandle) -> shell:
     let app = match &tab.tile {
         TileContent::Foreign { app_id, .. }
         | TileContent::LocalApp { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. }
         | TileContent::HostedWindow { app_id, .. } => app_id.clone(),
         TileContent::AppPlaceholder { label, .. } | TileContent::Stub { label, .. } => {
             label.clone()
@@ -50,13 +49,12 @@ fn window_reading(tab: &Tab, at: Standing<'_>, handle: &DesktopHandle) -> shell:
         TileContent::Foreign { .. } => "live",
         _ => "none",
     };
-    // A window of another of the person's devices runs there, and one of a peer's on theirs:
-    // neither may be pictured here yet, so each says which device it is on.
+    // A window that runs only on another device may not be pictured here yet: it says which
+    // device it is on.
     let (local, device, device_name) = match &tab.tile {
         TileContent::HostedWindow {
             host, host_label, ..
         } => (false, host.clone(), host_label.clone()),
-        TileContent::PeerWindow { .. } => (false, String::new(), String::new()),
         _ => (true, String::new(), String::new()),
     };
     shell::WindowReading {

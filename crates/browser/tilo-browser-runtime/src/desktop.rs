@@ -859,10 +859,8 @@ impl Tiles {
     /// The app `tab` shows once it can be built here, or the line the
     /// window shows instead.
     fn ready_app<'t>(&self, tab: &'t Tab) -> Result<&'t str, Unready> {
-        if let TileContent::PeerWindow { label, .. } | TileContent::HostedWindow { label, .. } =
-            &tab.tile
-        {
-            // Another device's window: drawn there, not in a browser.
+        if let TileContent::HostedWindow { label, .. } = &tab.tile {
+            // A window that runs on another device: drawn there, not in a browser.
             let label = if label.is_empty() { &tab.title } else { label };
             return Err(Unready::Notice(format!(
                 "{label} is not shown in a browser"

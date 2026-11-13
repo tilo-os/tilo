@@ -408,7 +408,6 @@ pub fn tab_app(tile: &tilo_desktop_model::TileContent) -> Option<String> {
     match tile {
         TileContent::Foreign { app_id, .. }
         | TileContent::LocalApp { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. }
         | TileContent::HostedWindow { app_id, .. } => Some(app_id.clone()),
         _ => None,
     }

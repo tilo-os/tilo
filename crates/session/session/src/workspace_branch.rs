@@ -1118,11 +1118,11 @@ mod tests {
                 ),
                 tab(
                     5,
-                    TileContent::PeerWindow {
-                        app_id: "so.tilo.browser".into(),
+                    TileContent::HostedWindow {
+                        app_id: "org.gnome.TextEditor".into(),
                         label: "theirs".into(),
-                        note: String::new(),
-                        missing: None,
+                        host: "ab".repeat(32),
+                        host_label: "Laptop".into(),
                     },
                 ),
             ],
@@ -1154,7 +1154,11 @@ mod tests {
             .collect();
         assert_eq!(names, ["Reading", "Writing"]);
         let tabs: Vec<&Tab> = branch.tabs().collect();
-        assert_eq!(tabs.len(), 1, "another person's window stays theirs");
+        assert_eq!(
+            tabs.len(),
+            1,
+            "a window that runs on another device stays there"
+        );
         assert!(matches!(
             &tabs[0].tile,
             TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.notes"

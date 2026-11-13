@@ -54,11 +54,11 @@ fn peer_tab(minter: &mut IdMinter) -> Tab {
     Tab {
         id: minter.mint(),
         title: "Writer".into(),
-        tile: ModelTile::PeerWindow {
+        tile: ModelTile::HostedWindow {
             app_id: APP.into(),
             label: "Writer".into(),
-            note: String::new(),
-            missing: None,
+            host: "ab".repeat(32),
+            host_label: "Laptop".into(),
         },
         app_title: None,
         view: String::new(),

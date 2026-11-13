@@ -43,12 +43,19 @@ impl Shared {
             .sync
             .as_ref()
             .map_or_else(String::new, |sync| sync.publisher().to_string());
+        #[cfg(target_os = "linux")]
+        let before = tree.clone();
         if self.desktops.follow(engine, &device, &mut tree) {
             // The tree this device drew is the tree it shows: what the record holds is already
             // placed, and swapping it in whole keeps the windows this device shows where its own
             // view left them.
             self.handle.replace_tree(tree.clone());
             self.handle.set_opened_by(self.desktops.opened_by());
+            // A window someone else opened in the workspace is one this device shows through its
+            // own instance of the app, on the same record: the app is asked for it as a window
+            // this device left open is.
+            #[cfg(target_os = "linux")]
+            self.restore.borrow_mut().arrived(&before, &tree);
         }
     }
 

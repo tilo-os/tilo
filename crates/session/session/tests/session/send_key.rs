@@ -111,7 +111,6 @@ fn tab_apps(session: &Session) -> Vec<String> {
             .map(|tab| match &tab.tile {
                 tilo_desktop_model::TileContent::Foreign { app_id, .. }
                 | tilo_desktop_model::TileContent::LocalApp { app_id, .. }
-                | tilo_desktop_model::TileContent::PeerWindow { app_id, .. }
                 | tilo_desktop_model::TileContent::HostedWindow { app_id, .. } => app_id.clone(),
                 tilo_desktop_model::TileContent::AppPlaceholder { label, .. }
                 | tilo_desktop_model::TileContent::Stub { label, .. } => label.clone(),

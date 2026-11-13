@@ -471,16 +471,13 @@ pub fn workspace_effect_receipts_of(doc: &AutoCommit) -> Vec<WorkspaceEffectRece
     receipts
 }
 
-/// Make a peer's tile mean something on this machine: a
-/// [`TileContent::Foreign`] `wl_surface` id only resolves on the
-/// compositor hosting that client, so the surface is dropped and the
-/// app id survives as [`TileContent::PeerWindow`]. `current` is
-/// preferred once a local instance is bound, or the peer's
-/// re-projection would take the window away again every round.
-///
-/// A peer's [`TileContent::LocalApp`] (a window it is still restoring) is
-/// the same news as its live window. A [`TileContent::HostedWindow`] stays
-/// exactly as published: that window runs only on its host.
+/// Make another device's tile mean something on this machine: a window of an app is a window this
+/// device opens its own instance of ([`TileContent::LocalApp`]), showing the same record through its
+/// own view, as a saved window opens again. A [`TileContent::Foreign`] `wl_surface` id only
+/// resolves on the compositor hosting that client, so the surface is dropped. `current` is
+/// preferred once this device bound its own instance of the app, or is waiting for it, so a peer's
+/// re-projection never takes the window away. A [`TileContent::HostedWindow`] stays exactly as
+/// published: that window runs only on its host.
 pub fn localise_tile(
     tile: TileContent,
     current: Option<&TileContent>,
@@ -488,38 +485,30 @@ pub fn localise_tile(
 ) -> TileContent {
     match tile {
         TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
-            // Already resolved here, to our own instance or the same
-            // waypoint — the remote tile has nothing to add.
             match current {
                 Some(
                     matched @ (TileContent::Foreign { app_id: local, .. }
-                    | TileContent::PeerWindow { app_id: local, .. }),
-                ) if local.eq_ignore_ascii_case(&app_id) => {
-                    return matched.clone();
-                }
-                _ => {}
-            }
-            let label = if tab_title.trim().is_empty() {
-                app_id.clone()
-            } else {
-                tab_title.to_string()
-            };
-            TileContent::PeerWindow {
-                app_id,
-                label,
-                note: String::new(),
-                missing: None,
+                    | TileContent::LocalApp { app_id: local, .. }),
+                ) if local.eq_ignore_ascii_case(&app_id) => matched.clone(),
+                _ => TileContent::LocalApp {
+                    label: if tab_title.trim().is_empty() {
+                        app_id.clone()
+                    } else {
+                        tab_title.to_string()
+                    },
+                    app_id,
+                    note: String::new(),
+                },
             }
         }
         // A governed workspace's owner places in-process kinds; a member that bound
         // its own instance of that app to the tab keeps it, as does a device whose
-        // saved window of that app waits for the app to open it again.
+        // window of that app waits for the app to open it.
         placeholder @ (TileContent::AppPlaceholder { .. } | TileContent::Stub { .. }) => {
             let app = crate::apps::canonical_app_id(&placeholder);
             match current {
                 Some(
                     bound @ (TileContent::Foreign { app_id, .. }
-                    | TileContent::PeerWindow { app_id, .. }
                     | TileContent::LocalApp { app_id, .. }),
                 ) if app
                     .as_deref()
@@ -779,16 +768,6 @@ mod tests {
             localise_tile(placeholder.clone(), Some(&bound), "Notes"),
             bound
         );
-        let waiting = TileContent::PeerWindow {
-            app_id: "so.tilo.notes".into(),
-            label: "Notes".into(),
-            note: String::new(),
-            missing: None,
-        };
-        assert_eq!(
-            localise_tile(placeholder.clone(), Some(&waiting), "Notes"),
-            waiting
-        );
         let other = TileContent::Foreign {
             app_id: "so.tilo.terminal".into(),
             surface_id: 8,
@@ -814,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hosted_window_arrives_as_itself_and_a_restoring_one_as_a_peer_window() {
+    fn a_hosted_window_arrives_as_itself_and_an_app_window_as_one_to_open_here() {
         let hosted = TileContent::HostedWindow {
             app_id: "org.gimp.GIMP".into(),
             label: "Poster.xcf".into(),
@@ -833,20 +812,26 @@ mod tests {
             Some("org.gimp.GIMP")
         );
 
-        let restoring = TileContent::LocalApp {
+        // Another device's window of an app, live there or still opening, is one this device
+        // opens its own instance of.
+        let opens_here = TileContent::LocalApp {
             app_id: "so.tilo.notes".into(),
-            label: "Notes".into(),
+            label: "Groceries".into(),
             note: String::new(),
         };
-        assert_eq!(
-            localise_tile(restoring, None, "Groceries"),
-            TileContent::PeerWindow {
+        for theirs in [
+            TileContent::LocalApp {
                 app_id: "so.tilo.notes".into(),
-                label: "Groceries".into(),
+                label: "Notes".into(),
                 note: String::new(),
-                missing: None,
-            }
-        );
+            },
+            TileContent::Foreign {
+                app_id: "so.tilo.notes".into(),
+                surface_id: 0,
+            },
+        ] {
+            assert_eq!(localise_tile(theirs, None, "Groceries"), opens_here);
+        }
     }
 
     fn held(entry: (&str, &str)) -> std::collections::BTreeMap<String, String> {
