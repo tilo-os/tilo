@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tasks@1af478b177cd7ffc";
+export const SURFACE = "so.tilo.tasks@921f6f889bda2035";
 
 export interface Area {
   resource: string;
@@ -38,6 +38,22 @@ export interface Imported {
   author: string;
   created_ms: number;
   messages: ImportedMessage[];
+}
+
+export interface ImportedIssue {
+  source: string;
+  key: string;
+  title: string;
+  body: string;
+  status: Status;
+  assignee: string | null;
+  author: string;
+  labels: string[];
+  created_ms: number;
+  url: string;
+  comments: ImportedMessage[];
+  links: string[];
+  parent: string | null;
 }
 
 export interface ImportedMessage {
@@ -62,6 +78,7 @@ export interface Issue {
   comments: Message[];
   author: string;
   created_ms: number;
+  url: string | null;
 }
 
 /** One of "project", "area". */
@@ -187,6 +204,9 @@ export interface Tracker extends tilo.Resource {
   }): Promise<tilo.Run | void>;
   import(args: {
     tasks: Imported[];
+  }): Promise<tilo.Run | void>;
+  importIssues(args: {
+    issues: ImportedIssue[];
   }): Promise<tilo.Run | void>;
   newProject(): Promise<void>;
 }

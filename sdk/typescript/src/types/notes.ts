@@ -20,7 +20,22 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@8ce7fd71d646d813";
+export const SURFACE = "so.tilo.notes@23d3c72215ed6de1";
+
+export interface ImportedImage {
+  url: string;
+  bytes: unknown;
+}
+
+export interface ImportedPage {
+  source: string;
+  key: string;
+  title: string;
+  markdown: string;
+  parent: string | null;
+  tags: string[];
+  images: ImportedImage[];
+}
 
 export interface Page {
   title: string;
@@ -107,6 +122,9 @@ export interface Notebook extends tilo.Resource {
     markdown: string;
     title?: string;
   }): Promise<unknown | tilo.Run>;
+  importPages(args: {
+    pages: ImportedPage[];
+  }): Promise<tilo.Run | void>;
   exportMarkdownContent(args?: {
     page?: string;
     title?: string;

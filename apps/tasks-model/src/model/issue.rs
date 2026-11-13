@@ -228,6 +228,12 @@ pub struct Issue {
     pub author: String,
     #[model(readonly)]
     pub created_ms: i64,
+    /// Source
+    ///
+    /// The page the issue came from, when it was imported from another
+    /// tracker: Linear's or a repository's issue page.
+    #[model(readonly)]
+    pub url: Option<String>,
 }
 
 impl Issue {
@@ -296,6 +302,29 @@ fn assignee_parts(assignee: &str) -> Option<(&'static str, &str)> {
     (!id.trim().is_empty() && id.trim() == id).then_some((prefix, id))
 }
 
+/// Whether `assignee` is one an issue can hold: `person:<id>` or
+/// `agent:<id>`.
+#[must_use]
+pub fn names_an_assignee(assignee: &str) -> bool {
+    assignee_parts(assignee).is_some()
+}
+
+/// The description an imported issue keeps: its own words, and the page it
+/// came from when the tracker named one, so whoever reads it finds the
+/// original.
+#[must_use]
+pub fn source_note(body: &str, url: &str) -> String {
+    let body = body.trim_end();
+    let url = url.trim();
+    if url.is_empty() {
+        body.to_owned()
+    } else if body.is_empty() {
+        format!("[Open the original]({url})")
+    } else {
+        format!("{body}\n\n[Open the original]({url})")
+    }
+}
+
 /// The assignee value naming the person `id`.
 #[must_use]
 pub fn person_assignee(id: &str) -> Atom {
@@ -346,6 +375,73 @@ pub struct ImportedMessage {
     #[serde(default)]
     pub at_ms: i64,
     pub text: String,
+}
+
+/// An issue read from another tracker, as an import brings it in: Linear's
+/// or a repository's issue page, with what it holds there.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ImportedIssue {
+    /// The tracker it came from: `linear` or `forgejo`.
+    pub source: String,
+    /// The issue as that tracker names it: `ENG-123`, or `repo#42`.
+    pub key: String,
+    pub title: String,
+    /// Its description, in Markdown.
+    #[serde(default)]
+    pub body: String,
+    pub status: Status,
+    /// `person:<name>` or `agent:<id>`; nobody without. An assignee the
+    /// tracker names but this workspace does not know is left out.
+    #[serde(default)]
+    pub assignee: Option<String>,
+    /// Who wrote it, as the tracker names them.
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub created_ms: i64,
+    /// The page it is read at in the tracker it came from.
+    #[serde(default)]
+    pub url: String,
+    /// Its thread, oldest first.
+    #[serde(default)]
+    pub comments: Vec<ImportedMessage>,
+    /// The keys of the issues it links to, in the same tracker and this
+    /// import.
+    #[serde(default)]
+    pub links: Vec<String>,
+    /// The key of the issue it is a sub-issue of, when the tracker nests it.
+    #[serde(default)]
+    pub parent: Option<String>,
+}
+
+/// The id an issue imported from `source` as `key` is kept under: the same on
+/// every device that imports it, so an import updates the issue it made
+/// instead of writing another.
+#[must_use]
+pub fn imported_issue_id(source: &str, key: &str) -> Id {
+    // FNV-1a, so the id is the same in every process without a dependency.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in source
+        .bytes()
+        .chain(std::iter::once(b':'))
+        .chain(key.bytes())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let source: String = source
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    Id::from_raw(format!("import-{source}-{hash:016x}"))
 }
 
 impl Imported {

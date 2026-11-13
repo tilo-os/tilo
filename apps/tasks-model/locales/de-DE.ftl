@@ -30,3 +30,4 @@ tasks-tracker-link-note = Notiz verknüpfen
 tasks-tracker-delete = Aufgabe löschen
 tasks-tracker-plan = Aufgabe planen
 tasks-tracker-import = Alte Aufgaben importieren
+tasks-tracker-import-issues = Aufgaben aus einem anderen Tracker importieren

@@ -20,6 +20,7 @@ from tilo import Resource, Run
 __all__ = [
     "Area",
     "Imported",
+    "ImportedIssue",
     "ImportedMessage",
     "Issue",
     "Kind",
@@ -48,6 +49,21 @@ class Imported(TypedDict):
     created_ms: int
     messages: list[ImportedMessage]
 
+class ImportedIssue(TypedDict):
+    source: str
+    key: str
+    title: str
+    body: str
+    status: Status
+    assignee: str | None
+    author: str
+    labels: list[str]
+    created_ms: int
+    url: str
+    comments: list[ImportedMessage]
+    links: list[str]
+    parent: str | None
+
 class ImportedMessage(TypedDict):
     author: str
     by_agent: bool
@@ -69,6 +85,7 @@ class Issue(TypedDict):
     comments: list[Message]
     author: str
     created_ms: int
+    url: str | None
 
 Kind = Literal["project", "area"]
 
@@ -106,7 +123,7 @@ class TrackerArea(TypedDict):
 
 class Tracker(Resource):
     """Tasks — `tasks.tracker`."""
-    __surface__ = "so.tilo.tasks@1af478b177cd7ffc"
+    __surface__ = "so.tilo.tasks@921f6f889bda2035"
     issues: list[Issue]
     areas: list[TrackerArea]
     @property
@@ -304,6 +321,10 @@ class Tracker(Resource):
     def import_(self, *, tasks: list[Imported]) -> Run | None:
         """Runs the app's action."""
         return self.action("import", tasks=tasks)
+
+    def import_issues(self, *, issues: list[ImportedIssue]) -> Run | None:
+        """Runs the app's action."""
+        return self.action("import-issues", issues=issues)
 
     def new_project(self) -> None:
         """Runs the app's action."""

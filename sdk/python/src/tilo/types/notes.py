@@ -18,10 +18,25 @@ from typing import Any, Literal, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
+    "ImportedImage",
+    "ImportedPage",
     "Page",
     "Tag",
     "Notebook",
 ]
+
+class ImportedImage(TypedDict):
+    url: str
+    bytes: Any
+
+class ImportedPage(TypedDict):
+    source: str
+    key: str
+    title: str
+    markdown: str
+    parent: str | None
+    tags: list[str]
+    images: list[ImportedImage]
 
 class Page(TypedDict):
     title: str
@@ -36,7 +51,7 @@ class Tag(TypedDict):
 
 class Notebook(Resource):
     """Notebook — `notes.notebook`."""
-    __surface__ = "so.tilo.notes@8ce7fd71d646d813"
+    __surface__ = "so.tilo.notes@23d3c72215ed6de1"
     pages: list[Page]
     tags: list[Tag]
     @property
@@ -184,6 +199,10 @@ class Notebook(Resource):
             args["title"] = title
         args["markdown"] = markdown
         return self.action("append-to-note", **args)
+
+    def import_pages(self, *, pages: list[ImportedPage]) -> Run | None:
+        """Runs the app's action."""
+        return self.action("import-pages", pages=pages)
 
     def export_markdown_content(self,
         *,

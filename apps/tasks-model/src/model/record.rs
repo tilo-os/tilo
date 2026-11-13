@@ -3,11 +3,14 @@
 use tilo_document::RichText;
 use tilo_reference::ResourceAt;
 use tilo_resource::{
-    self, ActionCx, Collection, Counter, Id, Model, NonBlank, Refusal, Set, resource,
+    self, ActionCx, Atom, Collection, Counter, Id, Model, NonBlank, Refusal, Set, resource,
 };
 
 use crate::model::goal::Area;
-use crate::model::issue::{Imported, Issue, Link, MAX_MESSAGE_CHARS, Message, Status};
+use crate::model::issue::{
+    Imported, ImportedIssue, Issue, Link, MAX_MESSAGE_CHARS, MAX_TITLE_CHARS, Message, MessageKind,
+    Status, imported_issue_id,
+};
 use crate::model::tracker_area::{Kind, Person, TrackerArea};
 
 /// A workspace's issues, the projects and areas above them, and who is
@@ -516,4 +519,158 @@ impl Tracker {
             self.imported.insert(task.task.clone());
         }
     }
+
+    /// Import issues from another tracker.
+    ///
+    /// Each issue is kept under an id its source and key derive, so running
+    /// the import again updates the issues it made instead of writing them
+    /// twice: its title, description, status, labels, assignee, source page
+    /// and thread follow the tracker, and a sub-issue or a link the tracker
+    /// names is added once. A number an issue already has stays.
+    #[action(writes = issues, step = "create")]
+    pub fn import_issues(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The issues as the tracker names them")] issues: Vec<ImportedIssue>,
+    ) -> Result<(), Refusal> {
+        let who = author(cx)?;
+        // Every issue first, so the sub-issue and the link that name one
+        // find it here.
+        for imported in &issues {
+            let id = imported_issue_id(&imported.source, &imported.key);
+            let title = imported_title(&imported.title, &imported.key);
+            let body = crate::model::issue::source_note(&imported.body, &imported.url);
+            let assignee = assignee_of(imported.assignee.as_deref());
+            let mut labels = Set::new();
+            for label in &imported.labels {
+                if let Some(label) = NonBlank::parse(label) {
+                    labels.insert(label.into_string());
+                }
+            }
+            let url = imported_url(&imported.url);
+            if self.issues.contains(&id) {
+                let issue = self.issues.get_mut(&id).ok_or_else(no_issue)?;
+                issue.title = title;
+                issue.body = RichText::from_markdown(&body);
+                issue.status = imported.status;
+                issue.assignee = assignee;
+                issue.labels = labels;
+                issue.url = url;
+            } else {
+                let number = self.next_number();
+                let created_ms = if imported.created_ms > 0 {
+                    imported.created_ms
+                } else {
+                    cx.now_ms()
+                };
+                self.issues.push(
+                    id.clone(),
+                    Issue {
+                        number,
+                        title,
+                        body: RichText::from_markdown(&body),
+                        status: imported.status,
+                        assignee,
+                        labels,
+                        url,
+                        author: imported_author(&imported.author, &who),
+                        created_ms,
+                        ..Issue::default()
+                    },
+                );
+            }
+            // Its conversation: each message keeps the id it was imported
+            // under, so the import adds what is new and rewrites what moved.
+            let issue = self.issues.get_mut(&id).ok_or_else(no_issue)?;
+            for (index, message) in imported.comments.iter().enumerate() {
+                let message_id = Id::from_raw(format!("{}-comment-{index}", id.as_str()));
+                issue.comments.push(
+                    message_id,
+                    Message {
+                        author: imported_author(&message.author, &who),
+                        by_agent: message.by_agent,
+                        at_ms: if message.at_ms > 0 {
+                            message.at_ms
+                        } else {
+                            cx.now_ms()
+                        },
+                        text: message.text.chars().take(MAX_MESSAGE_CHARS).collect(),
+                        kind: MessageKind::Comment,
+                        ..Message::default()
+                    },
+                );
+            }
+        }
+        // Then what ties them together.
+        for imported in &issues {
+            let id = imported_issue_id(&imported.source, &imported.key);
+            if let Some(parent) = imported.parent.as_deref() {
+                let parent = imported_issue_id(&imported.source, parent);
+                if self.issues.contains(&parent) && !self.is_under(&id, &parent) {
+                    self.issue_mut(&id)?.parent = Some(parent);
+                }
+            }
+            for key in &imported.links {
+                let target = imported_issue_id(&imported.source, key);
+                let Some(other) = self.issues.get(&target) else {
+                    continue;
+                };
+                let resource = crate::model::issue_resource(&target);
+                let linked = self.issues.get(&id).is_some_and(|issue| {
+                    issue.links.values().any(|link| link.resource == resource)
+                });
+                if linked {
+                    continue;
+                }
+                let label = format!("#{} {}", other.number, other.title);
+                let link_id = Id::from_raw(format!("{}-link-{target}", id.as_str()));
+                self.issue_mut(&id)?.links.push(
+                    link_id,
+                    Link {
+                        label,
+                        app: crate::model::APP_ID.to_owned(),
+                        kind: crate::model::KIND.to_owned(),
+                        resource,
+                        record: None,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The title an imported issue keeps: trimmed, and within what an issue holds.
+fn imported_title(title: &str, key: &str) -> String {
+    let title: String = title.trim().chars().take(MAX_TITLE_CHARS).collect();
+    if title.is_empty() {
+        format!("Imported {key}")
+    } else {
+        title
+    }
+}
+
+/// Who wrote an imported issue or message: the tracker's name for them, or
+/// the person running the import when it names none.
+fn imported_author(named: &str, who: &str) -> String {
+    let named = named.trim();
+    if named.is_empty() {
+        who.to_owned()
+    } else {
+        named.to_owned()
+    }
+}
+
+/// The assignee an imported issue carries: only one this tracker can hold.
+fn assignee_of(assignee: Option<&str>) -> Option<Atom> {
+    assignee
+        .map(str::trim)
+        .filter(|assignee| crate::model::issue::names_an_assignee(assignee))
+        .map(|assignee| Atom(assignee.to_owned()))
+}
+
+/// The page an imported issue came from, when the tracker named one.
+fn imported_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    (!url.is_empty()).then(|| url.to_owned())
 }
