@@ -1080,9 +1080,18 @@ pub(crate) async fn ensure_guest_policy(
         Answer::Deny,
         Grantee::person(hex::encode(cert.user_public_key)),
     );
-    let digest = *blake3::hash(b"public-workspace-guests-no-outside/v1").as_bytes();
+    // The request is the grant as this build writes it: the same grant settled
+    // again is the request done before, and a grant written differently (its
+    // answer, or the encoding a build gives it) is a new request that replaces
+    // the one held under its id, never one the host refuses as an ID reused.
+    let written = serde_json::to_vec(&deny).context("the guests' grant as written")?;
+    let request_id = *blake3::Hasher::new()
+        .update(b"public-workspace-guests-no-outside\0")
+        .update(&written)
+        .finalize()
+        .as_bytes();
     workspaces
-        .put_room_grants(workspace, cert, digest, vec![deny])
+        .put_room_grants(workspace, cert, request_id, vec![deny])
         .await
         .map_err(|error| anyhow::anyhow!("deny outside effects to guests: {error}"))?;
     Ok(())

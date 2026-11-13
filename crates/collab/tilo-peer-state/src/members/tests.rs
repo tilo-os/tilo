@@ -288,6 +288,22 @@ fn a_membership_an_earlier_release_kept_reads_the_same_once_brought_up() {
     let owner = device(1);
     let ana = device(3);
     let ben = device(5);
+    // A grant the owner gave Ana, as the earlier release wrote it: the person
+    // it is for and the one who gave it each named on their own.
+    let to_ana = tilo_action_policy::Grant::new(
+        "ana-invites",
+        tilo_action_policy::Grantee::person(person(&ana.1)),
+        tilo_action_policy::TreePath::workspace(WORKSPACE),
+        tilo_action_policy::KindSet::OUTSIDE,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person(person(&owner.1)),
+    );
+    let mut written_then = serde_json::to_value(&to_ana).unwrap();
+    for field in ["subject", "granted_by"] {
+        let named = written_then[field]["member"].take();
+        written_then[field] = named;
+    }
+    assert_eq!(written_then["subject"]["person"], person(&ana.1));
     let kept = kept_by_an_earlier_release(
         &workspace(&owner.1),
         &[
@@ -316,6 +332,11 @@ fn a_membership_an_earlier_release_kept_reads_the_same_once_brought_up() {
                 &person(&ana.1),
                 serde_json::to_vec(&1_000_u64).unwrap(),
             ),
+            (
+                "grants",
+                "ana-invites",
+                serde_json::to_vec(&written_then).unwrap(),
+            ),
         ],
     );
     // Read as this layout reads it, the workspace is its owner's alone.
@@ -340,8 +361,12 @@ fn a_membership_an_earlier_release_kept_reads_the_same_once_brought_up() {
         AT_NS,
     )
     .unwrap();
-    assert_eq!(written, 2, "one operation per member, no grants to add");
+    assert_eq!(written, 3, "one operation per member, then the grant");
     let replayed = replay(&brought_up, WORKSPACE);
+    assert!(
+        replayed.grants.contains(&to_ana),
+        "the grant the earlier release kept is held as this layout writes it"
+    );
     assert_eq!(earlier::roles(&replayed), earlier::roles(&membership));
     assert_eq!(
         replayed.joined.get(&person(&ana.1)),
@@ -349,5 +374,5 @@ fn a_membership_an_earlier_release_kept_reads_the_same_once_brought_up() {
         "each member joined when the earlier release says they did"
     );
     assert!(!earlier::holds_earlier_log(&brought_up));
-    assert_eq!(earlier::earlier_keys(&brought_up).len(), 3);
+    assert_eq!(earlier::earlier_keys(&brought_up).len(), 4);
 }

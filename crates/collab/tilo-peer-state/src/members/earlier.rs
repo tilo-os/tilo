@@ -69,10 +69,36 @@ pub fn earlier_keys(doc: &AutoCommit) -> Vec<String> {
         .collect()
 }
 
-/// The JSON values of the row map at `key`, each read as `T`, by name. A row
-/// that does not read is left out, as the earlier layout's own reader left it
-/// out, and named in the log.
-fn rows<T: serde::de::DeserializeOwned>(doc: &AutoCommit, key: &str) -> BTreeMap<String, T> {
+/// A grant as the earlier layout wrote it, as this layout writes it: those
+/// releases named a person, agent or bot a grant is for (or given by) on its
+/// own (`{"person": ..}`), and this layout names each a member
+/// (`{"member": {"person": ..}}`).
+fn earlier_grant(mut grant: serde_json::Value) -> serde_json::Value {
+    for field in ["subject", "granted_by"] {
+        let Some(grantee) = grant.get_mut(field) else {
+            continue;
+        };
+        let names_a_member = grantee.as_object().is_some_and(|named| {
+            named.len() == 1
+                && named
+                    .keys()
+                    .all(|kind| ["person", "agent", "bot"].contains(&kind.as_str()))
+        });
+        if names_a_member {
+            *grantee = serde_json::json!({ "member": grantee.take() });
+        }
+    }
+    grant
+}
+
+/// The JSON values of the row map at `key`, each read as `T` once `earlier`
+/// gave it this layout's form, by name. A row that does not read is left out,
+/// as the earlier layout's own reader left it out, and named in the log.
+fn rows<T: serde::de::DeserializeOwned>(
+    doc: &AutoCommit,
+    key: &str,
+    earlier: fn(serde_json::Value) -> serde_json::Value,
+) -> BTreeMap<String, T> {
     let mut read = BTreeMap::new();
     let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(ROOT, key) else {
         return read;
@@ -80,9 +106,9 @@ fn rows<T: serde::de::DeserializeOwned>(doc: &AutoCommit, key: &str) -> BTreeMap
     for name in doc.keys(&map) {
         let value = match doc.get(&map, name.as_str()) {
             Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                ScalarValue::Bytes(bytes) => {
-                    serde_json::from_slice(bytes).map_err(|error| error.to_string())
-                }
+                ScalarValue::Bytes(bytes) => serde_json::from_slice(bytes)
+                    .and_then(|value| serde_json::from_value(earlier(value)))
+                    .map_err(|error| error.to_string()),
                 other => Err(format!("a {other:?}, not JSON bytes")),
             },
             other => Err(format!("{other:?}, not a value")),
@@ -113,12 +139,14 @@ pub fn membership(doc: &AutoCommit, workspace: &str) -> Option<WorkspacePolicy> 
     }
     let mut policy = super::replay::start(doc, workspace);
     let owner = policy.owner.clone();
-    policy.members = rows::<Role>(doc, MEMBERS_ROWS);
+    policy.members = rows::<Role>(doc, MEMBERS_ROWS, std::convert::identity);
     policy
         .members
         .retain(|person, _| owner.as_ref() != Some(person));
-    policy.joined = rows::<u64>(doc, JOINED_ROWS);
-    let grants: Vec<Grant> = rows::<Grant>(doc, GRANTS_ROWS).into_values().collect();
+    policy.joined = rows::<u64>(doc, JOINED_ROWS, std::convert::identity);
+    let grants: Vec<Grant> = rows::<Grant>(doc, GRANTS_ROWS, earlier_grant)
+        .into_values()
+        .collect();
     if !grants.is_empty() {
         policy.grants = grants;
     }
