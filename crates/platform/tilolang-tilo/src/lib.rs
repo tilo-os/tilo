@@ -21,6 +21,7 @@ pub mod bundle;
 pub mod catalogue;
 pub mod chunk;
 pub mod containers;
+pub mod content;
 pub mod effects;
 pub mod history;
 pub mod host;

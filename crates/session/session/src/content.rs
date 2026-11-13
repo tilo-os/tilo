@@ -12,6 +12,7 @@
 //! thread, never from the session's loop.
 
 use std::collections::{BTreeSet, HashMap};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -54,6 +55,9 @@ pub(crate) struct Plane {
     shelf: Arc<Shelf>,
     peers: Arc<Peers>,
     inbound: SyncSender<Inbound>,
+    /// The store of each record the session keeps itself, by workspace and app
+    /// ([`Plane::store`]).
+    kept_stores: Mutex<HashMap<(String, String), ContentStore>>,
 }
 
 impl Plane {
@@ -83,6 +87,7 @@ impl Plane {
             shelf,
             peers,
             inbound,
+            kept_stores: Mutex::default(),
         })
     }
 
@@ -116,6 +121,27 @@ impl Plane {
     /// its workspace, through the same store the app's own `offerBlob` and `wantBlob` reach.
     pub(crate) fn media(self: &Arc<Self>) -> Arc<dyn WorkspaceMedia> {
         Arc::new(Media(Arc::clone(&self.shelf)))
+    }
+
+    /// The content store of the record of `app` in `workspace`, as the session keeps it itself:
+    /// what its actions keep is offered where the workspace's devices fetch the record's content
+    /// from, and what a record names and this device lacks is asked of the route.
+    ///
+    /// The store is the same one for the workspace and app every time: a session lends it to the
+    /// services whose records it keeps (`tilo_service::Service::lend_content`) on every pass.
+    pub(crate) fn store(&self, workspace: &str, app: &str) -> ContentStore {
+        let scope = (workspace.to_owned(), app.to_owned());
+        if let Some(store) = self.kept_stores.lock_recover().get(&scope) {
+            return store.clone();
+        }
+        let on = CrdtRoute::app(app, workspace);
+        let store = ContentStore::from_backend(Arc::new(Kept {
+            route: Arc::clone(&self.route),
+            on,
+        }))
+        .sealing();
+        self.kept_stores.lock_recover().insert(scope, store.clone());
+        store
     }
 
     /// The bytes this device keeps of `app` 's content in `workspace` under `hash` (lower-case
@@ -447,6 +473,81 @@ impl WorkspaceMedia for Media {
                 .map_err(|_| "the content store keeps these bytes under no address".to_owned())?;
             Ok(digest)
         })
+    }
+}
+
+/// The store of a record the session keeps itself, on the route the workspace's devices fetch its
+/// content from: what is kept is offered there, and what the record names and this device lacks is
+/// asked of it ([`RouteContent`]).
+struct Kept {
+    route: Arc<RouteContent>,
+    on: CrdtRoute,
+}
+
+impl tilo_content::ContentBackend for Kept {
+    fn put(
+        &self,
+        reader: &mut dyn std::io::Read,
+        _mime: &str,
+    ) -> Result<tilo_content::Stored, tilo_content::ContentError> {
+        let mut bytes = Vec::new();
+        reader
+            .take(MAX_CONTENT_BYTES.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_CONTENT_BYTES {
+            return Err(tilo_content::ContentError::ItemTooLarge {
+                actual: bytes.len(),
+                limit: usize::try_from(MAX_CONTENT_BYTES).unwrap_or(usize::MAX),
+            });
+        }
+        let hash = hash_bytes(&bytes);
+        self.route
+            .offer(&self.on, &hash, &bytes)
+            .map_err(tilo_content::ContentError::Io)?;
+        Ok(tilo_content::Stored {
+            hash,
+            len: bytes.len() as u64,
+        })
+    }
+
+    fn open(
+        &self,
+        hash: &str,
+    ) -> Result<Option<tilo_content::ContentReader>, tilo_content::ContentError> {
+        if let Some(bytes) = self.route.kept(&self.on, hash) {
+            return Ok(Some(Box::new(std::io::Cursor::new(bytes))));
+        }
+        // Not here: the route's other devices are asked, and what one hands over is kept where
+        // this store reads it the next time.
+        self.route.want(&self.on, hash);
+        Ok(None)
+    }
+
+    fn has(&self, hash: &str) -> bool {
+        self.route.kept(&self.on, hash).is_some()
+    }
+
+    fn state(&self, hash: &str) -> ContentState {
+        if self.has(hash) {
+            ContentState::Resolved
+        } else {
+            // A want started by [`Self::open`]: where it stands reaches the route's subscribers.
+            ContentState::Pending
+        }
+    }
+
+    fn shared(&self) -> bool {
+        true
+    }
+
+    /// The route serves the workspace's record, so what this store reads is as scoped as the
+    /// workspace the record is in.
+    fn workspace_scoped(&self) -> bool {
+        true
+    }
+
+    fn max_item_bytes(&self) -> usize {
+        usize::try_from(MAX_CONTENT_BYTES).unwrap_or(usize::MAX)
     }
 }
 

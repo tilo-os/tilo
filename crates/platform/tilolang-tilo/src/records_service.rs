@@ -80,6 +80,18 @@ pub struct RecordService {
     /// conversation of the turn an agent asks in — or empty for the place in front: what a
     /// resource it opens stands beside ([`Service::note_beside`]).
     beside: String,
+    /// Where the large parts of each record's actions are kept, by the app whose record it is:
+    /// the stores the session lent them ([`Self::provide_content`]), offered on each record's
+    /// route.
+    content: Arc<crate::content::Records>,
+    /// [`Self::content`] as the store this service's code reaches as its records' own: a part
+    /// kept now goes to the record being committed, and a part read comes from the record that
+    /// names it.
+    kept: tilo_content::ContentStore,
+    /// The wake scope this service's code runs in, its store registered for it: an action too
+    /// large to record whole keeps its parts there, and reads them back
+    /// ([`tilo_actions::content`]).
+    window: tilo_wake::WakeScope,
 }
 
 impl RecordService {
@@ -93,6 +105,8 @@ impl RecordService {
         let watch = host.store().watch();
         publications.settle(&host, &planner);
         let _ = watch.take();
+        let content = Arc::new(crate::content::Records::default());
+        let kept = content.store();
         Self {
             record,
             host,
@@ -112,7 +126,42 @@ impl RecordService {
             origin_waker: None,
             opens: Vec::new(),
             beside: String::new(),
+            content,
+            kept,
+            window: tilo_wake::WakeScope::new(),
         }
+    }
+
+    /// Keep the large parts of the record of `app`'s actions in `store`: the content store the
+    /// host lends that record, which offers what it keeps on the record's route — so the
+    /// record's other readers fetch a part from there — and asks the route for a part this
+    /// device lacks. A record this service keeps that is lent no store keeps no content: an
+    /// action whose parts nothing would keep is refused rather than losing them.
+    pub fn provide_content(&mut self, app: &str, store: tilo_content::ContentStore) {
+        self.content.keep_in(app, store);
+    }
+
+    /// The apps whose records this service keeps: each an app whose package it runs, or one whose
+    /// parts it holds ([`Service::share`]).
+    #[must_use]
+    pub fn kept_apps(&self) -> Vec<String> {
+        let mut apps: Vec<String> = self
+            .host
+            .packages()
+            .into_iter()
+            .map(|package| package.meta.app.clone())
+            .collect();
+        apps.extend(self.shared.keys().cloned());
+        apps.sort();
+        apps.dedup();
+        apps
+    }
+
+    /// The scope this service's code runs in, with its records' store registered for it: what it
+    /// commits or reads is the record's own content ([`tilo_actions::content`]).
+    fn in_records(&self) -> tilo_wake::WakeScopeGuard {
+        tilo_actions::content::register(&self.window.handle(), self.kept.clone());
+        self.window.enter()
     }
 
     /// Publish the package `meta`'s records, which the session runs the package itself for,
@@ -126,6 +175,7 @@ impl RecordService {
     /// devices, as an app's record is.
     pub fn share(&mut self, share: &tilo_service::Share<'_>) -> Result<(), String> {
         use tilo_automerge::ApplyIncoming as _;
+        let _in_records = self.in_records();
         let Some(meta) = crate::runtime::Meta::from_wasm(share.wasm) else {
             return Err(format!("{} carries no description", share.app));
         };
@@ -165,6 +215,7 @@ impl RecordService {
     /// into the record, and the door offers what it changed. Whether anything was taken in.
     pub fn follow(&mut self) -> Result<bool, String> {
         use tilo_automerge::ApplyIncoming as _;
+        let _in_records = self.in_records();
         let mut took = false;
         for (app, records) in &self.shared_records {
             let heads = self.record.committed_heads();
@@ -233,6 +284,7 @@ impl RecordService {
     /// Take in what another replica of the workspace record holds.
     pub fn take_in(&mut self, other: &mut tilo_resource::Doc) -> Result<(), String> {
         use tilo_automerge::ApplyIncoming as _;
+        let _in_records = self.in_records();
         self.record
             .merge_incoming(other)
             .map_err(|error| error.to_string())?;
@@ -426,6 +478,7 @@ impl RecordService {
             &action.kind,
             &action.kind,
         );
+        self.content.writing(&action.app);
         self.apply(action, encoded, in_run(context, invoker, run))
     }
 
@@ -437,6 +490,7 @@ impl RecordService {
         encoded: tilo_actions::EncodedAction,
         context: ActionContext,
     ) -> Result<(), String> {
+        let _in_records = self.in_records();
         let actor = context
             .invoker
             .as_ref()
@@ -485,6 +539,7 @@ impl RecordService {
         invoker: &tilo_actions::ActionInvoker,
         run: Option<&tilo_actions::WorkGroup>,
     ) -> Result<Started, DoorError> {
+        let _in_records = self.in_records();
         let address = ActionAddress::new(resource, action);
         // The place this invocation is asked in, taken as this one's: a note from the step that
         // brought it stands for it alone, never for the next invocation the service answers.
@@ -576,9 +631,15 @@ impl RecordService {
             .find(|tree| tree.id.as_str() == resource)
             .map(|tree| tree.kind.clone())
             .ok_or_else(|| format!("{resource} keeps no history here"))?;
+        let _in_records = self.in_records();
         let action = HostHistoryEdit::new(edit.clone(), self.words.clone());
         let encoded = action.encoded()?;
         let before = self.record.get_heads();
+        // The step the verb takes back is a change of the record the resource is of: a part it
+        // keeps, when the step is too large to record whole, is that record's.
+        if let Some(app) = app_of_resource(resource) {
+            self.content.writing(app);
+        }
         let context = ActionContext::for_resource(resource, &kind, &kind);
         self.apply(&action, encoded, in_run(context, invoker, run))?;
         self.publications.settle(&self.host, &self.planner);
@@ -592,6 +653,14 @@ impl RecordService {
             &self.words,
         ))
     }
+}
+
+/// The app whose record `resource` (a published id, `tl:<app>:<id>`) is one of.
+fn app_of_resource(resource: &str) -> Option<&str> {
+    resource
+        .strip_prefix("tl:")?
+        .split_once(':')
+        .map(|(app, _)| app)
 }
 
 /// `context` as a step of `invoker`, of the run `run` when it is one of a run's.
@@ -908,6 +977,7 @@ impl Service for RecordService {
     }
 
     fn poll(&mut self) -> bool {
+        let _in_records = self.in_records();
         let touched = self.publications.update(&self.host, &self.planner);
         let ran = self.trigger();
         // What the person dismissed here is their answer to a notice, as their change.
@@ -946,16 +1016,8 @@ impl Service for RecordService {
     }
 
     fn records(&self) -> Vec<tilo_service::Record> {
-        let mut apps: Vec<String> = self
-            .host
-            .packages()
-            .into_iter()
-            .map(|package| package.meta.app.clone())
-            .collect();
-        apps.extend(self.shared.keys().cloned());
-        apps.sort();
-        apps.dedup();
-        apps.iter()
+        self.kept_apps()
+            .iter()
             .filter_map(|app| self.service_record(app))
             .collect()
     }
@@ -1031,7 +1093,16 @@ impl Service for RecordService {
         self.set_origin_waker(wake);
     }
 
+    /// Keep each record's large parts in the store the session lends it: where an action too
+    /// large to record whole keeps what it cannot record, offered on that record's route.
+    fn lend_content(&mut self, store: &mut dyn FnMut(&str) -> tilo_content::ContentStore) {
+        for app in self.kept_apps() {
+            self.content.keep_in(&app, store(&app));
+        }
+    }
+
     fn settle(&mut self) {
+        let _in_records = self.in_records();
         self.publications.settle(&self.host, &self.planner);
     }
 }

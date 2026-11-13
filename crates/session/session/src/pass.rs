@@ -56,6 +56,11 @@ impl Session {
         self.read_controls();
         self.shared.feed_agents();
         let mut services = self.shared.services.borrow_mut();
+        // What the records the services keep themselves reference: each record's content, kept in
+        // the store of the workspace it stands in and offered on its route, so a device of the
+        // workspace fetches a part from where the record is. An agent's change too large to record
+        // whole is recorded rather than refused, and reads back here and on the person's devices.
+        self.lend_record_content(&mut services);
         // What the packages the session runs itself (the shell) wrote into the records their parts
         // share, published with every app's before the door answers this pass.
         if let Err(error) = services.follow_shared() {
@@ -68,6 +73,21 @@ impl Session {
         // What the answers wrote (an agent's record of its work) reaches the workspace in this
         // pass, not in the next one's.
         self.shared.records.write();
+    }
+
+    /// Keep each record the services keep themselves in the content store of the workspace it
+    /// stands in: the session's own records' large parts are offered on their routes, where the
+    /// workspace's devices fetch them ([`crate::content::Plane::store`]).
+    fn lend_record_content(&self, services: &mut tilo_service::Services) {
+        let Some(workspace) = self
+            .shared
+            .handle
+            .read(|tree| tree.active_workspace().map(|space| space.id().to_string()))
+        else {
+            return;
+        };
+        let content = &self.content;
+        services.lend_content(&mut |app| content.store(&workspace, app));
     }
 
     /// The person's login is over once a frame reaches the display: the startup is measured and

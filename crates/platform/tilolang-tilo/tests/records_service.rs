@@ -1,6 +1,9 @@
 //! A workspace's tilolang records as session resources: a note made through the notes app's own
 //! action is published, its reading is what a runtime loading notes as another app's package
-//! reads back, and a change to the note moves the reading.
+//! reads back, and a change to the note moves the reading. A change too large to record whole
+//! keeps its large parts in the record's content store, which the session lends
+//! ([`RecordService::provide_content`]), so an agent's paste is recorded and reads back here and
+//! on a peer.
 
 use automerge::AutoCommit;
 use serde_json::{Map, Value as Json, json};
@@ -399,4 +402,157 @@ fn notices(host: &Host) -> Vec<(String, String, String, String)> {
             Some((to, title, body, opens))
         })
         .collect()
+}
+
+/// A body past a mebibyte, a paragraph a line: what an agent pastes into a note.
+fn pasted_body() -> String {
+    use std::fmt::Write as _;
+    let mut body = String::new();
+    for at in 0..17 {
+        let _ = writeln!(body, "Pasted paragraph {at}: {}", "words ".repeat(11_000));
+    }
+    body
+}
+
+/// The change of `doc` whose recorded action keeps parts as content, and those parts.
+fn kept_as_content(doc: &mut tilo_resource::Doc) -> (automerge::ChangeHash, Vec<String>) {
+    let document = doc.document();
+    document
+        .get_changes(&[])
+        .iter()
+        .rev()
+        .find_map(|change| {
+            let hash = change.hash();
+            let action = tilo_actions::entry_of(document, hash)?.action?;
+            let parts = action.content_parts();
+            (!parts.is_empty()).then_some((hash, parts))
+        })
+        .expect("the paste's change keeps its body as content")
+}
+
+/// What replaying the change `change` of `doc` shows, its action's parts read from `store` alone:
+/// on a thread no window lent a store, as a history read or a peer's check is.
+fn decoded(
+    doc: &tilo_resource::Doc,
+    change: automerge::ChangeHash,
+    store: tilo_content::ContentStore,
+) -> tilo_actions::Verified {
+    let mut replay = doc.clone();
+    std::thread::spawn(move || {
+        let mut registry = tilo_actions::ActionRegistry::new();
+        tilolang_tilo::history::register(&mut registry);
+        registry.connect_content(store);
+        tilo_actions::verify_change(&mut replay, change, &registry).unwrap()
+    })
+    .join()
+    .unwrap()
+}
+
+/// The address a sealed reference names its ciphertext by.
+fn address(reference: &str) -> &str {
+    reference
+        .split_once('.')
+        .map_or(reference, |(hash, _)| hash)
+}
+
+/// A note whose body is past a mebibyte, written by an agent through the records service, is kept
+/// as content in the record's store: the paste is recorded rather than refused, the note reads it
+/// back, and the change decodes from the store alone — after the record opens again, and on a
+/// peer that asks the record's route for its parts.
+#[test]
+fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
+    let (mut service, _) = service();
+    let store = tilo_content::ContentStore::memory().sealing();
+    service.provide_content(APP, store.clone());
+    let note = new_note(&mut service);
+    let body = pasted_body();
+    let agent =
+        tilo_actions::ActionInvoker::actor("agent:tide").with_kind(tilo_actions::ActorKind::Agent);
+    let started = service
+        .invoke_as(
+            &agent,
+            &note,
+            tilolang_tilo::action::EDIT_TEXT_ACTION,
+            &args(json!({"field": "body", "value": body})),
+        )
+        .expect("the paste is recorded rather than refused");
+    assert!(matches!(started, Started::Done(_)), "the paste is done");
+    service.settle();
+    let reading = serde_json::to_string(&service.read(&note).expect("the note is published"))
+        .expect("the reading reads");
+    assert!(
+        reading.contains("Pasted paragraph 16:"),
+        "the note reads the paste back: {reading:.200}"
+    );
+
+    // Its change keeps the body as content, sealed, in the record's store.
+    let (paste, parts) = kept_as_content(&mut service.record().clone());
+    assert!(
+        parts.iter().all(|part| tilo_content::is_sealed(part)),
+        "a record's parts are sealed: {parts:?}"
+    );
+    assert!(
+        parts.iter().all(|part| store.has(part)),
+        "the record's store keeps every part: {parts:?}"
+    );
+
+    // The record opens again over what the device holds: the change decodes from the store alone,
+    // and the note the reopened record publishes reads the paste back.
+    let reopened = reopened_service(service.record(), &store);
+    assert_eq!(
+        decoded(reopened.record(), paste, store.clone()),
+        tilo_actions::Verified::Reproduced,
+        "after the record opens again, the paste reads back as it ran"
+    );
+    let reading = serde_json::to_string(&reopened.read(&note).expect("the note is published"))
+        .expect("the reading reads");
+    assert!(
+        reading.contains("Pasted paragraph 16:"),
+        "the reopened record reads the paste back: {reading:.200}"
+    );
+
+    // A peer holds the change and not its parts: decoding asks the record's route, and once what
+    // was offered there arrives, the action reproduces its change there too.
+    let lane = std::sync::Arc::new(collaboration::record_content::ContentLane::default());
+    let theirs = collaboration::record_content::RecordContent::store(
+        tilo_content::ContentStore::memory(),
+        std::sync::Arc::clone(&lane),
+    );
+    assert!(
+        matches!(
+            decoded(reopened.record(), paste, theirs.clone()),
+            tilo_actions::Verified::ContentMissing(_)
+        ),
+        "the peer lacks the paste until it arrives"
+    );
+    let wanted: Vec<String> = lane.take_requests().wants;
+    assert!(
+        parts
+            .iter()
+            .any(|part| wanted.iter().any(|hash| hash == address(part))),
+        "the peer asks the record's route for the paste: wanted {wanted:?}"
+    );
+    for part in &parts {
+        let hash = address(part);
+        let bytes = store
+            .read(hash)
+            .expect("the record's store keeps the ciphertext");
+        lane.arrive(hash.to_owned(), bytes);
+    }
+    assert_eq!(
+        decoded(reopened.record(), paste, theirs),
+        tilo_actions::Verified::Reproduced,
+        "once the paste arrived, the peer's action reproduces its change"
+    );
+}
+
+/// The record `doc` opened again, its content kept in `store`: a fresh service over the document
+/// the device holds, as the session opens it on the next start.
+fn reopened_service(doc: &tilo_resource::Doc, store: &tilo_content::ContentStore) -> RecordService {
+    let (replica, _) = Replica::new("ada", doc.clone(), &[DISCUSSION, NOTES]);
+    let Replica { doc, host, .. } = replica;
+    let mut service = RecordService::new(doc, host, "ada");
+    service.provide_content(APP, store.clone());
+    service.settle();
+    service
 }

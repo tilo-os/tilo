@@ -270,6 +270,12 @@ pub trait Service {
         Ok(())
     }
 
+    /// Keep what the records of `app` reference in the content store `store` names for it: where
+    /// an action too large to record whole keeps its large parts, which the session offers on that
+    /// record's route so the record's other readers fetch them from there. A service that keeps no
+    /// record of its own keeps none, and takes no store.
+    fn lend_content(&mut self, _store: &mut dyn FnMut(&str) -> tilo_content::ContentStore) {}
+
     /// Have `wake` called whenever an origin this service keeps in step answers, so the
     /// session's loop polls it and the answer lands in its records.
     fn wake_origins(&mut self, _wake: Wake) {}
@@ -507,6 +513,14 @@ impl Services {
             .iter()
             .flat_map(|service| service.history_records())
             .collect()
+    }
+
+    /// Keep what the services' records reference in the store `store` names for each record's app:
+    /// what the session lends the records it keeps itself (see [`Service::lend_content`]).
+    pub fn lend_content(&mut self, store: &mut dyn FnMut(&str) -> tilo_content::ContentStore) {
+        for service in &mut self.started {
+            service.lend_content(store);
+        }
     }
 
     /// Publish the package `share` names, which the session runs itself (the shell), with the

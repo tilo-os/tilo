@@ -21574,6 +21574,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-actions",
+ "tilo-content",
  "tilo-lock",
  "tilo-resource",
  "tokio",
