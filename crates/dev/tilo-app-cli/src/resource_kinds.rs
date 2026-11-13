@@ -627,6 +627,87 @@ mod tests {
         );
     }
 
+    /// One `impl Resource for` under `#[cfg(<predicate>)]`: its kind is left out only where no
+    /// production build can satisfy the predicate.
+    #[test]
+    fn a_kind_is_left_out_only_under_a_cfg_no_production_build_satisfies() {
+        for (predicate, declared) in [
+            ("test", false),
+            ("not(test)", true),
+            ("all(test, unix)", false),
+            ("all(unix, test)", false),
+            ("all(unix, feature = \"live\")", true),
+            ("any(test, unix)", true),
+            ("any(test, all(test, unix))", false),
+            ("feature = \"test\"", true),
+        ] {
+            let app = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(app.path().join("src")).unwrap();
+            std::fs::write(
+                app.path().join("src/lib.rs"),
+                format!(
+                    "#[cfg({predicate})]\nimpl Resource for Row {{ const KIND: &'static str = \"row.kind\"; }}\n"
+                ),
+            )
+            .unwrap();
+            let expected: &[&str] = if declared { &["row.kind"] } else { &[] };
+            assert_eq!(
+                super::declared_in(app.path()).unwrap(),
+                expected,
+                "cfg({predicate})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_source_that_does_not_parse_fails_the_scan_where_it_may_declare_a_kind() {
+        let app = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(app.path().join("src")).unwrap();
+        let source = app.path().join("src/lib.rs");
+        std::fs::write(
+            &source,
+            "impl Resource for Broken { const KIND: &'static str = \"broken.kind\";\n",
+        )
+        .unwrap();
+        let error = super::declared_in(app.path()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("parsing {}", source.display()),
+            "{error:#}"
+        );
+
+        // A file that names no kind and no module file is not parsed at all.
+        std::fs::write(&source, "pub fn unfinished( {\n").unwrap();
+        assert!(super::declared_in(app.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn metadata_without_a_resolved_root_its_packages_or_its_graph_is_refused() {
+        let app = tempfile::tempdir().unwrap();
+        for (metadata, expected) in [
+            (
+                serde_json::json!({}),
+                "cargo metadata names no root package",
+            ),
+            // What `cargo metadata` prints for a workspace manifest without a package.
+            (
+                serde_json::json!({"resolve": {"root": null}, "packages": []}),
+                "cargo metadata names no root package",
+            ),
+            (
+                serde_json::json!({"resolve": {"root": "app"}}),
+                "cargo metadata lists no packages",
+            ),
+            (
+                serde_json::json!({"resolve": {"root": "app"}, "packages": []}),
+                "cargo metadata has no resolve graph",
+            ),
+        ] {
+            let error = super::declared_with_metadata(app.path(), &metadata).unwrap_err();
+            assert_eq!(error.to_string(), expected, "{metadata}");
+        }
+    }
+
     fn write_crate(dir: &Path, manifest: &str, source: &str) {
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();
