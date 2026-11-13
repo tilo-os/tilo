@@ -1,13 +1,13 @@
-//! From a path inside an app's documents to the host file it names, and
-//! opening it there without stepping outside what was chosen.
+//! From a path inside an app's documents to the host file it names, and opening it
+//! there without stepping outside what was chosen.
 //!
-//! Every access starts from the chosen item itself, never from a path
-//! string: a file document is opened by name from its folder with
-//! `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`, so only that name (or a
-//! Save's sibling) can be reached and a link planted in its place is not
-//! followed; a folder document resolves the rest of the path beneath the
-//! folder with `RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS`, so `..` and
-//! symbolic links cannot climb out of it.
+//! Every access starts from the chosen item itself, never from a path string: a file
+//! document is opened by name from its folder with
+//! `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`, so only that name (or a Save's sibling)
+//! can be reached and a link planted in its place is not followed; a folder document
+//! resolves the rest of the path beneath the folder with
+//! `RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS`, so `..` and symbolic links cannot climb
+//! out of it.
 
 use std::ffi::OsStr;
 use std::io;
@@ -18,29 +18,26 @@ use rustix::fs::{Mode, OFlags, ResolveFlags};
 
 use crate::{AppKey, Document, Documents, Kind};
 
-/// A path inside one document, checked against what the choice covers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
     pub document: Document,
-    /// The path below the document's own name: empty for the chosen file
-    /// or folder itself, the save sibling's name for a Save's sibling, the
-    /// path inside a folder document otherwise.
+    /// The path below the document's own name: empty for the chosen file or folder
+    /// itself, the save sibling's name for a Save's sibling, the path inside a folder
+    /// document otherwise.
     pub inner: PathBuf,
 }
 
 impl Target {
-    /// Whether this is the chosen file or folder itself.
     pub fn is_root(&self) -> bool {
         self.inner.as_os_str().is_empty()
     }
 
-    /// Whether the app may change what this names.
     pub fn writable(&self) -> bool {
         self.document.kind.writes()
     }
 
-    /// The host path this names. For display and tests: open with
-    /// [`Self::open`], which resolves beneath the document.
+    /// The host path this names, for display and tests: open with [`Self::open`], which
+    /// resolves beneath the document.
     pub fn host_path(&self) -> PathBuf {
         match self.document.kind {
             Kind::Folder { .. } => self.document.host.join(&self.inner),
@@ -51,8 +48,8 @@ impl Target {
         }
     }
 
-    /// The folder every access to this target starts from, and the path
-    /// resolved beneath it.
+    /// The folder every access to this target starts from, and the path resolved beneath
+    /// it.
     fn anchor(&self) -> (PathBuf, PathBuf, ResolveFlags) {
         match self.document.kind {
             Kind::Folder { .. } => {
@@ -110,15 +107,13 @@ impl Target {
         )?)
     }
 
-    /// Where this really is on the host, found as an open finds it:
-    /// resolved beneath the chosen item, so a link swapped in since it was
-    /// chosen cannot point it anywhere else. What a host-side opener (the
-    /// app that opens the file's type) is handed.
+    /// Where this really is on the host, found as an open finds it: resolved beneath the
+    /// chosen item, so a link swapped in since cannot point it elsewhere. What a
+    /// host-side opener (the app that opens the file's type) is handed.
     ///
     /// # Errors
     ///
-    /// As [`Self::open`], and when the system cannot say where the opened
-    /// item is.
+    /// As [`Self::open`], and when the system cannot say where the opened item is.
     pub fn real_path(&self) -> io::Result<PathBuf> {
         use std::os::fd::AsRawFd as _;
         let opened = self.open(OFlags::PATH, Mode::empty())?;
@@ -158,10 +153,10 @@ impl Target {
     }
 }
 
-/// What `token`'s document with `inner` below it names, when the choice
-/// covers it. A file document covers its own name, and a Save also its
-/// save sibling; a folder document covers everything beneath it. `None`
-/// for anything else, and for any path with `..`, `.` or a root in it.
+/// What `token`'s document with `inner` below it names, when the choice covers it: a
+/// file document covers its own name, and a Save also its save sibling; a folder
+/// document covers everything beneath it. `None` for anything else, and for any path
+/// with `..`, `.` or a root in it.
 pub fn target(documents: &Documents, key: &AppKey, token: &str, inner: &Path) -> Option<Target> {
     let document = documents.document(key, token)?;
     let mut components = inner.components();
@@ -210,8 +205,8 @@ pub fn target(documents: &Documents, key: &AppKey, token: &str, inner: &Path) ->
     }
 }
 
-/// What an absolute path an app was given (`/run/tilo/documents/<token>/…`)
-/// names on the host, when a choice still covers it.
+/// What an absolute path an app was given (`/run/tilo/documents/<token>/…`) names on the
+/// host, when a choice still covers it.
 pub fn resolve(documents: &Documents, key: &AppKey, sandbox_path: &Path) -> Option<Target> {
     let (token, inner) = crate::split_sandbox_path(sandbox_path)?;
     target(documents, key, &token, &inner)
