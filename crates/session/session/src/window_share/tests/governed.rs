@@ -298,19 +298,20 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
         &mut window,
         "the share lands in the workspace's governance and on the sharer's desk",
         |sharer| {
-            governed(&second_engine, &workspace, &share) == 4
-                && on_desk(&sharer.session, workspace_id, &share) == 4
+            governed(&second_engine, &workspace, &share) == 1
+                && on_desk(&sharer.session, workspace_id, &share) == 1
         },
     );
     assert_eq!(
         governed(&second_engine, &workspace, &share),
-        4,
+        1,
         "the share is in the workspace's governance on the device that shares it, one grant \
-         per role below the owner: a share only its own desk names reaches no other device"
+         to the viewers that reaches every role above them: a share only its own desk names \
+         reaches no other device"
     );
     assert_eq!(
         on_desk(&sharer.session, workspace_id, &share),
-        4,
+        1,
         "and its own desk reads it from there"
     );
 
@@ -387,7 +388,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
     }
     assert_eq!(
         governed(&first_engine, &workspace, &share),
-        4,
+        1,
         "the governance the first device holds names the share"
     );
 
@@ -398,7 +399,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_gove
         &mut viewer,
         &mut None,
         "the first device's desk names the share its workspace's governance holds",
-        |viewer| on_desk(&viewer.session, workspace_id, &share) == 4,
+        |viewer| on_desk(&viewer.session, workspace_id, &share) == 1,
     );
     let host = hex::encode(second.device_public_key);
     let named = tab.to_string();
