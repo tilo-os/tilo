@@ -1393,19 +1393,9 @@ pub(crate) fn read_doc(doc: &ui::automerge::AutoCommit) -> Ebook {
 #[cfg(test)]
 mod tests;
 
+// One share and no long scenario: the drive of every scenario is asked for the
+// actions it cannot invoke and for those an agent is never shown.
 ui::reach_tests!(EbookShell);
-
-#[cfg(test)]
-mod agent_disclosure_tests {
-    #[test]
-    fn every_scenario_shows_an_agent_its_actions() {
-        if let Err(failures) =
-            ui::framework::testing::check_agents_are_shown_every_action::<super::EbookShell>()
-        {
-            panic!("{failures}");
-        }
-    }
-}
 
 /// German is one of the languages the app ships, and it reads in German: the
 /// copy comes from `locales/de-DE.ftl`, never from the English source
