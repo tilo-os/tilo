@@ -412,10 +412,10 @@ impl Agents {
             return open.record.clone();
         }
         drop(held);
-        let context = PermissionContext::from_standing(
-            &workspace_id,
-            Standing::person(workspace.policy.clone(), person.clone()),
-        )
+        let context = PermissionContext::from_standing(Standing::person(
+            workspace.policy.clone(),
+            person.clone(),
+        ))
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
         let records = self
             .records

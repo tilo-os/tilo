@@ -390,7 +390,7 @@ impl crate::Workspace {
     ) -> Result<PolicyEdit, Refusal> {
         self.require_governance(actor, tilo_action_policy::roles::governance::GRANT, now)?;
         let id = self
-            .grant_sandbox(cap.granted_by(collab_types::caps::Principal::Person(actor.to_owned())));
+            .grant_sandbox(cap.granted_by(tilo_action_policy::MemberId::person(actor.to_owned())));
         Ok(PolicyEdit {
             sandbox_granted: vec![id],
             ..PolicyEdit::default()

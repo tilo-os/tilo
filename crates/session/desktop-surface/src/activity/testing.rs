@@ -217,7 +217,7 @@ impl TestTree {
             return None;
         }
         let id = workspace
-            .grant_sandbox(cap.granted_by(collab_types::caps::Principal::Person(grantor.clone())));
+            .grant_sandbox(cap.granted_by(tilo_action_policy::MemberId::person(grantor.clone())));
         let stored = workspace.sandbox.iter().find(|c| c.id == id).cloned()?;
         self.doc_insert_sandbox(slot, &stored);
         Some(id)

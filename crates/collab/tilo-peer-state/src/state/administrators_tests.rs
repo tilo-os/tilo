@@ -307,17 +307,19 @@ fn readers() -> tilo_action_policy::Preset {
 #[test]
 fn an_administrators_own_device_changes_the_workspaces_settings_and_an_editors_cannot() {
     use crate::workspace_membership::SettingsChange;
-    use collab_types::caps::{Access, CapOverride, Principal, Scope, Subject as CapSubject};
+    use collab_types::caps::{Access, CapOverride, Scope};
+    use tilo_action_policy::Grantee;
     let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
     let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
     let rename = SettingsChange::Rename {
         name: "Plans".into(),
     };
     let capability = CapOverride::grant(
-        CapSubject::app("so.tilo.reader"),
+        Grantee::person(hex::encode(user)),
         Scope::NetHost("example.org".into()),
         Access::Read,
-    );
+    )
+    .through("so.tilo.reader");
     let sandbox = SettingsChange::GrantSandbox { capability };
     let save = SettingsChange::SavePreset { preset: readers() };
     for change in [rename.clone(), sandbox.clone(), save.clone()] {
@@ -337,7 +339,10 @@ fn an_administrators_own_device_changes_the_workspaces_settings_and_an_editors_c
     let [held] = granted.as_slice() else {
         panic!("one capability: {granted:?}");
     };
-    assert_eq!(held.granted_by, Some(Principal::Person(hex::encode(user))));
+    assert_eq!(
+        held.granted_by,
+        Some(tilo_action_policy::MemberId::person(hex::encode(user)))
+    );
     assert!(change_settings(&mut peer, &editor, save, now).unwrap());
     assert!(
         change_settings(

@@ -902,12 +902,12 @@ fn agent_actor(
     let certificate = certificate
         .map_err(|error| format!("the agent's person could not be verified: {error}"))?;
     Ok(super::BrokerActor::agent(format!("agent:{agent}"))
-        .for_person(super::principal_id_for_root(certificate.user_public_key)))
+        .for_person(super::person_id_for_root(certificate.user_public_key)))
 }
 
 #[cfg(test)]
 mod agent_actor_tests {
-    use super::super::{BrokerActor, principal_id_for_root};
+    use super::super::{BrokerActor, person_id_for_root};
     use super::agent_actor;
 
     /// A certificate issued by a person to a device of theirs.
@@ -936,7 +936,7 @@ mod agent_actor_tests {
         let actor = agent_actor("one", Ok(&cert)).expect("the agent's person is verified");
         assert_eq!(
             actor,
-            BrokerActor::agent("agent:one").for_person(principal_id_for_root(cert.user_public_key))
+            BrokerActor::agent("agent:one").for_person(person_id_for_root(cert.user_public_key))
         );
     }
 

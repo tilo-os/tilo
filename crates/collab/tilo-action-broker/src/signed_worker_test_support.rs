@@ -416,7 +416,7 @@ impl OriginalWorkspace {
             ),
         };
         // Someone the workspace grants everything until 100s, and nothing after.
-        let principal = principal_id_for_root(cert.user_public_key);
+        let principal = person_id_for_root(cert.user_public_key);
         let changes = tilo_action_policy::Grant::new(
             "changes-for-a-while",
             tilo_action_policy::Grantee::person(principal.clone()),
@@ -583,7 +583,7 @@ impl crate::services::LocalPersonServices for NativePerson {
             .clone()
             .ok_or("native identity retired")?;
         if workspace != self.0.route.cluster_id
-            || person != principal_id_for_root(certificate.user_public_key)
+            || person != person_id_for_root(certificate.user_public_key)
         {
             return Err("native person mismatch".into());
         }
@@ -593,6 +593,6 @@ impl crate::services::LocalPersonServices for NativePerson {
 
 /// The host's own person, invoking through its native seat.
 pub fn native_person(workspace: &CrdtRoute, cert: &DeviceCert) -> tilo_actions::remote::Caller {
-    tilo_actions::remote::Caller::local_person(principal_id_for_root(cert.user_public_key))
+    tilo_actions::remote::Caller::local_person(person_id_for_root(cert.user_public_key))
         .in_workspace(workspace.cluster_id.clone())
 }

@@ -1900,6 +1900,116 @@ impl<T: Model> Model for BTreeMap<String, T> {
     }
 }
 
+/// Implements [`Model`] for a policy value whose fields are its own: it is
+/// written as one JSON string and read back as it was written, with nothing
+/// inside it merging field by field.
+macro_rules! json_scalar {
+    ($ty:path) => {
+        impl Settable for $ty {}
+        impl Model for $ty {
+            const SCALAR: bool = true;
+            fn value_schema() -> serde_json::Value {
+                serde_json::json!({})
+            }
+            fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+                let _ = types;
+                crate::FieldType::Text
+            }
+            type Paths<R> = crate::Path<R, Self>;
+
+            fn paths_at<R>(path: crate::Path<R, Self>) -> crate::Path<R, Self> {
+                path
+            }
+
+            #[inline(never)]
+            fn to_json(&self) -> serde_json::Value {
+                serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+            }
+
+            #[inline(never)]
+            fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+                serde_json::from_value(value.clone())
+                    .map_err(|error| ModelError::invalid(error.to_string()))
+            }
+
+            #[inline(never)]
+            fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
+                match scalar(value) {
+                    Some(ScalarValue::Str(text)) => serde_json::from_str(text)
+                        .map_err(|error| ModelError::invalid(error.to_string())),
+                    _ => Err(ModelError::shape("a stored member")),
+                }
+            }
+
+            #[inline(never)]
+            fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+                let text = serde_json::to_string(self)
+                    .map_err(|error| ModelError::invalid(error.to_string()))?;
+                slot.put_scalar(doc, ScalarValue::Str(text.into()))
+            }
+
+            #[inline(never)]
+            fn stores_as(&self, before: &Self) -> bool {
+                self == before
+            }
+        }
+    };
+}
+
+// A capability names who it reaches, and who granted it: the two policy values
+// a stored record holds beside its scope.
+json_scalar!(tilo_action_policy::MemberId);
+json_scalar!(tilo_action_policy::Grantee);
+
+/// An app's id is the string it is: written as one, read as one.
+impl Settable for tilo_app_id::AppId {}
+impl Model for tilo_app_id::AppId {
+    const SCALAR: bool = true;
+    fn value_schema() -> serde_json::Value {
+        serde_json::json!({"type": "string"})
+    }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        let _ = types;
+        crate::FieldType::Text
+    }
+    type Paths<R> = crate::Path<R, Self>;
+
+    fn paths_at<R>(path: crate::Path<R, Self>) -> crate::Path<R, Self> {
+        path
+    }
+
+    #[inline(never)]
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::Value::String(self.as_str().to_owned())
+    }
+
+    #[inline(never)]
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        match value {
+            serde_json::Value::String(text) => Ok(Self::new(text.clone())),
+            _ => Err(ModelError::shape("an app id")),
+        }
+    }
+
+    #[inline(never)]
+    fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
+        match scalar(value) {
+            Some(ScalarValue::Str(text)) => Ok(Self::new(text.to_string())),
+            _ => Err(ModelError::shape("an app id")),
+        }
+    }
+
+    #[inline(never)]
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        slot.put_scalar(doc, ScalarValue::Str(self.as_str().to_owned().into()))
+    }
+
+    #[inline(never)]
+    fn stores_as(&self, before: &Self) -> bool {
+        self == before
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

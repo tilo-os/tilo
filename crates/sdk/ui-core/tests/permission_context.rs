@@ -4,8 +4,8 @@
 )]
 
 use tilo_ui::permissions::{
-    Access, ActionKind, Answer, AppKind, CapDecision, CapOverride, Denial, PermissionContext,
-    PermissionScope, ResourceRef, Role, Scope, TreePath, UserId, policy,
+    Access, ActionKind, Answer, AppKind, CapDecision, CapOverride, Denial, Grantee,
+    PermissionContext, PermissionScope, ResourceRef, Role, Scope, TreePath, UserId, policy,
 };
 
 /// A viewer in the workspace: role only, no individual capabilities.
@@ -20,7 +20,7 @@ fn viewer_ctx(user: &str) -> PermissionContext {
 /// to touch a path.
 fn editor_ctx(user: &str) -> PermissionContext {
     PermissionContext::member(user, Role::Editor).granting(CapOverride::grant(
-        collab_types::caps::Subject::person(user),
+        Grantee::person(user),
         Scope::FsPath("/var/workspace/report.md".into()),
         Access::Write,
     ))

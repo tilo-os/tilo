@@ -2250,7 +2250,7 @@ fn approval_projection(
                         .join(ticket.workspace_id().to_string()),
                     capability_json,
                     authority: Some(authority),
-                    principals: Vec::new(),
+                    members: Vec::new(),
                     relay_workspace_ids,
                 }],
             };

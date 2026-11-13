@@ -12,7 +12,7 @@
 //! [`OverviewHost`].
 
 use collab_types::MemberId;
-use collab_types::caps::{Access, Effect, Principal, Scope, Subject};
+use collab_types::caps::{Access, Effect, Scope};
 use collab_types::role::Role as CapRole;
 use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, UserId, Workspace, WorkspaceSlot};
 use tilo_sort::CompactSort as _;
@@ -315,18 +315,23 @@ pub fn workspace_shares(
         if !cap.is_live_at(Some(now)) || cap.effect != Effect::Grant {
             continue;
         }
-        let holder = match &cap.subject {
-            Subject::Principal(Principal::Person(p)) => p.clone(),
-            // Resolving the durable name here stops one holder appearing twice on the same share.
-            Subject::User(key) => match Principal::person_from_key(*key) {
-                Principal::Person(p) => p,
-                _ => continue,
-            },
-            Subject::Principal(_) => continue,
+        let Some(holder) = cap.grantee.person_id() else {
+            continue;
+        };
+        // A capability an app holds names that app in the scope, not a second holder.
+        let what = match &cap.app {
+            Some(app) => t_args(
+                "overview-shared-in-app",
+                &[
+                    ("scope", host.scope_label(&cap.scope).into()),
+                    ("app", app.as_str().into()),
+                ],
+            ),
+            None => host.scope_label(&cap.scope),
         };
         share(
-            host.scope_label(&cap.scope),
-            display_name(&holder, ws, tree),
+            what,
+            display_name(&holder.to_owned(), ws, tree),
             cap.access == Access::Write,
         );
     }
@@ -604,6 +609,7 @@ mod workspace_tests {
     use super::*;
     use collab_types::caps::{CapOverride, Expiry};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use tilo_action_policy::Grantee;
     use tilo_desktop_model::{AppKind, Strip, Tab, TileContent, WindowGroup, WindowWidth};
 
     const ME: &str = "me";
@@ -682,7 +688,7 @@ mod workspace_tests {
         fn a_file_grant_is_a_share_and_not_a_membership() {
             let mut w = ws("Design");
             w.sandbox.push(CapOverride::grant(
-                Subject::person("ada"),
+                Grantee::person("ada"),
                 Scope::FsPath("/var/workspace/brief".to_string()),
                 Access::Read,
             ));
@@ -705,7 +711,7 @@ mod workspace_tests {
             let mut w = ws("Design");
             for who in ["ada", "bob"] {
                 w.sandbox.push(CapOverride::grant(
-                    Subject::person(who),
+                    Grantee::person(who),
                     Scope::FsPath("/var/workspace/brief".to_string()),
                     Access::Read,
                 ));
@@ -723,7 +729,7 @@ mod workspace_tests {
         fn write_grants_are_marked_writable() {
             let mut w = ws("Design");
             w.sandbox.push(CapOverride::grant(
-                Subject::person("ada"),
+                Grantee::person("ada"),
                 Scope::FsPath("/var/workspace/brief".to_string()),
                 Access::Write,
             ));
@@ -748,7 +754,7 @@ mod workspace_tests {
             );
             w.sandbox.push(
                 CapOverride::grant(
-                    Subject::person("ada"),
+                    Grantee::person("ada"),
                     Scope::FsPath("/var/workspace/brief".to_string()),
                     Access::Read,
                 )

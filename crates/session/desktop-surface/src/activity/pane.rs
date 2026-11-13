@@ -31,7 +31,8 @@ use ui::time::{Duration, SystemTime};
 
 use automerge::transaction::Transactable;
 use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};
-use collab_types::caps::{Access, CapOverride, Effect, Principal, Scope, Subject};
+use collab_types::caps::{Access, CapOverride, Effect, Scope};
+use tilo_action_policy::{Grantee, MemberId};
 use ui::presence::PresenceCtx;
 use ui::widget::EntryKind;
 use ui::widget::{
@@ -3022,7 +3023,10 @@ fn describe_capability(cap: &CapOverride) -> String {
             ("effect", effect.into()),
             ("verb", verb.into()),
             ("scope", describe_scope(&cap.scope).into()),
-            ("subject", describe_subject(&cap.subject).into()),
+            (
+                "who",
+                describe_grantee(&cap.grantee, cap.app.as_ref()).into(),
+            ),
         ],
     )
 }
@@ -3038,20 +3042,24 @@ fn describe_scope(scope: &Scope) -> String {
     }
 }
 
-fn describe_subject(subject: &Subject) -> String {
-    match subject {
-        Subject::User(_) => t("activity-capability-a-person"),
-        Subject::Principal(p) => describe_principal(p),
-    }
-}
-
-fn describe_principal(p: &Principal) -> String {
-    match p {
-        Principal::Person(id) => short(id),
-        Principal::App(a) => a.clone(),
-        Principal::Agent(a) => t_args("activity-capability-agent", &[("agent", a.into())]),
-        Principal::Token(_) => t("activity-capability-invite-token"),
-        Principal::Workspace(_) => t("activity-capability-this-workspace"),
+/// Who a capability reaches, and through which app when it names one.
+fn describe_grantee(grantee: &Grantee, app: Option<&tilo_app_id::AppId>) -> String {
+    let who = match grantee {
+        Grantee::Member(MemberId::Person(id)) => short(id),
+        Grantee::Member(MemberId::Agent(agent)) => {
+            t_args("activity-capability-agent", &[("agent", agent.into())])
+        }
+        Grantee::Member(MemberId::Bot(bot)) => {
+            t_args("activity-capability-bot", &[("bot", bot.into())])
+        }
+        Grantee::Role(_) => t("activity-capability-this-workspace"),
+    };
+    match app {
+        Some(app) => t_args(
+            "activity-capability-through-app",
+            &[("who", who.into()), ("app", app.as_str().into())],
+        ),
+        None => who,
     }
 }
 

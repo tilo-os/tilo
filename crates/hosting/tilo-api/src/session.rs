@@ -226,9 +226,7 @@ impl Session {
             scope,
             label,
             run: uuid::Uuid::new_v4().simple().to_string(),
-            person: collab_types::Principal::of_person(connection.key.cert().user_public_key)
-                .id()
-                .to_owned(),
+            person: hex::encode(connection.key.cert().user_public_key),
             relay,
             connection,
             server,

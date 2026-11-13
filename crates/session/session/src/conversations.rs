@@ -417,7 +417,7 @@ impl Conversations {
             opened.policy.clone(),
             opened.records.author().0.clone(),
         );
-        let permissions = PermissionContext::from_standing(&opened.policy.workspace, standing)
+        let permissions = PermissionContext::from_standing(standing)
             .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
         WorkspaceRecord::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::open(
             &opened.records,
@@ -591,10 +591,10 @@ impl Conversations {
             chat: None,
             part: None,
         });
-        let permissions = PermissionContext::from_standing(
-            &workspace.workspace,
-            tilo_action_policy::Standing::person(workspace.policy.clone(), person.to_owned()),
-        )
+        let permissions = PermissionContext::from_standing(tilo_action_policy::Standing::person(
+            workspace.policy.clone(),
+            person.to_owned(),
+        ))
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
         let chat_id = RecordId::package_primary();
         if opened.chat.is_none() {

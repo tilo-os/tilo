@@ -40,7 +40,7 @@ pub struct HomePeerBundle {
     #[serde(default)]
     pub authority: Option<crate::workspace_authority::WorkspaceAuthorityEnvelope>,
     #[serde(default)]
-    pub principals: Vec<String>,
+    pub members: Vec<String>,
     /// Shell and relay workspace shards backed by this filesystem workspace: a
     /// desktop may attach one tree to several collaboration workspaces, so this
     /// mapping is authoritative for relay binding.
@@ -562,7 +562,7 @@ mod tests {
                 cache_dir: std::path::PathBuf::from("/tmp/files"),
                 capability_json: "[]".into(),
                 authority: None,
-                principals: Vec::new(),
+                members: Vec::new(),
                 relay_workspace_ids: vec![
                     collab_types::WorkspaceId::from_u128(7),
                     collab_types::WorkspaceId::from_u128(8),
@@ -588,7 +588,7 @@ mod tests {
                     cache_dir: std::path::PathBuf::from("/tmp/cache"),
                     capability_json: "[]".into(),
                     authority: None,
-                    principals: Vec::new(),
+                    members: Vec::new(),
                     relay_workspace_ids: vec![high],
                 }],
             };
@@ -677,14 +677,14 @@ mod tests {
         governor: &ed25519_dalek::SigningKey,
         collaborator: crate::IdentityKey,
     ) {
-        use collab_types::{Access, CapOverride, Effect, Scope, Subject};
+        use collab_types::{Access, CapOverride, Effect, Scope};
         authority
             .apply(
                 crate::workspace_authority::WorkspaceAuthorityEnvelope::sign(
                     workspace,
                     1,
                     vec![CapOverride::new(
-                        Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                        tilo_action_policy::Grantee::person(hex::encode(collaborator)),
                         Scope::FsPath("/".into()),
                         Effect::Grant,
                         Access::Read,

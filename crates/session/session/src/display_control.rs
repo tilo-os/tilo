@@ -73,7 +73,7 @@ impl DisplayControl {
         if !command.mutates() {
             return self.execute(command);
         }
-        let person = tilo_broker_core::principal_id_for_root(root);
+        let person = tilo_broker_core::person_id_for_root(root);
         let certificate = (self.certificate)(workspace, &person)?;
         if certificate.user_public_key != root || certificate.device_public_key != device {
             return Err("The Settings worker is not on this accepted owner device.".into());

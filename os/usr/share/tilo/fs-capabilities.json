@@ -1,9 +1,9 @@
 {
   "capabilities": [
     {
-      "subject": {
-        "Principal": {
-          "Person": "local"
+      "grantee": {
+        "member": {
+          "person": "local"
         }
       },
       "scope": {
@@ -12,8 +12,8 @@
       "effect": "Grant",
       "access": "Write",
       "id": "local-session-workspace",
-      "expiry": "Never",
-      "granted_by": null
+      "expiry": "Never"
     }
-  ]
+  ],
+  "workspace_members": {}
 }

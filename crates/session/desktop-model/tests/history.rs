@@ -2,7 +2,7 @@
 //! it is now: [`history::without_history`] serialisation and
 //! [`Workspace::policy_view`].
 
-use collab_types::caps::{Access, Actor, CapOverride, ResourceRef, Scope};
+use collab_types::caps::{Access, CapOverride, ResourceRef, Scope};
 use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, TreePath};
 use tilo_actions::{ActionContext, EffectReceiptStatus, InvocationId};
 use tilo_desktop_model::*;
@@ -95,11 +95,14 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
         Answer::Allow,
         Grantee::person("owner"),
     ));
-    workspace.grant_sandbox(CapOverride::grant(
-        collab_types::caps::Subject::app("so.tilo.notes"),
-        Scope::FsPath("/var/workspace/notes".into()),
-        Access::Read,
-    ));
+    workspace.grant_sandbox(
+        CapOverride::grant(
+            Grantee::person("editor"),
+            Scope::FsPath("/var/workspace/notes".into()),
+            Access::Read,
+        )
+        .through("so.tilo.notes"),
+    );
     let view = workspace.policy_view();
 
     assert!(view.strips.is_empty());
@@ -140,10 +143,10 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
             .answer
     };
     assert_eq!(app(&view), app(&workspace));
-    let code = Actor::app("so.tilo.notes").in_workspace(workspace.id().to_string());
+    let code = "so.tilo.notes";
     let notes_files = ResourceRef::FsPath("/var/workspace/notes/a.md".into());
     assert_eq!(
-        view.sandbox_decide_at(&code, &notes_files, Access::Read, NOW),
-        workspace.sandbox_decide_at(&code, &notes_files, Access::Read, NOW),
+        view.sandbox_decide_at(code, &notes_files, Access::Read, NOW),
+        workspace.sandbox_decide_at(code, &notes_files, Access::Read, NOW),
     );
 }

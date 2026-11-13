@@ -10,7 +10,7 @@
 //! - [`channel`] — `ChannelId`, `ArtifactId`: ids carried by a document's ops.
 //! - [`role`] — `Role`, `OpKind`, `ArtifactKind` of the op envelope; who may
 //!   make which change is decided by `tilo-action-policy` grants.
-//! - [`caps`] — the app sandbox: `(subject × scope × access)` capabilities
+//! - [`caps`] — the app sandbox: `(who × scope × access)` capabilities
 //!   over paths, file records, devices and network hosts.
 //! - [`op`] — `SignedOp`, the per-op envelope wrapping every CRDT
 //!   mutation crossing a process or network boundary.
@@ -90,8 +90,8 @@ pub const RECORD_URI_SCHEME: &str = "tilo-record";
 // without reaching into individual modules.
 pub use canonical::{CanonicalError, canonical_bytes};
 pub use caps::{
-    Access, Actor, CapDecision, CapOverride, Effect, Expiry, FsAuthority, LaunchGrants, Principal,
-    ResourceRef, Scope, Subject, WorkspaceMember, decide_capability, host_covers, path_covers,
+    Access, CapDecision, CapOverride, Effect, Expiry, FsAuthority, LaunchGrants, ResourceRef,
+    Scope, WorkspaceMember, decide_app, decide_capability, host_covers, path_covers,
 };
 pub use channel::{ArtifactId, ChannelId};
 pub use claim::{

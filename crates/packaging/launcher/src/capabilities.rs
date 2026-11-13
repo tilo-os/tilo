@@ -8,8 +8,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use collab_types::caps::{
-    Access, Actor, CapDecision, CapOverride, Effect, LaunchGrants, ResourceRef, Scope,
-    decide_capability,
+    Access, CapDecision, CapOverride, Effect, LaunchGrants, ResourceRef, Scope, decide_app,
 };
 
 /// How an app may take part in the space it is launched into.
@@ -102,21 +101,20 @@ impl CapabilityPlan {
         now: Option<u64>,
         device_paths: fn(&str) -> Vec<PathBuf>,
     ) -> Self {
-        let actor = Actor::app(app_id);
         let mut fs: BTreeMap<String, bool> = BTreeMap::new();
         let mut devices: Vec<String> = Vec::new();
         let mut net_hosts: Vec<String> = Vec::new();
 
         for cap in caps {
-            // Only grants nominate a resource.
-            if cap.effect != Effect::Grant || !cap.subject.matches_actor(&actor) {
+            // Only grants nominate a resource, and only this app's.
+            if cap.effect != Effect::Grant || !cap.names_app(app_id) {
                 continue;
             }
             match &cap.scope {
                 Scope::FsPath(raw) => {
                     let resource = ResourceRef::FsPath(raw.clone());
-                    let writable = allows(&actor, &resource, Access::Write, caps, now);
-                    let readable = writable || allows(&actor, &resource, Access::Read, caps, now);
+                    let writable = allows(app_id, &resource, Access::Write, caps, now);
+                    let readable = writable || allows(app_id, &resource, Access::Read, caps, now);
                     if !readable {
                         continue;
                     }
@@ -134,7 +132,7 @@ impl CapabilityPlan {
                     // `Read` is the floor of the verb ladder, so a grant phrased in any verb answers
                     // it.
                     if !allows(
-                        &actor,
+                        app_id,
                         &ResourceRef::Device(device.clone()),
                         Access::Read,
                         caps,
@@ -155,7 +153,7 @@ impl CapabilityPlan {
                         continue;
                     }
                     if !allows(
-                        &actor,
+                        app_id,
                         &ResourceRef::NetHost(host.clone()),
                         Access::Read,
                         caps,
@@ -513,13 +511,13 @@ impl CapabilityPlan {
 }
 
 fn allows(
-    actor: &Actor,
+    app: &str,
     resource: &ResourceRef,
     verb: Access,
     caps: &[CapOverride],
     now: Option<u64>,
 ) -> bool {
-    decide_capability(actor, resource, verb, caps, now) == CapDecision::Allow
+    decide_app(app, resource, verb, caps, now) == CapDecision::Allow
 }
 
 /// A path we are willing to bind: absolute, and not the root itself (binding `/` over the sandbox root
@@ -619,7 +617,8 @@ pub fn load_capability_file(path: &Path) -> LaunchGrants {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::caps::{Expiry, Subject};
+    use collab_types::caps::Expiry;
+    use tilo_action_policy::Grantee;
 
     /// Deterministic stand-in for the host's device nodes, so an argv assertion doesn't depend on
     /// whether the test machine owns a webcam.
@@ -632,7 +631,15 @@ mod tests {
     }
 
     fn fs_grant(app: &str, path: &str, verb: Access) -> CapOverride {
-        CapOverride::grant(Subject::app(app), Scope::FsPath(path.to_string()), verb)
+        app_grant(app, Scope::FsPath(path.to_string()), verb)
+    }
+
+    fn app_grant(app: &str, scope: Scope, access: Access) -> CapOverride {
+        CapOverride::grant(Grantee::person("ada"), scope, access).through(app)
+    }
+
+    fn app_restrict(app: &str, scope: Scope, access: Access) -> CapOverride {
+        CapOverride::new(Grantee::person("ada"), scope, Effect::Restrict, access).through(app)
     }
 
     #[test]
@@ -699,10 +706,9 @@ mod tests {
         {
             let caps = vec![
                 fs_grant("so.tilo.books", "/var/workspace/books", Access::Write),
-                CapOverride::new(
-                    Subject::app("so.tilo.books"),
+                app_restrict(
+                    "so.tilo.books",
                     Scope::FsPath("/var/workspace/books".to_string()),
-                    Effect::Restrict,
                     Access::Read,
                 ),
             ];
@@ -719,8 +725,8 @@ mod tests {
     #[test]
     fn device_and_network_capabilities_plan_their_own_resources() {
         {
-            let caps = vec![CapOverride::grant(
-                Subject::app("so.tilo.meet"),
+            let caps = vec![app_grant(
+                "so.tilo.meet",
                 Scope::Device("camera".to_string()),
                 Access::Read,
             )];
@@ -737,8 +743,8 @@ mod tests {
             );
         }
         {
-            let caps = vec![CapOverride::grant(
-                Subject::app("so.tilo.meet"),
+            let caps = vec![app_grant(
+                "so.tilo.meet",
                 Scope::Device("screencast".to_string()),
                 Access::Read,
             )];
@@ -751,8 +757,8 @@ mod tests {
             );
         }
         {
-            let caps = vec![CapOverride::grant(
-                Subject::app("so.tilo.mail"),
+            let caps = vec![app_grant(
+                "so.tilo.mail",
                 Scope::NetHost("mail.example.com".to_string()),
                 Access::Write,
             )];
@@ -770,8 +776,8 @@ mod tests {
         }
         {
             let grant = |host: &str| {
-                CapOverride::grant(
-                    Subject::app("so.tilo.mail"),
+                app_grant(
+                    "so.tilo.mail",
                     Scope::NetHost(host.to_string()),
                     Access::Write,
                 )
@@ -899,10 +905,9 @@ mod tests {
             let caps = vec![
                 fs_grant("so.tilo.files", &home.path(""), Access::Write),
                 fs_grant("so.tilo.files", &home.path(".config"), Access::Read),
-                CapOverride::new(
-                    Subject::app("so.tilo.files"),
+                app_restrict(
+                    "so.tilo.files",
                     Scope::FsPath(home.path(".config")),
-                    Effect::Restrict,
                     Access::Read,
                 ),
             ];

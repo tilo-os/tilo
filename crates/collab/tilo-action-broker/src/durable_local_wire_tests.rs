@@ -444,7 +444,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
             assert_eq!(
                 continued,
                 tilo_actions::remote::Caller::local_agent("scribe")
-                    .acting_for(principal_id_for_root(env.cert.user_public_key))
+                    .acting_for(person_id_for_root(env.cert.user_public_key))
                     .in_workspace(workspace.clone()),
                 "the invocation's caller names the agent and the person it acts for"
             );

@@ -6,7 +6,7 @@
 use ui::tokens::Rhythm;
 
 use crate::i18n::{t, t_args};
-use collab_types::caps::{Access, CapOverride, Effect, Expiry, Principal, Scope, Subject};
+use collab_types::caps::{Access, CapOverride, Effect, Expiry, Scope};
 use provider_settings_ui::widgets::{
     El, Item, SettingsSection, StatusTone, block, error_row, note, page, row, rows, section,
     thing_row, untitled, value_row,
@@ -15,6 +15,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
+use tilo_action_policy::Grantee;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, ViewCx};
 
@@ -326,7 +327,9 @@ impl PermissionsReader for SamplePermissions {
                 Access::Read,
             ),
         ]
-        .map(|(app, scope, access)| CapOverride::grant(Subject::app(app), scope, access));
+        .map(|(app, scope, access)| {
+            CapOverride::grant(Grantee::person("local"), scope, access).through(app)
+        });
         let caps = serde_json::to_string(&caps).ok()?;
         Some(format!(
             r#"{{"workspaces":[{{"name":"Home","sandbox":{caps}}}]}}"#
@@ -854,11 +857,14 @@ fn project(state_json: &str) -> Result<Vec<WsGrants>, serde_json::Error> {
         let mut by_app: std::collections::BTreeMap<String, Vec<CapView>> =
             std::collections::BTreeMap::new();
         for cap in &ws.sandbox {
-            let Subject::Principal(Principal::App(app)) = &cap.subject else {
+            let Some(app) = &cap.app else {
                 continue;
             };
             if let Some(view) = cap_view(cap) {
-                by_app.entry(app.to_owned()).or_default().push(view);
+                by_app
+                    .entry(app.as_str().to_owned())
+                    .or_default()
+                    .push(view);
             }
         }
         if by_app.is_empty() {
@@ -1112,7 +1118,8 @@ fn panel(
 mod tests {
     use super::*;
     use crate::testing::count_named;
-    use collab_types::caps::{Access, CapOverride, Scope, Subject};
+    use collab_types::caps::{Access, CapOverride, Scope};
+    use tilo_action_policy::Grantee;
     use ui::prelude::TestApp;
     use ui::widget::Widget;
 
@@ -1411,15 +1418,17 @@ mod tests {
     /// shape exactly.
     fn sample_state() -> String {
         let cam = CapOverride::grant(
-            Subject::app("so.tilo.camera"),
+            Grantee::person("local"),
             Scope::Device("camera".into()),
             Access::Read,
-        );
+        )
+        .through("so.tilo.camera");
         let file = CapOverride::grant(
-            Subject::app("so.tilo.camera"),
+            Grantee::person("local"),
             Scope::FsPath("/var/workspace/Photos".into()),
             Access::Read,
-        );
+        )
+        .through("so.tilo.camera");
         let caps = serde_json::to_string(&vec![cam, file]).unwrap();
         format!(r#"{{"workspaces":[{{"name":"Studio","sandbox":{caps}}}]}}"#)
     }
@@ -1510,7 +1519,8 @@ mod tests {
 
         {
             let g = |scope, verb| {
-                cap_view(&CapOverride::grant(Subject::app("a"), scope, verb)).map(|v| v.kind)
+                cap_view(&CapOverride::grant(Grantee::person("local"), scope, verb).through("a"))
+                    .map(|v| v.kind)
             };
             assert_eq!(
                 g(Scope::Device("camera".into()), Access::Read),
@@ -1553,20 +1563,26 @@ mod tests {
                 "{}",
                 cap.detail
             );
-            let rw = cap_view(&CapOverride::grant(
-                Subject::app("a"),
-                Scope::FsPath("/w".into()),
-                Access::Write,
-            ))
+            let rw = cap_view(
+                &CapOverride::grant(
+                    Grantee::person("local"),
+                    Scope::FsPath("/w".into()),
+                    Access::Write,
+                )
+                .through("a"),
+            )
             .unwrap();
             assert!(rw.detail.contains("read & write"));
             assert!(
-                cap_view(&CapOverride::new(
-                    Subject::app("a"),
-                    Scope::Device("camera".into()),
-                    Effect::Restrict,
-                    Access::Read,
-                ))
+                cap_view(
+                    &CapOverride::new(
+                        Grantee::person("local"),
+                        Scope::Device("camera".into()),
+                        Effect::Restrict,
+                        Access::Read,
+                    )
+                    .through("a"),
+                )
                 .is_none()
             );
         }

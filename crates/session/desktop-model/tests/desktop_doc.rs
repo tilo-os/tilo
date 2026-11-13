@@ -7,7 +7,7 @@
 
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjId, PatchAction, Prop, ROOT, ReadDoc as _};
-use collab_types::caps::{Access, CapOverride, Scope, Subject};
+use collab_types::caps::{Access, CapOverride, Scope};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::commands::{DesktopCommand, TabLocation, apply_command};
 use tilo_desktop_model::desktop_doc;
@@ -140,10 +140,11 @@ fn desktop_document_round_trips_the_desktop_and_governance() {
     {
         let (_, mut doc) = seeded();
         let cap = CapOverride::grant(
-            Subject::app("org.example.App"),
+            tilo_action_policy::Grantee::person("ada"),
             Scope::FsPath("/srv".into()),
             Access::Read,
         )
+        .through("org.example.App")
         .with_id("cap-x");
         assert!(desktop_doc::insert_sandbox(
             &mut doc,
@@ -1013,16 +1014,18 @@ fn seed_splices_inserted_removed_and_reordered_entries() {
 fn seed_deletes_fields_and_map_keys_the_tree_dropped() {
     let mut desktop = tree();
     let keep = CapOverride::grant(
-        Subject::app("org.example.App"),
+        tilo_action_policy::Grantee::person("ada"),
         Scope::FsPath("/srv".into()),
         Access::Read,
     )
+    .through("org.example.App")
     .with_id("cap-keep");
     let drop = CapOverride::grant(
-        Subject::app("org.example.App"),
+        tilo_action_policy::Grantee::person("ada"),
         Scope::FsPath("/tmp".into()),
         Access::Read,
     )
+    .through("org.example.App")
     .with_id("cap-drop");
     desktop.workspaces[0].sandbox = vec![keep.clone(), drop];
     let mut doc = committed_seed(&desktop);

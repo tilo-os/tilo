@@ -7,7 +7,7 @@ use std::path::PathBuf;
 /// The clock these fixtures run at, Unix seconds.
 const NOW: u64 = 1_800_000_000;
 
-use collab_types::caps::{Access, Actor, CapDecision, ResourceRef};
+use collab_types::caps::{Access, CapDecision, ResourceRef};
 use tilo_desktop_model::*;
 
 #[test]
@@ -38,7 +38,7 @@ fn capability_grants_start_empty_and_round_trip() {
             );
             assert_ne!(
                 ws.sandbox_decide_at(
-                    &Actor::app("org.gnome.gedit"),
+                    "org.gnome.gedit",
                     &ResourceRef::FsPath("/home/u/work".into()),
                     Access::Read,
                     NOW
@@ -52,6 +52,7 @@ fn capability_grants_start_empty_and_round_trip() {
     {
         let mut ws = Workspace::new(WorkspaceSlot::from(1), "Demo");
         ws.grant_app(
+            "ada",
             "org.gnome.gedit",
             &Capability::Filesystem {
                 path: PathBuf::from("/home/u/work"),
@@ -60,6 +61,7 @@ fn capability_grants_start_empty_and_round_trip() {
             },
         );
         ws.grant_app(
+            "ada",
             "org.gnome.gedit",
             &Capability::Network {
                 hosts: Some(vec!["github.com".into()]),
@@ -85,10 +87,10 @@ fn capability_grants_start_empty_and_round_trip() {
         }));
 
         // And the decision function agrees after the round-trip.
-        let app = Actor::app("org.gnome.gedit");
+        let app = "org.gnome.gedit";
         assert_eq!(
             round.sandbox_decide_at(
-                &app,
+                app,
                 &ResourceRef::FsPath("/home/u/work/notes.txt".into()),
                 Access::Write,
                 NOW
@@ -97,7 +99,7 @@ fn capability_grants_start_empty_and_round_trip() {
         );
         assert_ne!(
             round.sandbox_decide_at(
-                &app,
+                app,
                 &ResourceRef::FsPath("/home/u/secrets".into()),
                 Access::Read,
                 NOW
@@ -107,7 +109,7 @@ fn capability_grants_start_empty_and_round_trip() {
         );
         assert_eq!(
             round.sandbox_decide_at(
-                &app,
+                app,
                 &ResourceRef::NetHost("github.com".into()),
                 Access::Write,
                 NOW
@@ -116,7 +118,7 @@ fn capability_grants_start_empty_and_round_trip() {
         );
         assert_ne!(
             round.sandbox_decide_at(
-                &app,
+                app,
                 &ResourceRef::NetHost("evil.example".into()),
                 Access::Write,
                 NOW
@@ -246,12 +248,14 @@ fn a_windows_desktop_control_ends_when_it_is_taken_back() {
     assert!(!ws.holds_desktop_control_at(TERMINAL, NOW));
     assert!(!ws.stop_desktop_control(TERMINAL), "nothing to take back");
     ws.grant_app(
+        "ada",
         TERMINAL,
         &Capability::DesktopControl {
             scope: GRANT_ALWAYS,
         },
     );
     ws.grant_app(
+        "ada",
         TERMINAL,
         &Capability::Network {
             hosts: None,

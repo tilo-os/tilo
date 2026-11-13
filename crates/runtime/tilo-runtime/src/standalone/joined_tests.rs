@@ -333,7 +333,7 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
     let default_root = SigningKey::from_bytes(&[95; 32]);
     custody.device_cert.user_public_key = default_root.verifying_key().to_bytes();
     sign_device_cert(&mut custody.device_cert, &default_root).unwrap();
-    let default_actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
+    let default_actor = tilo_action_broker::collab_app_broker::person_id_for_root(
         custody.device_cert.user_public_key,
     );
     custody = HostIdentity::held(
@@ -591,8 +591,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         ),
     )
     .unwrap();
-    let actor =
-        tilo_action_broker::collab_app_broker::principal_id_for_root(device.user_public_key);
+    let actor = tilo_action_broker::collab_app_broker::person_id_for_root(device.user_public_key);
     assert!(
         joined
             .action_workspace(&actor, &workspace.to_string())
@@ -1431,7 +1430,7 @@ async fn the_profile_workspace_is_placed_once_on_its_own_host_and_held() {
     assert!(joined.workspace(workspace).is_some());
     joined.place(workspace, "Home").await.unwrap();
     assert_eq!(joined.owner.workspaces(), vec![workspace]);
-    let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
+    let actor = tilo_action_broker::collab_app_broker::person_id_for_root(
         joined.test_certificate().user_public_key,
     );
     assert_eq!(

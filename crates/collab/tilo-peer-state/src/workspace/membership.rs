@@ -566,7 +566,7 @@ fn sandbox(
                 "sandbox capability {id} ends with a session or a single use"
             )));
         }
-        if capability.granted_by != Some(collab_types::caps::Principal::Person(actor.to_owned())) {
+        if capability.granted_by != Some(tilo_action_policy::MemberId::person(actor.to_owned())) {
             return Err(MembershipRefusal::Refused(format!(
                 "sandbox capability {id} is not recorded as the writer's"
             )));

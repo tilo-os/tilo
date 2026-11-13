@@ -61,7 +61,7 @@ fn durable_fixture(
             crate::test_support::WorkspaceSlot(71),
             "Durable workspace",
         );
-        workspace.set_owner(principal_id_for_root(root_key.verifying_key().to_bytes()));
+        workspace.set_owner(person_id_for_root(root_key.verifying_key().to_bytes()));
         tree.workspaces.push(workspace);
         tree.set_active(crate::test_support::WorkspaceSlot(71));
         tree.persist_path = Some(root.join("state.json"));

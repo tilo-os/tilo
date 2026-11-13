@@ -466,7 +466,7 @@ impl AppBrokerState {
                     return Err("original local caller does not match invocation workspace".into());
                 }
                 let expected = current.agent_id.as_ref().map_or_else(
-                    || super::principal_id_for_root(certificate.user_public_key),
+                    || super::person_id_for_root(certificate.user_public_key),
                     |agent| format!("agent:{}", agent.strip_prefix("agent:").unwrap_or(agent)),
                 );
                 if actor.id == expected && actor.is_agent == current.agent_id.is_some() {

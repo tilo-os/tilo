@@ -88,7 +88,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     let (joined, directory) = Joined::test_hosting(placed).await;
     let certificate = joined.custody.device_cert.clone();
     let actor =
-        tilo_action_broker::collab_app_broker::principal_id_for_root(certificate.user_public_key);
+        tilo_action_broker::collab_app_broker::person_id_for_root(certificate.user_public_key);
     let mut workspace = TestWorkspace::in_workspace(TestSlot(42), placed, "Runtime doors");
     workspace.set_owner(actor.clone());
     let workspace_id = workspace.id().to_string();
@@ -184,7 +184,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
 async fn custody_the_runtime_no_longer_holds_ends_the_run() {
     let workspace = WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     let (joined, _directory) = Joined::test_hosting(workspace).await;
-    let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
+    let actor = tilo_action_broker::collab_app_broker::person_id_for_root(
         joined.test_certificate().user_public_key,
     );
     let run = joined

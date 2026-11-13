@@ -20,8 +20,23 @@ reason = "the session shell's half of the same connection: newline-delimited JSO
 
 [[break]]
 file = "crates/collab/collab-types/src/caps.rs"
+enum = "Principal"
+reason = "a sandbox capability names a grantee and an app, not a principal: there are no users whose stored capability lists must read, and the shipped list moves with the image"
+
+[[break]]
+file = "crates/collab/collab-types/src/caps.rs"
 enum = "PrincipalWire"
-reason = "the workspace principal changes name in place, from `Room` to `Workspace`: its postcard position (4) and every byte written before stay the same, a stored subject and a signed authority revision over it still read and verify, and JSON written before under the old name still reads it"
+reason = "written and read only by `Principal`, which is gone; no build reads it back"
+
+[[break]]
+file = "crates/collab/collab-types/src/caps.rs"
+enum = "Subject"
+reason = "a sandbox capability names a grantee and an app, not a subject: there are no users whose stored capability lists must read, and the shipped list moves with the image"
+
+[[break]]
+file = "crates/collab/collab-types/src/caps.rs"
+enum = "Actor"
+reason = "the sandbox asks with an `Acting` (a member chain and an app) instead of a bag of principals; nothing stores an actor"
 
 [[break]]
 file = "crates/collab/tilo-peer-state/src/workspace_membership.rs"

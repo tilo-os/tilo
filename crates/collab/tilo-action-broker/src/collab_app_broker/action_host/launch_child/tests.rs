@@ -171,7 +171,7 @@ impl crate::services::LocalPersonServices for NativePerson {
     ) -> Result<tilo_user_identity::DeviceCert, String> {
         let (_, certificate) = tilo_identity_host::broker::trusted_current_device(workspace)
             .map_err(|error| error.to_string())?;
-        if crate::collab_app_broker::principal_id_for_root(certificate.user_public_key) != person {
+        if crate::collab_app_broker::person_id_for_root(certificate.user_public_key) != person {
             return Err("different person".into());
         }
         Ok(certificate)

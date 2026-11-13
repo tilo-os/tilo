@@ -15,6 +15,8 @@ path = "src/lib.rs"
 tilo-resource = { path = "../../sdk/tilo-resource" }
 # Grants are capabilities in the shared vocabulary, not a second permission type.
 collab-types = { path = "../../collab/collab-types" }
+# A grant names a member or a role, and the app whose sandbox it is.
+tilo-action-policy = { path = "../../collab/action-policy" }
 # Images are tapp packages, named by their content address.
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 automerge.workspace = true

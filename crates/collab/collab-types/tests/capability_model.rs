@@ -1,20 +1,15 @@
 //! The sandbox capability primitive, exercised through the production
-//! decision function ([`decide_capability`]) — the same function the
-//! compositor, portal and filesystem call, so nothing here is re-implemented
-//! locally.
+//! decision functions ([`decide_capability`], [`decide_app`]) — the same
+//! functions the compositor, portal and filesystem call, so nothing here is
+//! re-implemented locally.
 //!
 //! Emphasis is deliberately on **denial**: a model only shown to permit
 //! things hasn't been shown to work at all.
 
 use collab_types::caps::{
-    Access, Actor, CapDecision, CapOverride, Effect, Principal, ResourceRef, Scope, Subject,
-    decide_capability,
+    Access, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_app, decide_capability,
 };
-use collab_types::crypto::Ed25519PublicKey;
-
-fn key(seed: u8) -> Ed25519PublicKey {
-    Ed25519PublicKey::from_bytes([seed; 32])
-}
+use tilo_action_policy::{Acting, Grantee, MemberId, Role};
 
 fn fs(path: &str) -> ResourceRef {
     ResourceRef::FsPath(path.into())
@@ -22,12 +17,16 @@ fn fs(path: &str) -> ResourceRef {
 
 /// `decide_capability` with no clock — every case but the expiry ones.
 fn decide(
-    actor: &Actor,
+    acting: &Acting,
     resource: &ResourceRef,
     access: Access,
     caps: &[CapOverride],
 ) -> CapDecision {
-    decide_capability(actor, resource, access, caps, None)
+    decide_capability(acting, resource, access, caps, None)
+}
+
+fn app_grant(app: &str, scope: Scope, access: Access) -> CapOverride {
+    CapOverride::grant(Grantee::person("ada"), scope, access).through(app)
 }
 
 /// An app without a capability reaches nothing; a path or host grant reaches
@@ -35,7 +34,6 @@ fn decide(
 #[test]
 fn an_app_reaches_only_the_paths_and_hosts_it_was_granted() {
     // Case: an app with no capability is denied everything.
-    let app = Actor::app("org.tilo.Ebook");
     for resource in [
         fs("/var/workspace/books/dune.epub"),
         ResourceRef::Device("camera".into()),
@@ -44,7 +42,7 @@ fn an_app_reaches_only_the_paths_and_hosts_it_was_granted() {
     ] {
         for access in [Access::Read, Access::Write] {
             assert_eq!(
-                decide(&app, &resource, access, &[]),
+                decide_app("org.tilo.Ebook", &resource, access, &[], None),
                 CapDecision::NotGranted,
                 "an app with no capability must be denied {access:?} on {resource:?}"
             );
@@ -52,73 +50,77 @@ fn an_app_reaches_only_the_paths_and_hosts_it_was_granted() {
     }
 
     // Case: an app granted one path cannot reach a sibling path.
-    let caps = vec![CapOverride::grant(
-        Subject::app("org.tilo.Ebook"),
+    let caps = vec![app_grant(
+        "org.tilo.Ebook",
         Scope::FsPath("/var/workspace/books".into()),
         Access::Write,
     )];
     assert_eq!(
-        decide(
-            &app,
+        decide_app(
+            "org.tilo.Ebook",
             &fs("/var/workspace/books/dune.epub"),
             Access::Write,
-            &caps
+            &caps,
+            None
         ),
         CapDecision::Allow,
         "the granted subtree is reachable"
     );
     assert_eq!(
-        decide(
-            &app,
+        decide_app(
+            "org.tilo.Ebook",
             &fs("/var/workspace/finances/tax.ods"),
             Access::Read,
-            &caps
+            &caps,
+            None
         ),
         CapDecision::NotGranted,
         "a sibling directory the app was never granted must be denied"
     );
 
     // Case: a path grant does not leak across a component boundary.
-    let caps = vec![CapOverride::grant(
-        Subject::app("org.tilo.Ebook"),
+    let caps = vec![app_grant(
+        "org.tilo.Ebook",
         Scope::FsPath("/var/workspace/docs".into()),
         Access::Write,
     )];
     assert_eq!(
-        decide(
-            &app,
+        decide_app(
+            "org.tilo.Ebook",
             &fs("/var/workspace/docs/a/b/c.txt"),
             Access::Write,
-            &caps
+            &caps,
+            None
         ),
         CapDecision::Allow,
         "grants inherit down the tree"
     );
     assert_eq!(
-        decide(
-            &app,
+        decide_app(
+            "org.tilo.Ebook",
             &fs("/var/workspace/docsSECRET/keys"),
             Access::Read,
-            &caps
+            &caps,
+            None
         ),
         CapDecision::NotGranted,
         "a string-prefix match that stops mid-component is not a parent directory"
     );
 
     // Case: a network capability is not a blanket one.
-    let browser = Actor::app("org.tilo.Browser");
-    let caps = vec![CapOverride::grant(
-        Subject::app("org.tilo.Browser"),
+    let caps = vec![app_grant(
+        "org.tilo.Browser",
         Scope::NetHost(".example.com".into()),
         Access::Write,
     )];
     for host in ["example.com", "api.example.com", "a.b.example.com"] {
         assert_eq!(
-            decide(
-                &browser,
+            decide_app(
+                "org.tilo.Browser",
                 &ResourceRef::NetHost(host.into()),
                 Access::Write,
-                &caps
+                &caps,
+                None
             ),
             CapDecision::Allow,
             "{host} is in the granted domain"
@@ -126,11 +128,12 @@ fn an_app_reaches_only_the_paths_and_hosts_it_was_granted() {
     }
     for host in ["evil.com", "example.com.evil.com", "notexample.com"] {
         assert_eq!(
-            decide(
-                &browser,
+            decide_app(
+                "org.tilo.Browser",
                 &ResourceRef::NetHost(host.into()),
                 Access::Write,
-                &caps
+                &caps,
+                None
             ),
             CapDecision::NotGranted,
             "{host} is outside the granted domain and must be denied"
@@ -138,71 +141,88 @@ fn an_app_reaches_only_the_paths_and_hosts_it_was_granted() {
     }
 }
 
-/// A workspace-wide grant reaches every sandboxed resource; a restriction
-/// caps it, and a device grant reaches only its device.
+/// A restriction caps a grant, and a device grant reaches only its device.
 #[test]
 fn restrictions_cap_grants_and_devices_stay_apart() {
-    let app = Actor::app("org.tilo.Camera");
-    let caps = vec![CapOverride::grant(
-        Subject::app("org.tilo.Camera"),
+    let caps = vec![app_grant(
+        "org.tilo.Camera",
         Scope::Device("camera".into()),
         Access::Read,
     )];
     assert_eq!(
-        decide(
-            &app,
+        decide_app(
+            "org.tilo.Camera",
             &ResourceRef::Device("camera".into()),
             Access::Read,
-            &caps
+            &caps,
+            None
         ),
         CapDecision::Allow
     );
     assert_eq!(
-        decide(
-            &app,
+        decide_app(
+            "org.tilo.Camera",
             &ResourceRef::Device("camera".into()),
             Access::Write,
-            &caps
+            &caps,
+            None
         ),
         CapDecision::NotGranted,
         "reading a device is not driving it"
     );
     assert_eq!(
-        decide(
-            &app,
+        decide_app(
+            "org.tilo.Camera",
             &ResourceRef::Device("microphone".into()),
             Access::Read,
-            &caps
+            &caps,
+            None
         ),
         CapDecision::NotGranted
     );
 
-    let mut caps = vec![CapOverride::grant(
-        Subject::app("org.tilo.Camera"),
+    let mut caps = vec![app_grant(
+        "org.tilo.Camera",
         Scope::FsPath("/var/workspace".into()),
         Access::Write,
     )];
-    caps.push(CapOverride::new(
-        Subject::app("org.tilo.Camera"),
-        Scope::FsPath("/var/workspace/finance".into()),
-        Effect::Restrict,
-        Access::Read,
-    ));
+    caps.push(
+        CapOverride::new(
+            Grantee::person("ada"),
+            Scope::FsPath("/var/workspace/finance".into()),
+            Effect::Restrict,
+            Access::Read,
+        )
+        .through("org.tilo.Camera"),
+    );
     assert_eq!(
-        decide(
-            &app,
+        decide_app(
+            "org.tilo.Camera",
             &fs("/var/workspace/finance/tax"),
             Access::Write,
-            &caps
+            &caps,
+            None
         ),
         CapDecision::DeniedByRestriction
     );
     assert_eq!(
-        decide(&app, &fs("/var/workspace/finance/tax"), Access::Read, &caps),
+        decide_app(
+            "org.tilo.Camera",
+            &fs("/var/workspace/finance/tax"),
+            Access::Read,
+            &caps,
+            None
+        ),
         CapDecision::Allow
     );
     assert_eq!(
-        decide(&app, &fs("/var/workspace/design"), Access::Write, &caps),
+        decide_app(
+            "org.tilo.Camera",
+            &fs("/var/workspace/design"),
+            Access::Write,
+            &caps,
+            None
+        ),
         CapDecision::Allow
     );
 }
@@ -211,11 +231,11 @@ fn restrictions_cap_grants_and_devices_stay_apart() {
 /// not there. Grants and restrictions lapse symmetrically.
 #[test]
 fn grants_and_restrictions_lapse_at_their_expiry() {
-    let app = Actor::app("org.tilo.Ebook");
+    let app = "org.tilo.Ebook";
     let path = fs("/var/workspace/books/dune.epub");
     let caps = vec![
-        CapOverride::grant(
-            Subject::app("org.tilo.Ebook"),
+        app_grant(
+            app,
             Scope::FsPath("/var/workspace/books".into()),
             Access::Write,
         )
@@ -231,163 +251,201 @@ fn grants_and_restrictions_lapse_at_their_expiry() {
         (5_000, CapDecision::NotGranted, "and stays gone"),
     ] {
         assert_eq!(
-            decide_capability(&app, &path, Access::Write, &caps, Some(now)),
+            decide_app(app, &path, Access::Write, &caps, Some(now)),
             want,
             "{why}"
         );
     }
 
     let caps = vec![
-        CapOverride::grant(
-            Subject::app("org.tilo.Ebook"),
-            Scope::FsPath("/var/workspace".into()),
-            Access::Write,
-        ),
+        app_grant(app, Scope::FsPath("/var/workspace".into()), Access::Write),
         CapOverride::new(
-            Subject::app("org.tilo.Ebook"),
+            Grantee::person("ada"),
             Scope::FsPath("/var/workspace".into()),
             Effect::Restrict,
             Access::Read,
         )
+        .through(app)
         .with_expiry(50),
     ];
     assert_eq!(
-        decide_capability(&app, &path, Access::Write, &caps, Some(10)),
+        decide_app(app, &path, Access::Write, &caps, Some(10)),
         CapDecision::DeniedByRestriction
     );
     assert_eq!(
-        decide_capability(&app, &path, Access::Write, &caps, Some(51)),
+        decide_app(app, &path, Access::Write, &caps, Some(51)),
         CapDecision::Allow,
         "a lapsed restriction stops biting, symmetrically with a lapsed grant"
     );
 }
 
-/// A capability serves exactly its subject: one app, a bearer token, a
-/// workspace's members, or one person however they are named.
+/// A capability serves exactly its grantee: one app, one member, or a role.
 #[test]
-fn a_capability_serves_only_its_subject() {
-    let caps = vec![CapOverride::grant(
-        Subject::app("org.tilo.Ebook"),
+fn a_capability_serves_only_its_grantee() {
+    // Case: an app's capability is that app's, whoever runs it.
+    let caps = vec![app_grant(
+        "org.tilo.Ebook",
         Scope::FsPath("/var/workspace/books".into()),
         Access::Read,
     )];
     let path = fs("/var/workspace/books/dune.epub");
     assert_eq!(
-        decide(&Actor::app("org.tilo.Ebook"), &path, Access::Read, &caps),
+        decide_app("org.tilo.Ebook", &path, Access::Read, &caps, None),
         CapDecision::Allow
     );
     assert_eq!(
-        decide(&Actor::app("org.tilo.Files"), &path, Access::Read, &caps),
+        decide_app("org.tilo.Files", &path, Access::Read, &caps, None),
         CapDecision::NotGranted,
-        "the Files app was not the subject of that grant"
+        "the Files app was not the app of that grant"
     );
     assert_eq!(
-        decide(&Actor::agent("assistant"), &path, Access::Read, &caps),
+        decide_app("agent:assistant", &path, Access::Read, &caps, None),
         CapDecision::NotGranted,
-        "an agent is its own subject, not a stand-in for any app"
+        "an agent's id is not an app id"
+    );
+    assert_eq!(
+        decide(&Acting::person("ada"), &path, Access::Read, &caps),
+        CapDecision::NotGranted,
+        "an app's sandbox is not the person's own reach"
+    );
+    assert_eq!(
+        decide(
+            &Acting::person("ada").in_app("org.tilo.Ebook"),
+            &path,
+            Access::Read,
+            &caps
+        ),
+        CapDecision::Allow,
+        "the app acting for its person reaches it"
     );
 
-    // Case: a bearer-token holder gets exactly the token's access.
+    // Case: a member's capability is reached by every node of the acting tree,
+    // and by nobody else.
     let caps = vec![CapOverride::grant(
-        Subject::token("inv-7f3a"),
-        Scope::FsPath("/var/workspace/shared/report.md".into()),
+        Grantee::person("ada"),
+        Scope::FsPath("/var/workspace/ada".into()),
         Access::Read,
     )];
-    let path = fs("/var/workspace/shared/report.md");
-    let holder = Actor::default().with_principal(Principal::Token("inv-7f3a".into()));
+    let path = fs("/var/workspace/ada/plan.md");
     assert_eq!(
-        decide(&holder, &path, Access::Read, &caps),
+        decide(&Acting::person("ada"), &path, Access::Read, &caps),
         CapDecision::Allow
     );
     assert_eq!(
-        decide(&holder, &path, Access::Write, &caps),
-        CapDecision::NotGranted,
-        "a read link is not a write link"
+        decide(
+            &Acting::agent("agent:scribe").acting_for(Acting::person("ada")),
+            &path,
+            Access::Read,
+            &caps
+        ),
+        CapDecision::Allow,
+        "an agent working for the member reaches what the member does"
     );
-    let wrong_token = Actor::default().with_principal(Principal::Token("inv-0000".into()));
     assert_eq!(
-        decide(&wrong_token, &path, Access::Read, &caps),
-        CapDecision::NotGranted,
-        "presenting a different token grants nothing"
+        decide(&Acting::person("bob"), &path, Access::Read, &caps),
+        CapDecision::NotGranted
     );
     assert_eq!(
-        decide(&Actor::default(), &path, Access::Read, &caps),
+        decide(&Acting::agent("agent:scribe"), &path, Access::Read, &caps),
         CapDecision::NotGranted,
-        "an actor presenting no principal holds nothing"
+        "an agent acting for nobody reaches nothing"
+    );
+
+    // Case: a role names its holders through the workspace's policy, which is
+    // not what a published list knows: the list names its members (see
+    // `crates/session/session/src/fs_authority.rs`).
+    let caps = vec![CapOverride::grant(
+        Grantee::Role(Role::Viewer),
+        Scope::FsPath("/var/workspace/design".into()),
+        Access::Read,
+    )];
+    assert_eq!(
+        decide(
+            &Acting::person("bob"),
+            &fs("/var/workspace/design/logo.svg"),
+            Access::Read,
+            &caps
+        ),
+        CapDecision::NotGranted
     );
 }
 
-/// A workspace subject covers exactly that workspace's members, and one person
-/// is one subject whether named by key or by hex id.
+/// A person's own capability is theirs through whatever app they run, and only
+/// the app a capability names carries the one that names it.
 #[test]
-fn workspaces_and_people_are_matched_by_identity() {
-    let caps = vec![CapOverride::grant(
-        Subject::workspace("ws-design"),
-        Scope::FsPath("/var/workspace/design".into()),
-        Access::Write,
-    )];
-    let path = fs("/var/workspace/design/logo.svg");
-    let insider = Actor::person("bob").in_workspace("ws-design");
-    let outsider = Actor::person("carol").in_workspace("ws-finance");
+fn an_app_scopes_a_capability_to_that_app() {
+    let caps = vec![
+        CapOverride::grant(
+            Grantee::person("ada"),
+            Scope::FsPath("/var/workspace/ada".into()),
+            Access::Read,
+        ),
+        CapOverride::grant(
+            Grantee::person("ada"),
+            Scope::FsPath("/var/workspace/photos".into()),
+            Access::Read,
+        )
+        .through("org.tilo.Photos"),
+    ];
+    let ada = || Acting::person("ada");
+    let own = fs("/var/workspace/ada/plan.md");
+    let photos = fs("/var/workspace/photos/cat.jpg");
     assert_eq!(
-        decide(&insider, &path, Access::Write, &caps),
+        decide(&ada(), &own, Access::Read, &caps),
+        CapDecision::Allow
+    );
+    assert_eq!(
+        decide(&ada().in_app("org.tilo.Photos"), &own, Access::Read, &caps),
         CapDecision::Allow,
-        "membership of the granted workspace carries the capability"
+        "an app reached for its person reaches what the person holds"
     );
     assert_eq!(
-        decide(&outsider, &path, Access::Write, &caps),
+        decide(&ada(), &photos, Access::Read, &caps),
         CapDecision::NotGranted,
-        "being in a *different* workspace grants nothing here"
+        "a capability naming an app is not the person's own reach"
     );
-
-    let k = key(3);
-    let hex = Principal::person_from_key(k);
-    let Principal::Person(hex_id) = hex.clone() else {
-        panic!("person_from_key must produce a Person principal");
-    };
-    assert_eq!(hex_id.len(), 64, "32 bytes as lowercase hex");
-    let path = fs("/var/workspace/a.txt");
-    let by_key = vec![CapOverride::grant(
-        Subject::User(k),
-        Scope::FsPath("/var/workspace".into()),
-        Access::Read,
-    )];
-    let by_id = vec![CapOverride::grant(
-        Subject::Principal(hex),
-        Scope::FsPath("/var/workspace".into()),
-        Access::Read,
-    )];
-    let id_actor = Actor::person(hex_id);
     assert_eq!(
-        decide(&id_actor, &path, Access::Read, &by_key),
+        decide(
+            &ada().in_app("org.tilo.Photos"),
+            &photos,
+            Access::Read,
+            &caps
+        ),
         CapDecision::Allow
     );
-    let key_actor = Actor::signed(k);
     assert_eq!(
-        decide(&key_actor, &path, Access::Read, &by_id),
-        CapDecision::Allow
+        decide(
+            &ada().in_app("org.tilo.Notes"),
+            &photos,
+            Access::Read,
+            &caps
+        ),
+        CapDecision::NotGranted,
+        "another app does not reach it"
     );
-    let other = Actor::signed(key(4));
     assert_eq!(
-        decide(&other, &path, Access::Read, &by_key),
-        CapDecision::NotGranted
-    );
-    assert_eq!(
-        decide(&other, &path, Access::Read, &by_id),
-        CapDecision::NotGranted
+        decide(
+            &Acting::person("bob").in_app("org.tilo.Photos"),
+            &photos,
+            Access::Read,
+            &caps
+        ),
+        CapDecision::NotGranted,
+        "another person does not reach it either"
     );
 }
 
 #[test]
 fn a_capability_round_trips_through_json() {
     let cap = CapOverride::grant(
-        Subject::person("bob"),
+        Grantee::Member(MemberId::agent("helper")),
         Scope::FsPath("/var/workspace/design".into()),
         Access::Write,
     )
+    .through("so.tilo.notes")
     .with_id("cap-1")
     .with_expiry(1_900_000_000)
-    .granted_by(Principal::Person("alice".into()));
+    .granted_by(MemberId::person("alice"));
     let json = serde_json::to_string(&cap).expect("serialise");
     let back: CapOverride = serde_json::from_str(&json).expect("deserialise");
     assert_eq!(cap, back);

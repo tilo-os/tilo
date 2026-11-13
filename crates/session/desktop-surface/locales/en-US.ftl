@@ -256,14 +256,14 @@ activity-titles-more = { $first }, { $second } and { $count } more
 activity-capability = { $effect ->
         [restrict] restricted { $verb }
        *[grant] { $verb }
-    } on { $scope } to { $subject }
+    } on { $scope } to { $who }
 activity-capability-unknown = a capability
 activity-capability-this-workspace = this workspace
 activity-capability-one-shared-file = one shared file
 activity-capability-network = network { $host }
-activity-capability-a-person = a person
 activity-capability-agent = agent { $agent }
-activity-capability-invite-token = an invite token
+activity-capability-bot = bot { $bot }
+activity-capability-through-app = { $who } in { $app }
 
 # Desktop surfaces
 desktop-system-status = System status
@@ -454,20 +454,15 @@ workspace-settings-expiry-until = Until
 workspace-settings-expiry-always = Always
 workspace-settings-granted-by-person = granted by { $id }
 workspace-settings-granted-by-you = granted by you
-workspace-settings-granted-by-app = granted by the { $app } app
 workspace-settings-granted-by-agent = granted by agent { $id }
-workspace-settings-granted-by-token = granted by token { $id }
-workspace-settings-granted-by-workspace = granted by workspace { $id }
+workspace-settings-granted-by-bot = granted by bot { $id }
 workspace-settings-permission-detail = { $allows }, { $grantor }
 workspace-settings-section-apps = Apps
 workspace-settings-section-people = People
 workspace-settings-section-agents = Agents
 workspace-settings-section-roles = Roles
-workspace-settings-section-other = Other
 workspace-settings-subject-bot = Bot { $id }
 workspace-settings-subject-role = everyone with { $role }
-workspace-settings-subject-token = token { $id }
-workspace-settings-subject-workspace = workspace { $id }
 workspace-settings-grant-camera = Camera
 workspace-settings-grant-microphone = Microphone
 workspace-settings-grant-screencast = Screen capture
@@ -758,6 +753,7 @@ overview-access-only-you = Only you
 overview-access-one = Shared with { $name }
 overview-access-two = Shared with { $name } and { $other }
 overview-access-many = Shared with { $name } and { $count } others
+overview-shared-in-app = { $scope } in { $app }
 overview-shares = { $count ->
         [one] 1 item shared
        *[other] { $count } items shared

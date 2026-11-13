@@ -129,7 +129,6 @@ mod tests {
             }
             let person = if role == Role::Owner { OWNER } else { member };
             let window = ui::permissions::PermissionContext::from_standing(
-                &w.policy.workspace,
                 tilo_action_policy::Standing::person(w.policy.clone(), person),
             )
             .at_unix_time(10);

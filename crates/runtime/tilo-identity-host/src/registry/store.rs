@@ -573,7 +573,7 @@ pub fn selected_principal_id_prompt(workspace: &str) -> io::Result<Option<String
     let registry = store.load_reconciled_prompt()?;
     Ok(registry
         .for_workspace(workspace, device_cert().as_ref())
-        .map(|profile| profile.principal_id()))
+        .map(|profile| profile.person_id()))
 }
 
 /// The identity this device presents in `workspace`, for shell chrome, apps

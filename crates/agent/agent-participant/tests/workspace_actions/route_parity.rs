@@ -799,11 +799,7 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
 
     let codex = Browser::open(&hosted, &computer, &host).await;
     let _ = tilo_session_client::device::run_as_agent(&codex.peer, "Codex").await;
-    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
-        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-    ) else {
-        panic!("a key names a person")
-    };
+    let person = hex::encode(root.verifying_key().to_bytes());
     let actions = tilo_session_core::remote::SessionActions::new(
         &codex.peer,
         codex.workspace,
@@ -898,11 +894,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     let agent =
         super::resource_support::open_admitted_peer(&hosted, &computer, &host, &cluster).await;
     let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
-    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
-        collab_types::Ed25519PublicKey::from_bytes(guest.verifying_key().to_bytes()),
-    ) else {
-        panic!("a key names a person")
-    };
+    let person = hex::encode(guest.verifying_key().to_bytes());
     let actions = tilo_session_core::remote::SessionActions::new(
         &agent.peer,
         agent.workspace,

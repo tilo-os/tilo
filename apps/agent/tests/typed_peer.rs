@@ -171,11 +171,7 @@ pub fn spawn_with_agent_grants(
     tilo_action_broker::collab_app_broker::tests::secure_socket_parent(parent)
         .expect("secure typed broker fixture root");
     let root = SigningKey::from_bytes(&ROOT_KEY);
-    let collab_types::Principal::Person(principal) = collab_types::Principal::person_from_key(
-        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-    ) else {
-        unreachable!("person key creates a person principal")
-    };
+    let principal = hex::encode(root.verifying_key().to_bytes());
     let mut workspace = tilo_action_broker::test_support::Workspace::in_workspace(
         tilo_action_broker::test_support::WorkspaceSlot(1),
         tilo_action_broker::test_support::WorkspaceId::parse(&TEST_WORKSPACE.to_string()).unwrap(),

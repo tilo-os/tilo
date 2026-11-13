@@ -341,7 +341,7 @@ mod tests {
                 cache_dir: temp.path().join("cache"),
                 capability_json: "[]".into(),
                 authority: None,
-                principals: Vec::new(),
+                members: Vec::new(),
                 relay_workspace_ids: vec![tilo_relay_protocol::WorkspaceId::from_u128(42)],
             }],
         };

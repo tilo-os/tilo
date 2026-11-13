@@ -2414,7 +2414,7 @@ impl AppBrokerState {
                 if original_workspace != workspace
                     || caller.principal()
                         != &tilo_actions::remote::CallerPrincipal::Person(
-                            super::principal_id_for_root(certificate.user_public_key),
+                            super::person_id_for_root(certificate.user_public_key),
                         )
                 {
                     return Err(ActionHostError::NotPermitted);

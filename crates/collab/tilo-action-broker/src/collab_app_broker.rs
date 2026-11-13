@@ -513,7 +513,7 @@ fn admit_verified_join_at(
     verified: VerifiedJoinIdentity,
     now: u64,
 ) -> Result<AdmittedJoinIdentity, String> {
-    let principal_id = principal_id_for_root(verified.user_public_key);
+    let principal_id = person_id_for_root(verified.user_public_key);
     // The personal cluster has no roster to consult: its members are, by the
     // workspace id's derivation, exactly the devices this root certified, each
     // acting as the workspace's owner — a foreign device with the foreign-device
@@ -740,7 +740,7 @@ struct PresenceEnvelope {
 /// One inert operation published by a live application connection: the one
 /// exported-action shape `runtime-collab` decodes off the wire, typed.
 /// The broker's actor, its published actions and their admission: every host's.
-pub use tilo_broker_core::actor::{BrokerActor, RunFacts, principal_id_for_root};
+pub use tilo_broker_core::actor::{BrokerActor, RunFacts, person_id_for_root};
 pub use tilo_broker_core::published::{PublishedAction, PublishedInput, PublishedSurface};
 pub(crate) use tilo_broker_core::published::{
     validate_published_surface, validate_resource_view_descriptors,
@@ -1124,7 +1124,7 @@ impl ContinuingCaller {
                 workspace: workspace.clone(),
                 certificate: Box::new(certificate.clone()),
                 time: time.clone(),
-                direct: tilo_actions::remote::Caller::local_person(principal_id_for_root(
+                direct: tilo_actions::remote::Caller::local_person(person_id_for_root(
                     certificate.user_public_key,
                 ))
                 .in_workspace(workspace.clone()),
@@ -1398,7 +1398,7 @@ impl AppBrokerState {
         workspace: &str,
         cert: &tilo_user_identity::DeviceCert,
     ) -> BrokerActor {
-        BrokerActor::person(principal_id_for_root(cert.user_public_key))
+        BrokerActor::person(person_id_for_root(cert.user_public_key))
             .capped(self.capped_in(workspace, cert))
     }
 
@@ -5197,7 +5197,7 @@ impl AppBrokerState {
             self.current_native_person(workspace, certificate)?;
             if workspace != &offered.0.route.cluster_id
                 || actor.is_agent
-                || actor.id != principal_id_for_root(certificate.user_public_key)
+                || actor.id != person_id_for_root(certificate.user_public_key)
             {
                 return Err(
                     "original native person does not match the invocation route or actor".into(),
@@ -11633,7 +11633,7 @@ pub mod tests {
                         source
                             .certificate
                             .as_ref()
-                            .map(|certificate| principal_id_for_root(certificate.user_public_key))
+                            .map(|certificate| person_id_for_root(certificate.user_public_key))
                     }),
                     app_id: self.route.app_id.clone(),
                     route: self.route.clone(),
@@ -11875,7 +11875,7 @@ pub mod tests {
             .run_until(async {
                 for directory in [false, true] {
                     let fixture = local_directory_fixture();
-                    let person = principal_id_for_root([0; 32]);
+                    let person = person_id_for_root([0; 32]);
                     let mut other_workspace = crate::test_support::Workspace::new(
                         crate::test_support::WorkspaceSlot(72),
                         "Other publication workspace",
@@ -12697,7 +12697,7 @@ pub mod tests {
     #[test]
     fn certified_join_admission_uses_workspace_membership_and_role() {
         let root = SigningKey::from_bytes(&[20; 32]);
-        let principal = principal_id_for_root(root.verifying_key().to_bytes());
+        let principal = person_id_for_root(root.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceSlot(1),
             "Member workspace",
@@ -12743,7 +12743,7 @@ pub mod tests {
         let root = SigningKey::from_bytes(&[24; 32]);
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(4), "Actions");
-        workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
+        workspace.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
         let workspace_id = workspace.id().to_string();
         let route = CrdtRoute::cluster(&workspace_id);
         let mut tree = WorkspaceTree::default();
@@ -12809,7 +12809,7 @@ pub mod tests {
         let root = SigningKey::from_bytes(&[25; 32]);
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(5), "Own");
-        workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
+        workspace.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -12866,7 +12866,7 @@ pub mod tests {
         let root = SigningKey::from_bytes(&[23; 32]);
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(3), "Foreign");
-        workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
+        workspace.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
         workspace.allow_agent("scribe", crate::test_support::KindSet::READ);
         let route = CrdtRoute::cluster(workspace.id().to_string());
         let mut tree = WorkspaceTree::default();
@@ -12880,7 +12880,7 @@ pub mod tests {
         let kept = crate::test_support::KeptAgents::default().keeping(
             &workspace_id,
             "scribe",
-            &principal_id_for_root(root.verifying_key().to_bytes()),
+            &person_id_for_root(root.verifying_key().to_bytes()),
         );
 
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
@@ -12918,13 +12918,13 @@ pub mod tests {
     #[test]
     fn a_delegated_agent_acts_with_its_persons_authority_and_ends_with_them() {
         let root = SigningKey::from_bytes(&[44; 32]);
-        let principal = principal_id_for_root(root.verifying_key().to_bytes());
+        let principal = person_id_for_root(root.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceSlot(44),
             "Agent workspace",
         );
         let owner =
-            principal_id_for_root(SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes());
+            person_id_for_root(SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes());
         workspace.set_owner(owner.clone());
         workspace.admit(principal.clone(), Role::Moderator);
         workspace.grant(tilo_action_policy::Grant::new(
@@ -12947,7 +12947,7 @@ pub mod tests {
         let kept = crate::test_support::KeptAgents::default().keeping(
             &workspace_id,
             "scribe",
-            &principal_id_for_root(root.verifying_key().to_bytes()),
+            &person_id_for_root(root.verifying_key().to_bytes()),
         );
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&root))
             .expect("the keeper is admitted before their agent is");
@@ -13012,9 +13012,9 @@ pub mod tests {
     fn a_hosted_agent_takes_its_persons_role_capped_and_ends_with_them() {
         use tilo_action_policy::roles::governance;
         let owner_root = SigningKey::from_bytes(&[45; 32]);
-        let owner = principal_id_for_root(owner_root.verifying_key().to_bytes());
+        let owner = person_id_for_root(owner_root.verifying_key().to_bytes());
         let bob_root = SigningKey::from_bytes(&[46; 32]);
-        let bob = principal_id_for_root(bob_root.verifying_key().to_bytes());
+        let bob = person_id_for_root(bob_root.verifying_key().to_bytes());
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(45), "Hosted");
         workspace.set_owner(owner.clone());
@@ -13049,17 +13049,17 @@ pub mod tests {
             .keeping(
                 &workspace_id,
                 "scribe",
-                &principal_id_for_root(owner_root.verifying_key().to_bytes()),
+                &person_id_for_root(owner_root.verifying_key().to_bytes()),
             )
             .keeping(
                 &workspace_id,
                 "reader",
-                &principal_id_for_root(bob_root.verifying_key().to_bytes()),
+                &person_id_for_root(bob_root.verifying_key().to_bytes()),
             )
             .keeping(
                 &workspace_id,
                 "bobs-scribe",
-                &principal_id_for_root(bob_root.verifying_key().to_bytes()),
+                &person_id_for_root(bob_root.verifying_key().to_bytes()),
             );
         let delegate = |root: &SigningKey, agent: &str, tree: &WorkspaceTree| {
             let mut admitted = admit_verified_join(tree, &route, verified_device(root)).unwrap();
@@ -13165,7 +13165,7 @@ pub mod tests {
         }
 
         let root = SigningKey::from_bytes(&[46; 32]);
-        let person = principal_id_for_root(root.verifying_key().to_bytes());
+        let person = person_id_for_root(root.verifying_key().to_bytes());
         let tide = "tide";
         let reed = "reed";
         let mut workspace =
@@ -13435,7 +13435,7 @@ pub mod tests {
     #[test]
     fn non_owner_cannot_claim_an_agent_principal() {
         let member = SigningKey::from_bytes(&[45; 32]);
-        let member_id = principal_id_for_root(member.verifying_key().to_bytes());
+        let member_id = person_id_for_root(member.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceSlot(45),
             "Delegation workspace",
@@ -13464,7 +13464,7 @@ pub mod tests {
     fn certified_join_admission_rejects_wrong_or_removed_root() {
         let member = SigningKey::from_bytes(&[21; 32]);
         let stranger = SigningKey::from_bytes(&[22; 32]);
-        let member_id = principal_id_for_root(member.verifying_key().to_bytes());
+        let member_id = person_id_for_root(member.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceSlot(2),
             "Revocation workspace",
@@ -13496,7 +13496,7 @@ pub mod tests {
     #[test]
     fn certified_join_admission_rejects_cross_workspace_replay() {
         let root = SigningKey::from_bytes(&[23; 32]);
-        let principal = principal_id_for_root(root.verifying_key().to_bytes());
+        let principal = person_id_for_root(root.verifying_key().to_bytes());
         let mut member_workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceSlot(3),
             "Member workspace",
@@ -13597,7 +13597,7 @@ pub mod tests {
     fn certified_document_send_uses_live_route_role_and_typed_snapshot() {
         let root = SigningKey::from_bytes(&[24; 32]);
         let device = SigningKey::from_bytes(&[25; 32]);
-        let principal = principal_id_for_root(root.verifying_key().to_bytes());
+        let principal = person_id_for_root(root.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceSlot(5),
             "Typed document workspace",
@@ -13755,7 +13755,7 @@ pub mod tests {
         assert_eq!(admitted.role, CapRole::Owner);
         assert_eq!(
             admitted.principal_id,
-            principal_id_for_root(root.verifying_key().to_bytes())
+            person_id_for_root(root.verifying_key().to_bytes())
         );
         assert!(
             admit_verified_join(&membership.read(), &route, verified_device(&stranger)).is_err(),

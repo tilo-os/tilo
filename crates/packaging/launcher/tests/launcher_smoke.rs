@@ -873,23 +873,26 @@ fn bundle_signatures_gate_the_runtime_mount() {
 #[test]
 fn capability_files_on_disk_become_binds_or_nothing() {
     {
-        use collab_types::caps::{Access, CapOverride, Scope, Subject};
+        use collab_types::caps::{Access, CapOverride, Scope};
+        use tilo_action_policy::Grantee;
 
         let dir = tempfile::tempdir().unwrap();
         let caps_file = dir.path().join("caps.json");
         let caps = vec![
             CapOverride::grant(
-                Subject::app("com.example.hello"),
+                Grantee::person("ada"),
                 Scope::FsPath("/var/workspace/books".to_string()),
                 Access::Read,
-            ),
+            )
+            .through("com.example.hello"),
             // Addressed to a different app: must not survive the crossing, even though it sits in the
             // same file.
             CapOverride::grant(
-                Subject::app("com.example.other"),
+                Grantee::person("ada"),
                 Scope::FsPath("/var/workspace/secrets".to_string()),
                 Access::Write,
-            ),
+            )
+            .through("com.example.other"),
         ];
         std::fs::write(
             &caps_file,

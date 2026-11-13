@@ -1249,9 +1249,9 @@ pub fn readable_folder(
     if workspace.role_of(saver).is_none() || workspace.is_blocked(saver) {
         return Err("the saver is not a member of the workspace".into());
     }
-    let actor = collab_types::Actor::person(saver).in_workspace(workspace.id().to_string());
-    if workspace.sandbox_decide_at(
-        &actor,
+    let acting = tilo_action_policy::Acting::person(saver);
+    if workspace.sandbox_decide_as_at(
+        &acting,
         &collab_types::ResourceRef::FsPath(path.clone()),
         collab_types::caps::Access::Read,
         tilo_clock::unix_now(),

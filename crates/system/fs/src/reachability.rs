@@ -54,9 +54,10 @@ pub fn wake_when_acl_admits_others(
 mod tests {
     use std::time::Duration;
 
-    use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Principal, Scope, Subject};
+    use collab_types::{Access, CapOverride, Effect, Scope};
     use iroh::endpoint::presets;
     use iroh::{RelayMap, RelayMode, RelayUrl};
+    use tilo_action_policy::{Grantee, MemberId};
 
     use super::{Reachability, wake_when_acl_admits_others};
     use crate::acl::{AclHandle, WorkspaceAcl};
@@ -92,9 +93,9 @@ mod tests {
         .await;
     }
 
-    fn grant(subject: Subject) -> CapOverride {
+    fn grant(grantee: Grantee) -> CapOverride {
         CapOverride::new(
-            subject,
+            grantee,
             Scope::FsPath("/".into()),
             Effect::Grant,
             Access::Write,
@@ -104,12 +105,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_grant_to_someone_else_wakes_the_relays() {
         let me = [1; 32];
-        let local = Principal::Person("local".into());
-        let own = vec![grant(Subject::Principal(local.clone()))];
+        let local = Grantee::person("local");
+        let own = vec![grant(local.clone())];
         let acl = AclHandle::new(WorkspaceAcl::from_capabilities(
             me,
             &own,
-            std::slice::from_ref(&local),
+            std::slice::from_ref(&MemberId::person("local")),
             None,
         ));
         let (endpoint, relays) = endpoint_without_relays().await;
@@ -124,7 +125,7 @@ mod tests {
         acl.replace(WorkspaceAcl::from_capabilities(
             me,
             &own,
-            std::slice::from_ref(&local),
+            std::slice::from_ref(&MemberId::person("local")),
             None,
         ));
         assert!(
@@ -132,11 +133,11 @@ mod tests {
             "a change that still names only this mount must not wake them"
         );
         let mut shared = own.clone();
-        shared.push(grant(Subject::User(Ed25519PublicKey([2; 32]))));
+        shared.push(grant(Grantee::person(hex::encode([2; 32]))));
         acl.replace(WorkspaceAcl::from_capabilities(
             me,
             &shared,
-            std::slice::from_ref(&local),
+            std::slice::from_ref(&MemberId::person("local")),
             None,
         ));
         until_relays(&relays, 2).await;
@@ -151,9 +152,7 @@ mod tests {
     async fn an_acl_naming_someone_else_wakes_the_relays_at_start() {
         let acl = AclHandle::new(WorkspaceAcl::from_capabilities(
             [1; 32],
-            &[grant(Subject::Principal(Principal::Workspace(
-                "team".into(),
-            )))],
+            &[grant(Grantee::person("someone-else"))],
             &[],
             None,
         ));
@@ -164,7 +163,9 @@ mod tests {
             tokio::runtime::Handle::current(),
             None,
         );
-        assert!(wake_when_acl_admits_others(&reachability, &acl, "a workspace grant").is_none());
+        assert!(
+            wake_when_acl_admits_others(&reachability, &acl, "a grant to someone else").is_none()
+        );
         until_relays(&relays, 2).await;
         endpoint.close().await;
     }

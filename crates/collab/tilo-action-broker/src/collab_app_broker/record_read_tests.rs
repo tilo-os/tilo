@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tilo_actions::remote::{RecordAddress, RecordCopy};
 
 use super::*;
-use crate::collab_app_broker::principal_id_for_root;
+use crate::collab_app_broker::person_id_for_root;
 use crate::services::{
     DocumentBytes, HostServices, LocalPersonServices, NativeDocumentReads, RecordChangeServices,
 };
@@ -97,7 +97,7 @@ impl NativeDocumentReads for Owner {
 struct Person(tilo_user_identity::DeviceCert);
 impl LocalPersonServices for Person {
     fn certificate(&self, _: &str, person: &str) -> Result<tilo_user_identity::DeviceCert, String> {
-        if person != principal_id_for_root(self.0.user_public_key) {
+        if person != person_id_for_root(self.0.user_public_key) {
             return Err("not this device's person".into());
         }
         Ok(self.0.clone())
@@ -155,7 +155,7 @@ fn fixture_with(owner: Owner) -> Fixture {
     let session =
         crate::test_owner::SessionOwner::initialize(&scratch.path().join("owner")).unwrap();
     let certificate = session.device();
-    let person = principal_id_for_root(certificate.user_public_key);
+    let person = person_id_for_root(certificate.user_public_key);
     let mut workspace = crate::test_support::Workspace::new(WorkspaceSlot(71), "Record reads");
     workspace.set_owner(person.clone());
     let workspace_id = workspace.id().to_string();

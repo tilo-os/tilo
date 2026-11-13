@@ -2324,6 +2324,7 @@ mod transfers_between_devices {
         let slot = WorkspaceSlot::of_workspace(workspace_id);
         let mut workspace = Workspace::in_workspace(slot, workspace_id, "Desk");
         workspace.grant_app(
+            "ada",
             FILES_APP_ID,
             &Capability::Filesystem {
                 path: folder.to_path_buf(),

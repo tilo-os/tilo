@@ -6,12 +6,11 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use collab_types::caps::{
-    Access, Actor, CapDecision, CapOverride, Effect, Principal, ResourceRef, Scope,
-    Subject as SandboxSubject, decide_capability,
+    Access, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_app, decide_capability,
 };
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Change, Context, Grant, GrantId, Grantee, KindSet, Lifetime,
-    MemberId, Preset, PresetError, Refusal, Role, TreePath, WorkspacePolicy, roles,
+    Acting, ActionKind, Answer, Authority, Change, Context, Grant, GrantId, Grantee, KindSet,
+    Lifetime, MemberId, Preset, PresetError, Refusal, Role, TreePath, WorkspacePolicy, roles,
 };
 
 use crate::app::AppId;
@@ -292,26 +291,27 @@ impl Workspace {
 
     // The sandbox: what apps' code may reach, granted through portals.
 
-    /// Record an app's sandbox grant. Returns the ids of the capabilities
-    /// written (one per requested scope).
-    pub fn grant_app(&mut self, app_id: &str, cap: &Capability) -> Vec<String> {
+    /// Record an app's sandbox grant, for `person`. Returns the ids of the
+    /// capabilities written (one per requested scope).
+    pub fn grant_app(&mut self, person: &str, app_id: &str, cap: &Capability) -> Vec<String> {
         let expiry = cap.requested_expiry();
         cap.requested_scopes()
             .into_iter()
             .map(|(scope, access)| {
                 self.grant_sandbox(
-                    CapOverride::grant(SandboxSubject::app(app_id), scope, access).expiring(expiry),
+                    CapOverride::grant(Grantee::person(person), scope, access)
+                        .through(app_id)
+                        .expiring(expiry),
                 )
             })
             .collect()
     }
 
     pub fn app_capabilities_at(&self, app_id: &str, now: u64) -> Vec<&CapOverride> {
-        let want = SandboxSubject::app(app_id);
         let live_at = Some(now);
         self.sandbox
             .iter()
-            .filter(|c| c.subject == want && c.effect == Effect::Grant && c.is_live_at(live_at))
+            .filter(|c| c.names_app(app_id) && c.effect == Effect::Grant && c.is_live_at(live_at))
             .collect()
     }
 
@@ -319,9 +319,8 @@ impl Workspace {
     /// `now`: a live [`Capability::DesktopControl`] grant of this
     /// workspace's.
     pub fn holds_desktop_control_at(&self, app_id: &str, now: u64) -> bool {
-        let want = SandboxSubject::app(app_id);
         self.sandbox.iter().any(|cap| {
-            cap.subject == want
+            cap.names_app(app_id)
                 && cap.effect == Effect::Grant
                 && cap.is_live_at(Some(now))
                 && matches!(
@@ -335,10 +334,9 @@ impl Workspace {
     /// [`Capability::DesktopControl`] grant of its, whatever its lifetime.
     /// Whether there was one.
     pub fn stop_desktop_control(&mut self, app_id: &str) -> bool {
-        let want = SandboxSubject::app(app_id);
         !self
             .revoke_sandbox_matching(|cap| {
-                cap.subject == want
+                cap.names_app(app_id)
                     && matches!(
                         Capability::from_capability(cap),
                         Some(Capability::DesktopControl { .. })
@@ -358,11 +356,11 @@ impl Workspace {
             if c.effect != Effect::Grant || !c.is_live_at(live_at) {
                 continue;
             }
-            let SandboxSubject::Principal(Principal::App(app)) = &c.subject else {
+            let Some(app) = &c.app else {
                 continue;
             };
             if let Some(desc) = Capability::from_capability(c) {
-                out.entry(AppId::new(app)).or_default().push(desc);
+                out.entry(AppId::new(app.as_str())).or_default().push(desc);
             }
         }
         out
@@ -378,10 +376,7 @@ impl Workspace {
         self.sandbox.iter().any(|capability| {
             capability.effect == Effect::Grant
                 && capability.is_live_at(live_at)
-                && matches!(
-                    &capability.subject,
-                    SandboxSubject::Principal(Principal::App(app)) if app == app_id
-                )
+                && capability.names_app(app_id)
                 && matches!(&capability.scope, Scope::Device(scope) if scope == device)
         })
     }
@@ -393,7 +388,7 @@ impl Workspace {
         self.sandbox.iter().any(|c| {
             c.effect == Effect::Grant
                 && c.is_live_at(live_at)
-                && matches!(&c.subject, SandboxSubject::Principal(Principal::App(_)))
+                && c.app.is_some()
                 && Capability::from_capability(c).is_some()
         })
     }
@@ -403,11 +398,10 @@ impl Workspace {
     /// that knows a row index can name the capability it removes.
     pub fn app_grant_ids_at(&self, app_id: &str, now: u64) -> Vec<String> {
         let live_at = Some(now);
-        let want = SandboxSubject::app(app_id);
         self.sandbox
             .iter()
             .filter(|c| {
-                c.subject == want
+                c.names_app(app_id)
                     && c.effect == Effect::Grant
                     && c.is_live_at(live_at)
                     && Capability::from_capability(c).is_some()
@@ -416,23 +410,35 @@ impl Workspace {
             .collect()
     }
 
-    /// May `actor` reach `resource` with `access` under the workspace's sandbox?
+    /// May the app `app` reach `resource` with `access` under the workspace's sandbox?
     pub fn sandbox_decide_at(
         &self,
-        actor: &Actor,
+        app: &str,
         resource: &ResourceRef,
         access: Access,
         now: u64,
     ) -> CapDecision {
-        decide_capability(actor, resource, access, &self.sandbox, Some(now))
+        decide_app(app, resource, access, &self.sandbox, Some(now))
+    }
+
+    /// May `acting` reach `resource` with `access` under the workspace's sandbox?
+    pub fn sandbox_decide_as_at(
+        &self,
+        acting: &Acting,
+        resource: &ResourceRef,
+        access: Access,
+        now: u64,
+    ) -> CapDecision {
+        decide_capability(acting, resource, access, &self.sandbox, Some(now))
     }
 
     /// Record a sandbox capability, minting an id if the caller didn't supply
-    /// one. A re-grant of the same (subject, scope, effect, access) merges,
+    /// one. A re-grant of the same (grantee, app, scope, effect, access) merges,
     /// keeping the longer-lived expiry.
     pub fn grant_sandbox(&mut self, mut cap: CapOverride) -> String {
         if let Some(slot) = self.sandbox.iter_mut().find(|c| {
-            c.subject == cap.subject
+            c.grantee == cap.grantee
+                && c.app == cap.app
                 && c.scope == cap.scope
                 && c.effect == cap.effect
                 && c.access == cap.access

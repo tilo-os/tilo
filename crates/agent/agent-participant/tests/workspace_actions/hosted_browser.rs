@@ -118,11 +118,7 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
     let mut agent = Browser::open(&hosted, &computer, &host).await;
     let _ =
         tilo_session_client::device::run_as_agent(&agent.peer, hosted_documents::RUN_LABEL).await;
-    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
-        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-    ) else {
-        panic!("a key names a person")
-    };
+    let person = hex::encode(root.verifying_key().to_bytes());
     let server = McpServer::new(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),

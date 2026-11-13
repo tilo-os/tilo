@@ -860,7 +860,7 @@ mod tests {
                     cache_dir: dir.path().join("cache"),
                     capability_json: "[]".into(),
                     authority: Some(authority),
-                    principals: Vec::new(),
+                    members: Vec::new(),
                     relay_workspace_ids: vec![
                         tilo_relay_protocol::WorkspaceId::from_u128(7),
                         tilo_relay_protocol::WorkspaceId::from_u128(8),

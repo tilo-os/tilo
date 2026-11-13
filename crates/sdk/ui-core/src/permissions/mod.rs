@@ -16,6 +16,8 @@
 
 use std::sync::Arc;
 
+pub use tilo_action_policy::{Acting, Grantee, MemberId};
+
 #[derive(Clone)]
 struct PolicyTimeSampler(Arc<dyn Fn() -> Result<u64, String> + Send + Sync>);
 
@@ -52,8 +54,7 @@ impl PartialEq for OnceSpender {
 impl Eq for OnceSpender {}
 
 pub use collab_types::caps::{
-    Access, Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope,
-    Subject, decide_capability,
+    Access, CapDecision, CapOverride, Effect, Expiry, ResourceRef, Scope, decide_capability,
 };
 pub use collab_types::role::Role;
 pub use tilo_action_policy as policy;
@@ -203,7 +204,7 @@ pub struct PermissionContext {
     /// The acting person's id. Empty when no person is named.
     user: UserId,
     /// Who reaches sandboxed resources.
-    actor: Actor,
+    acting: Acting,
     sandbox: Vec<CapOverride>,
     /// Who acts in the workspace and what bounds them. Shared, so a frame's
     /// copies of the context and its directory witness copy no policy.
@@ -231,7 +232,7 @@ pub struct PermissionContext {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DirectoryPermissionWitness {
     user: UserId,
-    actor: Actor,
+    acting: Acting,
     sandbox: Vec<CapOverride>,
     standing: Arc<Standing>,
     /// Which grants (workspace, then each bound's own) and sandbox capabilities
@@ -243,10 +244,10 @@ pub(crate) struct DirectoryPermissionWitness {
 impl PermissionContext {
     /// Decide with `standing` in the workspace and `sandbox` for the app's code,
     /// reached as `actor`.
-    pub fn new(actor: Actor, sandbox: Vec<CapOverride>, standing: Standing) -> Self {
+    pub fn new(acting: Acting, sandbox: Vec<CapOverride>, standing: Standing) -> Self {
         Self {
             user: UserId(standing.person_id().unwrap_or_default().to_owned()),
-            actor,
+            acting,
             sandbox,
             standing: Arc::new(standing),
             now: crate::time::try_unix_now(),
@@ -285,7 +286,7 @@ impl PermissionContext {
     /// remote peer's behalf.
     pub fn permissive() -> Self {
         Self::new(
-            Actor::person(LOCAL_USER),
+            Acting::person(LOCAL_USER),
             [
                 Scope::FsPath("/".into()),
                 Scope::Device(collab_types::caps::EVERY.into()),
@@ -295,7 +296,7 @@ impl PermissionContext {
             .into_iter()
             .enumerate()
             .map(|(index, scope)| {
-                CapOverride::grant(Subject::person(LOCAL_USER), scope, Access::Write)
+                CapOverride::grant(Grantee::person(LOCAL_USER), scope, Access::Write)
                     .with_id(format!("local-user-unrestricted-{index}"))
             })
             .collect(),
@@ -326,7 +327,7 @@ impl PermissionContext {
             policy
         };
         Self::new(
-            Actor::person(person.clone()).in_workspace(workspace),
+            Acting::person(person.clone()),
             Vec::new(),
             Standing::person(policy, person),
         )
@@ -335,9 +336,9 @@ impl PermissionContext {
     /// The permissions of a whole standing a host built (an installer
     /// bounded by a bot's grants), decided exactly as that standing says.
     #[must_use]
-    pub fn from_standing(workspace: &str, standing: Standing) -> Self {
+    pub fn from_standing(standing: Standing) -> Self {
         Self::new(
-            Actor::person(standing.person_id().unwrap_or_default()).in_workspace(workspace),
+            Acting::person(standing.person_id().unwrap_or_default()),
             Vec::new(),
             standing,
         )
@@ -347,7 +348,7 @@ impl PermissionContext {
     pub fn stranger(person: impl Into<String>) -> Self {
         let person = person.into();
         Self::new(
-            Actor::person(person.clone()).in_workspace(LOCAL_WORKSPACE),
+            Acting::person(person.clone()),
             Vec::new(),
             Standing::person(
                 policy::WorkspacePolicy::unowned(
@@ -435,7 +436,7 @@ impl PermissionContext {
     pub fn read_only(&self) -> Self {
         let mut context =
             Self::member_of(self.standing.workspace(), self.user.0.clone(), Role::Viewer);
-        context.actor = self.actor.clone();
+        context.acting = self.acting.clone();
         context.now = self.now;
         context.policy_time.clone_from(&self.policy_time);
         context
@@ -605,7 +606,7 @@ impl PermissionContext {
             .collect();
         Ok(DirectoryPermissionWitness {
             user: self.user.clone(),
-            actor: self.actor.clone(),
+            acting: self.acting.clone(),
             sandbox: self.sandbox.clone(),
             standing: Arc::clone(&self.standing),
             live,
@@ -636,8 +637,9 @@ impl PermissionContext {
         &self.user
     }
 
-    pub fn actor(&self) -> &Actor {
-        &self.actor
+    /// Who reaches sandboxed resources.
+    pub fn acting(&self) -> &Acting {
+        &self.acting
     }
 
     /// The role the person holds in the workspace, if any.
@@ -749,7 +751,7 @@ impl PermissionContext {
                     Ok(now) => now,
                     Err(error) => return Some(Denial::Unavailable(error)),
                 };
-                match decide_capability(&self.actor, resource, *access, &self.sandbox, now) {
+                match decide_capability(&self.acting, resource, *access, &self.sandbox, now) {
                     CapDecision::Allow => None,
                     denied => Some(Denial::Sandbox(denied)),
                 }
@@ -1393,7 +1395,7 @@ mod tests {
         // NEGATIVE: a capability that has lapsed is not a capability.
         {
             let cap = CapOverride::grant(
-                Subject::person("u_guest"),
+                Grantee::person("u_guest"),
                 Scope::FsPath("/var/workspace/shared".into()),
                 Access::Write,
             )

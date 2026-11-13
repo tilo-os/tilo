@@ -6,7 +6,7 @@
 
 use super::{
     AppBrokerState, BrokerActor, InvocationCaller, InvocationKey, InvocationOwner,
-    invocation_journal, principal_id_for_root,
+    invocation_journal, person_id_for_root,
 };
 use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
 use tilo_actions::{ActionDescriptor, InvocationId, InvocationUpdate};
@@ -163,7 +163,7 @@ impl AppBrokerState {
                     return Ok(InvocationOwner::Local { actor: actor.id });
                 };
                 let expected = current.agent_id.as_ref().map_or_else(
-                    || principal_id_for_root(certificate.user_public_key),
+                    || person_id_for_root(certificate.user_public_key),
                     |agent| format!("agent:{}", agent.strip_prefix("agent:").unwrap_or(agent)),
                 );
                 // The connection's app acting under its own identity, by what
@@ -202,7 +202,7 @@ impl AppBrokerState {
                 if original_workspace != workspace
                     || *original_invocation != invocation
                     || actor.is_agent
-                    || actor.id != principal_id_for_root(certificate.user_public_key)
+                    || actor.id != person_id_for_root(certificate.user_public_key)
                 {
                     tracing::warn!(
                         %workspace,

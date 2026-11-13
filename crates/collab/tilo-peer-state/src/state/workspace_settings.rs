@@ -82,7 +82,7 @@ impl StatePeer {
             // `validate` refuses them, so they never reach here.
             SettingsChange::GrantAppAction(_) | SettingsChange::RevokeAppAction(_) => Ok(false),
             SettingsChange::GrantSandbox { capability } => {
-                let by = collab_types::caps::Principal::Person(person_of(&member)?.to_owned());
+                let by = tilo_action_policy::MemberId::person(person_of(&member)?.to_owned());
                 grant_sandbox(&mut workspace, capability, by)?;
                 self.governance_mut()
                     .put_governed_sandbox(&workspace.sandbox, key, now)
@@ -130,7 +130,7 @@ impl StatePeer {
 fn grant_sandbox(
     workspace: &mut tilo_desktop_model::Workspace,
     capability: &collab_types::caps::CapOverride,
-    by: collab_types::caps::Principal,
+    by: tilo_action_policy::MemberId,
 ) -> Result<(), String> {
     if !capability.persists_across_restart() {
         return Err(

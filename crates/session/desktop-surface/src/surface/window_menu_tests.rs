@@ -1041,6 +1041,7 @@ fn stopping_desktop_control_takes_the_grant_back() {
     assert!(row(&handle.window_menu(route.tab), STOP_DESKTOP_CONTROL).is_none());
     let mut tree = handle.read(Clone::clone);
     tree.workspaces[0].grant_app(
+        "ada",
         "so.tilo.app0",
         &Capability::DesktopControl {
             scope: GRANT_ALWAYS,

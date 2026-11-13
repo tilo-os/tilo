@@ -245,7 +245,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
                 }])
                 .await
                 .unwrap();
-            let person = tilo_actions::remote::Caller::local_person(principal_id_for_root(
+            let person = tilo_actions::remote::Caller::local_person(person_id_for_root(
                 env.cert.user_public_key,
             ))
             .in_workspace(env.route.cluster_id.clone());

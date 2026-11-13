@@ -217,7 +217,7 @@ async fn native_store_host_sheet_uses_final_task_edits_and_rechecks_authority() 
                         sheet = sheets.recv() => sheet.unwrap(),
                     };
                     assert_eq!(question.target_app, STORE);
-                    assert_eq!(question.person, principal_id_for_root(f.native.certificate.user_public_key));
+                    assert_eq!(question.person, person_id_for_root(f.native.certificate.user_public_key));
                     let preview = question.moderation.expect("typed disclosure, not a generic approval");
                     assert_eq!(preview.content, "Reviewed");
                     assert_eq!(preview.signing_root, hex::encode(f.native.certificate.user_public_key));
@@ -349,7 +349,7 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
                 }
             }).await;
             assert_eq!(question.target_app, STORE);
-            assert_eq!(question.person, principal_id_for_root(f.native.certificate.user_public_key));
+            assert_eq!(question.person, person_id_for_root(f.native.certificate.user_public_key));
             let preview = question.moderation.expect("typed host disclosure");
             assert_eq!(preview.content, "Reviewed while Store was closed");
             assert_eq!(preview.signing_root, hex::encode(f.native.certificate.user_public_key));

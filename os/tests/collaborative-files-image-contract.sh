@@ -125,7 +125,7 @@ require_line /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-compo
 # Keep the unit/launcher protocol literal and paths tied together.  Exact-line
 # checks catch a continuation accidentally being dropped from ExecStart.
 require_text /usr/lib/systemd/system/fs.service "/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/quick-fs"
-require_text /usr/lib/systemd/system/fs.service "--acl /var/lib/tilo/fs-capabilities.json --principal person:local"
+require_text /usr/lib/systemd/system/fs.service "--acl /var/lib/tilo/fs-capabilities.json --member person:local"
 require_line /usr/lib/systemd/system/fs.service "ConditionPathExists=/dev/fuse"
 require_line /usr/lib/systemd/system/fs.service "ConditionPathExists=/var/lib/tilo/device/cert.bin"
 # The daemon unmounts itself on systemd's SIGTERM; an ExecStop= naming

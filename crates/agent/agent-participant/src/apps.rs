@@ -1244,7 +1244,7 @@ fn replica_standing(
             invoker = invoker
                 .with_kind(tilo_actions::ActorKind::Bot)
                 .acting_for(installer);
-            PermissionContext::from_standing(workspace, standing)
+            PermissionContext::from_standing(standing)
         }
         ReplicaActor::Member {
             standing,
@@ -1253,12 +1253,12 @@ fn replica_standing(
             agent,
             agent_name,
         } => {
-            let person = standing.person_id().unwrap_or_default().to_owned();
             // The host bounded the standing as it reads the caller
             // (`Caller::invoker`), and puts an ask to the person on their own
             // devices when their agent acts.
+            let person = standing.person_id().unwrap_or_default().to_owned();
             let permissions = PermissionContext::new(
-                ui::permissions::Actor::person(person.clone()).in_workspace(workspace),
+                ui::permissions::Acting::person(person.clone()),
                 sandbox,
                 standing,
             )

@@ -3,9 +3,9 @@
 //! governance each of those is checked against.
 
 use super::{
-    ActionKind, AutoCommit, DeviceCert, Ed25519PublicKey, GovernedIdentity, MembershipError,
-    Principal, Role, Route, SignedOp, Standing, StatePeer, SystemTime, TreePath, WorkspacePolicy,
-    backend, err, held_units, now_ns, record_kind, record_surface, workspace, workspace_host_actor,
+    ActionKind, Answer, Authority, AutoCommit, DeviceCert, GovernedIdentity, MembershipError, Role,
+    Route, SignedOp, Standing, StatePeer, SystemTime, TreePath, WorkspacePolicy, backend, err,
+    held_units, now_ns, record_kind, record_surface, workspace, workspace_host_actor,
 };
 use collab_types::signer::DeviceSigner;
 
@@ -329,9 +329,9 @@ impl StatePeer {
     ) -> Result<(String, bool, Option<crate::state::ActingAs>), MembershipError> {
         let (_, delegate) = backend::member::legacy(&self.core, source, now)?;
         let cert = self.certificate(source, now)?;
-        let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
+        let person = hex::encode(cert.user_public_key);
         Ok((
-            person.id().to_owned(),
+            person,
             backend::member::foreign(cert, &self.core.origin),
             delegate,
         ))

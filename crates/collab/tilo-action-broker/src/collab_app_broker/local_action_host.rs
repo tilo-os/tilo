@@ -44,7 +44,7 @@ impl AppBrokerState {
             .workspace()
             .ok_or("native personal cluster required")?;
         let certificate = service.certificate(workspace, person)?;
-        if super::principal_id_for_root(certificate.user_public_key) != *person {
+        if super::person_id_for_root(certificate.user_public_key) != *person {
             return Err("native person certificate mismatch".into());
         }
         self.current_native_person(workspace, &certificate)?;
@@ -139,7 +139,7 @@ impl AppBrokerState {
                     );
                     ActionHostError::NotPermitted
                 })?;
-            if super::principal_id_for_root(certificate.user_public_key) != *person {
+            if super::person_id_for_root(certificate.user_public_key) != *person {
                 return Err(refused("the certificate belongs to another person"));
             }
             let time = self
@@ -195,7 +195,7 @@ impl AppBrokerState {
             .ok_or("native person authority unavailable")?
             .certificate(
                 workspace,
-                &super::principal_id_for_root(certificate.user_public_key),
+                &super::person_id_for_root(certificate.user_public_key),
             )?;
         if current != *certificate {
             return Err("native person identity replaced".into());

@@ -1,6 +1,6 @@
 use super::{
     AppBrokerState, BrokerChannels, DurableInvocation, FanoutState, HostServices,
-    InvocationJournal, InvocationKey, PeerPublisher, VerifiedActionCaller, principal_id_for_root,
+    InvocationJournal, InvocationKey, PeerPublisher, VerifiedActionCaller, person_id_for_root,
 };
 use ed25519_dalek::{Signer as _, SigningKey};
 use std::{
@@ -88,7 +88,7 @@ fn fixture() -> Fixture {
         uuid::Uuid::parse_str(workspace_id).unwrap().into(),
         "Native recovery",
     );
-    workspace.set_owner(principal_id_for_root(certificate.user_public_key));
+    workspace.set_owner(person_id_for_root(certificate.user_public_key));
     let mut tree = crate::test_support::WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let membership = tree.shared();

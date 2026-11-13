@@ -86,7 +86,7 @@ pub(super) fn owner_authority(
     cache: &Path,
     workspace: uuid::Uuid,
     person: [u8; 32],
-    principals: Vec<collab_types::Principal>,
+    members: Vec<tilo_action_policy::MemberId>,
     bootstrap: Option<(Vec<collab_types::CapOverride>, &ed25519_dalek::SigningKey)>,
 ) -> Result<Option<std::sync::Arc<fs::workspace_authority::WorkspaceAuthority>>> {
     use fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
@@ -95,7 +95,7 @@ pub(super) fn owner_authority(
         return Ok(None);
     }
     let authority = std::sync::Arc::new(WorkspaceAuthority::open(
-        path, workspace, person, person, principals,
+        path, workspace, person, person, members,
     )?);
     if authority.current().is_none() {
         let (capabilities, signer) = bootstrap.context("saved Files authority is unavailable")?;

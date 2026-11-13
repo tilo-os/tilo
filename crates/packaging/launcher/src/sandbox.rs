@@ -2374,7 +2374,8 @@ mod tests {
     // Capability enforcement: assert on the production argv itself — a path missing from it is a path
     // the app cannot reach, whatever the UI says.
 
-    use collab_types::caps::{Access, CapOverride, Expiry, Scope, Subject};
+    use collab_types::caps::{Access, CapOverride, Expiry, Scope};
+    use tilo_action_policy::Grantee;
 
     /// Deterministic stand-in for the host's device nodes, so a camera assertion doesn't depend on the
     /// test machine owning one.
@@ -2413,7 +2414,26 @@ mod tests {
     }
 
     fn fs_grant(app: &str, path: &str, verb: Access) -> CapOverride {
-        CapOverride::grant(Subject::app(app), Scope::FsPath(path.to_string()), verb)
+        CapOverride::grant(
+            Grantee::person("ada"),
+            Scope::FsPath(path.to_string()),
+            verb,
+        )
+        .through(app)
+    }
+
+    fn app_grant(app: &str, scope: Scope, access: Access) -> CapOverride {
+        CapOverride::grant(Grantee::person("ada"), scope, access).through(app)
+    }
+
+    fn app_restrict(app: &str, scope: Scope, access: Access) -> CapOverride {
+        CapOverride::new(
+            Grantee::person("ada"),
+            scope,
+            collab_types::caps::Effect::Restrict,
+            access,
+        )
+        .through(app)
     }
 
     /// Everything a launch with no grants binds, as an equality (not `any()` probes) so a new mount
@@ -2449,10 +2469,9 @@ mod tests {
         let caps = vec![
             fs_grant("so.tilo.files", &home.display().to_string(), Access::Write),
             fs_grant("so.tilo.files", &notes.display().to_string(), Access::Read),
-            CapOverride::new(
-                Subject::app("so.tilo.files"),
+            app_restrict(
+                "so.tilo.files",
                 Scope::FsPath(notes.display().to_string()),
-                collab_types::caps::Effect::Restrict,
                 Access::Read,
             ),
         ];
@@ -2583,8 +2602,8 @@ mod tests {
                 "no camera capability must mean no camera device in the namespace: {without:?}"
             );
 
-            let caps = vec![CapOverride::grant(
-                Subject::app("so.tilo.meet"),
+            let caps = vec![app_grant(
+                "so.tilo.meet",
                 Scope::Device("camera".to_string()),
                 Access::Read,
             )];
@@ -2599,13 +2618,13 @@ mod tests {
         {
             let caps = vec![
                 fs_grant("so.tilo.other", "/var/workspace/secrets", Access::Write),
-                CapOverride::grant(
-                    Subject::app("so.tilo.other"),
+                app_grant(
+                    "so.tilo.other",
                     Scope::Device("camera".to_string()),
                     Access::Read,
                 ),
-                CapOverride::grant(
-                    Subject::app("so.tilo.other"),
+                app_grant(
+                    "so.tilo.other",
                     Scope::NetHost("*".to_string()),
                     Access::Write,
                 ),
@@ -2668,8 +2687,8 @@ mod tests {
                 "no network capability must leave the netns unshared: {isolated:?}"
             );
 
-            let caps = vec![CapOverride::grant(
-                Subject::app("so.tilo.mail"),
+            let caps = vec![app_grant(
+                "so.tilo.mail",
                 Scope::NetHost("*".to_string()),
                 Access::Write,
             )];
@@ -2680,8 +2699,8 @@ mod tests {
             );
         }
         {
-            let caps = vec![CapOverride::grant(
-                Subject::app("so.tilo.mail"),
+            let caps = vec![app_grant(
+                "so.tilo.mail",
                 Scope::NetHost("github.com".to_string()),
                 Access::Write,
             )];

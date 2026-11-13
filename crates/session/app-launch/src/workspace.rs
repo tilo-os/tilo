@@ -16,7 +16,8 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use collab_types::caps::{Access, CapOverride, LaunchGrants, Scope, Subject};
+use collab_types::caps::{Access, CapOverride, LaunchGrants, Scope};
+use tilo_action_policy::Grantee;
 use tilo_action_policy::WorkspacePolicy;
 
 /// The one app that browses this device's own files. It is handed the home
@@ -94,11 +95,14 @@ impl Workspace {
         let Some(home) = home.filter(|home| home.is_absolute()) else {
             return grants;
         };
-        grants.sandbox.push(CapOverride::grant(
-            Subject::app(app),
-            Scope::FsPath(home.display().to_string()),
-            Access::Write,
-        ));
+        grants.sandbox.push(
+            CapOverride::grant(
+                Grantee::person(self.person.clone()),
+                Scope::FsPath(home.display().to_string()),
+                Access::Write,
+            )
+            .through(app),
+        );
         grants
     }
 
@@ -176,15 +180,18 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::caps::{Access, CapOverride, Scope, Subject};
+    use collab_types::caps::{Access, CapOverride, Scope};
 
     fn granted(workspace: &Workspace, app: &str, path: &str) -> LaunchGrants {
         let mut grants = workspace.grants.clone();
-        grants.sandbox.push(CapOverride::grant(
-            Subject::app(app),
-            Scope::FsPath(path.into()),
-            Access::Read,
-        ));
+        grants.sandbox.push(
+            CapOverride::grant(
+                Grantee::person("person-7"),
+                Scope::FsPath(path.into()),
+                Access::Read,
+            )
+            .through(app),
+        );
         grants
     }
 
@@ -231,11 +238,15 @@ mod tests {
             workspace.grants_for_launch("so.tilo.file-explorer", Some(home.clone())),
             LaunchGrants {
                 author: false,
-                sandbox: vec![CapOverride::grant(
-                    Subject::app("so.tilo.file-explorer"),
-                    Scope::FsPath(home.display().to_string()),
-                    Access::Write,
-                )],
+                sandbox: vec![
+                    CapOverride::grant(
+                        Grantee::person("person-7"),
+                        Scope::FsPath(home.display().to_string()),
+                        Access::Write,
+                    )
+                    .through("so.tilo.file-explorer"),
+                ],
+                ..LaunchGrants::default()
             }
         );
         assert!(
@@ -274,11 +285,14 @@ mod tests {
         workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
         workspace.grants = {
             let mut grants = workspace.grants.clone();
-            grants.sandbox.push(CapOverride::grant(
-                Subject::app("so.tilo.mail"),
-                Scope::FsPath("/home/you/mail".into()),
-                Access::Read,
-            ));
+            grants.sandbox.push(
+                CapOverride::grant(
+                    Grantee::person("person-7"),
+                    Scope::FsPath("/home/you/mail".into()),
+                    Access::Read,
+                )
+                .through("so.tilo.mail"),
+            );
             grants.author = true;
             grants
         };

@@ -200,7 +200,7 @@ async fn certified_local_host_refuses_forged_or_rebound_admission() {
                     .certified_local_action_host(&other_device, &evidence)
                     .is_err()
             );
-            let keyless = tilo_actions::remote::Caller::local_person(principal_id_for_root(
+            let keyless = tilo_actions::remote::Caller::local_person(person_id_for_root(
                 env.cert.user_public_key,
             ))
             .in_workspace(&env.route.cluster_id)

@@ -18,7 +18,7 @@ pub mod route;
 pub mod services;
 pub mod steps;
 
-pub use actor::{BrokerActor, RunFacts, principal_id_for_root};
+pub use actor::{BrokerActor, RunFacts, person_id_for_root};
 pub use published::{
     PublishedAction, PublishedInput, PublishedSurface, validate_published_surface,
 };

@@ -24,7 +24,7 @@ use tilo_action_policy::{Standing, WorkspacePolicy};
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_user_identity::DeviceCert;
 
-use crate::collab_app_broker::principal_id_for_root;
+use crate::collab_app_broker::person_id_for_root;
 use crate::collab_broker::FanoutState;
 use crate::collab_core::BrokerChannels;
 use crate::collab_inbound::{self, RemoteDocument};
@@ -64,7 +64,7 @@ impl Person {
     #[must_use]
     pub fn of(identity_id: String, root: [u8; 32]) -> Self {
         Self {
-            principal: principal_id_for_root(root),
+            principal: person_id_for_root(root),
             identity_id,
             root,
         }
@@ -375,7 +375,7 @@ mod tests {
         );
         assert_eq!(
             Person::of(hex::encode(root_key), root_key).principal,
-            principal_id_for_root(root_key)
+            person_id_for_root(root_key)
         );
     }
 

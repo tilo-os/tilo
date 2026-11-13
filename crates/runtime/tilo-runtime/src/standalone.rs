@@ -294,7 +294,7 @@ fn open_profile_workspace(
     let workspace = ProfileWorkspace::open(root)?;
     let identity = tilo_identity_host::registry::identity_for_workspace(&workspace.workspace())?
         .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
-    let actor = identity.principal_id();
+    let actor = identity.person_id();
     stage("saving the workspace");
     workspace.adopt(&actor)?;
     Ok((workspace, identity, actor))

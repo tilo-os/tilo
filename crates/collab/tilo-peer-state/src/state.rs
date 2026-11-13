@@ -7,7 +7,6 @@ use crate::cached_document::CachedDocument;
 use crate::verified_certificate::VerifiedCertificate;
 use crate::{NeighbourMsg, workspace};
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
-use collab_types::caps::Principal;
 use collab_types::{
     ArtifactKind, DocumentMutation, Ed25519PublicKey, InboundState, OpKind, Role, SignedOp,
 };

@@ -46,7 +46,7 @@ pub fn device_certificate(
     // original certified admission").
     let (_, certificate) = tilo_identity_host::broker::trusted_current_device(workspace)
         .map_err(|error| error.to_string())?;
-    if tilo_action_broker::collab_app_broker::principal_id_for_root(certificate.user_public_key)
+    if tilo_action_broker::collab_app_broker::person_id_for_root(certificate.user_public_key)
         != person
     {
         return Err("native caller does not match the device person".into());
@@ -288,7 +288,7 @@ mod tests {
     impl Login {
         /// The person this login's identity names.
         fn person(&self) -> String {
-            tilo_action_broker::collab_app_broker::principal_id_for_root(
+            tilo_action_broker::collab_app_broker::person_id_for_root(
                 self.certificate
                     .as_ref()
                     .expect("a provisioned login")

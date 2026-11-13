@@ -247,11 +247,13 @@ mod tests {
 
     #[test]
     fn a_device_grant_never_substitutes_for_files_authorization() {
-        use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject};
+        use collab_types::{Access, CapOverride, Effect, Expiry, Scope};
+        use tilo_action_policy::Grantee;
         let person = [41; 32];
         let mut grant = CapOverride {
             id: String::default(),
-            subject: Subject::User(Ed25519PublicKey(person)),
+            grantee: Grantee::person(hex::encode(person)),
+            app: None,
             scope: Scope::Device("camera".into()),
             access: Access::Write,
             effect: Effect::Grant,
@@ -267,10 +269,11 @@ mod tests {
 
     #[test]
     fn normal_files_scope_authorizes_namespace_without_host_root_grant() {
-        use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject};
+        use collab_types::{Access, CapOverride, Effect, Expiry, Scope};
+        use tilo_action_policy::Grantee;
         let person = [41; 32];
         let read = CapOverride::grant(
-            Subject::User(Ed25519PublicKey(person)),
+            Grantee::person(hex::encode(person)),
             Scope::FsPath("/var/workspace".into()),
             Access::Read,
         );
@@ -280,7 +283,7 @@ mod tests {
         require_files_access(person, std::slice::from_ref(&write))
             .expect("normal Edit files includes Read without Admin");
         let mut ui_person = write.clone();
-        ui_person.subject = Subject::person(hex::encode(person));
+        ui_person.grantee = Grantee::person(hex::encode(person));
         require_files_access(person, &[ui_person])
             .expect("normal Permissions member subject matches certified person");
         let policy = vec![read, write.clone()];
@@ -338,7 +341,8 @@ mod tests {
 
     #[test]
     fn certified_saved_workspace_check_requires_exact_signed_files_access() {
-        use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject};
+        use collab_types::{Access, CapOverride, Effect, Expiry, Scope};
+        use tilo_action_policy::Grantee;
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
         let temp = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(temp.path().join("identity"));
@@ -362,7 +366,8 @@ mod tests {
         persist::write_device_cert(&paths.device_cert, &cert).unwrap();
         let grant = CapOverride {
             id: String::default(),
-            subject: Subject::User(Ed25519PublicKey(person)),
+            grantee: Grantee::person(hex::encode(person)),
+            app: None,
             scope: Scope::FsPath("/var/workspace".into()),
             access: Access::Write,
             effect: Effect::Grant,

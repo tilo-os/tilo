@@ -7,9 +7,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use collab_types::{CapOverride, Principal};
+use collab_types::CapOverride;
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use tilo_action_policy::MemberId;
 use wire_frame::{FrameError, Framing};
 
 use crate::sync::Ticket;
@@ -282,7 +283,7 @@ pub struct WorkspaceAuthority {
     workspace: uuid::Uuid,
     governor: [u8; 32],
     subject: IdentityKey,
-    principals: Vec<Principal>,
+    members: Vec<MemberId>,
     handle: AclHandle,
     current: Mutex<Option<WorkspaceAuthorityEnvelope>>,
 }
@@ -294,7 +295,7 @@ impl WorkspaceAuthority {
         workspace: uuid::Uuid,
         governor: [u8; 32],
         subject: IdentityKey,
-        principals: Vec<Principal>,
+        members: Vec<MemberId>,
     ) -> anyhow::Result<Self> {
         let path = path.into();
         let current = match std::fs::read(&path) {
@@ -306,13 +307,13 @@ impl WorkspaceAuthority {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
         };
-        let handle = AclHandle::new(project(subject, &principals, current.as_ref()));
+        let handle = AclHandle::new(project(subject, &members, current.as_ref()));
         Ok(Self {
             path,
             workspace,
             governor,
             subject,
-            principals,
+            members,
             handle,
             current: Mutex::new(current),
         })
@@ -367,7 +368,7 @@ impl WorkspaceAuthority {
         let bytes = postcard::to_allocvec(&next)?;
         tilo_files::native::atomic::write(&self.path, &bytes)?;
         self.handle
-            .replace(project(self.subject, &self.principals, Some(&next)));
+            .replace(project(self.subject, &self.members, Some(&next)));
         *current = Some(next);
         drop(current);
         Ok(true)
@@ -651,12 +652,12 @@ pub async fn read_frame<R: tokio::io::AsyncRead + Unpin + Send, T: for<'de> Dese
 
 fn project(
     subject: IdentityKey,
-    principals: &[Principal],
+    members: &[MemberId],
     envelope: Option<&WorkspaceAuthorityEnvelope>,
 ) -> WorkspaceAcl {
     match envelope {
         Some(envelope) if !envelope.tombstoned => {
-            WorkspaceAcl::from_capabilities(subject, &envelope.capabilities, principals, None)
+            WorkspaceAcl::from_capabilities(subject, &envelope.capabilities, members, None)
         }
         _ => WorkspaceAcl::new(),
     }
@@ -776,7 +777,7 @@ mod tests {
             )
             .unwrap();
             let grant = CapOverride::new(
-                Subject::User(collab_types::Ed25519PublicKey(subject)),
+                tilo_action_policy::Grantee::person(hex::encode(subject)),
                 Scope::FsPath("/".into()),
                 Effect::Grant,
                 CapAccess::Read,
@@ -816,7 +817,7 @@ mod tests {
         }
     }
     use crate::Access;
-    use collab_types::{Access as CapAccess, Effect, Scope, Subject};
+    use collab_types::{Access as CapAccess, Effect, Scope};
     use std::sync::Arc;
 
     /// The workspace authority follows the host-local capability list through its file watch: a
@@ -830,7 +831,7 @@ mod tests {
         let subject = [4; 32];
         let grant = |path: &str| {
             CapOverride::new(
-                Subject::User(collab_types::Ed25519PublicKey(subject)),
+                tilo_action_policy::Grantee::person(hex::encode(subject)),
                 Scope::FsPath(path.into()),
                 Effect::Grant,
                 CapAccess::Read,
@@ -1159,34 +1160,5 @@ mod tests {
             task.abort();
             endpoint.close().await;
         }
-    }
-
-    #[test]
-    fn an_envelope_names_its_members_under_the_stored_key() {
-        let governor = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
-        let workspace = uuid::Uuid::new_v4();
-        let member = collab_types::Ed25519PublicKey([0x52; 32]);
-        let envelope = WorkspaceAuthorityEnvelope::sign(
-            workspace,
-            3,
-            vec![CapOverride::new(
-                Subject::User(member),
-                Scope::FsPath("/".into()),
-                Effect::Grant,
-                CapAccess::Read,
-            )],
-            false,
-            &governor,
-        )
-        .unwrap();
-
-        let written = serde_json::to_string(&envelope).unwrap();
-        assert!(written.contains("\"room_members\""), "{written}");
-        assert!(!written.contains("\"workspace_members\""), "{written}");
-        let stored = written.replace("\"room_members\"", "\"workspace_members\"");
-        let read: WorkspaceAuthorityEnvelope = serde_json::from_str(&stored).unwrap();
-        assert_eq!(read, envelope);
-        read.verify(workspace, governor.verifying_key().to_bytes())
-            .unwrap();
     }
 }

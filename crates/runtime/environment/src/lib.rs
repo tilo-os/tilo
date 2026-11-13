@@ -16,7 +16,8 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path};
 use std::str::FromStr;
 
-use collab_types::caps::{Access, CapOverride, Effect, Principal, Scope, Subject};
+use collab_types::caps::{Access, CapOverride, Effect, Scope};
+use tilo_action_policy::{Grantee, MemberId};
 pub use tilo_app_package::PackageId;
 use tilo_resource::{
     ActionCx, Id, Invoke, JsonSchema, Model, ModelError, Outbox, Undoing, resource,
@@ -848,12 +849,13 @@ pub fn dir_grant(path: &Path, write: bool) -> Result<CapOverride, String> {
         ));
     }
     Ok(CapOverride::grant(
-        Subject::Principal(Principal::App(RUNTIME_APP_ID.to_owned())),
+        Grantee::person("local"),
         Scope::FsPath(path.to_string_lossy().into_owned()),
         if write { Access::Write } else { Access::Read },
     )
+    .through(RUNTIME_APP_ID)
     .with_id(grant_id(path))
-    .granted_by(Principal::Person("local".to_owned())))
+    .granted_by(MemberId::person("local")))
 }
 
 pub fn normalize_host(host: &str) -> Result<String, String> {
@@ -879,20 +881,20 @@ pub fn host_grant_id(host: &str) -> String {
 pub fn host_grant(host: &str) -> Result<CapOverride, String> {
     let host = normalize_host(host)?;
     Ok(CapOverride::grant(
-        Subject::Principal(Principal::App(RUNTIME_APP_ID.to_owned())),
+        Grantee::person("local"),
         Scope::NetHost(host.clone()),
         Access::Read,
     )
+    .through(RUNTIME_APP_ID)
     .with_id(host_grant_id(&host))
-    .granted_by(Principal::Person("local".to_owned())))
+    .granted_by(MemberId::person("local")))
 }
 
 /// Whether `cap` is a grant this record should carry: a `Grant` for
 /// [`RUNTIME_APP_ID`]. A `Restrict` written elsewhere is honoured by the
 /// evaluator, but never introduces a path.
 pub fn is_runtime_grant(cap: &CapOverride) -> bool {
-    cap.effect == Effect::Grant
-        && cap.subject == Subject::Principal(Principal::App(RUNTIME_APP_ID.to_owned()))
+    cap.effect == Effect::Grant && cap.names_app(RUNTIME_APP_ID)
 }
 
 /// Whether `key` may name an environment record: a short single path

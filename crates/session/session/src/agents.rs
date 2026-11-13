@@ -235,10 +235,10 @@ impl Agents {
             if !held {
                 return None;
             }
-            let permissions = PermissionContext::from_standing(
-                workspace,
-                Standing::person(policy.clone(), person.to_owned()),
-            )
+            let permissions = PermissionContext::from_standing(Standing::person(
+                policy.clone(),
+                person.to_owned(),
+            ))
             .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
             opened.record = WorkspaceRecord::<Record>::open(
                 &opened.records,

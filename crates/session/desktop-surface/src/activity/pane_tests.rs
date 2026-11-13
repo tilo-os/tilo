@@ -28,7 +28,8 @@ mod tests {
     }
     use automerge::ActorId;
     use automerge::transaction::{CommitOptions, Transactable};
-    use collab_types::caps::{Access, CapOverride, Scope, Subject};
+    use collab_types::caps::{Access, CapOverride, Scope};
+    use tilo_action_policy::Grantee;
     use tilo_automerge::ApplyIncoming as _;
 
     /// A plausible half-hour: owner, one grant, one revoke, one rename,
@@ -57,20 +58,22 @@ mod tests {
                 slot,
                 &user,
                 CapOverride::grant(
-                    Subject::app("files"),
+                    Grantee::person("ada"),
                     Scope::FsPath("/home/user/notes".to_string()),
                     Access::Read,
-                ),
+                )
+                .through("files"),
             )
             .expect("the owner may grant in their own workspace");
         tree.grant_in_workspace(
             slot,
             &user,
             CapOverride::grant(
-                Subject::app("terminal"),
+                Grantee::person("ada"),
                 Scope::Device("camera".to_string()),
                 Access::Read,
-            ),
+            )
+            .through("terminal"),
         )
         .expect("the owner may grant in their own workspace");
         assert!(tree.revoke_in_workspace(slot, &user, &granted));
@@ -797,10 +800,11 @@ mod tests {
             workspace,
             &user,
             CapOverride::grant(
-                Subject::app("files"),
+                Grantee::person("ada"),
                 Scope::FsPath("/home/user/later".to_string()),
                 Access::Read,
-            ),
+            )
+            .through("files"),
         )
         .expect("the owner may grant in their own workspace");
         tree.seed_doc_from_cache();
@@ -929,10 +933,11 @@ mod tests {
             workspace,
             &user,
             CapOverride::grant(
-                Subject::app("files"),
+                Grantee::person("ada"),
                 Scope::FsPath("/home/user/new-result".into()),
                 Access::Read,
-            ),
+            )
+            .through("files"),
         )
         .unwrap();
         tree.seed_doc_from_cache();
@@ -1252,10 +1257,11 @@ mod tests {
             second,
             &user,
             CapOverride::grant(
-                Subject::app("browser"),
+                Grantee::person("ada"),
                 Scope::NetHost("research.example".to_string()),
                 Access::Read,
-            ),
+            )
+            .through("browser"),
         )
         .expect("owner may grant in the second workspace too");
         tree.set_active(first);
@@ -1411,10 +1417,11 @@ mod tests {
 
         let week_ago_secs = i64::try_from(ui::time::try_unix_now().unwrap() - 604_800).unwrap();
         let last_week = CapOverride::grant(
-            Subject::app("files"),
+            Grantee::person("ada"),
             Scope::FsPath("/home/user/last-week".to_string()),
             Access::Read,
-        );
+        )
+        .through("files");
         let cap_id = {
             let workspace = tree
                 .desktop
@@ -1452,10 +1459,11 @@ mod tests {
             slot,
             &user,
             CapOverride::grant(
-                Subject::app("files"),
+                Grantee::person("ada"),
                 Scope::FsPath("/home/user/today".to_string()),
                 Access::Read,
-            ),
+            )
+            .through("files"),
         )
         .expect("owner may grant");
 
@@ -1837,10 +1845,11 @@ mod tests {
                 slot,
                 &user,
                 CapOverride::grant(
-                    Subject::app("files"),
+                    Grantee::person("ada"),
                     Scope::FsPath(format!("/tmp/bound/{i}")),
                     Access::Read,
-                ),
+                )
+                .through("files"),
             )
             .expect("owner may grant");
         }

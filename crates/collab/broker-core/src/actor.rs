@@ -13,15 +13,10 @@ use tilo_desktop_model::Workspace;
 
 use crate::published::{PublishedAction, PublishedSurface, canonical_record, published_node};
 
-/// The policy principal a user root is: the person its devices chain to.
+/// The person a user root is, as the workspace's governance names them: the key in lowercase hex.
 #[must_use]
-pub fn principal_id_for_root(user_public_key: [u8; 32]) -> String {
-    match collab_types::Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(
-        user_public_key,
-    )) {
-        collab_types::Principal::Person(id) => id,
-        _ => hex::encode(user_public_key),
-    }
+pub fn person_id_for_root(user_public_key: [u8; 32]) -> String {
+    hex::encode(user_public_key)
 }
 
 /// The task run an invocation is one of, as admission names it: the run's
@@ -139,7 +134,7 @@ impl BrokerActor {
                         agent.for_person(person).session_delegated()
                     }
                     (Some(person), _) => agent.for_person(person),
-                    (None, Some(root)) => agent.for_person(principal_id_for_root(*root)),
+                    (None, Some(root)) => agent.for_person(person_id_for_root(*root)),
                     (None, None) => agent,
                 }
             }
@@ -148,7 +143,7 @@ impl BrokerActor {
                 Self::person(person).through_app(id.clone())
             }
             CallerPrincipal::Bot(id) => match caller.user_public_key() {
-                Some(root) => Self::bot(id, principal_id_for_root(*root)),
+                Some(root) => Self::bot(id, person_id_for_root(*root)),
                 // A bot nobody installed has no authority to borrow: acting
                 // for nobody, it gets nothing.
                 None => Self::bot(id, String::new()),

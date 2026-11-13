@@ -92,13 +92,8 @@ fn hold_workspace(state: &Path, device: &ed25519_dalek::SigningKey, cert: &Devic
 }
 
 /// The person `root` certifies, as a workspace names its owner.
-fn principal(root: &[u8; 32]) -> String {
-    match collab_types::caps::Principal::person_from_key(
-        collab_types::crypto::Ed25519PublicKey::from_bytes(*root),
-    ) {
-        collab_types::caps::Principal::Person(id) => id,
-        other => panic!("{other:?} is not a person"),
-    }
+fn person_id(root: &[u8; 32]) -> String {
+    hex::encode(root)
 }
 
 /// A desk showing the workspace, known by its id, owned by the person.
@@ -106,7 +101,7 @@ fn desk(fixture: &Fixture) -> DesktopTree {
     let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let slot = WorkspaceSlot::of_workspace(workspace_id);
     let mut workspace = Workspace::in_workspace(slot, workspace_id, "Desk");
-    workspace.set_owner(principal(&fixture.cert.user_public_key));
+    workspace.set_owner(person_id(&fixture.cert.user_public_key));
     DesktopTree {
         workspaces: vec![workspace.clone()],
         active: workspace.slot,
@@ -121,7 +116,7 @@ fn serving(fixture: &Fixture, plane: &Path) -> crate::Session {
         crate::Options {
             presentation: ui::headless::fixture_runner_inputs,
             services: vec![Box::new(tilo_settings_service::SettingsService::new())],
-            person: principal(&fixture.cert.user_public_key),
+            person: person_id(&fixture.cert.user_public_key),
             collab: false,
             state: Some(fixture.state.clone()),
             action_plane: crate::ActionPlane::At(plane.join("collab.sock")),

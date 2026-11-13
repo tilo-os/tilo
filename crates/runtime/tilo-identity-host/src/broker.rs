@@ -12,7 +12,6 @@ use std::time::Duration;
 
 #[cfg(test)]
 use collab_types::DocumentMutation;
-use collab_types::caps::Principal;
 use collab_types::{Ed25519PublicKey, SignedOp, document_artifact_id, document_attestation_id};
 use ed25519_dalek::Signer;
 use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Request, Response};
@@ -65,7 +64,7 @@ fn identity_in(
     {
         return Ok(profile);
     }
-    let principal = profile.principal_id();
+    let principal = profile.person_id();
     match read_workspace(tree, workspace, |workspace| {
         workspace.policy.is_member(&principal)
     }) {
@@ -513,10 +512,7 @@ fn sign_collaboration_op(
             Err(error) => Response::Error(error.to_string()),
         };
     }
-    let principal_id =
-        Principal::person_from_key(Ed25519PublicKey::from_bytes(profile.user_public_key))
-            .id()
-            .to_string();
+    let principal_id = hex::encode(profile.user_public_key);
     let decided = read_workspace(tree, bound_workspace, |workspace| {
         workspace.role_of(&principal_id)?;
         let record = collab_types::Record {
@@ -606,10 +602,7 @@ fn channel_keys(
         }
         Err(error) => return Response::Denied(error.to_string()),
     }
-    let principal_id =
-        Principal::person_from_key(Ed25519PublicKey::from_bytes(profile.user_public_key))
-            .id()
-            .to_string();
+    let principal_id = hex::encode(profile.user_public_key);
     // The person reads their own cluster, the launch workspace of an app
     // opened there included; a workspace, as its policy says.
     let own_cluster =
@@ -980,7 +973,7 @@ mod tests {
         let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
 
         let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
-        committed.set_owner(profile.principal_id());
+        committed.set_owner(profile.person_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
         let tree = tree.shared();
@@ -1115,7 +1108,7 @@ mod tests {
         let mut tree_guard = tree.write();
         let committed = &mut tree_guard.desktop.workspaces[0];
         committed.set_owner("someone-else");
-        committed.admit(profile.principal_id(), Role::Commenter);
+        committed.admit(profile.person_id(), Role::Commenter);
         drop(tree_guard);
         // Without the app's surface a change is decided as an edit of the
         // record, which a commenter is not granted.
@@ -1214,7 +1207,7 @@ params = []
         ));
         let mut tree_guard = tree.write();
         let committed = &mut tree_guard.desktop.workspaces[0];
-        committed.admit(profile.principal_id(), Role::Viewer);
+        committed.admit(profile.person_id(), Role::Viewer);
         drop(tree_guard);
         assert!(matches!(
             sign_collaboration_op(
@@ -1257,7 +1250,7 @@ params = []
             .expect("device key");
         let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
         let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
-        committed.set_owner(profile.principal_id());
+        committed.set_owner(profile.person_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
         let tree = tree.shared();
@@ -1293,7 +1286,7 @@ params = []
         let mut tree_guard = tree.write();
         let committed = &mut tree_guard.desktop.workspaces[0];
         committed.set_owner("someone-else");
-        committed.admit(profile.principal_id(), Role::Viewer);
+        committed.admit(profile.person_id(), Role::Viewer);
         drop(tree_guard);
         assert!(matches!(
             sign(&emoji),
@@ -1322,7 +1315,7 @@ params = []
             .unwrap();
         let original = std::fs::read(&profile.record_path).unwrap();
         let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
-        committed.set_owner(profile.principal_id());
+        committed.set_owner(profile.person_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
         let socket = temp.path().join("identity.sock");
@@ -1428,7 +1421,7 @@ params = []
             .expect("registry")
             .expect("profile");
         let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
-        committed.set_owner(profile.principal_id());
+        committed.set_owner(profile.person_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
         let tree = Arc::new(tree.shared());
@@ -1483,7 +1476,7 @@ params = []
             node,
             KindSet::ALL,
             Answer::Allow,
-            Grantee::person(profile.principal_id()),
+            Grantee::person(profile.person_id()),
         ));
         for action in [
             "document.save",
@@ -1774,7 +1767,7 @@ params = []
             .expect("registry")
             .expect("profile");
         let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
-        committed.set_owner(profile.principal_id());
+        committed.set_owner(profile.person_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
         let tree = tree.shared();
@@ -1876,7 +1869,7 @@ params = []
         // The person this device signs as belongs to the workspace: the
         // operation is signed with the device's key, no identity picked.
         let mut committed = Workspace::in_workspace(WorkspaceSlot(1), workspace, "Workspace");
-        committed.set_owner(profile.principal_id());
+        committed.set_owner(profile.person_id());
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(committed);
         let tree = tree.shared();
@@ -1886,12 +1879,7 @@ params = []
         // as someone its roster does not hold. That is a membership fault to
         // report, never a question to put to the app.
         let mut elsewhere = Workspace::in_workspace(WorkspaceSlot(2), workspace, "Workspace");
-        let other_person = match collab_types::caps::Principal::person_from_key(
-            collab_types::crypto::Ed25519PublicKey::from_bytes([9; 32]),
-        ) {
-            collab_types::caps::Principal::Person(id) => id,
-            other => panic!("a person id, not {other:?}"),
-        };
+        let other_person = hex::encode([9; 32]);
         elsewhere.set_owner(other_person.clone());
         tree.write().desktop.workspaces = vec![elsewhere];
         match sign(&tree) {
@@ -1909,7 +1897,7 @@ params = []
         shared
             .policy
             .members
-            .insert(profile.principal_id(), collab_types::Role::Editor);
+            .insert(profile.person_id(), collab_types::Role::Editor);
         tree.write().desktop.workspaces = vec![shared];
         assert!(matches!(sign(&tree), Response::Signature(_)));
     }

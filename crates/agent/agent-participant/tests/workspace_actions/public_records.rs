@@ -546,11 +546,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     admit_person(&hosted, &host, &workspace, &computer, Role::Editor).await;
     let agent = open_admitted_peer(&hosted, &computer, &host, &workspace).await;
     let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
-    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
-        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-    ) else {
-        panic!("a key names a person")
-    };
+    let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let windows = std::sync::Arc::new(tilo_runtime::mcp_windows::AgentWindows::new(
         actions.clone(),

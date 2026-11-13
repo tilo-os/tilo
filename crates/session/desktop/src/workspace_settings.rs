@@ -11,10 +11,10 @@
 //! [`Workspace::govern_as_at`], which refuse callers failing [`Workspace::may_administer`].
 
 use crate::i18n::{t, t_args};
-use tilo_action_policy::Refusal;
+use tilo_action_policy::{Grantee, MemberId, Refusal};
 use tilo_sort::CompactSort as _;
 
-use collab_types::caps::{Access, CapOverride, Effect, Expiry, Principal, Scope, Subject};
+use collab_types::caps::{Access, CapOverride, Effect, Expiry, Scope};
 use collab_types::role::Role as CapRole;
 use collab_types::{Member, MemberId};
 use tilo_desktop_model::{UserId, Workspace};
@@ -266,26 +266,21 @@ pub fn expiry_label(expiry: Expiry) -> String {
 /// Who granted a capability, as a user-facing phrase, or `None` for a capability with no recorded
 /// grantor. People and agents are named as the People pane names them; the viewer is "you".
 pub fn granted_by_label(cap: &CapOverride, ws: &Workspace, local_user: &str) -> Option<String> {
-    cap.granted_by.as_ref().map(|p| match p {
-        Principal::Person(id) | Principal::Agent(id) if id == local_user => {
+    cap.granted_by.as_ref().map(|who| match who {
+        MemberId::Person(id) | MemberId::Agent(id) if id == local_user => {
             t("workspace-settings-granted-by-you")
         }
-        Principal::Person(id) => t_args(
+        MemberId::Person(id) => t_args(
             "workspace-settings-granted-by-person",
             &[("id", member_name_or_short_id(ws, id).into())],
         ),
-        Principal::App(id) => t_args("workspace-settings-granted-by-app", &[("app", id.into())]),
-        Principal::Agent(id) => t_args(
+        MemberId::Agent(id) => t_args(
             "workspace-settings-granted-by-agent",
             &[("id", member_name_or_short_id(ws, id).into())],
         ),
-        Principal::Token(id) => t_args(
-            "workspace-settings-granted-by-token",
-            &[("id", short_id(id).into())],
-        ),
-        Principal::Workspace(id) => t_args(
-            "workspace-settings-granted-by-workspace",
-            &[("id", short_id(id).into())],
+        MemberId::Bot(id) => t_args(
+            "workspace-settings-granted-by-bot",
+            &[("id", member_name_or_short_id(ws, id).into())],
         ),
     })
 }
@@ -332,9 +327,6 @@ pub enum SubjectKind {
     Member,
     Agent,
     Role,
-    /// Bearer token, workspace, or the work on a resource (an issue's runs, a shortcut) — surfaced
-    /// so no live capability is invisible in the panel, even though the composer can't mint one.
-    Other,
 }
 
 impl SubjectKind {
@@ -344,7 +336,6 @@ impl SubjectKind {
             SubjectKind::Member => "workspace-settings-section-people",
             SubjectKind::Agent => "workspace-settings-section-agents",
             SubjectKind::Role => "workspace-settings-section-roles",
-            SubjectKind::Other => "workspace-settings-section-other",
         })
     }
 }
@@ -357,14 +348,15 @@ pub struct GrantSubject {
 }
 
 impl GrantSubject {
-    /// Who a sandbox capability for this subject is held by.
-    pub fn to_subject(&self) -> Option<Subject> {
+    /// Who a sandbox capability for this subject is held by, and the app it names: an app's
+    /// sandbox belongs to the person granting it.
+    pub fn to_parts(&self, person: &str) -> Option<(Grantee, Option<String>)> {
         match self.kind {
-            SubjectKind::App => Some(Subject::app(self.id.clone())),
-            SubjectKind::Member => Some(Subject::person(self.id.clone())),
-            SubjectKind::Agent => Some(Subject::agent(self.id.clone())),
+            SubjectKind::App => Some((Grantee::person(person), Some(self.id.clone()))),
+            SubjectKind::Member => Some((Grantee::Member(MemberId::person(self.id.clone())), None)),
+            SubjectKind::Agent => Some((Grantee::agent(self.id.clone()), None)),
             // A role-wide grant is a policy decision, not a per-workspace click.
-            SubjectKind::Role | SubjectKind::Other => None,
+            SubjectKind::Role => None,
         }
     }
 
@@ -372,10 +364,8 @@ impl GrantSubject {
         match self.kind {
             SubjectKind::Member | SubjectKind::Agent => person_name(ws, local_user, &self.id),
             SubjectKind::App => app_display_name(apps, &self.id),
-            // A subject that is a resource's work is named as the resource.
-            _ => apps
-                .resource_label(&self.id)
-                .unwrap_or_else(|| self.id.clone()),
+            // A role is listed as the phrase its section reads.
+            SubjectKind::Role => self.id.clone(),
         }
     }
 }
@@ -515,7 +505,7 @@ pub fn grant_subject_key(entry: &GrantSubject) -> Option<String> {
         SubjectKind::Member => "member",
         SubjectKind::Agent => "agent",
         SubjectKind::App => "app",
-        SubjectKind::Role | SubjectKind::Other => return None,
+        SubjectKind::Role => return None,
     };
     Some(format!("{kind}:{}", entry.id))
 }
@@ -609,8 +599,8 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
         }
     }
     for cap in &ws.sandbox {
-        if let Subject::Principal(Principal::App(app)) = &cap.subject {
-            apps.push(app.clone());
+        if let Some(app) = &cap.app {
+            apps.push(app.as_str().to_owned());
         }
     }
     apps.compact_sort();
@@ -624,7 +614,7 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
 
 /// The capability `draft` names against `ws` , or `None` when the draft has no addressable subject
 /// (an empty workspace) or names a subject this panel cannot grant to.
-pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<CapOverride> {
+pub fn draft_capability(ws: &Workspace, person: &str, draft: &GrantDraft) -> Option<CapOverride> {
     let subjects = grant_subjects(ws);
     if subjects.is_empty() {
         return None;
@@ -637,8 +627,12 @@ pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<CapOverrid
         GrantTarget::AnyHost => Scope::NetHost("*".to_string()),
         GrantTarget::WorkspaceFiles => Scope::FsPath(WORKSPACE_FILES_PATH.to_string()),
     };
-    let subject = subject_entry.to_subject()?;
-    Some(CapOverride::grant(subject, scope, choice.access).expiring(draft.expiry))
+    let (grantee, app) = subject_entry.to_parts(person)?;
+    let cap = CapOverride::grant(grantee, scope, choice.access).expiring(draft.expiry);
+    Some(match app {
+        Some(app) => cap.through(app),
+        None => cap,
+    })
 }
 
 /// What a panel mutation changed, for the caller that applies it to the desktop. Empty means there
@@ -656,7 +650,7 @@ pub fn apply_grant_draft(
     draft: &GrantDraft,
 ) -> Result<PolicyEdit, Refusal> {
     let now = tilo_clock::unix_now();
-    match draft_capability(ws, draft) {
+    match draft_capability(ws, actor, draft) {
         Some(cap) => ws.grant_sandbox_as_at(actor, cap, now),
         None => Ok(PolicyEdit::default()),
     }
@@ -747,7 +741,7 @@ pub fn remove_member(
     let held: Vec<String> = ws
         .sandbox
         .iter()
-        .filter(|cap| subject_is_person(&cap.subject, member))
+        .filter(|cap| grantee_is_person(&cap.grantee, member))
         .map(|cap| cap.id.clone())
         .collect();
     for id in held {
@@ -758,11 +752,10 @@ pub fn remove_member(
     Ok(edit)
 }
 
-fn subject_is_person(subject: &Subject, user: &UserId) -> bool {
-    match subject {
-        Subject::Principal(Principal::Person(id)) => id == user,
-        Subject::User(key) => Principal::person_from_key(*key).id() == user.as_str(),
-        Subject::Principal(_) => false,
+fn grantee_is_person(grantee: &Grantee, user: &UserId) -> bool {
+    match grantee {
+        Grantee::Member(MemberId::Person(id)) => id == user,
+        Grantee::Member(MemberId::Agent(_) | MemberId::Bot(_)) | Grantee::Role(_) => false,
     }
 }
 
@@ -880,87 +873,35 @@ impl Listed<'_> {
     }
 }
 
-/// The section a sandbox capability is listed in: its subject's.
+/// The section a sandbox capability is listed in: the app whose sandbox it is, else its grantee's.
 fn classify_capability(cap: &CapOverride) -> GrantSubject {
-    classify_subject(&cap.subject)
-}
-
-fn classify_subject(subject: &Subject) -> GrantSubject {
-    match subject {
-        Subject::Principal(Principal::App(id)) => GrantSubject {
+    if let Some(app) = &cap.app {
+        return GrantSubject {
             kind: SubjectKind::App,
-            id: id.clone(),
-        },
-        Subject::Principal(Principal::Person(id)) => GrantSubject {
-            kind: SubjectKind::Member,
-            id: id.clone(),
-        },
-        Subject::User(key) => GrantSubject {
-            kind: SubjectKind::Member,
-            id: Principal::person_from_key(*key).id().to_string(),
-        },
-        Subject::Principal(Principal::Agent(id)) => GrantSubject {
-            kind: SubjectKind::Agent,
-            id: id.clone(),
-        },
-        Subject::Principal(Principal::Token(id)) => GrantSubject {
-            kind: SubjectKind::Other,
-            id: t_args(
-                "workspace-settings-subject-token",
-                &[("id", short_id(id).into())],
-            ),
-        },
-        Subject::Principal(Principal::Workspace(id)) => GrantSubject {
-            kind: SubjectKind::Other,
-            id: t_args(
-                "workspace-settings-subject-workspace",
-                &[("id", short_id(id).into())],
-            ),
-        },
+            id: app.as_str().to_owned(),
+        };
     }
+    classify_grantee(&cap.grantee)
 }
 
-/// The section a grant is listed in: its subject's, except that an app granted another app's action
-/// is listed under App actions.
-fn classify_grant(grant: &tilo_action_policy::Grant) -> GrantSubject {
-    let subject = &grant.grantee;
-    if let Some(id) = subject.person_id() {
-        return GrantSubject {
+/// The section a grantee is listed in.
+fn classify_grantee(grantee: &Grantee) -> GrantSubject {
+    match grantee {
+        Grantee::Member(MemberId::Person(id)) => GrantSubject {
             kind: SubjectKind::Member,
-            id: id.to_owned(),
-        };
-    }
-    if let Some(id) = subject.agent_id() {
-        return GrantSubject {
+            id: id.clone(),
+        },
+        Grantee::Member(MemberId::Agent(id) | MemberId::Bot(id)) => GrantSubject {
             kind: SubjectKind::Agent,
-            id: id.to_owned(),
-        };
-    }
-    if let Some(role) = subject.role_of() {
-        return GrantSubject {
+            id: id.clone(),
+        },
+        Grantee::Role(role) => GrantSubject {
             kind: SubjectKind::Role,
             id: t_args(
                 "workspace-settings-subject-role",
-                &[("role", role_label(role).into())],
+                &[("role", role_label(*role).into())],
             ),
-        };
-    }
-    match subject {
-        tilo_action_policy::Grantee::Member(tilo_action_policy::MemberId::Bot(id)) => {
-            GrantSubject {
-                kind: SubjectKind::Other,
-                id: t_args(
-                    "workspace-settings-subject-bot",
-                    &[("id", short_id(id).into())],
-                ),
-            }
-        }
-        tilo_action_policy::Grantee::Role(_) | tilo_action_policy::Grantee::Member(_) => {
-            GrantSubject {
-                kind: SubjectKind::Other,
-                id: t("workspace-settings-subject-foreign-device"),
-            }
-        }
+        },
     }
 }
 
@@ -986,7 +927,7 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, Listed<'_>)> {
                     && grant.id.as_str().starts_with("agent-member:");
                 !preset && !admission
             })
-            .map(|grant| (classify_grant(grant), Listed::Grant(grant))),
+            .map(|grant| (classify_grantee(&grant.grantee), Listed::Grant(grant))),
     );
     out.compact_sort_by(|a, b| {
         a.0.kind
@@ -1255,7 +1196,7 @@ mod members_tests {
     fn member_removal_takes_back_what_the_member_held() {
         let mut ws = ws_with_two_members();
         let cap = CapOverride::grant(
-            Subject::person(PEER),
+            Grantee::person(PEER),
             Scope::FsPath("/var/workspace".into()),
             Access::Write,
         );
@@ -1279,7 +1220,7 @@ mod members_tests {
         assert_eq!(ws.role_of(PEER), None);
         assert!(
             !ws.allows(
-                &ws.actor_for_person(&PEER.to_string()),
+                &ws.acting_for_person(&PEER.to_string()),
                 &collab_types::caps::ResourceRef::FsPath("/var/workspace/notes".into()),
                 Access::Write
             ),
@@ -1385,7 +1326,7 @@ mod agents_tests {
             ws.grant_as(
                 &OWNER.to_string(),
                 CapOverride::grant(
-                    Subject::agent(AGENT),
+                    Grantee::agent(AGENT),
                     Scope::FsPath("/var/workspace/brief.md".into()),
                     Access::Read,
                 ),
@@ -1439,10 +1380,10 @@ mod agents_tests {
                 subject_index: index,
                 ..GrantDraft::default()
             };
-            let Some(cap) = draft_capability(&ws, &draft) else {
+            let Some(cap) = draft_capability(&ws, OWNER, &draft) else {
                 panic!("agent grant can be composed");
             };
-            assert_eq!(cap.subject, Subject::agent(AGENT));
+            assert_eq!(cap.grantee, Grantee::agent(AGENT));
         }
 
         {
@@ -1475,20 +1416,22 @@ mod permissions_tests {
     /// Whoever is looking at the tab; never a grantor in these fixtures.
     const VIEWER: &str = "viewer-user";
 
-    fn app_actor(ws: &Workspace, app: &str) -> collab_types::caps::Actor {
-        collab_types::caps::Actor::app(app).in_workspace(ws.id().to_string())
+    fn app_acting(app: &str) -> tilo_action_policy::Acting {
+        tilo_action_policy::Acting::person(OWNER).in_app(app)
     }
 
     fn ws_with_grants() -> Workspace {
         let mut ws = Workspace::new(WorkspaceSlot::from(3), "perm-test");
         ws.set_owner(OWNER);
         ws.grant_app(
+            OWNER,
             "firefox",
             &Capability::Camera {
                 scope: GRANT_ALWAYS,
             },
         );
         ws.grant_app(
+            OWNER,
             "firefox",
             &Capability::Network {
                 hosts: None,
@@ -1517,10 +1460,11 @@ mod permissions_tests {
             assert_eq!(
                 capability_allows(
                     &CapOverride::grant(
-                        Subject::Principal(Principal::App("files".to_string())),
+                        Grantee::person(OWNER),
                         Scope::FsRecord(record.to_string()),
                         Access::Read,
-                    ),
+                    )
+                    .through("files"),
                     &NoAppDirectory
                 ),
                 "View one shared file (b0d4e23f-c…)"
@@ -1547,7 +1491,7 @@ mod permissions_tests {
             ws.grant_as(
                 &OWNER.to_string(),
                 CapOverride::grant(
-                    Subject::person("peer-user"),
+                    Grantee::person("peer-user"),
                     Scope::FsPath("/var/workspace".into()),
                     Access::Write,
                 ),
@@ -1594,7 +1538,7 @@ mod permissions_tests {
             ws.grant_as(
                 &ada,
                 CapOverride::grant(
-                    Subject::person(bea.clone()),
+                    Grantee::person(bea.clone()),
                     Scope::FsPath("/var/workspace".into()),
                     Access::Write,
                 ),
@@ -1628,10 +1572,11 @@ mod permissions_tests {
             ws.grant_as(
                 &OWNER.to_string(),
                 CapOverride::grant(
-                    Subject::app("terminal"),
+                    Grantee::person(OWNER),
                     Scope::FsPath("/var/workspace".into()),
                     Access::Write,
                 )
+                .through("terminal")
                 .expiring(Expiry::EndOfSession),
             )
             .expect("owner grants");
@@ -1661,7 +1606,8 @@ mod permissions_tests {
             ];
             for scope in &scopes {
                 for verb in [Access::Read, Access::Write] {
-                    let cap = CapOverride::grant(Subject::app("a"), scope.clone(), verb);
+                    let cap = CapOverride::grant(Grantee::person(OWNER), scope.clone(), verb)
+                        .through("a");
                     let line = capability_allows(&cap, &NoAppDirectory);
                     assert!(
                         !line.contains(WORKSPACE_FILES_PATH),
@@ -1680,15 +1626,17 @@ mod permissions_tests {
         // understates what is being granted.
         {
             let root = CapOverride::grant(
-                Subject::app("a"),
+                Grantee::person(OWNER),
                 Scope::FsPath(WORKSPACE_FILES_PATH.into()),
                 Access::Write,
-            );
+            )
+            .through("a");
             let sub = CapOverride::grant(
-                Subject::app("a"),
+                Grantee::person(OWNER),
                 Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design")),
                 Access::Write,
-            );
+            )
+            .through("a");
             assert_eq!(
                 capability_allows(&root, &NoAppDirectory),
                 "Edit workspace files"
@@ -1745,7 +1693,7 @@ mod permissions_tests {
                 draft.cycle_choice();
             }
             assert!(!ws.allows(
-                &app_actor(&ws, "firefox"),
+                &app_acting("firefox"),
                 &ResourceRef::Device("microphone".into()),
                 Access::Read
             ));
@@ -1755,7 +1703,7 @@ mod permissions_tests {
             assert_eq!(edit.sandbox_granted.len(), 1);
             assert!(
                 ws.allows(
-                    &app_actor(&ws, "firefox"),
+                    &app_acting("firefox"),
                     &ResourceRef::Device("microphone".into()),
                     Access::Read
                 ),
@@ -1868,7 +1816,7 @@ mod permissions_tests {
                     expiry: Expiry::Never,
                 };
                 let mut probe = ws.clone();
-                let cap = draft_capability(&ws, &draft).expect("every choice resolves");
+                let cap = draft_capability(&ws, OWNER, &draft).expect("every choice resolves");
                 assert_eq!(cap.effect, Effect::Grant);
                 let resource = match &cap.scope {
                     Scope::Device(d) => ResourceRef::Device(d.clone()),
@@ -1882,7 +1830,7 @@ mod permissions_tests {
                     .grant_as(&OWNER.to_string(), cap.clone())
                     .expect("owner grants");
                 assert!(
-                    probe.allows(&app_actor(&probe, "firefox"), &resource, cap.access),
+                    probe.allows(&app_acting("firefox"), &resource, cap.access),
                     "granting {:?} must make the decision function allow it",
                     choice.label()
                 );
@@ -1900,7 +1848,7 @@ mod permissions_tests {
             assert_eq!(edit.sandbox_revoked, vec![camera_row.id.clone()]);
             assert!(
                 !ws.allows(
-                    &app_actor(&ws, "firefox"),
+                    &app_acting("firefox"),
                     &ResourceRef::Device("camera".into()),
                     Access::Read
                 ),

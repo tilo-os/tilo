@@ -197,7 +197,7 @@ pub(crate) fn mint(
     admitted: &Admitted<'_>,
     now_ns: u64,
 ) -> Result<Minted, String> {
-    let starter = tilo_broker_core::principal_id_for_root(certificate.user_public_key);
+    let starter = tilo_broker_core::person_id_for_root(certificate.user_public_key);
     if starter != admitted.person {
         return Err("this device's identity is not the person's who admitted the agent".into());
     }
@@ -295,7 +295,7 @@ mod tests {
     }
 
     fn person(cert: &tilo_user_identity::DeviceCert) -> String {
-        tilo_broker_core::principal_id_for_root(cert.user_public_key)
+        tilo_broker_core::person_id_for_root(cert.user_public_key)
     }
 
     /// The run a connection is minted is a task agent's of its own, delegated by this device for

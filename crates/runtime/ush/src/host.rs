@@ -17,10 +17,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use collab_types::caps::{
-    Access, Actor, CapDecision, CapOverride, Principal, ResourceRef, Scope, Subject,
-    decide_capability,
-};
+use collab_types::caps::{Access, CapDecision, CapOverride, ResourceRef, Scope, decide_app};
 
 pub const HOST_SHELL_DEVICE: &str = "host-shell";
 
@@ -109,11 +106,11 @@ impl HostPolicy {
     }
 
     /// Has the person allowed `app_id` to open the Host target? Asked of the
-    /// same `decide_capability` every other decision goes through, so a
+    /// same `decide_app` every other decision goes through, so a
     /// `Restrict` takes it away again.
     pub fn allows_host_shell(&self, app_id: &str, now: Option<u64>) -> bool {
-        decide_capability(
-            &Actor::app(app_id),
+        decide_app(
+            app_id,
             &ResourceRef::Device(HOST_SHELL_DEVICE.to_string()),
             Access::Write,
             &self.capabilities,
@@ -126,12 +123,13 @@ impl HostPolicy {
         self.capabilities.retain(|c| c.id != id);
         self.capabilities.push(
             CapOverride::grant(
-                Subject::Principal(Principal::App(app_id.to_string())),
+                tilo_action_policy::Grantee::person("local"),
                 Scope::Device(HOST_SHELL_DEVICE.to_string()),
                 Access::Write,
             )
+            .through(app_id)
             .with_id(id.clone())
-            .granted_by(Principal::Person("local".to_string())),
+            .granted_by(tilo_action_policy::MemberId::person("local")),
         );
         id
     }
@@ -289,16 +287,9 @@ impl SessionOwnership {
 }
 
 pub fn signed_in_person() -> String {
-    SessionOwnership::discover().signed_in().map_or_else(
-        || "local".to_owned(),
-        |key| {
-            collab_types::caps::Principal::person_from_key(
-                collab_types::Ed25519PublicKey::from_bytes(key),
-            )
-            .id()
-            .to_owned()
-        },
-    )
+    SessionOwnership::discover()
+        .signed_in()
+        .map_or_else(|| "local".to_owned(), hex::encode)
 }
 
 /// This device, as an environment's file actions name the device that
@@ -557,16 +548,15 @@ mod tests {
         other.allow_host_shell("so.tilo.notes");
         assert!(!other.allows_host_shell(TERMINAL_APP_ID, now));
         let mut restricted = allowed();
-        restricted
-            .capabilities
-            .push(collab_types::caps::CapOverride::new(
-                collab_types::caps::Subject::Principal(collab_types::caps::Principal::App(
-                    TERMINAL_APP_ID.into(),
-                )),
+        restricted.capabilities.push(
+            collab_types::caps::CapOverride::new(
+                tilo_action_policy::Grantee::person("local"),
                 collab_types::caps::Scope::Device(HOST_SHELL_DEVICE.into()),
                 collab_types::caps::Effect::Restrict,
                 collab_types::caps::Access::Read,
-            ));
+            )
+            .through(TERMINAL_APP_ID),
+        );
         assert!(!restricted.allows_host_shell(TERMINAL_APP_ID, now));
 
         let mut twice = allowed();

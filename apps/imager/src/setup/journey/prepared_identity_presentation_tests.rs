@@ -63,7 +63,7 @@ fn negotiated_real_broker_photo_reaches_default_shared_avatar_paint() {
         tilo_identity_host::registry::identity_for_workspace(&room.to_string())
             .unwrap()
             .expect("this device has the person it signs as")
-            .principal_id(),
+            .person_id(),
     );
     let socket = temp.path().join("identity.sock");
     let _broker = tilo_identity_host::broker::spawn(

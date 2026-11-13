@@ -789,9 +789,9 @@ fn a_shortcut_armed_on_a_shared_folder_runs_once_when_a_file_in_it_changes() {
 
 /// The workspace's capability `id` letting `person` read the folder at `folder`.
 fn sharing(person: &str, id: &str, folder: &Path) -> collab_types::caps::CapOverride {
-    use collab_types::caps::{Access, CapOverride, Scope, Subject};
+    use collab_types::caps::{Access, CapOverride, Scope};
     CapOverride::grant(
-        Subject::person(person),
+        tilo_action_policy::Grantee::person(person),
         Scope::FsPath(folder.to_string_lossy().into_owned()),
         Access::Read,
     )

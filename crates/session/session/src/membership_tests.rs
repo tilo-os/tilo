@@ -815,6 +815,7 @@ fn a_refused_grant_change_says_why_and_keeps_the_grant() {
     tree.active_workspace_mut()
         .expect("a workspace in front")
         .grant_app(
+            "ada",
             "so.tilo.notes",
             &tilo_desktop_model::Capability::Camera {
                 scope: tilo_desktop_model::GRANT_SESSION,

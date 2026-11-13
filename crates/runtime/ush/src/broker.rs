@@ -1707,12 +1707,15 @@ pub(crate) mod tests {
 
     #[test]
     fn legacy_shims_reach_the_vm_only_with_the_users_own_grants() {
-        use collab_types::caps::{CapOverride, Principal, Scope, Subject};
-        let policy = Policy::new(vec![CapOverride::grant(
-            Subject::Principal(Principal::App(crate::RUNTIME_APP_ID.to_string())),
-            Scope::FsPath("/var/home/you/src".into()),
-            Access::Write,
-        )]);
+        use collab_types::caps::{CapOverride, Scope};
+        let policy = Policy::new(vec![
+            CapOverride::grant(
+                tilo_action_policy::Grantee::person("local"),
+                Scope::FsPath("/var/home/you/src".into()),
+                Access::Write,
+            )
+            .through(crate::RUNTIME_APP_ID),
+        ]);
         {
             let args = legacy_launch_args(
                 &policy,

@@ -1941,18 +1941,7 @@ fn resolve_local_user_id() -> String {
 /// A public key rendered as a person, in the one canonical form — so this
 /// string and the compositor's string for the same key are the same string.
 fn person_id_from_key(key: [u8; 32]) -> String {
-    // `person_from_key` constructs `Person` unconditionally, so the else
-    // branch cannot run. It recomputes the same canonical lowercase-hex form
-    // directly rather than panic on a branch that should never be reached.
-    if let collab_types::caps::Principal::Person(id) =
-        collab_types::caps::Principal::person_from_key(
-            collab_types::crypto::Ed25519PublicKey::from_bytes(key),
-        )
-    {
-        id
-    } else {
-        hex::encode(key)
-    }
+    hex::encode(key)
 }
 
 /// The application's authenticated durable route (falling back to its signed

@@ -13,7 +13,6 @@ mod workspace_startup;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
-use collab_types::Principal;
 use fs::clock::unix_now_ms;
 use fs::full_replica::{
     HomePeerBundle, HomePeerSet, aggregate_status, hydrate_full_workspace,
@@ -37,6 +36,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
+use tilo_action_policy::MemberId;
 use tilo_lock::MutexRecover as _;
 
 #[derive(Parser, Debug)]
@@ -105,9 +105,9 @@ struct AclArgs {
     /// The identity this mount acts as: 64 hex chars (Ed25519 public key). Defaults to the certified human root.
     #[arg(long, value_name = "HEX")]
     identity: Option<String>,
-    /// A principal this mount can prove beyond its own person id (`workspace:<id>`, `app:<id>`, `agent:<id>`, `token:<id>`, `person:<id>`); repeatable.
-    #[arg(long = "principal", value_name = "KIND:ID")]
-    principals: Vec<String>,
+    /// A member this mount acts for beyond its own key (`person:<id>`, `agent:<id>`, `bot:<id>`); repeatable.
+    #[arg(long = "member", value_name = "KIND:ID")]
+    members: Vec<String>,
     /// Read `--acl` once, at mount time, instead of on every change.
     #[arg(long)]
     acl_once: bool,
@@ -289,9 +289,9 @@ enum Command {
         /// Atomic readiness proof read by tilo-relay.
         #[arg(long, default_value = "/var/lib/tilo/full-replica/status.json")]
         status_file: PathBuf,
-        /// Additional capability principals held by the host identity.
-        #[arg(long = "principal")]
-        principals: Vec<String>,
+        /// Additional members held by the host identity.
+        #[arg(long = "member")]
+        members: Vec<String>,
         /// Relay workspace shard backed by this filesystem workspace.
         #[arg(long = "relay-workspace-id")]
         relay_workspace_ids: Vec<collab_types::WorkspaceId>,
@@ -490,7 +490,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             output,
             replica_cache_dir,
             status_file,
-            principals,
+            members,
             relay_workspace_ids,
         } => export_home_peer(
             &cache_dir,
@@ -498,7 +498,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             &output,
             &replica_cache_dir,
             status_file,
-            principals,
+            members,
             relay_workspace_ids,
         ),
         Command::RegisterContentPeer {
@@ -590,34 +590,30 @@ fn parse_identity(hex_str: &str) -> Result<IdentityKey> {
     Ok(key)
 }
 
-fn parse_principal(spec: &str) -> Result<Principal> {
+fn parse_member(spec: &str) -> Result<MemberId> {
     let (kind, id) = spec
         .split_once(':')
-        .with_context(|| format!("principal {spec:?} must be KIND:ID"))?;
+        .with_context(|| format!("member {spec:?} must be KIND:ID"))?;
     let id = id.to_string();
     Ok(match kind {
-        "person" => Principal::Person(id),
-        "app" => Principal::App(id),
-        "agent" => Principal::Agent(id),
-        "token" => Principal::Token(id),
-        // `room` is the kind's old spelling; a mount unit written before the
-        // rename keeps working.
-        "workspace" | "room" => Principal::Workspace(id),
-        other => bail!("unknown principal kind {other:?} (person|app|agent|token|workspace)"),
+        "person" => MemberId::Person(id),
+        "agent" => MemberId::Agent(id),
+        "bot" => MemberId::Bot(id),
+        other => bail!("unknown member kind {other:?} (person|agent|bot)"),
     })
 }
 
-/// Resolve `--acl`, `--identity` and `--principal` into the ACL the mount enforces (`None`
-/// if none requested). Fail-closed: any resolution failure refuses the mount rather than
-/// falling back to unenforced; the certified human root is the production default subject.
+/// Resolve `--acl`, `--identity` and `--member` into the ACL the mount enforces (`None` if none
+/// requested). Fail-closed: any resolution failure refuses the mount rather than falling back to
+/// unenforced; the certified human root is the production default identity.
 fn resolve_acl(
     args: &AclArgs,
     default_identity: IdentityKey,
 ) -> Result<Option<Arc<CapabilityFile>>> {
     let Some(path) = &args.acl else {
-        if args.identity.is_some() || !args.principals.is_empty() {
+        if args.identity.is_some() || !args.members.is_empty() {
             bail!(
-                "--identity/--principal require --acl; without a capability list they enforce nothing"
+                "--identity/--member require --acl; without a capability list they enforce nothing"
             );
         }
         return Ok(None);
@@ -627,13 +623,13 @@ fn resolve_acl(
         Some(hex_str) => parse_identity(hex_str)?,
         None => default_identity,
     };
-    let principals = args
-        .principals
+    let members = args
+        .members
         .iter()
-        .map(|s| parse_principal(s))
+        .map(|s| parse_member(s))
         .collect::<Result<Vec<_>>>()?;
 
-    let file = CapabilityFile::load(path, identity, principals)
+    let file = CapabilityFile::load(path, identity, members)
         .with_context(|| format!("binding the capability list {}", path.display()))?;
     println!(
         "Enforcing {} capabilities from {} as identity {}",
@@ -867,7 +863,7 @@ fn export_home_peer(
     output: &Path,
     replica_cache_dir: &Path,
     status_file: PathBuf,
-    principals: Vec<String>,
+    members: Vec<String>,
     mut relay_workspace_ids: Vec<collab_types::WorkspaceId>,
 ) -> Result<()> {
     let ticket_path = workspace_ticket_path(cache_dir);
@@ -900,7 +896,7 @@ fn export_home_peer(
         cache_dir: replica_cache_dir.join(decoded_ticket.workspace_id().to_string()),
         capability_json,
         authority: Some(authority),
-        principals,
+        members,
         relay_workspace_ids,
     };
     let mut bundle = if output.exists() {
@@ -1016,9 +1012,9 @@ async fn replica_workspace(
         governor,
         governor,
         bundle
-            .principals
+            .members
             .iter()
-            .map(|principal| parse_principal(principal))
+            .map(|member| parse_member(member))
             .collect::<Result<Vec<_>>>()?,
     )?;
     let envelope = bundle
@@ -1315,10 +1311,10 @@ async fn serve(
     // signed revision, but every peer thereafter enforces the durable governor-signed state.
     let workspace_authority = match cache_dir.as_ref() {
         Some(cache_dir) => {
-            let principals = acl_args
-                .principals
+            let members = acl_args
+                .members
                 .iter()
-                .map(|principal| parse_principal(principal))
+                .map(|member| parse_member(member))
                 .collect::<Result<Vec<_>>>()?;
             let bootstrap = acl_args
                 .acl
@@ -1336,7 +1332,7 @@ async fn serve(
                 cache_dir,
                 workspace_id,
                 credentials.user_public_key(),
-                principals,
+                members,
                 bootstrap,
             )?
         }
@@ -2515,9 +2511,9 @@ mod tests {
                  at boot, so a list read only at mount time can never carry a later grant"
             );
             assert_eq!(
-                acl.principals,
+                acl.members,
                 vec!["person:local".to_string()],
-                "the shipped list is written against a principal, because the mount's own identity \
+                "the shipped list is written against a member, because the mount's own identity \
                  is the device key minted on first boot, which no shipped file could name in advance"
             );
         }
@@ -2548,12 +2544,9 @@ mod tests {
 
             let path = os_file("os/usr/share/tilo/fs-capabilities.json");
             let identity: IdentityKey = [0x5A; 32]; // stands in for the per-start node key
-            let file = CapabilityFile::load(
-                &path,
-                identity,
-                vec![parse_principal("person:local").unwrap()],
-            )
-            .expect("the shipped default capability list must load");
+            let file =
+                CapabilityFile::load(&path, identity, vec![parse_member("person:local").unwrap()])
+                    .expect("the shipped default capability list must load");
 
             let handle = file.handle();
             assert!(
@@ -2595,7 +2588,7 @@ mod tests {
         );
         let identity: IdentityKey = [0x5A; 32];
         for path in &versions {
-            let local = vec![parse_principal("person:local").unwrap()];
+            let local = vec![parse_member("person:local").unwrap()];
             let file = CapabilityFile::load(path, identity, local).unwrap_or_else(|error| {
                 panic!(
                     "{} must still load on an upgraded machine: {error}",
@@ -2620,7 +2613,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_mount_lines_principals_and_persisted_tickets() {
+    fn cli_parses_mount_lines_members_and_persisted_tickets() {
         {
             let cli = Cli::try_parse_from([
                 "fs",
@@ -2637,15 +2630,15 @@ mod tests {
         }
         {
             assert_eq!(
-                parse_principal("workspace:team").unwrap(),
-                Principal::Workspace("team".into())
+                parse_member("person:local").unwrap(),
+                MemberId::Person("local".into())
             );
             assert_eq!(
-                parse_principal("app:org.tilo.files").unwrap(),
-                Principal::App("org.tilo.files".into())
+                parse_member("agent:helper").unwrap(),
+                MemberId::Agent("helper".into())
             );
-            assert!(parse_principal("wizard:merlin").is_err());
-            assert!(parse_principal("noseparator").is_err());
+            assert!(parse_member("wizard:merlin").is_err());
+            assert!(parse_member("noseparator").is_err());
         }
         {
             let temp = tempfile::tempdir().unwrap();
@@ -2736,14 +2729,12 @@ mod tests {
             assert!(!acl.permits(&identity, "/anything", Access::Write));
         }
         {
-            use collab_types::{
-                Access as CapAccess, CapOverride, Ed25519PublicKey, Effect, Scope, Subject,
-            };
+            use collab_types::{Access as CapAccess, CapOverride, Effect, Scope};
             use fs::Access;
 
             let who = [0x0A; 32];
             let caps = vec![CapOverride::new(
-                Subject::User(Ed25519PublicKey(who)),
+                tilo_action_policy::Grantee::person(hex::encode(who)),
                 Scope::FsPath("/w/docs".into()),
                 Effect::Grant,
                 CapAccess::Read,

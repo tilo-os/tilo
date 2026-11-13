@@ -205,14 +205,18 @@ fn check_restore_authority(
     app_id: &str,
     record: Option<&crate::record::RecordId>,
 ) -> Result<(), RestoreRefusal> {
-    use crate::permissions::{Access, ActionKind, Principal};
-    // The installed solo-workspace principal is the runner's existing local-author
-    // mapping. Other contexts must name the actual author.
-    let mapped = current.actor().principals.contains(&author.principal())
-        || current
-            .actor()
-            .principals
-            .contains(&Principal::Person(crate::permissions::LOCAL_USER.into()));
+    use crate::permissions::{Access, ActionKind, MemberId};
+    // The installed solo-workspace person is the runner's existing local-author mapping.
+    // Other contexts must name the actual author.
+    let acting = current.acting();
+    let mapped = acting
+        .nodes()
+        .into_iter()
+        .filter_map(|node| node.by.member_id())
+        .any(|member| match member {
+            MemberId::Person(id) => *id == author.0 || id == crate::permissions::LOCAL_USER,
+            MemberId::Agent(_) | MemberId::Bot(_) => false,
+        });
     if !mapped
         || !current.check(&crate::permissions::PermissionScope::app(
             app_id.to_owned(),

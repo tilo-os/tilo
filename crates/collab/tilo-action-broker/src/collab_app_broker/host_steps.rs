@@ -327,7 +327,7 @@ pub(super) fn is_local_host_caller(
                             && caller.user_public_key().is_none()
                             && caller.principal()
                                 == &tilo_actions::remote::CallerPrincipal::Person(
-                                    super::principal_id_for_root(certificate.user_public_key),
+                                    super::person_id_for_root(certificate.user_public_key),
                                 )
                     } else {
                         caller.user_public_key() == Some(&certificate.user_public_key)
@@ -673,7 +673,7 @@ fn host_step_failure(
 pub(crate) mod signed_test_support {
     use super::super::{
         AppBrokerState, BrokerChannels, DurableInvocation, FanoutState, InvocationKey,
-        PeerPublisher, principal_id_for_root, published_invocation::InvocationCaller,
+        PeerPublisher, person_id_for_root, published_invocation::InvocationCaller,
     };
     use crate::services::HostServices;
     use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
@@ -803,7 +803,7 @@ pub(crate) mod signed_test_support {
                 None,
                 Arc::new(NativeOwnerReceipts { owner }),
             );
-            let person = principal_id_for_root(certificate.user_public_key);
+            let person = person_id_for_root(certificate.user_public_key);
             workspace.set_owner(person.clone());
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);

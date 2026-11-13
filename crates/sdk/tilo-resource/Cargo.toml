@@ -37,6 +37,8 @@ uuid.workspace = true
 chrono = { workspace = true, optional = true, features = ["alloc"] }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
+# A capability names the app its sandbox belongs to.
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 tilo-resource-macros = { version = "0.1.0", path = "../tilo-resource-macros" }
 

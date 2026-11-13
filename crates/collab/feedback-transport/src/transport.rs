@@ -6,7 +6,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::feedback::{FeedbackAnswer, FeedbackDestination};
 use tilo_actions::remote::{Caller, CallerPrincipal};
-use ui::permissions::{ActionKind, Actor, Answer, PermissionContext, Standing, TreePath};
+use ui::permissions::{Acting, ActionKind, Answer, PermissionContext, Standing, TreePath};
 use ui::record::{RecordId, RecordStore};
 
 use tilo_feedback::{
@@ -67,7 +67,7 @@ impl Enrollment {
             owner: caller(owner),
             reporter: caller(reporter),
             permissions: PermissionContext::new(
-                Actor::person(standing.person_id().unwrap_or_default()).in_workspace(workspace),
+                Acting::person(standing.person_id().unwrap_or_default()),
                 serde_json::from_value(admission.sandbox.clone())?,
                 standing,
             )

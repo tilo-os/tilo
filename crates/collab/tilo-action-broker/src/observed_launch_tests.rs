@@ -273,7 +273,7 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                         "so.tilo.word-processor".into(),
                         Some(root),
                         env.route.cluster_id.clone(),
-                        Some(principal_id_for_root(env.cert.user_public_key))
+                        Some(person_id_for_root(env.cert.user_public_key))
                     )]
                 );
                 if scenario == "revoked" {
@@ -487,7 +487,7 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                     },
                 )
                 .await;
-                let person = principal_id_for_root(env.cert.user_public_key);
+                let person = person_id_for_root(env.cert.user_public_key);
                 let caller = tilo_actions::remote::Caller::local_person(&person)
                     .in_workspace(env.route.cluster_id.clone());
                 let original = tilo_actions::InvocationId::new();

@@ -329,7 +329,7 @@ impl AppBrokerState {
                 .or_else(|| {
                     caller
                         .user_public_key()
-                        .map(|root| super::principal_id_for_root(*root))
+                        .map(|root| super::person_id_for_root(*root))
                 }),
         }) else {
             return Pending::ready(Err(ActionHostError::confirmation_required()));

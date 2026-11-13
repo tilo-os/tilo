@@ -8,7 +8,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
-use ui::permissions::{Actor, KindSet, Role, UserId, policy};
+use ui::permissions::{Acting, KindSet, Role, UserId, policy};
 use ui::record::{RecordCheckout, RecordOwners};
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
@@ -35,7 +35,7 @@ fn enrollment() -> Enrollment {
 /// `person`, holding no role in the workspace.
 fn no_member(person: &str) -> PermissionContext {
     PermissionContext::new(
-        Actor::person(person).in_workspace(WORKSPACE),
+        Acting::person(person),
         vec![],
         ui::permissions::Standing::person(
             policy::WorkspacePolicy::unowned(WORKSPACE, &policy::Grantee::role(Role::Owner)),

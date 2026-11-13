@@ -334,9 +334,7 @@ fn members_of_the_workspace(app: &mut TestApp<TlApp>) {
         Grantee::person(&me),
     ));
     let standing = policy::Standing::person(policy, me);
-    app.set_permissions(ui::permissions::PermissionContext::from_standing(
-        &id, standing,
-    ));
+    app.set_permissions(ui::permissions::PermissionContext::from_standing(standing));
     let mut presence = ui::presence::PresenceCtx::default();
     // Mia is here from her laptop, which the workspace's host paired with her person; Leo is named
     // as himself.

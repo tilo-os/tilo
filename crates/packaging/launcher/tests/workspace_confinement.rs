@@ -403,13 +403,15 @@ fn run_with_grants(
     grants: &[(String, collab_types::caps::Access)],
     argv: &[&str],
 ) -> String {
-    use collab_types::caps::{CapOverride, LaunchGrants, Scope, Subject};
+    use collab_types::caps::{CapOverride, LaunchGrants, Scope};
+    use tilo_action_policy::Grantee;
 
     let caps_file = data.path.join("caps.json");
     let sandbox = grants
         .iter()
         .map(|(path, verb)| {
-            CapOverride::grant(Subject::app(PACKAGE), Scope::FsPath(path.clone()), *verb)
+            CapOverride::grant(Grantee::person("ada"), Scope::FsPath(path.clone()), *verb)
+                .through(PACKAGE)
         })
         .collect();
     let grants = LaunchGrants {

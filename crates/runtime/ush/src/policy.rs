@@ -13,9 +13,9 @@
 use std::path::{Path, PathBuf};
 
 use collab_types::caps::{
-    Access, Actor, CapDecision, CapOverride, Effect, Principal, ResourceRef, Scope, Subject,
-    decide_capability,
+    Access, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_app,
 };
+use tilo_action_policy::Grantee;
 use tilo_environment::{RUNTIME_APP_ID, is_grantable};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -26,14 +26,6 @@ pub struct Policy {
 impl Policy {
     pub fn new(capabilities: Vec<CapOverride>) -> Self {
         Self { capabilities }
-    }
-
-    /// The actor every question is asked about. `role: None` is load-bearing:
-    /// `collab_types::role_base_applies` returns false for `FsPath`, `Device`
-    /// and `NetHost`, so no role — not even Owner — reaches a path; every bind
-    /// exists because a capability says so.
-    pub fn actor() -> Actor {
-        Actor::app(RUNTIME_APP_ID)
     }
 
     pub fn trusted_dirs(&self, now: Option<u64>) -> Vec<PathBuf> {
@@ -50,12 +42,11 @@ impl Policy {
     }
 
     fn paths_where(&self, verb: Access, now: Option<u64>) -> Vec<PathBuf> {
-        let actor = Self::actor();
         let mut out: Vec<PathBuf> = Vec::new();
         for cap in &self.capabilities {
             // Only a Grant nominates a path; a Restrict can take one away (through
-            // `decide_capability` below) but never introduce one.
-            if cap.effect != Effect::Grant || !cap.subject.matches_actor(&actor) {
+            // `decide_app` below) but never introduce one.
+            if cap.effect != Effect::Grant || !cap.names_app(RUNTIME_APP_ID) {
                 continue;
             }
             let Scope::FsPath(raw) = &cap.scope else {
@@ -66,7 +57,7 @@ impl Policy {
                 continue;
             }
             let resource = ResourceRef::FsPath(raw.clone());
-            if decide_capability(&actor, &resource, verb, &self.capabilities, now)
+            if decide_app(RUNTIME_APP_ID, &resource, verb, &self.capabilities, now)
                 != CapDecision::Allow
             {
                 continue;
@@ -85,10 +76,9 @@ impl Policy {
     /// launcher gives an app's `NetHost` capabilities: a grant names a host,
     /// and `decide_capability` must still allow it.
     pub fn net_hosts(&self, now: Option<u64>) -> Vec<String> {
-        let actor = Self::actor();
         let mut out: Vec<String> = Vec::new();
         for cap in &self.capabilities {
-            if cap.effect != Effect::Grant || !cap.subject.matches_actor(&actor) {
+            if cap.effect != Effect::Grant || !cap.names_app(RUNTIME_APP_ID) {
                 continue;
             }
             let Scope::NetHost(host) = &cap.scope else {
@@ -101,8 +91,13 @@ impl Policy {
                 continue;
             }
             let resource = ResourceRef::NetHost(host.clone());
-            if decide_capability(&actor, &resource, Access::Read, &self.capabilities, now)
-                != CapDecision::Allow
+            if decide_app(
+                RUNTIME_APP_ID,
+                &resource,
+                Access::Read,
+                &self.capabilities,
+                now,
+            ) != CapDecision::Allow
             {
                 continue;
             }
@@ -129,14 +124,16 @@ impl Policy {
     /// built for a guest, whose record always says what it may reach.
     #[must_use]
     pub fn unbounded() -> Self {
-        let subject = Subject::Principal(Principal::App(RUNTIME_APP_ID.to_string()));
         Self {
-            capabilities: vec![CapOverride::new(
-                subject,
-                Scope::FsPath("/".to_string()),
-                Effect::Grant,
-                Access::Write,
-            )],
+            capabilities: vec![
+                CapOverride::new(
+                    Grantee::person("local"),
+                    Scope::FsPath("/".to_string()),
+                    Effect::Grant,
+                    Access::Write,
+                )
+                .through(RUNTIME_APP_ID),
+            ],
         }
     }
 
@@ -156,7 +153,7 @@ impl Policy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::caps::{Expiry, Principal, Subject};
+    use collab_types::caps::Expiry;
     use tilo_environment::dir_grant;
 
     fn granted(path: &str, write: bool) -> Policy {
@@ -221,12 +218,15 @@ mod tests {
         // The one that makes this not a second permission system: a `Restrict`
         // written by the compositor removes the writable bind here.
         let mut policy = granted("/var/home/you/src", true);
-        policy.capabilities.push(CapOverride::new(
-            Subject::Principal(Principal::App(RUNTIME_APP_ID.to_string())),
-            Scope::FsPath("/var/home/you/src".to_string()),
-            Effect::Restrict,
-            Access::Read,
-        ));
+        policy.capabilities.push(
+            CapOverride::new(
+                Grantee::person("local"),
+                Scope::FsPath("/var/home/you/src".to_string()),
+                Effect::Restrict,
+                Access::Read,
+            )
+            .through(RUNTIME_APP_ID),
+        );
         assert!(policy.trusted_dirs(Some(1_000)).is_empty());
         assert_eq!(
             policy.readable_dirs(Some(1_000)),
@@ -256,7 +256,7 @@ mod tests {
         assert_eq!(policy.net_hosts(Some(501)), [".crates.io"]);
 
         let mut other = tilo_environment::host_grant("example.com").unwrap();
-        other.subject = Subject::Principal(Principal::App("so.tilo.other".into()));
+        other.app = Some("so.tilo.other".into());
         assert!(Policy::new(vec![other]).net_hosts(Some(1)).is_empty());
 
         let any = Policy::new(vec![tilo_environment::host_grant("*").unwrap()]);
@@ -269,11 +269,14 @@ mod tests {
 
     #[test]
     fn a_grant_the_runtime_would_not_bind_binds_nothing() {
-        let policy = Policy::new(vec![CapOverride::grant(
-            Subject::Principal(Principal::App(RUNTIME_APP_ID.to_string())),
-            Scope::FsPath("/usr".to_string()),
-            Access::Write,
-        )]);
+        let policy = Policy::new(vec![
+            CapOverride::grant(
+                Grantee::person("local"),
+                Scope::FsPath("/usr".to_string()),
+                Access::Write,
+            )
+            .through(RUNTIME_APP_ID),
+        ]);
         assert!(policy.trusted_dirs(Some(1_000)).is_empty());
     }
 }

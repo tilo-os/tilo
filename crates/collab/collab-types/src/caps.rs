@@ -1,9 +1,10 @@
-//! The sandbox: what an app's code may touch outside the documents it
-//! publishes — filesystem paths, collaborative file records, devices and
-//! network hosts — as `(subject × scope × access)` capabilities.
+//! The sandbox: what code may reach outside the documents it publishes —
+//! filesystem paths, collaborative file records, devices and network hosts — as
+//! `(who × scope × access)` capabilities.
 //!
-//! Granted to an app at install and through portals, and never what a person
-//! grants a member: who may invoke which action is decided by
+//! A capability names a [`Grantee`], a member or a role, and names an app when it
+//! is that app's sandbox. Granted at install and through portals, and never what a
+//! person grants a member: who may invoke which action is decided by
 //! `tilo-action-policy` over the published tree.
 //!
 //! [`decide_capability`] is fail-closed and deny-biased: no matching grant
@@ -13,12 +14,10 @@
 //! record from an app, do not grant it.
 
 use serde::{Deserialize, Serialize};
-mod fs_authority_v1;
 pub mod net;
 
 pub use net::{Allowed, EgressPolicy, HostPattern, NetHostError, NetHostPattern, host_covers};
-
-use crate::crypto::Ed25519PublicKey;
+use tilo_action_policy::{Acting, Grantee, MemberId};
 
 /// How far a sandbox capability reaches into its resource.
 #[derive(
@@ -47,225 +46,6 @@ impl Access {
     /// Does holding `self` reach `other`?
     pub fn implies(self, other: Access) -> bool {
         self >= other
-    }
-}
-
-/// A named principal — the string-keyed half of the subject space.
-#[derive(
-    Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, tilo_resource::Model,
-)]
-#[serde(from = "PrincipalWire", into = "PrincipalWire")]
-pub enum Principal {
-    /// A human, by stable id. When the person has a signing key the id is its
-    /// lowercase hex, so a `Person` principal and a matching [`Subject::User`]
-    /// are interchangeable.
-    Person(String),
-    /// An application, by its stable app id.
-    App(String),
-    /// An automated agent.
-    Agent(String),
-    /// A bearer token: whoever presents this token id holds the capability.
-    Token(String),
-    /// A workspace: held by everyone in it.
-    Workspace(String),
-}
-
-/// [`Principal`] as it is written and read.
-///
-/// A workspace principal was called a room, and grants already stored name it
-/// that way. The variant keeps its place — postcard, which encoded capability
-/// lists are written in, names a variant by position, and a signed authority
-/// revision verifies over the bytes it was signed with — so every stored grant
-/// and revision still reads and verifies. It is written under the name grants
-/// were stored under, and a grant written while it was named `Workspace` still
-/// reads.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-enum PrincipalWire {
-    Person(String),
-    App(String),
-    Agent(String),
-    Token(String),
-    #[serde(rename = "Room", alias = "Workspace")]
-    Workspace(String),
-}
-
-impl From<PrincipalWire> for Principal {
-    fn from(wire: PrincipalWire) -> Self {
-        match wire {
-            PrincipalWire::Person(id) => Principal::Person(id),
-            PrincipalWire::App(id) => Principal::App(id),
-            PrincipalWire::Agent(id) => Principal::Agent(id),
-            PrincipalWire::Token(id) => Principal::Token(id),
-            PrincipalWire::Workspace(id) => Principal::Workspace(id),
-        }
-    }
-}
-
-impl From<Principal> for PrincipalWire {
-    fn from(principal: Principal) -> Self {
-        match principal {
-            Principal::Person(id) => PrincipalWire::Person(id),
-            Principal::App(id) => PrincipalWire::App(id),
-            Principal::Agent(id) => PrincipalWire::Agent(id),
-            Principal::Token(id) => PrincipalWire::Token(id),
-            Principal::Workspace(id) => PrincipalWire::Workspace(id),
-        }
-    }
-}
-
-impl Principal {
-    /// Name a person by their Ed25519 public key (canonical lowercase hex),
-    /// keeping `Subject::User` and `Principal::Person` interchangeable.
-    pub fn person_from_key(key: Ed25519PublicKey) -> Self {
-        Principal::Person(hex::encode(key.0))
-    }
-
-    /// The person `key` is, as their workspaces name them.
-    #[must_use]
-    pub fn of_person(key: [u8; 32]) -> Self {
-        Self::person_from_key(Ed25519PublicKey::from_bytes(key))
-    }
-
-    /// Is this principal a human?
-    pub fn is_person(&self) -> bool {
-        matches!(self, Principal::Person(_))
-    }
-
-    pub fn id(&self) -> &str {
-        match self {
-            Principal::Person(s)
-            | Principal::App(s)
-            | Principal::Agent(s)
-            | Principal::Token(s)
-            | Principal::Workspace(s) => s.as_str(),
-        }
-    }
-}
-
-/// Who a capability is about: one signing identity or a named [`Principal`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
-#[serde(deny_unknown_fields)]
-pub enum Subject {
-    /// One specific identity, by public key.
-    User(Ed25519PublicKey),
-    /// A named principal. The general case.
-    Principal(Principal),
-}
-
-impl Subject {
-    /// Does this subject cover `actor`?
-    pub fn matches_actor(&self, actor: &Actor) -> bool {
-        match self {
-            Subject::User(pk) => {
-                actor.key == Some(*pk)
-                    || actor.principals.contains(&Principal::person_from_key(*pk))
-            }
-            Subject::Principal(p) => {
-                if let (Principal::Person(_), Some(k)) = (p, actor.key)
-                    && *p == Principal::person_from_key(k)
-                {
-                    return true;
-                }
-                actor.principals.contains(p)
-            }
-        }
-    }
-
-    pub fn app(app_id: impl Into<String>) -> Self {
-        Subject::Principal(Principal::App(app_id.into()))
-    }
-
-    pub fn person(user_id: impl Into<String>) -> Self {
-        Subject::Principal(Principal::Person(user_id.into()))
-    }
-
-    pub fn agent(agent_id: impl Into<String>) -> Self {
-        Subject::Principal(Principal::Agent(agent_id.into()))
-    }
-
-    pub fn token(token_id: impl Into<String>) -> Self {
-        Subject::Principal(Principal::Token(token_id.into()))
-    }
-
-    pub fn workspace(workspace_id: impl Into<String>) -> Self {
-        Subject::Principal(Principal::Workspace(workspace_id.into()))
-    }
-
-    /// Is this subject a person?
-    pub fn is_person(&self) -> bool {
-        match self {
-            Subject::User(_) => true,
-            Subject::Principal(p) => p.is_person(),
-        }
-    }
-}
-
-/// The thing asking to reach a sandboxed resource: every [`Principal`] it can
-/// prove it is, and its signing key if it has one.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Actor {
-    /// The actor's signing key, if it has one.
-    pub key: Option<Ed25519PublicKey>,
-    /// Every principal this actor presents.
-    pub principals: Vec<Principal>,
-}
-
-impl Actor {
-    /// A person identified by signing key.
-    pub fn signed(key: Ed25519PublicKey) -> Self {
-        Self {
-            key: Some(key),
-            principals: vec![Principal::person_from_key(key)],
-        }
-    }
-
-    /// A person identified by a stable string id.
-    pub fn person(user_id: impl Into<String>) -> Self {
-        Self {
-            key: None,
-            principals: vec![Principal::Person(user_id.into())],
-        }
-    }
-
-    /// An application.
-    pub fn app(app_id: impl Into<String>) -> Self {
-        Self {
-            key: None,
-            principals: vec![Principal::App(app_id.into())],
-        }
-    }
-
-    /// An automated agent.
-    pub fn agent(agent_id: impl Into<String>) -> Self {
-        Self {
-            key: None,
-            principals: vec![Principal::Agent(agent_id.into())],
-        }
-    }
-
-    /// Add a principal (a workspace the actor is in, a token it presented,
-    /// the app it is running as).
-    #[must_use]
-    pub fn with_principal(mut self, p: Principal) -> Self {
-        if !self.principals.contains(&p) {
-            self.principals.push(p);
-        }
-        self
-    }
-
-    /// Add workspace membership.
-    #[must_use]
-    pub fn in_workspace(self, workspace: impl Into<String>) -> Self {
-        self.with_principal(Principal::Workspace(workspace.into()))
-    }
-
-    /// The person this actor is, if it presents one.
-    pub fn person_id(&self) -> Option<&str> {
-        self.principals.iter().find_map(|p| match p {
-            Principal::Person(id) => Some(id.as_str()),
-            _ => None,
-        })
     }
 }
 
@@ -307,73 +87,13 @@ impl Scope {
 /// workspaces: the sandbox capabilities people hold over shared files, and who
 /// may reach each workspace a relay carries (keyed by the relay's workspace
 /// id) — the workspace's members, as its policy names them.
-///
-/// Written as an object. It also reads the bare capability array that
-/// preceded it (`fs_authority_v1`): that file persists on a machine across
-/// image updates, and failing to read it leaves the filesystem unmounted.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FsAuthority {
     pub capabilities: Vec<CapOverride>,
-    /// The file it is in outlives an image update, so it is written under the
-    /// key it was first written under, and the key a build in between wrote it
-    /// under still reads (see [`FsAuthorityV2`]).
-    #[serde(rename = "room_members")]
-    pub workspace_members: std::collections::BTreeMap<String, Vec<WorkspaceMember>>,
-}
-
-/// The current, object form of [`FsAuthority`].
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FsAuthorityV2 {
+    /// Who may reach each workspace a relay carries. Absent when the file is a mount's own list.
     #[serde(default)]
-    capabilities: Vec<CapOverride>,
-    #[serde(default, rename = "room_members", alias = "workspace_members")]
-    workspace_members: std::collections::BTreeMap<String, Vec<WorkspaceMember>>,
-}
-
-impl<'de> Deserialize<'de> for FsAuthority {
-    /// An object is the current form; an array is the list before it. The
-    /// shape alone decides, so an error names what is wrong inside the form
-    /// the file is actually in.
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::value::{MapAccessDeserializer, SeqAccessDeserializer};
-
-        struct Either;
-        impl<'de> serde::de::Visitor<'de> for Either {
-            type Value = FsAuthority;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(
-                    "a file authority object (`{\"capabilities\": [...]}`) or the capability \
-                     array written before it",
-                )
-            }
-
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                map: A,
-            ) -> Result<FsAuthority, A::Error> {
-                let FsAuthorityV2 {
-                    capabilities,
-                    workspace_members,
-                } = FsAuthorityV2::deserialize(MapAccessDeserializer::new(map))?;
-                Ok(FsAuthority {
-                    capabilities,
-                    workspace_members,
-                })
-            }
-
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                self,
-                seq: A,
-            ) -> Result<FsAuthority, A::Error> {
-                let old = Vec::deserialize(SeqAccessDeserializer::new(seq))?;
-                Ok(FsAuthority::from(fs_authority_v1::migrate(old)))
-            }
-        }
-
-        deserializer.deserialize_any(Either)
-    }
+    pub workspace_members: std::collections::BTreeMap<String, Vec<WorkspaceMember>>,
 }
 
 /// A person a relay admits to one workspace: until `until` (Unix seconds,
@@ -404,8 +124,8 @@ impl From<Vec<CapOverride>> for FsAuthority {
     }
 }
 
-/// What a launch hands an app of a workspace: whether the person launching
-/// it may change the workspace through it, and its sandbox capabilities.
+/// What a launch hands an app: whether the person launching it may change the
+/// workspace through it, and the app's sandbox capabilities.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LaunchGrants {
@@ -422,13 +142,12 @@ impl LaunchGrants {
     /// a grant.
     #[must_use]
     pub fn for_app(&self, app: &str) -> Self {
-        let want = Subject::app(app);
         Self {
             author: self.author,
             sandbox: self
                 .sandbox
                 .iter()
-                .filter(|capability| capability.subject == want)
+                .filter(|cap| cap.names_app(app))
                 .cloned()
                 .collect(),
         }
@@ -441,7 +160,7 @@ impl LaunchGrants {
     }
 }
 
-/// Does the path-prefix `prefix` cover `path`, respecting component/// Does the path-prefix `prefix` cover `path`, respecting component
+/// Does the path-prefix `prefix` cover `path`, respecting component
 /// boundaries?
 ///
 /// `/w/docs` covers `/w/docs/a.txt` but not `/w/docsX` — a prefix that
@@ -462,7 +181,7 @@ pub fn path_covers(prefix: &str, path: &str) -> bool {
     path.starts_with(&with_sep)
 }
 
-/// A sandboxed resource an app might reach.
+/// A sandboxed resource code might reach.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResourceRef {
     FsPath(String),
@@ -471,8 +190,7 @@ pub enum ResourceRef {
     FsRecord(String),
 }
 
-/// When a capability dies — the `expiry` of `(subject, resource, verbs,
-/// expiry)`.
+/// When a capability dies — the `expiry` of `(who, resource, access, expiry)`.
 ///
 /// The whole lifetime vocabulary: the portal's "Just once" / "Until I log
 /// out" / "Always" map to [`Expiry::AfterUse`], `EndOfSession` and
@@ -550,11 +268,11 @@ impl Expiry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(deny_unknown_fields)]
 pub enum Effect {
-    /// Extend a subject's access within the scope.
+    /// Extend the grantee's access within the scope.
     Grant,
-    /// Cap a subject's access within the scope at the
-    /// capability's [`Access`]: `Restrict { Read }` means read-only. A restriction never
-    /// denies [`Access::Read`].
+    /// Cap the grantee's access within the scope at the capability's [`Access`]:
+    /// `Restrict { Read }` means read-only. A restriction never denies
+    /// [`Access::Read`].
     Restrict,
 }
 
@@ -562,7 +280,10 @@ pub enum Effect {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(deny_unknown_fields)]
 pub struct CapOverride {
-    pub subject: Subject,
+    pub grantee: Grantee,
+    /// Only through this app, when the capability is that app's sandbox.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<tilo_app_id::AppId>,
     pub scope: Scope,
     pub effect: Effect,
     pub access: Access,
@@ -570,13 +291,15 @@ pub struct CapOverride {
     pub id: String,
     pub expiry: Expiry,
     /// Who granted it, for audit and the share list.
-    pub granted_by: Option<Principal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granted_by: Option<MemberId>,
 }
 
 impl CapOverride {
-    pub fn new(subject: Subject, scope: Scope, effect: Effect, access: Access) -> Self {
+    pub fn new(grantee: Grantee, scope: Scope, effect: Effect, access: Access) -> Self {
         Self {
-            subject,
+            grantee,
+            app: None,
             scope,
             effect,
             access,
@@ -586,8 +309,46 @@ impl CapOverride {
         }
     }
 
-    pub fn grant(subject: Subject, scope: Scope, access: Access) -> Self {
-        Self::new(subject, scope, Effect::Grant, access)
+    pub fn grant(grantee: Grantee, scope: Scope, access: Access) -> Self {
+        Self::new(grantee, scope, Effect::Grant, access)
+    }
+
+    /// The same capability, reaching only through `app`.
+    #[must_use]
+    pub fn through(mut self, app: impl Into<tilo_app_id::AppId>) -> Self {
+        self.app = Some(app.into());
+        self
+    }
+
+    /// Whether this is `app`'s sandbox capability.
+    #[must_use]
+    pub fn names_app(&self, app: &str) -> bool {
+        self.app.as_ref().is_some_and(|named| named.as_str() == app)
+    }
+
+    /// Whether this capability reaches `acting`: its grantee names a node of the acting tree, and
+    /// one that names an app reaches it only through that app.
+    ///
+    /// A role entry reaches nobody here: the workspace's policy is what knows who holds a role, so
+    /// the list a mount enforces is written with its members
+    /// (`crates/session/session/src/fs_authority.rs`).
+    #[must_use]
+    pub fn reaches(&self, acting: &Acting) -> bool {
+        if let Some(app) = &self.app
+            && acting.app.as_ref() != Some(app)
+        {
+            return false;
+        }
+        acting
+            .nodes()
+            .into_iter()
+            .any(|node| match node.by.member_id() {
+                Some(member) => match &self.grantee {
+                    Grantee::Member(named) => named == member,
+                    Grantee::Role(_) => false,
+                },
+                None => false,
+            })
     }
 
     #[must_use]
@@ -609,7 +370,7 @@ impl CapOverride {
     }
 
     #[must_use]
-    pub fn granted_by(mut self, who: Principal) -> Self {
+    pub fn granted_by(mut self, who: MemberId) -> Self {
         self.granted_by = Some(who);
         self
     }
@@ -633,14 +394,40 @@ pub enum CapDecision {
     DeniedByRestriction,
 }
 
-/// May `actor` reach `resource` with `access`? A live matching grant whose
-/// access implies the request allows, unless a live matching restriction caps
-/// it below the request. `now` in Unix seconds; `None` skips expiry.
+/// May `acting` reach `resource` with `access`?
 ///
-/// Reading is refused only when no live grant covers the resource: every
-/// restriction's access implies `Read`, so none caps below it.
+/// A live matching grant whose access implies the request allows, unless a live
+/// matching restriction caps it below the request. `now` in Unix seconds; `None`
+/// skips expiry. Reading is refused only when no live grant covers the
+/// resource: every restriction's access implies `Read`, so none caps below it.
 pub fn decide_capability(
-    actor: &Actor,
+    acting: &Acting,
+    resource: &ResourceRef,
+    access: Access,
+    caps: &[CapOverride],
+    now: Option<u64>,
+) -> CapDecision {
+    decide(|cap| cap.reaches(acting), resource, access, caps, now)
+}
+
+/// May the app `app` reach `resource` with `access`, judged by the list written
+/// for its sandbox?
+///
+/// A launcher, a runtime and a portal ask on the app's behalf, over the list
+/// that app's install was granted: naming the app is the whole statement of who
+/// the capability is for, so the grantee is not asked about.
+pub fn decide_app(
+    app: &str,
+    resource: &ResourceRef,
+    access: Access,
+    caps: &[CapOverride],
+    now: Option<u64>,
+) -> CapDecision {
+    decide(|cap| cap.names_app(app), resource, access, caps, now)
+}
+
+fn decide(
+    reaches: impl Fn(&CapOverride) -> bool,
     resource: &ResourceRef,
     access: Access,
     caps: &[CapOverride],
@@ -649,10 +436,7 @@ pub fn decide_capability(
     let mut granted = false;
     let mut restricted = false;
     for cap in caps {
-        if !cap.is_live_at(now)
-            || !cap.subject.matches_actor(actor)
-            || !cap.scope.matches_resource(resource)
-        {
+        if !cap.is_live_at(now) || !reaches(cap) || !cap.scope.matches_resource(resource) {
             continue;
         }
         match cap.effect {
@@ -665,180 +449,5 @@ pub fn decide_capability(
         (true, false) => CapDecision::Allow,
         (_, true) if granted => CapDecision::DeniedByRestriction,
         _ => CapDecision::NotGranted,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A grant is written under the workspace principal's stored name, and a
-    /// grant written while it was named `Workspace` still reads as the same
-    /// grant: the variant keeps its place on the wire, so the bytes a
-    /// signature was made over verify unchanged.
-    #[test]
-    fn a_subject_is_written_under_the_name_it_was_stored_under() {
-        assert_eq!(
-            serde_json::to_string(&Subject::workspace("ws-design")).unwrap(),
-            r#"{"Principal":{"Room":"ws-design"}}"#,
-            "a reader on any build knows this name"
-        );
-        for written in [
-            r#"{"Principal":{"Room":"ws-design"}}"#,
-            r#"{"Principal":{"Workspace":"ws-design"}}"#,
-        ] {
-            let subject: Subject = serde_json::from_str(written).unwrap();
-            assert_eq!(subject, Subject::workspace("ws-design"), "{written}");
-        }
-
-        // Postcard names a variant by its place: `Subject::Principal` (1) then
-        // the workspace principal (4), the place a room kept.
-        let bytes = postcard::to_allocvec(&Subject::workspace("ws-design")).unwrap();
-        assert_eq!(bytes.get(..2), Some([1, 4].as_slice()));
-        assert_eq!(
-            postcard::from_bytes::<Subject>(&bytes).unwrap(),
-            Subject::workspace("ws-design")
-        );
-    }
-
-    /// The file a mount's authority is written in outlives an image update: it
-    /// is written under the members' stored key, and one written while the key
-    /// was named for a workspace still reads.
-    #[test]
-    fn an_authority_is_written_under_the_key_it_was_stored_under() {
-        assert_eq!(
-            serde_json::to_string(&FsAuthority::default()).unwrap(),
-            r#"{"capabilities":[],"room_members":{}}"#,
-            "a reader on any build knows this key"
-        );
-        for written in [
-            r#"{"capabilities":[],"room_members":{}}"#,
-            r#"{"capabilities":[],"workspace_members":{}}"#,
-        ] {
-            let authority: FsAuthority = serde_json::from_str(written).unwrap();
-            assert_eq!(authority, FsAuthority::default(), "{written}");
-        }
-    }
-
-    #[test]
-    fn a_grant_reaches_its_scope_and_a_restriction_caps_it() {
-        let actor = Actor::app("so.tilo.books");
-        let mut caps = vec![CapOverride::grant(
-            Subject::app("so.tilo.books"),
-            Scope::FsPath("/approved".into()),
-            Access::Write,
-        )];
-        let book = ResourceRef::FsPath("/approved/book.txt".into());
-        assert_eq!(
-            decide_capability(&actor, &book, Access::Write, &caps, None),
-            CapDecision::Allow
-        );
-        let sibling = ResourceRef::FsPath("/approvedX".into());
-        assert_eq!(
-            decide_capability(&actor, &sibling, Access::Read, &caps, None),
-            CapDecision::NotGranted
-        );
-        for other in [
-            ResourceRef::Device("camera".into()),
-            ResourceRef::NetHost("example.com".into()),
-            ResourceRef::FsRecord("file-1".into()),
-        ] {
-            assert_eq!(
-                decide_capability(&actor, &other, Access::Read, &caps, None),
-                CapDecision::NotGranted
-            );
-        }
-        caps.push(CapOverride::new(
-            Subject::app("so.tilo.books"),
-            Scope::FsPath("/".into()),
-            Effect::Restrict,
-            Access::Read,
-        ));
-        assert_eq!(
-            decide_capability(&actor, &book, Access::Write, &caps, None),
-            CapDecision::DeniedByRestriction
-        );
-        assert_eq!(
-            decide_capability(&actor, &book, Access::Read, &caps, None),
-            CapDecision::Allow
-        );
-        let stranger = Actor::app("dev.example.other");
-        assert_eq!(
-            decide_capability(&stranger, &book, Access::Read, &caps, None),
-            CapDecision::NotGranted
-        );
-    }
-
-    #[test]
-    fn a_restriction_never_removes_read_at_any_scope() {
-        let actor = Actor::app("so.tilo.books");
-        let cases = [
-            (
-                Scope::FsPath("/w".into()),
-                ResourceRef::FsPath("/w/a.txt".into()),
-            ),
-            (
-                Scope::Device("camera".into()),
-                ResourceRef::Device("camera".into()),
-            ),
-            (
-                Scope::NetHost("example.com".into()),
-                ResourceRef::NetHost("example.com".into()),
-            ),
-            (
-                Scope::FsRecord(EVERY.into()),
-                ResourceRef::FsRecord("file-1".into()),
-            ),
-        ];
-        for (scope, resource) in cases {
-            for granted in [Access::Read, Access::Write] {
-                for capped in [Access::Read, Access::Write] {
-                    let caps = [
-                        CapOverride::grant(Subject::app("so.tilo.books"), scope.clone(), granted),
-                        CapOverride::new(
-                            Subject::app("so.tilo.books"),
-                            scope.clone(),
-                            Effect::Restrict,
-                            capped,
-                        ),
-                    ];
-                    assert_eq!(
-                        decide_capability(&actor, &resource, Access::Read, &caps, Some(0)),
-                        CapDecision::Allow,
-                        "{scope:?}: grant {granted:?}, restrict {capped:?}"
-                    );
-                }
-            }
-            // The restriction matched: it is why Write is refused, not a
-            // scope that missed.
-            let caps = [
-                CapOverride::grant(Subject::app("so.tilo.books"), scope.clone(), Access::Write),
-                CapOverride::new(
-                    Subject::app("so.tilo.books"),
-                    scope.clone(),
-                    Effect::Restrict,
-                    Access::Read,
-                ),
-            ];
-            assert_eq!(
-                decide_capability(&actor, &resource, Access::Write, &caps, Some(0)),
-                CapDecision::DeniedByRestriction,
-                "{scope:?}"
-            );
-            // Only the absence of a grant refuses reading.
-            assert_eq!(
-                decide_capability(&actor, &resource, Access::Read, &caps[1..], Some(0)),
-                CapDecision::NotGranted,
-                "{scope:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn write_implies_read_and_not_the_other_way() {
-        assert!(Access::Write.implies(Access::Read));
-        assert!(Access::Write.implies(Access::Write));
-        assert!(Access::Read.implies(Access::Read));
-        assert!(!Access::Read.implies(Access::Write));
     }
 }

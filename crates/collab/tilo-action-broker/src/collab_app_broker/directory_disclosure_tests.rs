@@ -33,7 +33,7 @@ impl Person {
         }
     }
     fn id(&self) -> String {
-        principal_id_for_root(self.root.verifying_key().to_bytes())
+        person_id_for_root(self.root.verifying_key().to_bytes())
     }
     fn presentation(&self, workspace: &str) -> Vec<u8> {
         runtime_collab::CertifiedJoinIdentity {

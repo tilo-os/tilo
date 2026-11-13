@@ -4,9 +4,9 @@
 
 use std::collections::HashMap;
 
-use collab_types::caps::{Access, Actor, CapDecision, CapOverride, ResourceRef};
+use collab_types::caps::{Access, CapDecision, CapOverride, ResourceRef};
 use collab_types::role::Role as CapRole;
-use tilo_action_policy::{ActionKind, Answer, Grant, KindSet, TreePath, roles};
+use tilo_action_policy::{Acting, ActionKind, Answer, Grant, KindSet, TreePath, roles};
 use tilo_clock::unix_now;
 use tilo_desktop_model::{AppId, Capability, UserId, Workspace, WorkspaceDefaultError};
 
@@ -28,9 +28,9 @@ pub trait WorkspaceAuthority {
     fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>>;
     fn has_app_grants(&self) -> bool;
     fn app_grant_ids(&self, app_id: &str) -> Vec<String>;
-    /// Whether `actor` reaches the sandboxed `resource` for `access` .
-    fn decide(&self, actor: &Actor, resource: &ResourceRef, access: Access) -> CapDecision;
-    fn allows(&self, actor: &Actor, resource: &ResourceRef, access: Access) -> bool;
+    /// Whether `acting` reaches the sandboxed `resource` for `access` .
+    fn decide(&self, acting: &Acting, resource: &ResourceRef, access: Access) -> CapDecision;
+    fn allows(&self, acting: &Acting, resource: &ResourceRef, access: Access) -> bool;
     /// Record the sandbox capability `cap` , as `grantor` , who must be allowed to grant in the
     /// workspace. The capability's id.
     fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String>;
@@ -43,12 +43,8 @@ pub trait WorkspaceAuthority {
     /// below the workspace.
     fn person_allowed(&self, user: &str, relative: &TreePath, kind: ActionKind) -> bool;
     fn role_of(&self, user: &UserId) -> Option<CapRole>;
-    /// The sandbox actor a person is in this workspace.
-    fn actor_for_person(&self, user: &UserId) -> Actor;
-    /// The sandbox actor an app's code is in this workspace.
-    fn actor_for_app(&self, app_id: &str) -> Actor;
-    /// The sandbox actor an agent is in this workspace.
-    fn actor_for_agent(&self, agent: &str) -> Actor;
+    /// The acting a person is in this workspace.
+    fn acting_for_person(&self, user: &UserId) -> Acting;
     fn roster(&self) -> Vec<(UserId, CapRole)>;
     /// Agents admitted to the workspace, with the kinds of action their workspace grants allow.
     fn agent_members(&self) -> Vec<(String, KindSet)>;
@@ -78,11 +74,11 @@ impl WorkspaceAuthority for Workspace {
     fn app_grant_ids(&self, app_id: &str) -> Vec<String> {
         self.app_grant_ids_at(app_id, unix_now())
     }
-    fn decide(&self, actor: &Actor, resource: &ResourceRef, access: Access) -> CapDecision {
-        self.sandbox_decide_at(actor, resource, access, unix_now())
+    fn decide(&self, acting: &Acting, resource: &ResourceRef, access: Access) -> CapDecision {
+        self.sandbox_decide_as_at(acting, resource, access, unix_now())
     }
-    fn allows(&self, actor: &Actor, resource: &ResourceRef, access: Access) -> bool {
-        self.decide(actor, resource, access) == CapDecision::Allow
+    fn allows(&self, acting: &Acting, resource: &ResourceRef, access: Access) -> bool {
+        self.decide(acting, resource, access) == CapDecision::Allow
     }
     fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String> {
         self.grant_sandbox_as_at(grantor, cap, unix_now())
@@ -103,14 +99,8 @@ impl WorkspaceAuthority for Workspace {
     fn role_of(&self, user: &UserId) -> Option<CapRole> {
         Workspace::role_of(self, user).filter(|_| !self.is_blocked(user))
     }
-    fn actor_for_person(&self, user: &UserId) -> Actor {
-        Actor::person(user.clone()).in_workspace(self.id().to_string())
-    }
-    fn actor_for_app(&self, app_id: &str) -> Actor {
-        Actor::app(app_id).in_workspace(self.id().to_string())
-    }
-    fn actor_for_agent(&self, agent: &str) -> Actor {
-        Actor::agent(agent).in_workspace(self.id().to_string())
+    fn acting_for_person(&self, user: &UserId) -> Acting {
+        Acting::person(user.clone())
     }
     fn roster(&self) -> Vec<(UserId, CapRole)> {
         Workspace::roster(self)

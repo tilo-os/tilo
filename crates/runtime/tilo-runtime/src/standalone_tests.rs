@@ -45,7 +45,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
 
     let placed = WorkspaceId::new();
     let (joined, directory) = Joined::test_hosting(placed).await;
-    let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
+    let actor = tilo_action_broker::collab_app_broker::person_id_for_root(
         joined.test_certificate().user_public_key,
     );
     let mut workspace = Workspace::in_workspace(WorkspaceSlot(41), placed, "Execution isolation");

@@ -54,10 +54,8 @@ impl ServiceSessions {
     /// (and, for `admin` , administered by this workspace), now and rechecked after.
     fn authorize_selection(&self, context: &Context, admin: bool, app: &str) -> Result<(), String> {
         context.revalidate()?;
-        let person = collab_types::caps::Principal::person_from_key(
-            collab_types::crypto::Ed25519PublicKey::from_bytes(context.identity_public_key()),
-        );
-        if context.app_id() != app || context.person() != person.id() {
+        let person = hex::encode(context.identity_public_key());
+        if context.app_id() != app || context.person() != person {
             return Err("Account custody requires the certified person's own app".into());
         }
         let workspace = WorkspaceId::parse(context.workspace_id())

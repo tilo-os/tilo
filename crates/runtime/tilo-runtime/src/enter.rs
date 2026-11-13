@@ -126,9 +126,7 @@ impl Entered {
     /// serves: the agent surface runs here over the host's actions, as the run called `name`.
     #[must_use]
     pub fn on_host(device: Device, workspace_id: WorkspaceId, workspace: &str, name: &str) -> Self {
-        let person = collab_types::Principal::of_person(device.cert().user_public_key)
-            .id()
-            .to_owned();
+        let person = hex::encode(device.cert().user_public_key);
         let server = McpServer::new(device.actions(workspace_id), workspace.to_owned(), person)
             .with_surface(Surface::Agent)
             .with_agent_run(uuid::Uuid::new_v4().simple().to_string(), name.to_owned());

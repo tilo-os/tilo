@@ -733,8 +733,7 @@ async fn assert_signed_canonical(
                 Some(hex::encode(reporter.user_public_key).as_str())
             );
             ui::permissions::PermissionContext::new(
-                ui::permissions::Actor::person(standing.person_id().unwrap_or_default().to_owned())
-                    .in_workspace(&submission.destination.room),
+                ui::permissions::Acting::person(standing.person_id().unwrap_or_default()),
                 serde_json::from_value(admission.admission.sandbox).unwrap(),
                 standing,
             )

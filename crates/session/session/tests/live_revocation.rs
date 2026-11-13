@@ -80,9 +80,7 @@ fn member_may(
     path: &str,
     access: collab_types::caps::Access,
 ) -> bool {
-    let actor = collab_types::caps::Actor::signed(
-        collab_types::crypto::Ed25519PublicKey::from_bytes(member_key()),
-    );
+    let actor = tilo_action_policy::Acting::person(hex::encode(member_key()));
     collab_types::decide_capability(
         &actor,
         &collab_types::ResourceRef::FsPath(path.into()),

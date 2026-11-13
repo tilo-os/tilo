@@ -132,7 +132,7 @@ fn device(seed: u8) -> SigningKey {
 }
 
 fn principal(seed: u8) -> String {
-    principal_id_for_root(
+    person_id_for_root(
         SigningKey::from_bytes(&[seed; 32])
             .verifying_key()
             .to_bytes(),

@@ -1646,7 +1646,7 @@ impl JoinedChannel {
                     .verified_identity
                     .certificate
                     .as_ref()
-                    .map(|cert| principal_id_for_root(cert.user_public_key)),
+                    .map(|cert| person_id_for_root(cert.user_public_key)),
                 app_id: app_id.clone(),
                 route: route.clone(),
                 directory,

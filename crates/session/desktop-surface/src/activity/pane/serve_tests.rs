@@ -1,7 +1,8 @@
 use std::rc::Rc;
 
 use automerge::ActorId;
-use collab_types::caps::{Access, CapOverride, Scope, Subject};
+use collab_types::caps::{Access, CapOverride, Scope};
+use tilo_action_policy::Grantee;
 use tilo_actions::remote::workspace_activity as wire;
 
 use super::super::{ActivityView, WorkspaceActivityPane};
@@ -20,10 +21,11 @@ fn workspace_a_peer_changed() -> (TestTree, u64) {
             workspace,
             &owner,
             CapOverride::grant(
-                Subject::app("files"),
+                Grantee::person("ada"),
                 Scope::FsPath(path.into()),
                 Access::Read,
-            ),
+            )
+            .through("files"),
         )
         .expect("the owner grants in their own workspace");
     }

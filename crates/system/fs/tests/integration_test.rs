@@ -17,12 +17,13 @@ use std::{
 };
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use collab_types::{Access as CapAccess, CapOverride, Ed25519PublicKey, Effect, Scope, Subject};
+use collab_types::{Access as CapAccess, CapOverride, Effect, Scope};
 use fs::namespace::ROOT_INO;
 use fs::{Access, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, WorkspaceAcl};
 use fuser::{Config, MountOption};
 use iroh::endpoint::{Endpoint, presets};
 use tempfile::tempdir;
+use tilo_action_policy::{Grantee, MemberId};
 
 fn fuse_available() -> bool {
     std::path::Path::new("/dev/fuse").exists()
@@ -286,9 +287,13 @@ async fn cap_fixture_with(identity: [u8; 32], acl: fs::AclHandle) -> CapFixture 
     }
 }
 
+fn grantee_for(who: [u8; 32]) -> Grantee {
+    Grantee::Member(MemberId::person(hex::encode(who)))
+}
+
 fn read_cap(who: [u8; 32], path: &str) -> CapOverride {
     CapOverride::new(
-        Subject::User(Ed25519PublicKey(who)),
+        grantee_for(who),
         Scope::FsPath(path.into()),
         Effect::Grant,
         CapAccess::Read,
@@ -436,7 +441,7 @@ async fn capabilities_grant_exactly_their_path_verb_and_lifetime() {
     }
     {
         let workspace_cap = CapOverride::new(
-            Subject::workspace("another-workspace"),
+            Grantee::Role(collab_types::Role::Viewer),
             Scope::FsPath("/w/docs".into()),
             Effect::Grant,
             CapAccess::Write,
@@ -1667,7 +1672,7 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
         let rw = WorkspaceAcl::from_capabilities(
             BOB,
             &[CapOverride::new(
-                Subject::User(Ed25519PublicKey(BOB)),
+                grantee_for(BOB),
                 Scope::FsPath("/shared".into()),
                 Effect::Grant,
                 CapAccess::Write,

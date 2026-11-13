@@ -15,7 +15,7 @@ impl ParticipantJoinFixture {
     fn new(agents: &[String]) -> Self {
         let root = SigningKey::from_bytes(&[101; 32]);
         let device = SigningKey::from_bytes(&[102; 32]);
-        let principal = principal_id_for_root(root.verifying_key().to_bytes());
+        let principal = person_id_for_root(root.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceSlot(101),
             "Exact Agent identity",

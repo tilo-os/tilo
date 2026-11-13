@@ -27,7 +27,7 @@ mod owner_commit_tests {
             let directory = canonical_tempdir();
             let root = SigningKey::from_bytes(&[24; 32]);
             let device = SigningKey::from_bytes(&[25; 32]);
-            let principal = principal_id_for_root(root.verifying_key().to_bytes());
+            let principal = person_id_for_root(root.verifying_key().to_bytes());
             let mut workspace = crate::test_support::Workspace::new(
                 crate::test_support::WorkspaceSlot(5), "Durability boundary");
             workspace.set_owner(&principal);
@@ -101,7 +101,7 @@ mod owner_commit_tests {
                 let directory = canonical_tempdir();
                 let root = SigningKey::from_bytes(&[24; 32]);
                 let device = SigningKey::from_bytes(&[25; 32]);
-                let principal = principal_id_for_root(root.verifying_key().to_bytes());
+                let principal = person_id_for_root(root.verifying_key().to_bytes());
                 let mut workspace = crate::test_support::Workspace::new(
                     crate::test_support::WorkspaceSlot(5),
                     "read mode",
@@ -406,7 +406,7 @@ mod owner_commit_tests {
                 .into(),
             "Actual owner barrier",
         );
-        workspace.set_owner(principal_id_for_root(owner.peer().owner()));
+        workspace.set_owner(person_id_for_root(owner.peer().owner()));
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         tree.shared()
@@ -769,7 +769,7 @@ mod owner_commit_tests {
                 device: f.owner.device().device_public_key,
             },
         };
-        let actor = principal_id_for_root(f.owner.peer().owner());
+        let actor = person_id_for_root(f.owner.peer().owner());
         let context =
             tilo_actions::ActionContext::for_resource("record:bounded", "document", "Receipt test");
         f.state
@@ -1154,7 +1154,7 @@ mod owner_commit_tests {
             checkout,
             reveal: None,
         };
-        let principal = principal_id_for_root(cert.user_public_key);
+        let principal = person_id_for_root(cert.user_public_key);
         let context = HostContext::prepare(
             definition,
             HostContextInputs {
@@ -1507,7 +1507,7 @@ mod owner_commit_tests {
                     update: tilo_actions::InvocationUpdate::Accepted { invocation },
                     prepared_effect: Arc::default(),
                     last_sequence: 0,
-                    actor: principal_id_for_root(f.owner.peer().owner()),
+                    actor: person_id_for_root(f.owner.peer().owner()),
                     cancellable: false,
                     retryable_on_disconnect: false,
                     execution: tilo_actions::ExecutionMode::Immediate,
@@ -1560,7 +1560,7 @@ mod owner_commit_tests {
             root: f.owner.peer().owner(),
             device: f.owner.device().device_public_key,
         };
-        pending.actor = principal_id_for_root(f.owner.peer().owner());
+        pending.actor = person_id_for_root(f.owner.peer().owner());
         pending.prepared_effect = Arc::default();
         let state = f.state.clone();
         let retry_pending = pending.clone();
@@ -1810,7 +1810,7 @@ mod owner_commit_tests {
             let caller = delegated_owner_caller(&f, "mcp-7");
             // The person themselves, another agent, or a nameless agent: none
             // of them acted, so none may be named.
-            let person = principal_id_for_root(f.owner.peer().owner());
+            let person = person_id_for_root(f.owner.peer().owner());
             let actor = mistaken.unwrap_or(&person);
             let refusal = prepare_owner_effect_claiming(&f, &caller, actor)
                 .expect_err("a mismatched actor is still refused");

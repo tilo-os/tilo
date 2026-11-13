@@ -23,7 +23,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use collab_types::{CapOverride, Principal};
+use collab_types::CapOverride;
+use tilo_action_policy::MemberId;
 
 use crate::acl::{AclHandle, IdentityKey, WorkspaceAcl};
 use crate::file_watch::FileChanges;
@@ -68,7 +69,7 @@ pub enum Refresh {
 pub struct CapabilityFile {
     path: PathBuf,
     identity: IdentityKey,
-    principals: Vec<Principal>,
+    members: Vec<MemberId>,
     handle: AclHandle,
     /// The version last successfully loaded. `None` once observed missing, so reappearance always reloads.
     seen: Mutex<Option<Stamp>>,
@@ -85,15 +86,15 @@ impl CapabilityFile {
     pub fn load(
         path: impl Into<PathBuf>,
         identity: IdentityKey,
-        principals: Vec<Principal>,
+        members: Vec<MemberId>,
     ) -> Result<Self, CapsError> {
         let path = path.into();
         let (caps, stamp) = read_capabilities(&path)?;
-        let acl = build(identity, &caps, &principals);
+        let acl = build(identity, &caps, &members);
         Ok(Self {
             path,
             identity,
-            principals,
+            members,
             handle: AclHandle::new(acl),
             seen: Mutex::new(Some(stamp)),
         })
@@ -148,7 +149,7 @@ impl CapabilityFile {
             Ok((caps, stamp)) => {
                 let n = caps.len();
                 self.handle
-                    .replace(build(self.identity, &caps, &self.principals));
+                    .replace(build(self.identity, &caps, &self.members));
                 *self.seen.lock_recover() = Some(stamp);
                 Refresh::Reloaded(n)
             }
@@ -193,8 +194,8 @@ impl CapabilityFile {
 }
 
 /// Build the ACL for one identity from a capability list. `now: None` ⇒ every check reads the live clock, so a time-limited capability expires.
-fn build(identity: IdentityKey, caps: &[CapOverride], principals: &[Principal]) -> WorkspaceAcl {
-    WorkspaceAcl::from_capabilities(identity, caps, principals, None)
+fn build(identity: IdentityKey, caps: &[CapOverride], members: &[MemberId]) -> WorkspaceAcl {
+    WorkspaceAcl::from_capabilities(identity, caps, members, None)
 }
 
 fn read_capabilities(path: &Path) -> Result<(Vec<CapOverride>, Stamp), CapsError> {
@@ -237,13 +238,18 @@ pub enum CapsError {
 mod tests {
     use super::*;
     use crate::acl::Access;
-    use collab_types::{Access as CapAccess, Ed25519PublicKey, Effect, Scope, Subject};
+    use collab_types::{Access as CapAccess, Effect, Scope};
+    use tilo_action_policy::Grantee;
+
+    fn alice() -> Grantee {
+        Grantee::person(hex::encode(ALICE))
+    }
 
     const ALICE: IdentityKey = [0xA1; 32];
 
     fn read_grant(path: &str) -> CapOverride {
         CapOverride::new(
-            Subject::User(Ed25519PublicKey(ALICE)),
+            alice(),
             Scope::FsPath(path.into()),
             Effect::Grant,
             CapAccess::Read,
@@ -393,44 +399,6 @@ mod tests {
         })
         .await;
         reload.abort();
-    }
-
-    /// The list tmpfiles seeded on a machine installed on 2026-10-02, byte
-    /// for byte. `C` never overwrites it, so after the update that wrapped
-    /// the list in a file authority object it is still what fs.service
-    /// reads; refusing it crash-looped the service and left
-    /// `/var/workspace` unmounted.
-    #[test]
-    fn the_list_an_older_image_seeded_still_mounts_with_its_grant() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("fs-capabilities.json");
-        std::fs::write(
-            &path,
-            r#"[
-  {
-    "subject": { "Principal": { "Person": "local" } },
-    "scope": { "FsPath": "/" },
-    "effect": "Grant",
-    "verb": "Write",
-    "id": "local-session-workspace",
-    "expiry": "Never",
-    "granted_by": null
-  }
-]
-"#,
-        )
-        .unwrap();
-        let local = vec![Principal::Person("local".into())];
-        let file = CapabilityFile::load(&path, ALICE, local).expect("the old list must load");
-        let handle = file.handle();
-        assert!(handle.permits(&ALICE, "/notes/today.md", Access::Write));
-        let outsider = CapabilityFile::load(&path, ALICE, Vec::new())
-            .unwrap()
-            .handle();
-        assert!(
-            !outsider.permits(&ALICE, "/notes/today.md", Access::Read),
-            "migrating must not widen the grant beyond its principal"
-        );
     }
 
     #[test]
