@@ -373,4 +373,58 @@ mod tests {
             );
         }
     }
+
+    /// A placeholder resolves once, to its value as it stands; what does not resolve is sent
+    /// as it was typed.
+    #[test]
+    fn a_placeholder_resolves_once_and_what_does_not_resolve_stays_as_typed() {
+        let known = vars(&[
+            ("id", "7"),
+            ("host", "api.test"),
+            ("nested", "{{id}}"),
+            ("ünï", "ö"),
+        ]);
+        for (input, want) in [
+            ("", ""),
+            ("no placeholder", "no placeholder"),
+            ("{{host}}{{id}}", "api.test7"),
+            ("{{id}}{{id}}", "77"),
+            ("{{ missing }}", "{{ missing }}"),
+            ("{{Id}}", "{{Id}}"),
+            ("{{}}", "{{}}"),
+            ("{{  }}", "{{  }}"),
+            ("{{id", "{{id"),
+            ("id}}", "id}}"),
+            ("{{nested}}", "{{id}}"),
+            ("é{{id}}é", "é7é"),
+            ("{{ünï}}", "ö"),
+            ("{\"id\":{{id}}}", "{\"id\":7}"),
+        ] {
+            assert_eq!(substitute(input, &known), want, "substitute({input:?})");
+        }
+    }
+
+    /// The names a string refers to and the names an environment defines are read alike:
+    /// trimmed, and never empty.
+    #[test]
+    fn referenced_and_defined_names_are_trimmed_and_never_empty() {
+        for (input, want) in [
+            ("{{ a }}/{{a}}", vec!["a"]),
+            ("{{b}}{{a}}{{b}}", vec!["b", "a"]),
+            ("{{}}{{ }}", vec![]),
+            ("{{a}} then {{b", vec!["a"]),
+            ("plain", vec![]),
+        ] {
+            assert_eq!(referenced_vars(input), want, "referenced_vars({input:?})");
+        }
+
+        let mut off = KeyValue::new("off", "1");
+        off.enabled = false;
+        let defined = var_map(&[
+            KeyValue::new(" host ", " api.test "),
+            KeyValue::new("   ", "unnamed"),
+            off,
+        ]);
+        assert_eq!(defined, vars(&[("host", " api.test ")]));
+    }
 }

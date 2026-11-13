@@ -452,6 +452,13 @@ mod tests {
             .collect()
     }
 
+    fn sent(out: &Outgoing) -> Vec<(&str, &str)> {
+        out.headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect()
+    }
+
     #[test]
     fn query_params_precede_fragments_and_reuse_query_separators() {
         for (base, expected) in [
@@ -567,6 +574,143 @@ mod tests {
                 Some("name=Jane%20Doe&role=admin"),
                 "case form body"
             );
+        }
+    }
+
+    /// A row that is switched off or has no name is not sent, a body is sent only in a mode
+    /// that has one, and a request keeps the content type it was given.
+    #[test]
+    fn only_switched_on_named_rows_are_sent_and_a_given_content_type_is_kept() {
+        let off = |key: &str, value: &str| {
+            let mut row = KeyValue::new(key, value);
+            row.enabled = false;
+            row
+        };
+        let vars = env(&[("trace", "abc"), ("id", "7"), ("name", "Grün")]);
+        let json = "{\"id\":7}";
+        let fields = "q=a%26b%3Dc&name=Gr%C3%BCn";
+        let urlencoded = "application/x-www-form-urlencoded";
+        let vendor = "application/vnd.api+json";
+        for (mode, given, body, kind) in [
+            (BodyMode::None, None, None, None),
+            (
+                BodyMode::None,
+                Some("text/csv"),
+                None,
+                Some(("content-type", "text/csv")),
+            ),
+            (BodyMode::Raw, None, Some(json), None),
+            (
+                BodyMode::Json,
+                None,
+                Some(json),
+                Some(("Content-Type", "application/json")),
+            ),
+            (
+                BodyMode::Json,
+                Some(vendor),
+                Some(json),
+                Some(("content-type", vendor)),
+            ),
+            (
+                BodyMode::Form,
+                None,
+                Some(fields),
+                Some(("Content-Type", urlencoded)),
+            ),
+            (
+                BodyMode::Form,
+                Some("text/plain"),
+                Some(fields),
+                Some(("content-type", "text/plain")),
+            ),
+        ] {
+            let mut req = Request::new("r");
+            req.url = "https://x.test".into();
+            req.headers = vec![
+                KeyValue::new("X-Trace", "{{trace}}"),
+                off("X-Off", "1"),
+                KeyValue::new("  ", "unnamed"),
+            ];
+            req.headers
+                .extend(given.map(|value| KeyValue::new("content-type", value)));
+            req.body_mode = mode;
+            req.body_text = "{\"id\":{{id}}}".into();
+            req.form = vec![
+                KeyValue::new("q", "a&b=c"),
+                off("debug", "1"),
+                KeyValue::new("", "unnamed"),
+                KeyValue::new("name", "{{name}}"),
+            ];
+            let out = build_outgoing(&req, &vars);
+            let mut headers = vec![("X-Trace", "abc")];
+            headers.extend(kind);
+            assert_eq!(sent(&out), headers, "{mode:?} given {given:?}: headers");
+            assert_eq!(out.body.as_deref(), body, "{mode:?} given {given:?}: body");
+            assert_eq!(out.url, "https://x.test", "{mode:?} given {given:?}: url");
+        }
+    }
+
+    /// Auth becomes a header only from what the request itself holds: none, a reference to a
+    /// credential kept on the device and an API key without a header name add nothing.
+    #[test]
+    fn auth_adds_a_header_only_from_what_the_request_holds() {
+        let vars = env(&[
+            ("user", "ada"),
+            ("pass", "s3cr3t"),
+            ("name", "X-Api-Key"),
+            ("key", "k1"),
+        ]);
+        for (case, auth, headers) in [
+            ("none", Auth::None, vec![]),
+            (
+                "a reference",
+                Auth::SecretRef {
+                    id: "cred-1".into(),
+                    scheme: "Bearer".into(),
+                },
+                vec![],
+            ),
+            (
+                "an API key without a header name",
+                Auth::ApiKey {
+                    header: "  ".into(),
+                    value: "{{key}}".into(),
+                },
+                vec![],
+            ),
+            (
+                "an API key",
+                Auth::ApiKey {
+                    header: "{{name}}".into(),
+                    value: "{{key}}".into(),
+                },
+                vec![("X-Api-Key", "k1")],
+            ),
+            (
+                "basic from variables",
+                Auth::Basic {
+                    username: "{{user}}".into(),
+                    password: "{{pass}}".into(),
+                },
+                // base64("ada:s3cr3t") == "YWRhOnMzY3IzdA=="
+                vec![("Authorization", "Basic YWRhOnMzY3IzdA==")],
+            ),
+            (
+                "a bearer token that does not resolve",
+                Auth::Bearer {
+                    token: "{{missing}}".into(),
+                },
+                vec![("Authorization", "Bearer {{missing}}")],
+            ),
+        ] {
+            let mut req = Request::new("r");
+            req.url = "https://x.test/{{missing}}".into();
+            req.auth = auth;
+            let out = build_outgoing(&req, &vars);
+            assert_eq!(sent(&out), headers, "{case}: headers");
+            assert_eq!(out.url, "https://x.test/{{missing}}", "{case}: url");
+            assert!(out.body.is_none(), "{case}: body");
         }
     }
 }
