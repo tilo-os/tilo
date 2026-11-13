@@ -1,6 +1,5 @@
-//! Canonical content identity shared by host cache lookup and daemon import.
-//! Keep paths, executable bits and bytes in the identity; exclude only the
-//! metadata the importer writes itself.
+//! Canonical content identity shared by host cache lookup and daemon import: paths, executable
+//! bits and bytes, excluding only the metadata the importer writes itself.
 
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -11,7 +10,6 @@ pub const RELEASE_DIR: &str = "usr/lib/extension-release.d";
 /// Metadata beside the tree, also excluded from the hash.
 pub const PROVENANCE: &str = "provenance.json";
 
-/// One file or symlink a layer carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayerEntry {
     /// Relative to the layer root, `/`-separated.
@@ -107,7 +105,7 @@ fn file_digest(path: &Path) -> std::io::Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-/// Collect every path below `root` (relative, depth-first), not following symlinks.
+/// Every path below `root`, relative and depth-first, without following symlinks.
 pub fn walk(root: &Path, relative: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in fs::read_dir(root.join(relative))? {
         let entry = entry?;

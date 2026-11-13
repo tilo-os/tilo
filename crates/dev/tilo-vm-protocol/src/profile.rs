@@ -1,22 +1,9 @@
-//! Device profiles: input devices described by what real hardware reports, so a
-//! uinput copy of it gets the same hwdb, udev and libinput treatment.
-//!
-//! The default devices of a headful slot are `BUS_VIRTUAL`, vendor `0x7469`, named
-//! `tilo-vm keyboard (seat)`: libinput and udev's `70-touchpad`/hwdb/quirk rules,
-//! which match on bus, vendor, product and name, never see a laptop. A profile
-//! carries the identity (bus, vendor, product, version, name) and the capability
-//! bitmaps (keys, relative and absolute axes with ranges and resolution, device
-//! properties) of one real device, so the guest kernel registers a device that
-//! udev tags `ID_INPUT_TOUCHPAD` with the real size, that libinput classifies the
-//! same way, and that quirk files keyed on the model apply to.
-//!
-//! The checked-in profiles are captured from the Lenovo Yoga Slim 7x (83ED) under
-//! `os/hardware/profiles/lenovo-83ed/input/`: `/sys/class/input/eventN/device`
-//! for ids and bitmaps, the HID report descriptor for axis ranges and units.
-//!
-//! What a profile cannot reproduce: the kernel driver. hwdb's `KEYBOARD_KEY_<scan>`
-//! remaps are applied through the driver's keymap (`EVIOCSKEYCODE`), which a uinput
-//! device does not have, so a profile's keys arrive as the keycodes sent.
+//! Device profiles: one real device's identity and capability bitmaps, so a uinput copy gets the
+//! same hwdb, udev and libinput treatment (udev tags it `ID_INPUT_TOUCHPAD` with the real size,
+//! quirk files keyed on the model apply to it). The checked-in profiles are captured from the
+//! Lenovo Yoga Slim 7x (83ED) under `os/hardware/profiles/lenovo-83ed/input/`. What a profile
+//! cannot reproduce is the kernel driver: hwdb's `KEYBOARD_KEY_<scan>` remaps need the driver's
+//! keymap, so a profile's keys arrive as the keycodes sent.
 
 use serde::{Deserialize, Serialize};
 
@@ -41,7 +28,6 @@ pub struct AbsAxis {
     pub resolution: i32,
 }
 
-/// A device as the kernel reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceProfile {
@@ -116,7 +102,6 @@ pub fn profile_key(name: &str) -> Option<&'static str> {
         .map(|(known, _)| *known)
 }
 
-/// The profile `name` names.
 pub fn profile(name: &str) -> Result<DeviceProfile, String> {
     let (_, text) = PROFILES
         .iter()
@@ -130,10 +115,9 @@ pub fn profile(name: &str) -> Result<DeviceProfile, String> {
     Ok(profile)
 }
 
-/// Whether libinput accepts an axis whose range is empty (its `evdev_reject_device`):
-/// it skips `ABS_MISC`, `ABS_MT_SLOT` and `ABS_MT_TOOL_TYPE`, and disables a 0..0
-/// axis from `ABS_MISC` up to the multitouch ones. Any other empty axis makes it
-/// refuse the device, so the compositor never sees it.
+/// Whether libinput accepts an axis whose range is empty (its `evdev_reject_device`): it skips
+/// `ABS_MISC`, `ABS_MT_SLOT` and `ABS_MT_TOOL_TYPE`, and disables a 0..0 axis from `ABS_MISC` up to
+/// the multitouch ones. Any other empty axis makes it refuse the whole device.
 fn libinput_ignores_empty_range(axis: &AbsAxis) -> bool {
     matches!(axis.code, ABS_MISC | ABS_MT_SLOT | ABS_MT_TOOL_TYPE)
         || (axis.min == 0 && (ABS_MISC..ABS_MT_SLOT).contains(&axis.code))
@@ -144,7 +128,6 @@ impl DeviceProfile {
         self.abs.iter().find(|axis| axis.code == code)
     }
 
-    /// Whether the device can send key or button `code`.
     pub fn has_key(&self, code: u16) -> bool {
         self.key.contains(&code)
     }
@@ -232,7 +215,6 @@ impl DeviceProfile {
 mod tests {
     use super::*;
 
-    /// The checked-in captures load, match what the Yoga reports, and are usable.
     #[test]
     fn lenovo_83ed_profiles_match_the_captured_hardware() {
         let keyboard = profile("lenovo-83ed-keyboard").unwrap();
@@ -294,8 +276,6 @@ mod tests {
         assert!(skewed.check().unwrap_err().contains("min above max"));
     }
 
-    /// A keyboard with a 0..0 `ABS_VOLUME`, as the keyboard capture once had: libinput
-    /// rejects such a device, so the slot's compositor never opened it.
     #[test]
     fn an_axis_libinput_rejects_the_device_for_is_refused() {
         let volume = AbsAxis {

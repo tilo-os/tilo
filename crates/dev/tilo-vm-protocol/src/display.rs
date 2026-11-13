@@ -1,11 +1,7 @@
-//! The virtual monitors of a headful slot: `tilo-vm slot create --headful
-//! --outputs 2560x1600@2,1920x1080`.
-//!
-//! Each output becomes one vkms connector on the slot's card. Like a monitor
-//! without an EDID, each connector offers the standard VESA (DMT) modes at
-//! 60 Hz, 1024x768 preferred; the requested mode and scale reach the
-//! compositor through the display settings every user goes through (a
-//! confirmed display change, remembered for that set of monitors).
+//! The virtual monitors of a headful slot: each output becomes one vkms connector on the slot's
+//! card. Like a monitor without an EDID, each connector offers the standard VESA (DMT) modes at
+//! 60 Hz, 1024x768 preferred; the requested mode and scale reach the compositor through the
+//! display settings every user goes through.
 
 use std::fmt;
 use std::str::FromStr;
@@ -19,7 +15,6 @@ pub const MAX_EXTENT: u32 = 8192;
 /// The scale range the display settings accept.
 pub const SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.5..=4.0;
 
-/// One output: its mode in pixels and its scale.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct OutputSpec {
@@ -107,7 +102,6 @@ pub fn parse_outputs(text: &str) -> Result<Vec<OutputSpec>, String> {
     Ok(outputs)
 }
 
-/// The list as `parse_outputs` reads it.
 pub fn format_outputs(outputs: &[OutputSpec]) -> String {
     outputs
         .iter()

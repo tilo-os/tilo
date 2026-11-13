@@ -1,5 +1,5 @@
-//! The one client implementation, generic over any byte stream so the same
-//! code drives `ssh` stdio in production and a subprocess pipe in tests.
+//! The one client implementation, generic over any byte stream: `ssh` stdio in production, a
+//! subprocess pipe in tests.
 
 use std::io::{BufRead, Read, Write};
 
@@ -25,7 +25,7 @@ pub enum ClientError {
     Rpc(RpcError),
 }
 
-// Retain ordinary upload frames, but do not cache unusually large RPC bodies.
+// Retain ordinary upload frames; an unusually large RPC body is not cached.
 const MAX_RETAINED_REQUEST_BYTES: usize = UPLOAD_CHUNK_BYTES * 4;
 
 pub struct Client<R, W> {
@@ -49,23 +49,20 @@ impl<R: BufRead, W: Write> Client<R, W> {
         }
     }
 
-    /// Opt in only on a byte-transparent transport. JSON-line peer bridges
-    /// retain their existing framing and session accounting.
+    /// Opt in only on a byte-transparent transport: a JSON-line peer bridge keeps its own framing
+    /// and session accounting.
     pub fn enable_binary_uploads(&mut self) {
         self.binary_uploads = true;
     }
 
-    /// Connect-time handshake; every other call requires it first.
-    ///
-    /// # Errors
+    /// Connect-time handshake; every other call requires it first. Fails with
     /// [`ClientError::VersionMismatch`] when the daemon speaks another version.
     pub fn hello(&mut self, client_version: &str) -> Result<HelloResult, ClientError> {
         let hello = Hello {
             protocol: PROTOCOL_VERSION,
             client_version: client_version.into(),
         };
-        // `hello` itself never changes shape, so any daemon answers it with its
-        // own version and the mismatch is reported here, precisely.
+        // `hello` never changes shape, so a daemon of any version still answers it with its own.
         let result = self.call(hello)?;
         if result.protocol == PROTOCOL_VERSION {
             Ok(result)
@@ -77,7 +74,6 @@ impl<R: BufRead, W: Write> Client<R, W> {
         }
     }
 
-    /// Send one request and wait for its response.
     pub fn call<C: Call>(&mut self, params: C) -> Result<C::Output, ClientError> {
         if !self.usable {
             return Err(ClientError::Closed);
@@ -94,7 +90,7 @@ impl<R: BufRead, W: Write> Client<R, W> {
             crate::Request::DeviceActions(_) | crate::Request::DeviceUnlockEnrol(_)
         ) || matches!(&envelope.request, crate::Request::Control(p) if p.private_args.is_some())
         {
-            // Private frames never enter the retained public upload buffer.
+            // Private frames never enter the retained buffer.
             let mut line = zeroize::Zeroizing::new(
                 serde_json::to_vec(&envelope).map_err(|e| ClientError::Protocol(e.to_string()))?,
             );
@@ -104,8 +100,7 @@ impl<R: BufRead, W: Write> Client<R, W> {
             self.writer.flush()?;
             drop(line);
         } else {
-            // Reuse the serialized frame across serial calls instead of allocating
-            // and growing a new base64-sized JSON buffer for every upload chunk.
+            // Reuse one frame buffer across calls: an upload chunk is base64-sized.
             self.request_buffer.clear();
             serde_json::to_writer(&mut self.request_buffer, &envelope)
                 .map_err(|e| ClientError::Protocol(e.to_string()))?;
@@ -147,8 +142,8 @@ impl<R: BufRead, W: Write> Client<R, W> {
         }
     }
 
-    /// Upload as a bounded binary stream on a byte-transparent transport,
-    /// and in JSON-line chunks ([`Self::upload_json_lines`]) on any other.
+    /// Upload as a bounded binary stream on a byte-transparent transport, and in JSON-line chunks
+    /// ([`Self::upload_json_lines`]) on any other.
     pub fn upload(&mut self, mut bytes: impl Read) -> Result<String, ClientError> {
         if !self.binary_uploads {
             return self.upload_json_lines(bytes);

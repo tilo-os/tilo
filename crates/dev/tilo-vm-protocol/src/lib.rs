@@ -1,20 +1,7 @@
-//! The contract between the host CLI `tilo-vm` and the guest daemon `tilo-vmd`.
-//!
-//! Transport is newline-delimited JSON-RPC 2.0 over the stdio of
-//! `ssh <vm> tilo-vmd rpc`: one request object per line in, one response
-//! object per line out, strictly in order. The first call on every connection
-//! is [`Hello`], which carries [`PROTOCOL_VERSION`]; a daemon refuses every
-//! other method from a client whose version differs, so an old CLI never
-//! half-drives a new daemon.
-//!
-//! Layer bytes prefer an optional bounded binary substream ([`LayerUploadBinary`])
-//! with count and SHA-256 verification. Older protocol-8 peers retain base64
-//! chunks ([`LayerUploadChunk`]); all other operations remain ordered JSON-RPC.
-//!
-//! Long jobs that stream output (in-VM builds, CI layer extraction) do not
-//! use the RPC loop: `tilo-vm` runs `ssh <vm> tilo-vmd build` (or
-//! `ci-layer`) with a [`BuildJob`] or [`CiJob`] on stdin. The job's own
-//! output streams on stderr and its outcome is one [`JobLine`] on stdout.
+//! The contract between the host CLI `tilo-vm` and the guest daemon `tilo-vmd`: newline-delimited
+//! JSON-RPC 2.0 over the stdio of `ssh <vm> tilo-vmd rpc`, one object per line in and out, strictly
+//! in order. The first call on every connection is [`Hello`], which carries [`PROTOCOL_VERSION`];
+//! a daemon refuses every other method from a client whose version differs.
 
 pub mod binary;
 pub mod client;
@@ -39,28 +26,23 @@ pub use manifest::{ComponentInfo, Manifest, Scope};
 /// Bumped on any incompatible change to a request, response or semantics.
 pub const PROTOCOL_VERSION: u32 = 9;
 
-/// Where in-VM builds keep one synced source tree per host worktree; its
-/// `target/` is the worktree's own, evictable build dir.
+/// One synced source tree per host worktree for in-VM builds; each one's `target/` is
+/// evictable.
 pub const SRC_DIR: &str = "/var/lib/tilo-vm/src";
 
-/// Decoded bytes per upload chunk. Small enough to keep a line bounded,
-/// large enough that per-line overhead is noise.
+/// Decoded bytes per upload chunk.
 pub const UPLOAD_CHUNK_BYTES: usize = 1 << 20;
 
 /// The name of the pseudo-slot whose layers merge into the VM's own `/usr`.
 pub const VM_SLOT: &str = "vm";
 
-/// The name of the pseudo-slot that is the machine's own session: the
-/// session an image runs for its account without a greeter (a board's
-/// always-on session). Only images that run one have it.
+/// The pseudo-slot that is the machine's own session: the one an image runs for its account
+/// without a greeter (a board's always-on session). Only images that run one have it.
 pub const DEVICE_SLOT: &str = "device";
 
-/// How long the keep-awake lease lasts after the last request: every
-/// connection's [`Hello`] renews it, so a machine someone drives does not
-/// suspend under them, and one they stopped driving can again.
+/// How long the keep-awake lease lasts after the last request; every [`Hello`] renews it.
 pub const AWAKE_IDLE_SECONDS: u64 = 30 * 60;
 
-/// One request line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RequestEnvelope {
     pub jsonrpc: String,
@@ -69,7 +51,7 @@ pub struct RequestEnvelope {
     pub request: Request,
 }
 
-/// One response line: exactly one of `result` or `error` is present.
+/// Exactly one of `result` or `error` is set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResponseEnvelope {
     pub jsonrpc: String,
@@ -80,7 +62,7 @@ pub struct ResponseEnvelope {
     pub error: Option<RpcError>,
 }
 
-/// An error the daemon reports. `hint` is always the next thing to try.
+/// An error the daemon reports; `hint` is the next thing to try.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[error("{message}")]
 pub struct RpcError {
@@ -111,7 +93,6 @@ pub mod code {
     pub const JOB: i64 = 11;
 }
 
-/// Every method, tagged by its wire name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
 pub enum Request {
@@ -211,7 +192,7 @@ impl Request {
     }
 }
 
-/// A typed request: its params struct names its result type.
+/// A request whose params struct names its result type.
 pub trait Call: Into<Request> {
     type Output: DeserializeOwned + Serialize;
 }
@@ -280,20 +261,17 @@ pub struct SlotCreate {
     pub kind: SlotKind,
     #[serde(default)]
     pub owner: Owner,
-    /// Headful only: one vkms connector per output, left to right, with
-    /// this mode and scale applied through the display settings. Empty
-    /// means one connector at the compositor's default mode and scale.
+    /// Headful only: one vkms connector per output, left to right, with this mode and scale
+    /// applied through the display settings. Empty means one connector at the default mode.
     #[serde(default)]
     pub outputs: Vec<OutputSpec>,
-    /// Give the slot's user a throwaway test identity through the session's
-    /// dev-only control op, and start the session with fresh desktop state.
+    /// Give the slot's user a throwaway test identity through the session's dev-only control
+    /// op, and start the session with fresh desktop state.
     #[serde(default)]
     pub identity: bool,
-    /// Make the slot's user this VM's person instead, as a device's first
-    /// login does: no private identity root, and the session's own
-    /// onboarding creates their identity and certifies the machine's device
-    /// key, which starts `fs`. One slot per VM; refused once the machine
-    /// holds an identity.
+    /// Make the slot's user this VM's person instead, as a device's first login does: the
+    /// session's onboarding creates their identity and certifies the machine's device key, which
+    /// starts `fs`. One slot per VM; refused once the machine holds an identity.
     #[serde(default)]
     pub device_identity: bool,
 }
@@ -311,8 +289,6 @@ pub struct SlotRm {
     pub name: String,
 }
 
-/// One slot with every file its current generation adds, and where each
-/// comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotShow {
     pub name: String,
@@ -321,10 +297,8 @@ pub struct SlotShow {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerUploadBegin {}
 
-/// Optional protocol-8 upgrade: ready response, bounded binary frames, then
-/// a same-id byte-count response. Use `Client::upload` after explicit transport
-/// opt-in; a bare RPC call cannot perform the substream. Older peers reject it
-/// before consuming bytes.
+/// A bounded binary substream: ready response, binary frames, then a same-id byte count. Only
+/// `Client::upload` can drive it; a bare RPC call cannot.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerUploadBinary {}
 
@@ -335,7 +309,6 @@ pub struct LayerUploadChunk {
     pub data: String,
 }
 
-/// Where the bytes of a layer come from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LayerSource {
@@ -354,8 +327,8 @@ pub struct LayerImport {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerList {}
 
-/// Verify stored content before reusing a layer. Optional on protocol 8 peers;
-/// clients must stream normally when this method is unavailable.
+/// Verify stored content before reusing a layer; when the method is unavailable, stream the
+/// layer instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerVerify {
     pub hash: String,
@@ -379,8 +352,7 @@ pub struct Swap {
     pub partner: Option<Partner>,
 }
 
-/// A slot's next generation: what a swap that moves together with it leaves
-/// that slot reading.
+/// A slot's next generation, for a swap that moves with it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Partner {
     pub slot: String,
@@ -391,13 +363,12 @@ pub struct Partner {
 /// The interface every runtime service speaks to apps.
 pub const RUNTIME: &str = "runtime";
 
-/// The runtime services apps reach that run VM-wide, outside any slot's
-/// session set: swapped into the `vm` slot and shared by every slot. Each
-/// speaks the runtime interface alone.
+/// The runtime services apps reach that run VM-wide, outside any slot's session set: swapped
+/// into the `vm` slot and shared by every slot. Each speaks the runtime interface alone.
 pub const VM_RUNTIME_SERVICES: &[&str] = &["fs"];
 
-/// The canonical matched session components, in layer precedence order.
-/// VM-wide managers and boot components deliberately remain separate.
+/// The matched session components, in layer precedence order. VM-wide managers and boot
+/// components are separate.
 pub const USERSPACE_COMPONENTS: &[&str] = &[
     "launcher",
     "install",
@@ -412,8 +383,8 @@ pub const USERSPACE_COMPONENTS: &[&str] = &[
     "tilo-session",
 ];
 
-/// A build/import receipt from the same frozen source inventory. Historical
-/// provenance of reused content-addressed layer bytes remains independent.
+/// A build receipt from the same frozen source inventory; reused layer bytes keep the provenance
+/// of their own build.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserspaceMember {
     pub component: String,
@@ -422,7 +393,7 @@ pub struct UserspaceMember {
     pub source_inventory: String,
 }
 
-/// Host-observed account and login lifetime, revalidated at activation.
+/// The account and login a generation was applied to, revalidated at activation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserspaceSession {
     pub user: String,
@@ -431,8 +402,7 @@ pub struct UserspaceSession {
     pub login_wrapper: Option<u32>,
 }
 
-/// All members are imported before this generation-conditional admission.
-/// Older daemons reject this new method before making any side effects.
+/// All members are imported before this applies them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserspaceApply {
     pub slot: String,
@@ -449,9 +419,8 @@ pub struct UserspacePhase {
     pub seconds: f64,
 }
 
-/// One aggregate, including partial durable selection and its failure. A
-/// failed selection retains its SDK closure; it never reports success or
-/// silently removes the runtime beneath selected user packages.
+/// A failed selection keeps its SDK closure; it never reports success or leaves selected user
+/// packages without the runtime beneath them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserspaceResult {
     pub apply: ApplyResult,
@@ -512,16 +481,15 @@ pub struct Gc {
     /// Generations to keep per slot, besides the current one.
     pub keep: u32,
     pub dry_run: bool,
-    /// In-VM build dirs (one per host worktree) to keep, most recently
-    /// used first; older ones are evicted.
+    /// In-VM build dirs (one per host worktree) to keep, most recently used first.
     #[serde(default)]
     pub keep_targets: Option<u32>,
-    /// Evict further build dirs, least recently used first, until the VM
-    /// has this much free space.
+    /// Evict further build dirs, least recently used first, until the VM has this much free
+    /// space.
     #[serde(default)]
     pub free_goal_bytes: Option<u64>,
-    /// Unreferenced layers younger than this stay (an import whose swap has
-    /// not happened yet looks unreferenced); the daemon's default when absent.
+    /// Unreferenced layers younger than this stay: an import whose swap has not happened yet
+    /// looks unreferenced.
     #[serde(default)]
     pub min_age_seconds: Option<u64>,
 }
@@ -555,9 +523,6 @@ pub struct BootConfirm {
     pub expect_version: Option<String>,
 }
 
-/// Change the keep-awake lease beyond what every request does by itself
-/// (hold the machine awake until [`AWAKE_IDLE_SECONDS`] after it), or with
-/// neither field set just report it.
 /// Inspect or configure one saved `NetworkManager` profile's magic-packet wake.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -566,7 +531,7 @@ pub struct NetworkWake {
     pub enabled: Option<bool>,
 }
 
-/// Configuration observations do not certify physical resume.
+/// A configured, supported profile does not prove the machine wakes from it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkWakeStatus {
     pub profile: String,
@@ -610,7 +575,7 @@ impl SlotKind {
     }
 }
 
-/// Who created a slot, so humans can tell agents' slots apart.
+/// Who created a slot, to tell agents' slots apart.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Owner {
     #[serde(default)]
@@ -652,10 +617,8 @@ pub struct Provenance {
     /// `host`, `vm` or `ci`.
     #[serde(default)]
     pub builder: Option<String>,
-    /// The system interface versions the layer was built for: the
-    /// `[interfaces]` of `system-interfaces.toml` in the tree it was built
-    /// from ([`system_interfaces`]). After an image change a layer built
-    /// against another base still merges when these match the booted
+    /// The interface versions the layer was built for: the `[interfaces]` of `system-interfaces.toml`
+    /// in its tree. After an image change a layer still merges when these match the booted
     /// image's.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub interfaces: BTreeMap<String, u32>,
@@ -666,8 +629,7 @@ pub const SYSTEM_INTERFACES_IN_TREE: &str = "os/usr/share/tilo/system-interfaces
 /// Where an image declares them.
 pub const SYSTEM_INTERFACES: &str = "/usr/share/tilo/system-interfaces.toml";
 
-/// The interfaces the source tree at `root` declares
-/// ([`SYSTEM_INTERFACES_IN_TREE`]); empty when it declares none.
+/// The interfaces the source tree at `root` declares; empty when it declares none.
 #[must_use]
 pub fn tree_interfaces(root: &std::path::Path) -> BTreeMap<String, u32> {
     std::fs::read_to_string(root.join(SYSTEM_INTERFACES_IN_TREE))
@@ -675,8 +637,8 @@ pub fn tree_interfaces(root: &std::path::Path) -> BTreeMap<String, u32> {
         .unwrap_or_default()
 }
 
-/// The `[interfaces]` table of a `system-interfaces.toml`: each interface's
-/// one version. Empty when the text is not such a file.
+/// The `[interfaces]` table of a `system-interfaces.toml`, each interface's one version. Empty
+/// when the text is not such a file.
 #[must_use]
 pub fn system_interfaces(text: &str) -> BTreeMap<String, u32> {
     #[derive(Deserialize)]
@@ -695,10 +657,8 @@ pub fn system_interfaces(text: &str) -> BTreeMap<String, u32> {
 pub enum Declaration {
     /// There is no declaration: nothing is judged against one.
     Absent,
-    /// There is one, but not in the form this code reads: written for
-    /// another version of the system (on 2026-10-22 a shell layer's
-    /// one-version-per-interface declaration met an image whose app host
-    /// read lists of versions).
+    /// There is one, but in a form this code does not read: it was written for another version
+    /// of the system.
     Unreadable { detail: String },
     /// Each interface's one version.
     Versions { versions: BTreeMap<String, u32> },
@@ -749,10 +709,9 @@ fn local() -> String {
 }
 
 impl Provenance {
-    /// A component copied out of CI's image of a build, for `arch`:
-    /// `requested` is what the client knew (component, profile, features,
-    /// the commit it asked for); `digest` and `revision` are the pulled
-    /// image's. The same record whether the VM or the host pulled it.
+    /// A component copied out of CI's image of a build, for `arch`: `requested` is what the
+    /// client knew (component, profile, features, the commit it asked for); `digest` and
+    /// `revision` are the pulled image's.
     pub fn from_ci(
         requested: &Self,
         arch: &str,
@@ -772,7 +731,6 @@ impl Provenance {
         provenance
     }
 
-    /// A local build of `component` with nothing else known yet.
     pub fn local(component: &str) -> Self {
         Self {
             component: component.to_owned(),
@@ -792,9 +750,8 @@ impl Provenance {
     }
 }
 
-/// What the VM's base image was built with, from the dev image's
-/// `/usr/share/tilo-vm/base.json`. Layers are checked against it, field for
-/// field in the form [`Provenance`] records.
+/// What the VM's base image was built with, from its `/usr/share/tilo-vm/base.json`. Layers are
+/// checked against it, field for field in the form [`Provenance`] records.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BaseInfo {
     #[serde(default)]
@@ -813,7 +770,7 @@ pub struct BaseInfo {
     pub cargo_lock_hash: Option<String>,
 }
 
-/// Who holds seat0, since when.
+/// Who holds seat0.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lease {
     pub slot: String,
@@ -821,7 +778,6 @@ pub struct Lease {
     pub since: String,
 }
 
-/// Bytes on the VM disk that holds the state root.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Storage {
     /// Physically allocated bytes of all layers.
@@ -843,14 +799,12 @@ pub enum Policy {
     SessionRestart,
     /// `systemd-sysext refresh`, then the affected system units restart.
     VmRefresh,
-    /// A kernel changed: VM `/usr` refreshed, the new kernel installed as
-    /// the next boot entry ([`ApplyResult::boot`]); the client reboots the VM
-    /// and confirms the boot ([`BootConfirm`]).
+    /// A kernel changed: VM `/usr` refreshed and the new kernel made the next boot entry
+    /// ([`ApplyResult::boot`]); the client reboots the VM and confirms the boot.
     Reboot,
 }
 
-/// One observable step the daemon took, reported back so the CLI can say
-/// what happened as a consequence.
+/// One observable step the daemon took.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
@@ -891,16 +845,15 @@ pub enum Action {
     ProvisionTestIdentity {
         created: bool,
     },
-    /// The session's onboarding made its user this VM's person, and the
-    /// machine's device certificate started `fs`.
+    /// The session's onboarding made its user this VM's person; the machine's device certificate
+    /// started `fs`.
     CompleteOnboarding {
         created: bool,
     },
-    /// The slot user's desktop layout removed, so the next session starts
-    /// with none.
+    /// The slot user's desktop layout removed, so the next session starts with none.
     ResetDesktopState,
-    /// The desktop of a login restarted in place (`tilo-session` on
-    /// SIGUSR1): the login, its user manager and its services stayed.
+    /// The desktop of a login restarted in place (`tilo-session` on SIGUSR1); the login, its
+    /// user manager and its services stayed.
     RestartDesktop {
         user: String,
     },
@@ -913,8 +866,7 @@ pub enum Action {
     Deferred {
         reason: String,
     },
-    /// A kernel's vmlinuz and initramfs copied to `/boot` with a boot loader
-    /// entry of its own.
+    /// A kernel's vmlinuz and initramfs copied to `/boot` with a boot loader entry of their own.
     InstallBootEntry {
         entry: String,
         kver: String,
@@ -971,8 +923,7 @@ pub struct AwakeLease {
     pub problem: Option<String>,
 }
 
-/// Tools found on the VM's `PATH`, which decide where builds and CI layer
-/// extraction can run.
+/// Tools found on the VM's `PATH`, which decide where builds and CI layer extraction can run.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -1022,8 +973,7 @@ pub struct SlotInfo {
     pub user: Option<String>,
     /// Current generation; 0 is the base generation with no layers.
     pub generation: u64,
-    /// Every generation a rollback can reach, oldest first, starting with
-    /// the base generation 0.
+    /// Every generation a rollback can reach, oldest first, starting with the base generation 0.
     pub generations: Vec<u64>,
     /// Component name to layer hash for the current generation.
     pub components: BTreeMap<String, String>,
@@ -1033,8 +983,8 @@ pub struct SlotInfo {
     /// The outputs the slot was created with (`--outputs`), left to right.
     #[serde(default)]
     pub outputs: Vec<OutputSpec>,
-    /// How the running session differs from a greetd session (capabilities,
-    /// `SELinux` domain); `None` when it matches or is not running.
+    /// How the running session differs from a greetd session (capabilities, `SELinux` domain);
+    /// `None` when it matches or is not running.
     #[serde(default)]
     pub parity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1078,8 +1028,8 @@ pub struct SlotShowResult {
     pub slot: SlotInfo,
     /// Every file and symlink, grouped by component, sorted by path.
     pub files: Vec<SlotFile>,
-    /// Import provenance of the selected layers, keyed by component. Missing
-    /// metadata stays missing; callers must not infer a source from the request.
+    /// Import provenance of the selected layers, keyed by component. Missing metadata stays
+    /// missing; callers must not infer a source from the request.
     #[serde(default)]
     pub provenance: std::collections::BTreeMap<String, Provenance>,
 }
@@ -1114,26 +1064,23 @@ pub struct StatusResult {
     pub seat0: Option<Lease>,
     pub storage: Storage,
     pub issues: Vec<Issue>,
-    /// The last time the machine booted another OS image than its slots
-    /// were made on, and which slots kept layers built on the previous one.
-    /// Absent from a daemon that does not record images.
+    /// The last time the machine booted another OS image than its slots were made on, and which
+    /// slots kept layers built on the previous one. Absent from a daemon that does not record
+    /// images.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_change: Option<ImageChange>,
-    /// The OS image this boot runs, as [`booted_image`] names it: recorded
-    /// at every boot. Absent from a daemon that does not record images.
+    /// The OS image this boot runs, as [`booted_image`] names it. Absent from a daemon that does
+    /// not record images.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slots_image: Option<String>,
 }
 
-/// The machine booted another OS image than the one recorded at the boot
-/// before. Layers are built against one image (its libraries, its
-/// protocols, its other components), so on another one they may run old
-/// programs against new ones. They are the person's deployed work all the
-/// same: every slot stays on its generation, and nothing is deleted. Each
-/// layer still merges when it was built against the booted base, or when
-/// its interface versions match the booted image's; any other is held,
-/// kept but not merged, and the person is told. Only an explicit rollback
-/// or gc deletes. An unknown previous image is never a change.
+/// The machine booted another OS image than the one recorded at the boot before. Layers are
+/// built against one image (its libraries, its protocols, its other components), so on another
+/// one they may run old programs against new ones. Every slot stays on its generation and
+/// nothing is deleted: a layer merges when it was built against the booted base or when its
+/// interface versions match the booted image's, and any other is held and reported. An unknown
+/// previous image is never a change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageChange {
     /// The image recorded at the boot before. `None` only in a record an
@@ -1153,9 +1100,9 @@ pub struct ImageChange {
     /// it.
     #[serde(default)]
     pub held: Vec<HeldLayer>,
-    /// Slots an older tilo-vmd put back on the image at this change,
-    /// deleting their generations. tilo-vmd no longer drops anything; this
-    /// stays readable so such a record is reported as what it was.
+    /// Slots an older tilo-vmd put back on the image at this change, deleting their generations.
+    /// tilo-vmd no longer drops anything; the field stays readable so such a record is reported
+    /// as what it was.
     #[serde(default)]
     pub dropped: Vec<SlotLayers>,
     /// What that older tilo-vmd deleted of the dropped slots' layers.
@@ -1174,7 +1121,6 @@ pub struct HeldLayer {
     pub reason: String,
 }
 
-/// One slot's generation at an [`ImageChange`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotLayers {
     pub slot: String,
@@ -1193,10 +1139,9 @@ impl SlotLayers {
     }
 }
 
-/// The booted OS image, from a kernel command line: the composefs digest of
-/// the deployment (`composefs=`, bootc's composefs backend) or its ostree
-/// deployment path (`ostree=`). `None` for a machine booted some other way,
-/// where nothing tells two images apart.
+/// The booted OS image, from a kernel command line: the composefs digest of the deployment
+/// (`composefs=`, bootc's composefs backend) or its ostree deployment path (`ostree=`). `None`
+/// for a machine booted some other way, where nothing tells two images apart.
 #[must_use]
 pub fn booted_image(cmdline: &str) -> Option<String> {
     cmdline.split_whitespace().find_map(|word| {
@@ -1210,8 +1155,8 @@ pub fn booted_image(cmdline: &str) -> Option<String> {
 }
 
 impl ImageChange {
-    /// One line per slot, for people: which slots run layers built on the
-    /// previous image, and the way to either image.
+    /// One line per slot: which slots run layers built on the previous image, and how to reach
+    /// either image.
     #[must_use]
     pub fn describe(&self) -> Vec<String> {
         let mut lines = Vec::new();
@@ -1314,7 +1259,7 @@ pub struct LayerInfo {
     pub provenance: Provenance,
 }
 
-/// Canonical installer selection, separate from the protocol-v8 action vocabulary.
+/// The installer's canonical package selection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CohortSelection {
     pub id: String,
@@ -1332,7 +1277,7 @@ pub struct ApplyResult {
     pub changed: bool,
     pub policy: Policy,
     pub actions: Vec<Action>,
-    /// Signed package selections; older protocol-v8 clients ignore this field.
+    /// Signed package selections.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cohort_selection: Vec<CohortSelection>,
     /// Non-fatal findings, e.g. a layer built against a different base image.
@@ -1344,6 +1289,7 @@ pub struct ApplyResult {
 }
 
 /// The boot entry a kernel swap or rollback prepared.
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BootChange {
     /// Kernel release the next boot runs; `None` for the image's own kernel.
@@ -1355,8 +1301,8 @@ pub struct BootChange {
     pub fallback: Option<String>,
     /// `systemd-boot` or `grub`.
     pub loader: String,
-    /// How the initramfs was made (the image's dracut arguments, or the
-    /// distribution's defaults), `None` when an existing one was reused.
+    /// How the initramfs was made (the image's dracut arguments, or the distribution's defaults);
+    /// `None` when an existing one was reused.
     #[serde(default)]
     pub initramfs: Option<String>,
     #[serde(default)]
@@ -1369,8 +1315,8 @@ pub struct BootConfirmResult {
     pub running: String,
     /// `uname -v` of the running kernel.
     pub version: String,
-    /// The kernel release the last swap or rollback installed; `None` when
-    /// it put the image's kernel back.
+    /// The kernel release the last swap or rollback installed; `None` when it put the image's
+    /// kernel back.
     pub expected: Option<String>,
     /// True when the running kernel is the expected one; its entry is now
     /// the default.
@@ -1408,8 +1354,7 @@ pub struct ControlResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputResult {
     pub slot: String,
-    /// The logind seat the devices belong to (`seat-<slot>`, or `seat0`
-    /// while the slot holds it).
+    /// The logind seat the devices belong to (`seat-<slot>`, or `seat0` while the slot holds it).
     pub seat: String,
     /// Kernel input events written, `SYN` reports included.
     pub events: u64,
@@ -1468,7 +1413,6 @@ pub struct CiJob {
     pub provenance: Provenance,
 }
 
-/// What a job produced.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JobOutput {
@@ -1500,8 +1444,7 @@ pub struct JobLine {
     pub error: Option<RpcError>,
 }
 
-/// Prefix of the job line, so it is found among anything else a remote
-/// shell prints on stdout.
+/// Prefix of the job line, so it is found among anything else a remote shell prints there.
 pub const JOB_LINE_PREFIX: &str = "tilo-vmd-job: ";
 
 impl JobLine {
@@ -1521,8 +1464,8 @@ impl JobLine {
     }
 }
 
-/// Slot names become Linux user names (`tds-<name>`, at most 32 bytes)
-/// and systemd instance names, so they are short, lowercase and dash-safe.
+/// Slot names become Linux user names (`tds-<name>`, at most 32 bytes) and systemd instance
+/// names, so they are short, lowercase and dash-safe.
 pub fn valid_slot_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     (1..=28).contains(&bytes.len())
@@ -1533,9 +1476,8 @@ pub fn valid_slot_name(name: &str) -> bool {
         && !name.ends_with('-')
 }
 
-/// Distribution package names travel on a root command line, so only the
-/// characters package names use get through: `gtk4-devel-tools`, `libfoo++`,
-/// `python3.13`. No option can start one.
+/// Distribution package names travel on a root command line, so only the characters package
+/// names use get through: `gtk4-devel-tools`, `libstdc++`, `python3.13`. No option can start one.
 pub fn valid_package_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     (1..=128).contains(&bytes.len())
@@ -1593,14 +1535,11 @@ mod tests {
             serde_json::json!(["2560x1600@2", "1920x1080@1"])
         );
         assert_eq!(serde_json::from_value::<Request>(value).unwrap(), request);
-        // A client that sends no outputs gets the single default connector.
         let bare: SlotCreate = serde_json::from_str(r#"{"name":"a","kind":"headful"}"#).unwrap();
         assert!(bare.outputs.is_empty());
         assert!(!bare.identity);
     }
 
-    /// Request lines are flat JSON-RPC, method names match serde tags, and job lines are found among other
-    /// output.
     #[test]
     fn the_vm_protocol_wire_is_flat_tagged_and_found_in_output() {
         // Phase: request_line_is_flat_json_rpc.

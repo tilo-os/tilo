@@ -1,10 +1,7 @@
-//! Input for headful slots: what `tilo-vm input` asks for, and how key
-//! names, text and gamepad buttons map to Linux evdev codes (US layout).
-//!
-//! The codes are the kernel's `input-event-codes.h`. They travel through
-//! per-seat uinput devices (keyboard, pointer, touchscreen, pen, gamepad),
-//! so the compositor sees them through the real kernel path (libinput, or
-//! evdev for game controllers), exactly like hardware plugged into that seat.
+//! Input for headful slots: what `tilo-vm input` asks for, and how key names, text and gamepad
+//! buttons map to Linux evdev codes (US layout, the kernel's `input-event-codes.h`). They travel
+//! through per-seat uinput devices, so the compositor sees them through the real kernel path
+//! (libinput, or evdev for game controllers), like hardware plugged into that seat.
 
 use serde::{Deserialize, Serialize};
 
@@ -105,7 +102,6 @@ impl Stick {
         }
     }
 
-    /// The (x, y) absolute axes of this stick.
     pub fn axes(self) -> (u16, u16) {
         match self {
             Self::Left => (ABS_X, ABS_Y),
@@ -336,7 +332,6 @@ const PUNCTUATION: &[(char, char, u16)] = &[
     ('/', '?', 53),
 ];
 
-/// One key stroke: the key and whether shift is held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stroke {
     pub code: u16,
@@ -724,8 +719,6 @@ mod tests {
         );
     }
 
-    /// Combos map to evdev codes, text types on a US layout, validation names the problem, and actions
-    /// round-trip as tagged JSON.
     #[test]
     fn input_actions_map_validate_and_round_trip() {
         // Phase: combos_map_to_evdev_codes.

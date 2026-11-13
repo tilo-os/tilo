@@ -1,8 +1,6 @@
-//! Reader for `os/components.toml`, the component manifest.
-//!
-//! The manifest belongs to the image build, and `os/scripts/install-components.py`
-//! owns every path decision in it; dev tooling reads only what it needs to
-//! build a component and to decide what a swap restarts:
+//! Reader for `os/components.toml`, the component manifest. It belongs to the image build, and
+//! `os/scripts/install-components.py` owns every path decision in it; dev tooling reads only what
+//! it needs to build a component and to decide what a swap restarts:
 //!
 //! ```toml
 //! [[component]]
@@ -20,8 +18,8 @@
 //! files = [{ from = "fs", to = "/usr/bin/fs", mode = "0755" }]
 //! ```
 //!
-//! Everything else is ignored, so the schema can grow without breaking dev
-//! tools, and malformed entries are skipped rather than fatal.
+//! Everything else is ignored, so the schema can grow without breaking dev tools, and malformed
+//! entries are skipped rather than fatal.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -66,19 +64,16 @@ pub struct ComponentInfo {
     pub scope: Scope,
     #[serde(default)]
     pub units: Vec<String>,
-    /// User units whose `ExecStart` runs these files. A slot's session
-    /// restarts its whole user manager; the owner's login on a laptop keeps
-    /// it and restarts only these.
+    /// User units whose `ExecStart` runs these files. A slot's session restarts its whole user
+    /// manager; the owner's login on a laptop keeps it and restarts only these.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub user_units: Vec<String>,
-    /// Takes effect at the next boot (`dev_swap = "reboot"`, the kernel):
-    /// the daemon installs it as the VM's next boot entry and the client
-    /// reboots the VM.
+    /// Takes effect at the next boot (`dev_swap = "reboot"`, the kernel): the daemon installs it
+    /// as the VM's next boot entry and the client reboots the VM.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reboot: bool,
-    /// VM-wide files no session runs (`outside_sessions = true`, such as
-    /// tilo-vmd itself): a swap refreshes the VM's `/usr` and restarts
-    /// `units`, but leaves running sessions as they are.
+    /// VM-wide files no session runs (`outside_sessions = true`, such as tilo-vmd itself): a swap
+    /// refreshes the VM's `/usr` and restarts `units`, but leaves running sessions as they are.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub outside_sessions: bool,
     /// Opt-in phase CPU recording for a stand-in slot's shell generation.
@@ -87,7 +82,6 @@ pub struct ComponentInfo {
 }
 
 impl ComponentInfo {
-    /// A component of `scope` that restarts `units` and needs no reboot.
     pub fn new(scope: Scope, units: Vec<String>) -> Self {
         Self {
             scope,
@@ -103,36 +97,33 @@ impl ComponentInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Component {
     pub name: String,
-    /// `kind = "boot"`: only a cold boot exercises it. tilo-vm swaps it only
-    /// when it also has `dev_swap` (then `info.reboot` is set); otherwise a
-    /// swap is redirected to `scenario`.
+    /// `kind = "boot"`: only a cold boot exercises it. tilo-vm swaps it only when it also has
+    /// `dev_swap` (then `info.reboot` is set); otherwise a swap is redirected to `scenario`.
     pub boot: bool,
     /// For boot components: the os/dev driver that cold-boots them.
     pub scenario: Option<String>,
-    /// For swappable boot components: the script that builds them for a dev
-    /// VM, relative to the repository root.
+    /// For swappable boot components: the script that builds them for a dev VM, relative to the
+    /// repository root.
     pub dev_build: Option<String>,
     pub info: ComponentInfo,
     pub packages: Vec<String>,
-    /// Only the manifest's installed binary targets, rather than every binary
-    /// in each package (which can include heavyweight diagnostic tools).
+    /// Only the manifest's installed binary targets, not every binary in each package (which can
+    /// include heavyweight diagnostic tools).
     pub bins: Vec<String>,
     /// Package-qualified cargo features (`pkg/feature`).
     pub features: Vec<String>,
-    /// Features only dev builds enable, normally package-qualified. A bare
-    /// feature can target a single package with a shadowing self dependency.
+    /// Features only dev builds enable, normally package-qualified. A bare feature can target a
+    /// single package with a shadowing self dependency.
     pub dev_features: Vec<String>,
     pub profile: String,
-    /// Absolute install paths (`to`) of the component's files; a trailing
-    /// `/` marks a whole directory tree. What a CI layer extracts.
+    /// Absolute install paths (`to`) of the component's files; a trailing `/` marks a whole
+    /// directory tree. What a CI layer extracts.
     pub paths: Vec<String>,
-    /// `layer = "direct"`: the image build writes these files itself (the
-    /// signed runtime bundle, the thin-app store), so no cargo build of
-    /// `packages` alone produces them.
+    /// `layer = "direct"`: the image build writes these files itself (the signed runtime bundle,
+    /// the thin-app store), so no cargo build of `packages` alone produces them.
     pub image_assembled: bool,
 }
 
-/// Is `profile` a cargo profile name tilo-vm will pass on?
 pub fn valid_profile(profile: &str) -> bool {
     !profile.is_empty()
         && profile
@@ -155,8 +146,8 @@ impl Component {
         self
     }
 
-    /// The directory under the target dir that cargo writes this profile
-    /// to: `dev` and `test` land in `debug`, `bench` in `release`.
+    /// The directory under the target dir that cargo writes this profile to: `dev` and `test` land
+    /// in `debug`, `bench` in `release`.
     pub fn profile_dir(&self) -> &str {
         match self.profile.as_str() {
             "dev" | "test" => "debug",
@@ -165,8 +156,8 @@ impl Component {
         }
     }
 
-    /// Every feature a dev build enables: the manifest's, its dev features,
-    /// then `extra` (e.g. `pkg/dev-overrides` found in `cargo metadata`).
+    /// Every feature a dev build enables: the manifest's, its dev features, then `extra` (such as
+    /// `pkg/dev-overrides` found in `cargo metadata`).
     pub fn build_features(&self, extra: &[String]) -> Vec<String> {
         let mut features: Vec<String> = Vec::new();
         for feature in self.features.iter().chain(&self.dev_features).chain(extra) {
@@ -177,15 +168,13 @@ impl Component {
         features
     }
 
-    /// `cargo` arguments (after the program name) that build this
-    /// component for a dev layer. Both builders run exactly these.
+    /// `cargo` arguments (after the program name) that build this component for a dev layer. Both
+    /// builders run exactly these.
     ///
-    /// A `release` layer links the way dev images link their own release
-    /// binaries (`TILO_RUST_LTO=off` in os/Containerfile): no LTO, sixteen
-    /// codegen units. The workspace profile's fat LTO with one unit
-    /// re-optimises the whole program on every change, which made a warm
-    /// shell build take over fifteen minutes. Passed as `--config` rather
-    /// than environment so a cargo drop-in that builds elsewhere sees it.
+    /// A `release` layer links the way dev images link their own release binaries
+    /// (`TILO_RUST_LTO=off` in os/Containerfile): no LTO, sixteen codegen units, since the
+    /// workspace's fat LTO with one unit re-optimises the whole program on every change. Passed as
+    /// `--config` rather than environment so a cargo drop-in that builds elsewhere sees it.
     pub fn cargo_args(&self, extra: &[String]) -> Vec<String> {
         let mut args: Vec<String> = ["build", "--locked", "--profile", &self.profile]
             .map(str::to_owned)
@@ -212,8 +201,8 @@ impl Component {
         args
     }
 
-    /// Arguments for `python3` that lay the build out under `dest` with the
-    /// manifest installer, which owns every path decision.
+    /// Arguments for `python3` that lay the build out under `dest` with the manifest installer,
+    /// which owns every path decision.
     pub fn installer_args(&self, from: &str, dest: &str) -> Vec<String> {
         [
             INSTALLER, "--quiet", "--from", from, "--dest", dest, &self.name,
@@ -235,8 +224,8 @@ pub const INSTALLER: &str = "os/scripts/install-components.py";
 /// The cargo feature that turns on developer overrides in a package.
 pub const DEV_FEATURE: &str = "dev-overrides";
 
-/// `pkg/dev-overrides` for each of `packages` that declares the feature,
-/// read from `cargo metadata --no-deps --format-version 1` output.
+/// `pkg/dev-overrides` for each of `packages` that declares the feature, read from `cargo metadata
+/// --no-deps --format-version 1` output.
 pub fn dev_override_features(metadata: &serde_json::Value, packages: &[String]) -> Vec<String> {
     let Some(all) = metadata
         .get("packages")
@@ -290,11 +279,8 @@ impl Manifest {
         }
     }
 
-    /// Parse manifest text: `[[component]]` entries (a `[components.<name>]`
-    /// table is accepted too).
-    ///
-    /// # Errors
-    /// Invalid TOML. Entries lacking a name are skipped, not rejected.
+    /// Parse manifest text: `[[component]]` entries (a `[components.<name>]` table is accepted
+    /// too). Invalid TOML is an error; entries lacking a name are skipped, not rejected.
     pub fn parse(text: &str) -> Result<Self, String> {
         let root: toml::Table = text.parse().map_err(|e: toml::de::Error| e.to_string())?;
         let mut components = BTreeMap::new();
@@ -460,9 +446,6 @@ mod tests {
         );
     }
 
-    /// The component array form parses; reboot travels only when set; a profile override changes the build
-    /// and its output dir; cargo and installer arguments; unknown scope is session; the repository manifest
-    /// parses; a missing file is none.
     #[test]
     #[allow(
         clippy::too_many_lines,

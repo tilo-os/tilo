@@ -252,8 +252,7 @@ fn serialized_frame_storage_is_reused_without_leaking_previous_request_bytes() {
     expected_bytes.push(b'\n');
     assert_eq!(client.request_buffer, expected_bytes);
     assert_eq!(client.request_buffer.capacity(), capacity);
-    // The wire decoder parses the complete frame: stale large-request bytes
-    // after this tiny request would fail before it could return LayerList.
+    // Stale bytes after this tiny request would make the frame fail to parse.
     assert!(client.call(LayerList {}).unwrap().is_empty());
     assert_eq!(client.request_buffer.capacity(), capacity);
     assert!(client.request_buffer.len() < 128);
@@ -267,8 +266,7 @@ fn unusually_large_rpc_frames_are_sent_but_not_retained() {
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":[]}\n"
     );
     let mut client = Client::new(Cursor::new(responses), Vec::new());
-    // Direct RPC bodies can be larger than the chunks produced by upload().
-    // This only tests framing/cache retention; the daemon owns validation.
+    // A direct RPC body can be larger than any upload chunk.
     let data = "a".repeat(MAX_RETAINED_REQUEST_BYTES + 1);
     client
         .call(LayerUploadChunk {
