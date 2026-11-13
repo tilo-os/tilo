@@ -521,8 +521,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_unavailable_notifier_conforms() {
-        conformance::check_contract(&*unavailable());
+    fn notifiers_that_reach_no_platform_conform() {
+        let absent = unavailable();
+        let recording = conformance::Recording::default();
+        let rows: [(&str, &dyn Notifier); 2] = [
+            ("the_unavailable_notifier_conforms", &*absent),
+            ("a_recording_notifier_conforms", &recording),
+        ];
+        for (row, notifier) in rows {
+            eprintln!("row: {row}");
+            conformance::check_contract(notifier);
+        }
     }
 
     #[test]
@@ -572,11 +581,6 @@ mod tests {
         ] {
             assert!(validate(&bad).is_err(), "{bad:?}");
         }
-    }
-
-    #[test]
-    fn a_recording_notifier_conforms() {
-        conformance::check_contract(&conformance::Recording::default());
     }
 
     #[test]
