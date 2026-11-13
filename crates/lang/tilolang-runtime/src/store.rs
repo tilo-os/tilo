@@ -1940,6 +1940,81 @@ pub fn removed_of_log(
         .collect())
 }
 
+// ---- a field as a task's reads carry it ---------------------------------------------------
+
+/// A field as a task's reads carry it between the app's host and the task's: tagged by
+/// its kind (`{"bool": true}`), the inverse of [`field_of`].
+pub fn field_json(value: &FieldValue) -> Json {
+    match value {
+        FieldValue::Absent => serde_json::json!({"absent": true}),
+        FieldValue::Scalar(Scalar::Bool(flag)) => serde_json::json!({"bool": flag}),
+        FieldValue::Scalar(Scalar::Int(int)) => serde_json::json!({"int": int}),
+        FieldValue::Scalar(Scalar::Float(float)) => serde_json::json!({"float": float}),
+        FieldValue::Scalar(Scalar::Text(text)) => serde_json::json!({"str": text}),
+        FieldValue::Scalar(Scalar::Json(value)) => serde_json::json!({"json": value}),
+        FieldValue::Counter(count) => serde_json::json!({"counter": count}),
+        FieldValue::Text(text) => serde_json::json!({"text": text}),
+        FieldValue::Rich(rich) => serde_json::json!({"rich": rich}),
+        FieldValue::Items(items) => serde_json::json!({"items": items}),
+        FieldValue::Keys(keys) => serde_json::json!({"keys": keys}),
+        FieldValue::Entries(entries) => serde_json::json!({
+            "entries": entries
+                .iter()
+                .map(|(key, value)| serde_json::json!([key, field_json(&FieldValue::Scalar(value.clone()))]))
+                .collect::<Vec<_>>()
+        }),
+    }
+}
+
+pub fn field_of(json: &Json) -> Result<FieldValue, String> {
+    let bad = || format!("a field read as {json} is no field");
+    let (tag, value) = json
+        .as_object()
+        .and_then(|fields| fields.iter().next())
+        .ok_or_else(bad)?;
+    Ok(match tag.as_str() {
+        "absent" => FieldValue::Absent,
+        "bool" => FieldValue::Scalar(Scalar::Bool(value.as_bool().ok_or_else(bad)?)),
+        "int" => FieldValue::Scalar(Scalar::Int(value.as_i64().ok_or_else(bad)?)),
+        "float" => FieldValue::Scalar(Scalar::Float(value.as_f64().ok_or_else(bad)?)),
+        "str" => FieldValue::Scalar(Scalar::Text(value.as_str().ok_or_else(bad)?.to_owned())),
+        "json" => FieldValue::Scalar(Scalar::Json(value.clone())),
+        "counter" => FieldValue::Counter(value.as_i64().ok_or_else(bad)?),
+        "text" => FieldValue::Text(value.as_str().ok_or_else(bad)?.to_owned()),
+        "rich" => FieldValue::Rich(
+            serde_json::from_value::<crate::rich::RichValue>(value.clone()).map_err(|_| bad())?,
+        ),
+        "items" | "keys" => {
+            let texts = value
+                .as_array()
+                .ok_or_else(bad)?
+                .iter()
+                .map(|item| item.as_str().map(str::to_owned).ok_or_else(bad))
+                .collect::<Result<Vec<_>, _>>()?;
+            if tag == "items" {
+                FieldValue::Items(texts)
+            } else {
+                FieldValue::Keys(texts)
+            }
+        }
+        "entries" => FieldValue::Entries(
+            value
+                .as_array()
+                .ok_or_else(bad)?
+                .iter()
+                .map(|entry| {
+                    let key = entry[0].as_str().ok_or_else(bad)?.to_owned();
+                    match field_of(&entry[1])? {
+                        FieldValue::Scalar(scalar) => Ok((key, scalar)),
+                        _ => Err(bad()),
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        _ => return Err(bad()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

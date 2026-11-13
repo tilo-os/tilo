@@ -9,6 +9,7 @@
 
 use super::{Checker, Ex};
 use crate::abi::Imp;
+use crate::agent::CHANGED;
 use crate::ast::{self, BinOp, ExprKind, UnOp};
 use crate::diag::Span;
 use crate::ir::{Ek, Stmt};
@@ -333,6 +334,26 @@ impl Checker<'_> {
                         terms.push(("sort".to_owned(), Ex::str(&text)));
                     }
                 }
+                // When a resource last changed, which every resource's versions say: a filter
+                // of every type that declares none of that name, written as grep's
+                // (`changed: -7d`). A view's collection is answered by its index, which keeps
+                // no such filter, so only a list outside a view takes it.
+                CHANGED
+                    if info.search.filter(CHANGED).is_none()
+                        && !matches!(self.st.ctx, super::Ctx::View) =>
+                {
+                    if terms.iter().any(|(k, _)| k == CHANGED) {
+                        self.err(
+                            "E105",
+                            name.span,
+                            format!("`{CHANGED}` is set twice; a query sets each filter once"),
+                        );
+                        continue;
+                    }
+                    if let Some(when) = self.when_text(CHANGED, &a.value) {
+                        terms.push((CHANGED.to_owned(), Ex::str(&when)));
+                    }
+                }
                 filter => {
                     let Some(f) = info.search.filter(filter).cloned() else {
                         let keys: Vec<&str> =
@@ -342,19 +363,29 @@ impl Checker<'_> {
                         } else {
                             format!("its filters: {}", keys.join(", "))
                         };
+                        // Outside a view every type also takes when it last changed.
+                        let changed = (!matches!(self.st.ctx, super::Ctx::View)
+                            && info.search.filter(CHANGED).is_none())
+                        .then_some((CHANGED, "when it was last changed, as `changed: -7d`"));
                         let hint = crate::diag::suggestion_about(
                             filter,
                             info.search
                                 .filters
                                 .iter()
                                 .map(|f| (f.key.as_str(), f.doc.as_str()))
+                                .chain(changed)
                                 .chain([("in", ""), ("sort", "")]),
                         );
+                        let also = if changed.is_some() {
+                            ", `changed:` (when it last changed: `changed: -7d`, `changed: today`)"
+                        } else {
+                            ""
+                        };
                         self.err(
                             "E105",
                             name.span,
                             format!(
-                                "`{}` has no filter `{filter}`{hint}; {keys}, and `in:` and `sort:`",
+                                "`{}` has no filter `{filter}`{hint}; {keys}{also}, and `in:` and `sort:`",
                                 key.name
                             ),
                         );

@@ -768,7 +768,54 @@ impl Core {
                 .collect::<Vec<_>>()
                 .join("\n");
         }
+        // A version, or a list or option of them (`updated(n)`, `history(n)`,
+        // `find(Note).map(n -> updated(n))`), reads as history does.
+        let version = format!("{}.Version", tilolang::HOST_APP);
+        if ty == version {
+            return self.show_version(value);
+        }
+        if ty.contains(&version) {
+            let inner = |prefix: &str| ty.strip_prefix(prefix).and_then(|t| t.strip_suffix('>'));
+            if let Some(inner) = inner("Option<") {
+                return match value {
+                    Value::Opt(Some(v)) => self.show_typed(v, inner),
+                    _ => "none".to_owned(),
+                };
+            }
+            if let Some(inner) = inner("List<")
+                && let Value::List(items) = value
+            {
+                if items.is_empty() {
+                    return "(none)".to_owned();
+                }
+                return items
+                    .iter()
+                    .map(|v| self.show_typed(v, inner))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+            }
+        }
         self.show(value)
+    }
+
+    /// A `host.Version` on one line, as history reads: when, who, what it did and the action.
+    fn show_version(&self, v: &Value) -> String {
+        let Value::Tuple(fields) = v else {
+            return self.show_inline(v);
+        };
+        let get = |name: &str| {
+            tilolang::host::value_field("Version", name)
+                .and_then(|at| fields.get(at))
+                .map(|field| self.show_inline(field))
+                .unwrap_or_default()
+        };
+        format!(
+            "{}  {} by {}: {}",
+            get("at"),
+            get("kind"),
+            get("who"),
+            get("what")
+        )
     }
 }
 
