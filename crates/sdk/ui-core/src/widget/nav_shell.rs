@@ -438,7 +438,19 @@ struct ColumnFit {
     /// How many actions stand in the row; the rest are in the More menu.
     /// `None` until the first layout decides.
     shown: Option<usize>,
-    header: Option<crate::widget::HeaderRowLayout>,
+    header: Option<HeaderRowFacts>,
+}
+
+/// What one header row laid itself out as: the room it gave its title against what the title
+/// says, what it left beside it, and what its actions kept. The shell names the column and says
+/// whether the title reads, which only the title's own words can answer.
+#[derive(Clone, Copy, Debug)]
+struct HeaderRowFacts {
+    title_needs: f64,
+    title_has: f64,
+    free_beside_title: f64,
+    labelled_action: bool,
+    primary_shown: bool,
 }
 
 /// Everything the geometry depends on. Shared with the layout policy the
@@ -3200,8 +3212,19 @@ impl Widget for NavShell {
         let inputs = self.inputs.borrow();
         let fit = inputs.fit.borrow();
         let mut rows: [Option<crate::widget::HeaderRowLayout>; 4] = [None; 4];
-        for (row, slot) in rows.iter_mut().zip(fit.iter()) {
-            *row = slot.header;
+        for (index, (row, slot)) in rows.iter_mut().zip(fit.iter()).enumerate() {
+            *row = slot.header.map(|facts| crate::widget::HeaderRowLayout {
+                column: Column::ALL[index].key(),
+                title_needs: crate::num::f32_of_f64(facts.title_needs),
+                title_has: crate::num::f32_of_f64(facts.title_has),
+                free_beside_title: crate::num::f32_of_f64(facts.free_beside_title),
+                title_opens: self
+                    .headers
+                    .get(index)
+                    .is_none_or(|header| header.title.opens_within(facts.title_has)),
+                labelled_action: facts.labelled_action,
+                primary_shown: facts.primary_shown,
+            });
         }
         let m = inputs.metrics;
         let beside = self.beside_sidebar();
@@ -3472,11 +3495,17 @@ fn fit_of(header: &Header) -> (Vec<bool>, Vec<bool>, Option<usize>, Option<usize
     (capable, compact_now, menu_from, primary)
 }
 
-/// The button a header action is: the action itself or the one it shows as its face; the row fits
-/// it by its label, icon or faces, and its menu lists it by glyph and key.
+/// The button a header action is: the action itself, the control under the view a decorator
+/// wrapped around it, or the one it shows as its face; the row fits it by its label, icon or
+/// faces, and its menu lists it by glyph and key.
 fn button_of(action: &dyn Widget) -> Option<&Button> {
     if let Some(button) = action.as_any().and_then(|any| any.downcast_ref::<Button>()) {
         return Some(button);
+    }
+    if let Some(inner) =
+        crate::widget::capability::capability::<dyn crate::widget::decorator::Decorated>(action)
+    {
+        return button_of(inner.decorated());
     }
     action
         .children()
@@ -3496,15 +3525,35 @@ fn action_node(action: &dyn Widget) -> Option<crate::a11y::AccessNode> {
 
 /// [`button_of`], to change how it shows.
 fn button_of_mut(action: &mut dyn Widget) -> Option<&mut Button> {
-    if action.as_any().is_some_and(|any| any.is::<Button>()) {
-        return action
-            .as_any_mut()
-            .and_then(|any| any.downcast_mut::<Button>());
+    // The lookup hands back a pointer into the tree `action` owns, so each step's borrow of it
+    // ends before the next begins (`capability_mut` borrows the whole action for its answer).
+    let button = button_mut(action)?;
+    // SAFETY: `button` points at the `Button` inside `action`'s own tree, which `action`'s
+    // exclusive borrow keeps alive and unaliased for as long as the answer is used.
+    Some(unsafe { &mut *button })
+}
+
+/// The `Button` inside `action`, by pointer: the action itself, the control a decorator wrapped
+/// around it, or the one it shows as its face.
+fn button_mut(action: &mut dyn Widget) -> Option<*mut Button> {
+    if let Some(button) = action
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<Button>())
+    {
+        return Some(std::ptr::from_mut(button));
+    }
+    if let Some(inner) = crate::widget::capability::capability_mut::<
+        dyn crate::widget::decorator::DecoratedMut,
+    >(action)
+        && let Some(button) = button_mut(inner.decorated_mut())
+    {
+        return Some(button);
     }
     action.children_mut().into_iter().find_map(|child| {
         child
             .as_any_mut()
             .and_then(|any| any.downcast_mut::<Button>())
+            .map(std::ptr::from_mut)
     })
 }
 

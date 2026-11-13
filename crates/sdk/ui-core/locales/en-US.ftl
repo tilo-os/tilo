@@ -1072,6 +1072,10 @@ change-window-changed-more = { $who } changed at least { $count ->
    *[other] { $count } { $noun }
 }
 
+# What a window's mark opens: the panel of everything changed since the person last looked,
+# read out as a surface of its own.
+change-catch-up = Changes since you looked
+
 # One step of an agent's task: the program it ran, what it answered, what it
 # changed and what it proposes.
 program-step-program = Program the agent ran

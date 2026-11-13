@@ -228,6 +228,31 @@ fn dividers_of(staged: &stage::Staged) -> Vec<(String, Rect)> {
     out
 }
 
+/// The shell layout of the window `staged` shows, as the shell says it held its header rows.
+fn shell_at(staged: &stage::Staged) -> Option<ui::widget::ShellLayout> {
+    fn find(node: &ui::headless::InspectionNode) -> Option<ui::widget::ShellLayout> {
+        if let Some(ui::widget::LayoutInfo::Shell(shell)) = &node.layout {
+            return Some(*shell);
+        }
+        node.children.iter().find_map(find)
+    }
+    find(&staged.harness().inspection().root)
+}
+
+/// What the shown floating surface the widget `name` draws is called, as a reader hears it.
+fn shown_floating_name(staged: &stage::Staged, name: &str) -> Option<String> {
+    fn find(node: &ui::headless::InspectionNode, name: &str) -> Option<String> {
+        if node.widget == name && node.rect[2] > 0.0 && node.rect[3] > 0.0 {
+            return node
+                .semantics
+                .as_ref()
+                .and_then(|access| access.name.clone());
+        }
+        node.children.iter().find_map(|child| find(child, name))
+    }
+    find(&staged.harness().inspection().root, name)
+}
+
 /// Where the floating surface the widget `name` draws, a popover or a sheet, stands.
 fn floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
     rects(staged, name).into_iter().next()
@@ -2213,10 +2238,31 @@ fn a_narrow_channels_mark_opens_its_catch_up() {
         channels
             .lay_out_moving((320, 568), ui::Theme::light(), input_at((320, 568)))
             .expect("the app lays out");
+        // The header names the channel it shows: the row gives the title the room the word
+        // needs, and the mark beside it gives up its names for one face instead of cutting it
+        // short.
+        let title = shell_at(&channels)
+            .and_then(|shell| {
+                shell
+                    .rows
+                    .rows
+                    .into_iter()
+                    .flatten()
+                    .find(|row| row.column == "content")
+            })
+            .expect("the window's shell says how it held its header");
+        assert!(
+            title.title_opens && title.title_needs <= title.title_has + 0.5,
+            "the header's title reads whole: {title:?}"
+        );
         let mark = shown_floating_rect(&channels, "ChangeMark").expect("the header shows its mark");
         assert!(
             mark.y0 >= 0.0 && mark.y1 <= 56.0,
             "the mark stands in the window's header: {mark:?}"
+        );
+        assert!(
+            mark.width() <= mark.height() + 1.0,
+            "the mark stands as one face beside the title, not as a run of names: {mark:?}"
         );
         channels
             .press_at(mark.center().x, mark.center().y)
@@ -2226,6 +2272,13 @@ fn a_narrow_channels_mark_opens_its_catch_up() {
             .expect("the app lays out with its catch-up open");
         let sheet =
             shown_floating_rect(&channels, "Popover").expect("the narrow mark opens its catch-up");
+        // A surface of its own, read out as what it holds rather than as the words of the
+        // control it hangs from.
+        assert_eq!(
+            shown_floating_name(&channels, "Popover").as_deref(),
+            Some("Changes since you looked"),
+            "the catch-up names itself"
+        );
         let (_, frame) = channels.harness().frame_extent((320, 568));
         assert!(
             sheet.x0 >= 0.0

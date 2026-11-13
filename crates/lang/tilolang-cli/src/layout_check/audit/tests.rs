@@ -42,11 +42,24 @@ fn header_row(
     labelled: bool,
     primary: bool,
 ) -> ui::widget::HeaderRowLayout {
+    row_that_opens(needs, has, free, true, labelled, primary)
+}
+
+/// The same row, with the room its title has said to show words or an ellipsis alone.
+fn row_that_opens(
+    needs: f32,
+    has: f32,
+    free: f32,
+    opens: bool,
+    labelled: bool,
+    primary: bool,
+) -> ui::widget::HeaderRowLayout {
     ui::widget::HeaderRowLayout {
         column: "content",
         title_needs: needs,
         title_has: has,
         free_beside_title: free,
+        title_opens: opens,
         labelled_action: labelled,
         primary_shown: primary,
     }
@@ -78,6 +91,19 @@ fn a_header_row_gives_up_its_labels_before_its_title() {
     let dropped = header_row_problem(&header_row(180.0, 180.0, 0.0, false, false))
         .expect("a row that keeps its menu and not its primary action");
     assert!(dropped.contains("primary"), "{dropped}");
+}
+
+/// A title the row cut to an ellipsis alone names nothing: the column reads as "…" whatever
+/// stands beside it, so no room left over is needed to find it.
+#[test]
+fn a_title_cut_shorter_than_its_first_letter_and_an_ellipsis_is_a_finding() {
+    let alone = header_row_problem(&row_that_opens(180.0, 1.0, 0.0, false, false, true))
+        .expect("a title that reads as an ellipsis alone");
+    assert!(alone.contains("ellipsis alone"), "{alone}");
+    assert!(
+        header_row_problem(&row_that_opens(180.0, 40.0, 0.0, true, false, true)).is_none(),
+        "a title with room for its first letter and an ellipsis is cut as a title should be"
+    );
 }
 
 fn shell_layout(

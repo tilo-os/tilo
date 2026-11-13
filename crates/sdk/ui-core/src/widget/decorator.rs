@@ -72,6 +72,13 @@ pub trait Decorated: Widget {
     fn decorated(&self) -> &dyn Widget;
 }
 
+/// [`Decorated`], mutably: the control a decorator wraps, to change how it shows. A row that
+/// gives its actions less room asks the face it fits whether it can shrink, and a wrapped one
+/// answers for the control inside.
+pub trait DecoratedMut: Widget {
+    fn decorated_mut(&mut self) -> &mut dyn Widget;
+}
+
 /// A widget as `&dyn Widget`, also one that already is a trait object: a decorator's inner
 /// widget may be either, and its layout walk hands the inner widget on
 /// ([`Widget::for_each_layout_child`]).
@@ -181,6 +188,12 @@ macro_rules! decorator_trait {
             }
         }
 
+        impl<T: Decorator> DecoratedMut for T {
+            fn decorated_mut(&mut self) -> &mut dyn Widget {
+                self.inner_mut().as_dyn_widget_mut()
+            }
+        }
+
         $(#[$impl_attr])*
         impl<T: Decorator> Widget for T {
             $($impl_items)*
@@ -240,6 +253,12 @@ macro_rules! decorator_trait {
                         }
                     }
 
+                    impl crate::widget::decorator::DecoratedMut for $d ty {
+                        fn decorated_mut(&mut self) -> &mut dyn Widget {
+                            Decorator::inner_mut(self).as_dyn_widget_mut()
+                        }
+                    }
+
                     impl Widget for $d ty {
                         $($impl_items)*
                         $(
@@ -291,7 +310,14 @@ decorator_trait! {
             self.inner().provide(request);
         }
 
-        fn provide_mut<'a>(&'a mut self, request: &mut capability::RequestMut<'a, '_>) {
+        fn provide_mut<'a>(&'a mut self, request: &mut capability::RequestMut<'a, '_>)
+        where
+            Self: DecoratedMut,
+        {
+            if request.wants::<dyn DecoratedMut>() {
+                request.provide::<dyn DecoratedMut>(self);
+                return;
+            }
             self.inner_mut().provide_mut(request);
         }
 

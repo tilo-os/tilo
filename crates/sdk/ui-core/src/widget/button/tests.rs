@@ -1638,6 +1638,49 @@ fn tooltip_naming_precedence_and_compact_toolbar_semantics() {
         assert_eq!(node.name.as_deref(), Some("View options"));
     }
 
+    fn a_compacted_faced_button_shows_one_face_and_keeps_it_under_new_words() {
+        let mut text = TextRenderer::new();
+        let faces = || {
+            vec![
+                ("Ada".to_owned(), "ada".to_owned()),
+                ("Bo".to_owned(), "bo".to_owned()),
+            ]
+        };
+        let mut button = Button::new("mark", "2 changes by Ada and Bo").with_faces_of(faces());
+        let full = button.intrinsic_width(&mut text);
+        button.set_compact_toolbar_presentation(true);
+        let compact = button.intrinsic_width(&mut text);
+        assert!(
+            compact * 2.0 < full,
+            "one face stands where the names stood: {compact} of {full}"
+        );
+        assert!(
+            button.label.is_empty(),
+            "the row gave up the words for the face"
+        );
+        // A change arrives while the row is short: the mark takes the new words for when the row
+        // gives it room again, and stays one face where it stands now.
+        let fresh = Button::new("mark", "3 changes by Ada and Bo").with_faces_of(faces());
+        assert!(
+            button.take_words(&fresh),
+            "the mark keeps its place and its face"
+        );
+        assert!(
+            button.label.is_empty(),
+            "the compact pill shows its face, not the new words"
+        );
+        assert_eq!(
+            button.intrinsic_width(&mut text),
+            compact,
+            "the new words do not widen the pill the row made compact"
+        );
+        button.set_compact_toolbar_presentation(false);
+        assert_eq!(
+            button.label, "3 changes by Ada and Bo",
+            "the room back gives the mark its newest words"
+        );
+    }
+
     fn icon_only_effect_publishes_its_spoken_name() {
         let doc = AutoCommit::new();
         let named = Button::new("private", "")
@@ -1666,6 +1709,7 @@ fn tooltip_naming_precedence_and_compact_toolbar_semantics() {
     icon_only_tooltip_doubles_as_accessible_name();
     explicit_accessible_name_wins_over_tooltip();
     icon_only_effect_publishes_its_spoken_name();
+    a_compacted_faced_button_shows_one_face_and_keeps_it_under_new_words();
 }
 
 #[test]

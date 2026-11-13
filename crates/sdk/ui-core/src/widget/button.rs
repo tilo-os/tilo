@@ -472,17 +472,33 @@ impl Button {
     }
 
     /// Take the words and glyph of `fresh`, keeping this button's place and press; a shape apart
-    /// (icon-only for a label, another role or size) can only change by building it again.
+    /// (icon-only for a label, another role or size) can only change by building it again. A
+    /// button a row has compacted takes `fresh`'s words as what it shows when the row gives it
+    /// room again, and keeps showing its face.
     pub(crate) fn take_words(&mut self, fresh: &Button) -> bool {
+        let compact = self.compact_presentation.is_some();
         if fresh.icon.is_some() != self.icon.is_some()
-            || fresh.label.is_empty() != self.label.is_empty()
+            || (!compact && fresh.label.is_empty() != self.label.is_empty())
             || fresh.role != self.role
             || fresh.control_size != self.control_size
         {
             return false;
         }
-        self.set_label(fresh.label.clone(), fresh.placeholder);
+        if compact {
+            if let Some(presentation) = self.compact_presentation.as_mut() {
+                presentation.0.clone_from(&fresh.label);
+                presentation.1.clone_from(&fresh.accessible_name);
+                presentation.2.clone_from(&fresh.tooltip);
+            }
+        } else {
+            self.set_label(fresh.label.clone(), fresh.placeholder);
+        }
         self.set_detail(fresh.detail.clone());
+        if fresh.faces != self.faces {
+            self.faces.clone_from(&fresh.faces);
+            self.layout_dirty = true;
+            self.dirty = true;
+        }
         if let Some(icon) = fresh.icon {
             self.set_icon(icon);
         }
@@ -1966,10 +1982,10 @@ impl Button {
             on,
             interact,
             content: FaceContent {
-                flush: self.role.flush() && !label.is_empty(),
+                flush: self.flush_face(label),
                 icon: self.icon,
                 image: self.image.as_ref(),
-                faces: &self.faces,
+                faces: self.shown_faces(),
                 avatar: self
                     .avatar
                     .as_ref()
@@ -1989,6 +2005,23 @@ impl Button {
             },
             metrics,
             moment,
+        }
+    }
+
+    /// Whether the face stands flush on the button's own edges: a plain control's words have no
+    /// padding of their own, and a control a row compacted stands as its one face's square — the
+    /// room the row planned for it — rather than a padded pill wider than the square it planned.
+    fn flush_face(&self, label: &str) -> bool {
+        self.role.flush() && (!label.is_empty() || self.compact_presentation.is_some())
+    }
+
+    /// The faces the button shows: one while a row short of room has it compact — the one who
+    /// changed it newest, which the group names last — and the group itself otherwise.
+    fn shown_faces(&self) -> &[(String, String)] {
+        if self.compact_presentation.is_some() {
+            self.faces.last().map_or(&[], std::slice::from_ref)
+        } else {
+            &self.faces
         }
     }
 
@@ -2015,10 +2048,10 @@ impl Button {
         let (label, hint) = self.content();
         f32_of_f64(
             FaceContent {
-                flush: self.role.flush() && !label.is_empty(),
+                flush: self.flush_face(&label),
                 icon: self.icon,
                 image: None,
-                faces: &self.faces,
+                faces: self.shown_faces(),
                 avatar: self
                     .avatar
                     .as_ref()

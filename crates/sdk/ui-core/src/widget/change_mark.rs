@@ -160,6 +160,10 @@ impl ChangeMarkProps {
             .with_no_padding()
             .with_child(Box::new(column));
         let mut pair = button.with_popover(content);
+        // The catch-up is a surface of its own: read out, it says what it holds, never only the
+        // words of the control it hangs from.
+        pair.popover_mut()
+            .set_label(crate::i18n::widget_format("change-catch-up", &[]));
         pair.popover_mut().set_confined_to_viewport(true);
         pair.popover_mut()
             .set_max_width(f64::from(crate::tokens::Metrics::BASE.panel_width_list));

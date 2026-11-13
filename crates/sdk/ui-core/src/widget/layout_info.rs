@@ -102,6 +102,9 @@ pub struct HeaderRowLayout {
     pub title_needs: f32,
     pub title_has: f32,
     pub free_beside_title: f32,
+    /// The row gave the title room for its first letter and an ellipsis: less than that and the
+    /// column reads as an ellipsis alone, naming nothing the person can tell apart from another.
+    pub title_opens: bool,
     pub labelled_action: bool,
     pub primary_shown: bool,
 }

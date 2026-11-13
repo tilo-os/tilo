@@ -1047,6 +1047,8 @@ change-window-changed-more = Geändert von { $who }: mindestens { $count ->
    *[other] { $count } { $noun }
 }
 
+change-catch-up = Änderungen seit Ihrem letzten Blick
+
 # One step of an agent's task: the program it ran, what it answered, what it
 # changed and what it proposes.
 program-step-program = Programm, das der Agent ausgeführt hat
