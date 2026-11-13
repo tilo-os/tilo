@@ -119,7 +119,8 @@ pub(crate) fn long_classic(count: usize, lines: usize) -> Vec<u8> {
     epub("The Test Odyssey", &borrowed)
 }
 
-fn stored_zip(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+/// A ZIP archive holding `files` stored, each a name and its bytes.
+pub(crate) fn stored_zip(files: &[(String, Vec<u8>)]) -> Vec<u8> {
     const DOS_DATE_1980_01_01: u16 = 0x21;
     let (mut out, mut central) = (Vec::new(), Vec::new());
     for (name, data) in files {
