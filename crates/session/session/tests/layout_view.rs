@@ -32,11 +32,11 @@ fn views(site: &Site) -> Vec<(String, PersonView)> {
         .collect()
 }
 
-/// The window each person has in front of the group they opened it in, by person.
+/// The groups each view names a window in front of, by person.
 fn fronts(views: &[(String, PersonView)]) -> Vec<Vec<u64>> {
     views
         .iter()
-        .map(|(_, view)| view.front_tab.values().copied().collect())
+        .map(|(_, view)| view.front_tab.keys().copied().collect())
         .collect()
 }
 
@@ -62,20 +62,22 @@ fn each_person_keeps_their_own_view_of_the_workspace_layout() {
         },
     );
 
-    // Each person's view of the layout reached the workspace as a record of its own.
-    waited("a view of the layout for each person", &site, &[], || {
-        views(&site).len() == 2
-    });
+    // Each person's view of the layout reached the workspace as a record of its own, holding the
+    // windows both of them opened.
+    waited(
+        "a view of the layout for each person",
+        &site,
+        &[&ada_laptop, &bob_laptop],
+        || {
+            let held = views(&site);
+            held.len() == 2 && fronts(&held).iter().all(|front| front.len() == 2)
+        },
+    );
     let held = views(&site);
     assert_eq!(held.len(), 2, "one view per person");
-    let fronts = fronts(&held);
-    assert!(
-        fronts.iter().all(|front| front.len() == 2),
-        "each view names the window in front of each group: {held:?}\n{}\n{}\n{}\n{}",
-        site.refusals_report(),
-        ada_laptop.diagnostic(),
-        bob_laptop.diagnostic(),
-        site.records().len()
+    assert_ne!(
+        held[0].0, held[1].0,
+        "the view is the person's, not the workspace's: {held:?}"
     );
 }
 

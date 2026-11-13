@@ -482,7 +482,7 @@ impl SharedDesktops {
             Ok(false) => {
                 // Nothing to write: what this device read is the copy its next write is made on.
                 self.held(&key, |held| {
-                    held.written = Some(Written::Layout(heads, own, notes))
+                    held.written = Some(Written::Layout(heads, own, notes));
                 });
                 self.keep(&key, held, revision);
                 false
@@ -522,21 +522,7 @@ impl SharedDesktops {
             }
             let key = (room, route.clone());
             let view = PersonView::of(tree, workspace.slot);
-            let rested = self.held(&key, |held| {
-                // A view this device has not read here is written on the look after it reads it: it
-                // writes what the person changed, never a desk still being opened.
-                if !held.read
-                    || held.writing.is_some()
-                    || held.written.as_ref() == Some(&Written::View(view.clone()))
-                {
-                    return None;
-                }
-                match held.pending.replace(view.clone()) {
-                    Some(pending) if pending == view => Some(view.clone()),
-                    _ => None,
-                }
-            });
-            let Some(view) = rested else {
+            let Some(view) = self.held(&key, |held| rested(held, &view)) else {
                 continue;
             };
             self.held(&key, |held| {
@@ -806,6 +792,25 @@ impl SharedDesktops {
     }
 }
 
+/// The view to write into `key`'s record now, if any: what a look writes only once it rests, and
+/// never while a write of it is under way or before this device has read the record. A view that
+/// did not change is not written again.
+fn rested(held: &mut Held, view: &PersonView) -> Option<PersonView> {
+    // A view this device has not read here is written on the look after it reads it: it writes
+    // what the person changed, never a desk still being opened.
+    if !held.read || held.writing.is_some() {
+        return None;
+    }
+    if held.written.as_ref() == Some(&Written::View(view.clone())) {
+        held.pending = None;
+        return None;
+    }
+    match held.pending.replace(view.clone()) {
+        Some(pending) if pending == *view => Some(view.clone()),
+        _ => None,
+    }
+}
+
 /// Every window `desk`, a record's layout, holds.
 fn tabs_of(desk: &DesktopTree) -> BTreeSet<u64> {
     desk.workspaces.iter().flat_map(windows_of).collect()
@@ -820,4 +825,76 @@ fn windows_of(workspace: &Workspace) -> BTreeSet<u64> {
         .flat_map(|group| &group.tabs)
         .map(|tab| tab.id)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view(strip: u64) -> PersonView {
+        PersonView {
+            front_strip: Some(tilo_desktop_model::StripId(strip)),
+            ..PersonView::default()
+        }
+    }
+
+    /// A view that did not move is not written again: the look that finds it writes nothing.
+    #[test]
+    fn a_view_that_did_not_move_is_not_written() {
+        let written = view(11);
+        let mut held = Held {
+            read: true,
+            written: Some(Written::View(written.clone())),
+            ..Held::default()
+        };
+        assert_eq!(rested(&mut held, &written), None);
+    }
+
+    /// A view is written once it rests, not on the look that found it move: a drag or a burst of
+    /// switches changes it on every look and is one write when it is over.
+    #[test]
+    fn a_view_is_written_once_it_rests() {
+        let mut held = Held {
+            read: true,
+            ..Held::default()
+        };
+        assert_eq!(rested(&mut held, &view(11)), None, "the look that found it");
+        assert_eq!(
+            rested(&mut held, &view(11)),
+            Some(view(11)),
+            "the look after it, unchanged"
+        );
+        assert_eq!(
+            rested(&mut held, &view(12)),
+            None,
+            "a look that moved it again writes nothing yet"
+        );
+        assert_eq!(rested(&mut held, &view(12)), Some(view(12)));
+    }
+
+    /// A write of the view under way holds the look back, and a record this device has not read is
+    /// not written over.
+    #[test]
+    fn a_view_is_written_only_between_writes_and_after_a_read() {
+        let mut held = Held::default();
+        assert_eq!(
+            rested(&mut held, &view(11)),
+            None,
+            "the record was not read"
+        );
+        held.read = true;
+        held.writing = Some(Publishing {
+            writing: crate::engine_write::Writing::write(
+                std::sync::Arc::new(|| {}) as tilo_service::Wake,
+                async { Err("the test writes nothing".to_owned()) },
+            ),
+            candidate: automerge::AutoCommit::new(),
+            replaced: None,
+            revision: None,
+        });
+        assert_eq!(rested(&mut held, &view(11)), None, "a write is under way");
+        held.writing = None;
+        let _ = rested(&mut held, &view(11));
+        assert_eq!(rested(&mut held, &view(11)), Some(view(11)));
+    }
 }
