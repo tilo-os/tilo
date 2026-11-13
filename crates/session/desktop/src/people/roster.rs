@@ -50,7 +50,11 @@ fn names_of(
         .members
         .iter()
         .filter(|member| member.id.is_person() && member.id.key() != own_id)
-        .map(|member| (member.id.key(), member.name.clone(), member.joined_at))
+        .map(|member| {
+            let id = member.id.key();
+            let joined = workspace.policy.joined_at(&id).or(member.joined_at);
+            (id, member.name.clone(), joined)
+        })
         .collect();
     if let Some(name) = own_name.map(str::trim).filter(|name| !name.is_empty()) {
         people.push((

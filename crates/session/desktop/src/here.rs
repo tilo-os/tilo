@@ -2574,9 +2574,7 @@ mod tests {
                 .members
                 .insert(person.into(), tilo_action_policy::Role::Editor);
             workspace.policy.joined.insert(person.into(), admitted);
-            workspace
-                .collaborators
-                .push(Collaborator::new(person, "Alex"));
+            workspace.member_here(Member::keyed(person, "Alex"));
         }
         let tree = DesktopTree {
             active: workspace.slot,
@@ -2601,11 +2599,10 @@ mod tests {
             here.set_members(Some(alex(own.0, own.1)), Some(others));
             here
         };
-        let roster: HashMap<String, String> =
-            crate::collaborators::collaborator_roster_rows(&tree, "me-root")
-                .into_iter()
-                .map(|row| (row.id, row.label))
-                .collect();
+        let roster: HashMap<String, String> = crate::people::roster_rows(&tree, "me-root")
+            .into_iter()
+            .map(|row| (row.id, row.label))
+            .collect();
         assert_eq!(roster["person-z"], "Alex (1)", "who joined first is (1)");
         assert_eq!(roster["person-a"], "Alex (2)");
 

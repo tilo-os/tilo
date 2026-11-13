@@ -48,7 +48,7 @@ sources = [
     "crates/collab/collab-types/src/peer.rs",
     "crates/collab/collab-types/src/presence/shell.rs",
 ]
-roots = ["Hello", "HelloAck", "HelloAck2", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "PlaneFrame", "State"]
+roots = ["Hello", "HelloAck", "HelloAck2", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "PlaneFrame"]
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
@@ -695,11 +695,6 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "PlaneFrame" = "enum external"
 "PlaneFrame::Action" = "#0 tuple(Box<SignedDeviceAction>)"
 "PlaneFrame::Offer" = "#1 tuple(Box<Query>)"
-"Power" = "enum external"
-"Power::battery" = "#3 unit"
-"Power::charging" = "#1 unit"
-"Power::external" = "#0 unit"
-"Power::unknown" = "#2 unit"
 "PresenceColour" = "alias Option<String>"
 "PresenceItem" = "struct"
 "PresenceItem.keep_prefix" = "#1 u32"
@@ -800,17 +795,6 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Span" = "struct"
 "Span.len" = "#1 u64"
 "Span.offset" = "#0 u64"
-"State" = "struct"
-"State.app_installed" = "#2 bool"
-"State.critical_battery" = "#4 bool"
-"State.data_saving" = "#3 bool"
-"State.free_slots" = "#8 Option<u32>"
-"State.latency_ms" = "#9 u32"
-"State.load_permille" = "#7 u32"
-"State.online" = "#1 bool"
-"State.power" = "#6 Power"
-"State.priority" = "#5 i32"
-"State.requester" = "#0 bool"
 "SurfaceDecodeLimit" = "struct"
 "SurfaceDecodeLimit.codec" = "#0 String"
 "SurfaceDecodeLimit.max" = "#1 Option<(u32, u32)>"
