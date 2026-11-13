@@ -9,8 +9,7 @@ use crate::ids::TabId;
 use crate::layout::TileContent;
 
 /// The exact app a tile belongs to, as grants and launchers key it:
-/// built-in kinds by their package id, every other app by its
-/// own id.
+/// built-in kinds by their id, every other app by its own id.
 pub fn canonical_app_id(tile: &TileContent) -> Option<AppId> {
     match tile {
         TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
@@ -19,7 +18,7 @@ pub fn canonical_app_id(tile: &TileContent) -> Option<AppId> {
         TileContent::Foreign { app_id, .. }
         | TileContent::LocalApp { app_id, .. }
         | TileContent::PeerWindow { app_id, .. }
-        | TileContent::HostedWindow { app_id, .. } => Some(app_id.clone()),
+        | TileContent::HostedWindow { app_id, .. } => Some(AppId::new(app_id)),
     }
 }
 

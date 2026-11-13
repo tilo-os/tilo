@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use tilo_seal::SymmetricKey;
 use tilo_seal::secret_service::{DH_ALGORITHM, Handshake, TransportKey};
-use tilo_secret_service::app::{AppId, UnknownCaller};
+use tilo_secret_service::app::{CallerId, UnknownCaller};
 use tilo_secret_service::service::{
     BUS_NAME, CallerResolver, Core, MANAGEMENT_PATH, Managers, ROOT, WireSecret, publish,
 };
@@ -37,13 +37,14 @@ const COLLECTION: &str = "org.freedesktop.Secret.Collection";
 const ITEM: &str = "org.freedesktop.Secret.Item";
 const DEFAULT: &str = "/org/freedesktop/secrets/aliases/default";
 
-struct Identity(AppId);
+struct Identity(CallerId);
 
 impl CallerResolver for Identity {
     fn identify<'a>(
         &'a self,
         _sender: Option<&'a str>,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<AppId, UnknownCaller>> + Send + 'a>> {
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<CallerId, UnknownCaller>> + Send + 'a>>
+    {
         Box::pin(async move { Ok(self.0.clone()) })
     }
 }
@@ -110,8 +111,8 @@ impl World {
     }
 }
 
-fn app(id: &str) -> AppId {
-    AppId::parse(id).unwrap()
+fn app(id: &str) -> CallerId {
+    CallerId::parse(id).unwrap()
 }
 
 /// Uncached: a test reads a property twice to watch it change, which a

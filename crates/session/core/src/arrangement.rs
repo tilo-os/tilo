@@ -1235,7 +1235,9 @@ fn place_reading(
     PlaceReading {
         key: tab.id.to_string(),
         strip: strip.to_string(),
-        shows: tilo_desktop_model::apps::canonical_app_id(&tab.tile).unwrap_or_default(),
+        shows: tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+            .map(String::from)
+            .unwrap_or_default(),
         shown_as: tab.view.clone(),
         record,
         title: tab.title.clone(),
@@ -1252,7 +1254,9 @@ fn shown_app(tile: &TileContent) -> String {
         TileContent::AppPlaceholder { label, .. } | TileContent::Stub { label, .. } => {
             label.clone()
         }
-        held => tilo_desktop_model::apps::canonical_app_id(held).unwrap_or_default(),
+        held => tilo_desktop_model::apps::canonical_app_id(held)
+            .map(String::from)
+            .unwrap_or_default(),
     }
 }
 

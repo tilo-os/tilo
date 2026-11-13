@@ -59,7 +59,8 @@ pub(super) fn search_asked(
         let part = request.part().cloned();
         let app = super::find_group(tree, strip, group)
             .and_then(|window| window.tabs.iter().find(|tab| tab.id == window.active_tab))
-            .and_then(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile));
+            .and_then(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
+            .map(String::from);
         asked = Some(SearchRequest::Open {
             scope: Scope::InApp(AppScope { app, part }),
             query: request.query,
@@ -421,6 +422,7 @@ impl DesktopHandle {
             .tree
             .tab(tab)
             .and_then(|tab| tilo_desktop_model::apps::canonical_app_id(&tab.tile))
+            .map(String::from)
         else {
             return;
         };
@@ -452,7 +454,7 @@ impl DesktopHandle {
         let route = crate::navigation::active_route(&shared.tree)?;
         let window = crate::navigation::locate(&shared.tree, route)?;
         let tab = window.tabs.iter().find(|tab| tab.id == route.tab)?;
-        tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+        tilo_desktop_model::apps::canonical_app_id(&tab.tile).map(String::from)
     }
 
     /// The palette the desk searches with, shared with the host that draws it over the windows: the
@@ -671,7 +673,7 @@ fn windows(
                         tab: tab.id,
                         title,
                         app_title,
-                        app,
+                        app: app.map(String::from),
                         place,
                     });
                 }

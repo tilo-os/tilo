@@ -175,7 +175,7 @@ fn expected(app: &TestApp<NotebookApp>, page: &str, mode: Mode, view: Option<&st
                 id: WORKSPACE.parse().unwrap(),
                 slug: None,
             },
-            app: Some(AppId::new(NotebookApp::ID).unwrap()),
+            app: Some(AppId::parse(NotebookApp::ID).unwrap()),
             record: Some(RecordSegment::new(app.record().as_str()).unwrap()),
             resource: Some(ResourceAddress {
                 kind: "test.notebook.pages".into(),

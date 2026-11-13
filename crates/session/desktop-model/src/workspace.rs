@@ -374,7 +374,7 @@ impl Workspace {
                 continue;
             };
             if let Some(desc) = Capability::from_capability(c) {
-                out.entry(app.clone()).or_default().push(desc);
+                out.entry(AppId::new(app)).or_default().push(desc);
             }
         }
         out

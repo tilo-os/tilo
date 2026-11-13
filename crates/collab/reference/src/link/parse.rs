@@ -184,7 +184,7 @@ fn parse_scope<'a, I: Iterator<Item = &'a str>>(
             Context::Web(entry) => entry.origin().clone(),
             Context::Native => return Err(LinkError::NativeNeedsHost),
         }
-    } else if AppId::new(first).is_ok() {
+    } else if AppId::parse(first).is_ok() {
         return Err(LinkError::MissingScope);
     } else {
         return Err(LinkError::BadScope);
@@ -242,7 +242,7 @@ fn parse_route(route: &str, context: Context<'_>) -> Result<(LinkTarget, LinkSec
     let mut segments = split_path(path)?.into_iter().peekable();
     let mut target = LinkTarget::new(parse_scope(&mut segments, context, params.is_some())?);
     if let Some(app) = segments.next() {
-        target.app = Some(AppId::new(encode::decode_segment(app)?)?);
+        target.app = Some(AppId::parse(&encode::decode_segment(app)?)?);
     }
     if let Some(record) = segments.next() {
         target.record = Some(if record == "-" {
@@ -349,7 +349,7 @@ fn discuss_thread(target: &mut LinkTarget) -> Result<(), LinkError> {
     if target.app.is_some() || target.record.is_some() || target.resource.is_some() {
         return Ok(());
     }
-    target.app = Some(AppId::new(CHAT_APP)?);
+    target.app = Some(AppId::parse(CHAT_APP)?);
     target.record = Some(RecordSegment::Primary);
     target.resource = Some(ResourceAddress {
         kind: THREAD_KIND.to_owned(),

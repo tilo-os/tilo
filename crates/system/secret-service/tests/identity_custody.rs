@@ -543,7 +543,7 @@ fn assert_access_denied<T: std::fmt::Debug>(answer: zbus::Result<T>) {
 #[cfg(target_os = "linux")]
 fn serve_with_this_binary_as_portal_host() {
     use std::sync::Arc;
-    use tilo_secret_service::app::AppId;
+    use tilo_secret_service::app::CallerId;
     use tilo_secret_service::service::{BUS_NAME, BusResolver, Core, Managers, publish};
     use tilo_secret_service::store::{DeviceIdentityKey, Store};
     let device = child_env(CHILD_DEVICE);
@@ -555,7 +555,7 @@ fn serve_with_this_binary_as_portal_host() {
     let store = Arc::new(Store::new(run.join("vault.tseal"), Box::new(keys)));
     assert!(store.locked().is_none(), "the store did not open");
     let exe = std::fs::read_link("/proc/self/exe").unwrap();
-    let host = AppId::parse(&format!("local-process:{}", exe.display())).unwrap();
+    let host = CallerId::parse(&format!("local-process:{}", exe.display())).unwrap();
     block_on(async move {
         let connection = zbus::Connection::session().await.unwrap();
         let core = Core::new(

@@ -32,7 +32,7 @@ use tilo_user_identity::branch::{Resealed, SealedStore, SigningKey};
 use tilo_user_identity::persist::{IdentityPaths, PersistError, load_device_key};
 use zeroize::Zeroizing;
 
-use crate::app::AppId;
+use crate::app::CallerId;
 use crate::vault::{
     Access, AppRecord, Collection, Item, LOGIN_COLLECTION, Migration, Owner, SESSION_COLLECTION,
     SecretBytes, VAULT_VERSION, Vault,
@@ -277,7 +277,7 @@ pub struct NewItem {
 /// One row of the ledger as Settings lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppInfo {
-    pub id: AppId,
+    pub id: CallerId,
     pub name: String,
     pub access: Access,
     pub first_seen: u64,
@@ -415,7 +415,7 @@ impl Store {
     }
 
     /// Record `caller` in the ledger and refuse it if it was revoked.
-    fn admit(open: &mut Open, caller: &AppId) -> Result<()> {
+    fn admit(open: &mut Open, caller: &CallerId) -> Result<()> {
         let now = open.now;
         let record = open.vault.apps.entry(caller.clone()).or_insert_with(|| {
             open.dirty = true;
@@ -475,7 +475,7 @@ impl Store {
     ///
     /// [`StoreError::NoSuchObject`] for an unknown collection;
     /// [`StoreError::Invalid`] for a bad alias.
-    pub fn set_alias(&self, caller: &AppId, alias: &str, collection: &str) -> Result<()> {
+    pub fn set_alias(&self, caller: &CallerId, alias: &str, collection: &str) -> Result<()> {
         valid_name(alias)?;
         self.with_open(|open| {
             Self::admit(open, caller)?;
@@ -498,7 +498,7 @@ impl Store {
     /// collections.
     pub fn create_collection(
         &self,
-        caller: &AppId,
+        caller: &CallerId,
         label: &str,
         alias: Option<&str>,
     ) -> Result<String> {
@@ -542,7 +542,7 @@ impl Store {
     ///
     /// [`StoreError::Invalid`] for a built-in collection or one holding
     /// items the caller may not see.
-    pub fn delete_collection(&self, caller: &AppId, name: &str) -> Result<()> {
+    pub fn delete_collection(&self, caller: &CallerId, name: &str) -> Result<()> {
         if name == LOGIN_COLLECTION || name == SESSION_COLLECTION {
             return Err(StoreError::Invalid(
                 "built-in collections cannot be deleted",
@@ -579,7 +579,7 @@ impl Store {
     /// [`StoreError::Locked`] or [`StoreError::Revoked`].
     pub fn search(
         &self,
-        caller: &AppId,
+        caller: &CallerId,
         collection: Option<&str>,
         query: &BTreeMap<String, String>,
     ) -> Result<Vec<ItemRef>> {
@@ -615,7 +615,7 @@ impl Store {
     /// [`StoreError::Invalid`] for oversized input.
     pub fn create_item(
         &self,
-        caller: &AppId,
+        caller: &CallerId,
         collection: &str,
         new: NewItem,
         replace: bool,
@@ -677,7 +677,7 @@ impl Store {
     ///
     /// [`StoreError::NoSuchObject`] for an item that does not exist or that
     /// the caller may not see (the two are not told apart).
-    pub fn read_secret(&self, caller: &AppId, item: &ItemRef) -> Result<(SecretBytes, String)> {
+    pub fn read_secret(&self, caller: &CallerId, item: &ItemRef) -> Result<(SecretBytes, String)> {
         self.with_open(|open| {
             Self::admit(open, caller)?;
             let found = visible(&open.vault, caller, item)?;
@@ -692,7 +692,7 @@ impl Store {
     /// As [`Store::read_secret`].
     pub fn write_secret(
         &self,
-        caller: &AppId,
+        caller: &CallerId,
         item: &ItemRef,
         secret: Vec<u8>,
         content_type: String,
@@ -730,7 +730,7 @@ impl Store {
     /// # Errors
     ///
     /// As [`Store::read_secret`].
-    pub fn delete_item(&self, caller: &AppId, item: &ItemRef) -> Result<()> {
+    pub fn delete_item(&self, caller: &CallerId, item: &ItemRef) -> Result<()> {
         self.with_open(|open| {
             Self::admit(open, caller)?;
             visible(&open.vault, caller, item)?;
@@ -754,7 +754,7 @@ impl Store {
     /// [`StoreError::NoSuchObject`] for an item that does not exist or that
     /// the caller may not see (the two are not told apart);
     /// [`StoreError::Revoked`] for a revoked caller.
-    pub fn item_info(&self, caller: &AppId, item: &ItemRef) -> Result<ItemInfo> {
+    pub fn item_info(&self, caller: &CallerId, item: &ItemRef) -> Result<ItemInfo> {
         self.with_open(|open| {
             Self::admit(open, caller)?;
             let found = visible(&open.vault, caller, item)?;
@@ -843,7 +843,7 @@ impl Store {
     /// # Errors
     ///
     /// [`StoreError::NoSuchObject`] for an identity the ledger lacks.
-    pub fn set_access(&self, id: &AppId, access: Access) -> Result<()> {
+    pub fn set_access(&self, id: &CallerId, access: Access) -> Result<()> {
         self.with_open(|open| {
             open.vault
                 .apps
@@ -861,7 +861,7 @@ impl Store {
     /// # Errors
     ///
     /// [`StoreError::NoSuchObject`] for an identity the ledger lacks.
-    pub fn forget_app(&self, id: &AppId) -> Result<()> {
+    pub fn forget_app(&self, id: &CallerId) -> Result<()> {
         self.with_open(|open| {
             open.vault.apps.remove(id).ok_or(StoreError::NoSuchObject)?;
             let owner = Owner::App(id.clone());
@@ -894,7 +894,7 @@ impl Store {
         app: &str,
         legacy: Option<&[u8]>,
     ) -> Result<Zeroizing<[u8; SANDBOX_SECRET_LEN]>> {
-        let id = AppId::sandbox(app).ok_or(StoreError::Invalid("application id"))?;
+        let id = CallerId::sandbox(app).ok_or(StoreError::Invalid("application id"))?;
         if app.is_empty() || app.len() > 255 || app.contains('/') {
             return Err(StoreError::Invalid("application id"));
         }
@@ -990,7 +990,7 @@ impl Store {
     }
 }
 
-fn visible<'a>(vault: &'a Vault, caller: &AppId, item: &ItemRef) -> Result<&'a Item> {
+fn visible<'a>(vault: &'a Vault, caller: &CallerId, item: &ItemRef) -> Result<&'a Item> {
     vault
         .collections
         .get(&item.collection)

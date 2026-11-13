@@ -1621,7 +1621,8 @@ pub fn snapshot_with(
                             group: group.id,
                             tab: tab.id,
                         }),
-                        app: tilo_desktop_model::apps::canonical_app_id(&tab.tile),
+                        app: tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+                            .map(String::from),
                         label: tab.title.clone(),
                         strip_label: strip.name.clone(),
                         workspace_label: workspace.name.clone(),
