@@ -30,7 +30,9 @@ git switch -c my-change
 python3 tools/dev/install-git-hooks.py
 ```
 
-The hooks catch formatting and commit-message mistakes before you push.
+The hooks catch formatting, commit-message and build mistakes before your
+change leaves the machine. They are Git's own hooks, enabled per clone by that
+script; a push they refuse is fixed, never forced with `git push --no-verify`.
 
 ## Install the toolchain
 
@@ -148,6 +150,24 @@ git add PATHS_YOU_CHANGED
 git commit -m "fix(notes): keep the caret after undo"
 git push -u origin my-change
 ```
+
+The push is linted first. The hook works out which packages the pushed commits
+touch (Rust and Cargo files, against the ref being updated, or against where a
+new branch forked from `main`), and runs `cargo fmt --check` and Clippy over
+every target of the host for those packages, plus Clippy for
+`wasm32-unknown-unknown` on the ones that build for the page. A crate can
+compile here and still break the browser, which is what that second run
+catches. Only the touched packages are linted and both runs start together, so
+a one-crate change costs about the build of that crate; a push without Rust
+files passes immediately. Every failure prints the command that reruns it.
+Each package is linted as its default build; CI's wider matrix also covers the
+features a package's tests turn on.
+
+With `rcargo`, the maintainers' remote build tool, on your `PATH`, all of it
+compiles there, the wasm32 pass included. Without it the lint runs on your own
+toolchain, which needs `clippy` and `rustfmt` (`rustup component add clippy
+rustfmt`), and the hook says the wasm32 lint was skipped, so CI is the first to
+lint that target.
 
 Then [open a pull request](https://code.tilo.so/tilo/tilo/pulls) from your
 fork's branch into `tilo/tilo`'s `main`. Say what changed, why, and what you

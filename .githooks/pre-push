@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Lint the packages a push changes, natively and for the page, before the refs
+# leave. This is the fast subset of what CI checks on every commit: rustfmt,
+# Clippy over the host's targets, and Clippy for wasm32 on the touched packages
+# that build for the page, because a crate can compile here and still break the
+# page (std's clocks and files are not there). Only the packages the pushed
+# commits touch are linted, and the runs start together, so a one-crate push
+# costs about one build. tools/ci/pre_push_lint.py selects them and runs them.
+#
+# It is Git's own hook: this clone runs it through core.hooksPath (see
+# CONTRIBUTING.md). There is no environment variable to skip it; the escape is
+# Git's `--no-verify`, which contributors are asked never to use.
+set -euo pipefail
+# The lint reads Cargo metadata through the repository's own tools, which need
+# Python 3.11 or newer (tomllib); the same requirement as the pre-commit hook.
+if ! python3 -I -c 'import tomllib' 2>/dev/null; then
+  echo "git hook: the pre-push lint needs Python 3.11 or newer as python3; install it and put it first on PATH" >&2
+  exit 1
+fi
+root="$(git rev-parse --show-toplevel)"
+# Git passes the remote's name and URL as arguments and writes the refs it is
+# updating on stdin, which the lint reads unchanged.
+exec python3 "$root/tools/ci/pre_push_lint.py" "${1:-origin}"
