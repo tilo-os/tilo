@@ -239,151 +239,155 @@ mod tests {
         policy
     }
 
-    #[test]
-    fn an_edit_share_lets_a_viewer_change_that_item_only() {
-        let before = workspace();
-        assert!(!may(
-            &before,
-            "bo",
-            &edit_at(&item("p1")),
-            ActionKind::Undoable
-        ));
-        let edit = shared(ShareAccess::Edit);
-        assert!(may(
-            &edit,
-            "bo",
-            &edit_at(&item("p1")),
-            ActionKind::Undoable
-        ));
-        assert!(
-            !may(&edit, "bo", &edit_at(&item("p2")), ActionKind::Undoable),
-            "a sibling item stays as the role has it"
-        );
-        let view = shared(ShareAccess::View);
-        assert!(!may(
-            &view,
-            "bo",
-            &edit_at(&item("p1")),
-            ActionKind::Undoable
-        ));
-        assert!(may(&view, "bo", &edit_at(&item("p1")), ActionKind::Read));
-    }
+    tilo_test_env::scenario! {
+        fn a_share_reaches_one_item_within_its_sharers_standing;
 
-    #[test]
-    fn a_view_share_strips_no_one() {
-        let view = shared(ShareAccess::View);
-        assert!(
-            may(&view, "cy", &edit_at(&item("p1")), ActionKind::Undoable),
-            "an Editor still edits the shared item through their role"
-        );
-    }
-
-    #[test]
-    fn a_share_lifts_no_ban_or_restriction() {
-        let mut edit = shared(ShareAccess::Edit);
-        edit.grants.push(crate::roles::restriction_grant(
-            WORKSPACE,
-            "bo",
-            1_000,
-            Grantee::person("ada"),
-        ));
-        assert!(
-            !may(&edit, "bo", &edit_at(&item("p1")), ActionKind::Undoable),
-            "a restricted Viewer changes nothing, the shared item included"
-        );
-        assert!(
-            may(&edit, "bo", &edit_at(&item("p1")), ActionKind::Read),
-            "a restriction leaves reading alone"
-        );
-        let lapsed = Authority::person(edit.party("bo"))
-            .decide(
+        phase an_edit_share_lets_a_viewer_change_that_item_only;
+        {
+            let before = workspace();
+            assert!(!may(
+                &before,
+                "bo",
                 &edit_at(&item("p1")),
-                ActionKind::Undoable,
-                &Context::at(2_000),
-            )
-            .answer;
-        assert_eq!(
-            lapsed,
-            Answer::Allow,
-            "a lapsed restriction holds nothing off"
-        );
-        edit.grants.push(edit.block("cy", Grantee::person("ada")));
-        assert!(
-            !may(&edit, "cy", &edit_at(&item("p1")), ActionKind::Read),
-            "a ban keeps the person out of what the workspace shares too"
-        );
-    }
-
-    #[test]
-    fn a_share_gives_no_more_than_its_sharer_holds() {
-        let policy = workspace();
-        let grants = share_grants(WORKSPACE, "bo", "m1", &item("p1"), ShareAccess::Edit).unwrap();
-        assert!(matches!(
-            check_held(
-                &Authority::person(policy.party("bo")),
-                &grants,
-                &Context::at(0)
-            ),
-            Err(ShareRefusal::NotHeld(_))
-        ));
-        let grants = share_grants(WORKSPACE, "bo", "m1", &item("p1"), ShareAccess::View).unwrap();
-        assert!(
-            check_held(
-                &Authority::person(policy.party("bo")),
-                &grants,
-                &Context::at(0)
-            )
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn a_share_is_one_record_or_one_item_of_this_workspace() {
-        let record = TreePath::workspace(WORKSPACE)
-            .app("so.tilo.notes")
-            .kind("notes.notebook")
-            .resource("plan");
-        let ok = |node: &TreePath| share_grants(WORKSPACE, "ada", "m1", node, ShareAccess::View);
-        assert_eq!(ok(&record).unwrap().len(), 1);
-        assert!(ok(&record.clone().item("p1")).is_ok());
-        assert!(ok(&item("p1")).is_ok());
-        let every = TreePath::workspace(WORKSPACE)
-            .app("so.tilo.notes")
-            .kind("notes.notebook")
-            .any(Level::Resource);
-        for refused in [
-            every,
-            TreePath::workspace(WORKSPACE).app("so.tilo.notes"),
-            TreePath::workspace("r2")
-                .app("so.tilo.notes")
-                .kind("notes.notebook")
-                .resource("plan"),
-            record.clone().item("p1").field("body"),
-            TreePath::workspace(WORKSPACE).rest(),
-        ] {
+                ActionKind::Undoable
+            ));
+            let edit = shared(ShareAccess::Edit);
+            assert!(may(
+                &edit,
+                "bo",
+                &edit_at(&item("p1")),
+                ActionKind::Undoable
+            ));
             assert!(
-                matches!(ok(&refused), Err(ShareRefusal::Node(_))),
-                "{refused}"
+                !may(&edit, "bo", &edit_at(&item("p2")), ActionKind::Undoable),
+                "a sibling item stays as the role has it"
+            );
+            let view = shared(ShareAccess::View);
+            assert!(!may(
+                &view,
+                "bo",
+                &edit_at(&item("p1")),
+                ActionKind::Undoable
+            ));
+            assert!(may(&view, "bo", &edit_at(&item("p1")), ActionKind::Read));
+        }
+
+        phase a_view_share_strips_no_one;
+        {
+            let view = shared(ShareAccess::View);
+            assert!(
+                may(&view, "cy", &edit_at(&item("p1")), ActionKind::Undoable),
+                "an Editor still edits the shared item through their role"
             );
         }
-        assert_eq!(
-            share_grants(WORKSPACE, "ada", "", &record, ShareAccess::View),
-            Err(ShareRefusal::Id)
-        );
-        assert_eq!(
-            share_grants(WORKSPACE, "ada", "a/b", &record, ShareAccess::View),
-            Err(ShareRefusal::Id)
-        );
-        let grants = ok(&record).unwrap();
-        assert!(grants.iter().all(|grant| is_of_share(grant, "m1")
-            && grant.granted_by == Grantee::person("ada")
-            && grant.answer == Answer::Allow));
-        assert!(
-            !grants
-                .iter()
-                .any(|grant| grant.grantee == Grantee::role(Role::Owner))
-        );
-        assert_eq!("edit".parse::<ShareAccess>(), Ok(ShareAccess::Edit));
-        assert!("own".parse::<ShareAccess>().is_err());
+
+        phase a_share_lifts_no_ban_or_restriction;
+        {
+            let mut edit = shared(ShareAccess::Edit);
+            edit.grants.push(crate::roles::restriction_grant(
+                WORKSPACE,
+                "bo",
+                1_000,
+                Grantee::person("ada"),
+            ));
+            assert!(
+                !may(&edit, "bo", &edit_at(&item("p1")), ActionKind::Undoable),
+                "a restricted Viewer changes nothing, the shared item included"
+            );
+            assert!(
+                may(&edit, "bo", &edit_at(&item("p1")), ActionKind::Read),
+                "a restriction leaves reading alone"
+            );
+            let lapsed = Authority::person(edit.party("bo"))
+                .decide(
+                    &edit_at(&item("p1")),
+                    ActionKind::Undoable,
+                    &Context::at(2_000),
+                )
+                .answer;
+            assert_eq!(
+                lapsed,
+                Answer::Allow,
+                "a lapsed restriction holds nothing off"
+            );
+            edit.grants.push(edit.block("cy", Grantee::person("ada")));
+            assert!(
+                !may(&edit, "cy", &edit_at(&item("p1")), ActionKind::Read),
+                "a ban keeps the person out of what the workspace shares too"
+            );
+        }
+
+        phase a_share_gives_no_more_than_its_sharer_holds;
+        {
+            let policy = workspace();
+            let grants = share_grants(WORKSPACE, "bo", "m1", &item("p1"), ShareAccess::Edit).unwrap();
+            assert!(matches!(
+                check_held(
+                    &Authority::person(policy.party("bo")),
+                    &grants,
+                    &Context::at(0)
+                ),
+                Err(ShareRefusal::NotHeld(_))
+            ));
+            let grants = share_grants(WORKSPACE, "bo", "m1", &item("p1"), ShareAccess::View).unwrap();
+            assert!(
+                check_held(
+                    &Authority::person(policy.party("bo")),
+                    &grants,
+                    &Context::at(0)
+                )
+                .is_ok()
+            );
+        }
+
+        phase a_share_is_one_record_or_one_item_of_this_workspace;
+        {
+            let record = TreePath::workspace(WORKSPACE)
+                .app("so.tilo.notes")
+                .kind("notes.notebook")
+                .resource("plan");
+            let ok = |node: &TreePath| share_grants(WORKSPACE, "ada", "m1", node, ShareAccess::View);
+            assert_eq!(ok(&record).unwrap().len(), 1);
+            assert!(ok(&record.clone().item("p1")).is_ok());
+            assert!(ok(&item("p1")).is_ok());
+            let every = TreePath::workspace(WORKSPACE)
+                .app("so.tilo.notes")
+                .kind("notes.notebook")
+                .any(Level::Resource);
+            for refused in [
+                every,
+                TreePath::workspace(WORKSPACE).app("so.tilo.notes"),
+                TreePath::workspace("r2")
+                    .app("so.tilo.notes")
+                    .kind("notes.notebook")
+                    .resource("plan"),
+                record.clone().item("p1").field("body"),
+                TreePath::workspace(WORKSPACE).rest(),
+            ] {
+                assert!(
+                    matches!(ok(&refused), Err(ShareRefusal::Node(_))),
+                    "{refused}"
+                );
+            }
+            assert_eq!(
+                share_grants(WORKSPACE, "ada", "", &record, ShareAccess::View),
+                Err(ShareRefusal::Id)
+            );
+            assert_eq!(
+                share_grants(WORKSPACE, "ada", "a/b", &record, ShareAccess::View),
+                Err(ShareRefusal::Id)
+            );
+            let grants = ok(&record).unwrap();
+            assert!(grants.iter().all(|grant| is_of_share(grant, "m1")
+                && grant.granted_by == Grantee::person("ada")
+                && grant.answer == Answer::Allow));
+            assert!(
+                !grants
+                    .iter()
+                    .any(|grant| grant.grantee == Grantee::role(Role::Owner))
+            );
+            assert_eq!("edit".parse::<ShareAccess>(), Ok(ShareAccess::Edit));
+            assert!("own".parse::<ShareAccess>().is_err());
+        }
     }
 }

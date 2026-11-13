@@ -223,223 +223,227 @@ mod tests {
             .answer
     }
 
-    #[test]
-    fn a_person_is_decided_by_their_grants_and_their_roles() {
-        let policy = policy();
-        assert_eq!(
-            answer(
-                &Acting::person("editor"),
-                &policy,
-                &[],
-                ActionKind::Undoable
-            ),
-            Answer::Allow
-        );
-        assert_eq!(
-            answer(
-                &Acting::person("viewer"),
-                &policy,
-                &[],
-                ActionKind::Undoable
-            ),
-            Answer::Deny
-        );
-    }
+    tilo_test_env::scenario! {
+        fn whoever_acts_is_decided_by_every_party_it_acts_for;
 
-    #[test]
-    fn every_person_in_the_tree_has_to_allow_it() {
-        let policy = policy();
-        // What the agent's turn gives it: reading and changing the workspace.
-        let turn = [Grant::new(
-            "turn:scribe:0",
-            Grantee::agent("scribe"),
-            TreePath::workspace(WORKSPACE),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            Grantee::person("editor"),
-        )];
-        let agent_for_editor_and_owner = Acting::agent("scribe")
-            .acting_for(Acting::person("editor"))
-            .acting_for(Acting::person("owner"));
-        assert_eq!(
-            answer(
-                &agent_for_editor_and_owner,
-                &policy,
-                &turn,
-                ActionKind::Undoable
-            ),
-            Answer::Allow
-        );
-        let agent_for_a_viewer = agent_for_editor_and_owner.acting_for(Acting::person("viewer"));
-        assert_eq!(
-            answer(&agent_for_a_viewer, &policy, &turn, ActionKind::Undoable),
-            Answer::Deny,
-            "the viewer's grants decide too"
-        );
-    }
+        phase a_person_is_decided_by_their_grants_and_their_roles;
+        {
+            let policy = policy();
+            assert_eq!(
+                answer(
+                    &Acting::person("editor"),
+                    &policy,
+                    &[],
+                    ActionKind::Undoable
+                ),
+                Answer::Allow
+            );
+            assert_eq!(
+                answer(
+                    &Acting::person("viewer"),
+                    &policy,
+                    &[],
+                    ActionKind::Undoable
+                ),
+                Answer::Deny
+            );
+        }
 
-    #[test]
-    fn an_agent_needs_its_own_grants_as_well_as_its_persons() {
-        let mut policy = policy();
-        policy.grants.push(Grant::new(
-            "scribe-may-edit",
-            Grantee::agent("scribe"),
-            TreePath::workspace(WORKSPACE),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            Grantee::person("owner"),
-        ));
-        let acting = Acting::agent("scribe").acting_for(Acting::person("editor"));
-        assert_eq!(
-            answer(&acting, &policy, &[], ActionKind::Undoable),
-            Answer::Allow
-        );
-        let unbounded = Acting::agent("other").acting_for(Acting::person("editor"));
-        assert_eq!(
-            answer(&unbounded, &policy, &[], ActionKind::Undoable),
-            Answer::Deny,
-            "an agent with no grants of its own does nothing"
-        );
-    }
+        phase every_person_in_the_tree_has_to_allow_it;
+        {
+            let policy = policy();
+            // What the agent's turn gives it: reading and changing the workspace.
+            let turn = [Grant::new(
+                "turn:scribe:0",
+                Grantee::agent("scribe"),
+                TreePath::workspace(WORKSPACE),
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                Grantee::person("editor"),
+            )];
+            let agent_for_editor_and_owner = Acting::agent("scribe")
+                .acting_for(Acting::person("editor"))
+                .acting_for(Acting::person("owner"));
+            assert_eq!(
+                answer(
+                    &agent_for_editor_and_owner,
+                    &policy,
+                    &turn,
+                    ActionKind::Undoable
+                ),
+                Answer::Allow
+            );
+            let agent_for_a_viewer = agent_for_editor_and_owner.acting_for(Acting::person("viewer"));
+            assert_eq!(
+                answer(&agent_for_a_viewer, &policy, &turn, ActionKind::Undoable),
+                Answer::Deny,
+                "the viewer's grants decide too"
+            );
+        }
 
-    #[test]
-    fn an_issues_answers_decide_the_work_it_caused_and_no_other() {
-        let issue = "tasks.tracker/issues/release";
-        let mut policy = policy();
-        policy.grants.push(Grant::new(
-            "scribe-asks",
-            Grantee::agent("scribe"),
-            TreePath::workspace(WORKSPACE),
-            KindSet::READ_UNDOABLE,
-            Answer::Ask,
-            Grantee::person("owner"),
-        ));
-        policy.grants.push(Grant::new(
-            format!("{ISSUE_ANSWER_PREFIX}{issue}:app:so.tilo.notes:undoable"),
-            Grantee::agent("scribe"),
-            app(),
-            KindSet::UNDOABLE,
-            Answer::Allow,
-            Grantee::person("owner"),
-        ));
-        let run = Acting::agent("scribe")
-            .acting_for(Acting::person("editor"))
-            .caused_by(issue);
-        assert_eq!(
-            answer(&run, &policy, &[], ActionKind::Undoable),
-            Answer::Allow,
-            "the person's answer for the issue decides its work"
-        );
-        let another = Acting::agent("scribe")
-            .acting_for(Acting::person("editor"))
-            .caused_by("tasks.tracker/issues/other");
-        assert_eq!(
-            answer(&another, &policy, &[], ActionKind::Undoable),
-            Answer::Ask,
-            "another issue's answers decide nothing here"
-        );
-    }
+        phase an_agent_needs_its_own_grants_as_well_as_its_persons;
+        {
+            let mut policy = policy();
+            policy.grants.push(Grant::new(
+                "scribe-may-edit",
+                Grantee::agent("scribe"),
+                TreePath::workspace(WORKSPACE),
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                Grantee::person("owner"),
+            ));
+            let acting = Acting::agent("scribe").acting_for(Acting::person("editor"));
+            assert_eq!(
+                answer(&acting, &policy, &[], ActionKind::Undoable),
+                Answer::Allow
+            );
+            let unbounded = Acting::agent("other").acting_for(Acting::person("editor"));
+            assert_eq!(
+                answer(&unbounded, &policy, &[], ActionKind::Undoable),
+                Answer::Deny,
+                "an agent with no grants of its own does nothing"
+            );
+        }
 
-    #[test]
-    fn an_automation_acts_with_its_owners_party_bounded_by_its_steps() {
-        let policy = policy();
-        let automation = Acting::automation("1")
-            .acting_for(Acting::agent("scribe").acting_for(Acting::person("editor")));
-        let turn = [Grant::new(
-            "turn:scribe:0",
-            Grantee::agent("scribe"),
-            TreePath::workspace(WORKSPACE),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            Grantee::person("editor"),
-        )];
-        assert_eq!(
-            answer(&automation, &policy, &turn, ActionKind::Undoable),
-            Answer::Allow,
-            "the tree's people and software decide; the automation is its owner's"
-        );
-        // A step it was given may narrow what it does there.
-        let mut granted = turn.to_vec();
-        granted.push(Grant::new(
-            "automation-1:outside",
-            Grantee::person("editor"),
-            TreePath::workspace(WORKSPACE),
-            KindSet::OUTSIDE,
-            Answer::Deny,
-            Grantee::person("editor"),
-        ));
-        assert_eq!(
-            answer(&automation, &policy, &granted, ActionKind::Outside),
-            Answer::Deny
-        );
-        let homeless = Acting::automation("1");
-        assert_eq!(
-            answer(&homeless, &policy, &turn, ActionKind::Undoable),
-            Answer::Deny,
-            "an automation that runs for nobody allows nothing"
-        );
-    }
+        phase an_issues_answers_decide_the_work_it_caused_and_no_other;
+        {
+            let issue = "tasks.tracker/issues/release";
+            let mut policy = policy();
+            policy.grants.push(Grant::new(
+                "scribe-asks",
+                Grantee::agent("scribe"),
+                TreePath::workspace(WORKSPACE),
+                KindSet::READ_UNDOABLE,
+                Answer::Ask,
+                Grantee::person("owner"),
+            ));
+            policy.grants.push(Grant::new(
+                format!("{ISSUE_ANSWER_PREFIX}{issue}:app:so.tilo.notes:undoable"),
+                Grantee::agent("scribe"),
+                app(),
+                KindSet::UNDOABLE,
+                Answer::Allow,
+                Grantee::person("owner"),
+            ));
+            let run = Acting::agent("scribe")
+                .acting_for(Acting::person("editor"))
+                .caused_by(issue);
+            assert_eq!(
+                answer(&run, &policy, &[], ActionKind::Undoable),
+                Answer::Allow,
+                "the person's answer for the issue decides its work"
+            );
+            let another = Acting::agent("scribe")
+                .acting_for(Acting::person("editor"))
+                .caused_by("tasks.tracker/issues/other");
+            assert_eq!(
+                answer(&another, &policy, &[], ActionKind::Undoable),
+                Answer::Ask,
+                "another issue's answers decide nothing here"
+            );
+        }
 
-    #[test]
-    fn a_device_that_is_not_theirs_governs_nothing_and_asks_before_reaching_out() {
-        let policy = policy();
-        let foreign = Acting::person("owner").on_foreign_device(true);
-        assert_eq!(
-            answer(&foreign, &policy, &[], ActionKind::Outside),
-            Answer::Ask
-        );
-        let invite = roles::governance_action(WORKSPACE, roles::governance::INVITE);
-        let verdict: Verdict<'_> = Authority::of_acting(&foreign, &policy, &[]).decide(
-            &invite,
-            roles::GOVERNANCE_KIND,
-            &Context::at_secs(1),
-        );
-        assert_eq!(verdict.answer, Answer::Deny, "never governs a workspace");
-        assert_eq!(
-            answer(&Acting::person("owner"), &policy, &[], ActionKind::Undoable),
-            Answer::Allow
-        );
-    }
+        phase an_automation_acts_with_its_owners_party_bounded_by_its_steps;
+        {
+            let policy = policy();
+            let automation = Acting::automation("1")
+                .acting_for(Acting::agent("scribe").acting_for(Acting::person("editor")));
+            let turn = [Grant::new(
+                "turn:scribe:0",
+                Grantee::agent("scribe"),
+                TreePath::workspace(WORKSPACE),
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                Grantee::person("editor"),
+            )];
+            assert_eq!(
+                answer(&automation, &policy, &turn, ActionKind::Undoable),
+                Answer::Allow,
+                "the tree's people and software decide; the automation is its owner's"
+            );
+            // A step it was given may narrow what it does there.
+            let mut granted = turn.to_vec();
+            granted.push(Grant::new(
+                "automation-1:outside",
+                Grantee::person("editor"),
+                TreePath::workspace(WORKSPACE),
+                KindSet::OUTSIDE,
+                Answer::Deny,
+                Grantee::person("editor"),
+            ));
+            assert_eq!(
+                answer(&automation, &policy, &granted, ActionKind::Outside),
+                Answer::Deny
+            );
+            let homeless = Acting::automation("1");
+            assert_eq!(
+                answer(&homeless, &policy, &turn, ActionKind::Undoable),
+                Answer::Deny,
+                "an automation that runs for nobody allows nothing"
+            );
+        }
 
-    #[test]
-    fn an_app_reaches_only_the_kinds_it_declares_in_its_own_node() {
-        let policy = policy();
-        let acting = Acting::person("editor").in_app("so.tilo.notes");
-        let kinds = ["notes.note".to_owned()];
-        let answer = |node: TreePath| {
-            Authority::of_acting(&acting, &policy, &[])
-                .in_app(&kinds)
-                .decide(&node, ActionKind::Undoable, &Context::at_secs(1))
-                .answer
-        };
-        let own = TreePath::workspace(WORKSPACE).app("so.tilo.notes");
-        assert_eq!(answer(own.clone().kind("notes.note")), Answer::Allow);
-        assert_eq!(
-            answer(own.kind("notes.book")),
-            Answer::Deny,
-            "a kind the app does not declare is out of its reach"
-        );
-        assert_eq!(
-            answer(
-                TreePath::workspace(WORKSPACE)
-                    .app("so.tilo.chat")
-                    .kind("chat.messages")
-            ),
-            Answer::Allow,
-            "in another app's node the person's own grants decide"
-        );
-    }
+        phase a_device_that_is_not_theirs_governs_nothing_and_asks_before_reaching_out;
+        {
+            let policy = policy();
+            let foreign = Acting::person("owner").on_foreign_device(true);
+            assert_eq!(
+                answer(&foreign, &policy, &[], ActionKind::Outside),
+                Answer::Ask
+            );
+            let invite = roles::governance_action(WORKSPACE, roles::governance::INVITE);
+            let verdict: Verdict<'_> = Authority::of_acting(&foreign, &policy, &[]).decide(
+                &invite,
+                roles::GOVERNANCE_KIND,
+                &Context::at_secs(1),
+            );
+            assert_eq!(verdict.answer, Answer::Deny, "never governs a workspace");
+            assert_eq!(
+                answer(&Acting::person("owner"), &policy, &[], ActionKind::Undoable),
+                Answer::Allow
+            );
+        }
 
-    #[test]
-    fn a_tree_asks_the_person_unless_someone_acts_for_them() {
-        let person = Acting::person("editor");
-        assert!(person.asker(true).reachable);
-        assert!(!person.asker(true).delegated);
-        let agent = Acting::agent("scribe").acting_for(Acting::person("editor"));
-        assert!(agent.asker(true).delegated);
-        assert!(
-            !agent.asker(false).reachable,
-            "with nobody to ask, an ask refuses"
-        );
+        phase an_app_reaches_only_the_kinds_it_declares_in_its_own_node;
+        {
+            let policy = policy();
+            let acting = Acting::person("editor").in_app("so.tilo.notes");
+            let kinds = ["notes.note".to_owned()];
+            let answer = |node: TreePath| {
+                Authority::of_acting(&acting, &policy, &[])
+                    .in_app(&kinds)
+                    .decide(&node, ActionKind::Undoable, &Context::at_secs(1))
+                    .answer
+            };
+            let own = TreePath::workspace(WORKSPACE).app("so.tilo.notes");
+            assert_eq!(answer(own.clone().kind("notes.note")), Answer::Allow);
+            assert_eq!(
+                answer(own.kind("notes.book")),
+                Answer::Deny,
+                "a kind the app does not declare is out of its reach"
+            );
+            assert_eq!(
+                answer(
+                    TreePath::workspace(WORKSPACE)
+                        .app("so.tilo.chat")
+                        .kind("chat.messages")
+                ),
+                Answer::Allow,
+                "in another app's node the person's own grants decide"
+            );
+        }
+
+        phase a_tree_asks_the_person_unless_someone_acts_for_them;
+        {
+            let person = Acting::person("editor");
+            assert!(person.asker(true).reachable);
+            assert!(!person.asker(true).delegated);
+            let agent = Acting::agent("scribe").acting_for(Acting::person("editor"));
+            assert!(agent.asker(true).delegated);
+            assert!(
+                !agent.asker(false).reachable,
+                "with nobody to ask, an ask refuses"
+            );
+        }
     }
 }

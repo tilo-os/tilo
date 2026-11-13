@@ -32,202 +32,206 @@ fn workspace(members: &[(&str, Role)], administrator: &str) -> WorkspacePolicy {
     workspace
 }
 
-#[test]
-fn an_administrator_runs_every_governance_action_and_an_editor_none() {
-    let workspace = workspace(&[(BOB, Role::Editor), (CAROL, Role::Editor)], CAROL);
-    let bob = Authority::person(workspace.party(BOB));
-    let carol = Authority::person(workspace.party(CAROL));
-    for action in governance::ALL {
+tilo_test_env::scenario! {
+    fn an_administrator_governs_within_their_role;
+
+    phase an_administrator_runs_every_governance_action_and_an_editor_none;
+    {
+        let workspace = workspace(&[(BOB, Role::Editor), (CAROL, Role::Editor)], CAROL);
+        let bob = Authority::person(workspace.party(BOB));
+        let carol = Authority::person(workspace.party(CAROL));
+        for action in governance::ALL {
+            assert_eq!(
+                workspace.check_action(&carol, action, &cx(), false),
+                Ok(()),
+                "an administrator runs {action}"
+            );
+            assert!(
+                matches!(
+                    workspace.check_action(&bob, action, &cx(), true),
+                    Err(Refusal::NotPermitted(_))
+                ),
+                "an Editor by role alone does not run {action}"
+            );
+        }
+        // The grant reaches governance only: content stays the Editor's.
+        let send = TreePath::workspace("r")
+            .app("mail")
+            .kind("mail.message")
+            .resource("m1")
+            .action("send");
         assert_eq!(
-            workspace.check_action(&carol, action, &cx(), false),
-            Ok(()),
-            "an administrator runs {action}"
-        );
-        assert!(
-            matches!(
-                workspace.check_action(&bob, action, &cx(), true),
-                Err(Refusal::NotPermitted(_))
-            ),
-            "an Editor by role alone does not run {action}"
+            carol.decide(&send, ActionKind::Outside, &cx()).answer,
+            Answer::Ask
         );
     }
-    // The grant reaches governance only: content stays the Editor's.
-    let send = TreePath::workspace("r")
-        .app("mail")
-        .kind("mail.message")
-        .resource("m1")
-        .action("send");
-    assert_eq!(
-        carol.decide(&send, ActionKind::Outside, &cx()).answer,
-        Answer::Ask
-    );
-}
 
-#[test]
-fn an_administrator_never_hands_out_or_reaches_above_their_role() {
-    let workspace = workspace(
-        &[
-            (BOB, Role::Editor),
-            (CAROL, Role::Editor),
-            ("m", Role::Moderator),
-            ("v", Role::Viewer),
-        ],
-        CAROL,
-    );
-    let carol = Authority::person(workspace.party(CAROL));
-    workspace
-        .check_invite(CAROL, &carol, Role::Editor, &cx(), false)
-        .unwrap();
-    assert_eq!(
-        workspace.check_invite(CAROL, &carol, Role::Moderator, &cx(), false),
-        Err(Refusal::AboveActorRole {
-            actor: Some(Role::Editor),
-            wanted: Role::Moderator
-        })
-    );
-    assert_eq!(
-        workspace.check_invite(CAROL, &carol, Role::Owner, &cx(), false),
-        Err(Refusal::OwnerRole)
-    );
-    let set = |person: &str, role| Change::SetRole {
-        person: person.into(),
-        role,
-    };
-    workspace
-        .check(CAROL, &carol, &set("v", Role::Editor), &cx(), false)
-        .unwrap();
-    assert!(matches!(
-        workspace.check(CAROL, &carol, &set(BOB, Role::Moderator), &cx(), false),
-        Err(Refusal::AboveActorRole { .. })
-    ));
-    let remove = |person: &str| Change::RemoveMember {
-        person: person.into(),
-    };
-    workspace
-        .check(CAROL, &carol, &remove("v"), &cx(), false)
-        .unwrap();
-    for person in [BOB, "m"] {
+    phase an_administrator_never_hands_out_or_reaches_above_their_role;
+    {
+        let workspace = workspace(
+            &[
+                (BOB, Role::Editor),
+                (CAROL, Role::Editor),
+                ("m", Role::Moderator),
+                ("v", Role::Viewer),
+            ],
+            CAROL,
+        );
+        let carol = Authority::person(workspace.party(CAROL));
+        workspace
+            .check_invite(CAROL, &carol, Role::Editor, &cx(), false)
+            .unwrap();
+        assert_eq!(
+            workspace.check_invite(CAROL, &carol, Role::Moderator, &cx(), false),
+            Err(Refusal::AboveActorRole {
+                actor: Some(Role::Editor),
+                wanted: Role::Moderator
+            })
+        );
+        assert_eq!(
+            workspace.check_invite(CAROL, &carol, Role::Owner, &cx(), false),
+            Err(Refusal::OwnerRole)
+        );
+        let set = |person: &str, role| Change::SetRole {
+            person: person.into(),
+            role,
+        };
+        workspace
+            .check(CAROL, &carol, &set("v", Role::Editor), &cx(), false)
+            .unwrap();
         assert!(matches!(
-            workspace.check(CAROL, &carol, &remove(person), &cx(), false),
-            Err(Refusal::NotBelowActor { .. })
+            workspace.check(CAROL, &carol, &set(BOB, Role::Moderator), &cx(), false),
+            Err(Refusal::AboveActorRole { .. })
+        ));
+        let remove = |person: &str| Change::RemoveMember {
+            person: person.into(),
+        };
+        workspace
+            .check(CAROL, &carol, &remove("v"), &cx(), false)
+            .unwrap();
+        for person in [BOB, "m"] {
+            assert!(matches!(
+                workspace.check(CAROL, &carol, &remove(person), &cx(), false),
+                Err(Refusal::NotBelowActor { .. })
+            ));
+        }
+        assert_eq!(
+            workspace.check(CAROL, &carol, &remove(OWNER), &cx(), false),
+            Err(Refusal::Owner)
+        );
+        // A grant beyond what the administrator holds on its node.
+        let wider = Grant::new(
+            "wider",
+            Grantee::person(BOB),
+            workspace.node(),
+            KindSet::OUTSIDE,
+            Answer::Allow,
+            Grantee::person(CAROL),
+        );
+        assert!(matches!(
+            workspace.check(CAROL, &carol, &Change::Grant(wider), &cx(), false),
+            Err(Refusal::AboveActorGrant { .. })
         ));
     }
-    assert_eq!(
-        workspace.check(CAROL, &carol, &remove(OWNER), &cx(), false),
-        Err(Refusal::Owner)
-    );
-    // A grant beyond what the administrator holds on its node.
-    let wider = Grant::new(
-        "wider",
-        Grantee::person(BOB),
-        workspace.node(),
-        KindSet::OUTSIDE,
-        Answer::Allow,
-        Grantee::person(CAROL),
-    );
-    assert!(matches!(
-        workspace.check(CAROL, &carol, &Change::Grant(wider), &cx(), false),
-        Err(Refusal::AboveActorGrant { .. })
-    ));
-}
 
-#[test]
-fn an_administrator_governs_nothing_from_a_foreign_device_or_through_an_agent() {
-    let workspace = workspace(&[(CAROL, Role::Editor)], CAROL);
-    let foreign = workspace.person_on_device(CAROL, true);
-    let delegation = roles::agent_grants("r", "scribe", CAROL, &[]);
-    let acting = Acting::agent("scribe").acting_for(Acting::person(CAROL));
-    let agent = Authority::of_acting(&acting, &workspace, &delegation);
-    for action in governance::ALL {
-        assert!(
-            workspace
-                .check_action(&foreign, action, &cx(), true)
-                .is_err()
-        );
-        assert!(workspace.check_action(&agent, action, &cx(), true).is_err());
+    phase an_administrator_governs_nothing_from_a_foreign_device_or_through_an_agent;
+    {
+        let workspace = workspace(&[(CAROL, Role::Editor)], CAROL);
+        let foreign = workspace.person_on_device(CAROL, true);
+        let delegation = roles::agent_grants("r", "scribe", CAROL, &[]);
+        let acting = Acting::agent("scribe").acting_for(Acting::person(CAROL));
+        let agent = Authority::of_acting(&acting, &workspace, &delegation);
+        for action in governance::ALL {
+            assert!(
+                workspace
+                    .check_action(&foreign, action, &cx(), true)
+                    .is_err()
+            );
+            assert!(workspace.check_action(&agent, action, &cx(), true).is_err());
+        }
     }
-}
 
-#[test]
-fn a_ban_or_restriction_stops_whatever_governance_a_member_holds() {
-    let until = NOW + 60_000;
-    let mut restricted = workspace(&[(CAROL, Role::Editor), (BOB, Role::Moderator)], CAROL);
-    for person in [CAROL, BOB] {
-        restricted.grants.push(roles::restriction_grant(
-            "r",
-            person,
-            until,
+    phase a_ban_or_restriction_stops_whatever_governance_a_member_holds;
+    {
+        let until = NOW + 60_000;
+        let mut restricted = workspace(&[(CAROL, Role::Editor), (BOB, Role::Moderator)], CAROL);
+        for person in [CAROL, BOB] {
+            restricted.grants.push(roles::restriction_grant(
+                "r",
+                person,
+                until,
+                Grantee::person(OWNER),
+            ));
+        }
+        let carol = Authority::person(restricted.party(CAROL));
+        let bob = Authority::person(restricted.party(BOB));
+        assert_eq!(
+            restricted.check_action(&carol, governance::INVITE, &cx(), true),
+            Err(Refusal::Restricted(CAROL.into()))
+        );
+        assert_eq!(
+            restricted.check_action(&bob, governance::BAN, &cx(), true),
+            Err(Refusal::Restricted(BOB.into())),
+            "a Moderator's own actions do not outlast a restriction either"
+        );
+        assert_eq!(
+            restricted.check_action(&carol, governance::INVITE, &Context::at(until), false),
+            Ok(()),
+            "a lapsed restriction holds nobody off"
+        );
+
+        let mut banned = workspace(&[(CAROL, Role::Editor)], CAROL);
+        banned
+            .grants
+            .push(roles::block_grant("r", CAROL, Grantee::person(OWNER)));
+        let carol = Authority::person(banned.party(CAROL));
+        assert_eq!(
+            banned.check_action(&carol, governance::INVITE, &cx(), true),
+            Err(Refusal::Banned(CAROL.into()))
+        );
+        let owner = Authority::person(banned.party(OWNER));
+        assert_eq!(
+            banned.check_action(&owner, governance::INVITE, &cx(), false),
+            Ok(())
+        );
+    }
+
+    phase an_administrator_grant_on_the_workspace_resource_is_outranked_by_the_editor_rule;
+    {
+        let mut workspace = WorkspacePolicy::new("r", OWNER);
+        workspace.members.insert(CAROL.into(), Role::Editor);
+        let legacy = Grant::new(
+            roles::administrator_grant_id(CAROL).as_str(),
+            Grantee::person(CAROL),
+            roles::workspace_resource("r"),
+            KindSet::ALL,
+            Answer::Allow,
             Grantee::person(OWNER),
+        );
+        assert!(roles::is_legacy_administrator_grant("r", &legacy));
+        assert!(!roles::is_legacy_administrator_grant(
+            "r",
+            &roles::administrator_grant("r", CAROL, Grantee::person(OWNER))
+        ));
+        let denied = Grant {
+            answer: Answer::Deny,
+            ..legacy.clone()
+        };
+        let expiring = Grant {
+            lifetime: Lifetime::Until(NOW + 1),
+            ..legacy.clone()
+        };
+        for other in [denied, expiring] {
+            assert!(
+                !roles::is_legacy_administrator_grant("r", &other),
+                "rewriting {other:?} would widen it"
+            );
+        }
+        workspace.grants.push(legacy);
+        let carol = Authority::person(workspace.party(CAROL));
+        assert!(matches!(
+            workspace.check_action(&carol, governance::INVITE, &cx(), false),
+            Err(Refusal::NotPermitted(_))
         ));
     }
-    let carol = Authority::person(restricted.party(CAROL));
-    let bob = Authority::person(restricted.party(BOB));
-    assert_eq!(
-        restricted.check_action(&carol, governance::INVITE, &cx(), true),
-        Err(Refusal::Restricted(CAROL.into()))
-    );
-    assert_eq!(
-        restricted.check_action(&bob, governance::BAN, &cx(), true),
-        Err(Refusal::Restricted(BOB.into())),
-        "a Moderator's own actions do not outlast a restriction either"
-    );
-    assert_eq!(
-        restricted.check_action(&carol, governance::INVITE, &Context::at(until), false),
-        Ok(()),
-        "a lapsed restriction holds nobody off"
-    );
-
-    let mut banned = workspace(&[(CAROL, Role::Editor)], CAROL);
-    banned
-        .grants
-        .push(roles::block_grant("r", CAROL, Grantee::person(OWNER)));
-    let carol = Authority::person(banned.party(CAROL));
-    assert_eq!(
-        banned.check_action(&carol, governance::INVITE, &cx(), true),
-        Err(Refusal::Banned(CAROL.into()))
-    );
-    let owner = Authority::person(banned.party(OWNER));
-    assert_eq!(
-        banned.check_action(&owner, governance::INVITE, &cx(), false),
-        Ok(())
-    );
-}
-
-#[test]
-fn an_administrator_grant_on_the_workspace_resource_is_outranked_by_the_editor_rule() {
-    let mut workspace = WorkspacePolicy::new("r", OWNER);
-    workspace.members.insert(CAROL.into(), Role::Editor);
-    let legacy = Grant::new(
-        roles::administrator_grant_id(CAROL).as_str(),
-        Grantee::person(CAROL),
-        roles::workspace_resource("r"),
-        KindSet::ALL,
-        Answer::Allow,
-        Grantee::person(OWNER),
-    );
-    assert!(roles::is_legacy_administrator_grant("r", &legacy));
-    assert!(!roles::is_legacy_administrator_grant(
-        "r",
-        &roles::administrator_grant("r", CAROL, Grantee::person(OWNER))
-    ));
-    let denied = Grant {
-        answer: Answer::Deny,
-        ..legacy.clone()
-    };
-    let expiring = Grant {
-        lifetime: Lifetime::Until(NOW + 1),
-        ..legacy.clone()
-    };
-    for other in [denied, expiring] {
-        assert!(
-            !roles::is_legacy_administrator_grant("r", &other),
-            "rewriting {other:?} would widen it"
-        );
-    }
-    workspace.grants.push(legacy);
-    let carol = Authority::person(workspace.party(CAROL));
-    assert!(matches!(
-        workspace.check_action(&carol, governance::INVITE, &cx(), false),
-        Err(Refusal::NotPermitted(_))
-    ));
 }

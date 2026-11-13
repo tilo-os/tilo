@@ -219,66 +219,70 @@ mod tests {
         ids
     }
 
-    #[test]
-    fn a_node_of_the_renamed_app_reads_under_its_earlier_id() {
-        let ids = tasks();
-        let node = TreePath::workspace("r")
-            .app("so.tilo.lang.tasks")
-            .kind("tl.so.tilo.lang.tasks.TodoItem")
-            .resource("i1")
-            .action("check");
-        let old = TreePath::workspace("r").app("so.tilo.lang.todo");
-        assert!(ids.covers(&old.clone().rest(), &node));
-        assert!(
-            ids.covers(
-                &old.clone()
-                    .kind("tl.so.tilo.lang.todo.TodoItem")
-                    .any(Level::Resource),
-                &node
-            )
-        );
-        // Another app's kind, or a kind that only starts like it, stays as written.
-        let other = TreePath::workspace("r")
-            .app("so.tilo.lang.tasks")
-            .kind("tl.so.tilo.lang.tasksx.Item");
-        assert!(!ids.covers(&old.kind("tl.so.tilo.lang.todox.Item").rest(), &other));
-        // The earlier app's node is not the renamed one's: a grant on Tasks says nothing of an
-        // app still called Todo elsewhere.
-        assert!(!ids.covers(
-            &TreePath::workspace("r").app("so.tilo.lang.tasks"),
-            &TreePath::workspace("r").app("so.tilo.lang.todo")
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn earlier_ids_name_the_renamed_app;
 
-    #[test]
-    fn an_earlier_id_has_one_successor() {
-        let mut ids = tasks();
-        ids.insert(
-            "com.example.other",
-            ["so.tilo.lang.todo", "com.example.old"],
-        );
-        assert_eq!(
-            ids.successor("so.tilo.lang.todo"),
-            Some("so.tilo.lang.tasks")
-        );
-        assert_eq!(ids.of("com.example.other"), ["com.example.old"]);
-        assert_eq!(ids.current("so.tilo.lang.notes"), "so.tilo.lang.notes");
-        assert_eq!(ids.records_under("so.tilo.lang.tasks"), "so.tilo.lang.todo");
-        assert_eq!(
-            ids.records_under("so.tilo.lang.notes"),
-            "so.tilo.lang.notes"
-        );
-        assert!(ids.names("so.tilo.lang.todo", "so.tilo.lang.tasks"));
-        assert_eq!(
-            ids.current_resource("tl:so.tilo.lang.todo:abc"),
-            Some("tl:so.tilo.lang.tasks:abc".to_owned())
-        );
-        assert_eq!(
-            ids.current_resource("tl:so.tilo.lang.todo"),
-            Some("tl:so.tilo.lang.tasks".to_owned())
-        );
-        assert_eq!(ids.current_resource("tl:so.tilo.lang.notes:abc"), None);
-        assert_eq!(ids.current_resource("notes.page"), None);
+        phase a_node_of_the_renamed_app_reads_under_its_earlier_id;
+        {
+            let ids = tasks();
+            let node = TreePath::workspace("r")
+                .app("so.tilo.lang.tasks")
+                .kind("tl.so.tilo.lang.tasks.TodoItem")
+                .resource("i1")
+                .action("check");
+            let old = TreePath::workspace("r").app("so.tilo.lang.todo");
+            assert!(ids.covers(&old.clone().rest(), &node));
+            assert!(
+                ids.covers(
+                    &old.clone()
+                        .kind("tl.so.tilo.lang.todo.TodoItem")
+                        .any(Level::Resource),
+                    &node
+                )
+            );
+            // Another app's kind, or a kind that only starts like it, stays as written.
+            let other = TreePath::workspace("r")
+                .app("so.tilo.lang.tasks")
+                .kind("tl.so.tilo.lang.tasksx.Item");
+            assert!(!ids.covers(&old.kind("tl.so.tilo.lang.todox.Item").rest(), &other));
+            // The earlier app's node is not the renamed one's: a grant on Tasks says nothing of an
+            // app still called Todo elsewhere.
+            assert!(!ids.covers(
+                &TreePath::workspace("r").app("so.tilo.lang.tasks"),
+                &TreePath::workspace("r").app("so.tilo.lang.todo")
+            ));
+        }
+
+        phase an_earlier_id_has_one_successor;
+        {
+            let mut ids = tasks();
+            ids.insert(
+                "com.example.other",
+                ["so.tilo.lang.todo", "com.example.old"],
+            );
+            assert_eq!(
+                ids.successor("so.tilo.lang.todo"),
+                Some("so.tilo.lang.tasks")
+            );
+            assert_eq!(ids.of("com.example.other"), ["com.example.old"]);
+            assert_eq!(ids.current("so.tilo.lang.notes"), "so.tilo.lang.notes");
+            assert_eq!(ids.records_under("so.tilo.lang.tasks"), "so.tilo.lang.todo");
+            assert_eq!(
+                ids.records_under("so.tilo.lang.notes"),
+                "so.tilo.lang.notes"
+            );
+            assert!(ids.names("so.tilo.lang.todo", "so.tilo.lang.tasks"));
+            assert_eq!(
+                ids.current_resource("tl:so.tilo.lang.todo:abc"),
+                Some("tl:so.tilo.lang.tasks:abc".to_owned())
+            );
+            assert_eq!(
+                ids.current_resource("tl:so.tilo.lang.todo"),
+                Some("tl:so.tilo.lang.tasks".to_owned())
+            );
+            assert_eq!(ids.current_resource("tl:so.tilo.lang.notes:abc"), None);
+            assert_eq!(ids.current_resource("notes.page"), None);
+        }
     }
 
     #[test]

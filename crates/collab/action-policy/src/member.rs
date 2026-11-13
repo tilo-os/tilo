@@ -395,38 +395,42 @@ impl Acting {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_tree_names_every_member_and_person_in_it() {
-        let acting =
-            Acting::agent("claude").acting_for(Acting::person("q").acting_for(Acting::person("x")));
-        assert!(acting.delegated());
-        assert_eq!(acting.direct_person(), None);
-        assert_eq!(
-            acting.members(),
-            [
-                &MemberId::agent("claude"),
-                &MemberId::person("q"),
-                &MemberId::person("x")
-            ]
-        );
-        assert_eq!(acting.people(), vec!["q", "x"]);
-        let person = Acting::person("q");
-        assert!(person.direct());
-        assert_eq!(person.direct_person(), Some("q"));
-        assert!(Acting::person("q").on_foreign_device(true).delegated());
-    }
+    tilo_test_env::scenario! {
+        fn a_member_tree_names_and_writes_its_members;
 
-    #[test]
-    fn the_tree_is_written_as_it_is_read() {
-        let acting = Acting::automation("1")
-            .acting_for(
-                Acting::agent("claude")
-                    .acting_for(Acting::person("q"))
-                    .acting_for(Acting::person("x")),
-            )
-            .caused_by("chat.message:m1");
-        let json = serde_json::to_string(&acting).unwrap();
-        assert_eq!(serde_json::from_str::<Acting>(&json).unwrap(), acting);
-        assert!(json.contains("\"for\""), "{json}");
+        phase a_tree_names_every_member_and_person_in_it;
+        {
+            let acting =
+                Acting::agent("claude").acting_for(Acting::person("q").acting_for(Acting::person("x")));
+            assert!(acting.delegated());
+            assert_eq!(acting.direct_person(), None);
+            assert_eq!(
+                acting.members(),
+                [
+                    &MemberId::agent("claude"),
+                    &MemberId::person("q"),
+                    &MemberId::person("x")
+                ]
+            );
+            assert_eq!(acting.people(), vec!["q", "x"]);
+            let person = Acting::person("q");
+            assert!(person.direct());
+            assert_eq!(person.direct_person(), Some("q"));
+            assert!(Acting::person("q").on_foreign_device(true).delegated());
+        }
+
+        phase the_tree_is_written_as_it_is_read;
+        {
+            let acting = Acting::automation("1")
+                .acting_for(
+                    Acting::agent("claude")
+                        .acting_for(Acting::person("q"))
+                        .acting_for(Acting::person("x")),
+                )
+                .caused_by("chat.message:m1");
+            let json = serde_json::to_string(&acting).unwrap();
+            assert_eq!(serde_json::from_str::<Acting>(&json).unwrap(), acting);
+            assert!(json.contains("\"for\""), "{json}");
+        }
     }
 }

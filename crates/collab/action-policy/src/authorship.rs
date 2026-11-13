@@ -85,44 +85,48 @@ mod tests {
             .answer
     }
 
-    #[test]
-    fn trusted_code_asks_only_before_reaching_outside() {
-        let author = Grantee::agent("helper");
-        let own = code_grants(WORKSPACE, &author, true);
-        let party = code_party(&author, &own, &[]);
-        assert_eq!(
-            answer(&party, &node("x"), ActionKind::Undoable),
-            Answer::Allow
-        );
-        assert_eq!(answer(&party, &node("x"), ActionKind::Outside), Answer::Ask);
-    }
+    tilo_test_env::scenario! {
+        fn authored_code_asks_by_how_far_it_is_trusted;
 
-    #[test]
-    fn untrusted_code_asks_for_everything() {
-        let author = Grantee::agent("helper");
-        let own = code_grants(WORKSPACE, &author, false);
-        let party = code_party(&author, &own, &[]);
-        for kind in [ActionKind::Undoable, ActionKind::Outside] {
-            assert_eq!(answer(&party, &node("so.tilo.notes"), kind), Answer::Ask);
+        phase trusted_code_asks_only_before_reaching_outside;
+        {
+            let author = Grantee::agent("helper");
+            let own = code_grants(WORKSPACE, &author, true);
+            let party = code_party(&author, &own, &[]);
+            assert_eq!(
+                answer(&party, &node("x"), ActionKind::Undoable),
+                Answer::Allow
+            );
+            assert_eq!(answer(&party, &node("x"), ActionKind::Outside), Answer::Ask);
         }
-    }
 
-    #[test]
-    fn the_workspaces_denial_of_an_author_holds() {
-        let author = Grantee::agent("helper");
-        let own = code_grants(WORKSPACE, &author, true);
-        let workspace = [Grant::new(
-            "deny-notes",
-            author.clone(),
-            TreePath::workspace(WORKSPACE),
-            KindSet::ALL,
-            Answer::Deny,
-            Grantee::person("owner"),
-        )];
-        let party = code_party(&author, &own, &workspace);
-        assert_eq!(
-            answer(&party, &node("so.tilo.notes"), ActionKind::Read),
-            Answer::Deny
-        );
+        phase untrusted_code_asks_for_everything;
+        {
+            let author = Grantee::agent("helper");
+            let own = code_grants(WORKSPACE, &author, false);
+            let party = code_party(&author, &own, &[]);
+            for kind in [ActionKind::Undoable, ActionKind::Outside] {
+                assert_eq!(answer(&party, &node("so.tilo.notes"), kind), Answer::Ask);
+            }
+        }
+
+        phase the_workspaces_denial_of_an_author_holds;
+        {
+            let author = Grantee::agent("helper");
+            let own = code_grants(WORKSPACE, &author, true);
+            let workspace = [Grant::new(
+                "deny-notes",
+                author.clone(),
+                TreePath::workspace(WORKSPACE),
+                KindSet::ALL,
+                Answer::Deny,
+                Grantee::person("owner"),
+            )];
+            let party = code_party(&author, &own, &workspace);
+            assert_eq!(
+                answer(&party, &node("so.tilo.notes"), ActionKind::Read),
+                Answer::Deny
+            );
+        }
     }
 }
