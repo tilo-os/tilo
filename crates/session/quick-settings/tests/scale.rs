@@ -149,8 +149,14 @@ fn dragging_a_slider_sets_its_level_at_scale_2() {
         brightness.x0 + brightness.width() * 0.25,
         brightness.center().y,
     );
-    app.harness()
-        .drag_at((brightness.x1 - 4.0, brightness.center().y), quarter);
+    // From part way along the track, short of the value shown at its end.
+    app.harness().drag_at(
+        (
+            brightness.x0 + brightness.width() * 0.4,
+            brightness.center().y,
+        ),
+        quarter,
+    );
     app.settle();
     assert!(
         host.ran()
@@ -207,6 +213,8 @@ fn the_volume_control_mutes_at_scale_2() {
 /// lists.
 #[test]
 fn every_section_opens_at_scale_2() {
+    // Where each section rests: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
     for (section, names) in [
         (QsSection::Wifi, vec!["qs-wired", "qs-network"]),
         (QsSection::Bluetooth, vec!["qs-accessory", "qs-bluetooth"]),
@@ -222,8 +230,8 @@ fn every_section_opens_at_scale_2() {
             .unwrap();
         app.settle();
         assert!(
-            has(&mut app, "qs-back"),
-            "{section:?} opened with a way back"
+            has(&mut app, "qs-volume-row"),
+            "{section:?} opened in place, among the controls"
         );
         let targets: Vec<String> = app.harness().targets().keys().cloned().collect();
         assert!(
@@ -237,18 +245,19 @@ fn every_section_opens_at_scale_2() {
     }
 }
 
-/// The page a section replaces is the controls again, exactly where it
-/// stood: Back gives the panel back at 2× as it was.
+/// A section opens under its tile at 2×, and Back closes it with the controls exactly where they
+/// stood.
 #[test]
 fn back_returns_the_controls_page_at_scale_2() {
+    let _settled = ui::motion::testing::settled();
     let (mut app, _) = hosted("controls");
     let before = target(&mut app, "qs-tile-wifi");
     app.invoke(QuickSettings::TOGGLE_SECTION.with(QsSection::Wifi))
         .unwrap();
     app.settle();
     assert!(
-        !has(&mut app, "qs-tile-wifi"),
-        "the section replaced the page"
+        has(&mut app, "qs-section-wifi") && has(&mut app, "qs-tile-wifi"),
+        "the section opens among the controls"
     );
     app.invoke(QuickSettings::BACK.invoke()).unwrap();
     app.settle();

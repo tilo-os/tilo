@@ -2391,13 +2391,6 @@ impl Compositor {
         self.data.state.layer_shown(namespace)
     }
 
-    /// Whether the app of the layer surface `namespace` has drawn it: a surface shows nothing
-    /// before its first buffer, so a motion about it starts with that frame.
-    #[must_use]
-    pub fn layer_drawn(&self, namespace: &str) -> bool {
-        self.data.state.layer_drawn(namespace)
-    }
-
     /// Stand the session's layer surface `namespace` in `room` (`x, y, w, h` , logical layout
     /// coordinates), as big as its app asks for inside it, whatever its own anchors and margins
     /// say; `None` gives it back to them. A surface whose content fits itself rests against the

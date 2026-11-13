@@ -32,10 +32,23 @@ pub(crate) struct SliderFace {
     /// What the slider sets, when it is one of several: the display's name,
     /// or the screen and port the sound plays through, each its own fact.
     pub device: Vec<Fact>,
-    /// The level as the person reads it, or that it is muted.
-    pub value: String,
+    /// Sound is muted: the value says so, whatever the level.
+    pub muted: bool,
     pub level: f64,
     pub available: bool,
+}
+
+impl SliderFace {
+    /// The value at `level` as the person reads it, or that it is muted.
+    pub(crate) fn value_at(&self, level: f64) -> String {
+        if !self.available {
+            String::new()
+        } else if self.muted {
+            t("qs-muted")
+        } else {
+            percent(level)
+        }
+    }
 }
 
 /// The slider block at the top of the page.
@@ -60,7 +73,7 @@ impl Sliders {
                 kind: SliderKind::Brightness,
                 name: t("qs-brightness"),
                 device: Vec::new(),
-                value: percent(f64::from(state.brightness)),
+                muted: false,
                 level: f64::from(state.brightness),
                 available: true,
             });
@@ -82,7 +95,7 @@ impl Sliders {
                 } else {
                     Vec::new()
                 },
-                value: percent(f64::from(display.level)),
+                muted: false,
                 level: f64::from(display.level),
                 available: true,
             });
@@ -113,13 +126,7 @@ impl Sliders {
             kind: SliderKind::Volume,
             name: t("qs-volume"),
             device,
-            value: if !available {
-                String::new()
-            } else if muted {
-                t("qs-muted")
-            } else {
-                percent(level)
-            },
+            muted,
             // A muted output is silent at any level: its track is empty, as
             // the volume readout's is.
             level: if muted { 0.0 } else { level },
@@ -175,22 +182,6 @@ fn tile(control: QuickSettingsControl, state: &QuickSettingsState) -> TileFace {
         switch: tile_switch(control, state),
         section: section_of(control, state),
     }
-}
-
-/// The radios whose section's page has their switch in its header, as their tiles say: the
-/// page is where the person turns the radio on to see what it reaches, whether or not its tile is
-/// on the controls page.
-pub(crate) fn section_switches(state: &QuickSettingsState) -> Vec<TileFace> {
-    [
-        QuickSettingsControl::Wifi,
-        QuickSettingsControl::Bluetooth,
-        QuickSettingsControl::Vpn,
-    ]
-    .into_iter()
-    .filter(|control| available(*control, state))
-    .map(|control| tile(control, state))
-    .filter(|face| face.section.is_some())
-    .collect()
 }
 
 /// The controls of `arrangement` this machine has what they control for.
@@ -1167,7 +1158,10 @@ mod tests {
             .find(|row| row.id == "qs-volume")
             .expect("the row stands without an audio server");
         assert!(!volume.available, "there is nothing to set");
-        assert!(volume.value.is_empty(), "and no level to show");
+        assert!(
+            volume.value_at(volume.level).is_empty(),
+            "and no level to show"
+        );
         assert_eq!(said(&volume.device), vec![t("qs-sound-no-device")]);
         assert!(!sliders.outputs, "there is no output to choose");
 
@@ -1192,7 +1186,7 @@ mod tests {
             .expect("an output to set");
         assert!(volume.available);
         assert!(volume.device.is_empty(), "the only output needs no name");
-        assert_eq!(volume.value, "40%");
+        assert_eq!(volume.value_at(volume.level), "40%");
         assert!(sliders.outputs);
 
         // A second output to choose from: the row says which one plays.
@@ -1279,7 +1273,7 @@ mod tests {
             .iter()
             .find(|row| row.id == "qs-brightness")
             .expect("a screen to dim");
-        assert_eq!(brightness.value, "60%");
+        assert_eq!(brightness.value_at(brightness.level), "60%");
         assert!(
             brightness.device.is_empty(),
             "one screen needs no name of its own"
@@ -1294,7 +1288,7 @@ mod tests {
             ["Speakers"],
             "it names where the sound plays"
         );
-        assert_eq!(volume.value, "40%");
+        assert_eq!(volume.value_at(volume.level), "40%");
         assert!((volume.level - 0.4).abs() < 0.001);
     }
 
@@ -1366,7 +1360,7 @@ mod tests {
             .into_iter()
             .find(|row| row.id == "qs-volume")
             .expect("an output to set");
-        assert_eq!(volume.value, "Muted");
+        assert_eq!(volume.value_at(volume.level), "Muted");
         assert!(
             volume.level.abs() < 0.001,
             "a muted output is silent at any level"

@@ -669,7 +669,7 @@ fn the_panel_opens_the_same_way_in_a_windowed_session() {
     session.stop_surface("quick-settings");
 }
 
-/// The frame once the panel has drawn into it.
+/// The frame once the panel has drawn into it and finished arriving.
 fn drawn(session: &mut Session, desk: &Screenshot) -> Screenshot {
     drawn_on(session, desk, WIDTH)
 }
@@ -683,12 +683,23 @@ fn drawn_on(session: &mut Session, desk: &Screenshot, output_width: i32) -> Scre
         pump(session);
         let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
         if panel_pixel(&frame, output_width) != panel {
-            return frame;
+            break;
         }
         assert!(
             Instant::now() < deadline,
             "the panel shows nothing here (headless session without a renderer?)"
         );
+    }
+    // It grows from the bar as it arrives: what is measured is where it rests.
+    let mut last = session.compositor().screenshot("HEADLESS-1").expect("shot");
+    loop {
+        pump(session);
+        let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
+        if frame.rgba == last.rgba {
+            return frame;
+        }
+        assert!(Instant::now() < deadline, "the panel never came to rest");
+        last = frame;
     }
 }
 

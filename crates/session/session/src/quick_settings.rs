@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use tilo_desktop::overlays::{POPOVER_HEIGHT, POPOVER_WIDTH, Slot};
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_session_core::surface::LayerPose;
-use ui::kurbo::Rect;
+use ui::kurbo::{Point, Rect};
 use ui::motion::{Appear, Appearing};
 use ui::tokens::EffectiveMotion;
 
@@ -100,18 +100,16 @@ pub(crate) enum PanelKeys {
 /// The panel's own coming and going, which the compositor draws for it: its app is another
 /// process's layer surface, hidden here between openings, so it cannot tell an opening from a
 /// hiding and draws as it stands. The session poses it on the toolkit's [`Appear`] motion instead,
-/// every frame it moves, from the corner its slot anchors it by.
+/// every frame it moves, from where its slot was opened: the bar's status area, or the caret.
 pub(crate) struct PanelMotion {
     appear: Appearing,
     motion: EffectiveMotion,
     /// The panel's own rectangle, at its origin: what the pose scales and offsets in ([`Appearing`]
     /// works in the surface's own coordinates).
     surface: Rect,
+    /// Where it comes from, in the surface's own coordinates.
+    from: Point,
 }
-
-/// The corner the panel's slot anchors it by (`Anchor::TopTrailing`): it grows out of and shrinks
-/// back into the display's top-right corner, where the status area is.
-const ANCHOR: (f64, f64) = (1.0, 0.0);
 
 impl PanelMotion {
     pub(crate) fn new(motion: EffectiveMotion) -> Self {
@@ -119,18 +117,21 @@ impl PanelMotion {
             appear: Appearing::closed(),
             motion,
             surface: Rect::ZERO,
+            from: Point::ZERO,
         }
     }
 
-    /// Follow the slot: `up` whether the stack has the panel open, `drawn` whether its app has
-    /// drawn it yet, and `place` where the stack put it. A panel that is up but not drawn has no
-    /// first frame to grow from, so its arrival starts with that frame rather than running unseen
-    /// while its app starts.
-    pub(crate) fn follow(&mut self, up: bool, drawn: bool, place: Option<Rect>) {
-        if let Some(place) = place {
+    /// Follow the slot: `up` whether the stack has the panel open, `seen` whether the person sees
+    /// the frame its app drew for this opening, and `place` where it stands and where it was
+    /// opened from. A panel that is up but not seen has no first frame to grow from, so its
+    /// arrival starts with that frame rather than running unseen while its app draws the page it
+    /// was asked for.
+    pub(crate) fn follow(&mut self, up: bool, seen: bool, place: Option<(Rect, Point)>) {
+        if let Some((place, from)) = place {
             self.surface = Rect::new(0.0, 0.0, place.width(), place.height());
+            self.from = Point::new(from.x - place.x0, from.y - place.y0);
         }
-        if up && !drawn && !self.appear.is_open() {
+        if up && !seen && !self.appear.is_open() {
             return;
         }
         self.appear.follow(up, self.motion);
@@ -148,8 +149,9 @@ impl PanelMotion {
         self.appear.is_moving().then_some(now)
     }
 
-    /// How the compositor draws it this frame; `None` while it stands in place. Reduced motion only
-    /// fades it, as [`Appear`] says.
+    /// How the compositor draws it this frame; `None` while it stands in place. It grows out of,
+    /// and shrinks back into, the point of it nearest where it was opened from. Reduced motion
+    /// only fades it, as [`Appear`] says.
     pub(crate) fn pose(&self) -> Option<LayerPose> {
         let progress = self.appear.progress();
         if progress >= 1.0 {
@@ -159,13 +161,18 @@ impl PanelMotion {
             progress,
             ui::motion::Direction::of(self.appear.is_open()),
             self.surface,
-            ui::kurbo::Point::new(self.surface.x1, self.surface.y0),
+            self.from,
             self.motion,
         );
+        let origin = Appear::origin(self.surface, self.from);
+        let share = |at: f64, length: f64| if length > 0.0 { at / length } else { 0.0 };
         Some(LayerPose {
             scale: coming.scale,
             opacity: coming.opacity,
-            anchor: ANCHOR,
+            anchor: (
+                share(origin.x, self.surface.width()),
+                share(origin.y, self.surface.height()),
+            ),
             offset: (coming.offset.x, coming.offset.y),
         })
     }
@@ -218,11 +225,10 @@ impl crate::Session {
         self.shared
             .overlays
             .stands(Slot::QuickSettings, stands.filter(|_| open && visible));
-        let drawn = self.compositor.layer_drawn(SURFACE_NAMESPACE);
         self.quick_settings_panel.follow(
             open,
-            drawn,
-            stands.or_else(|| place.map(|standing| standing.room)),
+            visible,
+            place.map(|standing| (stands.unwrap_or(standing.room), standing.from)),
         );
         if !open || place.is_none() {
             // Down, or up where the stack cannot say: nothing shows, and its app runs on hidden, so
@@ -245,12 +251,34 @@ impl crate::Session {
         // already stands for costs nothing.
         let opening = self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(true);
         // What the keys asked the panel to show, which it can only be told while it runs. It is
-        // told before it shows, and shows only once it has drawn a frame after the asking: the
-        // first frame a person sees is that page, fitted, rather than the one it was left on.
+        // told before it shows, and shows only once it has drawn a frame after it answered: the
+        // first frame a person sees is that page, fitted, never the one it was left on, which it
+        // may draw again at its new place before the ask reaches it.
         let drawn_before = self.compositor.layer_frames(SURFACE_NAMESPACE);
         let asked = std::mem::take(&mut *self.shared.panel_asks.borrow_mut());
-        self.ask_panel(&asked);
-        self.show_quick_settings(opening.then_some(drawn_before));
+        let page = self.ask_panel(&asked);
+        if opening && page.is_some() {
+            self.quick_settings_asked = page;
+        }
+        let after = match self.quick_settings_asked {
+            Some(id)
+                if self
+                    .surfaces
+                    .outcome(id)
+                    .is_some_and(|state| !state.update.is_terminal()) =>
+            {
+                // Not answered yet by an app that runs: it stays out of sight, waiting.
+                self.compositor
+                    .set_layer_pose(SURFACE_NAMESPACE, self.quick_settings_panel.pose());
+                return;
+            }
+            Some(_) => {
+                self.quick_settings_asked = None;
+                Some(self.compositor.layer_frames(SURFACE_NAMESPACE))
+            }
+            None => opening.then_some(drawn_before),
+        };
+        self.show_quick_settings(after);
         // The panel takes the keyboard once the person sees it: Tab walks its controls and Enter
         // opens a section; opened to paste, the person types to find a copy and Enter pastes it.
         // Until then the keys and what they asked (a copy made just before) stay with the field
@@ -335,8 +363,10 @@ impl crate::Session {
         self.shared.overlays.close(Slot::QuickSettings);
     }
 
-    /// Tell the running panel what the keys asked of it, in order.
-    fn ask_panel(&mut self, asked: &[&'static str]) {
+    /// Tell the running panel what the keys asked of it, in order: the last ask for a page, which
+    /// its app answers once it shows that page.
+    fn ask_panel(&mut self, asked: &[&'static str]) -> Option<u64> {
+        let mut page = None;
         for &action in asked {
             let id = self.ask_surface(
                 SURFACE,
@@ -351,9 +381,10 @@ impl crate::Session {
                 (_, None) => {
                     tracing::debug!(action, "quick settings was not asked: it does not run");
                 }
-                (_, Some(_)) => {}
+                (_, Some(id)) => page = Some(id),
             }
         }
+        page
     }
 
     /// Take what the panel answered when Escape asked it to go back: the panel closes from its main
@@ -419,7 +450,7 @@ impl crate::Session {
             self.compositor.show_layer(SURFACE_NAMESPACE, false);
             // Gone from sight, it goes back to its controls: the next opening shows them, or the
             // page it is asked for built afresh, its field taking the keys.
-            self.ask_panel(&["show-controls"]);
+            let _ = self.ask_panel(&["show-controls"]);
         }
     }
 }
@@ -747,8 +778,12 @@ mod tests {
         let t0 = ui::time::now();
         let at = |ms: u64| t0 + ui::time::Duration::from_millis(ms);
         let mut panel = PanelMotion::new(EffectiveMotion::default());
-        // The place the stack gives it: 380 x 640 at the display's right.
-        let place = Some(Rect::new(892.0, 32.0, 1272.0, 672.0));
+        // The place the stack gives it: 380 x 640 at the display's right, under the bar's status
+        // area it was opened from.
+        let place = Some((
+            Rect::new(892.0, 32.0, 1272.0, 672.0),
+            Point::new(1272.0, 0.0),
+        ));
         // Every read of the motion is pinned at the instant it is read at.
         let look = |panel: &PanelMotion, ms: u64| {
             with_monotonic_time(at(ms), || (panel.is_drawn(), panel.pose()))
@@ -757,7 +792,7 @@ mod tests {
             with_monotonic_time(at(ms), || panel.next_pass(at(ms)).is_some())
         };
 
-        // Up while its app has not drawn it yet: out of sight, not moving.
+        // Up while the person does not see its app's frame yet: out of sight, not moving.
         with_monotonic_time(t0, || panel.follow(true, false, place));
         let (drawn, waiting) = look(&panel, 0);
         assert!(!drawn, "nothing to animate before its first frame");
@@ -775,7 +810,7 @@ mod tests {
             "from faint and small: {coming:?}"
         );
         assert!(
-            coming.offset.0 > 0.0 && coming.offset.1 < 0.0,
+            coming.offset.0 > 0.0 && coming.offset.1 < 0.0 && coming.anchor == (1.0, 0.0),
             "and from the corner the status area is in, up and to the right: {coming:?}"
         );
         assert!(

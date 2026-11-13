@@ -1,5 +1,5 @@
 //! Quick Settings as an app: its resource is the panel itself — which page
-//! shows, which section's page replaced the controls, whether it was opened
+//! shows, which section is open on the controls, whether it was opened
 //! to paste or is being arranged — and its actions move between them.
 //!
 //! The panel is this device's own and is gone with the session: the session
@@ -20,7 +20,7 @@ use crate::host::FixtureHost;
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum Page {
-    /// The controls, or the page of the section opened from them.
+    /// The controls, with the section opened on them.
     #[default]
     Root,
     /// One Bluetooth accessory and the devices it can move to.
@@ -41,7 +41,7 @@ pub struct QuickSettings {
     pub page: Page,
     /// The accessory its page is about, by address.
     pub accessory: String,
-    /// The section whose page replaces the controls; one at a time.
+    /// The section open under its control; one at a time.
     pub section: Option<QsSection>,
     /// Opened to paste: the clipboard history alone, and a choice is pasted
     /// into the focused field.
@@ -58,7 +58,7 @@ impl QuickSettings {
         *self = Self::default();
     }
 
-    /// Open a section's page, closing any other.
+    /// Open a section under its control, closing any other.
     #[action(housekeeping)]
     pub fn open_section(&mut self, #[param("The section")] section: QsSection) {
         self.page = Page::Root;
@@ -67,8 +67,7 @@ impl QuickSettings {
         self.section = Some(section);
     }
 
-    /// Open a section's page, or go back to the controls when it is the one
-    /// open.
+    /// Open a section, or close it when it is the one open.
     #[action(housekeeping)]
     pub fn toggle_section(&mut self, #[param("The section")] section: QsSection) {
         if self.section == Some(section) {

@@ -206,14 +206,6 @@ impl Layers {
             .map_or(0, |placed| placed.frames)
     }
 
-    /// Whether the client of `namespace` has drawn it: a surface shows nothing before its first
-    /// buffer, so a motion about it has nothing to move until then.
-    fn drawn(&self, namespace: &str) -> bool {
-        self.surfaces
-            .iter()
-            .any(|placed| placed.namespace == namespace && placed.has_buffer())
-    }
-
     /// How `namespace` is posed this frame, or [`LayerPose::SETTLED`].
     fn pose(&self, namespace: &str) -> LayerPose {
         self.poses.get(namespace).copied().unwrap_or_default()
@@ -525,11 +517,6 @@ impl State {
     /// `None` when it has not said, which is shown.
     pub(crate) fn layer_shown(&self, namespace: &str) -> Option<bool> {
         self.layers.shown(namespace)
-    }
-
-    /// Whether the client of the layer surface `namespace` has drawn it yet.
-    pub(crate) fn layer_drawn(&self, namespace: &str) -> bool {
-        self.layers.drawn(namespace)
     }
 
     /// Draw the layer surface `namespace` as `pose` says from the next frame on, or as it stands

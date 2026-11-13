@@ -565,6 +565,10 @@ pub struct Session {
     /// surface stands: the person works it from the keys that opened it.
     #[cfg(target_os = "linux")]
     pub(crate) quick_settings_keyboard: crate::quick_settings::PanelKeys,
+    /// The ask for the page an opening panel shows, until its app answers it: the panel shows from
+    /// the first frame its app draws after that answer.
+    #[cfg(target_os = "linux")]
+    pub(crate) quick_settings_asked: Option<u64>,
     /// The portal's link to the loop, while the portal serves.
     #[cfg(target_os = "linux")]
     pub(crate) portal: Option<crate::portal_link::SessionLink>,

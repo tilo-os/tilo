@@ -377,6 +377,21 @@ impl FloatingPanel {
         embed(header);
     }
 
+    /// How much taller than laid out its body's page is drawn this frame, while a band opens or
+    /// closes in it ([`crate::widget::Disclosing`]); the body's scroll view keeps its own box, so
+    /// the page is asked through it.
+    fn body_growth(&self) -> Option<f64> {
+        let page = match self
+            .body
+            .as_any()
+            .and_then(|any| any.downcast_ref::<crate::widget::Scrollable>())
+        {
+            Some(scroll) => scroll.content_disclosing(),
+            None => self.body.disclosing(),
+        };
+        page.map(|moving| moving.follower_offset(0.0))
+    }
+
     fn body_is_empty(&self) -> bool {
         self.body_rect.height() <= 0.5
     }
@@ -555,9 +570,13 @@ impl Widget for FloatingPanel {
         // A panel arriving is as tall as its page from its first frame: the window it shows in is
         // fitted, and no spring from the room it was given runs behind the person's eyes.
         let arriving = self.placed.is_moving(now);
+        // A section opening or closing in the page is drawn taller or shorter than it is laid
+        // out, on its own motion: the window goes with its edge, so what follows it moves down
+        // inside a panel growing under it, rather than after it on a spring of its own.
+        let growth = self.body_growth();
         if let Some(fit) = &mut self.fit {
-            if arriving {
-                fit.extent.snap(fit.wanted);
+            if arriving || growth.is_some() {
+                fit.extent.snap(fit.wanted + growth.unwrap_or(0.0));
             } else {
                 fit.extent.follow(
                     fit.wanted,
@@ -566,6 +585,11 @@ impl Widget for FloatingPanel {
                     now,
                 );
             }
+        }
+        // A window fitted to its page is resized under it, not moved: the panel stands where the
+        // window does.
+        if self.fit.is_some() {
+            self.placed.carry(self.rect);
         }
         self.placed.follow(
             self.rect,

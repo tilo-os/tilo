@@ -20,7 +20,7 @@ pub struct Showing {
     pub page: crate::Page,
     /// The accessory the page is about, by address, on its page.
     pub accessory: String,
-    /// The section whose page stands in the controls' place.
+    /// The section open on the controls.
     pub section: Option<crate::QsSection>,
     /// Opened to paste a copy into the focused field.
     pub pasting: bool,

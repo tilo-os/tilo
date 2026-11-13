@@ -538,6 +538,14 @@ impl Scrollable {
         }
     }
 
+    /// Whether its content is drawn taller or shorter than laid out while a band moves in it: a
+    /// surface that fits its window to this view's content goes with it. The view's own box does
+    /// not move, so this is not its [`Widget::disclosing`].
+    #[must_use]
+    pub fn content_disclosing(&self) -> Option<crate::widget::Disclosing> {
+        self.child.as_ref().and_then(|child| child.disclosing())
+    }
+
     /// Take the height the parent leaves: the rest of a column under a
     /// fixed bar, the whole of a grid row or a fixed-height container,
     /// including at the root of a window whose content has a max width.
