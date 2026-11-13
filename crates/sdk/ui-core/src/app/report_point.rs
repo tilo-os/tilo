@@ -266,13 +266,23 @@ fn hint(
     lit: Option<Rect>,
 ) {
     let style = theme.text(TextRole::Label);
+    let quiet = theme.text(TextRole::Caption);
+    let room = (bounds.width() - 64.0).max(0.0) as f32;
     let line = crate::i18n::I18nManager::lookup_plain("send-to-point-hint");
-    let shown = text.elide_to_width_style(&line, (bounds.width() - 64.0).max(0.0) as f32, &style);
+    let leaving = crate::i18n::I18nManager::lookup_plain("send-to-point-escape");
+    let shown = text.elide_to_width_style(&line, room, &style);
+    let leaving = text.elide_to_width_style(&leaving, room, &quiet);
     let (w, h) = text.measure_style(&shown, None, &style);
-    let (w, h) = (f64::from(w), f64::from(h));
-    let pad = 14.0;
-    let pill_h = h + 12.0;
-    let pill_w = w + 2.0 * pad;
+    let (leaving_w, leaving_h) = text.measure_style(&leaving, None, &quiet);
+    let (w, h, leaving_w, leaving_h) = (
+        f64::from(w),
+        f64::from(h),
+        f64::from(leaving_w),
+        f64::from(leaving_h),
+    );
+    let (pad, gap) = (14.0, 2.0);
+    let pill_h = h + gap + leaving_h + 12.0;
+    let pill_w = w.max(leaving_w) + 2.0 * pad;
     let x0 = bounds.center().x - pill_w / 2.0;
     let high = Rect::new(
         x0,
@@ -300,8 +310,16 @@ fn hint(
         scene,
         &shown,
         on.tokens.colors.text_primary,
-        transform.pre_translate((pill.x0 + pad, pill.center().y - h / 2.0).into()),
+        transform.pre_translate((pill.x0 + pad, pill.y0 + 6.0).into()),
         None,
         &style,
+    );
+    text.draw_style(
+        scene,
+        &leaving,
+        on.tokens.colors.text_dim,
+        transform.pre_translate((pill.x0 + pad, pill.y0 + 6.0 + h + gap).into()),
+        None,
+        &quiet,
     );
 }
