@@ -213,8 +213,8 @@ fail('seeds-after')
     def run_boot(self, fail='', terminate=False):
         env = dict(os.environ, FIXTURE_ROOT=str(self.root), FAIL_STAGE=fail,
                    TERMINATE=str(int(terminate)), PATH=f"{self.root}/bin:{os.environ['PATH']}")
-        # A boot spawns a dozen Python tool stand-ins and fsyncs its intent;
-        # on a loaded runner that took longer than a 10 s guess. The bound
+        # A boot spawns two dozen tool stand-ins and fsyncs its intent; on a
+        # loaded runner that took longer than a 10 s guess. The bound
         # only catches a hang: a timed-out boot leaves the fixture between
         # stages, which turned one slow boot into every later case failing.
         result = subprocess.run(['bash', str(self.root / 'firstboot')], env=env,
@@ -281,6 +281,10 @@ fail('seeds-after')
             with self.subTest(stage=stage):
                 result = self.run_boot(stage)
                 self.assertNotEqual(result.returncode, 0)
+                if stage == 'crash':
+                    # This row is the script killed after useradd committed,
+                    # not a second failed useradd.
+                    self.assertEqual(result.returncode, -9)
                 self.assertTrue(self.credential.exists())
                 self.assertTrue(self.full_name.exists())
                 self.assertEqual((self.root / 'expiry').read_text(), '1970-01-02')
@@ -306,7 +310,7 @@ fail('seeds-after')
 
     def test_termination_during_large_delivery_never_unlocks(self):
         result = self.run_boot('deliver-home-user', terminate=True)
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, -15)
         self.assertTrue((self.root / 'shadow').read_text().startswith('!'))
         self.assertTrue(self.credential.exists())
         self.assertEqual((self.root / 'expiry').read_text(), '1970-01-02')
@@ -362,6 +366,10 @@ fail('seeds-after')
         (self.root / 'expiry').write_text('-1')
         result = self.run_boot()
         self.assertNotEqual(result.returncode, 0)
+        # Refused as an account that was already there, before anything asks
+        # about it: the UID query's stand-in would refuse this boot too.
+        self.assertIn('refusing to modify pre-existing account', result.stderr)
+        self.assertFalse((self.root / 'useradd').exists())
         self.assertTrue(self.credential.exists())
         self.assertEqual((self.root / 'shadow').read_text(), '!unrelated')
         self.assertFalse((self.root / 'etc/install-user.transaction').exists())
