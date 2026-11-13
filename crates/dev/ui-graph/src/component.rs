@@ -1,29 +1,23 @@
 //! Component descriptions: what each described toolkit widget takes and does, as data.
 //!
 //! A description is generated from the widget's Rust definition (`#[derive(Component)]` in the
-//! toolkit), so it cannot drift from the widget. It is read by everything that composes
-//! widgets without being Rust: tilolang reads the catalogue as its package `ui`, the generic
-//! host adapter builds widgets from it, and a serialized graph names component instances by it.
+//! toolkit), so it cannot drift from the widget. It is read by everything that composes widgets
+//! without being Rust: tilolang reads the catalogue as its package `ui`, the generic host adapter
+//! builds widgets from it, and a serialized graph names component instances by it.
 //!
-//! The parts of a description:
-//!
-//! - **props**: typed values;
-//! - **slots**: child content, typed by what may go in it;
-//! - **events**: data, never closures; each takes an action reference or a view-state update;
-//! - **bindings**: two-way to a resource field, with the merge an edit is applied with;
-//! - **state**: what the widget keeps between frames, which is lens state;
-//! - **semantics**: its accessibility role, and which props name it and the resource it shows.
-//!
-//! The catalogue is versioned with the toolkit: [`FORMAT_VERSION`] is the shape of this format,
-//! and [`Catalogue::toolkit`] the toolkit version the descriptions were generated from.
+//! A description holds props (typed values), slots (child content, typed by what may go in it),
+//! events (data, never closures), bindings (two-way to a resource field, with the merge an edit is
+//! applied with), state (what the widget keeps between frames, which is lens state) and semantics
+//! (its accessibility role, and which props name it and the resource it shows). [`FORMAT_VERSION`]
+//! is the shape of this format; [`Catalogue::toolkit`] the toolkit version it was generated from.
 
 use serde::{Deserialize, Serialize};
 
 /// The version of the description format: a change to the shape of [`Description`] bumps it.
 pub const FORMAT_VERSION: u32 = 8;
 
-/// The prop a component carries when its block gives such a slot: the row offers to open into
-/// its document, which comes once it stands open.
+/// The prop a component carries when its block gives such a slot: the row offers to open into its
+/// document, which comes once it is open.
 pub const OPENS_PROP: &str = "opens";
 
 /// Every described component of one toolkit version.
@@ -270,9 +264,9 @@ pub struct Slot {
     /// Whether it is what the component's block fills when no slot is named.
     #[serde(default, skip_serializing_if = "is_false")]
     pub default: bool,
-    /// Whether it holds the document a row opens into where it stands: rendered only for the row
-    /// standing open, so the rows on screen that stand closed cost none of it. A component with
-    /// such a slot says so (`opens`) where it is built, so a row still offers to open.
+    /// Whether it holds the document a row opens into: rendered only for the open row, so closed
+    /// rows cost none of it. A component with such a slot says so (`opens`) where it is built, so a
+    /// row still offers to open.
     #[serde(default, skip_serializing_if = "is_false")]
     pub when_open: bool,
 }
@@ -332,14 +326,13 @@ pub struct Event {
     /// The value the event carries (the key a list selected), when it carries one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<Type>,
-    /// Where the value lands, when the event says: a drop's place among the other items of
-    /// what it was dropped on, counted from 0. An event with one carries `[value, at]`.
+    /// Where the value lands, when the event says: a drop's place among the items it was dropped
+    /// on, counted from 0. An event with one carries `[value, at]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Type>,
-    /// Whether the event is the action of the control that raises it: a press of the control
-    /// runs the action the view bound to it, through the door, so the press and an agent's
-    /// invocation of that action are the one route. An event that is not is the view's own: it
-    /// is reported to the view, which decides what it does.
+    /// Whether the event is the action of the control that raises it: a press runs the action the
+    /// view bound to it, through the door, so the press and an agent's invocation are the one
+    /// route. An event that is not is the view's own: it is reported to the view.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub press: bool,
 }
@@ -390,16 +383,15 @@ pub struct Semantics {
     /// The prop holding the resource the component presents, when it presents one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presents: Option<String>,
-    /// The component draws nothing where it stands: it gives the view it stands in something
-    /// to do (a context menu, a toolbar on hover, a swipe). Wherever a view's body puts it, it
-    /// belongs to that view; a list item holds those of its row.
+    /// The component draws nothing: it gives the view it stands in something to do (a context menu,
+    /// a toolbar on hover, a swipe). Wherever a view's body puts it, it belongs to that view; a list
+    /// item holds those of its row.
     #[serde(default, skip_serializing_if = "is_false")]
     pub attaches: bool,
-    /// Why the gallery cannot show it, when it cannot (`#[component(not_in_gallery = "…")]` at
-    /// the component's declaration): a component that only means something in a live session —
-    /// a place's window well, which draws nothing and holds the app's own window — is left out
-    /// of the gallery by its own declaration, never by a name list in a check. `None` when the
-    /// gallery can show it.
+    /// Why the gallery cannot show it (`#[component(not_in_gallery = "…")]` at the component's
+    /// declaration): a component that only means something in a live session, such as a place's
+    /// window well, is left out by its own declaration rather than by a name list in a check.
+    /// `None` when the gallery can show it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_in_gallery: Option<String>,
 }
@@ -441,17 +433,16 @@ pub enum Type {
     /// An action offered to the person, as a control shows it: what it is called, its icon and
     /// role, and what choosing it runs (an event of the instance, never a closure).
     Action,
-    /// One case of the catalogue's closed set `name` whose cases carry fields
-    /// ([`Catalogue::enums`]): a drawing's shape.
+    /// One case of the catalogue's closed set `name` whose cases carry fields: a drawing's shape.
     Cases {
         name: String,
     },
     /// A case of one of the app's own enums, by its name: which cases it holds is the field the
     /// binding names, so a description says only that it takes such a field.
     Enum,
-    /// A record a view names, as the component offers it: what refers to it, and how it reads
-    /// for the person now. What the component writes of it names the record, never the text, so
-    /// a record renamed later reads by its new title everywhere it was linked.
+    /// A record a view names, as the component offers it: what refers to it, and how it reads for
+    /// the person now. What the component writes names the record, never the text, so a record
+    /// renamed later reads by its new title everywhere it was linked.
     Link,
 }
 
@@ -528,8 +519,8 @@ pub enum Value {
 }
 
 /// A picture a component shows, by where its bytes are. The address is opaque to the toolkit: a
-/// window whose host holds a content store reads `tilo-blob://<hash>` from it, and any other
-/// address is fetched by the store the picture loads through.
+/// window whose host holds a content store reads `tilo-blob://<hash>`, and any other address is
+/// fetched by the store the picture loads through.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Picture {
@@ -537,9 +528,8 @@ pub struct Picture {
     pub src: String,
 }
 
-/// An action offered to the person, as a component holds one: how a control shows it, and the
-/// event of the instance that choosing it fires. Every field is always written: the wire's
-/// encoding is not self-describing.
+/// An action offered to the person, as a control shows it, and the event of the instance that
+/// choosing it fires. Every field is always written: the wire's encoding is not self-describing.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Offered {
@@ -553,17 +543,15 @@ pub struct Offered {
     pub destructive: bool,
     /// Whether the state it toggles is on, when it toggles one.
     pub on: Option<bool>,
-    /// `key: "e"`: the plain key that runs it while its window has the keyboard (and, on a
-    /// row's action, while that row is selected), as the person's keymap spells it. `None` when
-    /// it declares none.
+    /// `key: "e"`: the plain key that runs it while its window has the keyboard (and, on a row's
+    /// action, while that row is selected). `None` when it declares none.
     pub key: Option<String>,
     /// The event of the instance choosing it fires.
     pub event: String,
 }
 
 impl Value {
-    /// The type the value is of, as far as the value says (`None` and an empty list say
-    /// nothing).
+    /// The type the value is of, as far as the value says (`None` and an empty list say nothing).
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {

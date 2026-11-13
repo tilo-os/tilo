@@ -1,13 +1,12 @@
 //! The spelling of a key and of a chord: what an app declares (`key: "Ctrl+Enter"`), what the
 //! person presses, and what a menu or a palette shows.
 //!
-//! The compiler checks a declaration with it and the toolkit matches a press with it, so one
-//! table says what a key is called: `Esc`, `Escape` and the Escape key are one key, and so are
-//! `Space` and the space bar, on any keyboard layout.
+//! The compiler checks a declaration with it and the toolkit matches a press with it, so one table
+//! says what a key is called: `Esc` and the Escape key are one key, on any keyboard layout.
 
 /// The token of the key `name` names: `enter`, `escape`, `space`, `tab`, the arrows,
-/// `pageup`/`pagedown`, `home`/`end`, `delete`/`insert`, `f1`–`f12`, or one character in
-/// lowercase (`e`, `/`, `ä`). `None` when no key goes by that name.
+/// `pageup`/`pagedown`, `home`/`end`, `delete`/`insert`, `f1`–`f12`, or one character in lowercase
+/// (`e`, `/`, `ä`). `None` when no key goes by that name.
 #[must_use]
 pub fn key(name: &str) -> Option<String> {
     if name == " " {
@@ -17,8 +16,8 @@ pub fn key(name: &str) -> Option<String> {
     if name.chars().count() == 1 {
         return Some(name.to_lowercase());
     }
-    // A key painted the way a keyboard spells it (`Page Up`) names the same key as the token
-    // a press reports (`pageup`).
+    // A key painted the way a keyboard spells it (`Page Up`) names the same key as the token a press
+    // reports (`pageup`).
     let canonical = match name.to_ascii_lowercase().replace([' ', '_'], "").as_str() {
         "return" | "enter" => "enter",
         "esc" | "escape" => "escape",
@@ -76,8 +75,8 @@ enum Modifier {
     System,
 }
 
-/// A key with the modifiers held with it, as a shortcut is written: `Ctrl+Enter`,
-/// `Ctrl+Shift+K`, `Alt+Up`, `F2`, `e`.
+/// A key with the modifiers held with it, as a shortcut is written: `Ctrl+Enter`, `Ctrl+Shift+K`,
+/// `Alt+Up`, `F2`, `e`.
 // A key press reports each modifier as a flag of its own, so a chord holds four of them.
 #[allow(
     clippy::struct_excessive_bools,
@@ -100,8 +99,8 @@ impl Chord {
     ///
     /// # Errors
     ///
-    /// Describes what is not a chord: no key, a part that is neither a modifier nor a key, a
-    /// modifier given twice, a key before a modifier, or an empty part.
+    /// What is not a chord: no key, a part that is neither a modifier nor a key, a modifier given
+    /// twice, a key before a modifier, or an empty part.
     pub fn parse(text: &str) -> Result<Self, String> {
         let text = text.trim();
         let mut parts: Vec<&str> = text.split('+').map(str::trim).collect();
@@ -162,8 +161,8 @@ impl Chord {
         Ok(chord)
     }
 
-    /// The chord as it is declared and shown: the modifiers in one order, then the key, each as
-    /// the keyboard in use spells it (`Ctrl+Shift+enter`, or a Mac reader's `⌘⇧↩`).
+    /// The chord as declared and shown: the modifiers in one order, then the key, each as the
+    /// keyboard in use spells it (`Ctrl+Shift+enter`, or a Mac reader's `⌘⇧↩`).
     #[must_use]
     pub fn text(&self) -> String {
         let mut parts = Vec::with_capacity(5);
