@@ -764,7 +764,9 @@ mod tests {
     /// test's name: what is changed, and the phrases one of which the refusal says.
     #[test]
     fn a_bundle_checked_against_something_else_is_refused() {
-        let rows: [(&str, fn(&mut Case), &[&str]); 5] = [
+        type Change = fn(&mut Case);
+        type Row = (&'static str, Change, &'static [&'static str]);
+        let rows: [Row; 5] = [
             (
                 "another_root_is_refused",
                 |case| case.root = root("Tilo Release Root").pem,
