@@ -262,6 +262,16 @@ pub(crate) struct WindowShares {
     /// Whether this session exists to be seen: a hosted browser environment shares its windows with
     /// the workspace's members the moment they open, since nobody runs it for itself.
     share_by_default: bool,
+    /// Who writes this session's shares into a workspace's governance when its device may write
+    /// none itself: a session in a workspace's VM asks its host ([`ShareGovernor`]).
+    governor: Option<Rc<dyn ShareGovernor>>,
+}
+
+/// Who writes the shares of a session whose device governs nothing of its workspace: the workspace's
+/// host, which checks each names a window this device minted before it writes it.
+pub(crate) trait ShareGovernor {
+    /// Share the window `tab` of `app_id` with `workspace`'s members, or end that share.
+    fn share(&self, workspace: &str, app_id: &str, tab: TabId, shared: bool);
 }
 
 /// A window another member shares, as this session shows it on the desk.
@@ -312,6 +322,11 @@ impl WindowShares {
             share_by_default,
             ..Self::default()
         }))
+    }
+
+    /// Have `governor` write this session's shares from now on, never the session itself.
+    pub(crate) fn governed_by(&mut self, governor: Rc<dyn ShareGovernor>) {
+        self.governor = Some(governor);
     }
 
     /// What the bar says is being shared: each member viewing a window of this device, and whether
@@ -643,6 +658,10 @@ impl WindowShares {
     /// workspace reads to show it. The workspace's own governance checks them as it admits them, as
     /// it does any grant.
     fn announce(&self, desk: &DesktopHandle, tab: TabId, app_id: &str, workspace: &str) {
+        if let Some(governor) = &self.governor {
+            governor.share(workspace, app_id, tab, true);
+            return;
+        }
         let share = window_share_id(tab);
         let node = window_node(workspace, app_id, tab);
         let grants = match share_grants(workspace, &self.person, &share, &node, ShareAccess::View) {
@@ -684,6 +703,20 @@ impl WindowShares {
                 .any(|grant| is_of_share(grant, &share))
         };
         if !desk.read(|tree| tree.workspaces.iter().any(held)) {
+            return;
+        }
+        if let Some(governor) = &self.governor {
+            let sharing: Vec<String> = desk.read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .filter(|workspace| held(workspace))
+                    .map(|workspace| workspace.policy.workspace.clone())
+                    .collect()
+            });
+            for workspace in sharing {
+                governor.share(&workspace, "", tab, false);
+            }
+            self.changed();
             return;
         }
         let mut tree = desk.read(Clone::clone);
