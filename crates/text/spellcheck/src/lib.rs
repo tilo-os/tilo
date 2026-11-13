@@ -1,30 +1,6 @@
-//! The spelling engine behind every Tilo text field.
-//!
-//! The engine has three stages, mirroring the public API:
-//!
-//! 1. [`tokenize`] splits text into word [`Token`]s carrying byte offsets, so a
-//!    caller can map a flagged word back to a span in the original string.
-//! 2. [`Dictionary`] holds a set of known words. [`Dictionary::builtin`] loads an
-//!    embedded English word list; [`Dictionary::from_words`] builds one from any
-//!    iterator of strings.
-//! 3. [`check`] walks the tokens, skips non-spellable forms
-//!    (numbers, ALL-CAPS acronyms, URLs, emails), and flags the rest that are not
-//!    in the dictionary, attaching a ranked list of [`suggest`]ions.
-//!
-//! English uses the embedded word list. Other languages use the system's
-//! Hunspell dictionaries, parsed and checked in-process
-//! ([`spans_for_language`], [`suggestions_for_language`]), so checking
-//! behaves the same inside an app sandbox as outside it.
-//!
-//! ```
-//! use spellcheck::{Dictionary, check};
-//!
-//! let dict = Dictionary::from_words(["the", "quick", "brown", "fox"]);
-//! let misspellings = check(&dict, "teh quick brown fox");
-//! assert_eq!(misspellings.len(), 1);
-//! assert_eq!(misspellings[0].word, "teh");
-//! assert!(misspellings[0].suggestions.iter().any(|s| s == "the"));
-//! ```
+//! The spelling engine behind every Tilo text field: [`tokenize`] splits text into
+//! word [`Token`]s carrying byte offsets, [`Dictionary`] holds the known words, and
+//! [`check`] walks the tokens, skips non-spellable forms and suggests corrections.
 
 #![cfg_attr(
     test,
@@ -55,32 +31,23 @@ pub use distance::damerau_levenshtein_within;
 pub use suggest::suggest;
 pub use token::{Token, tokenize};
 
-/// A word that was flagged as not present in the dictionary, with its location
-/// in the source text and a ranked list of correction candidates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Misspelling {
-    /// The offending word, exactly as it appeared in the source (original case).
     pub word: String,
-    /// Byte offset of the first byte of the word in the source string.
     pub start: usize,
-    /// Byte offset one past the last byte of the word in the source string.
     pub end: usize,
-    /// Suggested corrections, best first (closest edit distance, then shortest).
     pub suggestions: Vec<String>,
 }
 
-/// Maximum number of suggestions attached to each [`Misspelling`] by [`check`].
 const DEFAULT_MAX_SUGGESTIONS: usize = 5;
 
-/// Spell-check `text` against `dict`, returning one [`Misspelling`] per flagged
-/// word in source order.
+/// Spell-check `text` against `dict`: one [`Misspelling`] per flagged word, in source
+/// order. A token is not flagged when the dictionary has it, when it is not spellable,
+/// or when it is a known product or conversational word.
 ///
-/// A token is *not* flagged when it is:
-/// - present in the dictionary (compared case-insensitively), or
-/// - a pure number (e.g. `42`, `3.14`, `1,000`), or
-/// - an ALL-CAPS acronym of length >= 2 (e.g. `NASA`, `Tilo` is *not* all-caps so
-///   it would still be checked), or
-/// - a URL or email-looking token.
+/// # Errors
+///
+/// Never; the result is the misspellings of this text.
 pub fn check(dict: &Dictionary, text: &str) -> Vec<Misspelling> {
     let mut out = Vec::new();
     for tok in checkable_words(text) {
@@ -98,11 +65,8 @@ pub fn check(dict: &Dictionary, text: &str) -> Vec<Misspelling> {
     out
 }
 
-/// Where the misspelled words in `text` are, without suggesting corrections.
-///
-/// [`check`] suggests a replacement for every flagged word and computes edit
-/// distances across the dictionary. Drawing a squiggle needs only the
-/// positions, so this avoids suggestion work when rendering underlines.
+/// Where the misspelled words in `text` are, without suggesting corrections: [`check`]
+/// computes edit distances across the dictionary, which drawing does not need.
 pub fn spans(dict: &Dictionary, text: &str) -> Vec<(usize, usize)> {
     checkable_words(text)
         .into_iter()
@@ -113,10 +77,8 @@ pub fn spans(dict: &Dictionary, text: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
-/// The words of `text` a checker judges, with their byte offsets: every
-/// spellable token, a hyphenated compound split into its parts, which are
-/// judged one by one ("ten-minute" is "ten" and "minute"; "well-knwon"
-/// flags only "knwon").
+/// The words of `text` a checker judges, with their byte offsets: every spellable token,
+/// with a hyphenated compound split into its parts, judged one by one.
 fn checkable_words(text: &str) -> Vec<Token<'_>> {
     let mut words = Vec::new();
     for token in tokenize(text) {
@@ -139,9 +101,6 @@ fn checkable_words(text: &str) -> Vec<Token<'_>> {
     words
 }
 
-/// How an English word is looked up: with a typographic apostrophe made
-/// plain, and a possessive judged by the word it belongs to ("studio's" is
-/// spelled right when "studio" is).
 fn english_lookup_form(word: &str) -> Cow<'_, str> {
     let word = normalize_lookup_word(word);
     let stem = word
@@ -155,11 +114,6 @@ fn english_lookup_form(word: &str) -> Cow<'_, str> {
     }
 }
 
-/// Which of `words` English spells right: the system's Hunspell dictionary
-/// for the language (affix rules, plurals, possessives, which words take a
-/// capital), else the embedded word list; the product names and common
-/// first names the embedded list adds count in both. `None` while neither
-/// is ready.
 fn english_results(language: &str, words: &[&str]) -> Option<Vec<bool>> {
     let lookups: Vec<Cow<'_, str>> = words.iter().map(|word| english_lookup_form(word)).collect();
     let lookups: Vec<&str> = lookups.iter().map(AsRef::as_ref).collect();
@@ -185,8 +139,6 @@ fn english_results(language: &str, words: &[&str]) -> Option<Vec<bool>> {
     )
 }
 
-/// The Hunspell dictionary English is checked with: the language's own
-/// region, and American English for a bare `en`.
 fn english_dictionary_name(language: &str) -> &str {
     if language.len() <= 2 {
         "en_US"
@@ -195,14 +147,9 @@ fn english_dictionary_name(language: &str) -> &str {
     }
 }
 
-/// Spell-check text in a BCP-47-ish language such as en-US or de-DE.
-///
-/// English uses the embedded dictionary (its expanded forms plus a
-/// conversational overlay), so it works in hermetic builds too. Other
-/// languages use the system's Hunspell dictionary for that language, checked
-/// in-process with its affix rules; without one, nothing is flagged. Nothing
-/// is flagged either while the dictionaries' code is still to come (the
-/// `lazy-dictionaries` feature).
+/// Spell-check text in a BCP-47-ish language such as `en-US` or `de-DE`. English uses
+/// the embedded dictionary, so it works in hermetic builds; another language uses the
+/// system's Hunspell dictionary when one is installed.
 pub fn spans_for_language(language: &str, text: &str) -> Vec<(usize, usize)> {
     DICTIONARIES.get().map_or_else(Vec::new, |dictionaries| {
         (dictionaries.spans)(language, text)
@@ -227,9 +174,8 @@ fn dictionary_spans(language: &str, text: &str) -> Vec<(usize, usize)> {
             .collect();
     }
 
-    // Hunspell dictionaries conventionally use ASCII apostrophes even when a
-    // typographic editor inserts U+2019. Normalise only for lookup; token byte
-    // ranges still refer to the untouched source text.
+    // Hunspell dictionaries use ASCII apostrophes even when a typographic editor inserts
+    // U+2019: normalise only for lookup, since token byte ranges refer to the source.
     let lookup_words: Vec<Cow<'_, str>> = tokens
         .iter()
         .map(|token| normalize_lookup_word(token.text))
@@ -245,9 +191,8 @@ fn dictionary_spans(language: &str, text: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
-/// Corrections for one word, best first: the embedded edit-distance
-/// suggester for English, the system Hunspell dictionary otherwise. None
-/// while the dictionaries' code is still to come.
+/// Corrections for one word, best first: the embedded edit-distance suggester for
+/// English, the system Hunspell dictionary otherwise.
 pub fn suggestions_for_language(language: &str, word: &str, max: usize) -> Vec<String> {
     if word.is_empty() || max == 0 {
         return Vec::new();
@@ -270,10 +215,8 @@ fn dictionary_suggestions(language: &str, word: &str, max: usize) -> Vec<String>
 }
 
 /// Return a correction only when the signal is strong enough for automatic
-/// replacement. This is intentionally much stricter than the suggestion menu:
-/// known high-frequency typos and English contractions typed without their
-/// apostrophe ([`contraction`]) are safe-listed, while the generic path accepts
-/// only an adjacent transposition matching the dictionary's first candidate.
+/// replacement, much stricter than the suggestion menu: known high-frequency typos and
+/// English contractions only.
 pub fn probable_correction(language: &str, word: &str) -> Option<String> {
     if let Some(candidate) = sure_correction(language, word) {
         return Some(candidate);
@@ -345,13 +288,6 @@ pub fn probable_correction(language: &str, word: &str) -> Option<String> {
     (DICTIONARIES.get()?.correction)(language, word, &lower)
 }
 
-/// A correction sure enough to apply although the word list holds the
-/// typed word: the English pronoun in lowercase ("i" is "I", "im" is "I'm")
-/// and "cant" / "wont", which people type for "can't" / "won't" far more
-/// often than they mean the rare nouns (as phone keyboards assume). Word
-/// lists are lowercase and hold "i", "cant" and "wont", and "i" / "im" are
-/// too short for [`probable_correction`]'s length floor. Backspace right
-/// after a correction takes it back.
 #[must_use]
 pub fn sure_correction(language: &str, word: &str) -> Option<String> {
     if !is_english(language) {
@@ -372,8 +308,6 @@ pub fn sure_correction(language: &str, word: &str) -> Option<String> {
     })
 }
 
-/// [`probable_correction`] past the curated list: an adjacent
-/// transposition the dictionary agrees on.
 fn dictionary_correction(language: &str, word: &str, lower: &str) -> Option<String> {
     if dictionary_spans(language, word).is_empty() {
         return None;
@@ -461,8 +395,6 @@ fn match_word_case(original: &str, correction: &str) -> String {
     correction.to_string()
 }
 
-/// The checks that need a language's dictionary: the embedded English
-/// list and the system's Hunspell dictionaries.
 #[derive(Clone, Copy)]
 pub struct Dictionaries {
     spans: fn(&str, &str) -> Vec<(usize, usize)>,
@@ -471,7 +403,6 @@ pub struct Dictionaries {
     prepare: fn(&mut dyn FnMut() -> bool) -> bool,
 }
 
-/// The dictionaries this crate checks with.
 #[must_use]
 pub fn builtin_dictionaries() -> Dictionaries {
     Dictionaries {
@@ -483,16 +414,11 @@ pub fn builtin_dictionaries() -> Dictionaries {
 }
 
 tilo_lock::lazy_code! {
-    /// The dictionaries. A program built with `lazy-dictionaries` fetches
-    /// their code the first time something checks spelling; until then
-    /// nothing is flagged or suggested, and a field checks again once
-    /// [`dictionaries_generation`] moved.
+    // The dictionaries. A program built with `lazy-dictionaries` fetches their code the
+    // first time something checks spelling; until then nothing is flagged.
     pub static DICTIONARIES: Dictionaries = builtin_dictionaries, feature = "lazy-dictionaries";
 }
 
-/// Bumped when the dictionaries arrive, or the English one is built in steps
-/// ([`prepare_dictionaries`]): a field that checked before checks again once
-/// this moved.
 #[must_use]
 pub fn dictionaries_generation() -> u64 {
     DICTIONARIES
@@ -504,20 +430,15 @@ static ENGLISH: OnceLock<Dictionary> = OnceLock::new();
 static ENGLISH_GENERATION: AtomicU64 = AtomicU64::new(0);
 static BUILT_IN_STEPS: AtomicBool = AtomicBool::new(false);
 
-/// The program builds the English dictionary in steps, in its idle time
-/// ([`prepare_dictionaries`]), instead of on the first check: a check before
-/// it is built flags nothing, and the fields check again once it is.
-///
-/// For a browser page, which has no thread to build it on: built on the
-/// first check, its 89,000 words held the keystroke that asked for well
-/// over a hundred milliseconds.
+// The program builds the English dictionary in steps, in its idle time, instead of on
+// the first check: a check before it is built flags nothing, and the fields check
+// again once it is.
 pub fn build_dictionaries_in_steps() {
     BUILT_IN_STEPS.store(true, Ordering::Release);
 }
 
-/// Build the English dictionary while `more` answers true. Fetches the
-/// dictionaries' code first when it is still to come (`None` until it is
-/// in); then true once the dictionary is built.
+/// Build the English dictionary while `more` answers true, fetching the dictionaries'
+/// code first when it is still to come.
 pub fn prepare_dictionaries(more: &mut dyn FnMut() -> bool) -> Option<bool> {
     DICTIONARIES
         .get()
@@ -543,8 +464,7 @@ fn prepare_english(more: &mut dyn FnMut() -> bool) -> bool {
     true
 }
 
-/// The English dictionary, built on first use unless the program builds it
-/// in steps ([`build_dictionaries_in_steps`]); then `None` until it is.
+/// The English dictionary, built on first use unless the program builds it in steps.
 fn shared_english() -> Option<&'static Dictionary> {
     if BUILT_IN_STEPS.load(Ordering::Acquire) {
         return ENGLISH.get();
@@ -552,10 +472,8 @@ fn shared_english() -> Option<&'static Dictionary> {
     Some(ENGLISH.get_or_init(Dictionary::builtin))
 }
 
-/// Begin loading `language`'s dictionary before the first field is focused.
-/// The background warm-up is best-effort: callers can still use the checker
-/// immediately and wait on the same `OnceLock` only if they beat this head
-/// start. Each language warms once.
+/// Begin loading `language`'s dictionary before the first field is focused; the warm-up
+/// is best-effort, and a caller can check immediately.
 pub fn warm_up_language(language: &str) {
     static STARTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     // A browser page has no threads; its first check builds the data.
@@ -590,7 +508,6 @@ pub fn warm_up_language(language: &str) {
         });
 }
 
-/// The session language in Hunspell's conventional `ll_CC` form.
 pub fn default_language() -> String {
     let raw = std::env::var("LC_ALL")
         .ok()
@@ -626,23 +543,16 @@ fn normalize_language(language: &str) -> Option<String> {
     .then_some(normalized)
 }
 
-/// Returns `true` if `word` is the kind of token a spell checker should judge.
-///
-/// Filters out pure numbers, ALL-CAPS acronyms, and URL/email-shaped tokens. The
-/// tokenizer already strips most punctuation, but it intentionally keeps `.`, `@`,
-/// `:` and `/` inside a run so that URLs and emails arrive here intact and can be
-/// recognised and skipped as a unit.
+/// Whether `word` is the kind of token a spell checker judges: pure numbers, ALL-CAPS
+/// acronyms and URL or email shapes are not.
 fn is_spellable(word: &str) -> bool {
     if word.is_empty() {
         return false;
     }
 
-    // URLs / emails: presence of these structural characters means "not a word".
     if word.contains('@') || word.contains('/') || word.contains("://") {
         return false;
     }
-    // A scheme-less domain such as `example.com` or `foo.bar.org`: a token that
-    // contains an internal dot with alphanumerics on both sides is URL-ish.
     if looks_like_domain(word) {
         return false;
     }
@@ -675,7 +585,6 @@ fn is_spellable(word: &str) -> bool {
         }
     }
 
-    // Pure numbers (and number-like tokens with no letters): skip.
     if !has_alpha {
         return false;
     }
@@ -685,15 +594,14 @@ fn is_spellable(word: &str) -> bool {
         return false;
     }
 
-    // ALL-CAPS acronyms of length >= 2 (e.g. NASA, HTML). A single capital letter
-    // ("I", "A") is still a real word and stays spellable.
+    // ALL-CAPS acronyms of length >= 2 (NASA, HTML); a single capital letter ("I", "A") is
+    // a real word and stays spellable.
     let char_count = word.chars().count();
     if all_upper && upper_count >= 2 && char_count >= 2 {
         return false;
     }
-    // Internal capitals usually mean an identifier or brand (`TextInput`,
-    // `iPhone`, `GitHub`), not a misspelling. A leading sentence/title capital
-    // remains checkable because it has at most one uppercase letter.
+    // Internal capitals usually mean an identifier or brand (`TextInput`, `iPhone`), not a
+    // misspelling; a leading capital stays checkable, having at most one.
     if internal_upper && !all_upper {
         return false;
     }
@@ -736,8 +644,6 @@ fn is_title_case(word: &str) -> bool {
     chars.next().is_some_and(char::is_uppercase) && chars.all(|character| !character.is_uppercase())
 }
 
-/// Whether the word right after `token`, on the same line, is title-cased:
-/// the two are a name ("Lena Hoffmann", "Northwind Studio").
 fn opens_a_name(text: &str, token: &Token<'_>) -> bool {
     let Some(rest) = text.get(token.end..) else {
         return false;
@@ -754,13 +660,11 @@ fn opens_a_name(text: &str, token: &Token<'_>) -> bool {
         && is_title_case(&next)
 }
 
-/// Heuristic: does the token look like a bare domain name (`name.tld`)?
 fn looks_like_domain(word: &str) -> bool {
     let Some((before, after)) = word.split_once('.') else {
         return false;
     };
-    // Internal dot only — leading/trailing dots are punctuation the tokenizer
-    // would normally have stripped.
+    // Internal dot only: leading and trailing dots are punctuation the tokenizer strips.
     if before.is_empty() || after.is_empty() {
         return false;
     }
@@ -894,7 +798,6 @@ mod tests {
             let dict = builtin();
             assert!(check(&dict, "NASA").is_empty());
             assert!(check(&dict, "HTML").is_empty());
-            // A single capital is a real one-letter word, still checked (and valid).
             assert!(check(&dict, "I").is_empty());
         }
         {
@@ -912,7 +815,6 @@ mod tests {
                 // The recorded span must slice back to exactly the token text.
                 assert_eq!(&text[tok.start..tok.end], tok.text);
             }
-            // And the specific words we expect are present, in order, with apostrophe.
             let words: Vec<&str> = tokenize(text).iter().map(|t| t.text).collect();
             assert_eq!(words, vec!["Hello", "world", "It's", "a", "test"]);
         }
@@ -927,12 +829,10 @@ mod tests {
         }
         {
             let mut dict = Dictionary::from_words(["the", "quick", "brown", "fox"]);
-            // "tilo" is unknown → flagged.
             let before = check(&dict, "the tilo fox");
             assert_eq!(before.len(), 1, "got {before:?}");
             assert_eq!(before[0].word, "tilo");
             assert!(dict.add_word("tilo"));
-            // Re-check: no longer flagged.
             let after = check(&dict, "the tilo fox");
             assert!(
                 after.is_empty(),
@@ -950,7 +850,6 @@ mod tests {
             assert!(result[0].suggestions.is_empty());
         }
         {
-            // Build a small dictionary where ordering is deterministic and checkable.
             let dict = Dictionary::from_words(["cat", "cart", "cats", "scat", "cataract"]);
             let s = suggest(&dict, "cot", 5);
             // "cat" is distance 1; the 4-letter ones are distance >= 1 too but longer.
@@ -977,8 +876,6 @@ mod tests {
                 probable_correction("en_US", "Tomorow"),
                 Some("Tomorrow".to_string())
             );
-            // A contraction typed without its apostrophe gets it back;
-            // a bare form that is a word of its own stays.
             for (typed, corrected) in [
                 ("doesnt", Some("doesn't")),
                 ("Doesnt", Some("Doesn't")),
@@ -1035,8 +932,6 @@ mod tests {
         assert_eq!(&compound[7..12], "knwon");
         // A possessive is judged by its word, so a misspelled one still shows.
         assert_eq!(spans(&dict, "the wrold's end"), vec![(4, 11)]);
-        // A capitalised misspelling opening a sentence is still marked; a run
-        // of capitalised words opening a line is a name.
         assert_eq!(spans(&dict, "Wrold peace"), vec![(0, 5)]);
         assert!(spans(&dict, "Qwordz Brightwater sent it").is_empty());
     }

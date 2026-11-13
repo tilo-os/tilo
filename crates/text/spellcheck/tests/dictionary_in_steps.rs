@@ -18,8 +18,6 @@ fn the_english_dictionary_builds_in_idle_steps_and_no_check_waits_for_it() {
     assert!(suggestions_for_language("en-US", "teh", 3).is_empty());
     let generation = dictionaries_generation();
 
-    // Each idle slice allows a couple of asks of the budget; the build takes
-    // many slices.
     let mut slices = 0;
     loop {
         slices += 1;
