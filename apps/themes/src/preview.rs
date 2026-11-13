@@ -1,6 +1,5 @@
-//! Widgets that show a theme document: a miniature desktop drawn in it, and
-//! the strip of its twelve presence colours. Both paint the *previewed*
-//! theme ([`crate::draw`]); the studio's own theme only frames them.
+//! Widgets that show a theme document: a miniature desktop drawn in it, and the strip of
+//! its twelve presence colours.
 
 use std::collections::HashMap;
 
@@ -17,23 +16,16 @@ use ui::widget::TaffyTreeExt;
 /// What a [`ThemePreview`] shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Show {
-    /// A window on the desktop, with a floating panel over it.
     Desktop,
-    /// A list row surface with selection and presence.
     List,
-    /// A dialog over the window it asks about.
     Dialog,
-    /// The twelve presence colours.
     Presence,
 }
 
-/// How tall a [`ThemePreview`] stands.
+/// How tall a [`ThemePreview`] is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Height {
-    /// A fixed height in logical pixels, at the full width it is given.
     Fixed(f32),
-    /// As tall as the miniature's proportions make it at the width it is
-    /// given, so it scales with its tile.
     Proportional,
 }
 
@@ -43,15 +35,12 @@ pub struct ThemePreview {
     label: String,
     rect: Rect,
     height: Height,
-    /// It sits inside a card: its corners follow the card's, inset by the
-    /// card's padding.
     in_card: bool,
     id: Option<String>,
 }
 
 impl ThemePreview {
-    /// A miniature desktop in `document`, `height` logical pixels tall. A
-    /// document this build does not admit previews the default theme.
+    /// A miniature desktop in `document`, `height` logical pixels tall.
     #[must_use]
     pub fn new(document: &ThemeDocument, height: f32) -> Self {
         let theme = ui::Theme::from_document(document).unwrap_or_default();
@@ -66,9 +55,9 @@ impl ThemePreview {
         }
     }
 
-    /// A miniature desktop in `document` that fills the width of the card
-    /// it leads at the miniature's own proportions: it grows and shrinks
-    /// with the card, and its corners are the card's, inset by its padding.
+    /// A miniature desktop in `document` that fills the width of the card it leads at the
+    /// miniature's own proportions: it grows and shrinks with the card, and its corners are
+    /// the card's, inset by its padding.
     #[must_use]
     pub fn tile(document: &ThemeDocument) -> Self {
         Self {

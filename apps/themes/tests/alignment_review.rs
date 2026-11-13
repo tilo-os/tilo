@@ -52,7 +52,6 @@ fn near(a: f64, b: f64, why: &str) {
     assert!((a - b).abs() < 0.5, "{why}: {a} vs {b}");
 }
 
-/// The theme's commands, in the window bar's order.
 const COMMANDS: [&str; 6] = [
     "Apply",
     "Copy as file",
@@ -69,8 +68,6 @@ fn bar(app: &mut TestApp<App>) -> ui::window_toolbar::WindowToolbar {
 
 #[test]
 fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
-    // The narrowest window that keeps the theme list docked beside the editor: the sidebar's own
-    // minimum and a column of content beside it, which is where the shell docks it.
     let theme = ui::Theme::dark();
     let metrics = theme.tokens.metrics;
     let width = f64::from(
@@ -113,9 +110,6 @@ fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
         assert!(dropdown.width() > 0.0);
         near(dropdown.height(), height, "choices share control height");
     }
-    // The list is docked at this width: the bar's toggle hides it and shows
-    // it again. Whether the list is shown is read from the bar, not from the
-    // list itself, which stays addressable while it slides away.
     assert_eq!(
         toolbar.sidebar,
         Some(true),
@@ -188,9 +182,6 @@ fn gallery_cards_wrap_to_available_width_with_measured_gaps() {
 #[test]
 fn large_text_reflows_controls_and_the_form_without_covering_chrome() {
     let mut one = frame("editor", (480, 4000), 1.0);
-    // At double text the list no longer fits beside the editor: the editor
-    // is a screen of its own, the top-level page, and the window bar's
-    // sidebar toggle reaches the list.
     let mut two = frame("editor", (480, 4000), 2.0);
     assert!(
         bar(&mut two).sidebar.is_some(),

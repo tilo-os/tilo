@@ -1,11 +1,7 @@
-//! The studio's controls, as slots in the window's bar
-//! ([`ui::window_toolbar`]): the shell's sidebar toggle and Back, what the
-//! content shows as the location (the presets, or the theme's name), and
-//! the theme's commands: Apply and Copy as file while it is legible, with
-//! Duplicate, Reset and Delete theme in the bar's menu. Each is declared as
-//! a binding of the studio's effects or of what the editor shows
-//! ([`ui::framework::WindowBar`]). The window draws no header row and no row
-//! of commands of its own.
+//! The studio's controls, as slots in the window's bar ([`ui::window_toolbar`]): the
+//! shell's sidebar toggle and Back, what the content shows as the location (the presets, or
+//! the theme's name), and the theme's commands: Apply and Copy as file while it is legible,
+//! with Duplicate, Reset and Delete theme in the bar's menu.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -25,8 +21,6 @@ pub(super) type Shown = Rc<RefCell<Option<Editing>>>;
 pub(super) struct StudioWindow {
     shell: NavShell,
     ui: Ui,
-    /// The bar as it was declared last: the press heard now names one of its
-    /// slots, then the window declares the bar for what it shows now.
     bar: WindowBar<Studio>,
 }
 

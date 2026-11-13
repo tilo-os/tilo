@@ -1,12 +1,6 @@
-//! Making a theme the one the system shows, and handing it on as a file.
-//!
-//! Applying writes the person's appearance in the shared settings document
-//! (`appearance.mode`, `appearance.dark_theme` / `appearance.light_theme`,
-//! and for one of their own themes its document in
-//! `appearance.custom_themes`), the same keys Settings writes, so the shell
-//! and every app pick it up through the theme layers. A theme that misses a
-//! contrast floor is never applied or exported: the person sees which pair
-//! fails and fixes it here.
+//! Making a theme the one the system shows, and handing it on as a file. A theme that
+//! misses a contrast floor is never applied or exported: the person sees which pair fails
+//! and fixes it here.
 
 use serde::{Deserialize, Serialize};
 use ui::storage::{Scope, SettingsSchema};
@@ -14,18 +8,15 @@ use ui::theme::{
     CUSTOM_THEMES_KEY, DARK_THEME_KEY, LIGHT_THEME_KEY, MODE_KEY, Preset, ThemeDocument,
 };
 
-/// The person's theme choice as the appearance section holds it: the keys
-/// Settings and [`apply`] write, read (never written) through the section's
-/// typed door so the studio follows a choice made anywhere.
+/// The person's theme choice as the appearance section holds it: the keys Settings and
+/// [`apply`] write, read (never written) through the section's typed door so the studio
+/// follows a choice made anywhere.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppearanceChoice {
-    /// `dark`, `light` or `automatic` (light by day, dark by night).
     #[serde(default)]
     pub mode: Option<String>,
-    /// The theme dark mode shows: a preset id or `custom:<id>`.
     #[serde(default)]
     pub dark_theme: Option<String>,
-    /// The theme light mode shows.
     #[serde(default)]
     pub light_theme: Option<String>,
 }
@@ -35,12 +26,10 @@ impl SettingsSchema for AppearanceChoice {
 }
 
 impl AppearanceChoice {
-    /// Whether the system shows `reference` (a preset id or `custom:<id>`),
-    /// a theme of the polarity `dark`: it is the theme chosen for that
-    /// polarity, and the mode shows that polarity or follows the time of
-    /// day (then both chosen themes are in use, each for its part of the
-    /// day). Unset keys read as the runtime reads them: dark mode, the Dark
-    /// and Light presets.
+    /// Whether the system shows `reference` (a preset id or `custom:<id>`), a theme of the
+    /// polarity `dark`: it is the theme chosen for that polarity, and the mode shows that
+    /// polarity or follows the time of day (then both chosen themes are in use, each for
+    /// its part of the day).
     #[must_use]
     pub fn shows(&self, reference: &str, dark: bool) -> bool {
         let mode = self.mode.as_deref();
@@ -55,9 +44,9 @@ impl AppearanceChoice {
     }
 }
 
-/// What applying a theme writes into the appearance section: the theme for
-/// its polarity, the mode (unless the person follows the time of day), and
-/// for a custom theme its document beside the ones already there.
+/// What applying a theme writes into the appearance section: the theme for its polarity,
+/// the mode (unless the person follows the time of day), and for a custom theme its
+/// document beside the ones already there.
 #[must_use]
 pub fn appearance_values(
     document: &ThemeDocument,
@@ -100,11 +89,8 @@ pub fn appearance_values(
     values
 }
 
-/// Refuse a document that is not admitted or misses a contrast floor,
-/// naming what fails.
+/// Refuse a document that is not admitted or misses a contrast floor, naming what fails.
 pub fn ensure_legible(document: &ThemeDocument) -> Result<(), String> {
-    // The full reason, a surface shader's own compile error included, so
-    // the import notice names what to fix.
     if let Some(reason) = ui::Theme::refusal(document) {
         return Err(reason);
     }
