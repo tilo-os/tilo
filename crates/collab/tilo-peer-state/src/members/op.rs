@@ -100,14 +100,8 @@ impl Membership {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MembershipOpCommand {
     /// The first operation of a workspace, the owner's: the membership the
-    /// workspace starts from, and the heads of the history it was read at.
-    /// Every receiver checks those heads are history it holds, so the owner
-    /// names a membership in the workspace's own past; a genesis by anyone
-    /// else's device has no effect.
-    Genesis {
-        legacy_heads: Vec<Vec<u8>>,
-        membership: Box<Membership>,
-    },
+    /// workspace starts from. A genesis by anyone else's device has no effect.
+    Genesis { membership: Box<Membership> },
     /// The workspace's membership changes its author's device made, in the
     /// order it made them. Replay checks each against the membership at the
     /// point the operation is reached, so an operation naming a change its
@@ -387,4 +381,35 @@ mod tests {
         assert_eq!(key.len(), 64);
         assert_eq!(hex::decode(&key).unwrap(), op.id().unwrap().0.to_vec());
     }
+}
+
+/// The genesis operation for `membership`, written by `device`.
+pub fn genesis_op(
+    device: &DeviceCert,
+    key: &dyn DeviceSigner,
+    membership: &WorkspacePolicy,
+    now_ns: u64,
+) -> Result<SignedMembershipOp, String> {
+    SignedMembershipOp::signed(
+        device,
+        key,
+        Vec::new(),
+        now_ns,
+        MembershipOpCommand::Genesis {
+            membership: Box::new(Membership::of(membership)),
+        },
+    )
+}
+
+/// Write `op` into `doc` under the key of its own id.
+pub fn put_op(doc: &mut automerge::AutoCommit, op: &SignedMembershipOp) -> Result<OpId, String> {
+    use automerge::transaction::Transactable as _;
+    let id = op.id()?;
+    doc.put(
+        automerge::ROOT,
+        op_key(id).as_str(),
+        automerge::ScalarValue::Bytes(op.to_bytes()?),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(id)
 }

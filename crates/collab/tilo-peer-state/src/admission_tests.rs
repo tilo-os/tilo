@@ -2962,7 +2962,7 @@ fn a_removed_members_device_writes_nothing_after_its_removal() {
     )
     .unwrap();
     let heads = workspace_doc.get_heads();
-    crate::members::legacy::put_op(&mut workspace_doc, &op).unwrap();
+    crate::members::put_op(&mut workspace_doc, &op).unwrap();
     peer.receive_from(
         TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
         NeighbourMsg::SyncResp {

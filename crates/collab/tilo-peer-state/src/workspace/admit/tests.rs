@@ -1002,15 +1002,14 @@ fn started() -> Started {
     }
     doc.commit();
     let policy = tilo_desktop_model::projection::workspace_policy_of(&doc, WORKSPACE);
-    let genesis = crate::members::legacy::genesis_op(
+    let genesis = crate::members::genesis_op(
         &owner,
         &owner_key,
-        &doc.get_heads(),
         &policy,
         crate::workspace::saved_shortcut::ns_at(NOW),
     )
     .unwrap();
-    crate::members::legacy::put_op(&mut doc, &genesis).unwrap();
+    crate::members::put_op(&mut doc, &genesis).unwrap();
     doc.commit();
     assert!(crate::members::starts(&doc, WORKSPACE));
     Started {
@@ -1035,7 +1034,7 @@ fn the_rows_a_batch_brings_are_rewritten_from_the_replay() {
     let reached = crate::members::heads(&crate::members::ops(before));
     let op = admitting(&workspace.admin, &workspace.admin_key, reached, &guest);
     let batch = changes_after(before, |doc| {
-        crate::members::legacy::put_op(doc, &op).unwrap();
+        crate::members::put_op(doc, &op).unwrap();
         // The administrator writes itself the owner's role beside its own
         // operation: rows are no authority, and the receiver projects the log.
         put_role(doc, workspace.admin.user_public_key, Role::Owner);
@@ -1085,7 +1084,7 @@ fn rows_a_batch_moves_beside_an_operation_are_refused_before_the_log_starts() {
     let admin = hex::encode(workspace.admin.device_public_key);
     let op = admitting(&workspace.admin, &workspace.admin_key, Vec::new(), &guest);
     let escalating = changes_after(&legacy, |doc| {
-        crate::members::legacy::put_op(doc, &op).unwrap();
+        crate::members::put_op(doc, &op).unwrap();
         put_role(doc, workspace.editor.user_public_key, Role::Owner);
     });
     assert_eq!(
@@ -1103,7 +1102,7 @@ fn rows_a_batch_moves_beside_an_operation_are_refused_before_the_log_starts() {
     // The operation on its own: kept for when the owner starts the log, and no
     // membership change until then.
     let alone = changes_after(&legacy, |doc| {
-        crate::members::legacy::put_op(doc, &op).unwrap();
+        crate::members::put_op(doc, &op).unwrap();
     });
     let admitted = admit(
         Some(&legacy),
@@ -1191,7 +1190,7 @@ fn a_role_permits_the_governance_a_members_operation_names() {
     );
     let batch = changes_after(before, |doc| {
         doc.put(ROOT, "name", "Renamed").unwrap();
-        crate::members::legacy::put_op(doc, &op).unwrap();
+        crate::members::put_op(doc, &op).unwrap();
     });
     let admin = hex::encode(workspace.admin.device_public_key);
     let admitted = admit(
@@ -1212,7 +1211,7 @@ fn a_role_permits_the_governance_a_members_operation_names() {
     );
     let batch = changes_after(&admitted.candidate, |doc| {
         crate::coverage::put(doc, coverage(1)).unwrap();
-        crate::members::legacy::put_op(doc, &op).unwrap();
+        crate::members::put_op(doc, &op).unwrap();
     });
     let admitted = admit(
         Some(&admitted.candidate),
@@ -1243,7 +1242,7 @@ fn a_governance_row_its_writers_role_does_not_permit_is_refused() {
     );
     let batch = changes_after(before, |doc| {
         crate::coverage::put(doc, coverage(1)).unwrap();
-        crate::members::legacy::put_op(doc, &op).unwrap();
+        crate::members::put_op(doc, &op).unwrap();
     });
     let editor = hex::encode(workspace.editor.device_public_key);
     match admit(
@@ -1276,7 +1275,7 @@ fn an_operation_names_exactly_the_governance_its_batch_changes() {
     let unnamed = governing(&workspace.admin, &workspace.admin_key, reached.clone(), &[]);
     let batch = changes_after(before, |doc| {
         doc.put(ROOT, "name", "Renamed").unwrap();
-        crate::members::legacy::put_op(doc, &unnamed).unwrap();
+        crate::members::put_op(doc, &unnamed).unwrap();
     });
     assert_eq!(
         admit(
@@ -1297,7 +1296,7 @@ fn an_operation_names_exactly_the_governance_its_batch_changes() {
     );
     let batch = changes_after(before, |doc| {
         doc.put(ROOT, "name", "Renamed").unwrap();
-        crate::members::legacy::put_op(doc, &spare).unwrap();
+        crate::members::put_op(doc, &spare).unwrap();
     });
     assert_eq!(
         admit(
@@ -1322,7 +1321,7 @@ fn a_reader_relays_an_operation_that_proves_its_writer() {
     let reached = crate::members::heads(&crate::members::ops(before));
     let op = admitting(&workspace.admin, &workspace.admin_key, reached, &guest);
     let batch = changes_after(before, |doc| {
-        crate::members::legacy::put_op(doc, &op).unwrap();
+        crate::members::put_op(doc, &op).unwrap();
     });
     let relay = hex::encode(workspace.viewer.device_public_key);
     let admitted = admit(

@@ -259,4 +259,3 @@ fn a_replica_acts_through_the_door() {
     assert_eq!(verb.action.action, "rename");
     assert_eq!(verb.action.kind, "test.contact");
 }
-

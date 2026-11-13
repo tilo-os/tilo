@@ -12,14 +12,15 @@
 //! The document's own member rows remain, projected from the operations, so a
 //! store, an older build and anything that reads a workspace document without
 //! its operations still sees who is in it.
-pub mod legacy;
 pub mod op;
 pub(crate) mod replay;
 
 #[cfg(test)]
 mod tests;
 
-pub use op::{MEMBERS_KEY, Membership, MembershipOpCommand, OpId, SignedMembershipOp};
+pub use op::{
+    MEMBERS_KEY, Membership, MembershipOpCommand, OpId, SignedMembershipOp, genesis_op, put_op,
+};
 pub use replay::{
     HeldOps, differences, genesis, growth, heads, heads_of, holds_genesis, materialise, ops,
     refusal, refused, replay, rows, settle, starts, steps, unwritten,
