@@ -937,10 +937,15 @@ lay_out_web() {
   mkdir -p "$native/web/install"
   # The installer downloads from the site that serves it, as tilo.sh's does
   # from tilo.sh: here this site's /releases, which serve this checkout's
-  # tilo command, never the one published on tilo.sh.
-  grep -q 'https://tilo.sh/releases' "$repo/dist/install/tilo.sh" \
-    || die 'dist/install/tilo.sh no longer names https://tilo.sh/releases; say here where it downloads from'
-  sed "s#https://tilo.sh/releases#$site_origin/releases#" "$repo/dist/install/tilo.sh" > "$native/web/install/install.sh"
+  # tilo command, never the one published on tilo.sh. It trusts the key this
+  # site signs them with in place of Tilo's release key, so the command the
+  # first screen gives works as pasted, in any shell.
+  local installer releases=https://tilo.sh/releases key
+  installer=$(<"$repo/dist/install/tilo.sh") key=$(<"$repo/keys/cosign.pub")
+  [[ $installer == *"$releases"* && $installer == *"$key"* ]] \
+    || die "dist/install/tilo.sh no longer names $releases and keys/cosign.pub; say here where it downloads from and what it trusts"
+  installer=${installer//"$releases"/"$site_origin/releases"}
+  printf '%s\n' "${installer//"$key"/"$(<"$state/release.pub")"}" > "$native/web/install/install.sh"
   web_site=$native/web/site
   web_install=$native/web/install
 }
@@ -962,8 +967,8 @@ lay_out_releases() {
 
 # DIR's archives listed in SHA256SUMS and that signed, as a release is
 # (cli-release.sh sums, sign), so the site's installer takes them: with this
-# stack's own throwaway key, not Tilo's release key, which an installer here
-# reads from TILO_RELEASE_KEY (stack.sh env exports it).
+# stack's own throwaway key, not Tilo's release key, which the installer this
+# site serves trusts instead (lay_out_web).
 sign_releases() {
   local dir=$1 key=$state/secrets/release-signing.pem
   if [[ ! -s $key ]]; then
@@ -1524,9 +1529,6 @@ print_env() {
 # reach the local API server; nothing here touches tilo.sh.
 export TILO_API_URL=$api_origin
 export TILO_SITE=$site_origin
-# The installer (curl -fsSL $site_origin | sh) checks this stack's releases
-# against its own key, not Tilo's release key.
-export TILO_RELEASE_KEY=$state/release.pub
 # An agent's MCP client, e.g. Claude Code:
 #   claude mcp add --transport http tilo-local $api_origin/mcp
 # a one-workspace key's MCP: $api_origin/w/<workspace>/mcp with

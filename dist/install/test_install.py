@@ -122,6 +122,26 @@ class Install(unittest.TestCase):
         self.assertNotIn(str(self.installed.parent), os.environ["PATH"].split(":"))
         self.assertNotIn("Next:", done.stderr, "what comes next is the command it ran")
 
+    def test_a_site_serving_it_with_its_own_key_in_place_needs_nothing_else(self):
+        # A copy of tilo.sh (os/containers/tilo-sh/stack.sh) serves this script with the key it
+        # signs its releases with in place of Tilo's, so its setup command works as pasted, in a
+        # shell that set nothing, and runs the tilo it installed, not an older one on PATH.
+        old = pathlib.Path(self.scratch.name) / "old"
+        old.mkdir()
+        (old / "tilo").write_text("#!/bin/sh\necho old tilo\n")
+        (old / "tilo").chmod(0o755)
+        self.publish(b'#!/bin/sh\necho "ran tilo $*"\n')
+        script = SCRIPT.read_text().replace((REPO / "keys/cosign.pub").read_text().strip(), self.pub.read_text().strip())
+        done = subprocess.run(
+            ["sh", "-s", "login", "K7Q-MX2P"],
+            input=script,
+            capture_output=True,
+            text=True,
+            env={"PATH": f"{old}:{os.environ['PATH']}", "HOME": str(self.home), "TILO_RELEASES": f"file://{self.release.parent}"},
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, "ran tilo login K7Q-MX2P\n")
+
     def test_another_directory_and_an_update_in_place(self):
         target = self.home / "bin"
         self.assertEqual(self.install(TILO_INSTALL_DIR=str(target)).returncode, 0)
