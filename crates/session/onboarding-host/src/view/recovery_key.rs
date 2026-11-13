@@ -315,115 +315,119 @@ mod tests {
     use std::path::PathBuf;
     use ui::widget::Widget as _;
 
-    #[test]
-    fn a_recovery_key_is_checked_while_typed_and_restores_only_when_valid() {
-        let seed = [0x3f_u8; 32];
-        let words = threshold_identity::bip39::encode(&seed)
-            .expect("32 bytes encode")
-            .to_string();
-        let restored = Arc::new(Mutex::new(Vec::<String>::new()));
-        let received = Arc::clone(&restored);
-        let mut view =
-            OnboardingView::with_minter(Box::new(|| Err("create should not run".to_string())));
-        view.words_importer = Arc::new(Mutex::new(Box::new(move |words: &str| {
-            received.lock().expect("record").push(words.to_owned());
-            Ok(MintedIdentity {
-                fingerprint: "cd".repeat(32),
-                path: PathBuf::from("/home/user/.config/tilo/identity/cd.json"),
-            })
-        })));
-        let mut doc = AutoCommit::new();
-        press(&view, &mut doc, KEY_EXISTING);
-        view.sync(&doc, &automerge::ROOT);
-        press(&view, &mut doc, KEY_CHOOSE_RECOVERY_KEY);
-        view.sync(&doc, &automerge::ROOT);
-        assert_eq!(view.flow().screen(), Screen::RecoveryKey);
+    tilo_test_env::scenario! {
+        fn a_recovery_key_is_checked_as_typed_and_as_written_down;
 
-        let set = |view: &OnboardingView, phrase: &str| {
-            *view.recovery_words.lock().expect("words") = phrase.to_owned();
-        };
-        // A word still being typed is not flagged; a finished unknown one is.
-        set(&view, "1. abandon 2. abil");
-        view.sync(&doc, &automerge::ROOT);
-        assert_eq!(view.recovery_check, WordsCheck::Typing { words: 2 });
-        set(&view, "abandon abil ");
-        view.sync(&doc, &automerge::ROOT);
-        let WordsCheck::Problem(problem) = &view.recovery_check else {
-            panic!(
-                "a finished unknown word is a problem: {:?}",
-                view.recovery_check
+        phase a_recovery_key_is_checked_while_typed_and_restores_only_when_valid;
+        {
+            let seed = [0x3f_u8; 32];
+            let words = threshold_identity::bip39::encode(&seed)
+                .expect("32 bytes encode")
+                .to_string();
+            let restored = Arc::new(Mutex::new(Vec::<String>::new()));
+            let received = Arc::clone(&restored);
+            let mut view =
+                OnboardingView::with_minter(Box::new(|| Err("create should not run".to_string())));
+            view.words_importer = Arc::new(Mutex::new(Box::new(move |words: &str| {
+                received.lock().expect("record").push(words.to_owned());
+                Ok(MintedIdentity {
+                    fingerprint: "cd".repeat(32),
+                    path: PathBuf::from("/home/user/.config/tilo/identity/cd.json"),
+                })
+            })));
+            let mut doc = AutoCommit::new();
+            press(&view, &mut doc, KEY_EXISTING);
+            view.sync(&doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_CHOOSE_RECOVERY_KEY);
+            view.sync(&doc, &automerge::ROOT);
+            assert_eq!(view.flow().screen(), Screen::RecoveryKey);
+
+            let set = |view: &OnboardingView, phrase: &str| {
+                *view.recovery_words.lock().expect("words") = phrase.to_owned();
+            };
+            // A word still being typed is not flagged; a finished unknown one is.
+            set(&view, "1. abandon 2. abil");
+            view.sync(&doc, &automerge::ROOT);
+            assert_eq!(view.recovery_check, WordsCheck::Typing { words: 2 });
+            set(&view, "abandon abil ");
+            view.sync(&doc, &automerge::ROOT);
+            let WordsCheck::Problem(problem) = &view.recovery_check else {
+                panic!(
+                    "a finished unknown word is a problem: {:?}",
+                    view.recovery_check
+                );
+            };
+            assert!(
+                problem.contains("abil") && problem.contains("ability"),
+                "names the word as typed and the word probably meant: {problem}"
             );
-        };
-        assert!(
-            problem.contains("abil") && problem.contains("ability"),
-            "names the word as typed and the word probably meant: {problem}"
-        );
 
-        // Restore is refused until the words are a valid key.
-        press(&view, &mut doc, KEY_RECOVERY_KEY_RESTORE);
-        view.sync(&doc, &automerge::ROOT);
-        assert!(restored.lock().expect("record").is_empty());
+            // Restore is refused until the words are a valid key.
+            press(&view, &mut doc, KEY_RECOVERY_KEY_RESTORE);
+            view.sync(&doc, &automerge::ROOT);
+            assert!(restored.lock().expect("record").is_empty());
 
-        // A valid key for another identity than this computer's is refused.
-        view.expected_identity = Some([0x11; 32]);
-        set(&view, &words.to_uppercase());
-        view.sync(&doc, &automerge::ROOT);
-        assert!(matches!(view.recovery_check, WordsCheck::Different { .. }));
-        press(&view, &mut doc, KEY_RECOVERY_KEY_RESTORE);
-        view.sync(&doc, &automerge::ROOT);
-        assert!(restored.lock().expect("record").is_empty());
+            // A valid key for another identity than this computer's is refused.
+            view.expected_identity = Some([0x11; 32]);
+            set(&view, &words.to_uppercase());
+            view.sync(&doc, &automerge::ROOT);
+            assert!(matches!(view.recovery_check, WordsCheck::Different { .. }));
+            press(&view, &mut doc, KEY_RECOVERY_KEY_RESTORE);
+            view.sync(&doc, &automerge::ROOT);
+            assert!(restored.lock().expect("record").is_empty());
 
-        view.expected_identity = None;
-        set(&view, &format!("{words}\n"));
-        view.sync(&doc, &automerge::ROOT);
-        assert!(matches!(view.recovery_check, WordsCheck::Ready { .. }));
-        press(&view, &mut doc, KEY_RECOVERY_KEY_RESTORE);
-        view.sync(&doc, &automerge::ROOT);
-        assert_eq!(restored.lock().expect("record").len(), 1);
-        assert!(view.flow().is_done());
-        assert!(
-            view.recovery_words.lock().expect("words").is_empty(),
-            "the typed words are wiped once used"
-        );
-    }
-
-    #[test]
-    fn writing_down_the_recovery_key_counts_as_a_verified_backup() {
-        let (mut view, _) = view();
-        view.set_visual_state_for_snapshot(OnboardingVisualState::BackupRecoveryKey);
-        let mut doc = AutoCommit::new();
-        view.sync(&doc, &automerge::ROOT);
-        press(&view, &mut doc, KEY_RECOVERY_KEY_CONFIRM);
-        view.sync(&doc, &automerge::ROOT);
-        assert!(
-            view.recovery_key_copy.is_some(),
-            "two words are still missing, so the copy is not confirmed"
-        );
-        let checks = view.recovery_key_copy.as_ref().expect("copy").checks;
-        for (at, position) in checks.iter().enumerate() {
-            let copy = view.recovery_key_copy.as_ref().expect("copy");
-            let word = copy.word(*position).to_uppercase();
-            *copy.answers[at].lock().expect("answer") = format!(" {word} ");
+            view.expected_identity = None;
+            set(&view, &format!("{words}\n"));
+            view.sync(&doc, &automerge::ROOT);
+            assert!(matches!(view.recovery_check, WordsCheck::Ready { .. }));
+            press(&view, &mut doc, KEY_RECOVERY_KEY_RESTORE);
+            view.sync(&doc, &automerge::ROOT);
+            assert_eq!(restored.lock().expect("record").len(), 1);
+            assert!(view.flow().is_done());
+            assert!(
+                view.recovery_words.lock().expect("words").is_empty(),
+                "the typed words are wiped once used"
+            );
         }
-        view.sync(&doc, &automerge::ROOT);
-        assert!(view.recovery_key_copy_confirmed);
-        press(&view, &mut doc, KEY_RECOVERY_KEY_CONFIRM);
-        view.sync(&doc, &automerge::ROOT);
-        assert!(
-            view.recovery_key_copy.is_none(),
-            "the words leave the screen"
-        );
-        assert!(view.recovery_key_written);
-        assert!(view.backup_was_verified);
-    }
 
-    #[test]
-    fn recovery_key_checks_take_one_word_from_each_third() {
-        for _ in 0..64 {
-            let checks = recovery_key_checks();
-            assert!((1..=8).contains(&checks[0]), "{checks:?}");
-            assert!((9..=16).contains(&checks[1]), "{checks:?}");
-            assert!((17..=24).contains(&checks[2]), "{checks:?}");
+        phase writing_down_the_recovery_key_counts_as_a_verified_backup;
+        {
+            let (mut view, _) = view();
+            view.set_visual_state_for_snapshot(OnboardingVisualState::BackupRecoveryKey);
+            let mut doc = AutoCommit::new();
+            view.sync(&doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_RECOVERY_KEY_CONFIRM);
+            view.sync(&doc, &automerge::ROOT);
+            assert!(
+                view.recovery_key_copy.is_some(),
+                "two words are still missing, so the copy is not confirmed"
+            );
+            let checks = view.recovery_key_copy.as_ref().expect("copy").checks;
+            for (at, position) in checks.iter().enumerate() {
+                let copy = view.recovery_key_copy.as_ref().expect("copy");
+                let word = copy.word(*position).to_uppercase();
+                *copy.answers[at].lock().expect("answer") = format!(" {word} ");
+            }
+            view.sync(&doc, &automerge::ROOT);
+            assert!(view.recovery_key_copy_confirmed);
+            press(&view, &mut doc, KEY_RECOVERY_KEY_CONFIRM);
+            view.sync(&doc, &automerge::ROOT);
+            assert!(
+                view.recovery_key_copy.is_none(),
+                "the words leave the screen"
+            );
+            assert!(view.recovery_key_written);
+            assert!(view.backup_was_verified);
+        }
+
+        phase recovery_key_checks_take_one_word_from_each_third;
+        {
+            for _ in 0..64 {
+                let checks = recovery_key_checks();
+                assert!((1..=8).contains(&checks[0]), "{checks:?}");
+                assert!((9..=16).contains(&checks[1]), "{checks:?}");
+                assert!((17..=24).contains(&checks[2]), "{checks:?}");
+            }
         }
     }
 }

@@ -772,20 +772,22 @@ mod tests {
         );
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    fn host_pointer_settings_import_once_without_overwriting_tilo_choices() {
-        // Phase `host_pointer_speed_maps_libinput_range_to_tilo_range`.
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+        )]
+        fn host_pointer_settings_import_once_without_overwriting_tilo_choices;
+
+        phase host_pointer_speed_maps_libinput_range_to_tilo_range;
         {
             assert_eq!(host_pointer_speed(-1.0), 0.0);
             assert_eq!(host_pointer_speed(0.0), 0.5);
             assert_eq!(host_pointer_speed(1.0), 1.0);
             assert_eq!(host_pointer_speed(4.0), 1.0);
         }
-        // Phase `host_input_migration_imports_per_device_scroll_and_is_idempotent`.
+
+        phase host_input_migration_imports_per_device_scroll_and_is_idempotent;
         {
             let existing = serde_json::Map::new();
             let updates = migration_updates(&existing, |schema, key| match (schema, key) {
@@ -810,7 +812,8 @@ mod tests {
             migrated.extend(updates);
             assert!(migration_updates(&migrated, |_, _| panic!("must not read twice")).is_empty());
         }
-        // Phase `host_pointer_import_keeps_device_classes_independent`.
+
+        phase host_pointer_import_keeps_device_classes_independent;
         {
             let existing = serde_json::Map::new();
             let updates = host_pointer_updates(&existing, &mut |schema, key| match (schema, key) {
@@ -837,7 +840,8 @@ mod tests {
                 Some(&serde_json::json!(0.2))
             );
         }
-        // Phase `host_input_migration_preserves_explicit_per_device_tilo_choices`.
+
+        phase host_input_migration_preserves_explicit_per_device_tilo_choices;
         {
             let existing = serde_json::Map::from_iter([
                 ("touchpad_natural_scroll".into(), serde_json::json!(false)),
@@ -857,7 +861,8 @@ mod tests {
                 Some(&serde_json::json!(0.25))
             );
         }
-        // Phase `version_three_repairs_only_the_stale_version_two_us_default`.
+
+        phase version_three_repairs_only_the_stale_version_two_us_default;
         {
             let stale = serde_json::Map::from_iter([
                 ("keyboard_layout".into(), serde_json::json!("us")),
@@ -921,7 +926,8 @@ mod tests {
             assert!(!preserved.contains_key("keyboard_layout"));
             assert!(!preserved.contains_key("keyboard_layouts"));
         }
-        // Phase `defaults_written_before_the_first_import_do_not_pin_us`.
+
+        phase defaults_written_before_the_first_import_do_not_pin_us;
         {
             let defaults = serde_json::Map::from_iter([
                 ("keyboard_layout".into(), serde_json::json!("us")),
@@ -954,9 +960,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn host_keyboard_settings_import_completely_and_retry_when_unavailable() {
-        // Phase `host_keyboard_import_is_complete_and_never_overwrites_tilo_choices`.
+    tilo_test_env::scenario! {
+        fn host_keyboard_settings_import_completely_and_retry_when_unavailable;
+
+        phase host_keyboard_import_is_complete_and_never_overwrites_tilo_choices;
         {
             let empty = serde_json::Map::new();
             let imported = keyboard_updates(&empty, &mut |_, key| match key {
@@ -986,7 +993,8 @@ mod tests {
                 "an existing Tilo keyboard selection must win as one coherent preference"
             );
         }
-        // Phase `host_repeat_import_preserves_exact_values_and_disabled_state`.
+
+        phase host_repeat_import_preserves_exact_values_and_disabled_state;
         {
             let enabled =
                 migration_updates(&serde_json::Map::new(), |schema, key| match (schema, key) {
@@ -1015,7 +1023,8 @@ mod tests {
                 Some(&serde_json::json!(0))
             );
         }
-        // Phase `unavailable_host_settings_are_retried_instead_of_marked_complete`.
+
+        phase unavailable_host_settings_are_retried_instead_of_marked_complete;
         {
             let existing = serde_json::Map::new();
             let unavailable = migration_updates(&existing, |_, _| None);
@@ -1034,7 +1043,8 @@ mod tests {
                 Some(&serde_json::json!(HOST_INPUT_MIGRATION_VERSION))
             );
         }
-        // Phase `gnome_xkb_sources_keep_order_and_variants`.
+
+        phase gnome_xkb_sources_keep_order_and_variants;
         {
             assert_eq!(
                 parse_gnome_xkb_sources(
@@ -1043,7 +1053,8 @@ mod tests {
                 ["de:nodeadkeys", "us"]
             );
         }
-        // Phase `gnome_compose_option_maps_to_the_shared_settings_schema`.
+
+        phase gnome_compose_option_maps_to_the_shared_settings_schema;
         {
             assert_eq!(
                 parse_gnome_compose_key("['grp:alt_shift_toggle', 'compose:rwin']").as_deref(),
@@ -1053,10 +1064,11 @@ mod tests {
         }
     }
 
-    /// Minimal tempdir helper (avoids pulling `tempfile` as a dev-dep — the only test in `quick-shell` that needs one).
-    #[test]
-    fn firstboot_run_creates_the_desktop_dir_and_never_provisions_identity() {
-        // Phase `run_with_xdg_creates_tilo_desktop_dir`.
+    tilo_test_env::scenario! {
+        /// Minimal tempdir helper (avoids pulling `tempfile` as a dev-dep — the only test in `quick-shell` that needs one).
+        fn firstboot_run_creates_the_desktop_dir_and_never_provisions_identity;
+
+        phase run_with_xdg_creates_tilo_desktop_dir;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             run_with_env(Some(tmp.path().as_os_str()), None).expect("firstboot succeeds");
@@ -1066,7 +1078,8 @@ mod tests {
                 "expected {expected:?} to be created"
             );
         }
-        // Phase `run_with_home_falls_back_to_dot_config`.
+
+        phase run_with_home_falls_back_to_dot_config;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             run_with_env(None, Some(tmp.path().as_os_str())).expect("firstboot succeeds via HOME");
@@ -1076,7 +1089,8 @@ mod tests {
                 "expected {expected:?} to be created"
             );
         }
-        // Phase `run_is_idempotent_on_existing_dir`.
+
+        phase run_is_idempotent_on_existing_dir;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             run_with_env(Some(tmp.path().as_os_str()), None).expect("first run ok");
@@ -1084,13 +1098,15 @@ mod tests {
             let expected = tmp.path().join("tilo-desktop");
             assert!(expected.exists());
         }
-        // Phase `run_without_env_is_a_noop_not_an_error`.
+
+        phase run_without_env_is_a_noop_not_an_error;
         {
             // Systemd `Type=oneshot` units fail the whole transaction if ExecStart
             // returns non-zero — first-boot must never break boot over missing env-vars in the unit context.
             run_with_env(None, None).expect("no-env case is a no-op, not an error");
         }
-        // Phase `run_does_not_provision_identity_when_missing`.
+
+        phase run_does_not_provision_identity_when_missing;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             run_with_env(Some(tmp.path().as_os_str()), None).expect("firstboot ok");
@@ -1104,7 +1120,8 @@ mod tests {
                 "firstboot must leave personal identity creation to the OOBE"
             );
         }
-        // Phase `run_does_not_touch_an_existing_identity`.
+
+        phase run_does_not_touch_an_existing_identity;
         {
             let tmp = tempfile::tempdir().expect("tempdir");
             let dir = tmp.path().join("tilo").join("identity");

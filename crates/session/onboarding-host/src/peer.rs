@@ -138,58 +138,62 @@ impl Peer {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_missing_descriptor_is_not_a_pending_transfer() {
-        let temporary = tempfile::tempdir().unwrap();
-        assert!(
-            Peer::open_at(temporary.path(), temporary.path(), temporary.path())
-                .unwrap()
-                .is_none()
-        );
-        assert!(!Peer::pending_at(temporary.path()));
-    }
+    tilo_test_env::scenario! {
+        fn a_handoff_descriptor_counts_only_when_present_private_and_well_formed;
 
-    #[test]
-    fn a_malformed_descriptor_is_refused() {
-        let temporary = tempfile::tempdir().unwrap();
-        let state = temporary.path().join(".local/state/tilo");
-        std::fs::create_dir_all(&state).unwrap();
-        for path in [
-            temporary.path().join(".local"),
-            temporary.path().join(".local/state"),
-            state.clone(),
-        ] {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        phase a_missing_descriptor_is_not_a_pending_transfer;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            assert!(
+                Peer::open_at(temporary.path(), temporary.path(), temporary.path())
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(!Peer::pending_at(temporary.path()));
         }
-        std::fs::write(state.join(FILE), b"{\"schema\":1}").unwrap();
-        std::fs::set_permissions(state.join(FILE), std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(Peer::pending_at(temporary.path()));
-        assert!(Peer::open_at(temporary.path(), temporary.path(), temporary.path()).is_err());
-    }
 
-    #[test]
-    fn a_linked_or_public_descriptor_is_refused() {
-        use std::os::unix::fs::{PermissionsExt as _, symlink};
-        let temporary = tempfile::tempdir().unwrap();
-        let state = temporary.path().join(".local/state/tilo");
-        std::fs::create_dir_all(&state).unwrap();
-        for path in [
-            temporary.path().join(".local"),
-            temporary.path().join(".local/state"),
-            state.clone(),
-        ] {
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        phase a_malformed_descriptor_is_refused;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let state = temporary.path().join(".local/state/tilo");
+            std::fs::create_dir_all(&state).unwrap();
+            for path in [
+                temporary.path().join(".local"),
+                temporary.path().join(".local/state"),
+                state.clone(),
+            ] {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            std::fs::write(state.join(FILE), b"{\"schema\":1}").unwrap();
+            std::fs::set_permissions(state.join(FILE), std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(Peer::pending_at(temporary.path()));
+            assert!(Peer::open_at(temporary.path(), temporary.path(), temporary.path()).is_err());
         }
-        let real = temporary.path().join("descriptor.json");
-        std::fs::write(&real, b"{}").unwrap();
-        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
-        symlink(&real, state.join(FILE)).unwrap();
-        assert!(tilo_handoff::read_descriptor(temporary.path()).is_err());
 
-        std::fs::remove_file(state.join(FILE)).unwrap();
-        std::fs::write(state.join(FILE), b"{}").unwrap();
-        std::fs::set_permissions(state.join(FILE), std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(tilo_handoff::read_descriptor(temporary.path()).is_err());
+        phase a_linked_or_public_descriptor_is_refused;
+        {
+            use std::os::unix::fs::{PermissionsExt as _, symlink};
+            let temporary = tempfile::tempdir().unwrap();
+            let state = temporary.path().join(".local/state/tilo");
+            std::fs::create_dir_all(&state).unwrap();
+            for path in [
+                temporary.path().join(".local"),
+                temporary.path().join(".local/state"),
+                state.clone(),
+            ] {
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            let real = temporary.path().join("descriptor.json");
+            std::fs::write(&real, b"{}").unwrap();
+            std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+            symlink(&real, state.join(FILE)).unwrap();
+            assert!(tilo_handoff::read_descriptor(temporary.path()).is_err());
+
+            std::fs::remove_file(state.join(FILE)).unwrap();
+            std::fs::write(state.join(FILE), b"{}").unwrap();
+            std::fs::set_permissions(state.join(FILE), std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(tilo_handoff::read_descriptor(temporary.path()).is_err());
+        }
     }
 }

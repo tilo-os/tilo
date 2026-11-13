@@ -15,48 +15,90 @@ fn keyboard_stops(widget: &dyn Widget, stops: &mut Vec<(String, Option<String>)>
     }
 }
 
-/// The ready screen at the size of the virtual machines the release gates
-/// boot (1280×800): its page fits, so Tab has one stop, Continue to desktop,
-/// and it is named. (When the page overflowed by a line its unnamed scroll
-/// region was a second stop, and Tab from the action landed there.)
-#[test]
-fn the_ready_screen_keyboard_stops_are_named() {
-    let (mut view, _) = view();
-    let mut doc = AutoCommit::new();
-    for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
-        press(&view, &mut doc, key);
+tilo_test_env::scenario! {
+    fn the_ready_screen_and_the_short_steps_fit_their_panel_with_named_stops;
+
+    phase the_ready_screen_keyboard_stops_are_named;
+    // The ready screen at the size of the virtual machines the release gates
+    // boot (1280×800): its page fits, so Tab has one stop, Continue to desktop,
+    // and it is named. (When the page overflowed by a line its unnamed scroll
+    // region was a second stop, and Tab from the action landed there.)
+    {
+        let (mut view, _) = view();
+        let mut doc = AutoCommit::new();
+        for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
+            press(&view, &mut doc, key);
+            view.sync(&doc, &automerge::ROOT);
+        }
+        press(&view, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
         view.sync(&doc, &automerge::ROOT);
-    }
-    press(&view, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-    view.sync(&doc, &automerge::ROOT);
-    press(&view, &mut doc, KEY_BACKUP_CONTINUE);
-    sync_journaled(&mut view, &doc);
-    if view.codec_page_visible() {
-        press(&view, &mut doc, KEY_CODECS_SKIP);
+        press(&view, &mut doc, KEY_BACKUP_CONTINUE);
         sync_journaled(&mut view, &doc);
-    }
-    assert!(
-        view.identity_ready_page,
-        "the walk ends on the ready screen"
-    );
+        if view.codec_page_visible() {
+            press(&view, &mut doc, KEY_CODECS_SKIP);
+            sync_journaled(&mut view, &doc);
+        }
+        assert!(
+            view.identity_ready_page,
+            "the walk ends on the ready screen"
+        );
 
-    let theme = Theme::dark();
-    lay_out_as_root(&mut view, 1280.0, 800.0, &theme);
+        let theme = Theme::dark();
+        lay_out_as_root(&mut view, 1280.0, 800.0, &theme);
 
-    // The shell's one stop is the setup app; Tab then walks the app's own.
-    let mut stops = Vec::new();
-    keyboard_stops(ceremony(&mut view), &mut stops);
-    assert!(
-        stops
+        // The shell's one stop is the setup app; Tab then walks the app's own.
+        let mut stops = Vec::new();
+        keyboard_stops(ceremony(&mut view), &mut stops);
+        assert!(
+            stops
+                .iter()
+                .all(|(_, name)| name.as_deref().is_some_and(|name| !name.is_empty())),
+            "every keyboard stop is named: {stops:?}"
+        );
+        let names: Vec<(&str, Option<&str>)> = stops
             .iter()
-            .all(|(_, name)| name.as_deref().is_some_and(|name| !name.is_empty())),
-        "every keyboard stop is named: {stops:?}"
-    );
-    let names: Vec<(&str, Option<&str>)> = stops
-        .iter()
-        .map(|(widget, name)| (widget.as_str(), name.as_deref()))
-        .collect();
-    assert_eq!(names, [("Button", Some("Continue to desktop"))]);
+            .map(|(widget, name)| (widget.as_str(), name.as_deref()))
+            .collect();
+        assert_eq!(names, [("Button", Some("Continue to desktop"))]);
+    }
+
+    phase the_short_setup_steps_fit_without_scrolling;
+    // The steps of a first setup whose copy is short fit their panel without
+    // scrolling, at the gates' 1280×800 and at 800×600: a scroll region on a
+    // page that has one action to take is a stop that scrolls nothing. The
+    // backup step is a form whose fields bring themselves into view, and its
+    // page may scroll.
+    {
+        for (width, height) in [(1280.0_f32, 800.0_f32), (800.0, 600.0)] {
+            let (mut view, _) = view();
+            let mut doc = AutoCommit::new();
+            let fits = |view: &mut OnboardingView, step: &str| {
+                let overflow = overflow(lay_out(view, width, height));
+                assert!(
+                    overflow.iter().all(|&by| by == 0.0),
+                    "{step} at {width}x{height} overflows its panel by {overflow:?}"
+                );
+            };
+            fits(&mut view, "the introduction");
+            press(&view, &mut doc, KEY_BEGIN);
+            view.sync(&doc, &automerge::ROOT);
+            fits(&mut view, "protecting the identity");
+            press(&view, &mut doc, KEY_UNDERSTOOD);
+            view.sync(&doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_CREATE);
+            view.sync(&doc, &automerge::ROOT);
+            sync_journaled(&mut view, &doc);
+            press(&view, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
+            view.sync(&doc, &automerge::ROOT);
+            press(&view, &mut doc, KEY_BACKUP_CONTINUE);
+            sync_journaled(&mut view, &doc);
+            assert!(
+                view.identity_ready_page,
+                "the walk ends on the ready screen"
+            );
+            fits(&mut view, "the ready screen");
+        }
+    }
 }
 
 /// Lay `view` out in a `width`×`height` window, as the shell does.
@@ -81,42 +123,4 @@ fn overflow(widgets: Vec<*mut dyn Widget>) -> Vec<f32> {
                 .map(|scroll| scroll.max_offset_y())
         })
         .collect()
-}
-
-/// The steps of a first setup whose copy is short fit their panel without
-/// scrolling, at the gates' 1280×800 and at 800×600: a scroll region on a
-/// page that has one action to take is a stop that scrolls nothing. The
-/// backup step is a form whose fields bring themselves into view, and its
-/// page may scroll.
-#[test]
-fn the_short_setup_steps_fit_without_scrolling() {
-    for (width, height) in [(1280.0_f32, 800.0_f32), (800.0, 600.0)] {
-        let (mut view, _) = view();
-        let mut doc = AutoCommit::new();
-        let fits = |view: &mut OnboardingView, step: &str| {
-            let overflow = overflow(lay_out(view, width, height));
-            assert!(
-                overflow.iter().all(|&by| by == 0.0),
-                "{step} at {width}x{height} overflows its panel by {overflow:?}"
-            );
-        };
-        fits(&mut view, "the introduction");
-        press(&view, &mut doc, KEY_BEGIN);
-        view.sync(&doc, &automerge::ROOT);
-        fits(&mut view, "protecting the identity");
-        press(&view, &mut doc, KEY_UNDERSTOOD);
-        view.sync(&doc, &automerge::ROOT);
-        press(&view, &mut doc, KEY_CREATE);
-        view.sync(&doc, &automerge::ROOT);
-        sync_journaled(&mut view, &doc);
-        press(&view, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-        view.sync(&doc, &automerge::ROOT);
-        press(&view, &mut doc, KEY_BACKUP_CONTINUE);
-        sync_journaled(&mut view, &doc);
-        assert!(
-            view.identity_ready_page,
-            "the walk ends on the ready screen"
-        );
-        fits(&mut view, "the ready screen");
-    }
 }

@@ -383,172 +383,180 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn save_and_load_round_trip_on_disk() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let store = DiskIdentityStore::at(tmp.path().join("primary.json"));
-        assert!(store.load().unwrap().is_none());
-        let rec = fixture_record();
-        store.save(&rec).unwrap();
-        assert!(store.identity_present());
-        let back = store.load().unwrap().unwrap();
-        assert_eq!(back.display_name, rec.display_name);
-        assert_eq!(back.public_key(), rec.public_key());
-        assert_eq!(back.schema_version, 2);
-        assert!(back.threshold_identity.secret_bytes.is_empty());
-        assert!(back.secret_ref.is_some());
-    }
+    tilo_test_env::scenario! {
+        fn the_identity_store_round_trips_its_record_and_decides_the_first_run;
 
-    #[test]
-    fn save_sets_0600_mode_on_unix() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let store = DiskIdentityStore::at(tmp.path().join("primary.json"));
-        store.save(&fixture_record()).unwrap();
-        #[cfg(unix)]
+        phase save_and_load_round_trip_on_disk;
         {
-            let meta = fs::metadata(store.path()).unwrap();
-            let mode = meta.permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600, "primary.json must be 0600, got {mode:o}");
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let store = DiskIdentityStore::at(tmp.path().join("primary.json"));
+            assert!(store.load().unwrap().is_none());
+            let rec = fixture_record();
+            store.save(&rec).unwrap();
+            assert!(store.identity_present());
+            let back = store.load().unwrap().unwrap();
+            assert_eq!(back.display_name, rec.display_name);
+            assert_eq!(back.public_key(), rec.public_key());
+            assert_eq!(back.schema_version, 2);
+            assert!(back.threshold_identity.secret_bytes.is_empty());
+            assert!(back.secret_ref.is_some());
+        }
+
+        phase save_sets_0600_mode_on_unix;
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let store = DiskIdentityStore::at(tmp.path().join("primary.json"));
+            store.save(&fixture_record()).unwrap();
+            #[cfg(unix)]
+            {
+                let meta = fs::metadata(store.path()).unwrap();
+                let mode = meta.permissions().mode() & 0o777;
+                assert_eq!(mode, 0o600, "primary.json must be 0600, got {mode:o}");
+            }
+        }
+
+        phase load_on_missing_file_returns_none;
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let store = DiskIdentityStore::at(tmp.path().join("does-not-exist.json"));
+            assert!(store.load().unwrap().is_none());
+            assert!(!store.identity_present());
+        }
+
+        phase first_run_flow_triggers_only_on_missing_identity;
+        {
+            let store = MemoryIdentityStore::new();
+            assert!(needs_first_run_flow(&store));
+            store.save(&fixture_record()).unwrap();
+            assert!(!needs_first_run_flow(&store));
+        }
+
+        phase only_the_secret_service_unavailable_error_enters_recovery;
+        {
+            assert!(is_secret_service_unavailable(
+                &runtime_identity::secret_service_unavailable_error()
+            ));
+            assert!(!is_secret_service_unavailable(&io::Error::new(
+                io::ErrorKind::InvalidData,
+                "identity JSON malformed",
+            )));
+            assert!(!is_secret_service_unavailable(&io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "identity directory is not private",
+            )));
         }
     }
 
-    #[cfg(unix)]
-    #[test]
-    #[cfg(unix)]
-    fn load_refuses_an_identity_path_symlink() {
-        use std::os::unix::fs::symlink;
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        #[cfg(unix)]
+        fn identity_paths_never_follow_a_link_and_an_invalid_record_is_no_identity;
 
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let target = tmp.path().join("elsewhere.json");
-        let bytes = fixture_record().to_json_bytes().unwrap();
-        fs::write(&target, bytes).unwrap();
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
-        let path = tmp.path().join("primary.json");
-        symlink(&target, &path).unwrap();
+        phase load_refuses_an_identity_path_symlink;
+        {
+            use std::os::unix::fs::symlink;
 
-        let store = DiskIdentityStore::at(path);
-        assert!(store.load().is_err());
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let target = tmp.path().join("elsewhere.json");
+            let bytes = fixture_record().to_json_bytes().unwrap();
+            fs::write(&target, bytes).unwrap();
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+            let path = tmp.path().join("primary.json");
+            symlink(&target, &path).unwrap();
+
+            let store = DiskIdentityStore::at(path);
+            assert!(store.load().is_err());
+        }
+
+        phase host_identity_tree_is_private_and_refuses_a_symlink_root;
+        {
+            use std::os::unix::fs::{PermissionsExt, symlink};
+
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let root = tmp.path().join("data/tilo");
+            prepare_private_host_identity_tree(&root).unwrap();
+            for directory in [&root, &root.join("user-identity"), &root.join("device")] {
+                assert_eq!(
+                    fs::metadata(directory).unwrap().permissions().mode() & 0o777,
+                    0o700
+                );
+            }
+
+            let target = tmp.path().join("target");
+            fs::create_dir(&target).unwrap();
+            let linked = tmp.path().join("linked");
+            symlink(&target, &linked).unwrap();
+            assert!(prepare_private_host_identity_tree(&linked).is_err());
+        }
+
+        phase invalid_existing_identity_keeps_trusted_setup_in_front_of_the_desktop;
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let path = tmp.path().join("primary.json");
+            fs::write(&path, b"not an identity").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            let store = DiskIdentityStore::at(path);
+            assert!(
+                needs_first_run_flow(&store),
+                "an invalid identity must not let an identity-less desktop start"
+            );
+        }
     }
 
-    #[test]
-    fn load_on_missing_file_returns_none() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let store = DiskIdentityStore::at(tmp.path().join("does-not-exist.json"));
-        assert!(store.load().unwrap().is_none());
-        assert!(!store.identity_present());
-    }
+    tilo_test_env::scenario! {
+        fn the_host_identity_root_and_files_paths_follow_the_session_environment;
 
-    #[test]
-    fn host_identity_root_uses_the_xdg_data_contract() {
-        assert_eq!(
-            host_identity_root(Some("/home/alice/.data".into()), Some("/ignored".into())).unwrap(),
-            PathBuf::from("/home/alice/.data/tilo")
-        );
-        assert_eq!(
-            host_identity_root(None, Some("/home/alice".into())).unwrap(),
-            PathBuf::from("/home/alice/.local/share/tilo")
-        );
-    }
-
-    #[test]
-    fn host_identity_root_never_depends_on_the_working_directory() {
-        assert!(host_identity_root(Some("relative".into()), Some("/home/alice".into())).is_err());
-        assert!(host_identity_root(None, Some("relative".into())).is_err());
-        assert!(host_identity_root(None, None).is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    #[cfg(unix)]
-    fn host_identity_tree_is_private_and_refuses_a_symlink_root() {
-        use std::os::unix::fs::{PermissionsExt, symlink};
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let root = tmp.path().join("data/tilo");
-        prepare_private_host_identity_tree(&root).unwrap();
-        for directory in [&root, &root.join("user-identity"), &root.join("device")] {
+        phase host_identity_root_uses_the_xdg_data_contract;
+        {
             assert_eq!(
-                fs::metadata(directory).unwrap().permissions().mode() & 0o777,
-                0o700
+                host_identity_root(Some("/home/alice/.data".into()), Some("/ignored".into())).unwrap(),
+                PathBuf::from("/home/alice/.data/tilo")
+            );
+            assert_eq!(
+                host_identity_root(None, Some("/home/alice".into())).unwrap(),
+                PathBuf::from("/home/alice/.local/share/tilo")
             );
         }
 
-        let target = tmp.path().join("target");
-        fs::create_dir(&target).unwrap();
-        let linked = tmp.path().join("linked");
-        symlink(&target, &linked).unwrap();
-        assert!(prepare_private_host_identity_tree(&linked).is_err());
-    }
+        phase host_identity_root_never_depends_on_the_working_directory;
+        {
+            assert!(host_identity_root(Some("relative".into()), Some("/home/alice".into())).is_err());
+            assert!(host_identity_root(None, Some("relative".into())).is_err());
+            assert!(host_identity_root(None, None).is_err());
+        }
 
-    #[test]
-    fn host_files_paths_match_the_user_service() {
-        let environment = host_files_environment(
-            Some("/home/alice".into()),
-            None,
-            Some("/run/user/1000".into()),
-        )
-        .unwrap();
-        assert_eq!(
-            environment[0].1,
-            PathBuf::from("/home/alice/.local/state/tilo/files")
-        );
-        assert_eq!(environment[1].1, environment[0].1.join("mount"));
-        assert_eq!(
-            environment[2].1,
-            PathBuf::from("/run/user/1000/tilo/files-workspace")
-        );
-        assert_eq!(environment[3].1, environment[2].1.join("fs-blobs.sock"));
-        assert_eq!(
-            environment[4],
-            (
-                "TILO_FS_STORAGE_DIR",
-                PathBuf::from("/run/user/1000/tilo/files-storage")
+        phase host_files_paths_match_the_user_service;
+        {
+            let environment = host_files_environment(
+                Some("/home/alice".into()),
+                None,
+                Some("/run/user/1000".into()),
             )
-        );
-        let custom =
-            host_files_environment(None, Some("/state".into()), Some("/runtime".into())).unwrap();
-        assert_eq!(custom[0].1, PathBuf::from("/state/tilo/files"));
-        assert!(
-            host_files_environment(None, Some("relative".into()), Some("/runtime".into())).is_err()
-        );
-        assert!(host_files_environment(Some("/home/alice".into()), None, None).is_err());
-    }
-
-    #[test]
-    fn first_run_flow_triggers_only_on_missing_identity() {
-        let store = MemoryIdentityStore::new();
-        assert!(needs_first_run_flow(&store));
-        store.save(&fixture_record()).unwrap();
-        assert!(!needs_first_run_flow(&store));
-    }
-
-    #[test]
-    fn only_the_secret_service_unavailable_error_enters_recovery() {
-        assert!(is_secret_service_unavailable(
-            &runtime_identity::secret_service_unavailable_error()
-        ));
-        assert!(!is_secret_service_unavailable(&io::Error::new(
-            io::ErrorKind::InvalidData,
-            "identity JSON malformed",
-        )));
-        assert!(!is_secret_service_unavailable(&io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "identity directory is not private",
-        )));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    #[cfg(unix)]
-    fn invalid_existing_identity_keeps_trusted_setup_in_front_of_the_desktop() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("primary.json");
-        fs::write(&path, b"not an identity").unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        let store = DiskIdentityStore::at(path);
-        assert!(
-            needs_first_run_flow(&store),
-            "an invalid identity must not let an identity-less desktop start"
-        );
+            .unwrap();
+            assert_eq!(
+                environment[0].1,
+                PathBuf::from("/home/alice/.local/state/tilo/files")
+            );
+            assert_eq!(environment[1].1, environment[0].1.join("mount"));
+            assert_eq!(
+                environment[2].1,
+                PathBuf::from("/run/user/1000/tilo/files-workspace")
+            );
+            assert_eq!(environment[3].1, environment[2].1.join("fs-blobs.sock"));
+            assert_eq!(
+                environment[4],
+                (
+                    "TILO_FS_STORAGE_DIR",
+                    PathBuf::from("/run/user/1000/tilo/files-storage")
+                )
+            );
+            let custom =
+                host_files_environment(None, Some("/state".into()), Some("/runtime".into())).unwrap();
+            assert_eq!(custom[0].1, PathBuf::from("/state/tilo/files"));
+            assert!(
+                host_files_environment(None, Some("relative".into()), Some("/runtime".into())).is_err()
+            );
+            assert!(host_files_environment(Some("/home/alice".into()), None, None).is_err());
+        }
     }
 }

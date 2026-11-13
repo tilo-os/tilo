@@ -258,113 +258,118 @@ mod tests {
     use super::fixtures::*;
     use super::*;
     use zeroize::Zeroizing;
-    #[test]
-    fn authenticated_password_handoff_is_bound_to_exact_setup_and_defer_clears_it() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let (home, identity, declaration) = fixture();
-        let digest = Prepared::open(home.path()).unwrap().digest();
-        let mut pending = Pending::open(home.path().to_path_buf(), identity, declaration).unwrap();
-        let secret = b"previously authenticated setup password";
-        assert!(
-            pending
-                .receive_prepared_password([0; 32], Zeroizing::new(secret.to_vec()))
-                .is_err()
-        );
-        assert!(pending.needs_password());
-        pending
-            .receive_prepared_password(digest, Zeroizing::new(secret.to_vec()))
-            .unwrap();
-        assert!(!pending.needs_password());
-        assert_eq!(pending.state(), "pending");
-        assert!(!pending.busy());
-        assert!(
-            !pending
-                .status()
-                .to_string()
-                .contains(std::str::from_utf8(secret).unwrap())
-        );
-        pending.invoke("later", &[]).unwrap();
-        assert!(!pending.holds_password());
-        let mut reopened = Pending::open(
-            pending.context().home.clone(),
-            pending.context().identity.clone(),
-            pending.context().declaration.clone(),
-        )
-        .unwrap();
-        reopened.invoke("resume", &[]).unwrap();
-        assert!(reopened.needs_password());
-    }
+    tilo_test_env::scenario! {
+        fn a_declared_portable_home_stays_pending_until_reviewed_or_explicitly_deferred;
 
-    #[test]
-    fn declared_missing_home_stays_pending_and_explicit_defer_is_not_completion() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let (home, identity, declaration) = fixture();
-        let before = std::fs::read(identity.join("primary.json")).unwrap();
-        let setup = std::fs::read(
-            home.path()
-                .join(".local/state/tilo/prepared-setup/prepared-setup.sealed"),
-        )
-        .unwrap();
-        let mut pending =
-            Pending::open(home.path().into(), identity.clone(), declaration.clone()).unwrap();
-        assert!(pending.pending());
-        assert!(pending.invoke("continue", b"").is_err());
-        assert!(pending.invoke("review", b"private setup password").is_err());
-        assert_eq!(pending.status()["state"], "unavailable");
-        assert!(pending.pending());
-        assert!(!pending.busy());
-        assert!(
-            !pending
-                .status()
-                .to_string()
-                .contains("private setup password")
-        );
-        assert!(pending.invoke("review", b"private setup password").is_err());
-        pending.invoke("later", b"").unwrap();
-        assert_eq!(pending.status()["state"], "deferred");
-        assert!(!pending.pending());
-        let receipt: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(root(home.path()).join("choice.json")).unwrap())
+        phase authenticated_password_handoff_is_bound_to_exact_setup_and_defer_clears_it;
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+            let (home, identity, declaration) = fixture();
+            let digest = Prepared::open(home.path()).unwrap().digest();
+            let mut pending = Pending::open(home.path().to_path_buf(), identity, declaration).unwrap();
+            let secret = b"previously authenticated setup password";
+            assert!(
+                pending
+                    .receive_prepared_password([0; 32], Zeroizing::new(secret.to_vec()))
+                    .is_err()
+            );
+            assert!(pending.needs_password());
+            pending
+                .receive_prepared_password(digest, Zeroizing::new(secret.to_vec()))
                 .unwrap();
-        assert_eq!(receipt["outcome"], "deferred");
-        assert_eq!(
-            receipt["declaration"]["setup_binding"],
-            declaration.setup_binding
-        );
-        assert_eq!(
-            std::fs::read(identity.join("primary.json")).unwrap(),
-            before
-        );
-        assert_eq!(
-            std::fs::read(
-                home.path()
-                    .join(".local/state/tilo/prepared-setup/prepared-setup.sealed")
+            assert!(!pending.needs_password());
+            assert_eq!(pending.state(), "pending");
+            assert!(!pending.busy());
+            assert!(
+                !pending
+                    .status()
+                    .to_string()
+                    .contains(std::str::from_utf8(secret).unwrap())
+            );
+            pending.invoke("later", &[]).unwrap();
+            assert!(!pending.holds_password());
+            let mut reopened = Pending::open(
+                pending.context().home.clone(),
+                pending.context().identity.clone(),
+                pending.context().declaration.clone(),
             )
-            .unwrap(),
-            setup
-        );
-        let mut resumed = Pending::open(home.path().into(), identity, declaration).unwrap();
-        assert!(!resumed.pending());
-        resumed.invoke("resume", b"").unwrap();
-        assert!(resumed.pending());
-        assert!(resumed.invoke("review", b"private setup password").is_err());
-        assert!(resumed.pending());
-        resumed.invoke("later", b"").unwrap();
-        assert_eq!(resumed.status()["state"], "deferred");
-    }
-    #[test]
-    fn declaration_receipt_refuses_wrong_binding_and_unsafe_defer_destination() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let (home, identity, declaration) = fixture();
-        let mut wrong = declaration.clone();
-        wrong.setup_binding = "unrelated-operation".into();
-        assert!(Pending::open(home.path().into(), identity.clone(), wrong).is_err());
-        let elsewhere = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(elsewhere.path(), root(home.path())).unwrap();
-        assert!(Pending::open(home.path().into(), identity, declaration).is_err());
-        assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0);
+            .unwrap();
+            reopened.invoke("resume", &[]).unwrap();
+            assert!(reopened.needs_password());
+        }
+
+        phase declared_missing_home_stays_pending_and_explicit_defer_is_not_completion;
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+            let (home, identity, declaration) = fixture();
+            let before = std::fs::read(identity.join("primary.json")).unwrap();
+            let setup = std::fs::read(
+                home.path()
+                    .join(".local/state/tilo/prepared-setup/prepared-setup.sealed"),
+            )
+            .unwrap();
+            let mut pending =
+                Pending::open(home.path().into(), identity.clone(), declaration.clone()).unwrap();
+            assert!(pending.pending());
+            assert!(pending.invoke("continue", b"").is_err());
+            assert!(pending.invoke("review", b"private setup password").is_err());
+            assert_eq!(pending.status()["state"], "unavailable");
+            assert!(pending.pending());
+            assert!(!pending.busy());
+            assert!(
+                !pending
+                    .status()
+                    .to_string()
+                    .contains("private setup password")
+            );
+            assert!(pending.invoke("review", b"private setup password").is_err());
+            pending.invoke("later", b"").unwrap();
+            assert_eq!(pending.status()["state"], "deferred");
+            assert!(!pending.pending());
+            let receipt: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root(home.path()).join("choice.json")).unwrap())
+                    .unwrap();
+            assert_eq!(receipt["outcome"], "deferred");
+            assert_eq!(
+                receipt["declaration"]["setup_binding"],
+                declaration.setup_binding
+            );
+            assert_eq!(
+                std::fs::read(identity.join("primary.json")).unwrap(),
+                before
+            );
+            assert_eq!(
+                std::fs::read(
+                    home.path()
+                        .join(".local/state/tilo/prepared-setup/prepared-setup.sealed")
+                )
+                .unwrap(),
+                setup
+            );
+            let mut resumed = Pending::open(home.path().into(), identity, declaration).unwrap();
+            assert!(!resumed.pending());
+            resumed.invoke("resume", b"").unwrap();
+            assert!(resumed.pending());
+            assert!(resumed.invoke("review", b"private setup password").is_err());
+            assert!(resumed.pending());
+            resumed.invoke("later", b"").unwrap();
+            assert_eq!(resumed.status()["state"], "deferred");
+        }
+
+        phase declaration_receipt_refuses_wrong_binding_and_unsafe_defer_destination;
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+            let (home, identity, declaration) = fixture();
+            let mut wrong = declaration.clone();
+            wrong.setup_binding = "unrelated-operation".into();
+            assert!(Pending::open(home.path().into(), identity.clone(), wrong).is_err());
+            let elsewhere = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(elsewhere.path(), root(home.path())).unwrap();
+            assert!(Pending::open(home.path().into(), identity, declaration).is_err());
+            assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0);
+        }
     }
 }
