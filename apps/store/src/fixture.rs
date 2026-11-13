@@ -42,18 +42,55 @@ const ARTWORK: &[(&str, &[u8])] = artwork![
     "VLC-preview-3.png" => "vlc-preview-3.png",
 ];
 
+/// A bundled image as the image store's decoder gave it, by its URL.
+type DecodedArtwork = (String, ui::image_store::DecodedImage);
+
+/// The bundled artwork, decoded: kept once every image has decoded, for the
+/// stores this process makes afterwards.
+static DECODED_ARTWORK: std::sync::OnceLock<Vec<DecodedArtwork>> = std::sync::OnceLock::new();
+
 /// The image store of a capture: every bundled icon and preview is decoded
 /// before the first frame. Preview widgets may request their image only
 /// while drawing, too late for a one-frame capture to wait for that load.
 /// The toolkit's host loader completes these local bytes without a network
 /// fetcher or a background race.
+///
+/// The first store of a process decodes the bundled bytes. Each later one is
+/// a cache of its own filled with a copy of those pixels: decoding the
+/// previews (800 by 500 at sixteen bits a channel, scaled to a thumbnail) is
+/// most of what a capture costs in an unoptimised build, and a process that
+/// stages many scenarios would decode the same bytes for each.
 pub fn artwork_store() -> ui::ImageStore {
     let (store, mut loader) = ui::ImageStore::host_driven();
+    if let Some(decoded) = DECODED_ARTWORK.get() {
+        for (url, image) in decoded {
+            store.get(url);
+            loader.take_requests();
+            if let Some(ticket) = loader.reserve(url) {
+                loader.complete_decoded(&ticket, Some(image.clone()));
+            }
+        }
+        return store;
+    }
+    let mut decoded = Vec::with_capacity(ARTWORK.len());
     for (name, bytes) in ARTWORK {
         let url = format!("{ARTWORK_HOST}{name}");
         store.get(&url);
         loader.take_requests();
         loader.complete(&url, Some(bytes));
+        if let Some(image) = store.get(&url) {
+            let pixels = ui::image_store::DecodedImage {
+                rgba: image.data.data().to_vec(),
+                width: image.width,
+                height: image.height,
+            };
+            decoded.push((url, pixels));
+        }
+    }
+    // An image that did not decode is not remembered as missing: the next
+    // store decodes the bytes again, as this one did.
+    if decoded.len() == ARTWORK.len() {
+        DECODED_ARTWORK.get_or_init(|| decoded);
     }
     store
 }
@@ -341,6 +378,48 @@ mod tests {
             );
         }
         assert!(store.is_idle(), "no fixture work remains in flight");
+    }
+
+    /// The first store of a process decodes the bundled bytes; a later one
+    /// is filled from those pixels, exactly, in a cache of its own.
+    #[test]
+    fn a_later_artwork_store_holds_the_decoded_pixels_in_a_cache_of_its_own() {
+        let first = artwork_store();
+        let later = artwork_store();
+        for (name, _) in ARTWORK {
+            let url = format!("{ARTWORK_HOST}{name}");
+            let decoded = first
+                .get(&url)
+                .unwrap_or_else(|| panic!("{name} is decoded in the first store"));
+            let copied = later
+                .get(&url)
+                .unwrap_or_else(|| panic!("{name} is ready in a later store"));
+            assert_eq!(
+                (copied.width, copied.height),
+                (decoded.width, decoded.height),
+                "{name} keeps its size"
+            );
+            assert_eq!(copied.format, decoded.format, "{name} keeps its format");
+            assert_eq!(
+                copied.alpha_type, decoded.alpha_type,
+                "{name} keeps its alpha"
+            );
+            assert!(
+                copied.data.data() == decoded.data.data(),
+                "{name} keeps every pixel the decoder gave it"
+            );
+        }
+        assert!(later.is_idle(), "a later store has no work in flight");
+
+        // An image the fixture does not bundle is never loaded, and asking
+        // one store for it leaves the other as it was.
+        let absent = format!("{ARTWORK_HOST}Absent.png");
+        assert!(first.get(&absent).is_none());
+        assert!(first.failed(&absent), "nothing loads an unbundled image");
+        assert!(first.is_idle(), "the refused load is not left in flight");
+        assert!(!later.is_known(&absent), "each store is a cache of its own");
+        assert!(later.get(&absent).is_none());
+        assert!(later.failed(&absent));
     }
 
     #[test]
