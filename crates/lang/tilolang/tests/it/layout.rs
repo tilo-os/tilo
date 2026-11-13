@@ -12,176 +12,181 @@ fn contains(wasm: &[u8], needle: &str) -> bool {
     wasm.windows(needle.len()).any(|w| w == needle.as_bytes())
 }
 
-#[test]
-fn the_layout_examples_compile_and_validate() {
-    let c = compile_body(LIBRARY);
-    validate(&c.wasm);
-}
+tilo_test_env::scenario! {
+    /// `space`, unit literals, layout primitives and sizing arguments.
+    fn layout_units_space_options_and_embeds_compile_to_props;
 
-#[test]
-fn units_become_unit_tagged_float_props() {
-    let c = compile_body(LIBRARY);
-    for want in [
-        "min.rem",
-        "min.dp",
-        "max.rem",
-        "aspect",
-        "fill",
-        "lines",
-        "truncate",
-        "at",
-        "bottom_trailing",
-        "distribute",
-        "between",
-        "section",
-    ] {
-        assert!(
-            contains(&c.wasm, want),
-            "{want} is not in the module's strings"
-        );
+    phase the_layout_examples_compile_and_validate;
+    {
+        let c = compile_body(LIBRARY);
+        validate(&c.wasm);
     }
-}
 
-#[test]
-fn space_reads_use_the_space_imports() {
-    let c = compile_body(LIBRARY);
-    let mut names = Vec::new();
-    for p in wasmparser::Parser::new(0).parse_all(&c.wasm) {
-        if let wasmparser::Payload::ImportSection(r) = p.expect("parses") {
-            names.extend(
-                r.into_imports()
-                    .map(|i| i.expect("import").name.to_string()),
+    phase units_become_unit_tagged_float_props;
+    {
+        let c = compile_body(LIBRARY);
+        for want in [
+            "min.rem",
+            "min.dp",
+            "max.rem",
+            "aspect",
+            "fill",
+            "lines",
+            "truncate",
+            "at",
+            "bottom_trailing",
+            "distribute",
+            "between",
+            "section",
+        ] {
+            assert!(
+                contains(&c.wasm, want),
+                "{want} is not in the module's strings"
             );
         }
     }
-    assert!(
-        names.contains(&"space_i".to_string()) && names.contains(&"space_f".to_string()),
-        "{names:?}"
-    );
-    assert!(names.contains(&"ui_prop_f".to_string()));
-}
 
-#[test]
-fn space_is_only_for_views() {
-    let got = codes("fn f() -> Bool {\n    return space.compact\n}");
-    assert_eq!(got, vec!["E064"]);
-    assert_eq!(
-        codes("view v() {\n    if space.nothing {\n        spacer\n    }\n}"),
-        vec!["E021"]
-    );
-}
-
-// USER REQUIREMENT (2026-10-20): "layout/UI arguments become typed enums declared by the
-// primitives (`gap: .section`, `align: .center`, ...); bare words are no longer accepted there
-// (error suggesting the dot form). Unit literals (11rem) and flags stay."
-#[test]
-fn options_are_dot_literals_of_the_primitives_enums() {
-    assert!(
-        codes("view v() {\n    row(gap: .tight, align: .center, distribute: .between) {\n        spacer\n    }\n}")
-            .is_empty()
-    );
-    assert!(
-        codes("view v(b: Bool) {\n    stack(gap: if b { .tight } else { .group }) {\n        text(\"x\", role: .title)\n        text(\"y\", role: .caption, truncate, min: 11rem)\n    }\n}")
-            .is_empty(),
-        "an option can be chosen at run time; flags and units stay"
-    );
-    assert_eq!(
-        codes("view v() {\n    row(gap: tight) {\n        spacer\n    }\n}"),
-        vec!["E065"]
-    );
-    assert_eq!(
-        codes("view v() {\n    row(align: .middle) {\n        spacer\n    }\n}"),
-        vec!["E036"],
-        "an option outside the primitive's enum is refused"
-    );
-    assert_eq!(
-        codes("fn f() -> Int {\n    let x = tight\n    return 1\n}"),
-        vec!["E014"]
-    );
-}
-
-/// A text's role reaches the host as the toolkit's `Text` role it names, and `numeric` sets it
-/// in tabular figures.
-#[test]
-fn a_chosen_option_reaches_the_host_as_its_name() {
-    let c = compile_body(
-        "view v(b: Bool) {\n    text(\"x\", role: if b { .title } else { .caption }, numeric: true)\n}",
-    );
-    validate(&c.wasm);
-    for want in ["numeric", "caption", "title", "ui.Text"] {
+    phase space_reads_use_the_space_imports;
+    {
+        let c = compile_body(LIBRARY);
+        let mut names = Vec::new();
+        for p in wasmparser::Parser::new(0).parse_all(&c.wasm) {
+            if let wasmparser::Payload::ImportSection(r) = p.expect("parses") {
+                names.extend(
+                    r.into_imports()
+                        .map(|i| i.expect("import").name.to_string()),
+                );
+            }
+        }
         assert!(
-            contains(&c.wasm, want),
-            "{want} is not in the module's strings"
+            names.contains(&"space_i".to_string()) && names.contains(&"space_f".to_string()),
+            "{names:?}"
+        );
+        assert!(names.contains(&"ui_prop_f".to_string()));
+    }
+
+    phase space_is_only_for_views;
+    {
+        let got = codes("fn f() -> Bool {\n    return space.compact\n}");
+        assert_eq!(got, vec!["E064"]);
+        assert_eq!(
+            codes("view v() {\n    if space.nothing {\n        spacer\n    }\n}"),
+            vec!["E021"]
         );
     }
-}
 
-#[test]
-fn unknown_layout_arguments_list_the_valid_ones() {
-    let err = tilolang::compile_package(
-        "app t.x \"X\"\nview v() {\n    grid(nope: 1)\n}\n",
-        &tilolang::IdsLock::new(),
-        &[],
-    )
-    .expect_err("fails");
-    assert_eq!(err[0].code, "E063");
-    assert!(
-        err[0].message.contains("min") && err[0].message.contains("columns"),
-        "{}",
-        err[0].message
-    );
-}
-
-#[test]
-fn min_and_max_need_a_unit() {
-    assert_eq!(codes("view v() {\n    grid(min: 11)\n}"), vec!["E063"]);
-}
-
-#[test]
-fn embed_takes_text_source_a_principal_author_and_emits_one_node() {
-    let c = compile_body(
-        "type M {\n    who: Principal\n    src: Text\n    n: Int\n    run: Option<host.Invocation>\n}\nview v(m: M) {\n    embed(m.src, author: m.who, invocation: m.run)\n}",
-    );
-    validate(&c.wasm);
-    for want in ["embed", "source", "author", "invocation"] {
-        assert!(contains(&c.wasm, want), "{want} is not in the module");
+    phase options_are_dot_literals_of_the_primitives_enums;
+    // USER REQUIREMENT (2026-10-20): "layout/UI arguments become typed enums declared by the
+    // primitives (`gap: .section`, `align: .center`, ...); bare words are no longer accepted there
+    // (error suggesting the dot form). Unit literals (11rem) and flags stay."
+    {
+        assert!(
+            codes("view v() {\n    row(gap: .tight, align: .center, distribute: .between) {\n        spacer\n    }\n}")
+                .is_empty()
+        );
+        assert!(
+            codes("view v(b: Bool) {\n    stack(gap: if b { .tight } else { .group }) {\n        text(\"x\", role: .title)\n        text(\"y\", role: .caption, truncate, min: 11rem)\n    }\n}")
+                .is_empty(),
+            "an option can be chosen at run time; flags and units stay"
+        );
+        assert_eq!(
+            codes("view v() {\n    row(gap: tight) {\n        spacer\n    }\n}"),
+            vec!["E065"]
+        );
+        assert_eq!(
+            codes("view v() {\n    row(align: .middle) {\n        spacer\n    }\n}"),
+            vec!["E036"],
+            "an option outside the primitive's enum is refused"
+        );
+        assert_eq!(
+            codes("fn f() -> Int {\n    let x = tight\n    return 1\n}"),
+            vec!["E014"]
+        );
     }
-    let head = "type M {\n    who: Principal\n    src: Text\n    n: Int\n}\n";
-    assert!(
-        codes(&format!("{head}view v(m: M) {{\n    embed(m.src)\n}}"))
-            .contains(&"E022".to_string()),
-        "an embed without an author is refused"
-    );
-    assert_eq!(
-        codes(&format!(
-            "{head}view v(m: M) {{\n    embed(m.n, author: m.who)\n}}"
-        )),
-        vec!["E020"]
-    );
-    assert_eq!(
-        codes(&format!(
-            "{head}view v(m: M) {{\n    embed(m.src, author: m.src)\n}}"
-        )),
-        vec!["E020"],
-        "text is not a principal"
-    );
-}
 
-#[test]
-fn show_takes_a_resource_and_names_its_view_by_text() {
-    let head = "type P {\n    shown_as: Text\n    n: Int\n}\n";
-    let c = compile_body(&format!(
-        "{head}view v(p: P) {{\n    show(p, view: p.shown_as)\n}}"
-    ));
-    validate(&c.wasm);
-    for want in ["show", "view"] {
-        assert!(contains(&c.wasm, want), "{want} is not in the module");
+    phase a_chosen_option_reaches_the_host_as_its_name;
+    // A text's role reaches the host as the toolkit's `Text` role it names, and `numeric` sets it
+    // in tabular figures.
+    {
+        let c = compile_body(
+            "view v(b: Bool) {\n    text(\"x\", role: if b { .title } else { .caption }, numeric: true)\n}",
+        );
+        validate(&c.wasm);
+        for want in ["numeric", "caption", "title", "ui.Text"] {
+            assert!(
+                contains(&c.wasm, want),
+                "{want} is not in the module's strings"
+            );
+        }
     }
-    assert_eq!(
-        codes(&format!(
-            "{head}view v(p: P) {{\n    show(p, view: p.n)\n}}"
-        )),
-        vec!["E020"],
-        "a view is named by text"
-    );
+
+    phase unknown_layout_arguments_list_the_valid_ones;
+    {
+        let err = tilolang::compile_package(
+            "app t.x \"X\"\nview v() {\n    grid(nope: 1)\n}\n",
+            &tilolang::IdsLock::new(),
+            &[],
+        )
+        .expect_err("fails");
+        assert_eq!(err[0].code, "E063");
+        assert!(
+            err[0].message.contains("min") && err[0].message.contains("columns"),
+            "{}",
+            err[0].message
+        );
+    }
+
+    phase min_and_max_need_a_unit;
+    {
+        assert_eq!(codes("view v() {\n    grid(min: 11)\n}"), vec!["E063"]);
+    }
+
+    phase embed_takes_text_source_a_principal_author_and_emits_one_node;
+    {
+        let c = compile_body(
+            "type M {\n    who: Principal\n    src: Text\n    n: Int\n    run: Option<host.Invocation>\n}\nview v(m: M) {\n    embed(m.src, author: m.who, invocation: m.run)\n}",
+        );
+        validate(&c.wasm);
+        for want in ["embed", "source", "author", "invocation"] {
+            assert!(contains(&c.wasm, want), "{want} is not in the module");
+        }
+        let head = "type M {\n    who: Principal\n    src: Text\n    n: Int\n}\n";
+        assert!(
+            codes(&format!("{head}view v(m: M) {{\n    embed(m.src)\n}}"))
+                .contains(&"E022".to_string()),
+            "an embed without an author is refused"
+        );
+        assert_eq!(
+            codes(&format!(
+                "{head}view v(m: M) {{\n    embed(m.n, author: m.who)\n}}"
+            )),
+            vec!["E020"]
+        );
+        assert_eq!(
+            codes(&format!(
+                "{head}view v(m: M) {{\n    embed(m.src, author: m.src)\n}}"
+            )),
+            vec!["E020"],
+            "text is not a principal"
+        );
+    }
+
+    phase show_takes_a_resource_and_names_its_view_by_text;
+    {
+        let head = "type P {\n    shown_as: Text\n    n: Int\n}\n";
+        let c = compile_body(&format!(
+            "{head}view v(p: P) {{\n    show(p, view: p.shown_as)\n}}"
+        ));
+        validate(&c.wasm);
+        for want in ["show", "view"] {
+            assert!(contains(&c.wasm, want), "{want} is not in the module");
+        }
+        assert_eq!(
+            codes(&format!(
+                "{head}view v(p: P) {{\n    show(p, view: p.n)\n}}"
+            )),
+            vec!["E020"],
+            "a view is named by text"
+        );
+    }
 }

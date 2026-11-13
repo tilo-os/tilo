@@ -467,89 +467,161 @@ mod tests {
     };
     use crate::meta::{PackageMeta, ViewMeta};
 
-    #[test]
-    fn words_that_read_as_code_are_not_names() {
-        for words in [
-            "Note editor for t",
-            "save_draft",
-            "notes.save()",
-            "store::notes",
-        ] {
-            assert!(reads_as_code(words).is_some(), "{words}");
-        }
-        for words in ["Note editor", "Save draft", "X", "A note", "I pinned this"] {
-            assert!(reads_as_code(words).is_none(), "{words}");
-            assert!(views_named_as_code(&alone(words)).is_empty(), "{words}");
-        }
-    }
+    tilo_test_env::scenario! {
+        /// The catalogue of a package's messages: which words are messages, and what a translation of them keeps.
+        fn a_packages_messages_are_its_words_and_their_translations;
 
-    #[test]
-    fn what_an_action_notifies_is_a_message_of_the_action() {
-        let mut meta = PackageMeta::default();
-        let action = serde_json::from_value(serde_json::json!({
-            "id": "7vjyuy7c",
-            "name": "remind",
-            "doc": "",
-            "params": [],
-            "class": "undoable",
-            "reaches": [],
-            "label": "Remind",
-        }))
-        .expect("an action");
-        meta.actions.push(action);
-        meta.words.push(crate::meta::WordMeta {
-            view: "7vjyuy7c".to_owned(),
-            key: "w-due".to_owned(),
-            text: "Due {d}".to_owned(),
-        });
-        let catalogue = source_catalogue(&meta);
-        assert!(catalogue.contains("d-7vjyuy7c = Remind"), "{catalogue}");
-        assert!(catalogue.contains(".w-due = Due { $d }"), "{catalogue}");
-    }
+        phase words_that_read_as_code_are_not_names;
+        {
+            for words in [
+                "Note editor for t",
+                "save_draft",
+                "notes.save()",
+                "store::notes",
+            ] {
+                assert!(reads_as_code(words).is_some(), "{words}");
+            }
+            for words in ["Note editor", "Save draft", "X", "A note", "I pinned this"] {
+                assert!(reads_as_code(words).is_none(), "{words}");
+                assert!(views_named_as_code(&alone(words)).is_empty(), "{words}");
+            }
+        }
 
-    #[test]
-    fn a_types_noun_is_one_of_it_and_several() {
-        let mut meta = PackageMeta::default();
-        for (id, name) in [("t1", "Tasks"), ("t2", "Person"), ("t3", "Today")] {
-            meta.types.push(
-                serde_json::from_value(serde_json::json!({
-                    "id": id,
-                    "name": name,
-                    "doc": "",
-                    "fields": [],
-                }))
-                .expect("a type"),
+        phase what_an_action_notifies_is_a_message_of_the_action;
+        {
+            let mut meta = PackageMeta::default();
+            let action = serde_json::from_value(serde_json::json!({
+                "id": "7vjyuy7c",
+                "name": "remind",
+                "doc": "",
+                "params": [],
+                "class": "undoable",
+                "reaches": [],
+                "label": "Remind",
+            }))
+            .expect("an action");
+            meta.actions.push(action);
+            meta.words.push(crate::meta::WordMeta {
+                view: "7vjyuy7c".to_owned(),
+                key: "w-due".to_owned(),
+                text: "Due {d}".to_owned(),
+            });
+            let catalogue = source_catalogue(&meta);
+            assert!(catalogue.contains("d-7vjyuy7c = Remind"), "{catalogue}");
+            assert!(catalogue.contains(".w-due = Due { $d }"), "{catalogue}");
+        }
+
+        phase a_types_noun_is_one_of_it_and_several;
+        {
+            let mut meta = PackageMeta::default();
+            for (id, name) in [("t1", "Tasks"), ("t2", "Person"), ("t3", "Today")] {
+                meta.types.push(
+                    serde_json::from_value(serde_json::json!({
+                        "id": id,
+                        "name": name,
+                        "doc": "",
+                        "fields": [],
+                    }))
+                    .expect("a type"),
+                );
+            }
+            let catalogue = source_catalogue(&meta);
+            for noun in [
+                "[one] task\n       *[other] tasks",
+                "[one] person\n       *[other] people",
+                "[one] today\n       *[other] today",
+            ] {
+                assert!(catalogue.contains(noun), "{noun} of\n{catalogue}");
+            }
+        }
+
+        phase a_part_a_view_composes_has_no_words_of_its_own;
+        {
+            let mut meta = alone("Note editor");
+            meta.views.push(ViewMeta {
+                id: "editor~row0".to_owned(),
+                row_of: Some("editor".to_owned()),
+                ..alone("Note editor").views[0].clone()
+            });
+            let catalogue = source_catalogue(&meta);
+            assert!(catalogue.contains("= Note editor"), "{catalogue}");
+            assert!(!catalogue.contains("editor-row0"), "{catalogue}");
+            assert!(!catalogue.contains(" for "), "{catalogue}");
+            meta.views[1].name = "Note editor for t".to_owned();
+            assert_eq!(
+                views_named_as_code(&meta).len(),
+                1,
+                "{:?}",
+                views_named_as_code(&meta)
             );
         }
-        let catalogue = source_catalogue(&meta);
-        for noun in [
-            "[one] task\n       *[other] tasks",
-            "[one] person\n       *[other] people",
-            "[one] today\n       *[other] today",
-        ] {
-            assert!(catalogue.contains(noun), "{noun} of\n{catalogue}");
-        }
-    }
 
-    #[test]
-    fn a_part_a_view_composes_has_no_words_of_its_own() {
-        let mut meta = alone("Note editor");
-        meta.views.push(ViewMeta {
-            id: "editor~row0".to_owned(),
-            row_of: Some("editor".to_owned()),
-            ..alone("Note editor").views[0].clone()
-        });
-        let catalogue = source_catalogue(&meta);
-        assert!(catalogue.contains("= Note editor"), "{catalogue}");
-        assert!(!catalogue.contains("editor-row0"), "{catalogue}");
-        assert!(!catalogue.contains(" for "), "{catalogue}");
-        meta.views[1].name = "Note editor for t".to_owned();
-        assert_eq!(
-            views_named_as_code(&meta).len(),
-            1,
-            "{:?}",
-            views_named_as_code(&meta)
-        );
+        phase a_translation_of_words_gone_from_the_source_is_stale;
+        {
+            let source = "d-a = Inbox\n    .w-new = { $n } new\n\nd-b = Notes\n";
+            let translation =
+                "d-a = Eingang\n    .w-new = { $n } neu\n    .w-unread = ungelesen\n\nd-gone = Weg\n";
+            assert_eq!(stale_keys(source, translation), ["d-a.w-unread", "d-gone"]);
+            assert!(stale_keys(source, "# a comment\nd-b = Notizen\n").is_empty());
+        }
+
+        phase pruning_a_translation_drops_the_words_its_source_stopped_saying;
+        {
+            let before = "d-a = Inbox\n    .doc = Mail.\n    .w-new = { $n } new\n\nd-b = Notes\n    .noun = { $count ->\n        [one] notebook\n       *[other] notebooks\n    }\n\nd-c = Title\n    .doc = A title.\n";
+            let after = "d-a = Inbox\n    .doc = Mail.\n\nd-c = Title\n";
+            let gone = gone_keys(before, after);
+            assert_eq!(gone, ["d-a.w-new", "d-b", "d-b.noun", "d-c.doc"]);
+            let translation = "# Deutsch\n\nd-a = Eingang\n    .doc = Post.\n    .w-new = { $n } neu\n\nd-b = Notizen\n    .noun = { $count ->\n        [one] Notizbuch\n       *[other] Notizbücher\n    }\n\nd-c = Titel\n    .doc = { $n ->\n        [one] Ein Titel\n       *[other] Titel\n}\n";
+            assert_eq!(
+                pruned(translation, &gone),
+                "# Deutsch\n\nd-a = Eingang\n    .doc = Post.\n\nd-c = Titel\n"
+            );
+            let own = "d-a = Eingang\n\nd-zzzzzzzz = Etwas\n";
+            assert_eq!(pruned(own, &gone), own);
+        }
+
+        phase a_description_is_the_first_sentence_unwrapped;
+        {
+            assert_eq!(
+                summary("The top bar: the parts\nin their order.\n\nMore."),
+                "The top bar: the parts in their order."
+            );
+            assert_eq!(
+                summary("One dock item, e.g. a tile. Its badge sits on it."),
+                "One dock item, e.g. a tile."
+            );
+            assert_eq!(summary(""), "");
+        }
+
+        phase a_refined_message_is_the_authors;
+        {
+            let committed = "# header\n\n# refined\nd-abc = Notes\n    .noun = { $count ->\n        [one] notebook\n       *[other] notebooks\n    }\n\nd-def = Title\n";
+            let kept = refined_blocks(committed);
+            assert_eq!(kept.len(), 1, "{kept:?}");
+            assert_eq!(kept[0].0, "d-abc");
+            assert!(kept[0].1.contains("notebooks"));
+        }
+
+        phase interpolation_becomes_a_named_variable_and_braces_stay_literal;
+        {
+            assert_eq!(pattern("Open {item.title}"), "Open { $title }");
+            assert_eq!(pattern("{n} new"), "{ $n } new");
+            assert_eq!(variable("count()"), "count");
+            assert_eq!(pattern("a } b"), "a {\"}\"} b");
+            assert_eq!(pattern("[draft]"), "{\"\"}[draft]");
+        }
+
+        phase a_code_sample_in_a_description_is_not_a_variable;
+        {
+            assert_eq!(
+                pattern("Declared one (`view open_threads(m: mail.Mail) { ... }`)"),
+                "Declared one (`view open_threads(m: mail.Mail) {\"{\"} ... {\"}\"}`)"
+            );
+            assert_eq!(
+                pattern("Then `{a.b}` is a value and `{ }` is not."),
+                "Then `{ $b }` is a value and `{\"{\"} {\"}\"}` is not."
+            );
+        }
     }
 
     fn alone(name: &str) -> PackageMeta {
@@ -567,72 +639,5 @@ mod tests {
             show: None,
         });
         meta
-    }
-
-    #[test]
-    fn a_translation_of_words_gone_from_the_source_is_stale() {
-        let source = "d-a = Inbox\n    .w-new = { $n } new\n\nd-b = Notes\n";
-        let translation =
-            "d-a = Eingang\n    .w-new = { $n } neu\n    .w-unread = ungelesen\n\nd-gone = Weg\n";
-        assert_eq!(stale_keys(source, translation), ["d-a.w-unread", "d-gone"]);
-        assert!(stale_keys(source, "# a comment\nd-b = Notizen\n").is_empty());
-    }
-
-    #[test]
-    fn pruning_a_translation_drops_the_words_its_source_stopped_saying() {
-        let before = "d-a = Inbox\n    .doc = Mail.\n    .w-new = { $n } new\n\nd-b = Notes\n    .noun = { $count ->\n        [one] notebook\n       *[other] notebooks\n    }\n\nd-c = Title\n    .doc = A title.\n";
-        let after = "d-a = Inbox\n    .doc = Mail.\n\nd-c = Title\n";
-        let gone = gone_keys(before, after);
-        assert_eq!(gone, ["d-a.w-new", "d-b", "d-b.noun", "d-c.doc"]);
-        let translation = "# Deutsch\n\nd-a = Eingang\n    .doc = Post.\n    .w-new = { $n } neu\n\nd-b = Notizen\n    .noun = { $count ->\n        [one] Notizbuch\n       *[other] Notizbücher\n    }\n\nd-c = Titel\n    .doc = { $n ->\n        [one] Ein Titel\n       *[other] Titel\n}\n";
-        assert_eq!(
-            pruned(translation, &gone),
-            "# Deutsch\n\nd-a = Eingang\n    .doc = Post.\n\nd-c = Titel\n"
-        );
-        let own = "d-a = Eingang\n\nd-zzzzzzzz = Etwas\n";
-        assert_eq!(pruned(own, &gone), own);
-    }
-
-    #[test]
-    fn a_description_is_the_first_sentence_unwrapped() {
-        assert_eq!(
-            summary("The top bar: the parts\nin their order.\n\nMore."),
-            "The top bar: the parts in their order."
-        );
-        assert_eq!(
-            summary("One dock item, e.g. a tile. Its badge sits on it."),
-            "One dock item, e.g. a tile."
-        );
-        assert_eq!(summary(""), "");
-    }
-
-    #[test]
-    fn a_refined_message_is_the_authors() {
-        let committed = "# header\n\n# refined\nd-abc = Notes\n    .noun = { $count ->\n        [one] notebook\n       *[other] notebooks\n    }\n\nd-def = Title\n";
-        let kept = refined_blocks(committed);
-        assert_eq!(kept.len(), 1, "{kept:?}");
-        assert_eq!(kept[0].0, "d-abc");
-        assert!(kept[0].1.contains("notebooks"));
-    }
-
-    #[test]
-    fn interpolation_becomes_a_named_variable_and_braces_stay_literal() {
-        assert_eq!(pattern("Open {item.title}"), "Open { $title }");
-        assert_eq!(pattern("{n} new"), "{ $n } new");
-        assert_eq!(variable("count()"), "count");
-        assert_eq!(pattern("a } b"), "a {\"}\"} b");
-        assert_eq!(pattern("[draft]"), "{\"\"}[draft]");
-    }
-
-    #[test]
-    fn a_code_sample_in_a_description_is_not_a_variable() {
-        assert_eq!(
-            pattern("Declared one (`view open_threads(m: mail.Mail) { ... }`)"),
-            "Declared one (`view open_threads(m: mail.Mail) {\"{\"} ... {\"}\"}`)"
-        );
-        assert_eq!(
-            pattern("Then `{a.b}` is a value and `{ }` is not."),
-            "Then `{ $b }` is a value and `{\"{\"} {\"}\"}` is not."
-        );
     }
 }

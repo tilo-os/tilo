@@ -616,185 +616,190 @@ mod tests {
         read(text).1
     }
 
-    #[test]
-    fn now_is_a_thursday_morning_in_berlin() {
-        assert_eq!(crate::calendar::time_text(NOW), "2026-10-29T07:00:00Z");
-    }
+    tilo_test_env::scenario! {
+        /// Days and times read out of what a person writes.
+        fn days_and_times_are_read_from_what_a_person_writes;
 
-    #[test]
-    fn a_day_and_a_time_come_out_of_the_title() {
-        assert_eq!(
-            read("Call the landlord tomorrow 9am"),
-            (
-                "Call the landlord".into(),
-                Some("2026-10-30".into()),
-                Some("2026-10-30T08:00:00Z".into())
-            )
-        );
-        assert_eq!(
-            read("Standup on Mon at 9:30"),
-            (
-                "Standup".into(),
-                Some("2026-11-02".into()),
-                Some("2026-11-02T08:30:00Z".into())
-            )
-        );
-        assert_eq!(
-            read("Pay rent due the 1st"),
-            ("Pay rent".into(), Some("2026-11-01".into()), None)
-        );
-        assert_eq!(
-            read("Buy milk"),
-            ("Buy milk".into(), None, None),
-            "nothing said when"
-        );
-    }
+        phase now_is_a_thursday_morning_in_berlin;
+        {
+            assert_eq!(crate::calendar::time_text(NOW), "2026-10-29T07:00:00Z");
+        }
 
-    #[test]
-    fn days_are_read_against_today() {
-        assert_eq!(day("x today"), Some("2026-10-29".into()));
-        assert_eq!(day("x tmrw"), Some("2026-10-30".into()));
-        assert_eq!(day("x friday"), Some("2026-10-30".into()));
-        assert_eq!(day("x thursday"), Some("2026-11-05".into()), "not today");
-        assert_eq!(day("x next tue"), Some("2026-11-03".into()));
-        assert_eq!(day("x next week"), Some("2026-11-02".into()));
-        assert_eq!(day("x this weekend"), Some("2026-10-31".into()));
-        assert_eq!(day("x in 3 days"), Some("2026-11-01".into()));
-        assert_eq!(day("x in a week"), Some("2026-11-05".into()));
-        assert_eq!(day("x in 2 weeks"), Some("2026-11-12".into()));
-        assert_eq!(day("x nov 2"), Some("2026-11-02".into()));
-        assert_eq!(day("x 24 december"), Some("2026-12-24".into()));
-        assert_eq!(
-            day("x oct 1"),
-            Some("2027-10-01".into()),
-            "passed this year"
-        );
-        assert_eq!(day("x 2026-12-31"), Some("2026-12-31".into()));
-    }
+        phase a_day_and_a_time_come_out_of_the_title;
+        {
+            assert_eq!(
+                read("Call the landlord tomorrow 9am"),
+                (
+                    "Call the landlord".into(),
+                    Some("2026-10-30".into()),
+                    Some("2026-10-30T08:00:00Z".into())
+                )
+            );
+            assert_eq!(
+                read("Standup on Mon at 9:30"),
+                (
+                    "Standup".into(),
+                    Some("2026-11-02".into()),
+                    Some("2026-11-02T08:30:00Z".into())
+                )
+            );
+            assert_eq!(
+                read("Pay rent due the 1st"),
+                ("Pay rent".into(), Some("2026-11-01".into()), None)
+            );
+            assert_eq!(
+                read("Buy milk"),
+                ("Buy milk".into(), None, None),
+                "nothing said when"
+            );
+        }
 
-    #[test]
-    fn a_time_alone_is_the_next_one_to_come() {
-        assert_eq!(read("x 5pm").2, Some("2026-10-29T16:00:00Z".into()));
-        assert_eq!(
-            read("x 7:30").2,
-            Some("2026-10-30T06:30:00Z".into()),
-            "passed"
-        );
-        assert_eq!(read("x at 9").2, Some("2026-10-29T08:00:00Z".into()));
-        assert_eq!(read("x noon").2, Some("2026-10-29T11:00:00Z".into()));
-        assert_eq!(read("x tonight").2, Some("2026-10-29T19:00:00Z".into()));
-        assert_eq!(
-            read("x this evening").2,
-            Some("2026-10-29T17:00:00Z".into()),
-            "this evening is today's, as tonight is"
-        );
-    }
+        phase days_are_read_against_today;
+        {
+            assert_eq!(day("x today"), Some("2026-10-29".into()));
+            assert_eq!(day("x tmrw"), Some("2026-10-30".into()));
+            assert_eq!(day("x friday"), Some("2026-10-30".into()));
+            assert_eq!(day("x thursday"), Some("2026-11-05".into()), "not today");
+            assert_eq!(day("x next tue"), Some("2026-11-03".into()));
+            assert_eq!(day("x next week"), Some("2026-11-02".into()));
+            assert_eq!(day("x this weekend"), Some("2026-10-31".into()));
+            assert_eq!(day("x in 3 days"), Some("2026-11-01".into()));
+            assert_eq!(day("x in a week"), Some("2026-11-05".into()));
+            assert_eq!(day("x in 2 weeks"), Some("2026-11-12".into()));
+            assert_eq!(day("x nov 2"), Some("2026-11-02".into()));
+            assert_eq!(day("x 24 december"), Some("2026-12-24".into()));
+            assert_eq!(
+                day("x oct 1"),
+                Some("2027-10-01".into()),
+                "passed this year"
+            );
+            assert_eq!(day("x 2026-12-31"), Some("2026-12-31".into()));
+        }
 
-    #[test]
-    fn an_hour_of_the_day_reads_to_its_time() {
-        assert_eq!(
-            read("x tomorrow morning"),
-            (
-                "x".into(),
-                Some("2026-10-30".into()),
-                Some("2026-10-30T08:00:00Z".into())
-            )
-        );
-        assert_eq!(
-            read("x tomorrow evening").2,
-            Some("2026-10-30T17:00:00Z".into())
-        );
-        assert_eq!(
-            read("x friday afternoon").2,
-            Some("2026-10-30T13:00:00Z".into())
-        );
-    }
+        phase a_time_alone_is_the_next_one_to_come;
+        {
+            assert_eq!(read("x 5pm").2, Some("2026-10-29T16:00:00Z".into()));
+            assert_eq!(
+                read("x 7:30").2,
+                Some("2026-10-30T06:30:00Z".into()),
+                "passed"
+            );
+            assert_eq!(read("x at 9").2, Some("2026-10-29T08:00:00Z".into()));
+            assert_eq!(read("x noon").2, Some("2026-10-29T11:00:00Z".into()));
+            assert_eq!(read("x tonight").2, Some("2026-10-29T19:00:00Z".into()));
+            assert_eq!(
+                read("x this evening").2,
+                Some("2026-10-29T17:00:00Z".into()),
+                "this evening is today's, as tonight is"
+            );
+        }
 
-    #[test]
-    fn later_is_a_couple_of_hours_on_the_quarter_hour() {
-        assert_eq!(
-            dated("later today", NOW, BERLIN),
-            Dated {
-                text: "later today".into(),
-                day: Some("2026-10-29".into()),
-                at: Some("2026-10-29T09:00:00Z".into()),
-            },
-            "two hours on, on the quarter hour"
-        );
-        assert_eq!(
-            read("x later").2,
-            Some("2026-10-29T09:00:00Z".into()),
-            "later"
-        );
-        assert_eq!(
-            read("x later today").2,
-            Some("2026-10-29T09:00:00Z".into()),
-            "later today"
-        );
-    }
+        phase an_hour_of_the_day_reads_to_its_time;
+        {
+            assert_eq!(
+                read("x tomorrow morning"),
+                (
+                    "x".into(),
+                    Some("2026-10-30".into()),
+                    Some("2026-10-30T08:00:00Z".into())
+                )
+            );
+            assert_eq!(
+                read("x tomorrow evening").2,
+                Some("2026-10-30T17:00:00Z".into())
+            );
+            assert_eq!(
+                read("x friday afternoon").2,
+                Some("2026-10-30T13:00:00Z".into())
+            );
+        }
 
-    #[test]
-    fn words_that_only_look_like_dates_stay() {
-        assert_eq!(read("Read 3 chapters").0, "Read 3 chapters");
-        assert_eq!(read("Buy sun cream"), ("Buy sun cream".into(), None, None));
-        assert_eq!(day("Picnic on sat"), Some("2026-10-31".into()));
-        assert_eq!(day("Picnic next sun"), Some("2026-11-01".into()));
-        assert_eq!(read("Book flights in march").0, "Book flights in march");
-        assert_eq!(
-            read("tomorrow").0,
-            "tomorrow",
-            "an entry that is only a date keeps it"
-        );
-    }
+        phase later_is_a_couple_of_hours_on_the_quarter_hour;
+        {
+            assert_eq!(
+                dated("later today", NOW, BERLIN),
+                Dated {
+                    text: "later today".into(),
+                    day: Some("2026-10-29".into()),
+                    at: Some("2026-10-29T09:00:00Z".into()),
+                },
+                "two hours on, on the quarter hour"
+            );
+            assert_eq!(
+                read("x later").2,
+                Some("2026-10-29T09:00:00Z".into()),
+                "later"
+            );
+            assert_eq!(
+                read("x later today").2,
+                Some("2026-10-29T09:00:00Z".into()),
+                "later today"
+            );
+        }
 
-    #[test]
-    fn german_says_the_same_days_in_its_own_words() {
-        let de = |text: &str| {
-            let Dated { text, day, at } = dated_lang(text, NOW, BERLIN, Language::German);
-            (text, day, at)
-        };
-        assert_eq!(
-            de("Vermieter anrufen morgen 10 uhr"),
-            (
-                "Vermieter anrufen".into(),
-                Some("2026-10-30".into()),
-                Some("2026-10-30T09:00:00Z".into())
-            )
-        );
-        assert_eq!(
-            de("Umzug am Fr um 9"),
-            (
-                "Umzug".into(),
-                Some("2026-10-30".into()),
-                Some("2026-10-30T08:00:00Z".into())
-            )
-        );
-        assert_eq!(
-            de("Miete übermorgen"),
-            ("Miete".into(), Some("2026-10-31".into()), None)
-        );
-        assert_eq!(
-            de("Wohnung nächste woche"),
-            ("Wohnung".into(), Some("2026-11-02".into()), None)
-        );
-        assert_eq!(
-            de("Termin 3. dezember"),
-            ("Termin".into(), Some("2026-12-03".into()), None)
-        );
-        assert_eq!(
-            de("Kaffee"),
-            ("Kaffee".into(), None, None),
-            "nothing said when"
-        );
-    }
+        phase words_that_only_look_like_dates_stay;
+        {
+            assert_eq!(read("Read 3 chapters").0, "Read 3 chapters");
+            assert_eq!(read("Buy sun cream"), ("Buy sun cream".into(), None, None));
+            assert_eq!(day("Picnic on sat"), Some("2026-10-31".into()));
+            assert_eq!(day("Picnic next sun"), Some("2026-11-01".into()));
+            assert_eq!(read("Book flights in march").0, "Book flights in march");
+            assert_eq!(
+                read("tomorrow").0,
+                "tomorrow",
+                "an entry that is only a date keeps it"
+            );
+        }
 
-    #[test]
-    fn a_day_reads_as_the_person_says_it() {
-        use super::day_label;
-        assert_eq!(day_label(20_755, 20_755, Language::English), "Today");
-        assert_eq!(day_label(20_756, 20_755, Language::English), "Tomorrow");
-        assert_eq!(day_label(20_757, 20_755, Language::English), "Sat 31 Oct");
-        assert_eq!(day_label(20_755, 20_755, Language::German), "Heute");
-        assert_eq!(day_label(20_757, 20_755, Language::German), "Sa 31. Okt.");
+        phase german_says_the_same_days_in_its_own_words;
+        {
+            let de = |text: &str| {
+                let Dated { text, day, at } = dated_lang(text, NOW, BERLIN, Language::German);
+                (text, day, at)
+            };
+            assert_eq!(
+                de("Vermieter anrufen morgen 10 uhr"),
+                (
+                    "Vermieter anrufen".into(),
+                    Some("2026-10-30".into()),
+                    Some("2026-10-30T09:00:00Z".into())
+                )
+            );
+            assert_eq!(
+                de("Umzug am Fr um 9"),
+                (
+                    "Umzug".into(),
+                    Some("2026-10-30".into()),
+                    Some("2026-10-30T08:00:00Z".into())
+                )
+            );
+            assert_eq!(
+                de("Miete übermorgen"),
+                ("Miete".into(), Some("2026-10-31".into()), None)
+            );
+            assert_eq!(
+                de("Wohnung nächste woche"),
+                ("Wohnung".into(), Some("2026-11-02".into()), None)
+            );
+            assert_eq!(
+                de("Termin 3. dezember"),
+                ("Termin".into(), Some("2026-12-03".into()), None)
+            );
+            assert_eq!(
+                de("Kaffee"),
+                ("Kaffee".into(), None, None),
+                "nothing said when"
+            );
+        }
+
+        phase a_day_reads_as_the_person_says_it;
+        {
+            use super::day_label;
+            assert_eq!(day_label(20_755, 20_755, Language::English), "Today");
+            assert_eq!(day_label(20_756, 20_755, Language::English), "Tomorrow");
+            assert_eq!(day_label(20_757, 20_755, Language::English), "Sat 31 Oct");
+            assert_eq!(day_label(20_755, 20_755, Language::German), "Heute");
+            assert_eq!(day_label(20_757, 20_755, Language::German), "Sa 31. Okt.");
+        }
     }
 }

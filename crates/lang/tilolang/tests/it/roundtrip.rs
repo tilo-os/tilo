@@ -107,81 +107,146 @@ fn print_of(src: &str) -> String {
     print_module(&parse(src).unwrap_or_else(|d| panic!("{d:#?}")))
 }
 
-#[test]
-fn printing_is_idempotent_on_the_demo() {
-    let once = print_of(DEMO);
-    let twice = print_of(&once);
-    assert_eq!(once, twice);
-}
+tilo_test_env::scenario! {
+    /// The printer: canonical text that parses back, with ids, spans and the app header's facts.
+    fn printing_is_canonical_and_parses_back_to_the_same_tree;
 
-#[test]
-fn printed_text_parses_to_the_same_tree() {
-    let a = parse(DEMO).expect("demo parses");
-    let b = parse(&print_module(&a)).expect("printed demo parses");
-    assert_eq!(print_module(&a), print_module(&b));
-    assert_eq!(a.items.len(), b.items.len());
-}
-
-#[test]
-fn fixtures_are_canonical() {
-    for name in ["counter.tl", "todo.tl", "cleanup.tl"] {
-        let src = fixture(name);
-        assert_eq!(print_of(&src), src, "{name} is not in canonical form");
+    phase printing_is_idempotent_on_the_demo;
+    {
+        let once = print_of(DEMO);
+        let twice = print_of(&once);
+        assert_eq!(once, twice);
     }
-}
 
-#[test]
-fn precedence_and_parentheses_survive() {
-    let src = "app t.x \"X\"\n\nfn f(a: Int, b: Int) -> Int {\n    return (a + b) * (a - b) / -(a % b)\n}\n";
-    assert_eq!(print_of(src), src);
-}
+    phase printed_text_parses_to_the_same_tree;
+    {
+        let a = parse(DEMO).expect("demo parses");
+        let b = parse(&print_module(&a)).expect("printed demo parses");
+        assert_eq!(print_module(&a), print_module(&b));
+        assert_eq!(a.items.len(), b.items.len());
+    }
 
-#[test]
-fn a_parameter_marker_prints_as_it_is_written() {
-    let src = "app t.x \"X\"\n\ntype Item {\n    title: Text\n    saved: Bool\n}\n\naction move(i: Item, above: Option<Item> (above)) {\n    i.title = \"x\"\n}\n\naction keep(i: Item, saved: Bool (label: \"On the Watch later list\") = not i.saved) {\n    i.saved = saved\n}\n";
-    assert_eq!(print_of(src), src);
-}
-
-#[test]
-fn doc_comments_are_kept() {
-    let out = print_of(&fixture("counter.tl"));
-    assert!(out.contains("/// Add one to the counter."));
-    assert!(out.contains("/// The current value."));
-}
-
-#[test]
-fn comments_are_dropped_and_continuation_lines_join() {
-    let src = "app t.x \"X\"\n// gone\nfn f(l: List<Int>) -> Int {\n    return l\n        .filter(x -> x > 1)\n        .count(x -> true)\n}\n";
-    let out = print_of(src);
-    assert!(
-        out.contains("return l.filter(x -> x > 1).count(x -> true)"),
-        "{out}"
-    );
-    assert!(!out.contains("gone"));
-}
-
-#[test]
-fn every_declaration_and_ui_call_has_an_id_and_a_span() {
-    let m = parse(&fixture("todo.tl")).expect("parses");
-    let mut ids = std::collections::BTreeSet::new();
-    for item in &m.items {
-        match item {
-            tilolang::ast::Item::Type(t) => {
-                assert!(ids.insert(t.node));
-                for f in &t.fields {
-                    assert!(ids.insert(f.node));
-                    assert!(f.span.end > f.span.start);
-                }
-            }
-            tilolang::ast::Item::Action(a) => {
-                assert!(ids.insert(a.node) && a.span.end > a.span.start);
-            }
-            tilolang::ast::Item::Fn(f) => assert!(ids.insert(f.node)),
-            tilolang::ast::Item::View(v) => assert!(ids.insert(v.node)),
-            _ => {}
+    phase fixtures_are_canonical;
+    {
+        for name in ["counter.tl", "todo.tl", "cleanup.tl"] {
+            let src = fixture(name);
+            assert_eq!(print_of(&src), src, "{name} is not in canonical form");
         }
     }
-    assert!(ids.len() > 8);
+
+    phase precedence_and_parentheses_survive;
+    {
+        let src = "app t.x \"X\"\n\nfn f(a: Int, b: Int) -> Int {\n    return (a + b) * (a - b) / -(a % b)\n}\n";
+        assert_eq!(print_of(src), src);
+    }
+
+    phase a_parameter_marker_prints_as_it_is_written;
+    {
+        let src = "app t.x \"X\"\n\ntype Item {\n    title: Text\n    saved: Bool\n}\n\naction move(i: Item, above: Option<Item> (above)) {\n    i.title = \"x\"\n}\n\naction keep(i: Item, saved: Bool (label: \"On the Watch later list\") = not i.saved) {\n    i.saved = saved\n}\n";
+        assert_eq!(print_of(src), src);
+    }
+
+    phase doc_comments_are_kept;
+    {
+        let out = print_of(&fixture("counter.tl"));
+        assert!(out.contains("/// Add one to the counter."));
+        assert!(out.contains("/// The current value."));
+    }
+
+    phase comments_are_dropped_and_continuation_lines_join;
+    {
+        let src = "app t.x \"X\"\n// gone\nfn f(l: List<Int>) -> Int {\n    return l\n        .filter(x -> x > 1)\n        .count(x -> true)\n}\n";
+        let out = print_of(src);
+        assert!(
+            out.contains("return l.filter(x -> x > 1).count(x -> true)"),
+            "{out}"
+        );
+        assert!(!out.contains("gone"));
+    }
+
+    phase every_declaration_and_ui_call_has_an_id_and_a_span;
+    {
+        let m = parse(&fixture("todo.tl")).expect("parses");
+        let mut ids = std::collections::BTreeSet::new();
+        for item in &m.items {
+            match item {
+                tilolang::ast::Item::Type(t) => {
+                    assert!(ids.insert(t.node));
+                    for f in &t.fields {
+                        assert!(ids.insert(f.node));
+                        assert!(f.span.end > f.span.start);
+                    }
+                }
+                tilolang::ast::Item::Action(a) => {
+                    assert!(ids.insert(a.node) && a.span.end > a.span.start);
+                }
+                tilolang::ast::Item::Fn(f) => assert!(ids.insert(f.node)),
+                tilolang::ast::Item::View(v) => assert!(ids.insert(v.node)),
+                _ => {}
+            }
+        }
+        assert!(ids.len() > 8);
+    }
+
+    phase the_native_vocabulary_is_canonical_and_round_trips;
+    {
+        assert_eq!(print_of(NATIVE), NATIVE);
+        crate::common::compile(NATIVE);
+        let a = parse(NATIVE).expect("parses");
+        let b = parse(&print_module(&a)).expect("printed text parses");
+        assert_eq!(print_module(&a), print_module(&b));
+    }
+
+    phase facts_on_one_line_and_lists_in_braces_print_canonically;
+    {
+        let src = "app t.x \"X\"\nview v(l: L) {\n    facts(l) { text(\"a\") }\n    list(l.items) { i -> text(i.t) }\n}\n";
+        let want = "app t.x \"X\"\n\nview v(l: L) {\n    facts(l) {\n        text(\"a\")\n    }\n    list(l.items) { i ->\n        text(i.t)\n    }\n}\n";
+        assert_eq!(print_of(src), want);
+    }
+
+    phase the_app_header_names_the_ids_the_app_had_before_and_they_reach_the_metadata;
+    {
+        let src = "app so.tilo.lang.tasks \"Tasks\" (category: .office, previously: so.tilo.lang.todo)\n\ntype N {\n    a: Int\n}\n";
+        let module = parse(src).expect("parses");
+        assert_eq!(module.app.previously, vec!["so.tilo.lang.todo".to_owned()]);
+        assert_eq!(print_module(&module), src);
+        let compiled = crate::common::compile_with(src, &[]).expect("compiles");
+        assert_eq!(
+            compiled.meta.previously,
+            vec!["so.tilo.lang.todo".to_owned()]
+        );
+        let several = "app so.tilo.lang.tasks \"Tasks\" (previously: [so.tilo.lang.todo, so.tilo.todo])\n\ntype N {\n    a: Int\n}\n";
+        let module = parse(several).expect("parses");
+        assert_eq!(module.app.previously.len(), 2);
+        assert_eq!(print_module(&module), several);
+    }
+
+    phase the_app_header_names_its_icon_and_category_and_they_reach_the_metadata;
+    {
+        let src = "app so.tilo.lang.notes \"Notes\" (icon: .file_text, category: .office)\n\ntype N {\n    a: Int\n}\n";
+        let module = parse(src).expect("parses");
+        assert_eq!(module.app.icon.as_deref(), Some("file_text"));
+        assert_eq!(module.app.category.as_deref(), Some("office"));
+        assert_eq!(
+            print_module(&module),
+            src,
+            "the canonical form keeps the options"
+        );
+        let compiled = crate::common::compile_with(src, &[]).expect("compiles");
+        assert_eq!(compiled.meta.icon.as_deref(), Some("file_text"));
+        assert_eq!(compiled.meta.category.as_deref(), Some("office"));
+        let plain = crate::common::compile_with("app t.x \"X\"\ntype N {\n    a: Int\n}\n", &[])
+            .expect("compiles");
+        assert_eq!((plain.meta.icon, plain.meta.category), (None, None));
+        for bad in [
+            "app t.x \"X\" (category: .weird)\n",
+            "app t.x \"X\" (colour: .red)\n",
+            "app t.x \"X\" (icon: .a, icon: .b)\n",
+            "app t.x \"X\" (icon: \"a.svg\")\n",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+    }
 }
 
 /// Every construct of the native vocabulary, in canonical form.
@@ -252,63 +317,3 @@ scenario "a week of notes" {
     invoke(new_note(nb), by: mia)
 }
 "#;
-
-#[test]
-fn the_native_vocabulary_is_canonical_and_round_trips() {
-    assert_eq!(print_of(NATIVE), NATIVE);
-    crate::common::compile(NATIVE);
-    let a = parse(NATIVE).expect("parses");
-    let b = parse(&print_module(&a)).expect("printed text parses");
-    assert_eq!(print_module(&a), print_module(&b));
-}
-
-#[test]
-fn facts_on_one_line_and_lists_in_braces_print_canonically() {
-    let src = "app t.x \"X\"\nview v(l: L) {\n    facts(l) { text(\"a\") }\n    list(l.items) { i -> text(i.t) }\n}\n";
-    let want = "app t.x \"X\"\n\nview v(l: L) {\n    facts(l) {\n        text(\"a\")\n    }\n    list(l.items) { i ->\n        text(i.t)\n    }\n}\n";
-    assert_eq!(print_of(src), want);
-}
-
-#[test]
-fn the_app_header_names_the_ids_the_app_had_before_and_they_reach_the_metadata() {
-    let src = "app so.tilo.lang.tasks \"Tasks\" (category: .office, previously: so.tilo.lang.todo)\n\ntype N {\n    a: Int\n}\n";
-    let module = parse(src).expect("parses");
-    assert_eq!(module.app.previously, vec!["so.tilo.lang.todo".to_owned()]);
-    assert_eq!(print_module(&module), src);
-    let compiled = crate::common::compile_with(src, &[]).expect("compiles");
-    assert_eq!(
-        compiled.meta.previously,
-        vec!["so.tilo.lang.todo".to_owned()]
-    );
-    let several = "app so.tilo.lang.tasks \"Tasks\" (previously: [so.tilo.lang.todo, so.tilo.todo])\n\ntype N {\n    a: Int\n}\n";
-    let module = parse(several).expect("parses");
-    assert_eq!(module.app.previously.len(), 2);
-    assert_eq!(print_module(&module), several);
-}
-
-#[test]
-fn the_app_header_names_its_icon_and_category_and_they_reach_the_metadata() {
-    let src = "app so.tilo.lang.notes \"Notes\" (icon: .file_text, category: .office)\n\ntype N {\n    a: Int\n}\n";
-    let module = parse(src).expect("parses");
-    assert_eq!(module.app.icon.as_deref(), Some("file_text"));
-    assert_eq!(module.app.category.as_deref(), Some("office"));
-    assert_eq!(
-        print_module(&module),
-        src,
-        "the canonical form keeps the options"
-    );
-    let compiled = crate::common::compile_with(src, &[]).expect("compiles");
-    assert_eq!(compiled.meta.icon.as_deref(), Some("file_text"));
-    assert_eq!(compiled.meta.category.as_deref(), Some("office"));
-    let plain = crate::common::compile_with("app t.x \"X\"\ntype N {\n    a: Int\n}\n", &[])
-        .expect("compiles");
-    assert_eq!((plain.meta.icon, plain.meta.category), (None, None));
-    for bad in [
-        "app t.x \"X\" (category: .weird)\n",
-        "app t.x \"X\" (colour: .red)\n",
-        "app t.x \"X\" (icon: .a, icon: .b)\n",
-        "app t.x \"X\" (icon: \"a.svg\")\n",
-    ] {
-        assert!(parse(bad).is_err(), "{bad}");
-    }
-}

@@ -575,56 +575,61 @@ mod tests {
         })
     }
 
-    #[test]
-    fn a_predicate_compares_an_items_fields_with_literals() {
-        let open_and_voted = Pred::And(vec![
-            Pred::Not(Box::new(Pred::Cmp(
-                CmpOp::Eq,
-                field("done"),
-                Operand::Lit(Lit::Bool(true)),
-            ))),
-            Pred::Cmp(CmpOp::Ge, field("votes"), Operand::Lit(Lit::Int(2))),
-        ]);
-        let item = |done, votes| [("done", Lit::Bool(done)), ("votes", Lit::Int(votes))];
-        assert_eq!(eval(&open_and_voted, &item(false, 2)), Ok(true));
-        assert_eq!(eval(&open_and_voted, &item(false, 1)), Ok(false));
-        assert_eq!(eval(&open_and_voted, &item(true, 9)), Ok(false));
-        assert_eq!(open_and_voted.fields(), [&"done", &"votes"]);
+    tilo_test_env::scenario! {
+        /// A predicate over an item's fields.
+        fn a_predicate_compares_the_fields_it_resolves;
 
-        let titled = Pred::Or(vec![
-            Pred::Const(false),
-            Pred::Cmp(
-                CmpOp::Ne,
+        phase a_predicate_compares_an_items_fields_with_literals;
+        {
+            let open_and_voted = Pred::And(vec![
+                Pred::Not(Box::new(Pred::Cmp(
+                    CmpOp::Eq,
+                    field("done"),
+                    Operand::Lit(Lit::Bool(true)),
+                ))),
+                Pred::Cmp(CmpOp::Ge, field("votes"), Operand::Lit(Lit::Int(2))),
+            ]);
+            let item = |done, votes| [("done", Lit::Bool(done)), ("votes", Lit::Int(votes))];
+            assert_eq!(eval(&open_and_voted, &item(false, 2)), Ok(true));
+            assert_eq!(eval(&open_and_voted, &item(false, 1)), Ok(false));
+            assert_eq!(eval(&open_and_voted, &item(true, 9)), Ok(false));
+            assert_eq!(open_and_voted.fields(), [&"done", &"votes"]);
+
+            let titled = Pred::Or(vec![
+                Pred::Const(false),
+                Pred::Cmp(
+                    CmpOp::Ne,
+                    field("title"),
+                    Operand::Lit(Lit::Text("x".into())),
+                ),
+            ]);
+            assert_eq!(eval(&titled, &[("title", Lit::Text("y".into()))]), Ok(true));
+            assert_eq!(
+                eval(&titled, &[("title", Lit::Text("x".into()))]),
+                Ok(false)
+            );
+        }
+
+        phase text_by_order_or_values_of_two_kinds_do_not_compare;
+        {
+            let ordered = Pred::Cmp(
+                CmpOp::Lt,
                 field("title"),
-                Operand::Lit(Lit::Text("x".into())),
-            ),
-        ]);
-        assert_eq!(eval(&titled, &[("title", Lit::Text("y".into()))]), Ok(true));
-        assert_eq!(
-            eval(&titled, &[("title", Lit::Text("x".into()))]),
-            Ok(false)
-        );
-    }
+                Operand::Lit(Lit::Text("m".into())),
+            );
+            assert!(eval(&ordered, &[("title", Lit::Text("a".into()))]).is_err());
+            let mixed = Pred::Cmp(CmpOp::Eq, field("done"), Operand::Lit(Lit::Int(1)));
+            assert!(eval(&mixed, &[("done", Lit::Bool(true))]).is_err());
+        }
 
-    #[test]
-    fn text_by_order_or_values_of_two_kinds_do_not_compare() {
-        let ordered = Pred::Cmp(
-            CmpOp::Lt,
-            field("title"),
-            Operand::Lit(Lit::Text("m".into())),
-        );
-        assert!(eval(&ordered, &[("title", Lit::Text("a".into()))]).is_err());
-        let mixed = Pred::Cmp(CmpOp::Eq, field("done"), Operand::Lit(Lit::Int(1)));
-        assert!(eval(&mixed, &[("done", Lit::Bool(true))]).is_err());
-    }
-
-    #[test]
-    fn resolving_a_field_that_does_not_resolve_resolves_nothing() {
-        let pred = Pred::Cmp(CmpOp::Eq, field("a"), field("b"));
-        assert_eq!(pred.resolve(&mut |f: &&str| (*f == "a").then_some(1)), None);
-        assert_eq!(
-            pred.resolve(&mut |f: &&str| Some(f.len())),
-            Some(Pred::Cmp(CmpOp::Eq, Operand::Field(1), Operand::Field(1)))
-        );
+        phase resolving_a_field_that_does_not_resolve_resolves_nothing;
+        {
+            let pred = Pred::Cmp(CmpOp::Eq, field("a"), field("b"));
+            assert_eq!(pred.resolve(&mut |f: &&str| (*f == "a").then_some(1)), None);
+            assert_eq!(
+                pred.resolve(&mut |f: &&str| Some(f.len())),
+                Some(Pred::Cmp(CmpOp::Eq, Operand::Field(1), Operand::Field(1)))
+            );
+        }
     }
 }

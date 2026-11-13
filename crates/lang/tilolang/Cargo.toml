@@ -46,6 +46,8 @@ tilo-words = { version = "0.1.0", path = "../../text/tilo-words" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# A subject's cases are the phases of one test (`scenario!`).
+tilo-test-env = { path = "../../dev/test-env" }
 wasmparser = { version = "0.252", default-features = false, features = ["std", "validate", "features", "simd"] }
 
 [lints]

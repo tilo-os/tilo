@@ -115,80 +115,85 @@ pub fn join(pieces: &[&str], sep: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_text_is_counted_in_graphemes() {
-        assert_eq!(len(""), 0);
-        assert_eq!(len("héllo"), 5);
-        assert_eq!(len("e\u{301}"), 1, "a letter and its accent are one");
-        assert_eq!(len("👩‍👩‍👧‍👦"), 1, "a family is one grapheme");
-        assert_eq!(len("🇩🇪!"), 2, "a flag is one");
-        assert_eq!(len("a🇩🇪"), 2);
-    }
+    tilo_test_env::scenario! {
+        /// The methods of a text.
+        fn text_methods_count_cut_and_match_in_graphemes;
 
-    #[test]
-    fn finding_and_cutting_count_the_same_way() {
-        assert_eq!(find("abc", "c"), Some(2));
-        assert_eq!(find("🇩🇪x", "x"), Some(1));
-        assert_eq!(
-            find("e\u{301}x", "x"),
-            Some(1),
-            "an accent makes no second place"
-        );
-        assert_eq!(find("abc", "z"), None);
-        assert_eq!(find("abc", ""), Some(0));
-        assert_eq!(slice("héllo", 1, 3), "él");
-        assert_eq!(slice("👩‍👩‍👧‍👦x", 1, 2), "x", "a cut never splits a grapheme");
-        assert_eq!(slice("abc", 0, 99), "abc", "past the end is the end");
-        assert_eq!(slice("abc", 2, 1), "", "from after to is empty");
-        assert_eq!(slice("abc", -3, 2), "ab", "a negative index is the start");
-    }
+        phase a_text_is_counted_in_graphemes;
+        {
+            assert_eq!(len(""), 0);
+            assert_eq!(len("héllo"), 5);
+            assert_eq!(len("e\u{301}"), 1, "a letter and its accent are one");
+            assert_eq!(len("👩‍👩‍👧‍👦"), 1, "a family is one grapheme");
+            assert_eq!(len("🇩🇪!"), 2, "a flag is one");
+            assert_eq!(len("a🇩🇪"), 2);
+        }
 
-    #[test]
-    fn casing_is_unicode_s_full_mapping() {
-        assert_eq!(upper("straße"), "STRASSE");
-        assert_eq!(lower("HÉLLO"), "héllo");
-        assert_eq!(lower("ΑΣ"), "ας", "a final sigma is its own case");
-        assert_eq!(trim("  a\t\n"), "a");
-        assert_eq!(
-            trim("\u{a0}a\u{a0}"),
-            "a",
-            "a no-break space is whitespace too"
-        );
-    }
+        phase finding_and_cutting_count_the_same_way;
+        {
+            assert_eq!(find("abc", "c"), Some(2));
+            assert_eq!(find("🇩🇪x", "x"), Some(1));
+            assert_eq!(
+                find("e\u{301}x", "x"),
+                Some(1),
+                "an accent makes no second place"
+            );
+            assert_eq!(find("abc", "z"), None);
+            assert_eq!(find("abc", ""), Some(0));
+            assert_eq!(slice("héllo", 1, 3), "él");
+            assert_eq!(slice("👩‍👩‍👧‍👦x", 1, 2), "x", "a cut never splits a grapheme");
+            assert_eq!(slice("abc", 0, 99), "abc", "past the end is the end");
+            assert_eq!(slice("abc", 2, 1), "", "from after to is empty");
+            assert_eq!(slice("abc", -3, 2), "ab", "a negative index is the start");
+        }
 
-    #[test]
-    fn words_are_a_text_s_runs_of_non_whitespace() {
-        assert_eq!(words(""), 0);
-        assert_eq!(words(" \n\t "), 0);
-        assert_eq!(words("one"), 1);
-        assert_eq!(words("one two  three\nfour"), 4);
-        assert_eq!(words("—"), 1, "a run of punctuation is a word");
-        assert_eq!(words("👩‍👩‍👧‍👦 x"), 2, "a family is one word");
-    }
+        phase casing_is_unicode_s_full_mapping;
+        {
+            assert_eq!(upper("straße"), "STRASSE");
+            assert_eq!(lower("HÉLLO"), "héllo");
+            assert_eq!(lower("ΑΣ"), "ας", "a final sigma is its own case");
+            assert_eq!(trim("  a\t\n"), "a");
+            assert_eq!(
+                trim("\u{a0}a\u{a0}"),
+                "a",
+                "a no-break space is whitespace too"
+            );
+        }
 
-    #[test]
-    fn matching_takes_a_star_per_any_run() {
-        assert!(matches("a*", "abc"));
-        assert!(matches("*c", "abc"));
-        assert!(matches("a*c", "abc"));
-        assert!(matches("a*c", "ac"));
-        assert!(matches("a*b*c", "axxbyyc"));
-        assert!(matches("*", ""));
-        assert!(matches("abc", "abc"));
-        assert!(!matches("abc", "abcd"));
-        assert!(!matches("a*c", "abx"), "the tail must end it");
-        assert!(!matches("A*", "abc"), "matching folds no case by itself");
-    }
+        phase words_are_a_text_s_runs_of_non_whitespace;
+        {
+            assert_eq!(words(""), 0);
+            assert_eq!(words(" \n\t "), 0);
+            assert_eq!(words("one"), 1);
+            assert_eq!(words("one two  three\nfour"), 4);
+            assert_eq!(words("—"), 1, "a run of punctuation is a word");
+            assert_eq!(words("👩‍👩‍👧‍👦 x"), 2, "a family is one word");
+        }
 
-    #[test]
-    fn splitting_keeps_every_piece() {
-        assert_eq!(split("a,b", ","), ["a", "b"]);
-        assert_eq!(split("a,,b", ","), ["a", "", "b"]);
-        assert_eq!(split("a,", ","), ["a", ""]);
-        assert_eq!(split("abc", ""), ["a", "b", "c"]);
-        assert_eq!(split("👩‍👩‍👧‍👦x", ""), ["👩‍👩‍👧‍👦", "x"]);
-        assert_eq!(split("", ","), [""]);
-        assert_eq!(join(&["a", "b"], ", "), "a, b");
-        assert_eq!(join(&[], ","), "");
+        phase matching_takes_a_star_per_any_run;
+        {
+            assert!(matches("a*", "abc"));
+            assert!(matches("*c", "abc"));
+            assert!(matches("a*c", "abc"));
+            assert!(matches("a*c", "ac"));
+            assert!(matches("a*b*c", "axxbyyc"));
+            assert!(matches("*", ""));
+            assert!(matches("abc", "abc"));
+            assert!(!matches("abc", "abcd"));
+            assert!(!matches("a*c", "abx"), "the tail must end it");
+            assert!(!matches("A*", "abc"), "matching folds no case by itself");
+        }
+
+        phase splitting_keeps_every_piece;
+        {
+            assert_eq!(split("a,b", ","), ["a", "b"]);
+            assert_eq!(split("a,,b", ","), ["a", "", "b"]);
+            assert_eq!(split("a,", ","), ["a", ""]);
+            assert_eq!(split("abc", ""), ["a", "b", "c"]);
+            assert_eq!(split("👩‍👩‍👧‍👦x", ""), ["👩‍👩‍👧‍👦", "x"]);
+            assert_eq!(split("", ","), [""]);
+            assert_eq!(join(&["a", "b"], ", "), "a, b");
+            assert_eq!(join(&[], ","), "");
+        }
     }
 }

@@ -576,66 +576,71 @@ impl MetaTy<'_> {
 mod tests {
     use super::Ty;
 
-    #[test]
-    fn a_type_named_as_a_language_type_reads_back_as_itself() {
-        for name in super::LANGUAGE_TYPE_NAMES {
-            let record = Ty::Record(super::TypeKey {
-                app: "t.x".into(),
-                name: (*name).into(),
-            });
-            let text = record.meta_text("t.x");
-            assert_eq!(text, format!("t.x.{name}"));
-            assert_eq!(Ty::parse_meta(&text, "t.x"), Some(record), "{name}");
+    tilo_test_env::scenario! {
+        /// A type's name read back, and which types a form asks for.
+        fn types_read_back_and_say_whether_a_form_asks_them;
 
-            let builtin = super::language_type(name).unwrap_or_else(|| panic!("{name}"));
-            assert_eq!(builtin.meta_text("t.x"), *name);
-            assert_eq!(Ty::parse_meta(name, "t.x"), Some(builtin.clone()), "{name}");
-            assert_eq!(super::named(&["std", name]), Some(builtin), "std.{name}");
-        }
-    }
+        phase a_type_named_as_a_language_type_reads_back_as_itself;
+        {
+            for name in super::LANGUAGE_TYPE_NAMES {
+                let record = Ty::Record(super::TypeKey {
+                    app: "t.x".into(),
+                    name: (*name).into(),
+                });
+                let text = record.meta_text("t.x");
+                assert_eq!(text, format!("t.x.{name}"));
+                assert_eq!(Ty::parse_meta(&text, "t.x"), Some(record), "{name}");
 
-    #[test]
-    fn every_type_is_asked_by_a_form_or_is_not() {
-        let asked = [
-            "Int",
-            "Float",
-            "Bool",
-            "Text",
-            "RichText",
-            "Date",
-            "Time",
-            "Duration",
-            "std.Identifier",
-            "Principal",
-            "Thing",
-            "enum Colour",
-            "Option<Duration>",
-            "Option<enum Colour>",
-            "Option<Thing>",
-        ];
-        for ty in asked {
-            let parsed = Ty::parse_meta(ty, "t.forms").unwrap_or_else(|| panic!("{ty} parses"));
-            assert!(parsed.asked_by_form(), "a form asks for {ty}");
+                let builtin = super::language_type(name).unwrap_or_else(|| panic!("{name}"));
+                assert_eq!(builtin.meta_text("t.x"), *name);
+                assert_eq!(Ty::parse_meta(name, "t.x"), Some(builtin.clone()), "{name}");
+                assert_eq!(super::named(&["std", name]), Some(builtin), "std.{name}");
+            }
         }
-        let unasked = [
-            "Bytes",
-            "Response",
-            "json.Value",
-            "File",
-            "Action",
-            "View",
-            "List<Text>",
-            "Set<Text>",
-            "Map<Text>",
-            "Collection<Thing>",
-            "Filter<Thing>",
-            "Option<List<Text>>",
-            "Option<Option<Text>>",
-        ];
-        assert!(!Ty::Unit.asked_by_form(), "no form asks for no value");
-        for ty in unasked {
-            let parsed = Ty::parse_meta(ty, "t.forms").unwrap_or_else(|| panic!("{ty} parses"));
-            assert!(!parsed.asked_by_form(), "no form asks for {ty}");
+
+        phase every_type_is_asked_by_a_form_or_is_not;
+        {
+            let asked = [
+                "Int",
+                "Float",
+                "Bool",
+                "Text",
+                "RichText",
+                "Date",
+                "Time",
+                "Duration",
+                "std.Identifier",
+                "Principal",
+                "Thing",
+                "enum Colour",
+                "Option<Duration>",
+                "Option<enum Colour>",
+                "Option<Thing>",
+            ];
+            for ty in asked {
+                let parsed = Ty::parse_meta(ty, "t.forms").unwrap_or_else(|| panic!("{ty} parses"));
+                assert!(parsed.asked_by_form(), "a form asks for {ty}");
+            }
+            let unasked = [
+                "Bytes",
+                "Response",
+                "json.Value",
+                "File",
+                "Action",
+                "View",
+                "List<Text>",
+                "Set<Text>",
+                "Map<Text>",
+                "Collection<Thing>",
+                "Filter<Thing>",
+                "Option<List<Text>>",
+                "Option<Option<Text>>",
+            ];
+            assert!(!Ty::Unit.asked_by_form(), "no form asks for no value");
+            for ty in unasked {
+                let parsed = Ty::parse_meta(ty, "t.forms").unwrap_or_else(|| panic!("{ty} parses"));
+                assert!(!parsed.asked_by_form(), "no form asks for {ty}");
+            }
         }
     }
 }
