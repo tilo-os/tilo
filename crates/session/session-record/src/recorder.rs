@@ -457,50 +457,54 @@ mod tests {
     const APP_STDERR: &[u8] =
         b"[app com.onepassword.OnePassword stderr] INFO  2026-10-11T02:22:33.1+00:00 started\n";
 
-    #[test]
-    fn tracing_records_are_events_and_stream_output_is_not() {
-        for line in [
-            LAUNCH,
-            XWAYLAND,
-            b"2026-10-11T02:22:31Z ERROR tilo::app_launch: stopped\n".as_slice(),
-        ] {
-            assert!(is_event(line), "{}", String::from_utf8_lossy(line));
-        }
-        for line in [
-            PAINT_STATS,
-            FRAME_LIFECYCLE,
-            APP_STDERR,
-            b"\n".as_slice(),
-            b"INFO no timestamp\n".as_slice(),
-        ] {
-            assert!(!is_event(line), "{}", String::from_utf8_lossy(line));
-        }
-    }
+    tilo_test_env::scenario! {
+        fn the_event_filter_keeps_whole_tracing_records_and_nothing_else;
 
-    #[test]
-    fn a_record_split_across_reads_is_kept_whole_once() {
-        let stream = [PAINT_STATS, LAUNCH, FRAME_LIFECYCLE, XWAYLAND].concat();
-        let expected = [LAUNCH, XWAYLAND].concat();
-        for cut in 1..stream.len() {
+        phase tracing_records_are_events_and_stream_output_is_not;
+        {
+            for line in [
+                LAUNCH,
+                XWAYLAND,
+                b"2026-10-11T02:22:31Z ERROR tilo::app_launch: stopped\n".as_slice(),
+            ] {
+                assert!(is_event(line), "{}", String::from_utf8_lossy(line));
+            }
+            for line in [
+                PAINT_STATS,
+                FRAME_LIFECYCLE,
+                APP_STDERR,
+                b"\n".as_slice(),
+                b"INFO no timestamp\n".as_slice(),
+            ] {
+                assert!(!is_event(line), "{}", String::from_utf8_lossy(line));
+            }
+        }
+
+        phase a_record_split_across_reads_is_kept_whole_once;
+        {
+            let stream = [PAINT_STATS, LAUNCH, FRAME_LIFECYCLE, XWAYLAND].concat();
+            let expected = [LAUNCH, XWAYLAND].concat();
+            for cut in 1..stream.len() {
+                let mut filter = EventFilter::default();
+                let mut picked = filter.feed(&stream[..cut]);
+                picked.extend(filter.feed(&stream[cut..]));
+                picked.extend(filter.finish());
+                assert_eq!(picked, expected, "cut at {cut}");
+            }
+        }
+
+        phase an_unterminated_last_record_is_kept_at_end_of_stream_and_long_lines_stay_bounded;
+        {
             let mut filter = EventFilter::default();
-            let mut picked = filter.feed(&stream[..cut]);
-            picked.extend(filter.feed(&stream[cut..]));
-            picked.extend(filter.finish());
-            assert_eq!(picked, expected, "cut at {cut}");
-        }
-    }
+            assert!(filter.feed(&XWAYLAND[..XWAYLAND.len() - 1]).is_empty());
+            assert_eq!(filter.finish(), XWAYLAND);
 
-    #[test]
-    fn an_unterminated_last_record_is_kept_at_end_of_stream_and_long_lines_stay_bounded() {
-        let mut filter = EventFilter::default();
-        assert!(filter.feed(&XWAYLAND[..XWAYLAND.len() - 1]).is_empty());
-        assert_eq!(filter.finish(), XWAYLAND);
-
-        let mut filter = EventFilter::new(1024);
-        for _ in 0..64 {
-            assert!(filter.feed(&[b'x'; 4096]).is_empty());
+            let mut filter = EventFilter::new(1024);
+            for _ in 0..64 {
+                assert!(filter.feed(&[b'x'; 4096]).is_empty());
+            }
+            assert!(filter.pending() <= 1024);
         }
-        assert!(filter.pending() <= 1024);
     }
 
     fn entries(directory: &Path) -> Vec<PathBuf> {

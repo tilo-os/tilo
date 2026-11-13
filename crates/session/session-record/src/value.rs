@@ -353,50 +353,54 @@ pub fn float_repr(value: f64) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn floats_print_as_python_repr_does() {
-        for (value, expected) in [
-            (0.0, "0.0"),
-            (100.0, "100.0"),
-            (1000.0 / 16.683, "59.94125756758377"),
-            (0.5, "0.5"),
-            (0.000_123, "0.000123"),
-            (0.000_012_3, "1.23e-05"),
-            (1e16, "1e+16"),
-            (123_456_789_012_345.6, "123456789012345.6"),
-            (-2.5, "-2.5"),
-        ] {
-            assert_eq!(float_repr(value), expected, "{value}");
+    tilo_test_env::scenario! {
+        fn a_value_prints_as_python_prints_it;
+
+        phase floats_print_as_python_repr_does;
+        {
+            for (value, expected) in [
+                (0.0, "0.0"),
+                (100.0, "100.0"),
+                (1000.0 / 16.683, "59.94125756758377"),
+                (0.5, "0.5"),
+                (0.000_123, "0.000123"),
+                (0.000_012_3, "1.23e-05"),
+                (1e16, "1e+16"),
+                (123_456_789_012_345.6, "123456789012345.6"),
+                (-2.5, "-2.5"),
+            ] {
+                assert_eq!(float_repr(value), expected, "{value}");
+            }
         }
-    }
 
-    #[test]
-    fn json_is_sorted_indented_and_ascii() {
-        let mut inner = Value::map();
-        inner.set("b", 1_i64);
-        inner.set("a", Value::List(vec![]));
-        let mut value = Value::map();
-        value.set("z", "é\u{1f600}\"\x1b");
-        value.set("m", inner);
-        value.set("e", Value::map());
-        value.set("n", Value::Null);
-        assert_eq!(
-            value.to_json(),
-            "{\n  \"e\": {},\n  \"m\": {\n    \"a\": [],\n    \"b\": 1\n  },\n  \"n\": null,\n  \"z\": \"\\u00e9\\ud83d\\ude00\\\"\\u001b\"\n}"
-        );
-    }
+        phase json_is_sorted_indented_and_ascii;
+        {
+            let mut inner = Value::map();
+            inner.set("b", 1_i64);
+            inner.set("a", Value::List(vec![]));
+            let mut value = Value::map();
+            value.set("z", "é\u{1f600}\"\x1b");
+            value.set("m", inner);
+            value.set("e", Value::map());
+            value.set("n", Value::Null);
+            assert_eq!(
+                value.to_json(),
+                "{\n  \"e\": {},\n  \"m\": {\n    \"a\": [],\n    \"b\": 1\n  },\n  \"n\": null,\n  \"z\": \"\\u00e9\\ud83d\\ude00\\\"\\u001b\"\n}"
+            );
+        }
 
-    #[test]
-    fn repr_matches_python() {
-        let mut value = Value::map();
-        value.set("status", "enabled");
-        value.set("reason", Value::Null);
-        value.set("quoted", "\"not-initialized\"");
-        value.set("count", 3_i64);
-        assert_eq!(
-            value.repr(),
-            "{'status': 'enabled', 'reason': None, 'quoted': '\"not-initialized\"', 'count': 3}"
-        );
-        assert_eq!(Value::from("it's").repr(), "\"it's\"");
+        phase repr_matches_python;
+        {
+            let mut value = Value::map();
+            value.set("status", "enabled");
+            value.set("reason", Value::Null);
+            value.set("quoted", "\"not-initialized\"");
+            value.set("count", 3_i64);
+            assert_eq!(
+                value.repr(),
+                "{'status': 'enabled', 'reason': None, 'quoted': '\"not-initialized\"', 'count': 3}"
+            );
+            assert_eq!(Value::from("it's").repr(), "\"it's\"");
+        }
     }
 }
