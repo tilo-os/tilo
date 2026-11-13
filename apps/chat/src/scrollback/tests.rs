@@ -144,15 +144,12 @@ fn open_channel(window: &mut Window, channel: &str) {
     window.harness().relayout();
 }
 
-#[test]
-fn scrolling_back_opens_earlier_parts_in_order_without_moving_the_view() {
-    let mut ada = Window::on_device("ada").unwrap();
+fn scrolling_back_opens_earlier_parts_in_order_without_moving_the_view(ada: &mut Window) {
     let mut bo = Window::on_device("bo").unwrap();
     // More than two views of messages in each part: the top of the head
     // is far from the view at the newest edge.
-    let per_part = 150;
-    three_parts(&mut ada, per_part);
-    join(&mut ada, &mut bo);
+    let per_part = MANY;
+    join(ada, &mut bo);
     // At the newest edge, only the head is held and shown.
     assert_eq!(held(&mut bo), vec![2]);
     let texts = shown(&mut bo);
@@ -203,12 +200,9 @@ fn scrolling_back_opens_earlier_parts_in_order_without_moving_the_view() {
     assert!(!loading(&mut bo), "nothing is earlier than part 0");
 }
 
-#[test]
-fn a_short_channel_reads_back_until_it_has_something_to_show() {
-    let mut ada = Window::on_device("ada").unwrap();
+fn a_short_channel_reads_back_until_it_has_something_to_show(ada: &mut Window) {
     let mut bo = Window::on_device("bo").unwrap();
-    three_parts(&mut ada, 2);
-    join(&mut ada, &mut bo);
+    join(ada, &mut bo);
     // Two messages do not fill the view: the part before is opened at once.
     bo.harness().relayout();
     assert_eq!(held(&mut bo), vec![1, 2]);
@@ -260,11 +254,8 @@ fn a_link_to_a_message_in_a_part_not_held_opens_parts_until_it_is_found() {
 
 /// A reader away for parts counts every message after their mark, from the
 /// counts the head carries of the parts before it, without holding them.
-#[test]
-fn a_joined_device_counts_unread_across_parts_it_does_not_hold() {
-    let mut ada = Window::on_device("ada").unwrap();
+fn a_joined_device_counts_unread_across_parts_it_does_not_hold(ada: &mut Window) {
     let mut bo = Window::on_device("bo").unwrap();
-    three_parts(&mut ada, 3);
     // Bo reads `#archive`, and read `#chat` on another device up to
     // the first message of part 1.
     create_archive(&mut bo);
@@ -275,7 +266,7 @@ fn a_joined_device_counts_unread_across_parts_it_does_not_hold() {
         seen: 1,
     }))
     .unwrap();
-    join(&mut ada, &mut bo);
+    join(ada, &mut bo);
     let unread = |bo: &mut Window| {
         bo.with_chat(|surface| {
             surface
@@ -312,11 +303,8 @@ fn a_joined_device_counts_unread_across_parts_it_does_not_hold() {
     assert_eq!(first.as_deref(), Some("1.1"));
 }
 
-#[test]
-fn the_first_unread_message_follows_the_read_mark() {
-    let mut ada = Window::on_device("ada").unwrap();
-    three_parts(&mut ada, 3);
-    let messages = crate::testing::mounted_messages(&mut ada);
+fn the_first_unread_message_follows_the_read_mark(ada: &mut Window) {
+    let messages = crate::testing::mounted_messages(ada);
     let general = Id::from_raw(CHAT_CHANNEL);
     let mark = ReadMark { part: 1, seen: 2 };
     let text = |messages: &crate::messages::Messages, id: Option<&Id>| {
@@ -382,12 +370,9 @@ fn unread_counts_reach_the_first_part_without_holding_it() {
 /// Part 0, which the workspace's hosts have none of: the timeline says earlier
 /// messages are not available, asks for nothing more and spins nothing,
 /// until it arrives after all.
-#[test]
-fn an_earlier_part_the_workspace_lacks_ends_in_a_final_state() {
-    let mut ada = Window::on_device("ada").unwrap();
+fn an_earlier_part_the_workspace_lacks_ends_in_a_final_state(ada: &mut Window) {
     let mut bo = Window::on_device("bo").unwrap();
-    three_parts(&mut ada, 2);
-    join(&mut ada, &mut bo);
+    join(ada, &mut bo);
     bo.harness().relayout();
     ada.deliver_record_to(&mut bo, &crate::parts::part(1))
         .unwrap();
@@ -428,12 +413,9 @@ fn an_earlier_part_the_workspace_lacks_ends_in_a_final_state() {
 /// A window that has not chosen its channel yet (its chat record still on
 /// its way when the head is taken up) shows no timeline, and reads nothing
 /// back for it.
-#[test]
-fn no_channel_in_view_reads_nothing_back() {
-    let mut ada = Window::on_device("ada").unwrap();
+fn no_channel_in_view_reads_nothing_back(ada: &mut Window) {
     let mut bo = Window::on_device("bo").unwrap();
-    three_parts(&mut ada, 150);
-    join(&mut ada, &mut bo);
+    join(ada, &mut bo);
     bo.with_chat(|surface| {
         surface.active_channel.clear();
         surface.messages.clear();
@@ -446,11 +428,8 @@ fn no_channel_in_view_reads_nothing_back() {
 /// A channel whose messages are all in the head (here one made after the
 /// earlier parts filled) reads nothing back: the head's counts of the parts
 /// before say it has none there.
-#[test]
-fn a_channel_with_nothing_earlier_reads_nothing_back() {
-    let mut ada = Window::on_device("ada").unwrap();
+fn a_channel_with_nothing_earlier_reads_nothing_back(ada: &mut Window) {
     let mut bo = Window::on_device("bo").unwrap();
-    three_parts(&mut ada, 2);
     bo.invoke(
         Chat::CREATE_CHANNEL_WITH_ID.with(chat::CreateChannelWithId {
             id: "c_quiet".into(),
@@ -463,7 +442,7 @@ fn a_channel_with_nothing_earlier_reads_nothing_back() {
     )
     .unwrap();
     open_channel(&mut bo, "c_quiet");
-    join(&mut ada, &mut bo);
+    join(ada, &mut bo);
     bo.harness().relayout();
     bo.harness().relayout();
     assert_eq!(held(&mut bo), vec![2]);
@@ -505,4 +484,49 @@ fn a_newcomer_asks_for_the_chats_newest_part_and_starts_none_meanwhile() {
     assert_eq!(held(&mut bo), [0], "the waiting post started it");
     assert!(chain.unwritten().is_none(), "the post was written");
     assert_eq!(chain.stage_as(&post, "u_bo").unwrap(), Some(0));
+}
+
+/// Messages of `#chat` in each part where each part is to hold more than two
+/// views of them.
+const MANY: usize = 150;
+
+/// The writer's chat with `per_part` messages of `#chat` in each of three
+/// parts. Filling the parts is most of what a test here costs, so the cases
+/// that read the same chat share its writer, which none of them changes, each
+/// with a reader of its own.
+fn writer(per_part: usize) -> Window {
+    let mut ada = Window::on_device("ada").unwrap();
+    three_parts(&mut ada, per_part);
+    ada
+}
+
+#[test]
+fn a_long_channel_reads_back_part_by_part_and_only_for_the_channel_in_view() {
+    let mut ada = writer(MANY);
+    crate::testing::cases_on!(
+        &mut ada;
+        scrolling_back_opens_earlier_parts_in_order_without_moving_the_view,
+        no_channel_in_view_reads_nothing_back,
+    );
+}
+
+#[test]
+fn a_short_channel_reads_back_to_what_there_is_and_no_further() {
+    let mut ada = writer(2);
+    crate::testing::cases_on!(
+        &mut ada;
+        a_short_channel_reads_back_until_it_has_something_to_show,
+        an_earlier_part_the_workspace_lacks_ends_in_a_final_state,
+        a_channel_with_nothing_earlier_reads_nothing_back,
+    );
+}
+
+#[test]
+fn unread_counts_and_the_first_unread_message_follow_the_read_mark() {
+    let mut ada = writer(3);
+    crate::testing::cases_on!(
+        &mut ada;
+        a_joined_device_counts_unread_across_parts_it_does_not_hold,
+        the_first_unread_message_follows_the_read_mark,
+    );
 }

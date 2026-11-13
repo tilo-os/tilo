@@ -1499,19 +1499,9 @@ thread_local! {
 /// for its description once (placing each node without bounds of its own
 /// asked for the whole description again, a build quadratic in the
 /// channel), and sent to a mirror as the composer alone.
-#[test]
-fn a_keystroke_in_a_long_channel_describes_chat_once_and_patches_the_composer_alone() {
-    let (mut frame, _records, _checkout) = semantic_component_harness("chat-semantics-keystroke");
-    let chain = crate::testing::chain();
-    for index in 0..300 {
-        frame
-            .call_on(
-                &chain,
-                "post",
-                serde_json::json!({"channel": "c_chat", "text": format!("Message {index}, long enough to wrap onto a second line")}),
-            )
-            .unwrap();
-    }
+fn a_keystroke_in_a_long_channel_describes_chat_once_and_patches_the_composer_alone(
+    frame: &mut ui::headless::FrameHarness,
+) {
     let inspection = frame.inspection();
     let composer = semantic_target_rect(&inspection.root, "chat.composer")
         .unwrap()
@@ -1571,25 +1561,12 @@ fn a_keystroke_in_a_long_channel_describes_chat_once_and_patches_the_composer_al
         );
         held = next;
     }
-    frame.close_components();
 }
 
 /// What a keystroke into the composer of a long channel costs before its
 /// frame: the event handled, the draft written. Timing is reported, the
 /// scopes it ran with it.
-#[test]
-fn a_keystroke_in_the_composer_of_a_long_channel_handled() {
-    let (mut frame, _records, _checkout) = semantic_component_harness("chat-composer-keystroke");
-    let chain = crate::testing::chain();
-    for index in 0..300 {
-        frame
-            .call_on(
-                &chain,
-                "post",
-                serde_json::json!({"channel": "c_chat", "text": format!("Message {index}, long enough to wrap onto a second line")}),
-            )
-            .unwrap();
-    }
+fn a_keystroke_in_the_composer_of_a_long_channel_handled(frame: &mut ui::headless::FrameHarness) {
     let inspection = frame.inspection();
     let composer = semantic_target_rect(&inspection.root, "chat.composer")
         .unwrap()
@@ -1627,7 +1604,6 @@ fn a_keystroke_in_the_composer_of_a_long_channel_handled() {
         }
     }
     handled.sort();
-    frame.close_components();
     eprintln!(
         "{report}composer keystroke handled: p50 {:?}, max {:?}",
         handled[handled.len() / 2],
@@ -1640,9 +1616,7 @@ fn a_keystroke_in_the_composer_of_a_long_channel_handled() {
 /// were woken for, served when the host idles, until the window rests. After
 /// the post's frame the window rests within a frame or two, and no layout
 /// tree is built again for it.
-#[test]
-fn a_new_message_leaves_the_window_at_rest() {
-    let (mut frame, _records, _checkout) = semantic_component_harness("chat-new-message");
+fn a_new_message_leaves_the_window_at_rest(frame: &mut ui::headless::FrameHarness) {
     let chain = crate::testing::chain();
     let post = |frame: &mut ui::headless::FrameHarness, text: String| {
         frame
@@ -1653,12 +1627,6 @@ fn a_new_message_leaves_the_window_at_rest() {
             )
             .unwrap();
     };
-    for index in 0..300 {
-        post(
-            &mut frame,
-            format!("Message {index}, long enough to wrap onto a second line"),
-        );
-    }
     // As the browser host does: serve what woke the window, then draw until
     // it rests. Each frame's time.
     let settle = |frame: &mut ui::headless::FrameHarness| {
@@ -1673,14 +1641,14 @@ fn a_new_message_leaves_the_window_at_rest() {
         }
         frames
     };
-    settle(&mut frame);
+    settle(frame);
     let mut report = String::new();
     for index in 0..3 {
         let rebuilt = frame.rebuilt_frames();
         let ((posted, frames), scopes) = ui::tilo_resource::profiling::observe(|| {
             let started = ui::time::Instant::now();
-            post(&mut frame, format!("News {index}"));
-            (started.elapsed(), settle(&mut frame))
+            post(frame, format!("News {index}"));
+            (started.elapsed(), settle(frame))
         });
         let mut scopes: Vec<_> = scopes
             .iter()
@@ -1709,8 +1677,33 @@ fn a_new_message_leaves_the_window_at_rest() {
             "a new message is drawn in a frame or two, then the window rests: {report}"
         );
     }
-    frame.close_components();
     eprintln!("{report}");
+}
+
+/// What a new message and a keystroke cost a Chat open over a long channel.
+/// Posting the channel's 300 messages is most of what each case costs, so the
+/// three share one mount: the new message first, which finds the window at
+/// rest, then the keystrokes, which leave the composer focused and typed in.
+#[test]
+fn a_long_channel_stays_cheap_for_a_new_message_and_a_keystroke() {
+    let (mut frame, _records, _checkout) = semantic_component_harness("chat-long-channel");
+    let chain = crate::testing::chain();
+    for index in 0..300 {
+        frame
+            .call_on(
+                &chain,
+                "post",
+                serde_json::json!({"channel": "c_chat", "text": format!("Message {index}, long enough to wrap onto a second line")}),
+            )
+            .unwrap();
+    }
+    crate::testing::cases_on!(
+        &mut frame;
+        a_new_message_leaves_the_window_at_rest,
+        a_keystroke_in_a_long_channel_describes_chat_once_and_patches_the_composer_alone,
+        a_keystroke_in_the_composer_of_a_long_channel_handled,
+    );
+    frame.close_components();
 }
 
 /// A newcomer's page in a public workspace holds none of the workspace's chat

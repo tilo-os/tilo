@@ -446,3 +446,19 @@ macro_rules! cases {
     };
 }
 pub(crate) use cases;
+
+/// Runs `case` on `fixture`, which several cases share because building it
+/// is most of what each costs, and fails naming the case when it fails. The
+/// cases after a failed one do not run: the fixture may no longer be whole.
+pub(crate) fn case_on<F>(fixture: &mut F, name: &str, case: fn(&mut F)) {
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| case(fixture)));
+    assert!(ran.is_ok(), "case {name} failed");
+}
+
+/// [`case_on`] for each of the named functions in turn, on one fixture.
+macro_rules! cases_on {
+    ($fixture:expr; $($case:ident),+ $(,)?) => {
+        $($crate::testing::case_on($fixture, stringify!($case), $case);)+
+    };
+}
+pub(crate) use cases_on;
