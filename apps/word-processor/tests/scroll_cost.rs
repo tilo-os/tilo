@@ -378,64 +378,146 @@ fn calls(phases: &[ui::tilo_resource::profiling::Sample], phase: &str) -> usize 
         .sum()
 }
 
+/// One use of the open document: `warm_up` once the caret stands in the middle of it, then
+/// `steps`, which are what is counted.
+struct Case {
+    name: &'static str,
+    warm_up: fn(&mut App, &mut Host),
+    steps: fn(&mut App, &mut Host),
+}
+
+/// What the steps of each of `cases` counted, one case after another in one window on one
+/// document of `blocks` blocks: writing the document is most of what a window on it costs, and
+/// none of these counts it. The first case meets the window as [`counted`] with
+/// [`caret_in_the_middle`] hands it over. For each later one the page goes back to its top and
+/// the same wheel and click place the caret again, and the case runs only if the editor then
+/// reports what it reported to the first: the same scroll offset and range, the same loaded
+/// paragraphs, the same caret and the same text under it. So a case that changes the document
+/// goes last.
+fn counted_in_turn<const N: usize>(
+    blocks: usize,
+    cases: [Case; N],
+) -> [Vec<ui::tilo_resource::profiling::Sample>; N] {
+    let mut counted = None;
+    ui::framework::testing::drive_live_window::<WordProcessorApp, _>(|app| {
+        let mut host = Host::new();
+        opened(app, &mut host, blocks);
+        let mut first_start = None;
+        counted = Some(cases.map(|case| {
+            if first_start.is_some() {
+                host.step(app, vec![wheel(1.0e9, TouchPhase::Moved)]);
+                host.settle(app);
+            }
+            caret_in_the_middle(app, &mut host);
+            let start = observe(app);
+            let first = first_start.get_or_insert_with(|| start.clone());
+            assert_eq!(
+                start, *first,
+                "{} starts where the first case started",
+                case.name
+            );
+            (case.warm_up)(app, &mut host);
+            let ((), phases) =
+                ui::tilo_resource::profiling::observe(|| (case.steps)(app, &mut host));
+            phases
+        }));
+    })
+    .expect("the window opens");
+    counted.expect("the window ran")
+}
+
+fn typed_letter(app: &mut App, host: &mut Host) {
+    host.step(app, vec![ui::synthetic_input::char_key("x")]);
+}
+
+fn eight_typed_letters(app: &mut App, host: &mut Host) {
+    for _ in 0..8 {
+        typed_letter(app, host);
+    }
+}
+
 fn typing_in_the_middle(blocks: usize) -> Vec<ui::tilo_resource::profiling::Sample> {
     counted(
         blocks,
         |app, host| {
             caret_in_the_middle(app, host);
-            host.step(app, vec![ui::synthetic_input::char_key("x")]);
+            typed_letter(app, host);
         },
-        |app, host| {
-            for _ in 0..8 {
-                host.step(app, vec![ui::synthetic_input::char_key("x")]);
-            }
-        },
+        eight_typed_letters,
     )
 }
 
+fn forty_caret_moves(app: &mut App, host: &mut Host) {
+    for key in [
+        NamedKey::ArrowDown,
+        NamedKey::ArrowRight,
+        NamedKey::ArrowUp,
+        NamedKey::ArrowLeft,
+    ]
+    .into_iter()
+    .cycle()
+    .take(40)
+    {
+        key_steps(app, host, key);
+    }
+}
+
+fn a_hundred_and_sixty_wheel_frames(app: &mut App, host: &mut Host) {
+    let mut fingers = ui::interaction::TouchPointerEmulator::default();
+    for frame in 0..160 {
+        host.step(app, scroll_events(ScrollInput::Wheel, frame, &mut fingers));
+    }
+}
+
 #[test]
-fn typing_publishes_nothing_again_however_long_the_document() {
+fn a_long_document_is_neither_published_nor_listed_again_while_it_is_used() {
     let short = typing_in_the_middle(600);
-    let long = typing_in_the_middle(5000);
-    for typed in [&short, &long] {
-        assert_eq!(calls(typed, "framework.resource_head"), 0);
-        assert_eq!(calls(typed, "framework.resource_tree"), 0);
+    let [moved, scrolled, long] = counted_in_turn(
+        5000,
+        [
+            Case {
+                name: "moving the caret",
+                warm_up: |_, _| {},
+                steps: forty_caret_moves,
+            },
+            Case {
+                name: "scrolling",
+                warm_up: |_, _| {},
+                steps: a_hundred_and_sixty_wheel_frames,
+            },
+            Case {
+                name: "typing",
+                warm_up: typed_letter,
+                steps: eight_typed_letters,
+            },
+        ],
+    );
+    assert_eq!(
+        calls(&moved, "word_processor.region_listed"),
+        0,
+        "moving the caret listed the paragraphs"
+    );
+    assert!(
+        calls(&scrolled, "rich_text.load.materialize") > 0,
+        "scrolling read no more of the document"
+    );
+    assert_eq!(calls(&scrolled, "framework.resource_head"), 0, "scrolling");
+    assert_eq!(calls(&scrolled, "framework.resource_tree"), 0, "scrolling");
+    for (typed, document) in [(&short, "short"), (&long, "long")] {
+        assert_eq!(
+            calls(typed, "framework.resource_head"),
+            0,
+            "typing in the {document} document"
+        );
+        assert_eq!(
+            calls(typed, "framework.resource_tree"),
+            0,
+            "typing in the {document} document"
+        );
     }
     for phase in ["ui.bound_discovery_miss", "ui.filtered_resource"] {
         assert_eq!(calls(&long, phase), calls(&short, phase), "{phase}");
     }
-}
-
-#[test]
-fn reading_more_while_scrolling_publishes_nothing_again() {
-    let scrolled = counted(5000, caret_in_the_middle, |app, host| {
-        let mut fingers = ui::interaction::TouchPointerEmulator::default();
-        for frame in 0..160 {
-            host.step(app, scroll_events(ScrollInput::Wheel, frame, &mut fingers));
-        }
-    });
-    assert!(calls(&scrolled, "rich_text.load.materialize") > 0);
-    assert_eq!(calls(&scrolled, "framework.resource_head"), 0);
-    assert_eq!(calls(&scrolled, "framework.resource_tree"), 0);
-}
-
-#[test]
-fn moving_the_caret_lists_no_paragraphs() {
-    let moved = counted(5000, caret_in_the_middle, |app, host| {
-        for key in [
-            NamedKey::ArrowDown,
-            NamedKey::ArrowRight,
-            NamedKey::ArrowUp,
-            NamedKey::ArrowLeft,
-        ]
-        .into_iter()
-        .cycle()
-        .take(40)
-        {
-            key_steps(app, host, key);
-        }
-    });
-    assert_eq!(calls(&moved, "word_processor.region_listed"), 0);
 }
 
 fn tables(app: &App) -> usize {
