@@ -1,22 +1,16 @@
-//! One in-process HTTP/1.1 responder for tests.
+//! One in-process HTTP/1.1 responder for tests. [`Responder`] answers a scripted sequence of
+//! [`Reply`]s, one per connection, and records every [`Request`] it saw so the test can assert on
+//! methods, headers and bodies; it can also express a hostile reply (a body with no length, one cut
+//! short, a malformed head), which a plain `TcpListener` loop cannot.
 //!
-//! Protocol clients kept growing their own throwaway `TcpListener` loops, each
-//! with slightly different request parsing and none of them able to express a
-//! hostile reply. [`Responder`] replaces them: it answers a scripted sequence
-//! of [`Reply`]s, one per connection, and records every [`Request`] it saw so
-//! the test can assert on methods, headers and bodies.
+//! Every scripted reply closes its connection, so a client never reuses a socket across scripted
+//! replies and the request order is exactly the reply order.
 //!
-//! Every scripted reply closes its connection, so a client never reuses a
-//! socket across scripted replies and the request order is exactly the reply
-//! order.
-//!
-//! [`Responder::handle`] answers with a function instead of a script, for
-//! tests that need a stateful fake server (a `WebDAV` store, say).
-//! [`Responder::serve`] hands the function the whole [`Peer`] connection, for
-//! a reply that is written in pieces while the test watches the client, for a
-//! client that keeps its connection across requests, or for a test that needs
-//! to see the client hang up. Each connection is served on its own thread, so
-//! concurrent clients work.
+//! [`Responder::handle`] answers with a function instead of a script, for a stateful fake server.
+//! [`Responder::serve`] hands the function the whole [`Peer`] connection, for a reply written in
+//! pieces while the test watches the client, for a client that keeps its connection across
+//! requests, or for a test that needs to see the client hang up. Each connection is served on its
+//! own thread.
 
 use std::fmt::Write as _;
 use std::io::{Read, Write};
@@ -26,13 +20,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
-/// How long [`Responder::next_request`] waits before declaring the client
-/// never sent the request the test expected.
+/// How long [`Responder::next_request`] waits before declaring that the client never sent the
+/// request the test expected.
 const REQUEST_WAIT: Duration = Duration::from_secs(10);
 /// Largest request a test client is expected to send.
 const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
-/// One scripted response.
 #[derive(Clone, Debug)]
 pub struct Reply {
     status: u16,
@@ -54,8 +47,8 @@ impl Reply {
         }
     }
 
-    /// Leave the connection open after the reply, so the client sends its
-    /// next request on the same socket (see [`Peer::next_request`]).
+    /// Leave the connection open after the reply, so the client sends its next request on the same
+    /// socket (see [`Peer::next_request`]).
     #[must_use]
     pub fn keep_alive(mut self) -> Self {
         self.close = false;
@@ -76,19 +69,18 @@ impl Reply {
         self
     }
 
-    /// Omit `Content-Length` and delimit the body by closing the connection,
-    /// the shape a hostile server uses to defeat length-header checks.
+    /// Omit `Content-Length` and delimit the body by closing the connection, the shape a hostile
+    /// server uses to defeat length-header checks.
     #[must_use]
     pub fn without_content_length(mut self) -> Self {
         self.content_length = false;
         self
     }
 
-    /// Send only the first half of the body and close the connection, the
-    /// way a dropped download ends. With `declare_length` the head still
-    /// announces the full length, so a client that holds the server to its
-    /// `Content-Length` notices; without it nothing does, and only a client
-    /// that knows how many bytes to expect can tell.
+    /// Send only the first half of the body and close the connection, the way a dropped download
+    /// ends. With `declare_length` the head still announces the full length, so a client that holds
+    /// the server to its `Content-Length` notices; without it only a client that knows how many
+    /// bytes to expect can tell.
     #[must_use]
     pub fn cut_short(mut self, declare_length: bool) -> Self {
         let full = self.body.len();
@@ -146,7 +138,6 @@ impl Reply {
     }
 }
 
-/// One request the responder received.
 #[derive(Clone, Debug)]
 pub struct Request {
     /// The request method as sent, e.g. `PROPFIND`.
@@ -173,7 +164,6 @@ impl Request {
     }
 }
 
-/// A listener on `127.0.0.1` that answers a scripted reply sequence.
 pub struct Responder {
     listener: TcpListener,
     port: u16,
@@ -206,10 +196,9 @@ impl Responder {
         }
     }
 
-    /// Answer every request with `handler` until the responder is dropped.
-    /// `None` closes the connection without a response, the way a server
-    /// that goes away mid-request looks to a client. Requests are also
-    /// recorded for [`Responder::next_request`].
+    /// Answer every request with `handler` until the responder is dropped. `None` closes the
+    /// connection without a response, the way a server that goes away mid-request looks to a client.
+    /// Requests are also recorded for [`Responder::next_request`].
     ///
     /// # Panics
     /// If the loopback listener cannot be created.
@@ -225,10 +214,9 @@ impl Responder {
         })
     }
 
-    /// Answer every connection with `handler`, which writes what the client
-    /// sees through [`Peer`]: a whole [`Reply`], raw bytes in as many pieces
-    /// as the test wants, the client's next request on the same connection,
-    /// or the wait for the client to hang up.
+    /// Answer every connection with `handler`, which writes what the client sees through [`Peer`]: a
+    /// whole [`Reply`], raw bytes in as many pieces as the test wants, the client's next request on
+    /// the same connection, or the wait for the client to hang up.
     ///
     /// # Panics
     /// If the loopback listener cannot be created.
@@ -281,8 +269,8 @@ impl Responder {
         self.requests.try_iter().collect()
     }
 
-    /// A responder that answers nothing, for asserting that a client never
-    /// connected (see [`Responder::assert_untouched`]).
+    /// A responder that answers nothing, for asserting that a client never connected (see
+    /// [`Responder::assert_untouched`]).
     pub fn silent() -> Self {
         Self::start(Vec::new())
     }
@@ -326,8 +314,7 @@ impl Responder {
     }
 }
 
-/// One connection a [`Responder`] is answering, handed to a
-/// [`Responder::serve`] handler.
+/// One connection a [`Responder`] is answering, handed to a [`Responder::serve`] handler.
 pub struct Peer<'a> {
     stream: &'a mut TcpStream,
     request: Request,
@@ -345,16 +332,15 @@ impl Peer<'_> {
         let _ = reply.write_to(self.stream);
     }
 
-    /// Write `bytes` exactly as given, without a head, so a reply can arrive
-    /// in pieces or be malformed on purpose. `false` once the client has gone
-    /// away, which is how a test stops writing to a socket nobody reads.
+    /// Write `bytes` exactly as given, without a head, so a reply can arrive in pieces or be
+    /// malformed on purpose. `false` once the client has gone away.
     #[must_use]
     pub fn write(&mut self, bytes: &[u8]) -> bool {
         self.stream.write_all(bytes).is_ok() && self.stream.flush().is_ok()
     }
 
-    /// The client's next request on this connection, or `None` when it closed
-    /// instead of asking again.
+    /// The client's next request on this connection, or `None` when it closed instead of asking
+    /// again.
     pub fn next_request(&mut self) -> Option<Request> {
         let request = read_request(self.stream)?;
         let _ = self.recorded.send(request.clone());
