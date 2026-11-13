@@ -15,6 +15,7 @@ use std::sync::{Arc, mpsc};
 
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
+use tilo_automerge::ApplyIncoming as _;
 use tilo_broker_core::custody::OwnerCustody as _;
 use tilo_desktop_model::WorkspaceId;
 use ui::permissions::UserId;
@@ -442,7 +443,7 @@ impl Inner {
             *doc = theirs;
         } else {
             let mut theirs = theirs;
-            if let Err(error) = doc.merge(&mut theirs) {
+            if let Err(error) = doc.merge_incoming(&mut theirs) {
                 tracing::warn!(%error, %workspace, %app, %record, "a record is not taken in");
                 return;
             }

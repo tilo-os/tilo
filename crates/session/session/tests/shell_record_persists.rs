@@ -58,7 +58,7 @@ fn session(root: &Path, state: &Path) -> Session {
             person: PERSON.to_owned(),
             shell: true,
             collab: false,
-            services: vec![Box::new(seeded)],
+            services: seeded,
             questions: Some(Questions::new()),
             action_plane: ActionPlane::At(root.join("plane.sock")),
             agent_door: Some(root.join("agent.sock")),

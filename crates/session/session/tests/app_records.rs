@@ -221,7 +221,9 @@ fn program_find(bytes: &[u8], words: &str) -> String {
     struct Held(Vec<u8>);
     impl tilolang_tilo::task_records::RecordSource for Held {
         fn record(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
-            assert_eq!((app, record), (TASKS, ""), "the task reads Tasks' record");
+            if (app, record) != (TASKS, "") {
+                return Err(format!("the task reads Tasks' record, not {app}:{record}"));
+            }
             Ok(Some(self.0.clone()))
         }
     }
