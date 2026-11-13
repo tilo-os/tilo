@@ -42,7 +42,7 @@ mode = "off"
 [sandbox.services]
 # The app's actions reach the desk over the workspace's broker: its window
 # publishes them there, and they are invoked back through it.
-collab = "optional@21"
+collab = "optional@22"
 
 [entrypoint]
 bin = "bin/print-centre"

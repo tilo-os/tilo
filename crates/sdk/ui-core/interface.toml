@@ -802,6 +802,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "WindowRequest" = "struct"
 "WindowRequest.collaboration" = "bool optional"
 "WindowRequest.instance" = "u64"
+"WindowRequest.open" = "Option<String> optional"
 "WindowRequest.reveal" = "Option<String> optional"
 "WindowRequest.shell_ui" = "bool optional"
 "WindowTarget" = "struct"

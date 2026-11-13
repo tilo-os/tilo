@@ -204,15 +204,13 @@ impl AppEntry {
 pub struct DocumentApp {
     pub id: String,
     pub name: String,
-    /// The glyph the app's own rows wear, by its Lucide name: the symbol the
-    /// app has in search, the switcher and the tab strip, never a generic grid.
+    pub is_default: bool,
+    /// The Lucide name of the glyph its rows wear.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// Where this device got the app, said only where another app that opens
-    /// the same document goes by the same name, so two rows never read alike.
+    /// Where this device got the app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<AppKind>,
-    pub is_default: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
