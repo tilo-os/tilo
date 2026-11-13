@@ -528,6 +528,85 @@ mod tests {
         }
     }
 
+    /// A link is kept only when its address starts with a web or mail
+    /// scheme, however the scheme is cased or padded; any other address
+    /// leaves its label plain text.
+    #[test]
+    fn a_link_is_kept_only_for_a_web_or_mail_address() {
+        let rows: [(&str, Option<&str>); 13] = [
+            ("http://example.com", Some("http://example.com")),
+            ("HTTPS://Example.com/A", Some("HTTPS://Example.com/A")),
+            ("  https://example.com/x \n", Some("https://example.com/x")),
+            ("MailTo:me@example.com", Some("MailTo:me@example.com")),
+            ("", None),
+            ("example.com", None),
+            ("/unsubscribe", None),
+            ("//example.com/x", None),
+            ("ftp://example.com/f", None),
+            ("data:text/html,hi", None),
+            ("vbscript:msgbox(1)", None),
+            ("java\tscript:alert(1)", None),
+            ("javascript://https://example.com/%0Aalert(1)", None),
+        ];
+        for (href, link) in rows {
+            let runs = render(&format!("<a href=\"{href}\">label</a>"));
+            let shown: Vec<(&str, Option<&str>)> = runs
+                .iter()
+                .map(|run| (run.text.as_str(), run.link.as_deref()))
+                .collect();
+            assert_eq!(shown, [("label", link)], "{href:?}");
+        }
+        // An anchor without an address is not a link, and a link ends with
+        // its element.
+        let runs = render("<a>plain</a> <a href=\"https://a.example\">in</a> out");
+        let shown: Vec<(&str, Option<&str>)> = runs
+            .iter()
+            .map(|run| (run.text.as_str(), run.link.as_deref()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("plain ", None),
+                ("in", Some("https://a.example")),
+                (" out", None)
+            ]
+        );
+    }
+
+    /// What a mail hides stays hidden however the style is spelled, with
+    /// everything inside it; a style that hides nothing shows its text.
+    #[test]
+    fn a_hidden_element_stays_hidden_however_it_is_spelled() {
+        for (html, shown) in [
+            ("<p style=\"visibility:hidden\">x</p>y", "y"),
+            ("<p style=\"VISIBILITY : Hidden\">x</p>y", "y"),
+            ("<div style=\"color:red; DISPLAY:\n NONE\">x</div>y", "y"),
+            ("<span hidden=\"\">x</span>y", "y"),
+            (
+                "<div hidden><img alt=\"Logo\"><a href=\"https://a.example\">go</a></div>y",
+                "y",
+            ),
+            ("<p style=\"display:block\">x</p>y", "x\n\ny"),
+        ] {
+            assert_eq!(text(html), shown, "{html:?}");
+        }
+    }
+
+    /// Quotes nest as deep as a mail likes; their marks stop at four.
+    #[test]
+    fn quote_marks_stop_at_four_levels() {
+        for (depth, marks) in [
+            (1, "> "),
+            (2, "> > "),
+            (4, "> > > > "),
+            (5, "> > > > "),
+            (9, "> > > > "),
+        ] {
+            let html = "<blockquote>".repeat(depth) + "q";
+            assert_eq!(text(&html), format!("{marks}q"), "depth {depth}");
+        }
+    }
+
     #[test]
     fn markup_is_read_as_an_engine_reads_it() {
         // Comments, CDATA outside foreign content, and processing
