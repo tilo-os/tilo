@@ -29,9 +29,8 @@
 "apps/music/src/app/tests.rs" = 4800
 "apps/notes/src/app.rs" = 5000
 "apps/osk/src/widget.rs" = 3500
-"apps/pdf-viewer/src/app.rs" = 6500
+"apps/pdf-viewer/src/app.rs" = 5500
 "apps/pdf-viewer/src/app/tests.rs" = 4000
-"apps/pdf-viewer/src/source.rs" = 3500
 "apps/settings/src/panes/accounts.rs" = 4000
 "apps/settings/src/panes/device_mesh.rs" = 3500
 "apps/settings/src/panes/network.rs" = 4000
@@ -42,7 +41,7 @@
 "apps/terminal/src/tests.rs" = 5000
 "apps/video-editor/src/app.rs" = 8500
 "apps/video-editor/src/model.rs" = 4500
-"apps/word-processor/src/widget/tests.rs" = 8500
+"apps/word-processor/src/widget/tests.rs" = 8000
 "crates/agent/local-model-service/src/lib.rs" = 3500
 "crates/agent/model-gateway/src/service.rs" = 4000
 "crates/browser/tilo-browser-runtime/src/browser.rs" = 3500

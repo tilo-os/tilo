@@ -1,8 +1,5 @@
-//! The word processor's editor and its window ([`WordProcessorWidget`]). Renders the
-//! `tilo-doc` document as a centered page (à la `LibreOffice` Writer) using the
-//! `RichTextLayout` primitive: word-wrapped paragraphs, headings, list bullets,
-//! inline **bold**/*italic*/underline, a selection highlight, and a caret. Maps
-//! pointer + keyboard onto the editing model (selection, formatting, save).
+//! The word processor's editor and its window: the document as a centred page, drawn with
+//! `RichTextLayout`, with pointer and keyboard mapped onto the editing model.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,8 +22,7 @@ use ui::richtext::RichTextLayout;
 use ui::text_edit::EditCore;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-// Provides `.r()/.g()/.b()` accessors on `vello` `Color` (used to derive
-// theme-tinted translucent chrome tones).
+// Gives `vello::Color` its `.r()/.g()/.b()`.
 use tilo_rich_text::{Draft, RichTextSurface, RichTextView, SubmitKey};
 use ui::ColorCompat;
 #[cfg(test)]
@@ -103,8 +99,6 @@ use proofing::misspelled_spans;
 use toolbar::ToolAction;
 pub use window::WordProcessorWidget;
 
-/// Convert the model's `(block, start, end)` ranges into serializable
-/// [`Span`](crate::actions::Span)s for an action payload.
 fn to_spans(ranges: Vec<(String, usize, usize)>) -> Vec<crate::actions::Span> {
     ranges
         .into_iter()
@@ -119,26 +113,21 @@ enum KeyPressEffect {
     Edit,
 }
 
-/// What a right-click context-menu row does. The shared [`ContextMenu`]'s
-/// `Arc<dyn Fn>` callbacks can't mutate the widget, so the widget keeps this
-/// parallel list and dispatches on the clicked row index.
+/// What a right-click menu row does: the shared [`ContextMenu`]'s callbacks cannot mutate
+/// the widget, so the rows carry these and dispatch by clicked index.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CtxAction {
     Cut,
     Copy,
     Paste,
     SelectAll,
-    /// Add the right-clicked (misspelled) word to the user dictionary.
     AddToDictionary(String),
-    /// Replace the right-clicked word's block span `[start,end)` (char offsets)
-    /// with a spelling suggestion.
     ApplySuggestion {
         block: String,
         start: usize,
         end: usize,
         replacement: String,
     },
-    /// A comment or tracked-change operation contributed by the review overlay.
     Review(ReviewAction),
 }
 
@@ -152,61 +141,35 @@ struct DocumentAutocorrection {
     replacement: String,
 }
 
-// Paper-context colors (the document sheet): document ink assumes a light sheet
-// (`STYLE_PALETTE[0]` is near-black), so paper stays light in both themes — only
-// chrome follows the theme. `ChromeColors::for_theme` derives `paper` from the
-// theme's lightest neutral when light enough; these consts are the fallback.
-/// Canonical paper tone — a barely-warm off-white. Ink/selection/caret below are
-/// chosen to read on this in every theme.
+// Paper stays light in both themes: the document ink assumes a light sheet, and only
+// chrome follows the theme.
+/// The canonical sheet; the ink, selection and caret below read on it in every theme.
 const PAPER_DEFAULT: Color = Color::from_rgb8(0xfc, 0xfc, 0xfa);
-/// Default ink for paper content that has no per-block style colour (table
-/// cells, image-block fallbacks). Dark so it reads on the light paper.
 const PAPER_INK: Color = Color::from_rgb8(0x1c, 0x1c, 0x20);
-/// Muted ink for paper chrome (running heads/footers, placeholders on paper).
 const PAPER_MUTED: Color = Color::from_rgb8(0x8a, 0x8a, 0x92);
-/// Alpha of the selection highlight painted on paper: translucent so the
-/// text reads through it.
 const PAPER_SELECTION_ALPHA: u8 = 0x4d;
-/// Alpha of the accent wash behind the header/footer band that is the active
-/// edit context (Word-style header/footer edit mode).
 const ACTIVE_BAND_FILL_ALPHA: u8 = 0x14;
-/// Alpha of the veil drawn over the body while a header/footer is being
-/// edited, so the body visibly recedes (like Word dimming the body in that mode).
 const BODY_DIM_VEIL_ALPHA: u8 = 0x66;
 
-/// The colours the page draws with, resolved once per frame from
-/// the [`Theme`]: the sheet itself and the theme's intents made legible on it.
-/// Window chrome reads the theme directly; only the document surface needs
-/// colours measured against the paper.
+/// The colours the page draws with, resolved each frame from the [`Theme`].
 #[derive(Clone, Copy)]
 struct ChromeColors {
-    /// The OS accent made legible on the paper: the caret, the selection
-    /// tint and the active header/footer band's edge and tab.
     paper_accent: Color,
-    /// Label ink on a [`Self::paper_accent`] fill (the band's tab).
     on_paper_accent: Color,
-    /// The theme's `danger` made legible on the paper: the spelling squiggle.
     paper_danger: Color,
-    /// Whisper tint on the sheet (missing-image / fidelity placeholders).
     paper_tint: Color,
-    /// Hairline on the sheet (placeholder edges, image-handle contrast).
     paper_edge: Color,
-    /// The paper sheet: never darker than the window behind it in a light
-    /// theme, and the canonical light sheet ([`PAPER_DEFAULT`]) under a dark
-    /// one, so the dark-authored document ink always reads.
+    /// The paper sheet: never darker than the window behind it in a light theme, and the
+    /// canonical sheet under a dark one, so the document ink always reads.
     paper: Color,
-    /// The sheet's lift off the desk behind it.
     paper_elevation: ui::tokens::Shadow,
 }
 
 impl ChromeColors {
-    /// Map the [`Theme`] onto the page's palette.
     fn for_theme(theme: &Theme) -> Self {
         let c = &theme.tokens.colors;
-        // A light theme's raised tier is often a well, recessed below the
-        // window ground; paper on it reads grey, as if disabled. The page is
-        // the lightest of that tier, the window ground and the canonical
-        // sheet, so it never sinks below the desk it lies on.
+        // Paper on a light theme's raised tier reads grey, as if disabled: take the lightest of
+        // that tier, the window ground and the canonical sheet.
         let paper = [c.surfaces.raised, c.surfaces.content, PAPER_DEFAULT]
             .into_iter()
             .filter(|colour| luminance(*colour) >= 0.85)
@@ -232,8 +195,6 @@ impl ChromeColors {
     }
 }
 
-/// Relative luminance (0..1) of a colour — used only to decide whether a theme's
-/// raised surface is light enough to serve as paper.
 fn luminance(c: Color) -> f64 {
     let r = f64::from(c.r()) / 255.0;
     let g = f64::from(c.g()) / 255.0;
@@ -242,54 +203,25 @@ fn luminance(c: Color) -> f64 {
 }
 
 const PAGE_TOP: f64 = 28.0;
-/// The least a page keeps beside either pane: the column it would lose the
-/// sheet whole in. Below that width the pane floats instead of docking.
 const PAGE_KEEPS: f64 = MAX_PAGE_W / 2.0;
-/// The window width (at 1×) from which the outline docks beside a page it
-/// leaves readable; below it the outline is a drawer over the page.
 const OUTLINE_DOCKS_FROM: f64 = ui::tokens::Metrics::BASE.panel_min_width as f64 + PAGE_KEEPS;
-/// The width from which the inspector docks beside a whole page; below it
-/// the inspector is a sheet over the page.
 const INSPECTOR_DOCKS_FROM: f64 =
     ui::tokens::Metrics::BASE.inspector_width as f64 + MAX_PAGE_W + 48.0;
 const MAX_PAGE_W: f64 = 820.0;
-/// Body blocks retained as rich views for a large imported document. The
-/// canonical CRDT remains complete; this is strictly the renderer's bounded
-/// working set (the selected block and a generous viewport band).
 const VIEWPORT_BLOCK_WINDOW: usize = 192;
-/// Approximate body-block extent used only to choose a large-document window
-/// before it has been shaped. Measured blocks immediately replace this estimate
-/// inside the loaded window; it prevents an offscreen import from being shaped
-/// just to find the initial viewport.
 const ESTIMATED_BLOCK_EXTENT: f64 = 34.0;
-/// Small documents keep the straightforward all-block cache. Larger imports
-/// switch to the bounded viewport cache below.
 const VIRTUALIZE_BODY_AFTER: usize = VIEWPORT_BLOCK_WINDOW * 2;
-/// Vertical gap between consecutive discrete pages (the canvas shows through it),
-/// à la Google Docs. Together with `LETTER_RATIO` this drives true pagination.
 const PAGE_GAP: f64 = 22.0;
 const CARET_WIDTH: f64 = 2.0;
-/// Find-match highlight is chrome on the paper — see `ChromeColors::find_highlight`.
-/// Amplitude (px) of the wavy spell-check underline.
 const SQUIGGLE_AMP: f64 = 1.6;
-/// Horizontal period (px) of one full wave of the spell-check underline.
 const SQUIGGLE_PERIOD: f64 = 4.0;
-/// Thin separator above the footnote area at the bottom of a page.
-/// Paper content (the footnote rule), not OS chrome.
 const NOTE_SEP: Color = Color::from_rgb8(0xb8, 0xb8, 0xbe);
-/// Footnote body text colour (slightly muted vs. body ink). Paper content.
 const NOTE_INK: Color = Color::from_rgb8(0x3a, 0x3a, 0x40);
-/// Footnote text size (smaller than body) and the gap above the separator.
 const NOTE_CONTENT_PX: f32 = 11.0;
 const NOTE_AREA_GAP: f64 = 10.0;
 
-// Panel + guide chrome colours are theme-driven — see `ChromeColors`, not new consts.
-// Layout guides + handles use the theme accent — see `chrome.accent`/`chrome.accent_faint`.
-/// How close (px) the pointer must be to a guide line to grab it.
 const GUIDE_GRAB: f64 = 7.0;
 
-/// Which layout element the bottom bar is editing. Each mode shows draggable
-/// guides on the page with live preview.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum LayoutMode {
     None,
@@ -297,7 +229,6 @@ enum LayoutMode {
     Spacing,
 }
 
-/// A per-side measurement (page margins / border insets), in px.
 #[derive(Clone, Copy, Debug)]
 struct Edges {
     top: f64,
@@ -341,18 +272,13 @@ enum Side {
     Left,
 }
 
-/// How a guide drag distributes to the other sides.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum DragKind {
-    /// Plain: move the grabbed side and its opposite symmetrically.
     Pair,
-    /// Shift: move only the grabbed side.
     Single,
-    /// Ctrl: scale all four sides proportionally.
     Proportional,
 }
 
-/// An active guide drag: which layout element, which side, and how it distributes.
 #[derive(Clone, Copy)]
 struct GuideDrag {
     mode: LayoutMode,
@@ -360,10 +286,8 @@ struct GuideDrag {
     kind: DragKind,
 }
 
-/// A transient free-object move. The document is only written on release, so a
-/// long pointer drag does not flood collaboration/history with intermediate
-/// coordinates; the final placement is one canonical action and gets the same
-/// stale-target refusal as palette-driven placement.
+/// A free-object move: the document is written on release only, as one action that gets
+/// the same stale-target refusal as a placed one.
 #[derive(Clone)]
 struct ObjectDrag {
     id: String,
@@ -387,7 +311,6 @@ impl Side {
     }
 }
 
-/// A numeric property of a style the panel can scrub or type into.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum NumField {
     Size,
@@ -420,7 +343,6 @@ impl NumField {
             NumField::Indent => s.indent = v,
         }
     }
-    /// The field the inspector edits this property with.
     fn input(self) -> ui::widget::NumberInput {
         let (min, max) = match self {
             NumField::Size => (6.0, 200.0),
@@ -433,7 +355,6 @@ impl NumField {
             .compact()
             .with_accessible_name(self.label())
     }
-    /// Stepper (+/-) increment.
     fn step(self) -> f32 {
         match self {
             NumField::Size => 1.0,
@@ -461,47 +382,26 @@ impl NumField {
     }
 }
 
-/// A clickable target inside the styles panel, resolved on press.
 #[derive(Clone, Debug, PartialEq)]
 enum PanelHit {
-    /// Dismiss the contextual inspector. Especially important when the panel
-    /// is a narrow-window overlay rather than a docked rail.
     Close,
-    /// Apply this style id to the selection / caret block.
     Pick(String),
-    /// Set the alignment of the **current paragraph(s)** (an instance `align`
-    /// attr — direct formatting, not the style default). The "This paragraph"
-    /// section, distinct from the named-style editor below it.
     ParaAlign(&'static str),
     SetColor([u8; 3]),
-    /// Open the shared colour-picker popover to choose an arbitrary colour for
-    /// the focused style (beyond the quick-preset swatches).
     OpenColorPicker,
-    /// Duplicate the current style under a fresh id and apply it.
     NewStyle,
-    /// Scale the selected image by a factor (a resize stepper: `0.9` shrinks,
-    /// `1.1` grows). Keeps the aspect ratio.
     ImageScale(f64),
-    /// Mirror the selected image horizontally (left↔right).
     ImageFlipH,
-    /// Mirror the selected image vertically (top↔bottom).
     ImageFlipV,
-    /// Inset every source edge by five percent. The canonical crop action
-    /// rejects any crop that would leave too little source visible.
+    /// Inset every edge by five percent; a crop that leaves too little source is refused.
     ImageCropInset,
-    /// Restore the full source image without changing its display frame.
     ImageCropReset,
-    /// Put the selected object back in the text flow, between paragraphs.
     ImageInline,
-    /// Turn the selected object into a freely positioned page object.
     ImageFreePosition,
     ImageWrapLeft,
-    /// Float the selected object at paragraph scope, with text on its left.
     ImageWrapRight,
 }
 
-/// The zoom field of the status band: the page scale in percent, stepped
-/// by ten.
 fn zoom_field() -> ui::widget::NumberInput {
     ui::widget::NumberInput::new(100.0)
         .with_range(ZOOM_MIN * 100.0, ZOOM_MAX * 100.0)
@@ -512,9 +412,6 @@ fn zoom_field() -> ui::widget::NumberInput {
         .with_accessible_name(t("a11y-zoom"))
 }
 
-/// The inspector's line-spacing menu: it keeps the spacing it shows, and a
-/// pick shows there until the editor reads it
-/// ([`Editor::drain_hosted_fields`]).
 fn line_spacing_menu() -> ui::widget::Dropdown {
     let labels: Vec<String> = block_layout::LINE_SPACINGS
         .iter()
@@ -525,16 +422,12 @@ fn line_spacing_menu() -> ui::widget::Dropdown {
         .with_accessible_name(t("a11y-line-spacing"))
 }
 
-/// The inspector's paragraph-style menu: it keeps the style id it shows, and
-/// a pick shows there until the editor reads it.
 fn style_pick_menu() -> ui::widget::Dropdown {
     ui::widget::Dropdown::from_state(Vec::new(), &ui::LocalState::new(String::new()))
         .control_size(ControlSize::Small)
         .with_accessible_name(t("panel-style"))
 }
 
-/// The toggleable inline mark a tilo-doc mark name denotes (Ctrl+B/I/U, toolbar,
-/// super/sub), for routing through `editing::toggle_mark`.
 fn inline_mark(name: &str) -> Option<crate::actions::editing::InlineMark> {
     use crate::actions::editing::InlineMark;
     Some(match name {
@@ -548,13 +441,7 @@ fn inline_mark(name: &str) -> Option<crate::actions::editing::InlineMark> {
     })
 }
 
-/// Per-visual-line `(line_top, line_height)` for a shaped layout (same coordinate
-/// space as `selection_rects`/`caret_geometry`). Used by intra-block pagination to
-/// find the line boundary at which a too-tall block splits across a page.
-///
-/// `RichTextLayout` has no line iterator, so tops are recovered from selection
-/// rects of the full text; blank wrapped lines (no glyphs, no rect) are back-filled
-/// at the uniform line advance. Result is sorted, deduped, and spans `[0, height())`.
+/// Per-line `(top, height)` of a shaped layout, to split a too-tall block across pages.
 #[allow(
     clippy::while_float,
     reason = "line_h/step are clamped to >= 1.0 above each loop, so every \
@@ -567,8 +454,7 @@ fn layout_line_tops(layout: &RichTextLayout, text: &str) -> Vec<(f64, f64)> {
         .into_iter()
         .map(|(_, y0, _, y1)| (f64::from(y0), f64::from(y1 - y0)))
         .collect();
-    // `selection_rects` may emit several spans on the same line (one per run); keep
-    // one entry per distinct top, preferring the larger height for that line.
+    // `selection_rects` may span a line several times: one entry per top, the larger height.
     tops.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     tops.dedup_by(|b, a| {
         if (a.0 - b.0).abs() < 0.5 {
@@ -582,13 +468,11 @@ fn layout_line_tops(layout: &RichTextLayout, text: &str) -> Vec<(f64, f64)> {
     if tops.is_empty() {
         return vec![(0.0, total_h.max(1.0))];
     }
-    // Ensure the first line starts at the top (a leading blank line has no rect).
     let line_h = tops.first().map_or(1.0, |&(_, h)| h).max(1.0);
     while tops.first().is_some_and(|&(top, _)| top > line_h * 0.5) {
         let first_top = tops.first().map_or(0.0, |&(top, _)| top);
         tops.insert(0, (first_top - line_h, line_h));
     }
-    // Back-fill any trailing blank lines so the tops span the full height.
     let Some(&(last_top, last_h)) = tops.last() else {
         return tops;
     };
@@ -601,14 +485,11 @@ fn layout_line_tops(layout: &RichTextLayout, text: &str) -> Vec<(f64, f64)> {
     tops
 }
 
-/// A digest-addressed stand-in key (`PresenceKey::from_scope_digest`).
 fn is_scope_digest_key(key: &PresenceKey) -> bool {
     matches!(key, PresenceKey::Widget { path }
         if matches!(path.first(), Some(PathSegment::Field(field)) if field == ui::presence::DIGEST_KEY_FIELD))
 }
 
-/// A part of the document state last copied into the editor's views, kept
-/// by reference so an unchanged part is recognised without comparing it.
 struct Copied<T>(Option<std::rc::Rc<T>>);
 
 impl<T> Default for Copied<T> {
@@ -618,7 +499,6 @@ impl<T> Default for Copied<T> {
 }
 
 impl<T> Copied<T> {
-    /// Whether `current` is not the part last seen; remembers it.
     fn see(&mut self, current: &std::rc::Rc<T>) -> bool {
         if self
             .0
@@ -633,15 +513,11 @@ impl<T> Copied<T> {
 }
 
 impl<T: Clone> Copied<T> {
-    /// A copy of `current` when it is not the part last copied.
     fn take_if_new(&mut self, current: &std::rc::Rc<T>) -> Option<T> {
         self.see(current).then(|| T::clone(current))
     }
 }
 
-/// Draw on `view` the comment marks of the threads about its text: one mark
-/// per thread, valued with the thread's id, as the review margin and the
-/// context menu read them.
 fn mark_comments(view: &mut BlockView, comments: &[tilo_doc::CommentView]) {
     view.marks
         .retain(|mark| mark.name != tilo_doc::schema::MARK_COMMENT);
@@ -659,15 +535,12 @@ fn mark_comments(view: &mut BlockView, comments: &[tilo_doc::CommentView]) {
     }
 }
 
-/// What the editor last copied out of the document state.
 #[derive(Default)]
 struct CopiedParts {
-    /// The shared paragraph behind each of `Editor::blocks`.
     blocks: Vec<std::rc::Rc<BlockView>>,
     header: Copied<Vec<BlockView>>,
     footer: Copied<Vec<BlockView>>,
     notes: Copied<Vec<NoteView>>,
-    /// The comment threads last drawn, with where their text was.
     comments: Vec<tilo_doc::CommentView>,
     changes: Copied<Vec<tilo_doc::ChangeView>>,
     content: Copied<std::collections::BTreeSet<String>>,
@@ -679,31 +552,13 @@ struct PartsUpdate {
     header: Option<Vec<BlockView>>,
     footer: Option<Vec<BlockView>>,
     notes: Option<Vec<NoteView>>,
-    /// The document's set of content addresses changed: fetch what is new.
     content: bool,
     review: Option<(Vec<tilo_doc::CommentView>, Vec<tilo_doc::ChangeView>)>,
 }
 
-/// The collaboration presence key for a document block, keyed by its **stable
-/// CRDT block id** (not its index): two peers share the same Automerge object
-/// ids for a given block, whereas a block's positional index drifts as peers
-/// concurrently insert/delete blocks. Keying by id therefore keeps a remote
-/// peer's caret/selection pinned to the right paragraph even while the document
-/// is being restructured. Used by BOTH the outbound `presence_payload` (so the
-/// App broadcasts the local caret/selection under this key) and the inbound
-/// render pass (so received caret/selection presence maps back onto the same
-/// block) — keeping the two halves in agreement is the whole point of the
-/// single helper.
-/// The presence key a word-processor block is addressed by on the wire.
-///
-/// Spelled out here rather than shared: this is the cross-process contract
-/// `apps/agent` reproduces from the outside (it has no window and no pointer,
-/// only a caret to publish), so the two sides must independently agree on the
-/// exact key shape.
-///
-/// The presence key of a paragraph. Hosted, it is the framework's resource
-/// key for the paragraph, the same on every collaborator's screen whatever
-/// their layout; standalone, the editor's own widget path.
+/// The presence key of a paragraph: its stable CRDT block id, not its index, so a peer's
+/// caret stays on the same paragraph while the document is restructured. `apps/agent`
+/// reproduces this key shape from outside.
 fn block_presence_key(block_id: &str) -> PresenceKey {
     ui::framework::ResourceSelection::Item(block_id.to_owned())
         .presence::<tilo_document::RichText>(
@@ -712,14 +567,8 @@ fn block_presence_key(block_id: &str) -> PresenceKey {
         .0
 }
 
-/// One non-local participant's caret or selection, published by the host
-/// under that participant's identity (see
-/// [`Editor::participant_presence`]).
 pub use ui::ParticipantPresence;
 
-/// The presence payload for `view`, exactly as the local window derives its
-/// own in `presence_payload`: the selection's part inside the caret block
-/// when non-empty, else the bare caret; byte offsets into the block text.
 fn participant_presence_payload(
     view: &crate::actions::participant::ParticipantView,
     doc: &AutoCommit,
@@ -748,48 +597,27 @@ fn participant_presence_payload(
     })
 }
 
-/// A resolved remote collaborator caret to paint this frame: the on-screen
-/// caret rectangle (in *content* space, ready to be mapped through the page
-/// content transform), the peer's id (for colour + the name label), and the
-/// label text. Produced by [`Editor::remote_presence_overlays`]
-/// from the live `PresenceCtx` + the frame's laid-out blocks so the geometry is
-/// pixel-identical to a local caret — never a re-derived approximation.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RemoteCaretOverlay {
     pub user: UserId,
     pub rect: Rect,
-    /// The pill text: the workspace's name for this peer, or their id if unnamed.
-    /// Resolved here (not at paint time) so it is directly assertable.
     pub label: String,
 }
 
-/// A resolved remote collaborator selection to paint this frame: one-or-more
-/// on-screen rectangles (a wrapped selection spans several lines) in content
-/// space, plus the peer it belongs to.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RemoteSelectionOverlay {
     pub user: UserId,
     pub rects: Vec<Rect>,
 }
 
-/// A measured table row within [`Editor::paginate_blocks`]'s
-/// table-layout branch: `(row_height, cells)`, each cell as `(col,
-/// cell_height, block)`.
 type TableRow<'a> = (f64, Vec<(usize, f64, &'a BlockView)>);
 
-/// `prepare_pass2_inputs`'s `(multi_sel, note_nums, spell_by_block)` result:
-/// whether the selection spans multiple cells, footnote citation numbers
-/// keyed by block id, and (when spell-check is on) misspelled byte spans
-/// keyed by block id.
 type Pass2Inputs = (
     bool,
     HashMap<String, usize>,
     HashMap<String, Vec<(usize, usize)>>,
 );
 
-/// Draw a wavy red spell-check underline from `x0` to `x1` at baseline `y`, in the
-/// given (already zoom-adjusted) transform. Approximated by short line segments
-/// tracing a sine so it reads as a squiggle without per-glyph curve math.
 #[allow(
     clippy::while_float,
     reason = "x advances by the fixed positive SQUIGGLE_PERIOD/2.0 each turn \
@@ -819,58 +647,32 @@ fn draw_squiggle(scene: &mut Scene, transform: Affine, color: Color, x0: f64, x1
     );
 }
 
-/// A block laid out for the current frame; kept for click hit-testing. The
-/// shaped `RichTextLayout` itself lives in `Editor::layout_cache`
-/// (keyed by `id`) so it can be reused across frames; look it up by `id`.
+/// A block laid out for the current frame, for click hit-testing; the shaped layout itself
 #[derive(Clone)]
 struct Laid {
     id: String,
     text: String,
     kind: String,
     size: f32,
-    /// On-screen top of this slice's visible band (post-scroll). For an unsplit
-    /// block this is where the shaped layout's first line sits. For a block split
-    /// across a page boundary, each slice is a separate `Laid` and `y_top` is the
-    /// top of the band that slice occupies on its page.
+    /// The top of this slice's band on screen after scroll; a split block has one slice per page.
     y_top: f64,
     text_x: f64,
     width: f64,
-    /// On-screen height of this slice's visible band. For an unsplit block this is
-    /// the full shaped-layout height; for a split slice it is only the height of
-    /// the lines that fall on this slice's page.
     height: f64,
-    /// Y where the shaped layout's internal origin (`line_top` = 0) maps on screen.
-    /// All layout-relative geometry (`selection_rects`, `caret_geometry`, `hit`)
-    /// is measured from here, so a line at internal `line_top` draws at
-    /// `layout_y + line_top`. Equals `y_top` for an unsplit block; for the lower
-    /// slice of a split block it sits *above* `y_top` (and above the page) so the
-    /// first carried-over line lands at the next page's top margin.
+    /// Where the shaped layout's origin maps on screen: layout-relative geometry is measured
+    /// from here, and a lower slice of a split block sits above its own top.
     layout_y: f64,
-    /// When a block is split across pages this slice must clip its drawing to its
-    /// own band so lines belonging to other slices (which share the same layout,
-    /// mapped through `layout_y`) do not bleed onto this page. `None` for unsplit
-    /// blocks (the band equals the whole layout, so no clip is needed).
     clip: Option<Rect>,
     bullet: Option<String>,
-    /// Resolved text colour from the block's style.
     ink: Color,
-    /// For `image` blocks: the blob hash to paint into this block's rect.
     image_hash: Option<String>,
-    /// Full grid-cell rectangle (table cells only) — for borders + precise hit.
     cell_box: Option<Rect>,
-    /// Grid row index (table cells only) — for header tint + zebra striping.
     cell_row: Option<usize>,
-    /// The page index this item was laid onto (0-based). Used to assign footnotes
-    /// to the page where their reference marker falls.
     page: usize,
-    /// The input method's composition while it is laid out in this block:
-    /// `text` stays the committed text, the shaped layout shows the
-    /// composition at the caret.
     composition: Option<EditCore>,
 }
 
 impl Laid {
-    /// The shaped layout's byte for committed char `offset`.
     fn layout_byte(&self, offset: usize) -> usize {
         shown_byte(
             self.composition.as_ref(),
@@ -879,18 +681,14 @@ impl Laid {
         )
     }
 
-    /// The shaped layout's byte for committed byte `byte`.
     fn shown(&self, byte: usize) -> usize {
         shown_byte(self.composition.as_ref(), &self.text, byte)
     }
 
-    /// The committed char offset of shaped layout byte `byte`.
     fn offset_at(&self, byte: usize) -> usize {
         committed_offset(self.composition.as_ref(), &self.text, byte)
     }
 
-    /// Where the caret at committed char `offset` draws in the shaped layout:
-    /// inside the composition at the input method's cursor while composing.
     fn caret_byte(&self, offset: usize) -> usize {
         self.composition.as_ref().map_or_else(
             || char_to_byte(&self.text, offset),
@@ -899,14 +697,10 @@ impl Laid {
     }
 }
 
-/// Committed byte `byte` of `text` mapped into the text as laid out with
-/// `composition` shown at the caret.
 fn shown_byte(composition: Option<&EditCore>, text: &str, byte: usize) -> usize {
     composition.map_or(byte, |core| core.to_display(text, byte))
 }
 
-/// Laid-out byte `byte` mapped back to a committed char offset of `text`;
-/// a point inside the composition lands at the caret it is composed at.
 fn committed_offset(composition: Option<&EditCore>, text: &str, byte: usize) -> usize {
     byte_to_char(
         text,
@@ -914,45 +708,25 @@ fn committed_offset(composition: Option<&EditCore>, text: &str, byte: usize) -> 
     )
 }
 
-/// A floated image's reserved column, live while subsequent body blocks lay out
-/// (coarse text-wrap). While `bottom` has not been passed, paragraphs on
-/// the same page are shaped at a reduced width and offset to the non-float side so
-/// they sit beside the image rather than under it. This is a *coarse* wrap: the
-/// whole paragraph is narrowed for its full height (not per wrapped line), because
-/// `ui::richtext` has no per-line exclusion zone. Once `y` clears `bottom`, blocks
-/// return to full width.
+/// A floated image's column: paragraphs on its page are shaped narrower beside it, whole
+/// rather than per line, until the flow passes its bottom.
 #[derive(Clone, Copy)]
 struct FloatReserve {
-    /// `true` = image floated to the LEFT edge (text pushed right); `false` = RIGHT
-    /// edge (text stays left, just narrowed).
     left: bool,
-    /// Width the text column must give up: image width + gutter (px).
     reserve_w: f64,
-    /// Content-space y (pre-scroll) where the image's band ends; blocks whose top
-    /// is above this are narrowed, blocks at/below it are full-width again.
     bottom: f64,
-    /// Page index the float lives on — a float only narrows blocks on its own page.
     page: usize,
 }
 
-/// One header/footer block laid out for the active edit context this frame, kept
-/// for click hit-testing + caret rendering inside the band. Mirrors [`Laid`] but
-/// carries the shaped layout inline (the band's layouts are small and not cached
-/// across frames). Coordinates are content space (the band draws through `ctf`).
 struct RegionLaid {
     id: String,
-    /// The committed text; `layout` shows `composition` at the caret.
     text: String,
-    /// Top-left origin of the run in content space.
     origin: Point,
     layout: RichTextLayout,
     composition: Option<EditCore>,
 }
 
-/// US-Letter page height in inches (width is 8.5in → `MAX_PAGE_W` px).
 const LETTER_RATIO: f64 = 11.0 / 8.5;
-/// Gap between a floated image's edge and the text column that wraps beside
-/// it, in [`Editor::paginate_blocks`]'s float-reserve math.
 const FLOAT_GUTTER: f64 = 12.0;
 
 struct EditorLifecycle {
@@ -969,24 +743,13 @@ struct ViewPreferences {
 struct ProofingPreferences {
     enabled: bool,
     language: String,
-    /// Whether the editor follows the host's personal dictionary; false
-    /// until it is attached, which keeps added words in memory only.
     personal: bool,
-    /// The personal words the dictionary was last built with.
     personal_words: proofing::PersonalDictionary,
-    /// The person's spelling preferences every app follows, which name the
-    /// language words are checked in; `None` until attached.
     shared: Option<ui::framework::Setting<ui::text_assistance::TextAssistancePrefs>>,
-    /// The shared spelling language last applied, so a change made in
-    /// Settings (or on another device) reaches an open editor once.
     applied_language: Option<String>,
 }
 
 impl ProofingPreferences {
-    /// The session's language. A unit test starts from a fixed English
-    /// checker instead, so its results do not depend on the host locale; a
-    /// test that exercises another sets it explicitly. The person's words
-    /// arrive with the editor's settings when it is attached.
     fn for_session() -> Self {
         Self {
             enabled: true,
@@ -1003,7 +766,6 @@ impl ProofingPreferences {
     }
 }
 
-/// The revision and preview state represented by the materialized body views.
 #[derive(Default)]
 struct MaterializedBody {
     heads: Vec<ChangeHash>,
@@ -1015,286 +777,136 @@ pub struct Editor {
     inner: WordProcessor,
     rect: Rect,
     lifecycle: EditorLifecycle,
-    /// Where edits go: the framework's dispatcher, which checks the
-    /// participant's permission, attributes each edit and groups typing into
-    /// undo steps. `None` until attached; nothing is written then.
+    /// Where edits go: checks permission, attributes each edit, groups typing into undo steps.
     dispatch: Option<ui::framework::Dispatcher<crate::framework::Document>>,
-    /// The document as the framework keeps it, shared with History mode,
-    /// search and the palette. `None` until attached.
     source: Option<ui::framework::Live<crate::framework::Document>>,
-    /// The kept state changed in a sync made mid-edit, and the views have
-    /// not yet been refreshed from it.
     source_unseen: bool,
-    /// What was last copied out of the state, to copy only what changed.
     copied: CopiedParts,
     pointer: Point,
     drag: DragSelect,
-    /// The word or paragraph a double- or triple-click selected, as its
-    /// `(start, end)` carets: a drag that continues the click grows the
-    /// selection by whole units and always keeps this one in it.
     drag_unit: Option<(Caret, Caret)>,
     path: Option<PathBuf>,
-    /// Where the document was saved when that place has no path here (a
-    /// browser page's Save dialog file), and as what: every later Save
-    /// writes there without asking, and only Save As asks again.
+    /// Where the document was saved when that place has no path here, and as what: every
+    /// later Save writes there, and only Save As asks again.
     kept: Option<(ui::portal::SaveDestination, WpFormat)>,
     format: Option<WpFormat>,
-    /// The window bar's search over the document: its query, matches and
-    /// the replacements waiting for the document.
     find: DocumentFind,
-    /// Image bytes (content address → bytes) fetched from the content store for the images the
-    /// document references, plus a
-    /// lazily-decoded image cache (`None` = decode failed / unsupported format).
     blobs: std::collections::BTreeMap<String, Vec<u8>>,
     image_cache: std::collections::HashMap<String, Option<ui::widget::Image>>,
     blocks: Vec<BlockView>,
-    /// Canonical body order for a large document. This is intentionally ids
-    /// only: offscreen rich text/marks/attrs stay in tilo-doc until its viewport
-    /// window asks for them.
     body_order: std::rc::Rc<tilo_document::BodyOrder>,
-    /// Start offset into `body_order` represented by `blocks`.
     body_window_start: usize,
-    /// Committed/pending revision and ruler previews represented by the body.
     materialized: MaterializedBody,
     #[cfg(test)]
     reference_text_rendering: bool,
-    /// Page-header block sequence (drawn in every page's top-margin band). A
-    /// `page-number` field marker is substituted with the page number per page.
+    /// The page header's blocks, drawn in every page's top margin; `page-number` fills in.
     header: Vec<BlockView>,
-    /// Page-footer block sequence (drawn in every page's bottom-margin band).
-    /// Mirrors `header`. When empty, a subtle default "Page N" indicator is drawn.
     footer: Vec<BlockView>,
     laid: Vec<Laid>,
-    /// Laid geometry of the header/footer band currently being edited (empty when
-    /// editing the body); content space, so hit-testing/caret reuse body coordinates.
     region_laid: Vec<RegionLaid>,
-    /// The header / footer band rects of the reference (first) page in content
-    /// space, cached each frame so the event handler can hit-test a click into a
-    /// band and switch the edit context. `(header_band, footer_band)`.
     head_band_rect: Rect,
     foot_band_rect: Rect,
-    /// Per-block shaped-text cache, keyed by shape key (text+marks+style+wrap
-    /// width): only edited/resized blocks pay the shaping cost. Pruned each frame.
     layout_cache: HashMap<String, (u64, RichTextLayout)>,
     recent_layout_cache: HashMap<String, (u64, RichTextLayout)>,
-    /// Diagnostics for the layout cache, recomputed each `draw`: number of
-    /// blocks whose layout was reused (`hits`) vs re-shaped (`misses`).
     dbg_layout_hits: usize,
     dbg_layout_misses: usize,
-    /// The window bar's slots, each carrying the command it runs.
     bar: ui::framework::BarCommands<window_bar::BarCommand>,
     paper_theme: Theme,
-    /// The window's theme this frame, for what is drawn on the desk.
     desk_theme: Theme,
-    /// System text scale used to size shared toolbar geometry and its hit map.
-    /// Updated from the live theme before frame geometry is resolved.
     text_scale: f64,
-    /// Last rich copy: `(plain_text, blocks)`. Paste uses it when the system
-    /// clipboard still holds this exact plain text.
     rich_clip: Option<(String, Vec<ClipBlock>)>,
-    /// Vertical scroll offset (px) and the max scroll (content overflow), updated
-    /// each frame from the laid-out content height.
     scroll_y: f64,
     scroll_viewport: f64,
     max_scroll: f64,
-    /// How many pages the document has, as the last pass paginated it.
     pages: usize,
-    /// The distance from one page's top to the next's, in screen px: one page
-    /// down is this far.
     page_pitch: f64,
-    /// How much of the canvas the window's search covers from its top, in
-    /// content px: the document scrolls that far before its start, so a
-    /// match near the start can be shown clear of the search's options.
+    /// How much of the canvas the window's search covers from its top, in content px, so a
+    /// match near the start is shown clear of the search's options.
     find_inset: f64,
-    /// What the window's search covers of the editor
-    /// ([`ui::widget::Findable::set_find_cover`]).
     find_cover: Option<Rect>,
-    /// The document's stylesheet (component-instance styles). Authoritative copy
-    /// in the widget; reloaded from the doc when not mid-drag, persisted on edit.
     sheet: crate::styles::StyleSheet,
-    /// Page margins — fully customizable by dragging guides on the page.
     margins: Edges,
     layout_mode: LayoutMode,
-    /// Active guide drag (the side being dragged), if any.
     guide_drag: Option<GuideDrag>,
-    /// A page-positioned image currently being dragged directly on canvas.
     object_drag: Option<ObjectDrag>,
-    /// Whether the horizontal ruler band is shown (toggled via the toolbar
-    /// "Ruler" button + the View bottom-bar chip). Default ON — it is the primary
-    /// surface for margin / indent / tab-stop editing.
     view: ViewPreferences,
-    /// Horizontal ruler component: painting, geometry and marker drag lifecycle.
     ruler: Ruler,
-    /// The page rect in screen space (post-scroll), cached each frame so the
-    /// event handler can hit-test layout guides against it.
     page_rect: Rect,
-    /// How the page shows the document's margins ([`pagination::margin_scale`]),
-    /// cached each frame with the page rect so the ruler draws and drags them
-    /// where the text stands.
     page_margin_scale: f64,
-    /// The bottom layout bar's clickable chips: `(mode, rect)`.
     layout_chips: Vec<(LayoutMode, Rect)>,
     layout_bar_height: f64,
     zoom_viewport: Rect,
-    /// Whether the contextual styles panel is shown (dismissable via the toolbar
-    /// "Styles" toggle).
-    /// The styles panel rect in screen space, cached each frame for hit-testing.
     panel_rect: Rect,
-    /// Clickable targets inside the styles panel, rebuilt each draw.
     panel_hits: Vec<(Rect, PanelHit)>,
     segmented_touch: SegmentedTouch,
-    /// The numeric field currently being typed into (click-to-type), if any.
     editing_field: Option<NumField>,
-    /// The inspector's style property fields.
     num_inputs: Vec<NumSlot>,
-    /// The inspector's line-spacing menu, the value it last showed, and where
-    /// it was drawn.
     line_spacing: ui::widget::Dropdown,
     line_spacing_shown: String,
     line_spacing_rect: Rect,
-    /// A failed save, shown as an error banner under the toolbar until the
-    /// next save succeeds or it is dismissed; holds the banner's dismiss
-    /// control as last drawn.
     save_error: Option<Rect>,
-    /// The inspector's paragraph-style menu: the style it last showed, the
-    /// `(id, name)` choices it offers, and where it was drawn.
     style_pick: ui::widget::Dropdown,
     style_pick_shown: String,
     style_pick_options: Vec<(String, String)>,
     style_pick_rect: Rect,
-    /// The inspector's scrolled column and how far it scrolls.
     panel_body: Rect,
     panel_scroll: f64,
     panel_max_scroll: f64,
-    /// The zoom field in the status band, and where it was drawn.
     zoom_input: ui::widget::NumberInput,
     zoom_rect: Rect,
-    /// Local page scale plus its toolbar drawing and hit-testing.
     zoom: ZoomControl,
-    /// Follow the available canvas width until the user explicitly operates a
-    /// zoom control. This makes a narrow/tiled editor readable on first open.
-    /// Footnotes / endnotes (materialized from the doc), sorted by note id; the
-    /// in-text numbering is derived from `note-ref` document order, not this order.
     notes: Vec<NoteView>,
-    /// The English dictionary, loaded lazily on first spell-check pass (it is
-    /// ~75k words, so building it eagerly would slow every cold start). Cloned
-    /// once from the process-wide shared built-in list (parsed at most once per
-    /// process), then **owned** by this widget so "Add to dictionary" can splice
-    /// user words into it via [`spellcheck::Dictionary::add_word`]. The
-    /// person's own words are layered in when it is built.
+    /// The English dictionary, built on the first spell-check pass (~75k words), then owned
+    /// here so words can be added to it.
     dict: Option<spellcheck::Dictionary>,
-    /// Whether spell-checking (the red squiggles) is enabled. Default ON.
-    /// Document/session dictionary selected for multilingual checking.
     proofing: ProofingPreferences,
     last_autocorrection: Option<DocumentAutocorrection>,
-    /// Per-block spell-check cache: block id → (text, misspelled byte spans). Keyed
-    /// by the block's text so an edit (which changes the text) invalidates the
-    /// entry and re-checks; an unchanged block reuses the spans for free.
+    /// Per-block spell-check cache, keyed by the block's text so an edit invalidates it.
     spell_cache: HashMap<String, (String, Vec<(usize, usize)>)>,
-    /// Right-click context menu (Cut / Copy / Paste / Select All, plus spell-check
-    /// "Add to dictionary" + suggestion rows when the clicked word is flagged).
-    /// Reuses the shared [`ContextMenu`] primitive; painted in the overlay pass.
     context_menu: ContextMenu,
-    /// Per-row action parallel to `context_menu`'s items (separators map to
-    /// `None`). A left-click on a row dispatches by index through this list.
     context_actions: Vec<Option<CtxAction>>,
-    /// The compact toolbar's labeled, keyboard/semantic shared swatch grid.
-    /// It is local view state; selecting a colour routes through `ToolAction`.
     compact_swatch_palette: CompactSwatchPalette,
     action_palette_request: Option<tilo_actions::ActionAddress>,
-    /// Comment/tracked-change visibility, materialized items, card drawing, and
-    /// frame-local action hit targets. Document mutation remains editor policy.
     review: ReviewOverlay,
-    /// The selected durable comment resource, if its thread composer is open.
-    /// This stays outside `ReviewOverlay`: that overlay only lays out inline
-    /// anchors/cards; the editor owns input and action dispatch.
     thread_comment: Option<String>,
-    /// A materialized snapshot supplied only by the headless visual scenario.
-    /// Interactive threads always resolve their current value from `review`.
     thread_snapshot: Option<tilo_doc::snapshot::CommentView>,
-    /// The reply being written, in the SDK editor: Ctrl+Enter sends it,
-    /// Escape closes the thread.
     thread_reply: Embedded<RichTextSurface<Draft>>,
-    /// The thread's replies as written, one view each.
     thread_reply_views: Vec<RichTextView>,
     thread_panel: Rect,
     thread_submit: Rect,
     thread_cancel: Rect,
-    /// Document-outline visibility, drawing, and frame-local hit geometry.
     outline: OutlinePane,
-    /// OS-theme-driven chrome palette, resolved at the top of every `draw` from
-    /// the passed-in [`Theme`]. Every chrome helper reads this instead of
-    /// hard-coded colours, so the editor honours light/dark mode + the OS
-    /// palette. Initialised to the dark theme's mapping for off-frame use.
     chrome: ChromeColors,
-    /// The outline (the leading sidebar) and the inspector (the trailing
-    /// panel): docked beside the page in a wide window, floating drawers
-    /// over a scrim in a narrow one.
     outline_drawer: ui::widget::SidebarDrawer,
     inspector_drawer: ui::widget::SidebarDrawer,
-    /// Crash-recovery persistence and its Restore/Discard surface.
-    /// The "New" picker owns its shared menu, lifecycle, and typed outcomes.
     file_menu: FileMenu,
-    /// An in-flight request for an image to insert: `Some` while the host's
-    /// chooser is open; its answer is drained each frame in
-    /// [`Self::drain_image_choice`].
     portal_rx: Option<portal::ContentsChannel>,
-    /// A save whose destination the person chose, written on the next sync
-    /// with the document, and the caller it answers.
     pending_save: Option<(PathBuf, ui::framework::EffectReply)>,
-    /// Right-click style-menu lifecycle, drawing, hit-testing, and typed outcome.
     style_menu: StyleMenu,
-    /// A transient operation result (e.g. save confirmation or failure),
-    /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
     toast: Notice,
-    /// The last frame's drawing, part by part, so a frame reports where it
-    /// differs from it.
     paint_damage: ui::widget::paint_damage::PaintDamage,
     ime_rect: Option<Rect>,
-    /// The style inspector's shared color-picker popover. It owns its lifecycle,
-    /// layout, drawing, and modal input routing; this editor applies its result.
     color_picker: StyleColorPicker,
-    /// Views of the other participants (agents, remote invokers) this widget
-    /// serves: bounded, idle-expiring, rebased on every change, and never
-    /// written into the document. The local window's view is `inner`.
     participants: participants::ParticipantViews,
-    /// A screenshot scenario to stage in the next sync, which has the
-    /// document its actions wrote.
     staged_scenario: Option<String>,
-    /// The person's layout setting, and the layout last applied from or
-    /// written to it; `None` until attached in a window someone uses.
     layout: Option<(
         ui::framework::Setting<proofing::WriterLayout>,
         Option<proofing::WriterLayout>,
     )>,
-    /// The file whose record this is, when the window was launched on one:
-    /// writing it records what it now holds, so a later open can tell a
-    /// change made elsewhere.
     record_file: Option<PathBuf>,
-    /// The Find results of this window's view and of each participant's,
-    /// as the document they were resolved against last placed them: what
-    /// [`ResourceSurface::live_rows`] publishes.
     bound: BoundRows,
-    /// The view an edit effect this window's person invoked leaves them
-    /// with, adopted once the document moved past the version it was built
-    /// against (the edit applied).
     pending_local: Option<(LocalVersion, crate::actions::participant::ParticipantView)>,
-    /// The last action the editor's own affordances dispatched, so a test can
-    /// compare it with what the matching published operation builds.
     #[cfg(test)]
     last_dispatched: Option<crate::actions::RichTextAction>,
 }
 
-/// The Find results the views a window serves offer, resolved at its last
-/// sync.
 #[derive(Default)]
 struct BoundRows {
     local: Vec<ui::framework::LiveRow>,
     participants: HashMap<tilo_actions::ParticipantId, Vec<ui::framework::LiveRow>>,
 }
 
-/// Committed heads plus the open transaction's size: changes whenever an
-/// edit applied.
+/// Committed heads plus the open transaction's size: changes whenever an edit applied.
 type LocalVersion = (Vec<automerge::ChangeHash>, usize);
 
 fn local_version(doc: &AutoCommit) -> LocalVersion {
@@ -1302,7 +914,6 @@ fn local_version(doc: &AutoCommit) -> LocalVersion {
     (doc.base_heads(), doc.pending_ops())
 }
 
-/// The host chooser's request for a document to open.
 fn open_request() -> portal::PickRequest {
     portal::PickRequest::open("Open document", "Open")
         .filter(
@@ -1319,8 +930,6 @@ fn open_request() -> portal::PickRequest {
         .thread_name("wp-portal-open")
 }
 
-/// The host chooser's request for where to save, suggesting `suggested`.
-/// The format follows the extension chosen.
 fn save_request(suggested: &str) -> portal::PickRequest {
     portal::PickRequest::save("Save as", "Save", suggested)
         .filter(portal::FileFilter::new("Word document").glob("*.docx"))
@@ -1337,8 +946,6 @@ fn save_request(suggested: &str) -> portal::PickRequest {
         .thread_name("wp-portal-save")
 }
 
-/// One process-wide built-in dictionary, shared across every word-processor
-/// widget so the ~75k-word list is parsed at most once per process.
 fn shared_dictionary() -> std::sync::Arc<spellcheck::Dictionary> {
     use std::sync::OnceLock;
     static DICT: OnceLock<std::sync::Arc<spellcheck::Dictionary>> = OnceLock::new();
@@ -1353,7 +960,6 @@ impl Default for Editor {
 }
 
 impl Editor {
-    /// Construct from the canonical record; this performs no document writes.
     pub fn from_document(state: &AutoCommit) -> Result<Self, String> {
         let mut widget = Self::new();
         widget.inner.bind_view_only(state, &automerge::ROOT);
@@ -1433,9 +1039,7 @@ impl Editor {
             layout_chips: Vec::new(),
             layout_bar_height: 0.0,
             zoom_viewport: Rect::ZERO,
-            // Keep the writing surface primary on first launch. The complete
-            // style inspector is one click away and becomes an overlay on a
-            // narrow tile rather than permanently consuming half the canvas.
+            // Keep the writing surface primary: the inspector is one click away.
             panel_rect: Rect::ZERO,
             panel_hits: Vec::new(),
             segmented_touch: SegmentedTouch::default(),
@@ -1496,7 +1100,6 @@ impl Editor {
             thread_submit: Rect::ZERO,
             thread_cancel: Rect::ZERO,
             outline: OutlinePane::default(),
-            // Overwritten at the top of every `draw` from the live theme.
             chrome: ChromeColors::for_theme(&Theme::dark()),
             outline_drawer: ui::widget::SidebarDrawer::new()
                 .left()
@@ -1528,8 +1131,6 @@ impl Editor {
         }
     }
 
-    /// Take part in the framework: read the document from its live state and
-    /// submit edits through its dispatcher.
     pub(crate) fn attach_framework(
         &mut self,
         live: ui::framework::Live<crate::framework::Document>,
@@ -1540,9 +1141,6 @@ impl Editor {
         self.source = Some(live);
     }
 
-    /// An editor attached outside any host, as a unit test drives it: its
-    /// edits go through a detached dispatcher to the document its `sync`
-    /// receives, whose live state it reads from the first sync on.
     #[cfg(test)]
     pub(crate) fn detached() -> Self {
         let mut widget = Self::new();
@@ -1552,21 +1150,17 @@ impl Editor {
         widget
     }
 
-    /// The last action the editor's own affordances dispatched.
     #[cfg(test)]
     pub(crate) fn last_dispatched_for_test(&self) -> Option<&crate::actions::RichTextAction> {
         self.last_dispatched.as_ref()
     }
 
-    /// The window shows the record of the file at `path`.
     pub(crate) fn show_record_of(&mut self, path: PathBuf) {
         let format = WpFormat::from_path(&path);
         self.set_file(path.clone(), format);
         self.record_file = Some(path);
     }
 
-    /// `bytes` were written to `path`: when that is the record's own file,
-    /// the record notes what the file now holds.
     fn note_file_written(&self, path: &std::path::Path, bytes: &[u8]) {
         if self.record_file.as_deref() != Some(path) {
             return;
@@ -1578,7 +1172,6 @@ impl Editor {
         }
     }
 
-    /// The Find results of the view of whoever is invoking, as rows.
     pub(crate) fn search_rows(&self) -> Vec<ui::framework::LiveRow> {
         match ui::invocation_scope::current_viewer() {
             Some(participant) => self
@@ -1591,14 +1184,10 @@ impl Editor {
         }
     }
 
-    /// Whether `word` is spelled right here: in the dictionary, or one of
-    /// the person's own words.
     pub fn is_spelled_right(&mut self, word: &str) -> bool {
         self.dictionary().contains(word)
     }
 
-    /// Check spelling in the language the person's shared spelling
-    /// preferences name, and lay the editor out as they last left it.
     pub(crate) fn follow_preferences(
         &mut self,
         shared: ui::framework::Setting<ui::text_assistance::TextAssistancePrefs>,
@@ -1609,9 +1198,6 @@ impl Editor {
         self.follow_settings();
     }
 
-    /// Bring the spelling language and the panels up to date with the
-    /// person's settings, and keep a panel they opened or closed here in
-    /// their layout.
     fn follow_settings(&mut self) {
         if let Some(shared) = &self.proofing.shared {
             let language = shared.get().spelling_language;
@@ -1656,17 +1242,12 @@ impl Editor {
         }
     }
 
-    /// Build the spelling dictionary with the person's own words, and keep
-    /// the words they add there.
     pub(crate) fn follow_personal_dictionary(&mut self) {
         self.proofing.personal = true;
         self.dict = None;
         self.spell_cache.clear();
     }
 
-    /// The document changed: draw it. An editor that has not drawn yet
-    /// still has a caret, at the start of the body, so edits bound to it (a
-    /// table at the caret) can be invoked before the first frame.
     pub(crate) fn present(&mut self, state: &crate::framework::Document) {
         if self.inner.caret().block.is_empty()
             && let Some(first) = state.text().and_then(|text| text.body().id_at(0))
@@ -1679,20 +1260,13 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// Whether this participant may only view the document.
     pub(crate) fn read_only(&self) -> bool {
         self.dispatch
             .as_ref()
             .is_none_or(ui::framework::Dispatcher::read_only)
     }
 
-    /// Lazily build (once) the widget's owned spell-check dictionary: a clone of
-    /// the process-wide shared built-in list (parsed at most once per process)
-    /// with any persisted user words layered in. Owned so "Add to dictionary"
-    /// can mutate it.
     fn dictionary(&mut self) -> &mut spellcheck::Dictionary {
-        // Explicit words added through the shared local host follow every
-        // window: build the spelling overlay again when they change.
         if self.proofing.personal {
             let snapshot = ui::personal_dictionary::snapshot();
             let language = self
@@ -1717,8 +1291,6 @@ impl Editor {
             .get_or_insert_with(|| personal.over(&shared_dictionary()))
     }
 
-    /// Misspelled byte spans for a body block, using `spell_cache` (keyed by the
-    /// block's text so an edit re-checks and an unchanged block is free).
     fn block_spell_spans(&mut self, id: &str, text: &str) -> Vec<(usize, usize)> {
         self.dictionary();
         if let Some((cached_text, spans)) = self.spell_cache.get(id)
@@ -1734,14 +1306,11 @@ impl Editor {
         spans
     }
 
-    /// Toggle the spell-check squiggles on/off (default ON). View-only; forces a
-    /// redraw.
     pub fn toggle_spellcheck(&mut self) {
         self.proofing.enabled = !self.proofing.enabled;
         self.lifecycle.dirty = true;
     }
 
-    /// Whether the spell-check squiggles are currently enabled.
     pub fn spellcheck_enabled(&self) -> bool {
         self.proofing.enabled && ui::text_assistance::preferences().check_spelling
     }
@@ -1750,7 +1319,6 @@ impl Editor {
         &self.proofing.language
     }
 
-    /// Whether the ruler, the styles panel and the outline are shown.
     pub fn panels_shown(&self) -> (bool, bool, bool) {
         (
             self.view.ruler_visible,
@@ -1765,20 +1333,14 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// Toggle comment + tracked-change markup on/off (default ON). View-only;
-    /// forces a redraw and never mutates the document. When off, commented text
-    /// shows without its highlight band/indicator and tracked-change runs render
-    /// as plain text (no review colour / underline / strike).
     pub fn toggle_markup(&mut self) {
         self.review.toggle();
-        // Shaping depends on review visibility because it changes per-run
-        // colours, so force every block to reshape next frame.
+        // Review visibility changes per-run colours, so every block reshapes next frame.
         self.layout_cache.clear();
         self.recent_layout_cache.clear();
         self.lifecycle.dirty = true;
     }
 
-    /// Whether comment + tracked-change markup is currently drawn.
     pub fn markup_enabled(&self) -> bool {
         self.review.is_visible()
     }
@@ -1786,30 +1348,20 @@ impl Editor {
     pub fn model(&self) -> &WordProcessor {
         &self.inner
     }
-    /// Put the responsive style inspector in a deterministic state for
-    /// examples, visual regression shots and embedders.
     pub fn set_styles_panel_open(&mut self, open: bool) {
         self.view.styles_panel_visible = open;
         self.lifecycle.dirty = true;
     }
 
-    /// Stage a representative non-destructive error toast for visual/a11y
-    /// regression shots. Runtime failures use the same toast surface.
     pub fn stage_error_for_shot(&mut self) {
         self.save_error = Some(Rect::ZERO);
         self.lifecycle.dirty = true;
     }
 
-    /// Show the matches of `query` for visual review. The query runs through
-    /// the complete-document search path, so this catches virtualized or
-    /// offscreen result regressions rather than painting mock highlights.
     pub fn stage_find_for_shot(&mut self, state: &AutoCommit, query: &str) {
         self.find_now(state, query);
     }
 
-    /// Open one materialized durable comment thread for visual/a11y review.
-    /// The screenshot path still uses the ordinary production panel rather
-    /// than a fixture-only rendering branch.
     pub fn stage_comment_thread_for_shot(&mut self, comment: tilo_doc::snapshot::CommentView) {
         self.thread_comment = Some(comment.id.clone());
         self.thread_snapshot = Some(comment);
@@ -1817,9 +1369,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// Stage `scenario`'s view state, and the review and image edits its
-    /// paragraphs carry, in the next action settlement.
-    /// A plain capture stages nothing.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         self.staged_scenario = scenario.map(str::to_owned);
         self.lifecycle.dirty = true;
@@ -1837,7 +1386,6 @@ impl Editor {
         }
     }
 
-    /// The first paragraph with text, and its length in characters.
     fn first_text_block(state: &AutoCommit) -> Option<(String, usize)> {
         let containers = crate::model::open(state).ok()?;
         tilo_doc::model::blocks_in_order(state, &containers)
@@ -1850,9 +1398,6 @@ impl Editor {
             })
     }
 
-    /// A comment by one reviewer and a tracked insertion by another on the
-    /// first paragraph, and with `thread` two replies and the thread panel
-    /// open: the review a collaborator's document arrives with.
     fn stage_review(&mut self, state: &mut ui::widget::Edits<'_>, thread: bool) {
         use crate::model::{DocumentAction, document};
         let Some((block, len)) = Self::first_text_block(state) else {
@@ -1916,11 +1461,8 @@ impl Editor {
         }
     }
 
-    /// An image placed after the first paragraph, framed at an intentional
-    /// size and selected, with the object inspector open.
     fn stage_selected_image(&mut self, state: &mut ui::widget::Edits<'_>) {
-        // A tiny valid RGB PNG: real decodable bytes cover the renderer's
-        // blob and image-cache path, while the pixels do not matter.
+        // A real decodable PNG: the bytes go through the blob and image-cache path.
         const SHOT_PNG: &[u8] = &[
             137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3,
             8, 2, 0, 0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207,
@@ -1971,9 +1513,6 @@ impl Editor {
         self.format = Some(format);
     }
 
-    /// Write `state` to `path` as `format`. A Save As destination becomes
-    /// the document's own once the write succeeds; export-only formats leave
-    /// it as it was.
     fn try_write_to_path(
         &mut self,
         state: &AutoCommit,
@@ -1995,8 +1534,6 @@ impl Editor {
         Ok(())
     }
 
-    /// `state` as a file in `format`, keeping the comment threads in its
-    /// text, as file formats do.
     fn export_bytes(&mut self, state: &AutoCommit, format: WpFormat) -> Result<Vec<u8>, String> {
         if self.inner.containers.is_none() {
             return Err("document has no writable path or initialized body".into());
@@ -2011,16 +1548,10 @@ impl Editor {
             })
     }
 
-    /// The page is this window's content, so the window's zoom gestures
-    /// reach it ([`ui::content_zoom::ContentZoom`]): Ctrl+Plus, Ctrl+Minus
-    /// and Ctrl+0, Ctrl+scroll and a pinch scale the sheet under the bar,
-    /// and the bar says the level. They are the same steps the status
-    /// band's zoom field takes, so a key and a typed percentage agree.
     pub(crate) fn zoom_page(&mut self, step: ui::content_zoom::ZoomStep) -> f32 {
         match step {
             ui::content_zoom::ZoomStep::In => self.zoom_by(ZOOM_STEP),
             ui::content_zoom::ZoomStep::Out => self.zoom_by(-ZOOM_STEP),
-            // Actual size for a page: 100 %, the size its type is set in.
             ui::content_zoom::ZoomStep::Reset => self.set_zoom(1.0),
         };
         #[allow(
@@ -2031,8 +1562,6 @@ impl Editor {
         factor
     }
 
-    /// Set the zoom factor (clamped) and request a repaint. Returns whether it
-    /// changed.
     fn set_zoom(&mut self, z: f64) -> bool {
         self.view.auto_fit_page = false;
         if self.zoom.set(z) {
@@ -2050,22 +1579,15 @@ impl Editor {
         changed
     }
 
-    /// The content (page) transform for this frame: a scale about the cached
-    /// top-center anchor. Everything inside the page clip draws through this so
-    /// the toolbar / find-bar / status bar stay unscaled.
     fn content_transform(&self, base: Affine) -> Affine {
         self.zoom.transform(base)
     }
 
-    /// Map a screen-space pointer into the unscaled content coordinate space the
-    /// `Laid` rects live in (the inverse of `content_transform`'s scale-about).
     fn pointer_to_content(&self, p: Point) -> Point {
         self.zoom.screen_to_content(p)
     }
 
-    /// The bounded slice to materialize around the viewport, including at the
-    /// top. The insertion point can stay far away while the user scrolls; caret
-    /// navigation explicitly moves the viewport through `scroll_to_block`.
+    /// The bounded slice materialized around the viewport; the caret can be far off screen.
     fn body_window_bounds(&self) -> (usize, usize) {
         let len = self.body_order.len();
         if len <= VIRTUALIZE_BODY_AFTER {
@@ -2082,24 +1604,16 @@ impl Editor {
         (end.saturating_sub(VIEWPORT_BLOCK_WINDOW), end)
     }
 
-    /// Materialize the body only when its CRDT heads change, or when scrolling
-    /// moves a large document's bounded working set. tilo-doc's requested-block API
-    /// preserves the canonical id order without doing a whole-region traversal.
     fn refresh_blocks(&mut self, state: &AutoCommit) {
         self.refresh_blocks_after_text_edit(state, None);
     }
 
-    /// Follow the document through the incrementally maintained state: a
-    /// change re-reads only the paragraphs it touched, and only the window
-    /// around the viewport is ever read. What changed is copied into the
-    /// views the layout draws from, paragraph by paragraph.
     fn refresh_blocks_after_text_edit(&mut self, state: &AutoCommit, _text_block: Option<&str>) {
         if self.inner.containers.is_none() {
             return;
         }
         let moved = self.refresh_live(state) | std::mem::take(&mut self.source_unseen);
-        // Search ranges are character offsets, not stable anchors: an open
-        // search reads the paragraphs again when the document moves.
+        // Search ranges are character offsets, not anchors: re-read on every move.
         self.follow_find(state, moved);
         if let Some(body) = self.with_live(|s| std::rc::Rc::clone(s.body())) {
             self.body_order = body;
@@ -2120,8 +1634,6 @@ impl Editor {
                 let Some(doc) = document.text() else {
                     return;
                 };
-                // Paragraphs: keep a view whose paragraph is unchanged (same
-                // shared value), copy the rest.
                 let mut kept: HashMap<String, (std::rc::Rc<BlockView>, BlockView)> = if preview {
                     HashMap::new()
                 } else {
@@ -2133,9 +1645,6 @@ impl Editor {
                 };
                 let mut sources = Vec::with_capacity(end.saturating_sub(start));
                 let mut views = Vec::with_capacity(end.saturating_sub(start));
-                // Comment threads live beside the text: where each one's text
-                // is now is read from its anchor, and drawn as the comment
-                // mark on the paragraphs shown.
                 let comments = document.comment_views(state);
                 for source in doc.blocks(start..end) {
                     let mut view = match kept.remove(&source.id) {
@@ -2189,15 +1698,12 @@ impl Editor {
         self.materialized.heads = state.base_heads();
         self.materialized.pending_ops = state.pending_ops();
         self.body_window_start = start;
-        // The spell cache deliberately follows the materialized render window:
-        // no offscreen import can retain shaped/checker text indefinitely.
+        // The spell cache follows the materialized window, so no offscreen text is kept.
         let live: std::collections::HashSet<&str> =
             self.blocks.iter().map(|b| b.id.as_str()).collect();
         self.spell_cache.retain(|id, _| live.contains(id.as_str()));
     }
 
-    /// The running region (if any) whose reference-page band contains content-
-    /// space point `p`. Used to switch the edit context on a click.
     fn band_at_pointer(&self, p: Point) -> Option<Region> {
         if self.head_band_rect.height() > 0.0 && self.head_band_rect.contains(p) {
             Some(Region::Header)
@@ -2208,9 +1714,6 @@ impl Editor {
         }
     }
 
-    /// Resolve a pointer position to a caret in the **active running region's**
-    /// band (`region_laid`) and apply it. Mirrors the body `caret_from_pointer`
-    /// but over the band's laid geometry.
     fn band_caret_from_pointer(&mut self, p: Point, extend: bool) {
         let mut hit: Option<(String, usize)> = None;
         for rl in &self.region_laid {
@@ -2227,8 +1730,7 @@ impl Editor {
                 break;
             }
         }
-        // Fall back to the nearest band block (first/last) so a click anywhere in
-        // the band still lands a caret.
+        // A click anywhere in the band lands a caret: fall back to its nearest block.
         if hit.is_none() {
             if let Some(rl) = self.region_laid.first()
                 && p.y < rl.origin.y
@@ -2258,17 +1760,11 @@ impl Editor {
         }
     }
 
-    /// Resolve a pointer position to a caret and apply it (optionally extending
-    /// the selection for click-drag).
     fn caret_from_pointer(&mut self, p: Point, extend: bool) {
-        // When editing a running region, the caret lives in that band — hit-test
-        // its laid geometry, not the body's.
         if self.inner.in_running_region() {
             self.band_caret_from_pointer(p, extend);
             return;
         }
-        // Find the laid block under the pointer: cells hit by their full box (so
-        // the right column is chosen), normal blocks by their vertical band.
         let mut hit: Option<(String, usize)> = None;
         for l in &self.laid {
             let inside = match l.cell_box {
@@ -2276,10 +1772,7 @@ impl Editor {
                 None => p.y >= l.y_top && p.y < l.y_top + l.height,
             };
             if inside {
-                // Hit-test in the layout's own coordinate space: `layout_y` maps the
-                // shaped layout origin onto this slice, so `p.y - layout_y` is the
-                // internal y of the line under the pointer (correct even when the
-                // line lives in a page-split slice whose band starts mid-layout).
+                // `layout_y` maps the shaped origin onto this slice: `p.y - layout_y` is internal.
                 let byte = self.layout_cache.get(&l.id).map_or(0, |(_, lay)| {
                     lay.hit(
                         num::f32_of_f64(p.x - l.text_x),
@@ -2291,9 +1784,6 @@ impl Editor {
             }
         }
         if hit.is_none() {
-            // Paragraph spacing and page gaps belong to the nearest visible
-            // text band, not the document's last block. Preserve x while clamping
-            // y into that slice so dragging through whitespace stays local.
             let distance = |l: &Laid| {
                 let top = l.cell_box.map_or(l.y_top, |r| r.y0);
                 let bottom = l.cell_box.map_or(l.y_top + l.height, |r| r.y1);
@@ -2337,7 +1827,6 @@ struct RunningBand<'a> {
     rect: Rect,
     is_footer: bool,
     editing: bool,
-    /// The block the input method composes in, and its composition.
     composition: Option<(&'a str, &'a EditCore)>,
 }
 
@@ -2373,7 +1862,6 @@ struct PageContentInput<'a> {
     multi_selection: bool,
     spell_by_block: &'a HashMap<String, Vec<(usize, usize)>>,
     note_numbers: &'a HashMap<String, usize>,
-    /// Who is here, whose colours the review marks wear.
     presence: &'a PresenceCtx,
 }
 
@@ -2383,8 +1871,6 @@ struct NotesSpellcheckInput<'a> {
     page_notes: &'a mut HashMap<usize, Vec<usize>>,
 }
 
-/// The running column of the inspector: where the next row goes, what it
-/// draws with, and the visible band rows are clipped to.
 struct PanelCtx<'a> {
     scene: &'a mut Scene,
     transform: Affine,
@@ -2396,36 +1882,23 @@ struct PanelCtx<'a> {
     clip: Rect,
 }
 
-/// One numeric style property's field in the inspector.
 struct NumSlot {
     field: NumField,
     input: ui::widget::NumberInput,
-    /// Decimals the field shows: none unless the document's value has some.
     decimals: usize,
-    /// Where it was drawn this frame (empty while scrolled out of view).
     rect: Rect,
 }
 
-/// One node of the word processor's accessibility tree: an [`ui::a11y::AccessNode`]
-/// plus its accessible children.
-///
-/// The word processor renders its blocks directly (materialized [`BlockView`]s,
-/// not child widgets), so [`Widget::accessibility`](ui::widget::Widget::accessibility)'s usual "single local node +
-/// `Widget::children`" path doesn't apply. Instead it builds the whole tree itself
-/// via [`Editor::accessibility_tree`], with this struct as the carrier;
-/// `accessibility` returns this tree's root so the host still sees a focusable
-/// `Document`.
+/// The word processor's accessibility tree, built whole by [`Editor::accessibility_tree`]:
+/// its blocks are drawn directly, so the usual single-node path does not apply.
 #[derive(Clone, Debug, PartialEq)]
 pub struct A11yTreeNode {
-    /// The local semantics of this element.
     pub node: ui::a11y::AccessNode,
-    /// This element's accessible children, in reading order.
     pub children: Vec<A11yTreeNode>,
 }
 
 struct FrameGeometry {
     canvas: Rect,
-    /// Conservative bounds of the actual canvas clip in final scene space.
     canvas_clip: Rect,
     canvas_left: f64,
     canvas_right: f64,
@@ -2442,8 +1915,6 @@ struct FrameGeometry {
     page_pitch: f64,
 }
 
-/// [`Editor::paginate_blocks`]'s pagination + text-shaping
-/// output, carried into the drawing passes that follow it.
 struct PaginationResult {
     laid: Vec<Laid>,
     cache: HashMap<String, (u64, RichTextLayout)>,
@@ -2452,25 +1923,11 @@ struct PaginationResult {
     blocks: Vec<BlockView>,
 }
 
-/// Loop-carried pagination state threaded through
-/// [`Editor::paginate_blocks`]'s per-block-kind handlers.
 struct PageCursor {
-    /// Where the next block goes and how it breaks across page sheets.
     flow: PageFlow,
-    /// The `laid` entries of each block placed through `flow`, in its order,
-    /// so a heading carried to the next page with its text can follow it.
     flow_laid: Vec<std::ops::Range<usize>>,
-    /// Highest page named by an out-of-flow object. It keeps the paper stack
-    /// present even when normal text flow has not reached that page yet.
     max_object_page: usize,
-    /// The currently-active floated image (anchor=paragraph/page,
-    /// wrap=left/right), if any: subsequent paragraphs on its page are
-    /// narrowed to flow beside it (coarse wrap — see [`FloatReserve`]).
-    /// Cleared once `y` clears the float's bottom, when the page advances
-    /// past it, or when the next float supersedes it.
     active_float: Option<FloatReserve>,
-    /// Per-level ordered-list counters (index = nesting level); reset when a
-    /// non-list block is reached or a shallower level re-enters.
     ol_counts: Vec<u32>,
 }
 
@@ -2502,25 +1959,16 @@ struct ImagePlacement {
     page: usize,
 }
 
-/// [`Editor::resolve_paragraph_shape`]'s output: everything
-/// [`Editor::paginate_paragraph`] needs to decide where the
-/// block lands and how to lay it out.
 struct ParagraphShape {
     st: crate::styles::StyleProps,
     indent: f64,
     bullet: Option<String>,
-    /// The coarse float-wrap x-origin offset, valid only while the active
-    /// float still applies to this block's (possibly page-advanced) page —
-    /// the caller re-checks that before using it.
     float_offset: f64,
     wrap_w: f32,
     key: u64,
     layout: RichTextLayout,
 }
 
-/// The resolved per-block draw geometry [`Editor::paginate_paragraph`]
-/// and [`Editor::emit_paragraph_slices`] both push into `Laid`
-/// entries for one paragraph-like block.
 struct ParagraphPlacement {
     text_x: f64,
     width: f64,
@@ -2529,17 +1977,12 @@ struct ParagraphPlacement {
     ink: Color,
 }
 
-/// Per-frame accumulators [`Editor::draw_page_content`] collects
-/// while painting `laid`, rendered by the caller once the pass completes.
 struct Pass2Markers {
     page_notes: HashMap<usize, Vec<usize>>,
     comment_markers: Vec<(String, f64, f64)>,
     change_markers: Vec<(String, f64, f64)>,
 }
 
-/// One [`Laid`] item's shaped layout + its on-screen origin y, bundled so
-/// [`Editor::draw_page_content`]'s per-item decoration helpers
-/// below don't each carry the same three parameters.
 struct LaidItemCtx<'a> {
     l: &'a Laid,
     layout: &'a RichTextLayout,

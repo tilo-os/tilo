@@ -35,7 +35,6 @@ use super::{
     RegionLaid, RunningBand, Side, shown_byte,
 };
 
-/// Screen axis of a margin/border guide for `side`: `(is_vertical, coordinate)`.
 fn guide_axis(page: Rect, e: Edges, side: Side) -> (bool, f64) {
     match side {
         Side::Left => (true, page.x0 + e.left),
@@ -45,8 +44,6 @@ fn guide_axis(page: Rect, e: Edges, side: Side) -> (bool, f64) {
     }
 }
 
-/// New inset for `side` from a pointer position, clamped to a sane range so a
-/// margin/border can never invert or swallow the whole page.
 fn inset_from_pointer(page: Rect, side: Side, p: Point) -> f64 {
     let raw = match side {
         Side::Left => p.x - page.x0,
@@ -61,8 +58,6 @@ fn inset_from_pointer(page: Rect, side: Side, p: Point) -> f64 {
     raw.clamp(4.0, max)
 }
 
-/// Apply a guide drag to `e`: Pair = grabbed side + its opposite, Single = just
-/// the grabbed side, Proportional = scale all four by the same factor.
 fn apply_edges(e: &mut Edges, page: Rect, side: Side, p: Point, kind: DragKind) {
     let v = inset_from_pointer(page, side, p);
     match kind {
@@ -84,13 +79,10 @@ fn apply_edges(e: &mut Edges, page: Rect, side: Side, p: Point, kind: DragKind) 
 }
 
 impl Editor {
-    /// The selection highlight painted on paper: the paper accent, translucent
-    /// so the text reads through it.
     pub(super) fn paper_selection(&self) -> Color {
         with_alpha(self.chrome.paper_accent, PAPER_SELECTION_ALPHA)
     }
 
-    /// Toggle a layout-edit mode from a chip click.
     pub(super) fn toggle_layout_mode(&mut self, mode: LayoutMode) {
         self.layout_mode = if self.layout_mode == mode {
             LayoutMode::None
@@ -99,8 +91,6 @@ impl Editor {
         };
     }
 
-    /// Persist the current page margins into the document (page setup lives in the
-    /// document so it survives save/reopen). Called on margin-guide drag release.
     pub(super) fn persist_margins(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.perform_action(
             state,
@@ -113,14 +103,8 @@ impl Editor {
         );
     }
 
-    /// Draw the page header (or footer) blocks for one page sheet inside the given
-    /// margin band, anchored to the band's bottom (footers) or top (headers), drawn
-    /// through `ctf` so it scales with the page content.
-    ///
-    /// When `editing` is set, the band is shaped with *raw* (1 char ⇄ 1 caret offset)
-    /// runs so click-to-caret lines up with the model, and per-block laid geometry is
-    /// returned for the caller to stash. Returns `(drew_anything, laid)`; `laid` is
-    /// empty unless `editing`.
+    /// Draw a page sheet's header or footer blocks inside its margin band, through `ctf`.
+    /// When `editing` is set, the band's laid geometry is returned for the caller to stash.
     pub(super) fn draw_running_band(
         scene: &mut Scene,
         ctf: Affine,
@@ -139,15 +123,10 @@ impl Editor {
             return (false, Vec::new());
         }
         let wrap_w = num::f32_of_f64(band.width().max(40.0));
-        // Header/footer run text is a touch smaller and muted, so it reads as
-        // chrome rather than body copy (LibreOffice-style running heads).
         let size = 12.0f32;
-        // Shape every block first so footers can be bottom-anchored.
         let mut shaped: Vec<RichTextLayout> = Vec::with_capacity(blocks.len());
         let mut total_h = 0.0f64;
         for b in blocks {
-            // The block being composed in shapes the composition inside its
-            // text, underlined.
             let composing = composition
                 .filter(|(id, _)| *id == b.id)
                 .map(|(_, core)| core);
@@ -173,23 +152,16 @@ impl Editor {
             total_h += f64::from(layout.height());
             shaped.push(layout);
         }
-        // Stack from the top of the band (headers) or just enough above the band
-        // bottom to fit the footer's content (footers).
         let mut y = if is_footer {
             (band.y1 - total_h).max(band.y0)
         } else {
             band.y0
         };
         let mut drew = false;
-        // Active-context bands draw their ink at full strength (so the editable
-        // text reads as live copy); non-active bands stay muted chrome. The
-        // editable ink is paper-context (dark), not chrome-context — the band sits
-        // on the light paper sheet, so chrome ink (light in dark mode) would be
-        // invisible there.
+        // An active band draws paper ink at full strength; a resting one stays muted chrome.
         let ink = if editing { PAPER_INK } else { PAPER_MUTED };
         let mut laid: Vec<RegionLaid> = Vec::new();
-        // Consume `shaped` so the (non-Clone) layouts can be *moved* into the laid
-        // geometry when editing, instead of cloned.
+        // Consume `shaped`, so the layouts move into the laid geometry rather than being cloned.
         for (idx, layout) in shaped.into_iter().enumerate() {
             let origin = Point::new(band.x0, y);
             tr.draw_rich(
@@ -216,10 +188,6 @@ impl Editor {
         (drew, laid)
     }
 
-    /// Draw the "you are editing this band" affordance around the active
-    /// header/footer band (Word-style header/footer edit mode): a subtle dashed
-    /// accent outline plus a small "Header"/"Footer" tab label at the band's top
-    /// edge. Drawn through `ctf` so it tracks the page zoom.
     pub(super) fn draw_active_band_chrome(
         &self,
         scene: &mut Scene,
@@ -227,7 +195,6 @@ impl Editor {
         tr: &mut TextRenderer,
         band: Rect,
     ) {
-        // A faint fill so the active band reads as the focused surface.
         let pad = Rect::new(band.x0 - 2.0, band.y0 - 1.0, band.x1 + 2.0, band.y1 + 1.0);
         let edge = self.chrome.paper_accent;
         scene.fill(
@@ -276,16 +243,11 @@ impl Editor {
         );
     }
 
-    /// Render the caret (and any selection highlight) inside the active
-    /// header/footer band, using the laid geometry captured in `region_laid`. The
-    /// band caret mirrors the body caret (same `caret_geometry` machinery) so it
-    /// blinks-free but lands exactly between glyphs.
     pub(super) fn draw_band_caret(&mut self, scene: &mut Scene, ctf: Affine) {
         if !self.lifecycle.focused {
             return;
         }
         let caret = self.inner.caret();
-        // Selection highlight (single-band, char range) when present.
         if let Some((s, e)) = self.inner.band_selection_range()
             && let Some(rl) = self.region_laid.iter().find(|r| r.id == s.0)
         {
@@ -319,7 +281,6 @@ impl Editor {
         }
     }
 
-    /// The per-side measurement the active mode edits (the page margins).
     fn active_edges(&self) -> Option<Edges> {
         match self.layout_mode {
             LayoutMode::Margins => Some(self.margins),
@@ -327,7 +288,6 @@ impl Editor {
         }
     }
 
-    /// The style id of the block under the caret.
     pub(super) fn focused_style_key(&self) -> Option<String> {
         self.blocks
             .iter()
@@ -335,15 +295,11 @@ impl Editor {
             .map(block_style_key)
     }
 
-    /// The `space_after` of the focused block's style.
     fn focused_space_after(&self) -> f64 {
         self.focused_style_key()
             .map_or(8.0, |k| f64::from(self.sheet.get(&k).space_after))
     }
 
-    /// `(x-center, y)` of the spacing grip — centered in the gap *after the
-    /// focused block*, so dragging it edits that block's style (every block of
-    /// the same style follows).
     fn spacing_handle(&self) -> Option<(f64, f64)> {
         let l = self
             .laid
@@ -354,7 +310,6 @@ impl Editor {
         Some((cx, l.y_top + l.height + self.focused_space_after() / 2.0))
     }
 
-    /// Which guide (if any) is under the pointer, for the active layout mode.
     pub(super) fn hit_guide(&self, p: Point) -> Option<Side> {
         let page = self.page_rect;
         if let Some(e) = self.active_edges() {
@@ -388,14 +343,11 @@ impl Editor {
         None
     }
 
-    /// Apply a live guide drag to the relevant layout value.
     pub(super) fn apply_guide_drag(&mut self, gd: GuideDrag, p: Point) {
         let page = self.page_rect;
         match gd.mode {
             LayoutMode::Margins => apply_edges(&mut self.margins, page, gd.side, p, gd.kind),
             LayoutMode::Spacing => {
-                // Edit the focused block's *style* spacing — all blocks of that
-                // style follow (component-instance model).
                 let bottom = self
                     .laid
                     .iter()
@@ -414,20 +366,14 @@ impl Editor {
         }
     }
 
-    /// The caret paragraph's left/hanging indent (px), read from the cached block
-    /// views (the `indent` block attr), so the draw pass (which has no
-    /// `state`) can read it. `0.0` when unset.
     fn caret_block_indent(&self) -> f64 {
         self.block_num_attr_view(&self.inner.caret.block, "indent")
     }
 
-    /// The caret paragraph's first-line indent (px), read from cached block views.
     fn caret_block_first_line_indent(&self) -> f64 {
         self.block_num_attr_view(&self.inner.caret.block, "first_line_indent")
     }
 
-    /// The caret paragraph's tab stops (px from the left text margin), read from
-    /// cached block views (the comma-encoded `tab_stops` attr).
     fn caret_block_tab_stops(&self) -> Vec<f64> {
         let raw = self
             .blocks
@@ -438,7 +384,6 @@ impl Editor {
         crate::word_processor::parse_tab_stops(&raw)
     }
 
-    /// Read a numeric (`Float`/`Int`) attr off a cached block view, `0.0` absent.
     fn block_num_attr_view(&self, block: &str, key: &str) -> f64 {
         self.blocks
             .iter()
@@ -450,8 +395,6 @@ impl Editor {
             })
     }
 
-    /// Map an unscaled content x (the page coordinate space) to screen x using the
-    /// cached zoom + anchor — the same scale-about the page content draws through.
     #[cfg(test)]
     pub(super) fn content_x_to_screen(&self, cx: f64) -> f64 {
         self.zoom.content_x_to_screen(cx)
@@ -603,8 +546,6 @@ impl Editor {
         self.refresh_blocks(state);
     }
 
-    /// Update the caret block's `indent` attr in the cached block views only (a
-    /// live drag preview before the release persists it).
     pub(super) fn set_caret_block_indent_view(&mut self, v: f64) {
         let id = self.inner.caret.block.clone();
         if let Some(b) = self.blocks.iter_mut().find(|b| b.id == id) {
@@ -614,7 +555,6 @@ impl Editor {
         }
     }
 
-    /// Update the caret block's `first_line_indent` attr in the cached block views.
     pub(super) fn set_caret_block_first_line_view(&mut self, v: f64) {
         let id = self.inner.caret.block.clone();
         if let Some(b) = self.blocks.iter_mut().find(|b| b.id == id) {
@@ -624,7 +564,6 @@ impl Editor {
         }
     }
 
-    /// Update tab stop `i` in the cached block views (live drag preview).
     fn set_caret_tab_stop_view(&mut self, i: usize, v: f64) {
         let id = self.inner.caret.block.clone();
         let mut stops = self.caret_block_tab_stops();
@@ -643,8 +582,6 @@ impl Editor {
         }
     }
 
-    /// Draggable guides + live value labels for the active layout mode, drawn
-    /// over the page content.
     pub(super) fn draw_layout_overlay(
         &self,
         scene: &mut Scene,
@@ -652,8 +589,6 @@ impl Editor {
         tr: &mut TextRenderer,
         page: Rect,
     ) {
-        // The guides are what you are dragging: your colour, made legible
-        // on the paper; the guide at rest is a quieter hairline of it.
         let theme = &self.paper_theme;
         let you = self.chrome.paper_accent;
         let rest = self.chrome.paper_edge;
@@ -675,10 +610,6 @@ impl Editor {
                 } else {
                     (rest, rule)
                 };
-                // At rest a guide runs through the margins only, from the
-                // page's edge to the text block's corner on either side, so
-                // it never runs along the text; the guide being dragged
-                // spans the page.
                 let (lo, hi) = if vert {
                     (page.y0 + e.top, page.y1 - e.bottom)
                 } else {
@@ -702,9 +633,6 @@ impl Editor {
                     };
                     scene.fill(Fill::NonZero, transform, col, None, &line);
                 }
-                // A grip in the margin shows where to take the guide: half
-                // way across the top margin on a side guide, half way across
-                // the leading margin on a top or bottom one.
                 let (gx, gy) = if vert {
                     (c, f64::midpoint(start, lo))
                 } else {
@@ -717,7 +645,6 @@ impl Editor {
                     None,
                     &vello::kurbo::Circle::new((gx, gy), grip),
                 );
-                // The value, set just inside the page beside its guide.
                 let label = format!("{}", num::i64_of_f64(e.get(side).round()));
                 let (lx, ly) = if vert {
                     (c + gap, page.y0 + gap)
@@ -758,16 +685,11 @@ impl Editor {
         }
     }
 
-    /// The status band's height: one small control with the tightest step
-    /// above and below.
     pub(super) fn status_band_height(theme: &Theme) -> f64 {
         ButtonFace::height(ControlSize::Small, theme) + 2.0 * f64::from(theme.tokens.spacing.s1)
     }
 
-    /// The status band along the bottom: the Margins / Spacing layout modes
-    /// as one segmented control, the live readout of the mode in use, the
-    /// word and character counts, and the zoom field. It stands on the
-    /// content ground with one hairline above it.
+    /// The status band: the layout modes, the live readout, the counts and the zoom field.
     pub(super) fn draw_layout_bar(
         &mut self,
         scene: &mut Scene,
@@ -782,9 +704,6 @@ impl Editor {
         let cy = bar.center().y;
         let control_h = ButtonFace::height(ControlSize::Small, theme);
 
-        // The two layout modes are toggles, at most one of them in use and
-        // neither at rest: plain buttons that stand on the selection lift
-        // while their mode is on.
         let gap = f64::from(sp.s1);
         let mut x = bar.x0 + s3;
         let mut chips = Vec::with_capacity(2);
@@ -813,9 +732,7 @@ impl Editor {
         let strip_x1 = x - gap;
         self.layout_chips = chips;
 
-        // Trailing: the zoom field, then the counts before it. A band with no
-        // room left for a count drops it — the zoom control stays, because a
-        // phone has no other way to zoom.
+        // A count with no room is dropped; the zoom field stays, a phone having no other way.
         let zoom_w = self.zoom_input.preferred_width(theme, tr);
         let zoom = Rect::new(
             bar.x1 - s3 - zoom_w,
@@ -876,7 +793,6 @@ impl Editor {
         let _ = left;
     }
 
-    /// The page the caret stands on, of how many the document has.
     pub(super) fn page_readout(&self) -> String {
         t_args(
             "status-page",
@@ -887,8 +803,7 @@ impl Editor {
         )
     }
 
-    /// The page index the caret stands on, from the last laid pass: the page
-    /// its block was laid onto.
+    /// The page the caret's block was laid onto, from the last laid pass.
     pub(super) fn caret_page(&self) -> usize {
         let caret = &self.inner.caret;
         self.laid
@@ -897,7 +812,6 @@ impl Editor {
             .map_or(0, |laid| laid.page)
     }
 
-    /// The live value of the layout mode in use, or nothing at rest.
     fn layout_readout(&self) -> Option<String> {
         match self.layout_mode {
             LayoutMode::Margins => Some(t_args(
@@ -926,13 +840,10 @@ impl Editor {
         }
     }
 
-    /// Whether the styles panel is drawn this frame.
     pub(super) fn styles_panel_visible(&self) -> bool {
         self.view.styles_panel_visible
     }
 
-    /// Wider compact tiles use a drawer; phones present the inspector as
-    /// the foreground page. Desktop windows reserve space beside the document.
     pub(super) fn styles_panel_overlay(&self) -> bool {
         self.view.styles_panel_visible && self.inspector_drawer.is_overlay()
     }
@@ -942,11 +853,6 @@ impl Editor {
             && ui::widget::modal_dialog::uses_full_window(self.rect, &self.desk_theme)
     }
 
-    /// The contextual inspector. Docked, it is the window's inspector region;
-    /// on a phone it fills the window using the shared opaque page surface.
-    /// A header names
-    /// what it inspects beside its close button, and below it the image
-    /// inspector or the paragraph's two sections scroll as one column.
     pub(super) fn draw_styles_panel(
         &mut self,
         scene: &mut Scene,
@@ -968,7 +874,6 @@ impl Editor {
         let x0 = panel.x0 + pad;
         let right = panel.x1 - pad;
 
-        // Header: what the panel inspects, and its close button.
         let image = self.selected_image_id().is_some();
         let title = if image {
             t("panel-image")
@@ -1006,8 +911,6 @@ impl Editor {
         );
         self.panel_hits.push((close, PanelHit::Close));
 
-        // The column below the header scrolls when it is taller than the
-        // panel.
         let body = Rect::new(panel.x0, header.y1 + f64::from(sp.s2), panel.x1, panel.y1);
         self.panel_body = body;
         scene.push_layer(
@@ -1052,8 +955,6 @@ impl Editor {
         self.panel_scroll = self.panel_scroll.clamp(0.0, self.panel_max_scroll);
     }
 
-    /// "This paragraph": direct formatting of the paragraph(s) under the
-    /// caret — alignment as a segmented control and line spacing as a menu.
     fn draw_panel_this_paragraph(&mut self, ctx: &mut PanelCtx<'_>) {
         ctx.section(&t("panel-this-paragraph"), true);
         ctx.field_label(&t("panel-align"));
@@ -1084,8 +985,7 @@ impl Editor {
         self.line_spacing_rect = Self::host_menu(&mut self.line_spacing, ctx, rect, viewport);
     }
 
-    /// Lay out and draw a hosted menu in `rect`; returns where it was drawn
-    /// (nothing while scrolled out of view).
+    /// Lay out and draw a hosted menu in `rect`; answers where it was drawn.
     fn host_menu(
         menu: &mut ui::widget::Dropdown,
         ctx: &mut PanelCtx<'_>,
@@ -1108,10 +1008,7 @@ impl Editor {
         rect
     }
 
-    /// "Paragraph style": the named style under the caret, picked from a
-    /// menu, then the style's properties, which change every paragraph of
-    /// that style. Font, bold and italic are not among them: they are set on
-    /// the selection, from the toolbar, in one place.
+    /// The named style under the caret and its properties; font, bold and italic belong to
     fn draw_panel_style(
         &mut self,
         ctx: &mut PanelCtx<'_>,
@@ -1146,14 +1043,11 @@ impl Editor {
         self.draw_panel_style_properties(ctx, st);
     }
 
-    /// The style's colour, sizes and spacing, then a new style from this
-    /// paragraph's look.
     fn draw_panel_style_properties(
         &mut self,
         ctx: &mut PanelCtx<'_>,
         st: &crate::styles::StyleProps,
     ) {
-        // Colour: the document palette as swatches and a custom colour.
         ctx.field_label(&t("panel-colour"));
         let swatch_gap = f64::from(ctx.theme.tokens.spacing.s1);
         let count = STYLE_PALETTE.len() + 1;
@@ -1189,8 +1083,6 @@ impl Editor {
         }
         ctx.y += side + f64::from(ctx.theme.tokens.spacing.rhythm.related);
 
-        // Size and spacing, as number fields two to a line, each under its
-        // label.
         for pair in [
             [NumField::Size, NumField::Indent],
             [NumField::SpaceBefore, NumField::SpaceAfter],
@@ -1231,7 +1123,6 @@ impl Editor {
             }
         }
 
-        // A new style from this paragraph's look.
         ctx.y += f64::from(ctx.theme.tokens.spacing.rhythm.related);
         let r = ctx.control_line();
         ctx.button(r, &t("panel-new-style"), None, self.pointer);
@@ -1240,10 +1131,7 @@ impl Editor {
         }
     }
 
-    /// The image inspector shown when an image is selected: its size, a
-    /// smaller / larger stepper (aspect-locked), flips, crop and placement.
-    /// Its controls register as `panel_hits` so pointer and assistive
-    /// technology activation share one dispatch path.
+    /// The image inspector: size, a stepper, flips, crop and placement, as `panel_hits`.
     fn draw_image_inspector(&mut self, ctx: &mut PanelCtx<'_>) {
         let (dw, dh) = self.selected_image_dims().unwrap_or((0.0, 0.0));
         let dims = format!(
@@ -1294,7 +1182,6 @@ impl Editor {
             }
         }
 
-        // Placement, as one segmented control the width of the column.
         ctx.field_label(&t("panel-image-position"));
         let labels = [
             t("panel-image-inline"),
@@ -1322,9 +1209,7 @@ impl Editor {
         }
     }
 
-    /// The document outline: one entry per `heading` block (in document order),
-    /// derived from the already-materialized `self.blocks` so it works mid-frame
-    /// without re-materializing the doc. Excludes generated TOC lines.
+    /// The outline: one entry per heading in document order, from the materialized blocks.
     pub(super) fn outline_entries(&self) -> Vec<crate::word_processor::Heading> {
         self.blocks
             .iter()
@@ -1343,12 +1228,8 @@ impl Editor {
             .collect()
     }
 
-    /// The heading nearest (at or just above) the current scroll position — the
-    /// one to highlight in the outline as "where you are". Uses the last frame's
-    /// laid geometry (`y_top` is screen-space post-scroll; recover content space).
-    /// Returns the heading block id, or `None` when there are no headings laid.
+    /// The heading at or above the viewport top, to mark where the reader is.
     pub(super) fn active_outline_block(&self) -> Option<String> {
-        // Content-space top of the visible canvas region.
         let view_top = self.scroll_y;
         let mut best: Option<(f64, String)> = None; // (content_y, id)
         let mut first: Option<(f64, String)> = None;
@@ -1360,7 +1241,6 @@ impl Editor {
             if first.as_ref().is_none_or(|(y, _)| cy < *y) {
                 first = Some((cy, l.id.clone()));
             }
-            // The deepest heading whose top is at/above the viewport top.
             if cy <= view_top + 1.0 && best.as_ref().is_none_or(|(y, _)| cy >= *y) {
                 best = Some((cy, l.id.clone()));
             }
@@ -1368,12 +1248,9 @@ impl Editor {
         best.or(first).map(|(_, id)| id)
     }
 
-    /// Generate (or regenerate) the table of contents from the document headings.
-    /// Page numbers are read from the last frame's laid geometry (`Laid::page`);
-    /// a heading not yet laid out falls back to page 1. Delegates the block
-    /// mutation to the model so the insert/replace logic stays testable.
+    /// Rebuild the table of contents from the headings, with page numbers from the last laid
+    /// geometry.
     pub(super) fn generate_toc(&mut self, state: &mut ui::widget::Edits<'_>) {
-        // Map heading block id → 1-based page from the last laid-out frame.
         let page_of: HashMap<&str, usize> = self
             .laid
             .iter()
@@ -1393,7 +1270,6 @@ impl Editor {
             })
             .collect();
         if entries.is_empty() {
-            // Nothing to build a TOC from — tell the user *why* nothing happened.
             self.toast.show(t("toast-toc-empty"), ToastKind::Info);
             self.lifecycle.dirty = true;
             return;
@@ -1401,19 +1277,15 @@ impl Editor {
         self.perform_action(state, &crate::actions::generate_toc_action(entries));
         self.refresh_blocks(state);
         self.lifecycle.dirty = true;
-        // Scroll the freshly-inserted TOC (always at the document top) into
-        // view: the table itself is the visible result.
         self.scroll_y = 0.0;
     }
 }
 
 impl PanelCtx<'_> {
-    /// Whether `rect` shows in the scrolled column at all.
     fn visible(&self, rect: Rect) -> bool {
         rect.y1 > self.clip.y0 && rect.y0 < self.clip.y1
     }
 
-    /// One block of text, wrapped to the column.
     fn text_line(&mut self, text: &str, role: TextRole, strong: bool, dim: bool) {
         let style = if strong {
             self.theme.text(role).strong()
@@ -1442,8 +1314,6 @@ impl PanelCtx<'_> {
         self.y += f64::from(h);
     }
 
-    /// A section header in `Subheading`, a group's gap above it unless it is
-    /// the panel's first.
     fn section(&mut self, title: &str, first: bool) {
         if !first {
             self.y += f64::from(self.theme.tokens.spacing.rhythm.group);
@@ -1452,15 +1322,11 @@ impl PanelCtx<'_> {
         self.y += f64::from(self.theme.tokens.spacing.rhythm.related);
     }
 
-    /// A field's label, in secondary ink, over the control on the line
-    /// below it. Every field of the inspector is set this way, so labels
-    /// and controls share one leading edge.
     fn field_label(&mut self, label: &str) {
         self.text_line(label, TextRole::Label, false, true);
         self.y += f64::from(self.theme.tokens.spacing.rhythm.tight);
     }
 
-    /// One line of `Caption` in secondary ink under the control above it.
     fn caption(&mut self, text: &str) {
         self.y -= f64::from(self.theme.tokens.spacing.rhythm.related)
             - f64::from(self.theme.tokens.spacing.rhythm.tight);
@@ -1468,8 +1334,6 @@ impl PanelCtx<'_> {
         self.y += f64::from(self.theme.tokens.spacing.rhythm.related);
     }
 
-    /// A line one small control tall, the width of the column; returns it
-    /// for the control.
     fn control_line(&mut self) -> Rect {
         let h = ButtonFace::height(ControlSize::Small, self.theme);
         let line = Rect::new(self.x0, self.y, self.right, self.y + h);
@@ -1477,7 +1341,6 @@ impl PanelCtx<'_> {
         line
     }
 
-    /// A control line split into two equal halves.
     fn pair(&mut self) -> (Rect, Rect) {
         let gap = f64::from(self.theme.tokens.spacing.s2);
         let line = self.control_line();
@@ -1488,8 +1351,6 @@ impl PanelCtx<'_> {
         )
     }
 
-    /// Two fields side by side, each label over its half of the control
-    /// line below; returns the two halves.
     fn label_pair(&mut self, first: &str, second: &str) -> (Rect, Rect) {
         let gap = f64::from(self.theme.tokens.spacing.s2);
         let mid = f64::midpoint(self.x0, self.right);
@@ -1514,16 +1375,12 @@ impl PanelCtx<'_> {
         self.pair()
     }
 
-    /// A segmented control the width of the column on its own line;
-    /// returns each segment's rect (none while scrolled out of view).
     fn segmented(&mut self, labels: &[String], selected: usize, pointer: Point) -> Vec<Rect> {
         let segments: Vec<ui::widget::Segment> =
             labels.iter().map(ui::widget::Segment::new).collect();
         self.segmented_items(&segments, selected, pointer)
     }
 
-    /// [`Self::segmented`] of segments that may show icons (each named by
-    /// its label).
     fn segmented_items(
         &mut self,
         segments: &[ui::widget::Segment],
@@ -1537,7 +1394,6 @@ impl PanelCtx<'_> {
         rects
     }
 
-    /// A segmented control filling `row`; returns each segment's rect.
     fn segmented_in(
         &mut self,
         row: Rect,
@@ -1569,8 +1425,6 @@ impl PanelCtx<'_> {
         rects
     }
 
-    /// A small secondary button in `rect`; with `toggle`, a toggle that
-    /// stands on the selection lift while on.
     fn button(&mut self, rect: Rect, label: &str, toggle: Option<bool>, pointer: Point) {
         if !self.visible(rect) {
             return;
@@ -1588,7 +1442,6 @@ impl PanelCtx<'_> {
     }
 }
 
-/// The spoken names of a palette's swatches, in palette order.
 pub(super) fn swatch_names(kind: PaletteKind) -> Vec<String> {
     match kind {
         PaletteKind::Text => [

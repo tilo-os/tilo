@@ -40,9 +40,7 @@ use super::{
 };
 
 impl Editor {
-    /// Chrome bands above the canvas — the Find bar and the ruler (the
-    /// commands are the window bar's) — plus the canvas/page geometry they reserve around. The first
-    /// pass of [`Self::draw`].
+    /// The bands above the canvas (the Find bar, the ruler) and the page geometry they reserve.
     pub(super) fn draw_frame_chrome(
         &mut self,
         scene: &mut Scene,
@@ -64,9 +62,7 @@ impl Editor {
         let accessible_page = self.text_scale > 1.01;
         let page_right = self.page_area_right(theme, column, mobile_page);
         if self.view.auto_fit_page {
-            // Phone-sized tiles use a responsive editing sheet instead of
-            // shrinking an entire Letter page until its body copy is 7 px.
-            // Wider canvases retain print-faithful page sizing and auto-fit.
+            // A phone-sized tile uses a responsive sheet rather than shrink a Letter page to 7 px.
             let fit = if accessible_page {
                 self.text_scale
             } else if mobile_page {
@@ -77,17 +73,11 @@ impl Editor {
             self.zoom.set(fit);
         }
 
-        // No bottom status strip: its readout floats as a transient component,
-        // so the content spans down to the layout bar and
-        // reclaims the strip's height. The layout bar now sits at the very bottom.
         let content_bottom = full.y1.max(full.y0);
         self.layout_bar_height = Self::status_band_height(theme);
         let layout_bar_top = (content_bottom - self.layout_bar_height).max(full.y0);
-        // The page's column: what the docked outline and inspector leave.
         let canvas_left = column.x0;
         let canvas_right = column.x1.max(canvas_left + 1.0);
-        // Reserve + draw the failed-save banner (when shown) at the top of
-        // the page's column.
         let banner_h = self.draw_save_error(
             scene,
             transform,
@@ -99,10 +89,7 @@ impl Editor {
                 top: full.y0,
             },
         );
-        // Reserve the horizontal ruler band (when on) out of the canvas top, below
-        // the banner. It is drawn with the *unscaled* `transform` so it stays a
-        // fixed-height strip while the page scrolls/zooms; its tick + marker
-        // positions are mapped through the zoom so they track the page edge.
+        // The ruler draws unscaled, so it keeps its height while the page scrolls and zooms.
         let ruler_h = if self.view.ruler_visible {
             Ruler::band_height(theme, text_renderer)
         } else {
@@ -116,18 +103,13 @@ impl Editor {
         );
         self.zoom_viewport = canvas;
 
-        // Zoom anchor: the canvas top, horizontally centered. The page+content
-        // transform scales about this point, so the page stays centered and the
-        // top of the (scrolled) content stays pinned to the canvas top as zoom
-        // changes. The toolbar/find-bar/status bar are drawn with the unscaled
-        // `transform` and are unaffected.
+        // Zoom anchors at the canvas top centre: the page stays centred and the content top
+        // stays pinned; the chrome above draws unscaled.
         self.zoom
             .set_anchor(Point::new(f64::midpoint(canvas.x0, page_right), canvas.y0));
         let ctf = self.content_transform(transform);
 
-        // Per-side page geometry — every margin is independently customizable.
-        // The page is a FIXED size (it does not resize with the window); the
-        // window just shows more or less of it and centers it.
+        // The page is a fixed size; the window shows more or less of it and centres it.
         let (page_w, m) = responsive_page_geometry(
             canvas_left,
             page_right,
@@ -136,10 +118,6 @@ impl Editor {
             mobile_page,
             accessible_page,
         );
-        // Centre in *content* space even when the page is wider than the
-        // unscaled canvas. Scaling about the canvas centre then keeps both page
-        // edges visible in auto-fit mode instead of pinning the left edge and
-        // clipping the right.
         self.page_margin_scale =
             super::pagination::margin_scale(page_w, mobile_page, accessible_page);
         let page_x = f64::midpoint(canvas.x0, page_right) - page_w / 2.0;
@@ -147,21 +125,14 @@ impl Editor {
         let content_x = page_x + m.left;
         let content_w = num::f32_of_f64((page_w - m.left - m.right).max(80.0));
 
-        // Horizontal ruler band (drawn unscaled, above the canvas). Reads the
-        // page edge geometry just computed, plus the caret paragraph's indent +
-        // tab stops from the cached block views.
         if ruler_h > 0.0 {
             let band = Rect::new(canvas_left, full.y0 + banner_h, canvas_right, canvas.y0);
             self.draw_ruler(scene, transform, text_renderer, theme, band, page_x, page_w);
         } else {
             self.ruler.clear();
         }
-        // True pagination: each page is a fixed US-Letter sheet (height `letter_h`)
-        // stacked with `PAGE_GAP` between sheets. A block lays into the current
-        // page's text band [content_top, content_bottom]; when the *next whole
-        // block* would not fit before the bottom text margin, the page advances and
-        // the block starts at the next page's top margin — content is never split,
-        // so a page-end never crosses a line of text.
+        // A block that would not fit before the bottom text margin starts at the next page's
+        // top margin, so a page end never splits a line.
         let letter_h = page_w * LETTER_RATIO;
         let page_pitch = letter_h + PAGE_GAP;
 
@@ -184,18 +155,13 @@ impl Editor {
         }
     }
 
-    /// The trailing edge of the area the page centres in. Review cards stand
-    /// in a column beside the page: when a page centred in the whole
-    /// `column` would leave too little room for them on its trailing side,
-    /// the page moves over (and, fitted, shrinks) so the cards never cover
-    /// the text. A phone-sized or large-text sheet keeps the whole width.
+    /// The trailing edge of the area the page centres in. Review cards sit in a column beside
+    /// the page, which moves over (and, fitted, shrinks) rather than cover the text.
     fn page_area_right(&self, theme: &Theme, column: Rect, responsive: bool) -> f64 {
         if responsive || !self.review.shows_cards() {
             return column.x1;
         }
         let reserve = ReviewOverlay::column_reserve(theme);
-        // An enlarged sheet reflows, and shares the canvas with review cards
-        // unless that would leave less than a readable paragraph column.
         if self.text_scale > 1.01 {
             return if column.width() - reserve >= 320.0 * self.text_scale {
                 column.x1 - reserve
@@ -216,10 +182,6 @@ impl Editor {
         }
     }
 
-    /// Draw each discrete page sheet (the caller clips them to the canvas): shadow +
-    /// paper, header/footer running bands (with the active edit-context band
-    /// highlighted), and the default "Page N" indicator when there's no footer
-    /// of its own. Returns the reference (first) page's rect in screen space.
     pub(super) fn draw_page_sheets(
         &mut self,
         scene: &mut Scene,
@@ -228,17 +190,9 @@ impl Editor {
         num_pages: usize,
         sy: f64,
     ) -> Rect {
-        // Discrete page sheets (shadow + paper) stacked with `PAGE_GAP`. Each
-        // sheet draws the page header inside its top-margin band and the footer
-        // inside its bottom-margin band (page-number fields resolved to this
-        // page's number). A subtle "Page N" indicator lives in the gap below the
-        // sheet only when the document has no footer of its own. All through
-        // `fg.ctf` (the zoom transform) so the page magnifies with the content.
         let header = std::mem::take(&mut self.header);
         let footer = std::mem::take(&mut self.footer);
-        // Which running region (if any) is currently the active edit context, and
-        // on which page its editable band lives (the first page is the reference —
-        // the header/footer content is shared across pages, like Word).
+        // The header and footer are shared across pages; the first page is the reference.
         let edit_region = self.inner.region();
         let caret_block = self.inner.caret.block.clone();
         let band_composition = header
@@ -247,9 +201,7 @@ impl Editor {
             .find(|b| self.inner.in_running_region() && b.id == caret_block)
             .and_then(|b| self.inner.composition(&b.text));
         self.region_laid.clear();
-        // Drawing every sheet makes a long imported document O(page_count) per
-        // frame even though the canvas clips all but a handful. Paint only the
-        // visible sheets plus one neighbour for the inter-page indicator.
+        // Only the visible sheets are painted, plus one neighbour for the page indicator.
         let visible_top = sy + fg.canvas.y0;
         let visible_bottom = sy + fg.canvas.y1 / self.zoom.factor();
         let first_page = num::usize_of_f64(
@@ -285,8 +237,6 @@ impl Editor {
         self.header = header;
         self.footer = footer;
         // The visible page is the reference rect for guides and hit-testing.
-        // Margins apply identically to every sheet, so retaining page zero here
-        // would make guides unusable after scrolling through a long document.
         let page = Rect::new(
             fg.page_x,
             fg.page_top + num::f64_of_usize(first_page) * fg.page_pitch - sy,
@@ -297,9 +247,6 @@ impl Editor {
         page
     }
 
-    /// One page sheet (shadow + paper), its header/footer running bands (with
-    /// the active edit-context band highlighted), and the default "Page N"
-    /// indicator when there's no footer of its own.
     fn draw_page_sheet(
         &mut self,
         scene: &mut Scene,
@@ -317,27 +264,22 @@ impl Editor {
         } = *input;
         let ptop = fg.page_top + num::f64_of_usize(i) * fg.page_pitch - sy;
         let sheet = Rect::new(fg.page_x, ptop, fg.page_x + fg.page_w, ptop + fg.letter_h);
-        // The sheet: lifted off the desk by the floating shadow, with an
-        // edge derived from the paper so it separates from a light desk too.
         let radius = f64::from(self.paper_theme.tokens.radii.detail);
         ui::surface::shadow(scene, fg.ctf, sheet, radius, &self.chrome.paper_elevation);
         ui::surface::card(scene, fg.ctf, sheet, radius, self.chrome.paper);
         let page_no = i + 1;
-        // Header band: the top margin, inset by the L/R text margins.
         let head_band = Rect::new(
             sheet.x0 + fg.m.left,
             sheet.y0,
             sheet.x1 - fg.m.right,
             sheet.y0 + fg.m.top,
         );
-        // Footer band: the bottom margin, inset by the L/R text margins.
         let foot_band = Rect::new(
             sheet.x0 + fg.m.left,
             sheet.y1 - fg.m.bottom,
             sheet.x1 - fg.m.right,
             sheet.y1,
         );
-        // Cache the reference-page band rects for the event handler's hit-test.
         if i == 0 {
             self.head_band_rect = head_band;
             self.foot_band_rect = foot_band;
@@ -378,9 +320,7 @@ impl Editor {
             self.region_laid = foot_laid;
             self.draw_active_band_chrome(scene, fg.ctf, text_renderer, foot_band);
         }
-        // Default page indicator in the gap — only when no footer was drawn.
         if !drew_footer && !foot_editing {
-            // Drawn in the inter-page gap on the desk: window ink.
             let label = t_args("page-indicator", &[arg("n", num::i64_of_usize(page_no))]);
             let style = self.desk_theme.text(TextRole::Caption).numeric();
             let (w, h) = text_renderer.measure_style(&label, None, &style);
@@ -397,41 +337,24 @@ impl Editor {
         }
     }
 
-    /// Restore the block cache pass 1 took, then precompute pass 2's read-only
-    /// inputs: whether the selection spans multiple cells, footnote citation
-    /// numbers in document order, and (when spell-check is on) the misspelled
-    /// spans for every body block near the viewport. Returns `(multi_sel,
-    /// note_nums, spell_by_block)`.
     pub(super) fn prepare_pass2_inputs(
         &mut self,
         blocks: Vec<BlockView>,
         laid: &[Laid],
         fg: &FrameGeometry,
     ) -> Pass2Inputs {
-        // Restore the block cache before pass 2 so selection lookups resolve.
         self.blocks = blocks;
         let multi_sel = self.selection_blocks_cached().len() > 1;
 
-        // Footnote numbering: assign citation numbers (1,2,3…) to notes in the
-        // order their `note-ref` markers first appear in the body. This drives
-        // both the in-text superscript and the bottom-of-page footnote list.
+        // Citation numbers follow the `note-ref` markers' document order.
         let note_nums = note_numbering(&self.blocks);
 
-        // Spell-check (squiggles): precompute the misspelled byte spans for every
-        // body block *near the viewport* before pass 2, so the read-only pass-2
-        // loop (which borrows `self` immutably) can look them up without a `&mut`
-        // borrow conflict. Cheap: cached per block keyed by text (an edit
-        // re-checks), and culled to a band around the visible canvas.
+        // Spans are checked before pass 2, which borrows `self` immutably.
         let mut spell_by_block: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
         if self.spellcheck_enabled() {
-            // A generous band around the canvas (one screenful above/below) so a
-            // block scrolling into view is already checked; everything else is
-            // skipped to keep the pass cheap on long documents.
+            // One screenful above and below the canvas, so a block scrolling in is already checked.
             let cull_lo = fg.canvas.y0 - fg.canvas.height();
             let cull_hi = fg.canvas.y1 + fg.canvas.height();
-            // Collect the (id, text) of in-band, spellable body blocks first to end
-            // the immutable borrow of `laid`/`self.blocks` before the `&mut self`
-            // dictionary/cache calls below.
             let targets: Vec<(String, String)> = laid
                 .iter()
                 .filter(|l| {
@@ -454,11 +377,6 @@ impl Editor {
         (multi_sel, note_nums, spell_by_block)
     }
 
-    /// Pass 2 of [`Self::draw`]: paint cell borders, bullets, selection, the
-    /// shaped text, decorations (find/comment/tracked-change highlights,
-    /// spell-check squiggles, footnote superscripts) and the caret for every
-    /// laid item. Collects the footnote/comment/change-card bookkeeping that
-    /// the passes after this one render.
     pub(super) fn draw_page_content(
         &mut self,
         parts: &mut PaintParts,
@@ -473,17 +391,11 @@ impl Editor {
             change_markers: Vec::new(),
         };
 
-        // Pass 2: draw cell borders, bullets, selection, text, caret. Everything
-        // here renders through `fg.ctf` (the zoom transform) so page content scales
-        // while the surrounding chrome stays at 100%.
-        // Each laid block is a part of its own, bounded by the paper's width
-        // over its band (bullets, change bars and its table cell included)
-        // and what its marks reach past it (spelling squiggles, an image's
-        // handles): a typed character repaints its paragraph.
+        // Page content draws through the zoom transform; the surrounding chrome stays at 100%.
+        // Each laid block is a paint part bounded by the paper's width over its band, plus what
+        // its marks reach past it, so a typed character repaints its paragraph only.
         let page_to_widget = self.zoom.transform(Affine::IDENTITY);
-        // What its marks reach past it, in content pixels: a spelling
-        // squiggle under its last line, a selected image's 5 px corner
-        // handles with their stroke.
+        // What marks reach past a block's band, in content px.
         let reach = f64::from(self.desk_theme.tokens.spacing.s2);
         for l in input.laid {
             let mut band = Rect::new(
@@ -513,8 +425,6 @@ impl Editor {
         markers
     }
 
-    /// One laid block of pass 2: its cell border, bullet, selection, text,
-    /// change and note decorations, and the caret when it is in it.
     fn draw_laid_block(
         &mut self,
         scene: &mut Scene,
@@ -547,19 +457,10 @@ impl Editor {
 
         Self::draw_laid_bullet(scene, fg, text_renderer, l);
 
-        // The shaped text lives in the layout cache (built in pass 1), keyed
-        // by block id. Every normal/cell entry was inserted there.
         let Some((_, layout)) = new_cache.get(&l.id) else {
             return;
         };
-        // Layout-relative geometry is measured from `layout_y` (= the on-screen
-        // y of the shaped layout's origin). For an unsplit block this equals
-        // `y_top`; for a slice of a page-split block it is offset so the carried
-        // lines land in this slice's band.
         let ly = l.layout_y;
-        // A split slice clips its drawing to its own band so lines belonging to
-        // the block's other slices (drawn from the same layout via `ly`) never
-        // bleed onto this page. Unsplit blocks (`clip == None`) draw unclipped.
         let clipped = l.clip.is_some();
         if let Some(band) = l.clip {
             scene.push_layer(
@@ -624,11 +525,7 @@ impl Editor {
         l: &Laid,
     ) {
         if let Some(bul) = &l.bullet {
-            // The marker column is right-aligned at the same gap for `9.`
-            // and `10.` alike. A fixed start point makes multi-digit
-            // counters grow into the paragraph and visibly collide at
-            // large text. Measure with the exact font/scale used below,
-            // then reserve the same perceived gap for every counter width.
+            // Right-aligned for `9.` and `10.` alike, measured with the font used below.
             let marker = ui::text_render::TextStyle::content(l.size);
             let (marker_width, _) = text_renderer.measure_style(bul, None, &marker);
             let marker_x = list_marker_x(l.text_x, f64::from(marker_width));
@@ -643,8 +540,6 @@ impl Editor {
         }
     }
 
-    /// A table cell's tinted background (header row / zebra stripe / plain)
-    /// + border, for one pass-2 item.
     fn draw_laid_cell_box(
         &self,
         scene: &mut Scene,
@@ -652,8 +547,6 @@ impl Editor {
         bx: Rect,
         cell_row: Option<usize>,
     ) {
-        // Document table styling on the sheet (not OS chrome): default header
-        // tint, zebra and hairline the authored table carries.
         let fill = match cell_row {
             Some(0) => Color::from_rgb8(0xec, 0xee, 0xf3), // header row tint
             Some(r) if r % 2 == 0 => Color::from_rgb8(0xf6, 0xf6, 0xf9), // zebra
@@ -669,9 +562,6 @@ impl Editor {
         );
     }
 
-    /// One pass-2 image item: paint it (mirrored per `flip_h`/`flip_v`, or a
-    /// placeholder if undecoded), then ring it with the selection chrome when
-    /// it's the caret's block.
     fn draw_laid_image(
         &mut self,
         scene: &mut Scene,
@@ -680,18 +570,14 @@ impl Editor {
         l: &Laid,
     ) {
         let rect = Rect::new(l.text_x, l.y_top, l.text_x + l.width, l.y_top + l.height);
-        // Mirror flips (`flip_h` / `flip_v` block attrs) are applied as a
-        // scale-about-centre on the paint transform, so the image draws
-        // mirrored in place without moving its slot.
+        // Flips scale about the centre, so the image mirrors in place without moving its slot.
         let options = image_paint_options(self.blocks.iter().find(|b| b.id == l.id));
         let image_transform = image_paint_transform(fg.ctf, rect, options);
         if let Some(hash) = &l.image_hash {
             if let Some(slot) = self.image_cache.get_mut(hash)
                 && let Some(img) = slot
             {
-                // Paint a scaled full-source rectangle through a clip matching
-                // the stable display frame. This is source cropping, not a
-                // resize: the frame and surrounding text layout never jump.
+                // Source cropping: the display frame stays, so the layout never jumps.
                 let source = cropped_image_source(rect, options.crop);
                 if image_crop_is_active(options.crop) {
                     scene.push_layer(
@@ -717,9 +603,6 @@ impl Editor {
                 &self.paper_theme,
             );
         }
-        // Selection chrome: when this image is the caret's block, ring it
-        // with an accent border + corner resize handles so it reads as
-        // "selected" (the panel then shows the resize / flip controls).
         if l.id == self.inner.caret.block {
             Self::draw_selected_image_chrome(
                 scene,
@@ -804,7 +687,6 @@ impl Editor {
         }
     }
 
-    /// One pass-2 "fidelity" (unrenderable embedded content) placeholder item.
     fn draw_laid_fidelity(
         scene: &mut Scene,
         fg: &FrameGeometry,
@@ -843,9 +725,6 @@ impl Editor {
         );
     }
 
-    /// Selection highlight, find-match highlight, comment highlight (which
-    /// also records `comment_markers` for the review-card pass), and the
-    /// shaped text itself, for one pass-2 item.
     fn draw_laid_text(
         &self,
         scene: &mut Scene,
@@ -862,7 +741,6 @@ impl Editor {
             .map(|(b0, b1)| (l.shown(b0), l.shown(b1)))
         {
             if let (Some(bx), true) = (l.cell_box, multi_sel) {
-                // Multi-cell selection: highlight the whole cell (spreadsheet-style).
                 scene.fill(Fill::NonZero, fg.ctf, self.paper_selection(), None, &bx);
             } else {
                 for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
@@ -877,7 +755,6 @@ impl Editor {
             }
         }
 
-        // Find-match highlights (under the text).
         if self.find.is_active() {
             let ranges: Vec<(usize, usize)> = self
                 .find
@@ -914,11 +791,7 @@ impl Editor {
                 }
             }
         }
-        // Comment highlight bands (under the text): a pale-yellow band over
-        // each `comment`-marked range. Mapped to on-screen rects via the same
-        // `selection_rects` geometry as the selection highlight, so it tracks
-        // wrapping. The comment's start line is recorded for the right-margin
-        // indicator/card rendered after the loop. Only when markup is shown.
+        // Comment bands use the selection geometry, so they track wrapping.
         if self.review.is_visible()
             && let Some(b) = self.blocks.iter().find(|b| b.id == l.id)
         {
@@ -937,8 +810,6 @@ impl Editor {
                     );
                     scene.fill(Fill::NonZero, fg.ctf, wash, None, &r);
                 }
-                // Anchor the marker at the start line's top, and remember
-                // the range's right edge (max rect x1) for the inline tab.
                 if let Some(&(_, ry0, _, _)) = rects.first() {
                     let right_x = rects.iter().map(|r| r.2).fold(f32::MIN, f32::max);
                     comment_markers.push((cid, ly + f64::from(ry0), l.text_x + f64::from(right_x)));
@@ -952,20 +823,15 @@ impl Editor {
             text_renderer.draw_rich(scene, layout, text_transform, l.ink);
             return;
         }
-        // Keep the real canvas/slice layers and all paragraph bookkeeping.
-        // Only omit glyph encoding whose ink cannot reach either clip.
+        // Glyph encoding is skipped only where no ink can reach either clip.
         let clip = l.clip.map_or(fg.canvas_clip, |clip| {
             fg.canvas_clip.intersect(fg.ctf.transform_rect_bbox(clip))
         });
         text_renderer.draw_rich_in_clip(scene, layout, text_transform, l.ink, clip);
     }
 
-    /// Tracked-change decorations (green underline for `ins`, red strike for
-    /// `del`) over one pass-2 item's text, plus recording `change_markers`
-    /// for the review-card pass. Drawn here (rather than via the shaped
-    /// layout's own underline/strike lists) so the decoration colour matches
-    /// the review-tinted glyphs — the toolkit paints shaped decorations in
-    /// the block ink. Only when markup is shown.
+    /// Change decorations (green underline for `ins`, red strike for `del`), drawn here rather
+    /// than from the shaped layout, so their colour matches the review-tinted glyphs.
     fn draw_laid_change_decos(
         &self,
         scene: &mut Scene,
@@ -1002,8 +868,6 @@ impl Editor {
                     scene.fill(Fill::NonZero, fg.ctf, DELETION_INK, None, &line);
                 }
             }
-            // Collect a review-card marker per change range (carrying the
-            // change id so the card's Accept/Reject can act on it).
             for (bs, be, cid) in block_change_ranges(b) {
                 let rects = layout.selection_rects(l.shown(bs), l.shown(be));
                 if let Some(&(_, ry0, _, _)) = rects.first() {
@@ -1014,8 +878,6 @@ impl Editor {
         }
     }
 
-    /// Spell-check squiggles + note-reference superscripts over one pass-2
-    /// item's text, recording `page_notes` for the footnote-area pass.
     fn draw_laid_notes_and_spellcheck(
         &self,
         scene: &mut Scene,
@@ -1030,13 +892,9 @@ impl Editor {
             page_notes,
         } = input;
         let (l, layout, ly) = (item.l, item.layout, item.ly);
-        // Spell-check squiggles: a wavy red underline under each misspelled
-        // span. The byte span maps to one-or-more on-screen rects via the same
-        // `selection_rects` geometry the selection highlight uses (so it tracks
-        // wrapping). The squiggle hugs just under each rect's bottom.
+        // A misspelled span maps through the selection geometry, so the squiggle tracks wrapping.
         if let Some(spans) = spell_by_block.get(&l.id) {
-            // One pass over the paragraph's runs for all of its spans (a
-            // pasted page can carry thousands of squiggles).
+            // One pass over the paragraph's runs for all of its spans.
             let (top, bottom) = layout_clip_band(fg, ly);
             let shown: Vec<(usize, usize)>;
             let spans = if l.composition.is_some() {
@@ -1064,12 +922,7 @@ impl Editor {
             }
         }
 
-        // Note-reference superscripts: each `note-ref` placeholder in this
-        // block renders as a small superscript citation number, positioned at
-        // the placeholder glyph's location (it occupies one U+FFFC char, which
-        // the body run shapes as near-zero-width). The number is taken from the
-        // document-order numbering; the page is recorded so the footnote text
-        // renders at the bottom of this page.
+        // Each `note-ref` placeholder glyph becomes a superscript citation number.
         if !note_nums.is_empty()
             && let Some(b) = self.blocks.iter().find(|b| b.id == l.id)
         {
@@ -1079,8 +932,6 @@ impl Editor {
                 };
                 let bs = l.layout_byte(ci);
                 let be = l.layout_byte(ci + 1);
-                // Anchor at the placeholder's left edge; fall back to the
-                // caret geometry if the glyph produced no selection rect.
                 let placeholder_rect = layout.selection_rects(bs, be).into_iter().next();
                 let (mx, my) = placeholder_rect.map_or_else(
                     || {
@@ -1089,8 +940,7 @@ impl Editor {
                     },
                     |(rx0, ry0, _, _)| (rx0, ry0),
                 );
-                // Mask the U+FFFC object-replacement glyph (a box in some
-                // fonts) with paper so only the superscript number shows.
+                // The object-replacement glyph is masked with paper, so only the number shows.
                 if let Some((rx0, ry0, rx1, ry1)) = placeholder_rect {
                     let mask = Rect::new(
                         l.text_x + f64::from(rx0),
@@ -1101,7 +951,6 @@ impl Editor {
                     scene.fill(Fill::NonZero, fg.ctf, self.chrome.paper, None, &mask);
                 }
                 let label = num.to_string();
-                // Superscript: smaller font, raised toward the line's top.
                 let sup_size = (l.size * 0.7).max(8.0);
                 text_renderer.draw_style(
                     scene,
@@ -1117,11 +966,7 @@ impl Editor {
         }
     }
 
-    /// Footnote areas: a thin separator + numbered footnotes at the bottom of
-    /// each page's text band, keyed by the page pass 2 recorded each marker
-    /// against. Page assignment is approximate; drawn inside the page clip so
-    /// it scrolls with the content. Endnotes are skipped (they belong at the
-    /// document end, not per page).
+    /// Footnotes at the bottom of the page they are cited on; endnotes belong at the end.
     pub(super) fn draw_footnotes(
         &self,
         scene: &mut Scene,
@@ -1132,8 +977,6 @@ impl Editor {
         sy: f64,
     ) {
         if !page_notes.is_empty() {
-            // number → footnote text, resolved once. Endnotes are skipped here
-            // (they belong at the document end, not per page).
             let mut num_to_note: HashMap<usize, String> = HashMap::new();
             for n in &self.notes {
                 if n.kind == tilo_doc::schema::NOTE_KIND_FOOTNOTE
@@ -1143,7 +986,6 @@ impl Editor {
                 }
             }
             for (page, nums) in page_notes {
-                // Distinct, ascending footnote numbers on this page.
                 let mut nums: Vec<usize> = nums
                     .iter()
                     .copied()
@@ -1156,7 +998,6 @@ impl Editor {
                 }
                 let line_h = (f64::from(NOTE_CONTENT_PX) * 1.4).ceil();
                 let area_h = num::f64_of_usize(nums.len()) * line_h;
-                // Bottom of the text band on this page (above the footer margin).
                 let band_bottom =
                     fg.page_top + num::f64_of_usize(*page) * fg.page_pitch + fg.letter_h
                         - fg.m.bottom
@@ -1164,7 +1005,7 @@ impl Editor {
                 let sep_y = band_bottom - area_h - NOTE_AREA_GAP;
                 let left = fg.page_x + fg.m.left;
                 let right = fg.page_x + fg.page_w - fg.m.right;
-                // Thin separator (about a third of the text width, like Word).
+                // A thin separator, about a third of the text width, as Word draws it.
                 let sep =
                     vello::kurbo::Line::new((left, sep_y), (left + (right - left) * 0.33, sep_y));
                 scene.stroke(
@@ -1193,8 +1034,6 @@ impl Editor {
         }
     }
 
-    /// The single-line "start typing" placeholder shown over an otherwise
-    /// empty document.
     pub(super) fn draw_empty_placeholder(
         &self,
         scene: &mut Scene,
@@ -1208,8 +1047,7 @@ impl Editor {
             && only.text.is_empty()
             && let Some(l) = first
         {
-            // The hint starts past the caret, so the caret never stands on
-            // its first letter, and is set in the paragraph's own size.
+            // Past the caret and in the paragraph's own size, so the caret never covers it.
             let placeholder = t("canvas-empty-placeholder");
             let style = ui::text_render::TextStyle::content(l.size);
             let x = l.text_x + CARET_WIDTH + f64::from(self.paper_theme.tokens.spacing.s1);
@@ -1218,19 +1056,13 @@ impl Editor {
                 &placeholder,
                 self.paper_theme.tokens.colors.text_tertiary,
                 ctf * Affine::translate((x, l.y_top)),
-                // The empty-state hint shares the authored paragraph's live
-                // column width. At 200% text a one-line hint used to extend
-                // beyond the responsive sheet, unlike real paragraph text.
-                // Let the shared text renderer wrap it at that exact bound.
+                // The hint wraps at the authored column's width.
                 Some(num::f32_of_f64((l.width - (x - l.text_x)).max(1.0))),
                 &style,
             );
         }
     }
 
-    /// Header/footer edit mode: veil the body (Word dims it while editing a
-    /// running head) on every page, then draw the band caret on top so it
-    /// stays crisp through the veil.
     pub(super) fn draw_running_region_veil(
         &mut self,
         scene: &mut Scene,
@@ -1276,12 +1108,10 @@ impl Editor {
         }
     }
 
-    /// How far the document scrolls, in unzoomed content space: the
-    /// offset, the overflow and the visible window share one unit, so page
-    /// zoom cannot distort the thumb.
+    /// Scroll offset, overflow and window in unzoomed content space, so zoom cannot distort the
+    /// thumb.
     pub(super) fn canvas_scroll_metrics(&self) -> ui::widget::ScrollMetrics {
-        // The room before the start that the window's search opens counts
-        // as content, so the offset is never negative.
+        // The room the search opens before the start counts as content, so the offset stays ≥ 0.
         ui::widget::ScrollMetrics::new(
             self.max_scroll + self.find_inset + self.scroll_viewport,
             self.scroll_viewport,
@@ -1289,8 +1119,6 @@ impl Editor {
         )
     }
 
-    /// The scrollbar thumb (right edge), shown only when the content
-    /// overflows the canvas.
     pub(super) fn draw_scrollbar(&self, scene: &mut Scene, transform: Affine, canvas: Rect) {
         if self.max_scroll > 0.0 {
             let gutter = f64::from(self.desk_theme.tokens.metrics.scrollbar_gutter);
@@ -1306,11 +1134,7 @@ impl Editor {
         }
     }
 
-    /// Remote collaborators' carets + selections, resolved by the single
-    /// [`Self::remote_presence_overlays`] pass so on-screen geometry matches
-    /// what the unit tests assert on. Selections paint under the text, carets
-    /// over it, each in the peer's colour with a name pill. A no-op with no
-    /// remote presence, so single-user rendering is unchanged.
+    /// Selections paint under the text and carets over it, each in the peer's colour.
     pub(super) fn draw_remote_overlays(
         &self,
         scene: &mut Scene,
@@ -1321,9 +1145,7 @@ impl Editor {
         presence: &PresenceCtx,
     ) {
         let (remote_carets, remote_selections) = self.remote_presence_overlays(presence);
-        // This pass runs after the page layer was popped. Clip every
-        // collaborator's mark and label to the canvas, so a scrolled-away
-        // caret or highlight cannot reach the toolbar or other panes.
+        // Clipped to the canvas, so a scrolled-away caret cannot reach the toolbar.
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -1331,8 +1153,6 @@ impl Editor {
             Affine::IDENTITY,
             &canvas_clip,
         );
-        // A peer's just-typed run glows in their colour, fading; drawn first so it
-        // sits under the selection and caret rather than competing with them.
         for (user, spans) in self.remote_typing_overlays(presence, ui::time::now()) {
             presence.draw_peer_typing(scene, theme, &user, &spans);
         }
@@ -1341,10 +1161,6 @@ impl Editor {
                 presence.draw_peer_selection(scene, theme, ctf, &sel.user, *r);
             }
         }
-        // Action-driven collaborators publish stable block/range anchors,
-        // not fake mouse coordinates. Resolve those anchors through the same
-        // shaped layouts as a person's selection and decorate the resulting
-        // geometry with the authenticated actor label.
         let now = ui::time::now();
         for interaction in presence.interactions_for_resource("word-processor.document", now) {
             let ranges = match &interaction.anchor {
@@ -1388,7 +1204,6 @@ impl Editor {
             for rect in &rects {
                 presence.draw_peer_selection(scene, theme, ctf, &user, *rect);
             }
-            // Label an actual visible span, never a union spanning page gaps.
             if let Some(bounds) = rects.first().copied() {
                 let label = presence.display_name(&user);
                 presence.draw_peer_outline_labeled(
@@ -1400,8 +1215,7 @@ impl Editor {
                 );
             }
         }
-        // A name is window chrome, not document text: page zoom moves the
-        // caret but does not magnify its label.
+        // A name pill is window chrome: page zoom moves it, but does not magnify it.
         let page_to_window = self.zoom.transform(Affine::IDENTITY);
         let window = ctf * page_to_window.inverse();
         for c in &remote_carets {

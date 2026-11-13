@@ -21,8 +21,6 @@ use super::{
 };
 
 impl Editor {
-    /// Resolve the Find results of this window's view and of each
-    /// participant's against `doc` as it is now.
     pub(super) fn resolve_bound_edits(&mut self, doc: &AutoCommit) {
         if self.read_only() {
             self.bound = BoundRows::default();
@@ -49,8 +47,6 @@ impl Editor {
         };
     }
 
-    /// Adopt the view an edit effect left this window's person with, once
-    /// the edit applied.
     pub(super) fn adopt_local_outcome(&mut self, state: &AutoCommit) {
         let Some((version, _)) = &self.pending_local else {
             return;
@@ -65,9 +61,7 @@ impl Editor {
         }
     }
 
-    /// Make the edit an edit effect names at the invoker's caret: a
-    /// participant's own view when one invoked it, else this window's. The
-    /// edit goes through the door as the invoker's, one undo step.
+    /// Make the edit an edit effect names at the invoker's caret, through the door.
     fn answer_edit_effect(
         &mut self,
         effect: &WordProcessorEffect,
@@ -78,8 +72,7 @@ impl Editor {
             None => return Some(Err("the document is not at hand".into())),
         };
         let participant = ui::invocation_scope::current_participant();
-        // An image told the heading it goes after goes at that paragraph's
-        // end, found by its text.
+        // An image told the heading `after` goes at that paragraph's end, found by its text.
         let after = match effect {
             WordProcessorEffect::PlaceImage {
                 after: Some(after), ..
@@ -96,7 +89,6 @@ impl Editor {
             },
             _ => None,
         };
-        // Told where to act, it acts there; else at the invoker's caret.
         let view = match (after.as_ref().or_else(|| cx.place()), &participant) {
             (Some(place), _) => {
                 match crate::actions::participant::ParticipantView::at_place(&doc, place) {
@@ -153,11 +145,9 @@ impl Editor {
             None => self.pending_local = Some((local_version(&doc), next)),
         }
         self.lifecycle.dirty = true;
-        // One that answers its caller does so with the blocks its edit
-        // changed, once the door applied it.
+        // A caller that waits for an answer gets the blocks its edit changed.
         if answers_later(effect) {
             return Some(cx.when_landed(|(), landed, _| {
-                // The blocks it changed; the ids it minted are among them.
                 let answer = match landed.answer {
                     Some(serde_json::Value::Object(mut fields)) => {
                         fields.remove("changed").unwrap_or_default()
@@ -170,8 +160,6 @@ impl Editor {
         Some(Ok(ui::framework::Effected::done()))
     }
 
-    /// Bring the kept state up to date with `state`. Returns whether it
-    /// changed.
     pub(super) fn refresh_live(&self, state: &AutoCommit) -> bool {
         self.source.as_ref().is_some_and(|live| {
             live.sync(state).unwrap_or_else(|error| {
@@ -190,7 +178,6 @@ impl Editor {
             .and_then(|live| live.with(|document| document.text().map(read)))
     }
 
-    /// Show the paragraphs `demand` names.
     pub(super) fn demand_live(&self, state: &AutoCommit, demand: ui::tilo_resource::Demand) {
         if let Some(live) = &self.source
             && let Err(error) = live.demand(state, demand)
@@ -199,10 +186,9 @@ impl Editor {
         }
     }
 
-    /// Dispatch one [`RichTextAction`](crate::actions::RichTextAction) —
-    /// the single CRDT-mutation path shared with the Ctrl+K palette — through the
-    /// Tilo action executor. Document heads before the event's first action are
-    /// stashed so the host records **one** undo boundary bracketing the whole event.
+    /// One `RichTextAction` through the executor: the single mutation path shared with the
+    /// palette. The heads before the event's first action are stashed, so the host records one
+    /// undo boundary for it.
     pub(super) fn perform_action(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -219,8 +205,6 @@ impl Editor {
         let _ = self.try_perform_edits(state, action);
     }
 
-    /// Submit one document action. `false` when the host refuses it, so a
-    /// caller can leave the document and caret as they were.
     fn try_perform_action(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -242,7 +226,6 @@ impl Editor {
         done
     }
 
-    /// Take the document verb `operation` now, as this window's person.
     pub(super) fn perform_verb(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -251,9 +234,7 @@ impl Editor {
         self.perform_verb_as(state, operation, None)
     }
 
-    /// Take the document verb `operation` now, as `author` when one is
-    /// named (a scenario staging a collaborator's comment), else as this
-    /// window's person.
+    /// Take the verb as `author` when one is named, else as this window's person.
     pub(super) fn perform_verb_as(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -271,9 +252,6 @@ impl Editor {
         self.try_perform_document(state, &action)
     }
 
-    /// Submit one action of the document now. `false` when the host
-    /// refuses it, so a caller can leave the document and caret as they
-    /// were.
     fn try_perform_document(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -295,10 +273,8 @@ impl Editor {
         }
     }
 
-    /// Persist only the changed fields of named styles through stable typed
-    /// actions. This avoids replaying a stale whole-sheet snapshot over a
-    /// collaborator's unrelated style edit and gives custom-style deletion an
-    /// explicit tombstone plus absolute instance fallback set.
+    /// Persist only the fields of named styles that changed, so a stale whole-sheet snapshot
+    /// never overwrites a collaborator's style edit.
     pub(super) fn persist_stylesheet_via_actions(&mut self, state: &mut ui::widget::Edits<'_>) {
         let before = self.inner.stylesheet(state);
         let after = self.sheet.clone();
@@ -347,9 +323,6 @@ impl Editor {
         }
     }
 
-    /// Replace one exact, already-resolved text range through the canonical
-    /// action executor.  Find/replace, autocorrection, and ordinary typing all
-    /// use this rather than opening a second CRDT write path in the widget.
     pub(super) fn splice_via_action(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -365,9 +338,6 @@ impl Editor {
         );
     }
 
-    /// This window's view for an edit: [`Self::local_participant_view`]
-    /// without the Find hits, which no editing primitive reads (keeps a
-    /// keystroke from cloning them).
     pub(super) fn local_edit_view(&self) -> crate::actions::participant::ParticipantView {
         use crate::actions::participant::{ParticipantView, ViewPoint};
         let caret = self.inner.caret();
@@ -384,11 +354,7 @@ impl Editor {
         }
     }
 
-    /// Run one editor input through its pure `editing::*` primitive — the
-    /// function Ctrl+K and agents invoke as a published operation — against
-    /// this window's view, dispatch its envelopes and adopt its next view.
-    ///
-    /// A refusal (no caret, needs a selection, stale arguments) is a no-op.
+    /// Run an editor input through its pure `editing` primitive and adopt its next view.
     fn edit_via_primitive(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -404,8 +370,6 @@ impl Editor {
         for action in &envelopes {
             self.perform_edits(state, action);
         }
-        // A caret waiting on a block the edit created settles on the
-        // kept order, brought up to date, not on a listed body.
         let next = if next.pending.is_some() {
             self.sync_source(state);
             let body = self.kept_body();
@@ -416,14 +380,10 @@ impl Editor {
         self.adopt_local_view(&next, state);
     }
 
-    /// Bring the kept state up to date with `state` in the middle of an edit;
-    /// the next refresh still copies what changed into the views.
     pub(super) fn sync_source(&mut self, state: &AutoCommit) {
         self.source_unseen |= self.refresh_live(state);
     }
 
-    /// Run a caret motion with the body order brought up to date with
-    /// `state`, so it finds the caret's neighbours without listing the body.
     pub(super) fn with_kept_body<T>(
         &mut self,
         state: &AutoCommit,
@@ -434,14 +394,10 @@ impl Editor {
         self.inner.with_kept_body(body, motion)
     }
 
-    /// The kept body order, once there is kept state.
     pub(super) fn kept_body(&self) -> Option<std::rc::Rc<tilo_document::BodyOrder>> {
         self.with_live(|s| std::rc::Rc::clone(s.body()))
     }
 
-    /// Make `next` (an editing primitive's result, settled against the
-    /// document its envelopes produced) this window's caret and selection.
-    /// The Find bar keeps its own state.
     pub(super) fn adopt_local_view(
         &mut self,
         next: &crate::actions::participant::ParticipantView,
@@ -461,10 +417,6 @@ impl Editor {
         });
     }
 
-    /// Apply a published view operation (`move-caret`, `select-*`,
-    /// `find-text`) to this window: the same pure function a participant's
-    /// invocation runs, adopted as the local caret/selection. `find-text`
-    /// opens the Find bar on the query, as typing it there would.
     pub(crate) fn apply_local_view_operation(
         &mut self,
         state: &AutoCommit,
@@ -493,8 +445,7 @@ impl Editor {
         Ok(())
     }
 
-    /// Move `participant`'s own view (its caret, selection or Find) as
-    /// `movement` says. Nothing is written into the document.
+    /// Move a participant's own view; nothing is written into the document.
     pub(crate) fn move_participant_view(
         &mut self,
         participant: &tilo_actions::ParticipantId,
@@ -518,15 +469,12 @@ impl Editor {
         Ok(())
     }
 
-    /// Select the whole active region (Ctrl+A, context menu).
     pub(super) fn select_all_via_primitive(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.edit_via_primitive(state, crate::actions::editing::select_all);
     }
 
-    /// Insert ordinary typed text through the same serializable actions exposed
-    /// to agents and Ctrl+K.  A multi-block selection is a structural merge,
-    /// represented by its own single envelope rather than a hidden UI-only
-    /// sequence of splice/delete writes.
+    /// Typing through the same actions agents and the palette use; a multi-block selection is one
+    /// structural envelope.
     pub(super) fn insert_text_via_action(&mut self, state: &mut ui::widget::Edits<'_>, text: &str) {
         self.insert_text_edits(state, text);
     }
@@ -537,12 +485,8 @@ impl Editor {
         });
     }
 
-    /// Enter is a structural document edit, so split the addressed block through
-    /// the same typed action stream as typing and formatting. The newly-created
-    /// stable id is discovered from the synchronous before/after set solely to
-    /// update the local caret; it is minted by the action's pinned actor.
+    /// Split the caret block through the same actions; its new id comes from the before/after set.
     pub(super) fn enter_via_action(&mut self, state: &mut ui::widget::Edits<'_>) {
-        // The paragraph that follows the caret is read off the kept order.
         self.sync_source(state);
         let body = self.kept_body();
         self.edit_via_primitive(state, |view, doc| {
@@ -666,7 +610,6 @@ impl Editor {
         self.inner.clear_anchor();
     }
 
-    /// Backspace/Delete run the published delete operation.
     pub(super) fn delete_via_action(&mut self, state: &mut ui::widget::Edits<'_>, backward: bool) {
         let direction = if backward {
             crate::actions::editing::DeleteDirection::Backward
@@ -678,9 +621,7 @@ impl Editor {
         });
     }
 
-    /// The context Ctrl+K needs to build the document's resource tree: the caret
-    /// anchor for structural inserts and the blocks a block-level format targets.
-    /// `None` until the document is bound (a fresh, unsynced widget).
+    /// What Ctrl+K needs to build the resource tree; `None` until the document is bound.
     pub(crate) fn wp_resource_ctx(
         &self,
         doc: &AutoCommit,
@@ -689,8 +630,6 @@ impl Editor {
         if caret.block.is_empty() {
             return None;
         }
-        // The caret block is the alignment target for a palette-initiated block
-        // format (the palette runs between frames with no live selection).
         let target = if self.blocks.iter().any(|b| b.id == caret.block) {
             vec![caret.block.clone()]
         } else {
@@ -734,11 +673,7 @@ impl Editor {
         })
     }
 
-    /// This window's own view as a participant view: the caret, the
-    /// selection anchor, the active region and the Find bar's query and hits.
-    /// `Self::wp_resource_ctx` is its projection (computed from the render
-    /// cache so it stays cheap per frame); `view.ctx(doc)` yields the same
-    /// context.
+    /// This window's own view: the caret, the selection, the region and the Find bar's state.
     pub fn local_participant_view(&self) -> crate::actions::participant::ParticipantView {
         use crate::actions::participant::{FindState, ParticipantView, ViewPoint};
         let caret = self.inner.caret();
@@ -764,8 +699,6 @@ impl Editor {
         }
     }
 
-    /// `participant`'s current view, rebased onto `doc`. `None` for a
-    /// participant this widget holds no view for.
     pub fn participant_view(
         &self,
         participant: &tilo_actions::ParticipantId,
@@ -774,10 +707,8 @@ impl Editor {
         self.participants.view(participant, doc)
     }
 
-    /// The view an invocation by `participant` resolves against: its stored
-    /// view, or — for a participant without one yet — a collapsed caret at the
-    /// end of the body (an agent's spawn position). `None` only for a document
-    /// without body blocks.
+    /// The view an invocation by `participant` resolves against: its own, else a caret at the end
+    /// of the body.
     pub fn participant_view_or_default(
         &self,
         participant: &tilo_actions::ParticipantId,
@@ -788,9 +719,7 @@ impl Editor {
             .or_else(|| crate::actions::participant::ParticipantView::at_document_end(doc))
     }
 
-    /// Store `participant`'s view, valid against `doc` as it is now (after
-    /// its envelopes were applied). Presentation state only: nothing is
-    /// written into the document. The map stays bounded (LRU, idle TTL).
+    /// Store a participant's view; presentation only, bounded by LRU and idle TTL.
     pub fn set_participant_view(
         &mut self,
         participant: &tilo_actions::ParticipantId,
@@ -803,7 +732,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// The name painted next to `participant`'s caret (e.g. "Agent for Ada").
     pub fn set_participant_label(
         &mut self,
         participant: &tilo_actions::ParticipantId,
@@ -812,9 +740,7 @@ impl Editor {
         self.participants.set_label(participant, label);
     }
 
-    /// The Find results `participant` sees, as resources: this window's
-    /// for `None`, else built from that participant's own view only, so no
-    /// other participant's hits leak into it.
+    /// The Find results one participant sees; no other participant's hits.
     #[cfg(test)]
     pub(crate) fn participant_resources(
         &self,
@@ -836,17 +762,12 @@ impl Editor {
         .unwrap_or_default()
     }
 
-    /// Apply one participant's edit — the envelopes and next view an
-    /// `editing::*` primitive returned for that participant's view — and
-    /// store the view. Each envelope goes through the canonical executor with
-    /// the invoker in its context (durable attribution), on a dispatcher
-    /// separate from this window's, so the edit never joins the local user's
-    /// undo group.
+    /// Apply one participant's edit and store its view. Each envelope goes through the executor
+    /// with the invoker in its context, on its own dispatcher, so it never joins the local undo
+    /// group. A refusal leaves the view as it was, rebased.
     ///
     /// # Errors
-    /// Refuses an invoker without a participant, and returns the first
-    /// executor refusal; envelopes before it stay applied, the view is then
-    /// left as it was (rebased).
+    /// Refuses an invoker without a participant.
     #[cfg(test)]
     pub(crate) fn apply_participant_edit(
         &mut self,
@@ -861,7 +782,6 @@ impl Editor {
         let Some(dispatch) = self.dispatch.clone() else {
             return Err("this view edits nothing".into());
         };
-        // Each edit is the participant's in history.
         let _invoker = ui::invocation_scope::InvokerScope::enter(invoker.clone());
         for action in &envelopes {
             dispatch
@@ -872,10 +792,8 @@ impl Editor {
         Ok(())
     }
 
-    /// Every other participant's caret or selection as collaboration
-    /// presence, under the same `wp_block` key and byte offsets the local
-    /// window publishes, so peers render an agent exactly like a person.
-    /// The host publishes each entry under that participant's identity.
+    /// Other participants' carets as presence, under the same key and byte offsets the local window
+    /// publishes.
     pub fn participant_presence(&self, doc: &AutoCommit) -> Vec<ParticipantPresence> {
         let mut out = Vec::new();
         for participant in self.participants.participants() {
@@ -896,10 +814,7 @@ impl Editor {
         out
     }
 
-    // ---- formatting affordances → actions -----------------------------------
-
-    /// Toggle an inline mark (bold/italic/underline/strike) over the selection,
-    /// as one replayable action. A toggle with no selection is a no-op.
+    /// Toggle an inline mark over the selection, as one replayable action.
     pub(super) fn dispatch_toggle_mark(&mut self, state: &mut ui::widget::Edits<'_>, name: &str) {
         if let Some(mark) = inline_mark(name) {
             self.edit_via_primitive(state, |view, doc| {
@@ -920,8 +835,6 @@ impl Editor {
         self.perform_action(state, &action);
     }
 
-    /// Toggle a mutually-exclusive mark (super/sub) over the selection / caret
-    /// block, clearing its sibling, as one replayable action.
     pub(super) fn dispatch_exclusive_mark(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -944,7 +857,6 @@ impl Editor {
         } else {
             Some(crate::actions::MarkVal::Bool(true))
         };
-        // When turning on, also clear the sibling over the same spans.
         let also_clear = if active {
             vec![]
         } else {
@@ -955,8 +867,6 @@ impl Editor {
         self.perform_action(state, &action);
     }
 
-    /// Set a valued inline mark (font/size/colour/highlight) over the selection
-    /// or caret block, as one replayable action (replacing any prior value).
     pub(super) fn dispatch_set_mark_value(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -968,14 +878,12 @@ impl Editor {
         });
     }
 
-    /// Clear a valued inline mark over the selection or caret block.
     pub(super) fn dispatch_clear_mark(&mut self, state: &mut ui::widget::Edits<'_>, name: &str) {
         self.edit_via_primitive(state, |view, doc| {
             crate::actions::editing::clear_mark(view, doc, name)
         });
     }
 
-    /// Set the paragraph kind/level over the selection, as one replayable action.
     pub(super) fn dispatch_paragraph_style(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -993,9 +901,6 @@ impl Editor {
         });
     }
 
-    /// Apply a named paragraph style (a style-picker pick) over the current
-    /// paragraph targets as one replayable action: the style attr plus, for a
-    /// built-in, the structural kind / level / ordered.
     pub(super) fn dispatch_apply_named_style(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -1006,8 +911,6 @@ impl Editor {
         });
     }
 
-    /// Set a block attribute (alignment / line-spacing / style) over the current
-    /// target blocks, as one replayable action.
     pub(super) fn dispatch_block_attr(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -1023,10 +926,8 @@ impl Editor {
         self.perform_action(state, &action);
     }
 
-    /// Make the target paragraphs a list (`ordered` numbered, else
-    /// bulleted), or plain paragraphs again when every one already is that
-    /// list, as one replayable action. Table cells and other structural
-    /// blocks keep their kind.
+    /// Make the targets a list, or plain paragraphs when they all are already; table cells keep
+    /// their kind.
     pub(super) fn dispatch_toggle_list(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -1060,10 +961,7 @@ impl Editor {
         self.perform_action(state, &action);
     }
 
-    /// Insert a `rows`×`cols` table after the caret as one replayable action,
-    /// then re-seat the caret into the new table's first cell (presentation) —
-    /// the cell ids are minted inside `apply`, so they're discovered from the
-    /// document afterwards rather than known up front.
+    /// Insert a table after the caret and seat the caret in its first cell.
     pub(super) fn insert_table_via_action(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -1076,8 +974,6 @@ impl Editor {
             state,
             &crate::actions::insert_table_action(&after, rows, cols),
         );
-        // The first cell of the freshly-created table = the new `cell` block at
-        // (row 0, col 0). Seat the caret there so typing continues in the table.
         if let Some(c) = self.inner.containers.clone() {
             let snap = tilo_doc::model::materialize(state, &c);
             let first = snap
@@ -1187,7 +1083,6 @@ impl Editor {
         self.inner.clear_anchor();
     }
 
-    /// The ids of every `cell` block currently in the body.
     fn body_cell_ids(&self, state: &AutoCommit) -> std::collections::HashSet<String> {
         match self.inner.containers.clone() {
             Some(c) => tilo_doc::model::materialize(state, &c)
@@ -1201,7 +1096,6 @@ impl Editor {
     }
 }
 
-/// Whether `effect` answers its caller once its edit applied.
 fn answers_later(effect: &WordProcessorEffect) -> bool {
     use ui::tilo_resource::Effect as _;
     let id = effect.id();
@@ -1211,10 +1105,6 @@ fn answers_later(effect: &WordProcessorEffect) -> bool {
 }
 
 impl Editor {
-    /// Apply a synchronous command or view operation. Returns `Ok(false)`
-    /// when `type_id` is not this widget's.
-    /// Invoke `effect` through the document's door, as the palette or an
-    /// agent does: checked, and answered by [`Self::answer_effect`].
     pub(super) fn invoke_effect(&mut self, effect: &WordProcessorEffect) {
         if let Some(dispatch) = &self.dispatch {
             dispatch.effect(effect);
@@ -1222,9 +1112,6 @@ impl Editor {
         self.lifecycle.dirty = true;
     }
 
-    /// Answer `effect`, however it was invoked. What the person chooses
-    /// later (a file to open, where to save) reaches the editor through
-    /// `this`, the editor as its window and view share it.
     pub(crate) fn answer_effect(
         &mut self,
         this: &std::rc::Rc<std::cell::RefCell<Self>>,
@@ -1237,8 +1124,6 @@ impl Editor {
         }
         if let Some(movement) = effect.view_operation()? {
             let doc = cx.document().ok_or("the document is not at hand")?.clone();
-            // A delivered invocation by a participant (an agent task) moves
-            // only that participant's view; without one it is this window's.
             match ui::invocation_scope::current_participant() {
                 Some(participant) => self.move_participant_view(&participant, &movement, &doc)?,
                 None => self.apply_local_view_operation(&doc, &movement)?,
@@ -1251,9 +1136,7 @@ impl Editor {
                 self.open_in_place(cx, &path)?;
             }
             WordProcessorEffect::OpenDocument { path: None } => {
-                // Where files have paths, the document is worked on where it
-                // is; elsewhere (a browser page) its contents are brought in
-                // and Save asks where they go.
+                // Where files have paths the document is worked on where it is; else Save asks.
                 let editor = std::rc::Rc::clone(this);
                 if tilo_files::available(tilo_files::Feature::NativePaths) {
                     return Ok(
@@ -1327,9 +1210,7 @@ impl Editor {
         Ok(Effected::done())
     }
 
-    /// Replace the document with the file at `path` (its format by
-    /// extension), as one action Undo takes back; the file becomes where
-    /// Save writes.
+    /// Replace the document with the file at `path`, as one undoable action, and save there after.
     fn open_in_place(
         &mut self,
         cx: &ui::framework::EffectCx<crate::framework::Document>,
@@ -1344,9 +1225,6 @@ impl Editor {
         Ok(())
     }
 
-    /// Replace the document with the file `name` whose contents are `bytes`
-    /// (its format by extension), as one action Undo takes back. It has no
-    /// path here, so Save asks where it goes.
     fn open_contents(
         &mut self,
         cx: &ui::framework::EffectCx<crate::framework::Document>,
@@ -1361,10 +1239,8 @@ impl Editor {
         Ok(())
     }
 
-    /// Replace the body of this document, while it is empty, with the file
-    /// `name` (Word when it has none) kept as `content`, a
-    /// `tilo.content:<reference>` address. A document with words, pictures or
-    /// tables in it is someone's writing, which an import never replaces.
+    /// Replace the body with content while the document is empty: a document with anything in it is
+    /// someone's writing, which an import never replaces.
     fn import_content(
         &mut self,
         cx: &ui::framework::EffectCx<crate::framework::Document>,
@@ -1410,8 +1286,6 @@ impl Editor {
         })))
     }
 
-    /// Keep the document as a file in `format` (Word when none) in the
-    /// content store, and answer its address.
     fn export_content(
         &mut self,
         cx: &ui::framework::EffectCx<crate::framework::Document>,
@@ -1445,7 +1319,6 @@ impl Editor {
         ui::framework::Effected::content(&hash)
     }
 
-    /// Replace the document's body with `bytes` read as `format`.
     fn replace_with(
         &mut self,
         cx: &ui::framework::EffectCx<crate::framework::Document>,
@@ -1459,29 +1332,23 @@ impl Editor {
             dispatch.submit(crate::model::Document::ADOPT_COMMENTS.invoke());
         });
         self.scroll_y = 0.0;
-        // The whole body changes; per-block caches keyed by id/text go stale.
         self.layout_cache.clear();
         self.recent_layout_cache.clear();
         self.spell_cache.clear();
         Ok(())
     }
 
-    /// Write the document to `path` now, from the document lent to the
-    /// effect.
     fn save_now(
         &mut self,
         cx: &ui::framework::EffectCx<crate::framework::Document>,
         path: &std::path::Path,
     ) -> Result<(), String> {
         let doc = cx.document().ok_or("the document is not at hand")?.clone();
-        // Saving where the document lives says nothing; only a failure is
-        // news.
+        // Only a failure is news.
         self.try_write_to_path(&doc, path, WpFormat::from_path(path))?;
         Ok(())
     }
 
-    /// Write the document to `destination`, a place with no path here, as
-    /// `format`, without asking.
     fn write_kept(
         &mut self,
         cx: &mut ui::framework::EffectCx<crate::framework::Document>,
@@ -1495,8 +1362,6 @@ impl Editor {
         }))
     }
 
-    /// Ask the person where to save with the host's chooser; the chosen file
-    /// is written on the next sync, which answers the caller.
     fn choose_where_to_save(
         &self,
         this: &std::rc::Rc<std::cell::RefCell<Self>>,
@@ -1507,9 +1372,6 @@ impl Editor {
             |f| f.to_string_lossy().into_owned(),
         );
         if !tilo_files::available(tilo_files::Feature::NativePaths) {
-            // No path here (a browser page): the document goes where the
-            // person chooses, as the chosen name's format, and that place is
-            // kept for the next Save.
             let editor = std::rc::Rc::clone(this);
             return cx.choose_destination(save_request(&suggested), move |(), destination, cx| {
                 let destination =

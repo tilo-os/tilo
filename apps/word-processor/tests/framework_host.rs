@@ -1,7 +1,3 @@
-//! The word processor on the app framework: the real component runtime,
-//! record storage, permissions, per-author undo and History mode, driven the
-//! way a person drives the editor — by typing into it.
-
 use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::framework::testing::TestApp;
 use ui::permissions::Role;
@@ -44,8 +40,6 @@ fn a_keystroke_is_an_action_and_typing_undoes_a_word_at_a_time() {
         Some("word-processor.document")
     );
 
-    // A word is one step: undo takes back "world", redo restores it, and a
-    // second undo takes back "hello ".
     assert!(app.undo());
     assert_eq!(paragraphs(&app), ["hello "]);
     assert!(app.redo());
@@ -154,15 +148,12 @@ fn one_apply_creates_a_filled_table_and_one_undo_takes_it_back() {
     });
     assert_eq!(kinds, ["paragraph", "cell", "cell", "cell", "cell"]);
 
-    // One step: the whole table, cells and text, goes with one undo.
     assert!(app.undo());
     assert_eq!(paragraphs(&app), ["These are the people"]);
     assert!(app.redo());
     assert_eq!(paragraphs(&app).len(), 5);
 }
 
-/// A record holding `paragraphs` paragraphs, pasted through the editor's own
-/// paste action.
 fn long_document(paragraphs: usize) -> TestApp<WordProcessorApp> {
     use tilo_document::ClipBlock;
     use tilo_document::action::{RegionKind, RichTextAction};
@@ -198,7 +189,6 @@ fn long_document(paragraphs: usize) -> TestApp<WordProcessorApp> {
     app
 }
 
-/// The median time of a run of keystrokes.
 fn keystroke_cost(app: &mut TestApp<WordProcessorApp>) -> std::time::Duration {
     app.harness().type_text("warm ");
     let mut costs: Vec<_> = "typing along"
@@ -219,8 +209,6 @@ fn a_keystroke_in_a_long_document_costs_what_it_costs_in_a_short_one() {
     let mut long = long_document(4_000);
     let short_cost = keystroke_cost(&mut short);
 
-    // Typing and Enter in the long document never list or sort its
-    // paragraphs, and read only the paragraphs around the page on screen.
     let scans = tilo_doc::model::ordered_keys_scan_count();
     let long_cost = keystroke_cost(&mut long);
     long.harness().key("Enter");
@@ -239,12 +227,9 @@ fn a_keystroke_in_a_long_document_costs_what_it_costs_in_a_short_one() {
         &text[..3]
     );
 
-    // The times are a report for the machine the test runs on; the scan
-    // count above is what keeps the cost independent of the document's size.
     eprintln!("keystroke median: {short_cost:?} in 200 paragraphs, {long_cost:?} in 4000");
 }
 
-/// The document as stored, formatting included.
 fn snapshot(app: &TestApp<WordProcessorApp>) -> tilo_doc::DocSnapshot {
     app.read_document(|doc| {
         let c = word_processor::model::open(doc).unwrap();
@@ -279,7 +264,6 @@ fn undoing_a_mark_over_several_paragraphs_clears_it_from_every_one() {
         value: Some(MarkVal::Bool(true)),
         also_clear: Vec::new(),
     };
-    // Through `group`, the door an agent uses for a multi-part edit.
     app.invoke_confirmed(Invoke::group([Invoke::<Document>::edit(
         &word_processor::model::edit(&bold),
     )
@@ -298,7 +282,6 @@ fn undoing_a_mark_over_several_paragraphs_clears_it_from_every_one() {
     assert_eq!(snapshot(&app).blocks, before.blocks);
 }
 
-/// What the History preview pane shows, as assistive technology reads it.
 fn preview_text(app: &mut TestApp<WordProcessorApp>) -> String {
     fn find(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
         if node.test_id.as_deref() == Some("history-preview") {
@@ -351,9 +334,6 @@ fn history_labels(resource: &tilo_actions::ResourceSpec, out: &mut Vec<String>) 
     }
 }
 
-/// What the person does between two sittings at the keyboard: a change of
-/// theirs that is not typing (a heading, by its shortcut) ends the History
-/// row their typing reads as, so what they type next is a version of its own.
 fn stop_typing(app: &mut TestApp<WordProcessorApp>, level: u8) {
     let before = app.versions().len();
     app.harness().set_modifiers(&["ctrl".to_owned()]);
@@ -367,18 +347,14 @@ fn stop_typing(app: &mut TestApp<WordProcessorApp>, level: u8) {
     );
 }
 
-/// Open History and select the change whose result is `version`.
 fn select_version(app: &mut TestApp<WordProcessorApp>, version: &[automerge::ChangeHash]) {
     let [hash] = version else {
         panic!("a single-author edit leaves one head");
     };
-    // History is the window bar's, beside the editor's slots: press it as
-    // the bar hands the press over.
     if !app.harness().targets().contains_key("history-back-live") {
         app.harness().press_window_history().unwrap();
     }
     let entry = format!("timeline-entry:{}", &hash.to_string()[..32]);
-    // A typed word is a run of keystrokes; expand runs until the change shows.
     for _ in 0..4 {
         let inspection = app.harness().inspection();
         let mut published = Vec::new();
@@ -488,7 +464,6 @@ fn history_previews_a_version_and_restores_it_like_a_revert() {
         );
     }
 
-    // Back in the live document, Ctrl+Z takes the restore back.
     app.harness().click_named("history-back-live").unwrap();
     assert!(app.undo(), "Ctrl+Z reverses the restore");
     assert_eq!(paragraphs(&app), ["alpha beta gamma"]);
@@ -542,10 +517,6 @@ fn a_stale_review_and_a_viewer_cannot_restore() {
     );
 }
 
-/// A computer's session configures the collaboration service for every app
-/// it launches, and a hosted editor has no file record of its own: `open`
-/// with a path imports the file into the hosted document, and the import is
-/// kept like any other edit.
 #[test]
 fn open_with_a_path_imports_the_file_under_a_configured_collaboration_service() {
     const CHILD: &str = "TILO_WRITER_HOSTED_OPEN_CHILD";
@@ -598,9 +569,6 @@ fn open_with_a_path_imports_the_file_under_a_configured_collaboration_service() 
     std::fs::remove_dir_all(directory).unwrap();
 }
 
-/// A launch naming a file opens the file's own record with the file
-/// imported; launched on it again, the record — with the edits made since —
-/// is the document, and another file is another record.
 #[test]
 fn a_file_launch_opens_the_files_own_record() {
     ui::i18n::I18nManager::init("en-US");
@@ -627,8 +595,6 @@ fn a_file_launch_opens_the_files_own_record() {
     assert_eq!(paragraphs(&app), ["first line", "second line"]);
 }
 
-/// Every screenshot scenario stages the document through actions the
-/// record keeps: the review a collaborator left, a framed image.
 #[test]
 fn scenarios_stage_the_document_through_actions() {
     ui::i18n::I18nManager::init("en-US");
@@ -697,8 +663,6 @@ fn scenarios_stage_the_document_through_actions() {
     }
 }
 
-/// Explicit local words follow the shared host dictionary in every window;
-/// application settings no longer create a separate vocabulary store.
 #[test]
 fn the_persons_own_words_are_spelled_right_in_every_window() {
     use settings_store::personal_dictionary::{Service, host::Host};
@@ -773,9 +737,6 @@ fn an_edit_bound_to_the_caret_is_invoked_on_the_document() {
     assert_eq!(paragraphs(&app), ["Hello world"]);
 }
 
-/// Two devices that each open the same file before they have synced create
-/// its record each, and converge on one document: the file's content once,
-/// and what each of them wrote.
 #[test]
 fn two_sessions_creating_one_files_record_converge_on_one_document() {
     ui::i18n::I18nManager::init("en-US");
@@ -799,8 +760,6 @@ fn two_sessions_creating_one_files_record_converge_on_one_document() {
     assert!(merged[0].ends_with(" There."), "{merged:?}");
 }
 
-/// A file changed elsewhere since its record last read or wrote it is read
-/// again when it is opened; one saved from here, or untouched, is not.
 #[test]
 fn reopening_a_file_changed_elsewhere_reads_it_again() {
     ui::i18n::I18nManager::init("en-US");
@@ -828,8 +787,6 @@ fn reopening_a_file_changed_elsewhere_reads_it_again() {
     assert_eq!(paragraphs(&app), ["Edited: First draft"]);
 }
 
-/// Saving the document to its own file records what the file now holds, so
-/// opening it again reads nothing back in.
 #[test]
 fn a_file_saved_here_is_not_read_again() {
     ui::i18n::I18nManager::init("en-US");
@@ -855,9 +812,6 @@ fn a_file_saved_here_is_not_read_again() {
     assert_eq!(app.versions().len(), versions, "nothing was read back in");
 }
 
-/// The panels a person opens follow them to their next window, and the
-/// language their shared spelling preferences name is the one words are
-/// checked in.
 #[test]
 fn layout_and_spelling_language_follow_the_person() {
     use word_processor::effects::WordProcessorEffect;
@@ -894,9 +848,6 @@ fn layout_and_spelling_language_follow_the_person() {
     assert_eq!(language.as_deref(), Some("de_DE"));
 }
 
-/// What an agent does in a document for a person is history the person
-/// reads in their language: the app's sentence for each edit and verb, and
-/// who did it for whom.
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     use tilo_document::action::{MarkVal, RegionKind, RichTextAction, Span};
@@ -993,7 +944,6 @@ fn history_entries_render_as_the_apps_sentences() {
     );
 }
 
-/// A collaborator's change to the document: a note field written.
 fn peer_note(doc: &mut ui::tilo_resource::Doc, note: &str) {
     ui::tilo_resource::write_key(
         doc,
