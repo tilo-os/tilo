@@ -1,10 +1,4 @@
 //! An entry already tried is not tried again (docs/security/sign-in.md §4.2).
-//!
-//! Someone unsure whether their first attempt registered types the same thing
-//! again; that must cost one TPM try, not two. Wrong entries are kept as HMACs
-//! under a key drawn when the daemon starts, in its memory only, per person,
-//! until that person succeeds or ten minutes pass. This is no security
-//! boundary: anything that bypasses the daemon still meets the TPM.
 
 use crate::secret::Secret;
 use crate::userkey::hmac_sha256;
@@ -44,7 +38,6 @@ impl Guard {
         });
     }
 
-    /// Whether `secret` is one of this person's recent wrong entries.
     pub fn already_wrong(&mut self, uid: u32, secret: &Secret, now: Instant) -> bool {
         self.forget_expired(now);
         let digest = self.digest(secret);
@@ -70,7 +63,6 @@ impl Guard {
         self.wrong.remove(&uid);
     }
 
-    /// When the oldest remembered entry is due to be forgotten.
     pub fn next_expiry(&self) -> Option<Instant> {
         self.wrong
             .values()

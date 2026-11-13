@@ -2,9 +2,6 @@
 //! their record into the LUKS2 header, where the boot can read it before the
 //! root is open; and the device's `tilo-comforts` token, which carries the
 //! login screens' comforts to the boot (docs/security/sign-in.md §3.4).
-//!
-//! Nothing here removes or rewrites a keyslot or token it did not create: the
-//! recovery key, the old disk passphrase and tilo-rollback's slots stay.
 
 use crate::record::{Factor, Record, SecretKind};
 use crate::wrapper::{Entry, Kind, Wrapper};
@@ -79,7 +76,6 @@ impl SigninToken {
     }
 }
 
-/// The header's JSON metadata, read in one call.
 fn metadata(runner: &dyn Runner, device: &Path) -> Result<serde_json::Value> {
     let out = require(
         runner,
@@ -177,7 +173,6 @@ pub fn write_comforts(
         bail!("the sign-in comforts did not encode as an object");
     };
     token.insert("type".into(), COMFORTS_TOKEN_TYPE.into());
-    // A LUKS2 token names the keyslots it opens; this one opens none.
     token.insert("keyslots".into(), serde_json::Value::Array(Vec::new()));
     import(
         runner,
@@ -189,7 +184,6 @@ pub fn write_comforts(
     )
 }
 
-/// Import `json` over token `existing`, or into a free token id.
 fn import(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -222,11 +216,8 @@ fn import(
     Ok(id)
 }
 
-/// What authorises adding a keyslot.
 pub enum Authority<'a> {
-    /// A passphrase one of the existing keyslots accepts.
     Passphrase(&'a [u8]),
-    /// The volume key itself.
     VolumeKey(&'a [u8]),
 }
 
@@ -315,7 +306,6 @@ mod tests {
     use std::collections::BTreeMap;
     use tilo_rollback::exec::Output;
 
-    /// A stand-in for cryptsetup over a LUKS2 header's token area.
     struct Header {
         tokens: RefCell<BTreeMap<u32, serde_json::Value>>,
     }

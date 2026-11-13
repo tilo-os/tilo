@@ -1,18 +1,6 @@
 //! The TPM + secret wrapper: the user key as a sealed data object whose only
 //! policy is its authorisation value, with dictionary-attack protection on
 //! (no `noda`), so every wrong secret costs one of the TPM's tries.
-//!
-//! The object lives under a primary made fresh from the standard ECC P-256
-//! storage key template on the owner hierarchy each time, so nothing is
-//! persisted in the TPM and a Windows-owned persistent SRK is never touched.
-//! The template has `noda`, as the standard one does: only the person's own
-//! object counts tries, so a locked-out TPM still loads it and can say so, and
-//! a new secret can be sealed while the lockout lasts.
-//!
-//! Sealing and unsealing run in an HMAC session salted to that primary with
-//! parameter encryption both ways, so neither the authorisation value nor the
-//! user key crosses the bus to a discrete TPM in the clear: the value only
-//! keys the session's HMAC, and the key and sealed data travel encrypted.
 
 use crate::userkey::UserKey;
 use anyhow::{Context as _, Result, bail};
@@ -28,10 +16,8 @@ pub struct Sealed {
     pub private: Vec<u8>,
 }
 
-/// What the TPM's lockout allows right now, for the screen to say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tries {
-    /// Wrong secrets left before the TPM makes everyone wait.
     pub left: u32,
     /// When none is left, the seconds until one comes back; while tries are
     /// left there is nothing to wait for.
@@ -40,7 +26,6 @@ pub struct Tries {
 
 pub enum Unseal {
     Key(UserKey),
-    /// The secret was wrong and cost a try.
     Wrong(Option<Tries>),
     /// The TPM refuses every try until its lockout decays.
     LockedOut(Option<Tries>),
@@ -245,9 +230,7 @@ enum Failure {
 /// `TPM_RC_LOCKOUT`, a warning: the TPM refuses every DA-protected
 /// authorisation until its lockout decays.
 const TPM_RC_LOCKOUT: u32 = 0x921;
-/// `TPM_RC_AUTH_FAIL`: a wrong value that incremented the counter.
 const TPM_RC_AUTH_FAIL: u32 = 0x08E;
-/// `TPM_RC_BAD_AUTH`: a wrong value for an object without DA protection.
 const TPM_RC_BAD_AUTH: u32 = 0x0A2;
 
 /// By the TPM's response code, which tpm2-tools prints as
@@ -260,7 +243,6 @@ fn classify(out: &Output) -> Failure {
     }
 }
 
-/// The last `Esys_…(0x…)` code tpm2-tools reported.
 fn response_code(stderr: &str) -> Option<u32> {
     stderr.lines().rev().find_map(|line| {
         let start = line.find("Esys_")?;
@@ -297,7 +279,6 @@ pub fn tries(runner: &dyn Runner) -> Option<Tries> {
     })
 }
 
-/// A TPM that answers and throttles wrong authorisation values.
 pub fn usable(runner: &dyn Runner) -> bool {
     lockout::read(runner).is_ok_and(|p| p.max_tries > 0 && p.recovery_time > 0)
 }

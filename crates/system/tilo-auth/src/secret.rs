@@ -13,7 +13,6 @@ impl Secret {
         Self(Zeroizing::new(typed.nfc().collect()))
     }
 
-    /// The secret as a file holds it: one trailing newline is not part of it.
     pub fn from_file_bytes(bytes: &[u8]) -> Option<Self> {
         let text = std::str::from_utf8(bytes).ok()?;
         Some(Self::new(text.strip_suffix('\n').unwrap_or(text)))
@@ -31,7 +30,6 @@ impl Secret {
         self.0.is_empty()
     }
 
-    /// The TPM authorisation value of the person's sealed user key.
     pub fn auth_value(&self) -> Zeroizing<[u8; 32]> {
         let mut hasher = Sha256::new();
         hasher.update(AUTH_VALUE_DOMAIN);

@@ -1,8 +1,4 @@
 //! `tilo-auth`: sign in at boot, and talk to `tilo-authd`.
-//!
-//! `boot-unlock`, `boot-people` and `boot-comforts` run in the initrd and need
-//! no daemon. The rest ask the daemon. Secrets are read from a file or stdin,
-//! never argv.
 
 use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
@@ -58,7 +54,6 @@ enum Cmd {
         #[arg(long, default_value = handoff::DESCRIPTION, hide = true)]
         handoff: String,
     },
-    /// The people who can open the system volume, as JSON, for the boot screen.
     BootPeople {
         #[arg(long)]
         device: PathBuf,
@@ -69,12 +64,10 @@ enum Cmd {
         #[arg(long)]
         device: PathBuf,
     },
-    /// Check a secret read from stdin.
     Verify {
         #[arg(long)]
         user: String,
     },
-    /// Whether a person's secret is checked by tilo-authd, and their factors.
     Status {
         #[arg(long)]
         user: String,
@@ -93,7 +86,6 @@ enum Cmd {
         #[arg(long)]
         user: String,
     },
-    /// Every person's record, without anything secret. Root only.
     Records {
         #[arg(long, default_value = record::DIR)]
         dir: PathBuf,
