@@ -5186,8 +5186,11 @@ impl BrowserWidget {
         page.actions.extend(self.capabilities.permission_answers());
         // A departure the page started on its own waits on the person: the
         // action states its id, and the page it leaves from, what it does, the
-        // method and where it goes, so whoever answers sees what leaves.
-        for held in self.holds.waiting() {
+        // method and where it goes, so whoever answers sees what leaves. One
+        // is asked about at a time, the oldest first: an action's address is
+        // the page's and its own name, which two answers cannot share, and a
+        // window publishing two would publish none of its actions.
+        if let Some(held) = self.holds.waiting().next() {
             let id = held.request.id.to_string();
             let mut bound: Vec<(String, serde_json::Value)> = held
                 .facts()

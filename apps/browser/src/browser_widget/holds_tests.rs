@@ -338,8 +338,29 @@ fn a_click_on_the_submit_button_is_held_and_the_page_stays() {
     );
 }
 
+/// The departures a window publishes for the person to answer, by the id each
+/// names.
+fn published_departures(widget: &BrowserWidget) -> Vec<String> {
+    page_resource(widget)
+        .actions
+        .into_iter()
+        .filter(|action| action.id == "send-held-request")
+        .filter_map(|action| {
+            Some(
+                action
+                    .params()
+                    .iter()
+                    .find(|param| param.name == "id")?
+                    .choices
+                    .first()?
+                    .to_string(),
+            )
+        })
+        .collect()
+}
+
 #[test]
-fn a_hold_one_departure_names_does_not_answer_another() {
+fn departures_are_asked_about_one_at_a_time_and_one_answer_answers_one() {
     let (engine, mut widget, doc, root) =
         page_in(BrowsingMode::Visitor, "https://shop.example/order");
     for (id, origin) in [(4, "https://orders.example"), (5, "https://pay.example")] {
@@ -349,28 +370,45 @@ fn a_hold_one_departure_names_does_not_answer_another() {
         engine.hold(request);
     }
     widget.sync(&doc, &root);
-    // Each departure is answered by the id it is published with: the page
-    // names both, and neither answers the other.
-    let named: Vec<String> = page_resource(&widget)
+    // The oldest is asked about first, and alone: two answers at one address
+    // would leave the window publishing none of its actions.
+    assert_eq!(
+        published_departures(&widget),
+        ["4"],
+        "the oldest waits first"
+    );
+    let violations = ui::tilo_actions::validate_surface_contracts(
+        &[widget.published()],
+        &ui::tilo_actions::ActionRegistry::default(),
+    );
+    assert!(
+        !violations
+            .iter()
+            .any(|violation| format!("{violation:?}").contains("duplicate action address")),
+        "the page's actions are each at their own address: {violations:?}"
+    );
+    let keep = page_resource(&widget)
         .actions
         .into_iter()
-        .filter(|action| action.id == "send-held-request")
-        .filter_map(|action| {
-            let id = action
-                .params()
-                .iter()
-                .find(|param| param.name == "id")?
-                .choices
-                .first()?
-                .to_string();
-            Some(id)
-        })
-        .collect();
+        .find(|action| action.id == "keep-held-request")
+        .expect("the person may keep the page as it is")
+        .build_json(serde_json::json!({"id": "4"}).as_object().expect("an id"))
+        .expect("the answer names the held request");
+    widget
+        .admit(
+            ui::tilo_actions::InvocationId::new(),
+            effect_operation(&keep.payload),
+        )
+        .expect("the answer is accepted");
     assert_eq!(
-        named,
-        ["4", "5"],
-        "each wait names the departure it answers"
+        held_answers(&engine),
+        vec![(4, false)],
+        "the answer is 4's alone"
     );
+    // The page closes the request it was answered about, and the next is asked.
+    engine.push_event(WebViewEvent::HeldRequestClosed { id: 4 });
+    widget.sync(&doc, &root);
+    assert_eq!(published_departures(&widget), ["5"], "then the next one");
 }
 
 #[test]
