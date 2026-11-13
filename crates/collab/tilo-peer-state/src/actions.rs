@@ -558,8 +558,12 @@ impl ActionPlane {
         let (asker, own) = self
             .read_workspace(&query.workspace, |peer| {
                 (
-                    peer.permissions(remote, now).ok().map(|asker| asker.person),
-                    peer.permissions(device, now).ok().map(|own| own.person),
+                    peer.permissions(remote, now)
+                        .ok()
+                        .and_then(|asker| asker.person_id().map(str::to_owned)),
+                    peer.permissions(device, now)
+                        .ok()
+                        .and_then(|own| own.person_id().map(str::to_owned)),
                 )
             })
             .await?;
