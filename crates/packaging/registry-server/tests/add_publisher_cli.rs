@@ -1,5 +1,5 @@
-//! `add-publisher` as the operator runs it: a namespace is required, and Tilo's
-//! own namespace is granted only with an explicit `--first-party`.
+//! `add-publisher` as the operator runs it: a namespace is required, and Tilo's own namespace is
+//! granted only with an explicit `--first-party`.
 
 #![allow(clippy::unwrap_used, reason = "integration-test setup and assertions")]
 
@@ -38,7 +38,6 @@ fn add_publisher_requires_namespace() {
     let before = std::fs::read(storage.publishers_path()).unwrap();
     let newcomer = pubkey_hex(72);
 
-    // phase: no_namespace_is_refused_and_leaves_the_allowlist_alone
     {
         let output = add_publisher(
             temp.path(),
@@ -56,7 +55,6 @@ fn add_publisher_requires_namespace() {
         assert_eq!(std::fs::read(storage.publishers_path()).unwrap(), before);
     }
 
-    // phase: tilo_namespace_without_first_party_is_refused
     for namespace in ["so.tilo", "so.tilo.labs"] {
         let output = add_publisher(
             temp.path(),
@@ -74,7 +72,6 @@ fn add_publisher_requires_namespace() {
         assert_eq!(std::fs::read(storage.publishers_path()).unwrap(), before);
     }
 
-    // phase: a_named_namespace_is_granted_exactly
     {
         let output = add_publisher(
             temp.path(),
@@ -92,7 +89,6 @@ fn add_publisher_requires_namespace() {
         assert!(!row.owns_package_id("so.tilo.store"));
     }
 
-    // phase: first_party_confirms_the_tilo_grant
     {
         let output = add_publisher(
             temp.path(),
@@ -132,7 +128,6 @@ fn grant_adds_a_namespace_to_an_allowed_publisher() {
         .save_allowlist(&crate::support::allowlist(vec![release.clone()]))
         .unwrap();
 
-    // phase: grant_adds_to_the_row_it_already_owns
     {
         let output = add_publisher(
             temp.path(),
@@ -160,7 +155,6 @@ fn grant_adds_a_namespace_to_an_allowed_publisher() {
         assert!(row.owns_package_id("labs.tilo.agent"));
     }
 
-    // phase: granting_a_namespace_it_owns_already_leaves_the_row_alone
     {
         let output = add_publisher(
             temp.path(),
@@ -185,7 +179,6 @@ fn grant_adds_a_namespace_to_an_allowed_publisher() {
         assert_eq!(allow.publishers[0].namespaces, ["so.tilo", "labs.tilo"]);
     }
 
-    // phase: a_grant_never_creates_the_publisher_it_extends
     {
         let stranger = pubkey_hex(82);
         let output = add_publisher(
@@ -198,7 +191,6 @@ fn grant_adds_a_namespace_to_an_allowed_publisher() {
         assert_eq!(storage.load_allowlist().unwrap().publishers.len(), 1);
     }
 
-    // phase: the_tilo_namespace_still_needs_first_party_when_granted
     {
         let output = add_publisher(
             temp.path(),

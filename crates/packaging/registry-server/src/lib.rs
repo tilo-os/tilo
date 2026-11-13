@@ -1,21 +1,10 @@
-//! `registry-server` — the self-hostable Tilo app registry.
-//!
-//! The library surface exposes:
-//!
-//! - [`storage::Storage`] — on-disk state (entries + identity +
-//!   allowlist), atomic-rename writes.
-//! - [`allowlist::PublisherAllowlist`] — owner-controlled
-//!   `publishers.toml`.
-//! - [`serve::AppState`] + [`serve::handle`] — the HTTP handler
-//!   plumbed into hyper.
-//! - [`run_server`] / [`bind_and_run`] — the tokio + hyper glue
-//!   that spawns the listener.
-//!
-//! TLS is deliberately out of scope: deployments put nginx or
-//! Caddy in front of this. Every mutating endpoint is signature-
-//! verified, so the transport-security layer only exists to
-//! protect the round-trip of GETs and to authenticate the base
-//! URL clients pin.
+//! `registry-server`: the self-hostable Tilo app registry. [`storage::Storage`] holds the on-disk
+//! state (entries, identity, allowlist) with atomic-rename writes,
+//! [`allowlist::PublisherAllowlist`] the owner-controlled `publishers.toml`, and
+//! [`serve::AppState`] with [`serve::handle`] the HTTP handler that [`run_server`] and
+//! [`bind_and_run`] put behind a listener. TLS is deliberately out of scope: deployments put nginx
+//! or Caddy in front of this. Every mutating endpoint is signature-verified, so the transport layer
+//! only protects the round-trip of GETs and authenticates the base URL clients pin.
 
 use std::net::SocketAddr;
 
@@ -54,12 +43,9 @@ pub use storage::{
 };
 pub use submission_review::Inspection;
 
-/// Bind the server to `addr` and run until the listener errors or
-/// the process is killed. Public so integration tests can drive
-/// the same code path the CLI does.
-///
-/// Returns `Ok(bound_addr)` — useful when the caller passed
-/// `0.0.0.0:0` for tests and needs to know the ephemeral port.
+/// Bind the server to `addr` and run until the listener errors or the process is killed. Public so
+/// integration tests drive the same code path the CLI does; returns the bound address, which a
+/// caller that passed port 0 needs.
 pub async fn bind_and_run(addr: SocketAddr, state: AppState) -> std::io::Result<SocketAddr> {
     let listener = TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
@@ -87,9 +73,7 @@ pub async fn bind_and_run(addr: SocketAddr, state: AppState) -> std::io::Result<
     Ok(bound)
 }
 
-/// Same as [`bind_and_run`] but blocks the current tokio task
-/// on a ctrl-c so callers embedding the server can await
-/// shutdown.
+/// [`bind_and_run`], waiting on ctrl-c so callers embedding the server can await shutdown.
 pub async fn run_server(addr: SocketAddr, state: AppState) -> std::io::Result<()> {
     let _bound = bind_and_run(addr, state).await?;
     tokio::signal::ctrl_c().await?;
@@ -97,8 +81,7 @@ pub async fn run_server(addr: SocketAddr, state: AppState) -> std::io::Result<()
     Ok(())
 }
 
-/// Convenience: default XDG state dir for the registry data.
-/// Falls back to `~/.local/state/tilo-registry`.
+/// The default XDG state dir for the registry data, else `~/.local/state/tilo-registry`.
 pub fn default_data_dir() -> std::path::PathBuf {
     tilo_paths::xdg::state_home().map_or_else(
         || std::path::PathBuf::from("/var/lib/tilo-registry"),

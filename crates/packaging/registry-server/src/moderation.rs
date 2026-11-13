@@ -1,8 +1,7 @@
-//! Durable pending-submission, review, and quarantine lifecycle.
-//!
-//! Approval and restoration re-verify publisher material at the point it can
-//! become public. Rejection intentionally accepts malformed/revoked requests,
-//! preserving their original bytes in an audit record while draining the queue.
+//! Durable pending-submission, review and quarantine lifecycle. Approval and restoration re-verify
+//! publisher material at the point it can become public. Rejection intentionally accepts malformed
+//! or revoked requests, preserving their original bytes in an audit record while draining the
+//! queue.
 
 use std::sync::{Arc, Mutex};
 
@@ -33,11 +32,9 @@ impl ModerationService {
         }
     }
 
-    /// Queue a signed publisher add, update, or delete request.
-    ///
-    /// Signature and allowlist verification deliberately occur at approval.
-    /// This method nevertheless validates public and pending ownership and
-    /// timestamps, giving publishers immediate feedback on stale submissions.
+    /// Queue a signed publisher add, update, or delete request. Signature and allowlist
+    /// verification deliberately happen at approval. This method nevertheless validates public and
+    /// pending ownership and timestamps, giving publishers immediate feedback on stale submissions.
     pub fn submit(
         &self,
         change: EntryChangeRequest,
@@ -60,9 +57,9 @@ impl ModerationService {
             deferred.as_ref().or(pending.as_ref()),
             &self.artifact_hosts(),
         )?;
-        // A version already public with an identical artifact was checked
-        // when it was approved; every other bot version must name a program
-        // the registry holds whose needs match its listing.
+        // A version already public with an identical artifact was checked when it was approved;
+        // every other bot version must name a program the registry holds whose needs match its
+        // listing.
         if change.action != EntryAction::Delete {
             for version in &change.entry.versions {
                 let already_public = public
@@ -82,8 +79,8 @@ impl ModerationService {
             }
         }
         let submission = PendingSubmission {
-            // The package id is a single atomic pending slot: replacing a
-            // revision is one rename rather than a delete/create window.
+            // The package id is a single atomic pending slot: replacing a revision is one rename,
+            // not a delete and a create.
             submission_id: package_id.clone(),
             submitted_at_unix,
             change,
@@ -105,7 +102,6 @@ impl ModerationService {
         Ok(submission)
     }
 
-    /// Fetch a pending submission by package id.
     pub fn pending(
         &self,
         submission_id: &str,
@@ -113,13 +109,12 @@ impl ModerationService {
         Ok(self.storage.load_pending(submission_id)?)
     }
 
-    /// List pending publisher submissions. Ordering is not defined.
     pub fn pending_submissions(&self) -> Result<Vec<PendingSubmission>, ModerationError> {
         Ok(self.storage.load_pending_submissions()?)
     }
 
-    /// Approve a pending request after re-verifying it against the current
-    /// owner allowlist, then apply it to the public index.
+    /// Approve a pending request after re-verifying it against the current owner allowlist, then
+    /// apply it to the public index.
     pub fn approve(
         &self,
         reviewed_submission: &PendingSubmission,
@@ -139,19 +134,13 @@ impl ModerationService {
         )
     }
 
-    /// Approve an exact bounded batch while the caller retains the registry
-    /// mutation lock. This joins promotion selection, its durable journal,
-    /// moderation, and snapshot publication into one cross-process
-    /// transaction boundary. Every pending slot is compared and validated
-    /// before the first mutation. Missing slots are accepted only when a
-    /// previous crash durably completed the exact review and public state,
-    /// which makes promotion-journal replay safe.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any selected submission changed, disappeared
-    /// without a completed review, fails trust validation, conflicts with the
-    /// public index, or cannot be persisted.
+    /// Approve an exact bounded batch while the caller holds the registry mutation lock, joining
+    /// promotion selection, its durable journal, moderation and snapshot publication into one
+    /// cross-process transaction. Every pending slot is compared and validated before the first
+    /// mutation. Missing slots are accepted only when a previous crash durably completed the exact
+    /// review and public state, which makes promotion-journal replay safe. # Errors Returns an
+    /// error if any selected submission changed, disappeared without a completed review, fails
+    /// trust validation, conflicts with the public index, or cannot be persisted.
     pub fn approve_batch_in_transaction(
         &self,
         _transaction: &SnapshotLock<'_>,
@@ -254,16 +243,11 @@ impl ModerationService {
         Ok(())
     }
 
-    /// Restore deferred successors and consume the completed promotion's
-    /// journal and staged manifest while the registry mutation lock is held.
-    /// New submissions cannot observe a journal that cleanup will remove.
-    /// Replaying this after a crash is safe because every transition and
-    /// deletion is idempotent.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if deferred state cannot be restored or durable
-    /// promotion state cannot be removed.
+    /// Restore deferred successors and consume the completed promotion's journal and staged
+    /// manifest while the registry mutation lock is held, so new submissions cannot observe a
+    /// journal that cleanup will remove. Replaying this after a crash is safe because every
+    /// transition and deletion is idempotent. # Errors Returns an error if deferred state cannot be
+    /// restored or durable promotion state cannot be removed.
     pub fn complete_promotion_in_transaction(
         &self,
         _transaction: &SnapshotLock<'_>,
@@ -295,9 +279,8 @@ impl ModerationService {
         )
     }
 
-    /// Where this registry accepts version artifacts to be hosted: the
-    /// official artifact tree, plus this registry's own `/artifacts/` when it
-    /// is a loopback development instance.
+    /// Where this registry accepts version artifacts to be hosted: the official artifact tree, plus
+    /// this registry's own `/artifacts/` when it is a loopback development instance.
     fn artifact_hosts(&self) -> ArtifactHosts {
         let base_url = self
             .storage
@@ -375,8 +358,8 @@ impl ModerationService {
             subject: ReviewSubject::Submission(pending),
         };
         self.persist_review_if_absent(&review)?;
-        // save public state -> save audit -> remove pending. A crash in either
-        // gap can be retried without overwriting a newer public revision.
+        // Save public state, then audit, then remove pending. A crash in either gap can be retried
+        // without overwriting a newer public revision.
         let _deleted = self
             .storage
             .delete_pending(&reviewed_submission.submission_id)?;
@@ -412,10 +395,9 @@ impl ModerationService {
         }
     }
 
-    /// Reject a pending request without changing public state.
-    ///
-    /// Rejection intentionally does not re-verify, so a revoked or malformed
-    /// publisher request cannot become permanently stuck in `pending/`.
+    /// Reject a pending request without changing public state. Rejection intentionally does not
+    /// re-verify, so a revoked or malformed publisher request cannot become permanently stuck in
+    /// `pending/`.
     pub fn reject(
         &self,
         submission_id: &str,
@@ -430,10 +412,9 @@ impl ModerationService {
         self.reject_locked(pending, reviewer.into(), reason.into(), reviewed_at_unix)
     }
 
-    /// Reject exactly the pending request the operator inspected. A newer
-    /// publisher revision must be reviewed before it can be rejected.
-    /// Like ordinary rejection, this also clears malformed or revoked
-    /// requests without re-verifying their signatures.
+    /// Reject exactly the pending request the operator inspected. A newer publisher revision must
+    /// be reviewed before it can be rejected. Like ordinary rejection, this also clears malformed
+    /// or revoked requests without re-verifying their signatures.
     pub fn reject_reviewed(
         &self,
         candidate: &PendingSubmission,
@@ -528,8 +509,7 @@ impl ModerationService {
         Ok(review)
     }
 
-    /// Return a quarantined entry to visibility after fresh signature and
-    /// allowlist verification.
+    /// Return a quarantined entry to visibility after fresh signature and allowlist verification.
     pub fn restore_quarantined(
         &self,
         package_id: &str,
@@ -641,30 +621,29 @@ impl ArtifactHosts {
 
 const OFFICIAL_REGISTRY_ORIGIN: &str = "https://apps.tilo.so";
 
-/// `<base_url>` without a trailing slash when it is a loopback HTTP origin
-/// with a port, as accepted for local artifacts.
+/// `<base_url>` without a trailing slash when it is a loopback HTTP origin with a port, as accepted
+/// for local artifacts.
 fn local_origin(base_url: &str) -> Option<String> {
     local_artifact_prefix(base_url).map(|prefix| prefix.trim_end_matches("/artifacts/").to_owned())
 }
 
-/// The URL a version names for the bot program `blake3_hex` this registry
-/// serves: `/blobs/<blake3>` on the official origin, or on a loopback base.
+/// The URL a version names for the bot program `blake3_hex` this registry serves: `/blobs/<blake3>`
+/// on the official origin, or on a loopback base.
 pub(crate) fn program_url(base_url: &str, blake3_hex: &str) -> String {
     let origin = local_origin(base_url).unwrap_or_else(|| OFFICIAL_REGISTRY_ORIGIN.to_owned());
     registry_types::bot_program_url(&origin, &blake3_hex.to_ascii_lowercase())
 }
 
-/// The URL a version names for the artifact `blake3_hex` this registry hosts:
-/// its loopback `<base_url>/artifacts/` in local development, the official
-/// artifact origin otherwise.
+/// The URL a version names for the artifact `blake3_hex` this registry hosts: its loopback
+/// `<base_url>/artifacts/` in local development, the official artifact origin otherwise.
 pub(crate) fn artifact_url(base_url: &str, blake3_hex: &str) -> String {
     let prefix =
         local_artifact_prefix(base_url).unwrap_or_else(|| OFFICIAL_ARTIFACT_PREFIX.to_owned());
     format!("{prefix}{}.tapp", blake3_hex.to_ascii_lowercase())
 }
 
-/// `<base_url>/artifacts/` when `base_url` is a loopback HTTP origin without
-/// credentials, path, query or fragment; `None` for every public deployment.
+/// `<base_url>/artifacts/` when `base_url` is a loopback HTTP origin without credentials, path,
+/// query or fragment; `None` for every public deployment.
 fn local_artifact_prefix(base_url: &str) -> Option<String> {
     let base = base_url.strip_suffix('/').unwrap_or(base_url);
     let authority = base.strip_prefix("http://")?;
@@ -681,8 +660,8 @@ fn validate_submission(
     pending: Option<&PendingSubmission>,
     artifacts: &ArtifactHosts,
 ) -> Result<(), ModerationError> {
-    // An app must never turn into a bot under the same id, or the reverse:
-    // what is installed would silently change what it is.
+    // An app must never turn into a bot under the same id, or the reverse: what is installed would
+    // silently change what it is.
     if let Some(current) = public.or_else(|| pending.map(|p| &p.change.entry))
         && current.kind != change.entry.kind
     {
@@ -846,11 +825,10 @@ fn validate_version_history(
                 .iter()
                 .find(|version| same_version_identity(version, old))
             else {
-                // A version leaves under the publisher's retention, once
-                // enough newer versions of its target and channel stay, or
-                // when the entry is at its version limit and a newer version
-                // for its target supersedes it. No target loses its current
-                // release either way.
+                // A version leaves under the publisher's retention once enough newer versions of
+                // its target and channel stay, or when the entry is at its version limit and a
+                // newer version for its target supersedes it. No target loses its current release
+                // either way.
                 let at_limit = proposed.versions.len() == registry_types::entry::MAX_ENTRY_VERSIONS;
                 let superseded = at_limit
                     && proposed.versions.iter().any(|version| {
@@ -1034,7 +1012,6 @@ fn thread_lock(lock: &Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>, Modera
         .map_err(|_| ModerationError::TransitionLockPoisoned)
 }
 
-/// Failures from moderation validation, persistence, or verification.
 #[derive(Debug, Error)]
 pub enum ModerationError {
     #[error("storage: {0}")]
@@ -1217,8 +1194,8 @@ mod tests {
             Err(ModerationError::VersionHistoryRemoved { .. })
         ));
 
-        // Below the limit, retention drops versions with enough newer ones
-        // of their target and channel left.
+        // Below the limit, retention drops versions with enough newer ones of their target and
+        // channel left.
         let mut short = current.clone();
         short
             .versions
@@ -1272,7 +1249,6 @@ mod tests {
 
     #[test]
     fn submissions_keep_append_only_per_target_history() {
-        // phase: version_history_is_monotonic_per_target
         {
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
             let mut current = entry(&key, 42);
@@ -1304,7 +1280,6 @@ mod tests {
             new_target.versions.push(arm);
             assert!(validate_version_history(&new_target, Some(&current), &official).is_ok());
         }
-        // phase: pending_replacement_requires_append_only_history_and_same_owner
         {
             let (_dir, service) = setup();
             let first = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -1334,7 +1309,6 @@ mod tests {
                 Err(ModerationError::PendingOwnedByAnotherPublisher(_))
             ));
         }
-        // phase: both_architectures_are_preserved_when_a_stale_submission_arrives
         {
             let (_dir, service) = setup();
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -1354,7 +1328,6 @@ mod tests {
             ));
             assert_eq!(service.pending("so.tilo.editor").unwrap(), Some(pending));
         }
-        // phase: retrying_the_same_submission_is_idempotent
         {
             let (_dir, service) = setup();
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -1508,7 +1481,6 @@ mod tests {
 
     #[test]
     fn approval_rechecks_the_reviewed_state_and_is_replay_safe() {
-        // phase: approval_rechecks_allowlist_and_is_replay_safe_after_public_write
         {
             let (_dir, service) = setup();
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -1532,7 +1504,6 @@ mod tests {
                 Some(review)
             );
         }
-        // phase: approval_refuses_a_submission_replaced_after_review
         {
             let (_dir, service) = setup();
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -1555,7 +1526,6 @@ mod tests {
                     .is_none()
             );
         }
-        // phase: batch_retry_recovers_an_approval_completed_before_a_crash
         {
             let (_dir, service) = setup();
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -1590,7 +1560,6 @@ mod tests {
 
     #[test]
     fn delete_and_restore_requests_are_moderated() {
-        // phase: delete_is_queued_and_rejection_can_drain_a_revoked_request
         {
             let (_dir, service) = setup();
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -1612,7 +1581,6 @@ mod tests {
                     .is_some()
             );
         }
-        // phase: approved_delete_removes_the_public_entry
         {
             let (_dir, service) = setup();
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -1634,7 +1602,6 @@ mod tests {
                     .is_none()
             );
         }
-        // phase: restore_requires_current_allowlist
         {
             let (_dir, service) = setup();
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -1673,7 +1640,6 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn promotion_recovery_keeps_newer_submissions_reachable() {
-        // phase: promotion_recovery_preserves_a_newer_submission_for_the_same_slot
         {
             let (_dir, service) = setup();
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -1703,8 +1669,8 @@ mod tests {
                 })
                 .unwrap();
 
-            // A submit arriving after a crash sees the durable journal. It must
-            // not replace the selected slot and make the journal unreplayable.
+            // A submit arriving after a crash sees the durable journal. It must not replace the
+            // selected slot and make the journal unreplayable.
             let successor = service
                 .submit(append_change(&key, &selected.change, 11), 102)
                 .unwrap();
@@ -1760,7 +1726,6 @@ mod tests {
                     .is_none()
             );
         }
-        // phase: promotion_cleanup_keeps_a_concurrent_successor_reachable
         {
             let (_dir, service) = setup();
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));

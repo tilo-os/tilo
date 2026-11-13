@@ -1,16 +1,12 @@
-//! Content-addressed files checked against their names once per file, not
-//! once per request.
-//!
-//! Every object this registry serves by content (payload blobs and chunks,
-//! their compressed twins, imported artifacts, thin packages, version
-//! indexes) is re-checked against its name before it leaves the server, so a
-//! corrupted or swapped file is refused rather than served. The files are
-//! immutable: each is written once through an atomic rename and never edited
-//! in place. Checking the same unchanged file again on every download only
-//! re-hashed (and for a twin, re-decompressed) bytes already known to match,
-//! on the I/O threads every other request waits for. Here a file is checked
-//! the first time it is served and again only when it is no longer the same
-//! file: another inode, length, modification or change time.
+//! Content-addressed files checked against their names once per file, not once per request. Every
+//! object this registry serves by content (payload blobs and chunks, their compressed twins,
+//! imported artifacts, thin packages, version indexes) is re-checked against its name before it
+//! leaves the server, so a corrupted or swapped file is refused instead of served. The files are
+//! immutable: each is written once through an atomic rename and never edited in place. Checking an
+//! unchanged file again on every download only re-hashes (and for a twin, re-decompresses) bytes
+//! already known to match, on the I/O threads every other request waits for. Here a file is checked
+//! the first time it is served, and again only when it is no longer the same file: another inode,
+//! length, modification or change time.
 
 use std::collections::HashMap;
 use std::fs::{File, Metadata};
@@ -22,8 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::StorageError;
 
-/// Which file a path named when it was read: a replaced or edited file has
-/// another stamp.
+/// Which file a path named when it was read: a replaced or edited file has another stamp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct FileStamp {
     device: u64,
@@ -86,7 +81,6 @@ impl FileStamp {
         self.len
     }
 
-    /// Whether the file last changed at least `settle` ago.
     fn settled(&self, settle: Duration) -> bool {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -112,12 +106,11 @@ impl Default for CheckedFiles {
     }
 }
 
-/// How long after its last change a file's stamp is trusted to name its
-/// bytes. File times advance in clock ticks, so an edit in place within the
-/// tick of an earlier read can leave the stamp unchanged; a file that
-/// changed this recently is checked again on every read (as git re-reads a
-/// racily clean index entry). Any later change moves the change time past
-/// the remembered one, which no user can set back.
+/// How long after its last change a file's stamp is trusted to name its bytes. File times advance
+/// in clock ticks, so an edit in place within the tick of an earlier read can leave the stamp
+/// unchanged; a file that changed this recently is checked again on every read (as git re-reads a
+/// racily clean index entry). Any later change moves the change time past the remembered one, which
+/// no user can set back.
 const SETTLE: Duration = Duration::from_secs(2);
 
 impl CheckedFiles {
@@ -134,10 +127,9 @@ impl CheckedFiles {
         self.checks.load(Ordering::Relaxed)
     }
 
-    /// The bytes of the file at `path`, or `None` when it does not exist.
-    /// `admit` sees the file's stamp before it is read (to refuse one too
-    /// large to read); `check` sees its bytes, unless this same file has
-    /// passed it before.
+    /// The bytes of the file at `path`, or `None` when it does not exist. `admit` sees the file's
+    /// stamp before it is read (to refuse one too large to read); `check` sees its bytes, unless
+    /// this same file has passed it before.
     pub(crate) fn read(
         &self,
         path: &Path,
@@ -150,8 +142,8 @@ impl CheckedFiles {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(StorageError::Io(format!("open {what}: {error}"))),
         };
-        // The stamp of the opened file, so it names exactly the bytes read
-        // even when the path is replaced meanwhile.
+        // The stamp of the opened file, so it names exactly the bytes read even when the path is
+        // replaced meanwhile.
         let stamp = FileStamp::of(
             &file
                 .metadata()

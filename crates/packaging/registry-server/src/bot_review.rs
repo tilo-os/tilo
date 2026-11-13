@@ -1,6 +1,5 @@
-//! Checks for bot versions. A bot version binds a program file the registry
-//! itself holds (uploaded, then published as a blob), so review reads the
-//! bytes from storage, never from the network.
+//! Checks for bot versions. A bot version binds a program file the registry itself holds (uploaded,
+//! then published as a blob), so review reads the bytes from storage, never from the network.
 
 use std::collections::BTreeSet;
 
@@ -13,7 +12,6 @@ use tilo_automation::requirements::{ProgramRequirements, requirements};
 
 use crate::{Storage, StorageError};
 
-/// What review verified about one bot version's program.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct InspectedProgram {
     pub version: String,
@@ -47,11 +45,8 @@ pub enum BotReviewError {
     Storage { version: String, reason: String },
 }
 
-/// Whether `listed` says exactly what `derived` needs. Every difference is
-/// named, so a publisher can fix the listing in one go.
-///
-/// # Errors
-/// A sentence listing each difference.
+/// Whether `listed` says exactly what `derived` needs. Every difference is named, so a publisher
+/// can fix the listing in one go.
 pub fn requirements_match(
     listed: &BotRequirements,
     derived: &ProgramRequirements,
@@ -98,10 +93,8 @@ pub fn requirements_match(
     }
 }
 
-/// Check `bytes` against the version that binds them.
-///
-/// # Errors
-/// [`BotReviewError`] for a size, hash, program or requirements mismatch.
+/// Check `bytes` against the version that binds them. # Errors [`BotReviewError`] for a size, hash,
+/// program or requirements mismatch.
 pub fn inspect_program(
     package_id: &str,
     version: &str,
@@ -150,8 +143,8 @@ pub fn inspect_program(
     })
 }
 
-/// The program bytes of `version`: the publisher's upload, or the blob an
-/// earlier approval already published.
+/// The program bytes of `version`: the publisher's upload, or the blob an earlier approval already
+/// published.
 fn program_bytes(
     storage: &Storage,
     version: &str,
@@ -191,8 +184,7 @@ pub fn review_bot_versions(
         .collect()
 }
 
-/// Inspect one version of a bot entry: the check `submit` runs on each
-/// version a request adds.
+/// Inspect one version of a bot entry: the check `submit` runs on each version a request adds.
 pub(crate) fn check_submitted_version(
     storage: &Storage,
     entry: &RegistryEntry,

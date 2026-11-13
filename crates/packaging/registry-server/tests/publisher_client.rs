@@ -1,6 +1,6 @@
-//! `registry-client`, as `tilo-app apply` and `tilo-app publish` drive it,
-//! against a running registry: apply for a namespace, get approved, publish
-//! a build into it, and find the upload where review reads it.
+//! `registry-client`, as `tilo-app apply` and `tilo-app publish` drive it, against a running
+//! registry: apply for a namespace, get approved, publish a build into it, and find the upload
+//! where review reads it.
 
 #![allow(
     clippy::unwrap_used,
@@ -173,8 +173,8 @@ async fn an_outside_publisher_applies_is_approved_and_publishes() {
     .unwrap();
 }
 
-/// A second release while the first waits for review: the new request keeps
-/// every version the waiting one lists, and nobody else can read it.
+/// A second release while the first waits for review: the new request keeps every version the
+/// waiting one lists, and nobody else can read it.
 fn a_release_before_review_extends_the_waiting_request(
     client: &RegistryClient,
     key: &SigningKey,

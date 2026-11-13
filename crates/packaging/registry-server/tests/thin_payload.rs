@@ -1,7 +1,6 @@
-//! Thin packages whose payload the publisher hosts as objects beside the
-//! `.tapp`: review fetches the objects (whole blobs, or chunk lists and
-//! their chunks) into the registry, verified and within the payload limit,
-//! and installers fetch them back from `/blobs/` chunk by chunk.
+//! Thin packages whose payload the publisher hosts as objects beside the `.tapp`: review fetches
+//! the objects (whole blobs, or chunk lists and their chunks) into the registry, verified and
+//! within the payload limit, and installers fetch them back from `/blobs/` chunk by chunk.
 
 #![allow(
     clippy::unwrap_used,
@@ -24,8 +23,7 @@ use tilo_app_package::{BlobFetcher, BlobHash, Manifest, SigningIdentity, pack};
 const CHUNK: u64 = 64 * 1024;
 const PROVIDES: &str = "tilo-runtime/2026.07";
 
-/// Serve the files of `dir` at `<base>/<name>`, like the artifact proxy
-/// serves a release directory.
+/// Serve the files of `dir` at `<base>/<name>`, like the artifact proxy serves a release directory.
 fn serve_dir(dir: PathBuf) -> (String, Responder) {
     let served = Responder::handle(move |request| {
         let body = request
@@ -59,8 +57,8 @@ struct Published {
     payload: BTreeMap<String, Vec<u8>>,
 }
 
-/// Pack `files` under `manifest`, split it into `<root>/objects` with
-/// `CHUNK`-sized chunks, and describe the thin form at `base_url`.
+/// Pack `files` under `manifest`, split it into `<root>/objects` with `CHUNK`-sized chunks, and
+/// describe the thin form at `base_url`.
 fn publish(
     root: &Path,
     identity: &SigningIdentity,
@@ -194,7 +192,6 @@ fn review(
     reason = "one scenario, one labelled phase per merged case"
 )]
 async fn thin_packages_review_from_hosted_objects_and_install_from_chunks() {
-    // phase: a_thin_runtime_reviews_from_chunked_objects_and_serves_them
     {
         let tmp = tempfile::tempdir().unwrap();
         let identity = SigningIdentity::generate();
@@ -244,8 +241,8 @@ async fn thin_packages_review_from_hosted_objects_and_install_from_chunks() {
             .unwrap();
         assert_eq!(list.chunks.len(), 6);
 
-        // Publication inspects what collection stored while it holds the
-        // registry lock, and must not take it again.
+        // Publication inspects what collection stored while it holds the registry lock, and must
+        // not take it again.
         let thin = std::fs::read(published.objects.join("package.tapp")).unwrap();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let (held_storage, held_entry) = (storage.clone(), published.entry.clone());
@@ -303,8 +300,8 @@ async fn thin_packages_review_from_hosted_objects_and_install_from_chunks() {
             .unwrap();
         assert_eq!(chunk.bytes().await.unwrap().len() as u64, CHUNK);
 
-        // An installer fetches the thin package and its payload, chunk by
-        // verified chunk, and materializes the tree.
+        // An installer fetches the thin package and its payload, chunk by verified chunk, and
+        // materializes the tree.
         let registry = app_registry::HttpBlobs::new(format!("http://{addr}"));
         let payload = published.payload.clone();
         // Installers are synchronous: no async runtime on the fetching thread.
@@ -341,7 +338,6 @@ async fn thin_packages_review_from_hosted_objects_and_install_from_chunks() {
         .await;
         install.join().unwrap();
     }
-    // phase: a_tampered_chunk_or_missing_object_fails_review_and_publishes_no_list
     {
         let tmp = tempfile::tempdir().unwrap();
         let identity = SigningIdentity::generate();
@@ -395,7 +391,6 @@ async fn thin_packages_review_from_hosted_objects_and_install_from_chunks() {
             "{error}"
         );
     }
-    // phase: a_thin_app_is_held_to_the_application_budget
     {
         let tmp = tempfile::tempdir().unwrap();
         let identity = SigningIdentity::generate();
@@ -413,10 +408,9 @@ async fn thin_packages_review_from_hosted_objects_and_install_from_chunks() {
             &base,
         );
         let storage = Storage::open(tmp.path().join("data")).unwrap();
-        // Even beside a developer session whose publisher list names this
-        // key (package_store::size_limit), under which a development store
-        // installs the session's own builds above the limit: the registry
-        // holds every application to it.
+        // Even beside a developer session whose publisher list names this key
+        // (package_store::size_limit), under which a development store installs the session's own
+        // builds above the limit: the registry holds every application to it.
         let list = tmp.path().join("developer-publishers.txt");
         std::fs::write(
             &list,

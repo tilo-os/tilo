@@ -1,9 +1,7 @@
-//! Fail-closed inspection of package bytes behind a pending registry entry.
-//!
-//! A publisher signature authenticates metadata, but it does not prove that a
-//! moderator reviewed the bytes at the advertised URL. The reviewer CLI uses
-//! this module before approval. Redirects and non-public destinations are
-//! refused so inspection cannot become an SSRF primitive.
+//! Fail-closed inspection of package bytes behind a pending registry entry. A publisher signature
+//! authenticates metadata, but it does not prove that a moderator reviewed the bytes at the
+//! advertised URL. The reviewer CLI uses this module before approval. Redirects and non-public
+//! destinations are refused so inspection cannot become an SSRF primitive.
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
@@ -19,9 +17,8 @@ const COPY_BUFFER_BYTES: usize = 64 * 1024;
 #[derive(Clone, Copy, Debug)]
 pub struct InspectionPolicy {
     pub max_package_bytes: u64,
-    /// Distinct payload bytes a `kind = "runtime"` package may reference.
-    /// Its payload travels as objects beside a thin `.tapp`, each at most
-    /// [`tilo_app_package::chunks::MAX_OBJECT_BYTES`].
+    /// Distinct payload bytes a `kind = "runtime"` package may reference. Its payload travels as
+    /// objects beside a thin `.tapp`, each at most [`tilo_app_package::chunks::MAX_OBJECT_BYTES`].
     pub max_runtime_payload_bytes: u64,
     /// Ceiling of one request: the `.tapp`, or one payload object.
     pub timeout: Duration,
@@ -50,9 +47,9 @@ impl InspectionPolicy {
         }
     }
 
-    /// Ceiling on the distinct payload bytes the package may reference:
-    /// the application budget for an app, the runtime payload limit for a
-    /// runtime, and the download limit for other kinds, which travel full.
+    /// Ceiling on the distinct payload bytes the package may reference: the application budget for
+    /// an app, the runtime payload limit for a runtime, and the download limit for other kinds,
+    /// which travel full.
     fn payload_limit(&self, tapp: &TappArtifact, manifest: &tilo_app_package::Manifest) -> u64 {
         if manifest.package.kind == tilo_app_package::Kind::Runtime {
             return self.max_runtime_payload_bytes;
@@ -132,8 +129,8 @@ pub enum BundleReviewError {
     },
 }
 
-/// Fetch and inspect every version. The caller approves the unchanged signed
-/// submission only after this succeeds.
+/// Fetch and inspect every version. The caller approves the unchanged signed submission only after
+/// this succeeds.
 pub fn inspect_entry(
     entry: &RegistryEntry,
     policy: InspectionPolicy,
@@ -144,8 +141,7 @@ pub fn inspect_entry(
         .collect())
 }
 
-/// Fetch every version and retain the exact verified bytes for a later
-/// networkless signing step.
+/// Fetch every version and retain the exact verified bytes for a later networkless signing step.
 pub fn fetch_entry_bytes(
     entry: &RegistryEntry,
     policy: InspectionPolicy,
@@ -160,8 +156,8 @@ pub fn fetch_entry_bytes(
         .collect()
 }
 
-/// [`fetch_entry_bytes`], reading each version a publisher uploaded to this
-/// registry from `storage` (see [`review_version_bytes`]).
+/// [`fetch_entry_bytes`], reading each version a publisher uploaded to this registry from `storage`
+/// (see [`review_version_bytes`]).
 pub fn review_entry_bytes(
     storage: &crate::Storage,
     entry: &RegistryEntry,
@@ -177,10 +173,10 @@ pub fn review_entry_bytes(
         .collect()
 }
 
-/// [`fetch_version_bytes`], except that a version whose URL is this
-/// registry's `/artifacts/<blake3>.tapp` and whose bytes a publisher uploaded
-/// (`PUT /uploads`) is read from `storage` instead: approval is what makes
-/// that URL serve them. The bytes pass the same inspection either way.
+/// [`fetch_version_bytes`], except that a version whose URL is this registry's
+/// `/artifacts/<blake3>.tapp` and whose bytes a publisher uploaded (`PUT /uploads`) is read from
+/// `storage` instead: approval is what makes that URL serve them. The bytes pass the same
+/// inspection either way.
 pub fn review_version_bytes(
     storage: &crate::Storage,
     entry: &RegistryEntry,
@@ -212,17 +208,13 @@ pub fn review_version_bytes(
     Ok((inspection, bytes))
 }
 
-/// [`inspect_bytes`] for a package that may be thin. Each payload blob the
-/// `.tapp` does not carry must be held by `storage` already or, given a
-/// `fetch` policy, is fetched from the objects the publisher hosts beside
-/// `tapp_url` (`<blob>.blob`, or `<blob>.chunks` and its chunks), verified,
-/// and streamed straight into `storage`'s payload blobs. The payload shape
-/// and size limits are then checked on the verified lengths, so a thin
-/// application stays within the application budget.
-///
-/// # Errors
-/// As [`inspect_bytes`], or a payload blob that cannot be found, fetched,
-/// verified, stored, or that exceeds the package's payload limit.
+/// [`inspect_bytes`] for a package that may be thin. Each payload blob the `.tapp` does not carry
+/// must be held by `storage` already or, given a `fetch` policy, is fetched from the objects the
+/// publisher hosts beside `tapp_url` (`<blob>.blob`, or `<blob>.chunks` and its chunks), verified,
+/// and streamed straight into `storage`'s payload blobs. The payload shape and size limits are then
+/// checked on the verified lengths, so a thin application stays within the application budget. #
+/// Errors As [`inspect_bytes`], or a payload blob that cannot be found, fetched, verified, stored,
+/// or that exceeds the package's payload limit.
 pub fn inspect_stored_bytes(
     storage: &crate::Storage,
     entry: &RegistryEntry,
@@ -241,11 +233,10 @@ pub fn inspect_stored_bytes(
         reason: error.to_string(),
     };
     if !missing.is_empty() && fetch.is_some() {
-        // The thin form lands first: pruning keeps the blobs of every thin
-        // package a pending version names, so blobs arriving below survive
-        // a concurrent prune. Only collection fetches; publication inspects
-        // what collection already stored, while holding the registry lock
-        // that storing takes.
+        // The thin form lands first: pruning keeps the blobs of every thin package a pending
+        // version names, so blobs arriving below survive a concurrent prune. Only collection
+        // fetches; publication inspects what collection already stored, while holding the registry
+        // lock that storing takes.
         storage.save_payload_blobs(bytes).map_err(storage_error)?;
     }
     let mut total = payload_total(&lengths);
@@ -292,11 +283,9 @@ fn payload_total(lengths: &std::collections::BTreeMap<tilo_app_package::BlobHash
         .fold(0u64, |sum, len| sum.saturating_add(*len))
 }
 
-/// Fetch and verify one signed version while retaining its exact bytes.
-///
-/// This single-version boundary lets callers durably consume each verified
-/// artifact before fetching the next version instead of retaining an entry's
-/// complete version history in memory.
+/// Fetch and verify one signed version while retaining its exact bytes. This single-version
+/// boundary lets callers durably consume each verified artifact before fetching the next version,
+/// instead of retaining an entry's complete version history in memory.
 pub fn fetch_version_bytes(
     entry: &RegistryEntry,
     version: &RegistryVersion,
@@ -341,8 +330,8 @@ fn download_tapp(
     Ok(bytes)
 }
 
-/// Parse a URL review may fetch: HTTPS (or, for an explicitly local
-/// registry, HTTP) without credentials or a fragment.
+/// Parse a URL review may fetch: HTTPS (or, for an explicitly local registry, HTTP) without
+/// credentials or a fragment.
 fn parse_url(text: &str, policy: InspectionPolicy) -> Result<reqwest::Url, BundleReviewError> {
     let url = reqwest::Url::parse(text).map_err(|error| BundleReviewError::Url {
         url: text.to_owned(),
@@ -363,8 +352,8 @@ fn parse_url(text: &str, policy: InspectionPolicy) -> Result<reqwest::Url, Bundl
     Ok(url)
 }
 
-/// GET `url` from a public address pinned against DNS rebinding, without
-/// following redirects, within the policy's per-request timeout.
+/// GET `url` from a public address pinned against DNS rebinding, without following redirects,
+/// within the policy's per-request timeout.
 fn safe_get(
     url: &reqwest::Url,
     policy: InspectionPolicy,
@@ -413,13 +402,12 @@ fn safe_get(
     Ok(response)
 }
 
-/// Fetch the payload blob `hash` from the objects beside the version's
-/// `tapp_url` into `storage`, verified, returning its length. A whole
-/// `<hash>.blob` streams to disk and is published only once it hashed
-/// right; a `<hash>.chunks` list is followed chunk by chunk, each streamed
-/// and checked the same way and the joined bytes checked against `hash`
-/// before the list is published. Memory stays at one copy buffer. `spent`
-/// payload bytes of the package's `limit` are already accounted for.
+/// Fetch the payload blob `hash` from the objects beside the version's `tapp_url` into `storage`,
+/// verified, returning its length. A whole `<hash>.blob` streams to disk and is published only once
+/// it hashed right; a `<hash>.chunks` list is followed chunk by chunk, each streamed and checked
+/// the same way and the joined bytes checked against `hash` before the list is published. Memory
+/// stays at one copy buffer. `spent` payload bytes of the package's `limit` are already accounted
+/// for.
 fn fetch_payload_blob(
     storage: &crate::Storage,
     version: &RegistryVersion,
@@ -573,8 +561,7 @@ impl Objects<'_> {
                 .open_payload_object(&chunk.hash)
                 .map_err(stored)?
             {
-                // Already held, verified when stored; it still feeds the
-                // whole-blob check.
+                // Already held, verified when stored; it still feeds the whole-blob check.
                 copy_bounded(file, chunk.len, |bytes| {
                     assembly.update(bytes).map_err(std::io::Error::from)
                 })
@@ -618,8 +605,8 @@ fn get_object(
         .map_err(|error| fetch_error(url.as_str(), &error))
 }
 
-/// Stream `reader` to `sink` in bounded pieces: the byte count, or `None`
-/// when the reader yields more than `limit` bytes.
+/// Stream `reader` to `sink` in bounded pieces: the byte count, or `None` when the reader yields
+/// more than `limit` bytes.
 fn copy_bounded(
     mut reader: impl Read,
     limit: u64,
@@ -716,9 +703,8 @@ fn inspected(
     }
 }
 
-/// Everything [`inspect_bytes`] checks except the payload shape, which
-/// needs every payload blob's length: size, digest, signature, manifest
-/// identity and signed target.
+/// Everything [`inspect_bytes`] checks except the payload shape, which needs every payload blob's
+/// length: size, digest, signature, manifest identity and signed target.
 fn inspect_metadata(
     entry: &RegistryEntry,
     version: &RegistryVersion,
@@ -781,9 +767,8 @@ fn inspect_metadata(
     Ok(meta)
 }
 
-/// A Linux, Windows, macOS or Android build is a self-contained executable:
-/// its signed `[target]` names the version exactly, under the desktop size
-/// limit.
+/// A Linux, Windows, macOS or Android build is a self-contained executable: its signed `[target]`
+/// names the version exactly, under the desktop size limit.
 fn check_desktop_target(
     version: &RegistryVersion,
     manifest: &tilo_app_package::Manifest,
@@ -854,13 +839,11 @@ fn check_native_target(
         .isa
         .for_arch(architecture)
         .map(|isa| isa.wire_label().to_string());
-    // The interfaces a version records are exactly the ones its signed
-    // manifest requires: a device decides what to offer from them before it
-    // has the package, so an entry must not understate them. A version
-    // published before versions recorded interfaces records none; entries
-    // keep such versions, and refusing them would refuse every update of
-    // their entry. `tilo-install` and the launcher check the signed
-    // manifest itself, so such a build still never installs or runs where
+    // The interfaces a version records are exactly the ones its signed manifest requires: a device
+    // decides what to offer from them before it has the package, so an entry must not understate
+    // them. A version published before versions recorded interfaces records none; entries keep such
+    // versions, and refusing them would refuse every update of their entry. `tilo-install` and the
+    // launcher check the signed manifest itself, so such a build still never installs or runs where
     // its interfaces are not served.
     let interfaces_bound =
         target.interfaces.is_empty() || manifest.required_interface_wire() == target.interfaces;
@@ -916,8 +899,8 @@ fn public_v6(ip: Ipv6Addr) -> bool {
         || (segments[0] == 0x2001 && segments[1] == 0x0db8))
 }
 
-/// The `.tapp` a version binds. Only a tapp is a package to review; a bot
-/// program goes through the bot checks instead.
+/// The `.tapp` a version binds. Only a tapp is a package to review; a bot program goes through the
+/// bot checks instead.
 fn tapp_of(version: &RegistryVersion) -> Result<&TappArtifact, BundleReviewError> {
     version
         .tapp()
@@ -934,7 +917,6 @@ mod tests {
 
     #[test]
     fn review_fetch_policy_refuses_before_network_io() {
-        // phase: default_review_policy_enforces_the_app_limit_before_download
         {
             let policy = InspectionPolicy::default();
             assert_eq!(policy.max_package_bytes, app_registry::MAX_APP_TAPP_BYTES);
@@ -948,7 +930,6 @@ mod tests {
                     if limit == app_registry::MAX_APP_TAPP_BYTES
             ));
         }
-        // phase: review_fetch_refuses_local_and_credentialed_urls_before_network_io
         {
             let mut entry = sample_entry("http://127.0.0.1/app.tapp");
             assert!(matches!(
@@ -967,7 +948,6 @@ mod tests {
                 Err(BundleReviewError::PrivateAddress(_))
             ));
         }
-        // phase: public_address_classification_covers_special_ranges
         {
             assert!(!public_ip("127.0.0.1".parse().unwrap()));
             assert!(!public_ip("169.254.1.2".parse().unwrap()));
@@ -980,7 +960,6 @@ mod tests {
 
     #[test]
     fn artifact_inspection_binds_identity_manifest_size_and_isa() {
-        // phase: package_inspection_verifies_identity_manifest_and_size
         {
             let identity = SigningIdentity::generate();
             let (bytes, package_id) = signed_tapp(&identity);
@@ -1018,7 +997,6 @@ mod tests {
                 Err(BundleReviewError::ManifestMismatch { .. })
             ));
         }
-        // phase: arm_artifact_inspection_binds_architecture_and_isa
         {
             let identity = SigningIdentity::generate();
             let (bytes, package_id) = signed_tapp_arch(&identity, "aarch64 = \"v8.2-a\"");
@@ -1044,7 +1022,6 @@ mod tests {
                 Err(BundleReviewError::TargetMismatch { .. })
             ));
         }
-        // phase: a_version_recorded_before_interfaces_still_reviews
         {
             let identity = SigningIdentity::generate();
             let (bytes, package_id) = signed_tapp_with(
