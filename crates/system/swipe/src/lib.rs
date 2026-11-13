@@ -1,16 +1,12 @@
-//! Safe Rust wrapper over the FUTO swipe-library (`SwipeEngine`) via a
-//! C-ABI shim (`csrc/swipe_ffi.cpp`).
+//! Safe Rust wrapper over the FUTO swipe engine (`SwipeEngine`) through a C-ABI
+//! shim (`csrc/swipe_ffi.cpp`): the FUTO encoder, an optional paired decoder and
+//! an optional context LM on `ExecuTorch`, scored against a dictionary trie.
 //!
-//! Real ML swipe-typing: the FUTO encoder (universal) + an optional paired
-//! decoder + an optional context LM run on `ExecuTorch`, scored against a
-//! dictionary trie. See [`FutoSwipe`].
-//!
-//! When the crate is built WITHOUT the FUTO static libs (env `TILO_SWIPE_LIB`
-//! unset at build time → `cfg(futo)` off), [`available`] returns `false` and
-//! [`FutoSwipe::new`] returns `None`, so callers (the on-screen keyboard)
-//! transparently fall back to their geometric decoder.
+//! Without the FUTO static libs (`TILO_SWIPE_LIB` unset at build time, so
+//! `cfg(futo)` is off), [`available`] returns `false` and [`FutoSwipe::new`]
+//! returns `None`, so the keyboard falls back to its geometric decoder.
 
-/// A decoded swipe candidate: the word and its final score (higher = better).
+/// The word and its final score; higher is better.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Candidate {
     pub word: String,
@@ -68,13 +64,11 @@ mod imp {
     const WORDS_CAP: usize = 8192;
     const MAX_RESULTS: usize = 32;
 
-    /// A loaded FUTO swipe engine. Not thread-safe (the underlying
-    /// `SwipeEngine` isn't) — keep it on one thread.
+    /// A loaded engine. Not thread-safe: keep it on one thread.
     pub struct FutoSwipe {
         handle: *mut c_void,
     }
 
-    /// Paths to the model assets for [`FutoSwipe::new`].
     #[derive(Clone, Debug, Default)]
     pub struct ModelPaths {
         pub encoder: std::path::PathBuf,
@@ -95,7 +89,7 @@ mod imp {
     }
 
     impl FutoSwipe {
-        /// Load the engine. Returns `None` if the encoder fails to load.
+        /// `None` if the encoder fails to load.
         pub fn new(paths: &ModelPaths, beam_width: i32, top_k: i32) -> Option<Self> {
             let enc = cstr(&paths.encoder);
             let dec = cstr_opt(&paths.decoder);
@@ -127,9 +121,9 @@ mod imp {
             unsafe { tilo_swipe_has_lm(self.handle) != 0 }
         }
 
-        /// Recognize a swipe. `x`/`y` are normalized to the layout's [0,1]
-        /// space; `t` is milliseconds since the first point. Returns up to
-        /// `top_k` ranked candidates (best first).
+        /// Recognize a swipe. `x`/`y` are normalized to the layout's [0,1] space;
+        /// `t` is milliseconds since the first point. Returns up to `top_k`
+        /// candidates, best first.
         pub fn recognize(&self, x: &[f32], y: &[f32], t: &[f32], top_k: i32) -> Vec<Candidate> {
             let n = x.len().min(y.len()).min(t.len());
             if n == 0 {
@@ -154,8 +148,8 @@ mod imp {
             parse_results(&words, &scores, count)
         }
 
-        /// Context-only next-word prediction (requires an LM). `context` is
-        /// the previous words, oldest first.
+        /// Context-only next-word prediction, which needs an LM. `context` is the
+        /// previous words, oldest first.
         pub fn predict_next(&self, context: &[&str], k: i32) -> Vec<Candidate> {
             if !self.has_lm() {
                 return Vec::new();
@@ -231,8 +225,7 @@ mod stub {
         pub dict_combined: Option<PathBuf>,
     }
 
-    /// Stub used when the crate is built without the FUTO libs. `new`
-    /// always returns `None`, so callers fall back to a geometric decoder.
+    /// The stub without the FUTO libs: `new` always returns `None`.
     pub struct FutoSwipe(());
 
     impl FutoSwipe {
