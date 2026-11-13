@@ -7,6 +7,7 @@ use std::path::Path;
 
 mod build;
 mod check;
+mod command;
 mod dev;
 mod layout_check;
 mod native_types;
