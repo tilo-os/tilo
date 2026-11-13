@@ -459,7 +459,7 @@ mod tests {
     /// pieces that came, and the whole content once they cover its total (none before that).
     #[test]
     fn wanted_content_is_whole_only_once_its_pieces_cover_its_total() {
-        let cases: [(&str, Vec<(Want<()>, Option<&[u8]>)>); 2] = [
+        let cases = [
             (
                 "content_is_whole_once_its_pieces_cover_it_in_any_order",
                 vec![
