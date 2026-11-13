@@ -1,8 +1,8 @@
-//! The registry identity the verification commands use: bootc's existing
-//! pull credentials, copied into a private directory for the run.
+//! The registry identity the verification commands use: bootc's existing pull
+//! credentials, copied into a private directory for the run.
 //!
-//! The pull identity is transport only. It cannot authorize an image or
-//! change the pinned release key or the owner's grant.
+//! The pull identity is transport only. It cannot authorize an image or change the
+//! pinned release key or the owner's grant.
 
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -23,8 +23,8 @@ pub const AUTH_FILES: [&str; 3] = [
 ];
 const CREDENTIALS_LIMIT: usize = 1_048_576;
 
-/// A private copy of the pull credentials and the environment that points
-/// the verification commands at it. Dropping it removes the copy.
+/// A private copy of the pull credentials and the environment that points the
+/// verification commands at it. Dropping it removes the copy.
 #[derive(Debug)]
 pub struct Registry {
     directory: tempfile::TempDir,
@@ -102,13 +102,11 @@ impl Registry {
         })
     }
 
-    /// The variables added to each command's environment.
     #[must_use]
     pub fn environment(&self) -> &[(&'static str, OsString)] {
         &self.environment
     }
 
-    /// The private directory holding the copy.
     #[must_use]
     pub fn directory(&self) -> &Path {
         self.directory.path()

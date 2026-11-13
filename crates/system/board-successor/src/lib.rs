@@ -1,5 +1,5 @@
-//! `tilo-board-successor`: selects an authenticated successor release for
-//! a board image. Tags are discovery hints only.
+//! `tilo-board-successor`: selects an authenticated successor release for a board
+//! image. Tags are discovery hints only.
 //!
 //! ```text
 //! tilo-board-successor applicable   exit 0 on an official board release image, 3 otherwise
@@ -14,10 +14,10 @@
 //! ```
 //!
 //! `tilo-verified-update` runs the first two; the installer backend and the
-//! offline-target import run `install-update-origin`. All cryptographic verification uses the
-//! image's pinned Cosign verifier and key; this helper never changes the
-//! deployment, owner trust or rollback state. Exit status 1 on any failure,
-//! with the reason on stderr; 128 + the signal when stopped.
+//! offline-target import run `install-update-origin`. All cryptographic verification
+//! uses the image's pinned Cosign verifier and key; this helper never changes the
+//! deployment, owner trust or rollback state. Exit status 1 on any failure, with the
+//! reason on stderr; 128 + the signal when stopped.
 
 pub mod command;
 pub mod profile;
@@ -36,11 +36,10 @@ use crate::profile::{Root, development_origin, read_profile};
 use crate::registry::Registry;
 use crate::release::{MAX_OUTPUT, PROFILE, select};
 
-/// A failure, by what the original raised.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
-    /// A check refused (`ValueError` and the lookups that raised
-    /// `KeyError`, `TypeError` or `AttributeError`).
+    /// A check refused (`ValueError`, and the lookups that raised `KeyError`,
+    /// `TypeError` or `AttributeError`).
     Value(String),
     /// The operating system refused (`OSError`).
     Os(String),
@@ -51,7 +50,6 @@ pub enum Error {
 }
 
 impl Error {
-    /// A check's refusal.
     pub fn value(message: impl Into<String>) -> Self {
         Self::Value(message.into())
     }
@@ -86,10 +84,8 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// `Result` with this crate's [`Error`].
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// `require(condition, message)`.
 pub fn require(condition: bool, message: impl Into<String>) -> Result<()> {
     if condition {
         Ok(())
