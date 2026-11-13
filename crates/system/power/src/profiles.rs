@@ -14,17 +14,11 @@ pub struct PowerProfilesMonitor {
 }
 
 impl PowerProfilesMonitor {
-    /// # Errors
-    ///
-    /// Returns an error if the `power-profiles-daemon` proxy cannot be built on `connection`.
     pub async fn with_connection(connection: &zbus::Connection) -> zbus::Result<Self> {
         let proxy = zbus::Proxy::new(connection, DEST, PATH, IFACE).await?;
         Ok(Self { proxy })
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the `ActiveProfile` property cannot be read.
     pub async fn active_profile(&self) -> zbus::Result<String> {
         self.proxy.get_property("ActiveProfile").await
     }
@@ -35,10 +29,6 @@ impl PowerProfilesMonitor {
     }
 
     /// The profiles the daemon advertises, in its order.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `Profiles` property cannot be read.
     pub async fn profiles(&self) -> zbus::Result<Vec<String>> {
         let profiles: Vec<HashMap<String, OwnedValue>> =
             self.proxy.get_property("Profiles").await?;
