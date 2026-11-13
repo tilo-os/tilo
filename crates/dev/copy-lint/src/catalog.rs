@@ -1,8 +1,6 @@
-//! Checks that a crate's Fluent catalogues agree with each other.
-//!
-//! A key only English defines shows English on a German desktop, a key the
-//! source lacks is dead copy, and a translation that drops a variable loses
-//! words. Each crate states its catalogues once:
+//! Checks that a crate's Fluent catalogues agree with each other: a key only English defines shows
+//! English on a German desktop, a key the source lacks is dead copy, and a translation that drops a
+//! variable loses words. Each crate states its catalogues once:
 //!
 //! ```no_run
 //! const CATALOGS: &[(&str, &str)] = &[("en-US", "a = A\n"), ("de-DE", "a = Ä\n")];
@@ -13,8 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fluent::{FluentBundle, FluentResource};
 
-/// Every message in a catalogue, keyed by id, with its full pattern
-/// (continuation lines included).
+/// Every message in a catalogue, keyed by id, with its full pattern (continuation lines included).
 #[must_use]
 pub fn messages(source: &str) -> BTreeMap<String, String> {
     let mut messages = BTreeMap::new();
