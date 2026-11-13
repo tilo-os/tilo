@@ -55,6 +55,8 @@ impl Session {
         // hands them.
         self.read_controls();
         self.shared.feed_agents();
+        // The apps' records the services run over are the workspace's, once the session holds it.
+        self.shared.keep_app_records();
         let mut services = self.shared.services.borrow_mut();
         // What the packages the session runs itself (the shell) wrote into the records their parts
         // share, published with every app's before the door answers this pass.

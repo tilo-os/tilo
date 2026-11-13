@@ -43,7 +43,7 @@ fn session(root: &std::path::Path) -> Session {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(crate::common::seeded_apps())],
+        services: crate::common::seeded_apps(),
         questions: Some(Questions::new()),
         action_plane: ActionPlane::At(root.join("plane.sock")),
         agent_door: Some(root.join("agent.sock")),
@@ -278,4 +278,125 @@ fn a_place_positioned_beside_another_stands_next_to_it() {
     });
     assert_eq!(moved.1, iy, "it stands at the inbox's line: {moved:?}");
     assert!(moved.0 > ix, "to the inbox's right: {moved:?} against {ix}");
+}
+
+/// How wide the display of [`a_place_moved_to_a_point_is_drawn_there`] is: wide enough that the
+/// point the place is moved to stands on it with the canvas where it opened.
+const WIDE: i32 = 2560;
+
+/// A session on a display [`WIDE`] wide, the framed canvas in front, the seeded apps published.
+fn wide_session(root: &std::path::Path) -> Session {
+    let mut session = crate::common::headless_on(
+        &[tilo_compositor::OutputConfig::new(
+            "HEADLESS-1",
+            WIDE,
+            crate::common::HEIGHT,
+        )],
+        Options {
+            person: PERSON.to_owned(),
+            shell: true,
+            collab: false,
+            services: crate::common::seeded_apps(),
+            questions: Some(Questions::new()),
+            action_plane: ActionPlane::At(root.join("plane.sock")),
+            agent_door: Some(root.join("agent.sock")),
+            ..Options::default()
+        },
+    );
+    show_preset(&mut session, "Frames");
+    until(&mut session, "the canvas", |session| {
+        session.shell_control(CANVAS_ENTRY).is_some()
+    });
+    session
+}
+
+/// Move the place `key` to `(1600, 0)` with its own `position`, as the agent, and wait until it is
+/// drawn there: its frame as far right of where it was drawn as 1600 is of the strip's point
+/// before, and at the canvas' top.
+fn moved_and_drawn(session: &mut Session, key: &str) {
+    let name = crate::common::wait_for(session, "the place's name", |session| {
+        crate::common::place(session, crate::common::number(key))
+            .map(|place| place.name)
+            .filter(|name| !name.is_empty())
+    });
+    // The place's frame, by the name every surface calls it: the one on the canvas, above the
+    // dock that lists it by the same name.
+    let shown = |session: &Session| {
+        session.shell_controls(&name).into_iter().find(|&rect| {
+            crate::common::on_display(rect, WIDE, crate::common::HEIGHT)
+                && rect.1 < f64::from(crate::common::HEIGHT) - 120.0
+        })
+    };
+    let (x0, y0, _, _) =
+        crate::common::wait_for(session, "the place drawn", |session| shown(session));
+    let before = crate::common::place(session, crate::common::number(key)).expect("the place");
+    let (bx, by, _) = canvas_point(session, &before);
+
+    session
+        .invoke_with_actor(
+            AGENT,
+            &format!("shell:place:{key}"),
+            "position",
+            &serde_json::json!({"x": 1600, "y": 0}),
+        )
+        .unwrap_or_else(|error| panic!("the position runs: {error}"));
+    let (x, y, _) = crate::common::wait_for(session, "the place moved", |session| {
+        let place = crate::common::place(session, crate::common::number(key))?;
+        let point = canvas_point(session, &place);
+        (point.0 == 1600).then_some(point)
+    });
+    assert_eq!((x, y), (1600, 0), "the arrangement holds the point");
+    #[allow(clippy::cast_precision_loss, reason = "canvas points are small")]
+    let (dx, dy) = ((1600 - bx) as f64, (0 - by) as f64);
+    crate::common::wait_for(
+        session,
+        format_args!("the place drawn at its point, {dx},{dy} from {x0},{y0}"),
+        |session| {
+            let (nx, ny, _, _) = shown(session)?;
+            ((nx - x0 - dx).abs() < 2.0 && (ny - y0 - dy).abs() < 2.0).then_some(())
+        },
+    );
+}
+
+/// A place moved to a point on the canvas (`position` with `x` and `y`, as the person's drag and an
+/// agent's step move it) is drawn there: its frame stands at that point, as far from where it
+/// stood as the point is.
+#[test]
+fn a_place_moved_to_a_point_is_drawn_there() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = wide_session(root.path());
+    let notes_root = root_of(&session, "so.tilo.lang.notes");
+    let notes = placed_as_agent(
+        &mut session,
+        &notes_root,
+        serde_json::json!({"resource": notes_root, "x": 240, "y": 160}),
+    );
+    moved_and_drawn(&mut session, &notes.key);
+}
+
+/// An app's window opened on the canvas, as `session.open_app` opens one beside the others, moved
+/// to a point is drawn there too.
+#[test]
+fn an_apps_window_moved_to_a_point_is_drawn_there() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = wide_session(root.path());
+    for app in ["so.tilo.lang.tasks", "so.tilo.lang.notes"] {
+        session
+            .invoke(
+                tilo_desktop::desk_verbs::CHROME_RESOURCE,
+                "open-app",
+                serde_json::json!({"app": app})
+                    .as_object()
+                    .expect("an object"),
+            )
+            .unwrap_or_else(|error| panic!("{app} opens: {error}"));
+    }
+    let notes = crate::common::wait_for(&mut session, "the Notes window's place", |session| {
+        crate::common::places(session)
+            .into_iter()
+            .find(|place| place.shows == "so.tilo.lang.notes")
+    });
+    moved_and_drawn(&mut session, &notes.key);
 }

@@ -102,7 +102,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
         action_plane: tilo_session::ActionPlane::At(root.path().join("plane.sock")),
         agent_door: Some(root.path().join("agent.sock")),
         admit_repl: vec![program],
-        services: vec![Box::new(crate::common::seeded_apps())],
+        services: crate::common::seeded_apps(),
         questions: Some(questions),
         ..options()
     });
@@ -279,7 +279,7 @@ fn the_repl_makes_a_style_with_the_same_call() {
             person: PERSON.to_owned(),
             shell: true,
             collab: false,
-            services: vec![Box::new(apps)],
+            services: apps,
             questions: Some(questions),
             action_plane: tilo_session::ActionPlane::At(root.path().join("plane.sock")),
             agent_door: Some(root.path().join("agent.sock")),

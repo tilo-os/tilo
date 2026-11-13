@@ -104,7 +104,8 @@ impl Service for Channels {
 /// `root` , the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
     let program = std::env::current_exe().expect("this test's program");
-    let apps = crate::common::seeded_apps();
+    let mut services = crate::common::seeded_apps();
+    services.push(Box::new(Channels::new()));
     let mut session = crate::common::headless_on(
         &[OutputConfig::new(
             "HEADLESS-1",
@@ -115,7 +116,7 @@ fn session(root: &std::path::Path) -> Session {
             person: crate::common::PERSON.to_owned(),
             shell: true,
             collab: false,
-            services: vec![Box::new(apps), Box::new(Channels::new())],
+            services,
             questions: Some(tilo_service::Questions::new()),
             action_plane: ActionPlane::At(root.join("plane.sock")),
             agent_door: Some(root.join("agent.sock")),

@@ -30,7 +30,6 @@ use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
 };
-use tilo_service::Service as _;
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -169,7 +168,7 @@ fn the_seeded_apps_publish_their_records_to_the_session() {
         }
     }
     let apps = crate::common::seeded_apps();
-    let resources = apps.resources();
+    let resources = crate::common::published(&apps);
     let mut kinds = std::collections::BTreeSet::new();
     walk(&resources, &mut kinds);
     for kind in [
@@ -487,8 +486,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
     let root = private_home();
     let socket = root.path().join("test-control.sock");
     let apps = crate::common::seeded_apps();
-    let note = apps
-        .resources()
+    let note = crate::common::published(&apps)
         .iter()
         .flat_map(|resource| resource.children.clone())
         .find(|resource| resource.label == "Groceries")
@@ -500,7 +498,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(apps)],
+        services: apps,
         test_control: Some(socket.clone()),
         ..Options::default()
     });

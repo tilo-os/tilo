@@ -736,7 +736,10 @@ fn start(
         match tilo_session::seeded_apps::seeded_from_env(&tilo_session::identity::seated_person(
             &options,
         )) {
-            Ok(apps) => options.services.push(Box::new(apps)),
+            Ok(apps) => options.services.extend(
+                apps.into_iter()
+                    .map(|app| Box::new(app) as Box<dyn tilo_service::Service>),
+            ),
             Err(error) => eprintln!("tilo-session: the seeded apps did not load: {error}"),
         }
         // A Rust app's sample resources and views, so a shell draws them live: a development shot
