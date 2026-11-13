@@ -1738,173 +1738,79 @@ mod tests {
     use super::*;
     use crate::{ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind};
 
-    /// A stale revision is typed in this build and travels in the shape
-    /// every peer decodes: an older peer reads the invalid request it always
-    /// sent, and the reasons older hosts gave it read back as the variant.
-    #[test]
-    fn a_stale_revision_is_typed_and_travels_as_older_peers_read_it() {
-        let encoded = serde_json::to_value(ActionHostError::StaleRevision).unwrap();
-        assert_eq!(
-            encoded,
-            serde_json::json!({"InvalidRequest": {"reason": STALE_REVISION_REASON}})
-        );
-        assert_eq!(
-            serde_json::from_value::<ActionHostError>(encoded).unwrap(),
-            ActionHostError::StaleRevision
-        );
-        assert_eq!(ActionHostError::StaleRevision.code(), "stale_revision");
-        // Only that exact reason: a refusal that merely mentions a revision
-        // is the refusal it is.
-        let other = ActionHostError::Refused {
-            reason: "the call changed since that revision, honestly".into(),
-        };
-        let round_trip: ActionHostError =
-            serde_json::from_value(serde_json::to_value(&other).unwrap()).unwrap();
-        assert_eq!(round_trip, other);
-        let needs = ActionHostError::InvalidRequest {
-            reason: CONFIRMED_ACTION_NEEDS_REVISION.into(),
-        };
-        assert!(needs.needs_revision());
-        assert!(!ActionHostError::StaleRevision.needs_revision());
-    }
+    tilo_test_env::scenario! {
+        fn a_caller_keeps_its_identity_and_authority;
 
-    /// A failure's structured details travel beside its message.
-    #[test]
-    fn a_failure_with_details_round_trips() {
-        let update = InvocationUpdate::Failed {
-            invocation: InvocationId::new(),
-            error: ActionFailure {
-                code: "invalid_arguments".into(),
-                message: "argument `pageSize` must be at most 64".into(),
-                details: Some(serde_json::json!({
-                    "param": "pageSize",
-                    "violation": {"kind": "maximum", "bound": 64}
-                })),
-                retryable: false,
-            },
-        };
-        let encoded = serde_json::to_string(&update).unwrap();
-        assert_eq!(
-            serde_json::from_str::<InvocationUpdate>(&encoded).unwrap(),
-            update
-        );
-    }
+        phase a_bot_is_its_own_principal_acting_for_its_installer;
+        {
+            let installer = [7u8; 32];
+            let caller = Caller::bot("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6", installer, [9u8; 32]);
+            assert_eq!(
+                caller.principal().grantee(),
+                Some(tilo_action_policy::Grantee::bot(
+                    "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6"
+                ))
+            );
+            let actor = caller.actor();
+            assert_eq!(actor.id, "bot:6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6");
+            assert_eq!(actor.kind, crate::ActorKind::Bot);
+            assert_eq!(
+                actor.for_person.as_deref(),
+                Some(hex::encode(installer).as_str())
+            );
+            assert!(crate::ActorKind::Bot.acts_for_someone());
+        }
 
-    /// A run that reached something only the person may allow is refused for
-    /// want of their answer, and that refusal carries what the run stated
-    /// about it: the page departure it holds, as it travels to the host that
-    /// asks them.
-    #[test]
-    fn a_refusal_for_want_of_the_person_carries_the_departure_the_run_stated() {
-        let departure = vec![
-            browser::departure_facet("page", "https://visa.example/apply"),
-            browser::departure_facet("kind", "submit"),
-            browser::departure_facet("method", "POST"),
-            browser::departure_facet("destination", "https://visa.example"),
-            browser::departure_facet("picture", "tilo.content:5f2b"),
-        ];
-        let invocation = InvocationId::new();
-        let state = InvocationState::new(
-            invocation,
-            InvocationUpdate::Failed {
-                invocation,
-                error: ActionFailure {
-                    code: CONFIRMATION_REQUIRED_CODE.into(),
-                    message: "the person has to allow this".into(),
-                    details: serde_json::to_value(&departure).ok(),
-                    retryable: false,
-                },
-            },
-        );
-        let receipt = state.receipt();
-        let ReceiptStatus::Rejected {
-            error: ActionHostError::ConfirmationRequired { departure: stated },
-        } = &receipt.status
-        else {
-            panic!("a run waiting on the person is a refusal: {receipt:?}");
-        };
-        assert_eq!(*stated, departure);
-        // The refusal travels with it, so a host in another process asks the
-        // person about what leaves and not about a name for it.
-        let error = ActionHostError::ConfirmationRequired {
-            departure: stated.clone(),
-        };
-        let wire = serde_json::to_value(&error).unwrap();
-        assert_eq!(
-            serde_json::from_value::<ActionHostError>(wire).unwrap(),
-            error
-        );
-    }
+        phase a_member_principal_maps_to_its_grantee;
+        {
+            use tilo_action_policy::Grantee;
+            assert_eq!(
+                CallerPrincipal::Person("p".into()).grantee(),
+                Some(Grantee::person("p"))
+            );
+            assert_eq!(
+                CallerPrincipal::Agent("a".into()).grantee(),
+                Some(Grantee::agent("a"))
+            );
+            assert_eq!(
+                CallerPrincipal::Bot("b".into()).grantee(),
+                Some(Grantee::bot("b"))
+            );
+            assert_eq!(CallerPrincipal::App("x.y".into()).grantee(), None);
+        }
 
-    #[test]
-    fn a_bot_is_its_own_principal_acting_for_its_installer() {
-        let installer = [7u8; 32];
-        let caller = Caller::bot("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6", installer, [9u8; 32]);
-        assert_eq!(
-            caller.principal().grantee(),
-            Some(tilo_action_policy::Grantee::bot(
-                "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6"
-            ))
-        );
-        let actor = caller.actor();
-        assert_eq!(actor.id, "bot:6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6");
-        assert_eq!(actor.kind, crate::ActorKind::Bot);
-        assert_eq!(
-            actor.for_person.as_deref(),
-            Some(hex::encode(installer).as_str())
-        );
-        assert!(crate::ActorKind::Bot.acts_for_someone());
-    }
+        phase execution_lifetime_is_shared_without_changing_caller_identity;
+        {
+            let first = Caller::local_person("person:owner").in_new_execution();
+            let retained = first.clone();
+            let second = first.clone().in_new_execution();
+            let hash = |caller: &Caller| {
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(caller, &mut hasher);
+                std::hash::Hasher::finish(&hasher)
+            };
+            let before = hash(&first);
+            first.retire_execution();
+            assert!(!retained.execution_is_live());
+            assert!(second.execution_is_live());
+            assert_eq!(first, retained);
+            assert_eq!(hash(&first), before);
+            let reconnected = retained.in_new_execution();
+            assert!(reconnected.execution_is_live());
+            assert_ne!(reconnected.execution_id(), first.execution_id());
+        }
 
-    #[test]
-    fn a_member_principal_maps_to_its_grantee() {
-        use tilo_action_policy::Grantee;
-        assert_eq!(
-            CallerPrincipal::Person("p".into()).grantee(),
-            Some(Grantee::person("p"))
-        );
-        assert_eq!(
-            CallerPrincipal::Agent("a".into()).grantee(),
-            Some(Grantee::agent("a"))
-        );
-        assert_eq!(
-            CallerPrincipal::Bot("b".into()).grantee(),
-            Some(Grantee::bot("b"))
-        );
-        assert_eq!(CallerPrincipal::App("x.y".into()).grantee(), None);
-    }
-
-    #[test]
-    fn execution_lifetime_is_shared_without_changing_caller_identity() {
-        let first = Caller::local_person("person:owner").in_new_execution();
-        let retained = first.clone();
-        let second = first.clone().in_new_execution();
-        let hash = |caller: &Caller| {
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            std::hash::Hash::hash(caller, &mut hasher);
-            std::hash::Hasher::finish(&hasher)
-        };
-        let before = hash(&first);
-        first.retire_execution();
-        assert!(!retained.execution_is_live());
-        assert!(second.execution_is_live());
-        assert_eq!(first, retained);
-        assert_eq!(hash(&first), before);
-        let reconnected = retained.in_new_execution();
-        assert!(reconnected.execution_is_live());
-        assert_ne!(reconnected.execution_id(), first.execution_id());
-    }
-
-    #[test]
-    fn projected_execution_retains_transport_retirement_without_changing_authority() {
-        let original = Caller::local_person("projected-person").in_new_execution();
-        let projected = Caller::authenticated([1; 32], [2; 32])
-            .in_execution(original.execution_lease().unwrap());
-        assert_eq!(projected.execution_id(), original.execution_id());
-        assert_eq!(projected.user_public_key(), Some(&[1; 32]));
-        assert_eq!(original.user_public_key(), None);
-        original.retire_execution();
-        assert!(!projected.execution_is_live());
+        phase projected_execution_retains_transport_retirement_without_changing_authority;
+        {
+            let original = Caller::local_person("projected-person").in_new_execution();
+            let projected = Caller::authenticated([1; 32], [2; 32])
+                .in_execution(original.execution_lease().unwrap());
+            assert_eq!(projected.execution_id(), original.execution_id());
+            assert_eq!(projected.user_public_key(), Some(&[1; 32]));
+            assert_eq!(original.user_public_key(), None);
+            original.retire_execution();
+            assert!(!projected.execution_is_live());
+        }
     }
 
     fn alice() -> Caller {
@@ -1915,109 +1821,113 @@ mod tests {
         Caller::authenticated([9; 32], [8; 32])
     }
 
-    /// Camera's "Open Photos" opens a window of the person's own, as the
-    /// launcher does: a workspace's grants have nothing to consent to, so a guest
-    /// is not asked first.
-    #[test]
-    fn opening_an_app_needs_no_workspace_consent() {
-        for spec in [
-            ApplicationLaunch::app("so.tilo.photos").spec("open-photos", "Open Photos", ""),
-            ApplicationLaunch::content_spec("so.tilo.photos", "open-capture", "Open", ""),
-        ] {
-            assert!(spec.contract.is_own_device(), "{}", spec.id);
+    tilo_test_env::scenario! {
+        fn an_application_action_names_its_destination;
+
+        phase opening_an_app_needs_no_workspace_consent;
+        // Camera's "Open Photos" opens a window of the person's own, as the
+        // launcher does: a workspace's grants have nothing to consent to, so a guest
+        // is not asked first.
+        {
+            for spec in [
+                ApplicationLaunch::app("so.tilo.photos").spec("open-photos", "Open Photos", ""),
+                ApplicationLaunch::content_spec("so.tilo.photos", "open-capture", "Open", ""),
+            ] {
+                assert!(spec.contract.is_own_device(), "{}", spec.id);
+                assert_eq!(
+                    spec.contract.need().kind,
+                    crate::ActionKind::Read,
+                    "{}",
+                    spec.id
+                );
+            }
+        }
+
+        phase application_launch_action_preserves_destination_and_never_falls_back_to_open;
+        {
+            let launch = ApplicationLaunch::with_action(
+                "so.tilo.file-explorer",
+                "files.remote-account:616461",
+                "open-remote-account",
+            );
+            let spec = launch.spec("open-files", "Browse files", "Open this account in Files");
+            let encoded = spec.build_args([]).unwrap();
+            assert_eq!(encoded.type_id, ApplicationLaunch::TYPE);
+            let decoded: ApplicationLaunch = serde_json::from_slice(&encoded.payload).unwrap();
+            assert!(decoded.valid());
+            for workspace in ["workspace-a", "workspace-b"] {
+                assert_eq!(
+                    decoded.target(workspace),
+                    application_action_target(
+                        workspace,
+                        "so.tilo.file-explorer",
+                        "files.remote-account:616461",
+                        "open-remote-account",
+                    )
+                );
+            }
+            assert!(matches!(decoded.argument(), InvokeArgument::None));
+            let legacy: ApplicationLaunch = serde_json::from_value(serde_json::json!({
+                "app_id": "so.tilo.photos"
+            }))
+            .unwrap();
+            assert!(legacy.valid());
             assert_eq!(
-                spec.contract.need().kind,
-                crate::ActionKind::Read,
-                "{}",
-                spec.id
+                legacy.target("workspace-a"),
+                application_open_target("workspace-a", "so.tilo.photos")
+            );
+            let mut invalid = decoded;
+            invalid.content_hash = Some("a".repeat(64));
+            assert!(
+                !invalid.valid(),
+                "a handoff must not mix content staging and an app action"
+            );
+            invalid.content_hash = None;
+            invalid.action.as_mut().unwrap().resource.clear();
+            assert!(
+                !invalid.valid(),
+                "an invalid destination must fail, not open an empty app"
             );
         }
-    }
 
-    #[test]
-    fn application_launch_action_preserves_destination_and_never_falls_back_to_open() {
-        let launch = ApplicationLaunch::with_action(
-            "so.tilo.file-explorer",
-            "files.remote-account:616461",
-            "open-remote-account",
-        );
-        let spec = launch.spec("open-files", "Browse files", "Open this account in Files");
-        let encoded = spec.build_args([]).unwrap();
-        assert_eq!(encoded.type_id, ApplicationLaunch::TYPE);
-        let decoded: ApplicationLaunch = serde_json::from_slice(&encoded.payload).unwrap();
-        assert!(decoded.valid());
-        for workspace in ["workspace-a", "workspace-b"] {
+        phase an_application_action_target_names_its_workspace_and_app;
+        {
+            let target =
+                application_action_target("workspace-1", "so.tilo.chat", "chat.workspace", "call");
             assert_eq!(
-                decoded.target(workspace),
-                application_action_target(
-                    workspace,
-                    "so.tilo.file-explorer",
-                    "files.remote-account:616461",
-                    "open-remote-account",
-                )
+                application_provider(&target.provider),
+                Some(("workspace-1", "so.tilo.chat"))
             );
-        }
-        assert!(matches!(decoded.argument(), InvokeArgument::None));
-        let legacy: ApplicationLaunch = serde_json::from_value(serde_json::json!({
-            "app_id": "so.tilo.photos"
-        }))
-        .unwrap();
-        assert!(legacy.valid());
-        assert_eq!(
-            legacy.target("workspace-a"),
-            application_open_target("workspace-a", "so.tilo.photos")
-        );
-        let mut invalid = decoded;
-        invalid.content_hash = Some("a".repeat(64));
-        assert!(
-            !invalid.valid(),
-            "a handoff must not mix content staging and an app action"
-        );
-        invalid.content_hash = None;
-        invalid.action.as_mut().unwrap().resource.clear();
-        assert!(
-            !invalid.valid(),
-            "an invalid destination must fail, not open an empty app"
-        );
-    }
+            assert_eq!(target.address, ActionAddress::new("chat.workspace", "call"));
+            for other in [
+                "7",
+                "workspace:workspace-1",
+                "application:workspace-1",
+                "application::so.tilo.chat",
+                "application:workspace-1:",
+                "application:workspace-1:a:",
+            ] {
+                assert_eq!(application_provider(other), None, "{other}");
+            }
+            assert_eq!(application_provider_record(&target.provider), None);
 
-    #[test]
-    fn an_application_action_target_names_its_workspace_and_app() {
-        let target =
-            application_action_target("workspace-1", "so.tilo.chat", "chat.workspace", "call");
-        assert_eq!(
-            application_provider(&target.provider),
-            Some(("workspace-1", "so.tilo.chat"))
-        );
-        assert_eq!(target.address, ActionAddress::new("chat.workspace", "call"));
-        for other in [
-            "7",
-            "workspace:workspace-1",
-            "application:workspace-1",
-            "application::so.tilo.chat",
-            "application:workspace-1:",
-            "application:workspace-1:a:",
-        ] {
-            assert_eq!(application_provider(other), None, "{other}");
+            let target = application_record_target(
+                "workspace-1",
+                "so.tilo.notes",
+                "uuid:7",
+                "notes.page:1",
+                "open",
+            );
+            assert_eq!(
+                application_provider(&target.provider),
+                Some(("workspace-1", "so.tilo.notes"))
+            );
+            assert_eq!(
+                application_provider_record(&target.provider),
+                Some("uuid:7")
+            );
+            assert_eq!(target.address, ActionAddress::new("notes.page:1", "open"));
         }
-        assert_eq!(application_provider_record(&target.provider), None);
-
-        let target = application_record_target(
-            "workspace-1",
-            "so.tilo.notes",
-            "uuid:7",
-            "notes.page:1",
-            "open",
-        );
-        assert_eq!(
-            application_provider(&target.provider),
-            Some(("workspace-1", "so.tilo.notes"))
-        );
-        assert_eq!(
-            application_provider_record(&target.provider),
-            Some("uuid:7")
-        );
-        assert_eq!(target.address, ActionAddress::new("notes.page:1", "open"));
     }
 
     fn descriptor(resource: &str, action: &str) -> ActionDescriptor {
@@ -2170,22 +2080,6 @@ mod tests {
             PendingPoll::Ready(value) => value,
             PendingPoll::Waiting | PendingPoll::Abandoned => panic!("the host answers at once"),
         }
-    }
-
-    #[test]
-    fn a_retry_with_another_appearance_is_another_invocation() {
-        let request = archive(InvocationId(uuid::Uuid::from_u128(9)));
-        let appearing = InvokeRequest {
-            appearance: Some(crate::Appearance::new("alice", None, None).unwrap()),
-            ..request.clone()
-        };
-        assert!(!request.same_invocation(&appearing));
-        assert!(appearing.same_invocation(&InvokeRequest {
-            wait_ms: Some(10),
-            ..appearing.clone()
-        }));
-        let json = serde_json::to_string(&request).unwrap();
-        assert!(!json.contains("appearance"), "{json}");
     }
 
     fn archive(invocation: InvocationId) -> InvokeRequest {
@@ -2343,14 +2237,116 @@ mod tests {
         ]
     }
 
-    /// Every message round-trips through a frame, frames from another version are refused not
-    /// misread, and the wire names versions and messages explicitly.
-    /// Runs each phase below in order; every phase builds its own fixture.
-    #[test]
-    fn the_remote_wire_is_versioned_and_explicit() {
-        every_message_round_trips_through_a_frame();
-        frames_from_another_version_are_refused_not_misread();
-        the_wire_names_versions_and_messages_explicitly();
+    tilo_test_env::scenario! {
+        fn remote_messages_and_failures_read_back_typed;
+
+        phase a_stale_revision_is_typed_and_travels_as_older_peers_read_it;
+        // A stale revision is typed in this build and travels in the shape
+        // every peer decodes: an older peer reads the invalid request it always
+        // sent, and the reasons older hosts gave it read back as the variant.
+        {
+            let encoded = serde_json::to_value(ActionHostError::StaleRevision).unwrap();
+            assert_eq!(
+                encoded,
+                serde_json::json!({"InvalidRequest": {"reason": STALE_REVISION_REASON}})
+            );
+            assert_eq!(
+                serde_json::from_value::<ActionHostError>(encoded).unwrap(),
+                ActionHostError::StaleRevision
+            );
+            assert_eq!(ActionHostError::StaleRevision.code(), "stale_revision");
+            // Only that exact reason: a refusal that merely mentions a revision
+            // is the refusal it is.
+            let other = ActionHostError::Refused {
+                reason: "the call changed since that revision, honestly".into(),
+            };
+            let round_trip: ActionHostError =
+                serde_json::from_value(serde_json::to_value(&other).unwrap()).unwrap();
+            assert_eq!(round_trip, other);
+            let needs = ActionHostError::InvalidRequest {
+                reason: CONFIRMED_ACTION_NEEDS_REVISION.into(),
+            };
+            assert!(needs.needs_revision());
+            assert!(!ActionHostError::StaleRevision.needs_revision());
+        }
+
+        phase a_failure_with_details_round_trips;
+        // A failure's structured details travel beside its message.
+        {
+            let update = InvocationUpdate::Failed {
+                invocation: InvocationId::new(),
+                error: ActionFailure {
+                    code: "invalid_arguments".into(),
+                    message: "argument `pageSize` must be at most 64".into(),
+                    details: Some(serde_json::json!({
+                        "param": "pageSize",
+                        "violation": {"kind": "maximum", "bound": 64}
+                    })),
+                    retryable: false,
+                },
+            };
+            let encoded = serde_json::to_string(&update).unwrap();
+            assert_eq!(
+                serde_json::from_str::<InvocationUpdate>(&encoded).unwrap(),
+                update
+            );
+        }
+
+        phase a_refusal_for_want_of_the_person_carries_the_departure_the_run_stated;
+        // A run that reached something only the person may allow is refused for
+        // want of their answer, and that refusal carries what the run stated
+        // about it: the page departure it holds, as it travels to the host that
+        // asks them.
+        {
+            let departure = vec![
+                browser::departure_facet("page", "https://visa.example/apply"),
+                browser::departure_facet("kind", "submit"),
+                browser::departure_facet("method", "POST"),
+                browser::departure_facet("destination", "https://visa.example"),
+                browser::departure_facet("picture", "tilo.content:5f2b"),
+            ];
+            let invocation = InvocationId::new();
+            let state = InvocationState::new(
+                invocation,
+                InvocationUpdate::Failed {
+                    invocation,
+                    error: ActionFailure {
+                        code: CONFIRMATION_REQUIRED_CODE.into(),
+                        message: "the person has to allow this".into(),
+                        details: serde_json::to_value(&departure).ok(),
+                        retryable: false,
+                    },
+                },
+            );
+            let receipt = state.receipt();
+            let ReceiptStatus::Rejected {
+                error: ActionHostError::ConfirmationRequired { departure: stated },
+            } = &receipt.status
+            else {
+                panic!("a run waiting on the person is a refusal: {receipt:?}");
+            };
+            assert_eq!(*stated, departure);
+            // The refusal travels with it, so a host in another process asks the
+            // person about what leaves and not about a name for it.
+            let error = ActionHostError::ConfirmationRequired {
+                departure: stated.clone(),
+            };
+            let wire = serde_json::to_value(&error).unwrap();
+            assert_eq!(
+                serde_json::from_value::<ActionHostError>(wire).unwrap(),
+                error
+            );
+        }
+
+        phase the_remote_wire_is_versioned_and_explicit;
+        // Every message round-trips through a frame, frames from another version are refused not
+        // misread, and the wire names versions and messages explicitly.
+        // Runs each phase below in order; every phase builds its own fixture.
+        {
+            every_message_round_trips_through_a_frame();
+            frames_from_another_version_are_refused_not_misread();
+            the_wire_names_versions_and_messages_explicitly();
+        }
     }
 
     fn every_message_round_trips_through_a_frame() {
@@ -2401,64 +2397,6 @@ mod tests {
             String::from_utf8(bytes).unwrap(),
             r#"{"version":1,"message":{"Cancel":{"invocation":"00000000-0000-0000-0000-000000000000"}}}"#
         );
-    }
-
-    /// A retried invocation reports the original and runs once; ids cannot be reused or borrowed;
-    /// refusals are not remembered; the ledger forgets the oldest past capacity; a reservation holds
-    /// the id until the start completes.
-    /// Runs each phase below in order; every phase builds its own fixture.
-    #[test]
-    fn remote_invocations_run_at_most_once_per_owned_id() {
-        a_retried_invocation_reports_the_original_and_runs_once();
-        an_invocation_id_cannot_be_reused_or_borrowed();
-        a_refused_invocation_is_not_remembered();
-        the_ledger_forgets_oldest_invocations_past_capacity();
-        a_reservation_holds_the_id_until_the_start_completes();
-    }
-
-    #[test]
-    fn admitted_executions_share_authority_but_cannot_borrow_invocations() {
-        let first = alice().in_new_execution();
-        let second = alice().in_new_execution();
-        assert_eq!(first.principal(), second.principal());
-        assert_eq!(first.workspace(), second.workspace());
-        assert_ne!(first.execution_id(), second.execution_id());
-        let host = CountingHost::new();
-        let id = InvocationId::new();
-        let admitted = now(host.invoke(&first, archive(id))).unwrap();
-        assert_eq!(now(host.invoke(&first, archive(id))).unwrap(), admitted);
-        assert_eq!(
-            now(host.invoke(&second, archive(id))),
-            Err(ActionHostError::InvocationConflict)
-        );
-        assert_eq!(host.observe(&second, &id), None);
-        assert_eq!(
-            now(host.cancel(&second, &id)),
-            Err(ActionHostError::UnknownInvocation)
-        );
-        let retained = first.clone();
-        let hash = |caller: &Caller| {
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            std::hash::Hash::hash(caller, &mut hasher);
-            std::hash::Hasher::finish(&hasher)
-        };
-        let before = hash(&first);
-        host.retire_execution(&first);
-        assert!(!retained.execution_is_live());
-        assert!(second.execution_is_live());
-        assert_eq!(first, retained);
-        assert_eq!(hash(&first), before);
-        let reconnected = retained.in_new_execution();
-        assert!(reconnected.execution_is_live());
-        assert_ne!(reconnected.execution_id(), first.execution_id());
-        host.finish(&first, &id);
-        assert!(matches!(
-            now(host.invoke(&first, archive(id))).unwrap().status,
-            ReceiptStatus::Completed { .. }
-        ));
-        assert!(host.observe(&first, &id).is_some());
-        assert!(host.observe(&second, &id).is_none());
-        assert_eq!(host.runs(), 1);
     }
 
     fn a_retried_invocation_reports_the_original_and_runs_once() {
@@ -2519,18 +2457,6 @@ mod tests {
         }
         assert_eq!(ledger.get(&alice(), &requests[0].invocation), None);
         assert_eq!(ledger.get(&alice(), &requests[2].invocation), Some(&2));
-    }
-
-    /// Serve answers requests and ignores responses, typed arguments use the local invocation slot,
-    /// a remote device is the person its root names, and a refusal answers every request and nothing
-    /// else.
-    /// Runs each phase below in order; every phase builds its own fixture.
-    #[test]
-    fn serving_answers_each_request_as_the_person_the_device_belongs_to() {
-        serve_answers_requests_and_ignores_responses();
-        typed_arguments_use_the_local_invocation_slot();
-        a_remote_device_is_the_person_its_root_names();
-        a_refusal_answers_every_request_and_nothing_else();
     }
 
     fn serve_answers_requests_and_ignores_responses() {
@@ -2786,83 +2712,173 @@ mod tests {
         assert_eq!(reason, CHANGE_FEED_UNAVAILABLE);
     }
 
-    #[test]
-    fn capacity_churn_preserves_in_flight_deduplication() {
-        let caller = alice();
-        let mut ledger = InvocationLedger::<u32>::with_capacity(3);
-        let pending = archive(InvocationId::new());
-        assert_eq!(ledger.reserve(&caller, &pending), Ok(Reservation::Reserved));
-        let mut completed = VecDeque::new();
-        for n in 0..8 {
-            let request = archive(InvocationId::new());
+    tilo_test_env::scenario! {
+        fn a_host_serves_each_invocation_once_as_its_caller;
+
+        phase a_retry_with_another_appearance_is_another_invocation;
+        {
+            let request = archive(InvocationId(uuid::Uuid::from_u128(9)));
+            let appearing = InvokeRequest {
+                appearance: Some(crate::Appearance::new("alice", None, None).unwrap()),
+                ..request.clone()
+            };
+            assert!(!request.same_invocation(&appearing));
+            assert!(appearing.same_invocation(&InvokeRequest {
+                wait_ms: Some(10),
+                ..appearing.clone()
+            }));
+            let json = serde_json::to_string(&request).unwrap();
+            assert!(!json.contains("appearance"), "{json}");
+        }
+
+        phase remote_invocations_run_at_most_once_per_owned_id;
+        // A retried invocation reports the original and runs once; ids cannot be reused or borrowed;
+        // refusals are not remembered; the ledger forgets the oldest past capacity; a reservation holds
+        // the id until the start completes.
+        // Runs each phase below in order; every phase builds its own fixture.
+        {
+            a_retried_invocation_reports_the_original_and_runs_once();
+            an_invocation_id_cannot_be_reused_or_borrowed();
+            a_refused_invocation_is_not_remembered();
+            the_ledger_forgets_oldest_invocations_past_capacity();
+            a_reservation_holds_the_id_until_the_start_completes();
+        }
+
+        phase admitted_executions_share_authority_but_cannot_borrow_invocations;
+        {
+            let first = alice().in_new_execution();
+            let second = alice().in_new_execution();
+            assert_eq!(first.principal(), second.principal());
+            assert_eq!(first.workspace(), second.workspace());
+            assert_ne!(first.execution_id(), second.execution_id());
+            let host = CountingHost::new();
+            let id = InvocationId::new();
+            let admitted = now(host.invoke(&first, archive(id))).unwrap();
+            assert_eq!(now(host.invoke(&first, archive(id))).unwrap(), admitted);
             assert_eq!(
-                ledger.admit(&caller, &request, || Ok(n)),
-                Ok((&n, Admission::Started))
-            );
-            completed.push_back(request.invocation);
-            if completed.len() > 2 {
-                let evicted = completed.pop_front().unwrap();
-                assert_eq!(ledger.get(&caller, &evicted), None);
-            }
-            for id in &completed {
-                assert!(ledger.get(&caller, id).is_some());
-            }
-            assert!(matches!(
-                ledger.admit(&caller, &pending, || panic!("duplicate dispatch")),
-                Err(ActionHostError::Unavailable { .. })
-            ));
-            assert_eq!(
-                ledger.reserve(&mallory(), &pending),
+                now(host.invoke(&second, archive(id))),
                 Err(ActionHostError::InvocationConflict)
             );
+            assert_eq!(host.observe(&second, &id), None);
+            assert_eq!(
+                now(host.cancel(&second, &id)),
+                Err(ActionHostError::UnknownInvocation)
+            );
+            let retained = first.clone();
+            let hash = |caller: &Caller| {
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(caller, &mut hasher);
+                std::hash::Hasher::finish(&hasher)
+            };
+            let before = hash(&first);
+            host.retire_execution(&first);
+            assert!(!retained.execution_is_live());
+            assert!(second.execution_is_live());
+            assert_eq!(first, retained);
+            assert_eq!(hash(&first), before);
+            let reconnected = retained.in_new_execution();
+            assert!(reconnected.execution_is_live());
+            assert_ne!(reconnected.execution_id(), first.execution_id());
+            host.finish(&first, &id);
+            assert!(matches!(
+                now(host.invoke(&first, archive(id))).unwrap().status,
+                ReceiptStatus::Completed { .. }
+            ));
+            assert!(host.observe(&first, &id).is_some());
+            assert!(host.observe(&second, &id).is_none());
+            assert_eq!(host.runs(), 1);
         }
-        ledger.complete(&pending.invocation, 99);
-        assert_eq!(
-            ledger.admit(&caller, &pending, || panic!("duplicate dispatch")),
-            Ok((&99, Admission::Retried))
-        );
-        let next = archive(InvocationId::new());
-        assert_eq!(ledger.reserve(&caller, &next), Ok(Reservation::Reserved));
-        assert_eq!(ledger.get(&caller, &pending.invocation), None);
-    }
 
-    #[test]
-    fn capacity_churn_refuses_new_ids_when_every_slot_is_reserved() {
-        let caller = alice();
-        // Zero capacity is clamped to one, which must still protect its reservation.
-        for capacity in 0..=2 {
-            let mut ledger = InvocationLedger::<u32>::with_capacity(capacity);
-            let pending: Vec<_> = (0..capacity.max(1))
-                .map(|_| archive(InvocationId::new()))
-                .collect();
-            for request in &pending {
-                assert_eq!(ledger.reserve(&caller, request), Ok(Reservation::Reserved));
-            }
-            let refused = archive(InvocationId::new());
-            for _ in 0..4 {
+        phase serving_answers_each_request_as_the_person_the_device_belongs_to;
+        // Serve answers requests and ignores responses, typed arguments use the local invocation slot,
+        // a remote device is the person its root names, and a refusal answers every request and nothing
+        // else.
+        // Runs each phase below in order; every phase builds its own fixture.
+        {
+            serve_answers_requests_and_ignores_responses();
+            typed_arguments_use_the_local_invocation_slot();
+            a_remote_device_is_the_person_its_root_names();
+            a_refusal_answers_every_request_and_nothing_else();
+        }
+
+        phase capacity_churn_preserves_in_flight_deduplication;
+        {
+            let caller = alice();
+            let mut ledger = InvocationLedger::<u32>::with_capacity(3);
+            let pending = archive(InvocationId::new());
+            assert_eq!(ledger.reserve(&caller, &pending), Ok(Reservation::Reserved));
+            let mut completed = VecDeque::new();
+            for n in 0..8 {
+                let request = archive(InvocationId::new());
+                assert_eq!(
+                    ledger.admit(&caller, &request, || Ok(n)),
+                    Ok((&n, Admission::Started))
+                );
+                completed.push_back(request.invocation);
+                if completed.len() > 2 {
+                    let evicted = completed.pop_front().unwrap();
+                    assert_eq!(ledger.get(&caller, &evicted), None);
+                }
+                for id in &completed {
+                    assert!(ledger.get(&caller, id).is_some());
+                }
                 assert!(matches!(
-                    ledger.admit(&caller, &refused, || panic!("dispatch at capacity")),
+                    ledger.admit(&caller, &pending, || panic!("duplicate dispatch")),
                     Err(ActionHostError::Unavailable { .. })
                 ));
-                for request in &pending {
-                    assert!(matches!(
-                        ledger.admit(&caller, request, || panic!("duplicate dispatch")),
-                        Err(ActionHostError::Unavailable { .. })
-                    ));
-                }
-            }
-            for (n, request) in pending.iter().enumerate() {
-                let n = u32::try_from(n).unwrap();
-                ledger.complete(&request.invocation, n);
                 assert_eq!(
-                    ledger.admit(&caller, request, || panic!("duplicate dispatch")),
-                    Ok((&n, Admission::Retried))
+                    ledger.reserve(&mallory(), &pending),
+                    Err(ActionHostError::InvocationConflict)
                 );
             }
-            // Capacity refusals are not remembered and can be retried later.
-            assert_eq!(ledger.reserve(&caller, &refused), Ok(Reservation::Reserved));
-            ledger.abandon(&refused.invocation);
-            assert_eq!(ledger.reserve(&caller, &refused), Ok(Reservation::Reserved));
+            ledger.complete(&pending.invocation, 99);
+            assert_eq!(
+                ledger.admit(&caller, &pending, || panic!("duplicate dispatch")),
+                Ok((&99, Admission::Retried))
+            );
+            let next = archive(InvocationId::new());
+            assert_eq!(ledger.reserve(&caller, &next), Ok(Reservation::Reserved));
+            assert_eq!(ledger.get(&caller, &pending.invocation), None);
+        }
+
+        phase capacity_churn_refuses_new_ids_when_every_slot_is_reserved;
+        {
+            let caller = alice();
+            // Zero capacity is clamped to one, which must still protect its reservation.
+            for capacity in 0..=2 {
+                let mut ledger = InvocationLedger::<u32>::with_capacity(capacity);
+                let pending: Vec<_> = (0..capacity.max(1))
+                    .map(|_| archive(InvocationId::new()))
+                    .collect();
+                for request in &pending {
+                    assert_eq!(ledger.reserve(&caller, request), Ok(Reservation::Reserved));
+                }
+                let refused = archive(InvocationId::new());
+                for _ in 0..4 {
+                    assert!(matches!(
+                        ledger.admit(&caller, &refused, || panic!("dispatch at capacity")),
+                        Err(ActionHostError::Unavailable { .. })
+                    ));
+                    for request in &pending {
+                        assert!(matches!(
+                            ledger.admit(&caller, request, || panic!("duplicate dispatch")),
+                            Err(ActionHostError::Unavailable { .. })
+                        ));
+                    }
+                }
+                for (n, request) in pending.iter().enumerate() {
+                    let n = u32::try_from(n).unwrap();
+                    ledger.complete(&request.invocation, n);
+                    assert_eq!(
+                        ledger.admit(&caller, request, || panic!("duplicate dispatch")),
+                        Ok((&n, Admission::Retried))
+                    );
+                }
+                // Capacity refusals are not remembered and can be retried later.
+                assert_eq!(ledger.reserve(&caller, &refused), Ok(Reservation::Reserved));
+                ledger.abandon(&refused.invocation);
+                assert_eq!(ledger.reserve(&caller, &refused), Ok(Reservation::Reserved));
+            }
         }
     }
 

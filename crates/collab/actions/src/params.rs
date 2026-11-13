@@ -1873,33 +1873,98 @@ mod declaration_reuse_tests {
 
     use super::{ActionArgs, ActionParam, ParamType};
 
-    #[test]
-    fn shared_schema_edits_and_descriptor_changes_are_still_refused() {
-        let original = ActionParam::required("body", ParamType::Text, "Body")
-            .with_schema(json!({"type": "string", "minLength": 3}));
-        assert!(original.validate_declaration().is_empty());
-        assert!(
-            ActionArgs::bind_json(
-                std::slice::from_ref(&original),
-                json!({"body": "a"}).as_object().unwrap()
-            )
-            .is_err()
-        );
-        let mut edited = original.clone();
-        assert!(edited.validate_declaration().is_empty());
-        Arc::make_mut(edited.schema.as_mut().unwrap())["minLength"] = json!(-1);
-        assert!(edited.validate_declaration()[0].contains("non-negative integer"));
-        assert!(original.validate_declaration().is_empty());
-        let mut renamed = original.clone();
-        renamed.name = " ".into();
-        assert_eq!(
-            renamed.validate_declaration(),
-            ["parameter name must be non-empty"]
-        );
-        let mut secret = original;
-        secret.ty = ParamType::Secret;
-        secret.choices.push("private".into());
-        assert!(secret.validate_declaration()[0].contains("must not publish possible values"));
+    tilo_test_env::scenario! {
+        fn a_shared_declaration_is_validated_once_per_schema;
+
+        phase shared_schema_edits_and_descriptor_changes_are_still_refused;
+        {
+            let original = ActionParam::required("body", ParamType::Text, "Body")
+                .with_schema(json!({"type": "string", "minLength": 3}));
+            assert!(original.validate_declaration().is_empty());
+            assert!(
+                ActionArgs::bind_json(
+                    std::slice::from_ref(&original),
+                    json!({"body": "a"}).as_object().unwrap()
+                )
+                .is_err()
+            );
+            let mut edited = original.clone();
+            assert!(edited.validate_declaration().is_empty());
+            Arc::make_mut(edited.schema.as_mut().unwrap())["minLength"] = json!(-1);
+            assert!(edited.validate_declaration()[0].contains("non-negative integer"));
+            assert!(original.validate_declaration().is_empty());
+            let mut renamed = original.clone();
+            renamed.name = " ".into();
+            assert_eq!(
+                renamed.validate_declaration(),
+                ["parameter name must be non-empty"]
+            );
+            let mut secret = original;
+            secret.ty = ParamType::Secret;
+            secret.choices.push("private".into());
+            assert!(secret.validate_declaration()[0].contains("must not publish possible values"));
+        }
+
+        phase last_owner_schema_mutation_dissociates_prior_validation;
+        {
+            let mut parameter = ActionParam::required("body", ParamType::Text, "Body")
+                .with_schema(json!({"type": "string"}));
+            assert!(parameter.validate_declaration().is_empty());
+            Arc::make_mut(parameter.schema.as_mut().unwrap())["type"] = json!("unsupported");
+            assert_eq!(
+                parameter.validate_declaration(),
+                ["invalid schema: schema has an unsupported `type`"]
+            );
+            Arc::make_mut(parameter.schema.as_mut().unwrap())["type"] = json!("string");
+            assert!(parameter.validate_declaration().is_empty());
+        }
+
+        phase retired_generations_are_released_and_new_invalid_schemas_are_refused;
+        {
+            for _ in 0..128 {
+                let schema = Arc::new(json!({"type": "string"}));
+                let retired = Arc::downgrade(&schema);
+                let parameter =
+                    ActionParam::required("body", ParamType::Text, "Body").with_shared_schema(schema);
+                assert!(parameter.validate_declaration().is_empty());
+                drop(parameter);
+                assert!(retired.upgrade().is_none());
+                let invalid = ActionParam::required("body", ParamType::Text, "Body")
+                    .with_schema(json!({"pattern": "["}));
+                assert!(invalid.validate_declaration()[0].contains("invalid pattern"));
+            }
+        }
+
+        phase shared_declaration_observes_recursive_publication_work;
+        {
+            let properties: serde_json::Map<String, serde_json::Value> = (0..128)
+                .map(|index| {
+                    (
+                        format!("field{index}"),
+                        json!({"type": "array", "items": {"type": "object", "properties": {
+                            "text": {"type": "string", "minLength": 1},
+                            "count": {"type": "integer", "minimum": 0}
+                        }, "additionalProperties": false}}),
+                    )
+                })
+                .collect();
+            let parameter = ActionParam::required("request", ParamType::Object, "Request")
+                .with_shared_schema(Arc::new(
+                    json!({"type": "object", "properties": properties}),
+                ));
+            let start = Instant::now();
+            for _ in 0..1000 {
+                assert!(
+                    std::hint::black_box(&parameter)
+                        .validate_declaration()
+                        .is_empty()
+                );
+            }
+            eprintln!(
+                "ACTION_SCHEMA_DECLARATION_OBSERVATION iterations=1000 fields=128 elapsed_ns={} includes_gpu_or_display=false",
+                start.elapsed().as_nanos()
+            );
+        }
     }
 
     /// A desk's ids span all of `u64`; a device whose key folds high mints ids above `i64::MAX`,
@@ -1921,67 +1986,6 @@ mod declaration_reuse_tests {
             .expect("a negative integer binds too");
         assert_eq!(negative.to_json()["row"], json!(-48));
     }
-
-    #[test]
-    fn last_owner_schema_mutation_dissociates_prior_validation() {
-        let mut parameter = ActionParam::required("body", ParamType::Text, "Body")
-            .with_schema(json!({"type": "string"}));
-        assert!(parameter.validate_declaration().is_empty());
-        Arc::make_mut(parameter.schema.as_mut().unwrap())["type"] = json!("unsupported");
-        assert_eq!(
-            parameter.validate_declaration(),
-            ["invalid schema: schema has an unsupported `type`"]
-        );
-        Arc::make_mut(parameter.schema.as_mut().unwrap())["type"] = json!("string");
-        assert!(parameter.validate_declaration().is_empty());
-    }
-
-    #[test]
-    fn retired_generations_are_released_and_new_invalid_schemas_are_refused() {
-        for _ in 0..128 {
-            let schema = Arc::new(json!({"type": "string"}));
-            let retired = Arc::downgrade(&schema);
-            let parameter =
-                ActionParam::required("body", ParamType::Text, "Body").with_shared_schema(schema);
-            assert!(parameter.validate_declaration().is_empty());
-            drop(parameter);
-            assert!(retired.upgrade().is_none());
-            let invalid = ActionParam::required("body", ParamType::Text, "Body")
-                .with_schema(json!({"pattern": "["}));
-            assert!(invalid.validate_declaration()[0].contains("invalid pattern"));
-        }
-    }
-
-    #[test]
-    fn shared_declaration_observes_recursive_publication_work() {
-        let properties: serde_json::Map<String, serde_json::Value> = (0..128)
-            .map(|index| {
-                (
-                    format!("field{index}"),
-                    json!({"type": "array", "items": {"type": "object", "properties": {
-                        "text": {"type": "string", "minLength": 1},
-                        "count": {"type": "integer", "minimum": 0}
-                    }, "additionalProperties": false}}),
-                )
-            })
-            .collect();
-        let parameter = ActionParam::required("request", ParamType::Object, "Request")
-            .with_shared_schema(Arc::new(
-                json!({"type": "object", "properties": properties}),
-            ));
-        let start = Instant::now();
-        for _ in 0..1000 {
-            assert!(
-                std::hint::black_box(&parameter)
-                    .validate_declaration()
-                    .is_empty()
-            );
-        }
-        eprintln!(
-            "ACTION_SCHEMA_DECLARATION_OBSERVATION iterations=1000 fields=128 elapsed_ns={} includes_gpu_or_display=false",
-            start.elapsed().as_nanos()
-        );
-    }
 }
 
 #[cfg(test)]
@@ -1989,246 +1993,250 @@ mod rich_schema_tests {
     use super::*;
     use serde_json::json;
 
-    /// Structured arguments are typed and recursively validated; resource, datetime, secret and
-    /// nullable values round-trip; a malformed schema is rejected before it describes values; unique
-    /// array items are published and enforced.
-    /// Runs each phase below in order; every phase builds its own fixture.
-    #[test]
-    fn action_parameters_are_typed_validated_and_round_trip() {
-        structured_arguments_are_typed_and_recursively_validated();
-        resource_datetime_secret_and_nullable_values_round_trip();
-        malformed_schema_is_rejected_before_it_describes_values();
-        unique_array_items_are_published_and_enforced();
-    }
+    tilo_test_env::scenario! {
+        fn parameters_bind_and_validate_by_their_schema;
 
-    #[test]
-    fn null_leaves_an_optional_argument_out_and_is_no_required_ones_value() {
-        let params = vec![
-            ActionParam::required("media", ParamType::Text, "media"),
-            ActionParam::optional("fade_in", ParamType::Number, "fade in"),
-            ActionParam::optional("parent", ParamType::Text, "parent").nullable(),
-        ];
-        let supplied = json!({"media": "shot-a.mp4", "fade_in": null, "parent": null});
-        let bound = ActionArgs::bind_json(&params, supplied.as_object().unwrap()).unwrap();
-        assert_eq!(
-            bound.to_json(),
-            *json!({"media": "shot-a.mp4", "parent": null})
-                .as_object()
-                .unwrap()
-        );
-        assert_eq!(bound.number("fade_in"), None);
+        phase action_parameters_are_typed_validated_and_round_trip;
+        // Structured arguments are typed and recursively validated; resource, datetime, secret and
+        // nullable values round-trip; a malformed schema is rejected before it describes values; unique
+        // array items are published and enforced.
+        // Runs each phase below in order; every phase builds its own fixture.
+        {
+            structured_arguments_are_typed_and_recursively_validated();
+            resource_datetime_secret_and_nullable_values_round_trip();
+            malformed_schema_is_rejected_before_it_describes_values();
+            unique_array_items_are_published_and_enforced();
+        }
 
-        let missing = json!({"media": null});
-        assert_eq!(
-            ActionArgs::bind_json(&params, missing.as_object().unwrap())
-                .unwrap_err()
-                .to_string(),
-            "argument `media` may not be null"
-        );
-    }
+        phase null_leaves_an_optional_argument_out_and_is_no_required_ones_value;
+        {
+            let params = vec![
+                ActionParam::required("media", ParamType::Text, "media"),
+                ActionParam::optional("fade_in", ParamType::Number, "fade in"),
+                ActionParam::optional("parent", ParamType::Text, "parent").nullable(),
+            ];
+            let supplied = json!({"media": "shot-a.mp4", "fade_in": null, "parent": null});
+            let bound = ActionArgs::bind_json(&params, supplied.as_object().unwrap()).unwrap();
+            assert_eq!(
+                bound.to_json(),
+                *json!({"media": "shot-a.mp4", "parent": null})
+                    .as_object()
+                    .unwrap()
+            );
+            assert_eq!(bound.number("fade_in"), None);
 
-    #[test]
-    fn shared_schema_preserves_wire_binding_and_copy_on_write() {
-        use crate::{ActionSpec, EncodedAction, ExecutionLocus};
-        use std::sync::Arc;
+            let missing = json!({"media": null});
+            assert_eq!(
+                ActionArgs::bind_json(&params, missing.as_object().unwrap())
+                    .unwrap_err()
+                    .to_string(),
+                "argument `media` may not be null"
+            );
+        }
 
-        let schema = serde_json::json!({"type": "integer", "minimum": 1});
-        let original =
-            ActionParam::required("count", ParamType::Integer, "Count").with_schema(schema.clone());
-        let clone = original.clone();
-        assert!(Arc::ptr_eq(
-            original.schema.as_ref().unwrap(),
-            clone.schema.as_ref().unwrap()
-        ));
-        let expected = serde_json::json!({
-            "name":"count", "ty":"integer", "required":true,
-            "description":"Count", "schema":schema
-        });
-        assert_eq!(serde_json::to_value(&clone).unwrap(), expected);
-        let decoded: ActionParam = serde_json::from_value(expected).unwrap();
-        assert_eq!(decoded, original);
-        let spec = ActionSpec::typed(
-            "count",
-            "Count",
-            "Count",
-            ExecutionLocus::ClientLocal,
-            vec![clone],
-            |args| EncodedAction {
-                type_id: "test.count".into(),
-                payload: serde_json::to_vec(&args.to_json()).unwrap(),
-            },
-        );
-        let valid = serde_json::json!({"count":2});
-        let encoded = spec.build_json(valid.as_object().unwrap()).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&encoded.payload).unwrap(),
-            valid
-        );
-        assert!(
-            spec.build_json(serde_json::json!({"count":0}).as_object().unwrap())
-                .is_err()
-        );
-        assert_eq!(spec.build_text("2"), Some(encoded));
-        assert_eq!(
-            spec.build_text("0").unwrap().type_id,
-            crate::resource::INVALID_ARGUMENTS_TYPE
-        );
-        let mut edited = original.clone();
-        Arc::make_mut(edited.schema.as_mut().unwrap())["minimum"] = serde_json::json!(3);
-        assert_eq!(original.schema.as_ref().unwrap()["minimum"], 1);
-        assert!(ActionArgs::bind_json(&[edited], valid.as_object().unwrap()).is_err());
-        assert!(spec.build_json(valid.as_object().unwrap()).is_ok());
+        phase shared_schema_preserves_wire_binding_and_copy_on_write;
+        {
+            use crate::{ActionSpec, EncodedAction, ExecutionLocus};
+            use std::sync::Arc;
 
-        let resource = ActionParam::required("target", ParamType::Resource, "Target")
-            .with_schema(serde_json::json!({"type":"string"}));
-        let annotated = resource.clone().of_resource_kind("test.page");
-        assert_eq!(resource.resource_kind(), None);
-        assert_eq!(annotated.resource_kind(), Some("test.page"));
-        assert_eq!(
-            resource
-                .schema
-                .as_ref()
-                .unwrap()
-                .get(RESOURCE_KIND_ANNOTATION),
-            None
-        );
-    }
-
-    #[test]
-    fn a_picked_resource_is_a_reference_of_its_kind() {
-        let note =
-            ActionParam::required("note", ParamType::Object, "The note").picking(Pick::Resource {
-                kind: "notes.notebook.pages".into(),
+            let schema = serde_json::json!({"type": "integer", "minimum": 1});
+            let original =
+                ActionParam::required("count", ParamType::Integer, "Count").with_schema(schema.clone());
+            let clone = original.clone();
+            assert!(Arc::ptr_eq(
+                original.schema.as_ref().unwrap(),
+                clone.schema.as_ref().unwrap()
+            ));
+            let expected = serde_json::json!({
+                "name":"count", "ty":"integer", "required":true,
+                "description":"Count", "schema":schema
             });
-        assert!(
-            note.validate_declaration().is_empty(),
-            "{:?}",
-            note.validate_declaration()
-        );
-        assert_eq!(
-            note.pick(),
-            Some(Pick::Resource {
-                kind: "notes.notebook.pages".into()
-            })
-        );
-        let params = [note];
-        let reference = serde_json::json!({ "note": {
-            "app": "so.tilo.notes",
-            "kind": "notes.notebook.pages",
-            "id": "notes.notebook/pages/p1",
-            "label": "Plan",
-        }});
-        assert!(ActionArgs::bind_json(&params, reference.as_object().unwrap()).is_ok());
-        let typed_id = serde_json::json!({ "note": { "id": "notes.notebook/pages/p1" } });
-        assert!(
-            ActionArgs::bind_json(&params, typed_id.as_object().unwrap()).is_err(),
-            "a reference names its app and kind"
-        );
-        let subject = ActionParam::required("who", ParamType::Object, "Who").picking(Pick::Grantee);
-        assert_eq!(subject.pick(), Some(Pick::Grantee));
-    }
+            assert_eq!(serde_json::to_value(&clone).unwrap(), expected);
+            let decoded: ActionParam = serde_json::from_value(expected).unwrap();
+            assert_eq!(decoded, original);
+            let spec = ActionSpec::typed(
+                "count",
+                "Count",
+                "Count",
+                ExecutionLocus::ClientLocal,
+                vec![clone],
+                |args| EncodedAction {
+                    type_id: "test.count".into(),
+                    payload: serde_json::to_vec(&args.to_json()).unwrap(),
+                },
+            );
+            let valid = serde_json::json!({"count":2});
+            let encoded = spec.build_json(valid.as_object().unwrap()).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&encoded.payload).unwrap(),
+                valid
+            );
+            assert!(
+                spec.build_json(serde_json::json!({"count":0}).as_object().unwrap())
+                    .is_err()
+            );
+            assert_eq!(spec.build_text("2"), Some(encoded));
+            assert_eq!(
+                spec.build_text("0").unwrap().type_id,
+                crate::resource::INVALID_ARGUMENTS_TYPE
+            );
+            let mut edited = original.clone();
+            Arc::make_mut(edited.schema.as_mut().unwrap())["minimum"] = serde_json::json!(3);
+            assert_eq!(original.schema.as_ref().unwrap()["minimum"], 1);
+            assert!(ActionArgs::bind_json(&[edited], valid.as_object().unwrap()).is_err());
+            assert!(spec.build_json(valid.as_object().unwrap()).is_ok());
 
-    #[test]
-    fn a_parameter_with_labelled_choices_of_people_binds_its_values() {
-        let param = ActionParam::required("id", ParamType::Text, "The identity")
-            .with_labelled_choices([("ada", "Ada"), ("bob", "Bob")])
-            .choosing_people(["ada", "bob"]);
-        assert!(param.validate_declaration().is_empty());
-        let params = [param];
-        assert!(ActionArgs::bind(&params, [("id".into(), ArgValue::Text("ada".into()))]).is_ok());
-        assert!(
-            ActionArgs::bind(&params, [("id".into(), ArgValue::Text("eve".into()))]).is_err(),
-            "only the values offered"
-        );
-    }
+            let resource = ActionParam::required("target", ParamType::Resource, "Target")
+                .with_schema(serde_json::json!({"type":"string"}));
+            let annotated = resource.clone().of_resource_kind("test.page");
+            assert_eq!(resource.resource_kind(), None);
+            assert_eq!(annotated.resource_kind(), Some("test.page"));
+            assert_eq!(
+                resource
+                    .schema
+                    .as_ref()
+                    .unwrap()
+                    .get(RESOURCE_KIND_ANNOTATION),
+                None
+            );
+        }
 
-    #[test]
-    fn prefix_items_check_the_leading_items_and_items_the_rest() {
-        let schema = json!({
-            "type": "array",
-            "prefixItems": [{"const": "a"}, {"type": "string"}],
-            "items": {"type": "integer"},
-        });
-        assert!(validate_schema_definition(&schema).is_ok());
-        assert!(validate_schema(&json!(["a", "x", 1, 2]), &schema).is_ok());
-        assert!(validate_schema(&json!(["b", "x"]), &schema).is_err());
-        assert!(validate_schema(&json!(["a", 1]), &schema).is_err());
-        assert!(validate_schema(&json!(["a", "x", "y"]), &schema).is_err());
-        assert!(validate_schema_definition(&json!({"prefixItems": {}})).is_err());
-    }
+        phase a_picked_resource_is_a_reference_of_its_kind;
+        {
+            let note =
+                ActionParam::required("note", ParamType::Object, "The note").picking(Pick::Resource {
+                    kind: "notes.notebook.pages".into(),
+                });
+            assert!(
+                note.validate_declaration().is_empty(),
+                "{:?}",
+                note.validate_declaration()
+            );
+            assert_eq!(
+                note.pick(),
+                Some(Pick::Resource {
+                    kind: "notes.notebook.pages".into()
+                })
+            );
+            let params = [note];
+            let reference = serde_json::json!({ "note": {
+                "app": "so.tilo.notes",
+                "kind": "notes.notebook.pages",
+                "id": "notes.notebook/pages/p1",
+                "label": "Plan",
+            }});
+            assert!(ActionArgs::bind_json(&params, reference.as_object().unwrap()).is_ok());
+            let typed_id = serde_json::json!({ "note": { "id": "notes.notebook/pages/p1" } });
+            assert!(
+                ActionArgs::bind_json(&params, typed_id.as_object().unwrap()).is_err(),
+                "a reference names its app and kind"
+            );
+            let subject = ActionParam::required("who", ParamType::Object, "Who").picking(Pick::Grantee);
+            assert_eq!(subject.pick(), Some(Pick::Grantee));
+        }
 
-    /// A number outside its parameter's declared range is refused with the
-    /// bound as data, in the same words as before, and the door's failure
-    /// carries it as `details`. A bound nested in a property stays words.
-    #[test]
-    fn a_maximum_violation_carries_its_bound() {
-        let params = vec![
-            ActionParam::required("pageSize", ParamType::Integer, "Items")
-                .with_schema(json!({"type": "integer", "minimum": 1, "maximum": 64})),
-            ActionParam::optional("scale", ParamType::Number, "Zoom")
-                .with_schema(json!({"type": "number", "minimum": 0.5})),
-            ActionParam::optional("box", ParamType::Object, "Bounds").with_schema(json!({
-                "type": "object",
-                "properties": {"width": {"type": "integer", "maximum": 10}}
-            })),
-        ];
-        let bind = |arguments: serde_json::Value| {
-            ActionArgs::bind_json(&params, arguments.as_object().unwrap())
-        };
-        let refused = bind(json!({"pageSize": 200})).unwrap_err();
-        assert_eq!(
-            refused,
-            ArgError::OutOfRange {
-                name: "pageSize".into(),
-                violation: ArgViolation::Maximum { bound: json!(64) },
-            }
-        );
-        assert_eq!(
-            refused.to_string(),
-            "argument `pageSize` must be at most 64"
-        );
-        let door = crate::DoorError::from(refused);
-        assert_eq!(door.code(), "invalid_arguments");
-        assert_eq!(door.to_string(), "argument `pageSize` must be at most 64");
-        assert_eq!(
-            door.failure_details(),
-            Some(json!({"param": "pageSize", "violation": {"kind": "maximum", "bound": 64}}))
-        );
+        phase a_parameter_with_labelled_choices_of_people_binds_its_values;
+        {
+            let param = ActionParam::required("id", ParamType::Text, "The identity")
+                .with_labelled_choices([("ada", "Ada"), ("bob", "Bob")])
+                .choosing_people(["ada", "bob"]);
+            assert!(param.validate_declaration().is_empty());
+            let params = [param];
+            assert!(ActionArgs::bind(&params, [("id".into(), ArgValue::Text("ada".into()))]).is_ok());
+            assert!(
+                ActionArgs::bind(&params, [("id".into(), ArgValue::Text("eve".into()))]).is_err(),
+                "only the values offered"
+            );
+        }
 
-        let refused = bind(json!({"pageSize": 1, "scale": 0.25})).unwrap_err();
-        assert_eq!(
-            refused,
-            ArgError::OutOfRange {
-                name: "scale".into(),
-                violation: ArgViolation::Minimum { bound: json!(0.5) },
-            }
-        );
-        assert_eq!(refused.to_string(), "argument `scale` must be at least 0.5");
+        phase prefix_items_check_the_leading_items_and_items_the_rest;
+        {
+            let schema = json!({
+                "type": "array",
+                "prefixItems": [{"const": "a"}, {"type": "string"}],
+                "items": {"type": "integer"},
+            });
+            assert!(validate_schema_definition(&schema).is_ok());
+            assert!(validate_schema(&json!(["a", "x", 1, 2]), &schema).is_ok());
+            assert!(validate_schema(&json!(["b", "x"]), &schema).is_err());
+            assert!(validate_schema(&json!(["a", 1]), &schema).is_err());
+            assert!(validate_schema(&json!(["a", "x", "y"]), &schema).is_err());
+            assert!(validate_schema_definition(&json!({"prefixItems": {}})).is_err());
+        }
 
-        let nested = bind(json!({"pageSize": 1, "box": {"width": 11}})).unwrap_err();
-        assert!(matches!(nested, ArgError::Constraint { .. }), "{nested:?}");
-        assert_eq!(crate::DoorError::from(nested).failure_details(), None);
-        assert!(bind(json!({"pageSize": 64, "scale": 0.5})).is_ok());
-    }
+        phase a_maximum_violation_carries_its_bound;
+        // A number outside its parameter's declared range is refused with the
+        // bound as data, in the same words as before, and the door's failure
+        // carries it as `details`. A bound nested in a property stays words.
+        {
+            let params = vec![
+                ActionParam::required("pageSize", ParamType::Integer, "Items")
+                    .with_schema(json!({"type": "integer", "minimum": 1, "maximum": 64})),
+                ActionParam::optional("scale", ParamType::Number, "Zoom")
+                    .with_schema(json!({"type": "number", "minimum": 0.5})),
+                ActionParam::optional("box", ParamType::Object, "Bounds").with_schema(json!({
+                    "type": "object",
+                    "properties": {"width": {"type": "integer", "maximum": 10}}
+                })),
+            ];
+            let bind = |arguments: serde_json::Value| {
+                ActionArgs::bind_json(&params, arguments.as_object().unwrap())
+            };
+            let refused = bind(json!({"pageSize": 200})).unwrap_err();
+            assert_eq!(
+                refused,
+                ArgError::OutOfRange {
+                    name: "pageSize".into(),
+                    violation: ArgViolation::Maximum { bound: json!(64) },
+                }
+            );
+            assert_eq!(
+                refused.to_string(),
+                "argument `pageSize` must be at most 64"
+            );
+            let door = crate::DoorError::from(refused);
+            assert_eq!(door.code(), "invalid_arguments");
+            assert_eq!(door.to_string(), "argument `pageSize` must be at most 64");
+            assert_eq!(
+                door.failure_details(),
+                Some(json!({"param": "pageSize", "violation": {"kind": "maximum", "bound": 64}}))
+            );
 
-    #[test]
-    fn a_refusal_names_the_alternative_an_enumerated_tag_selects() {
-        let schema = json!({"oneOf": [
-            {"type": "object", "required": ["action"], "properties": {
-                "action": {"enum": ["draw", "paint"]}, "args": {"type": "object"}
-            }, "additionalProperties": false},
-            {"type": "object", "required": ["action", "args"], "properties": {
-                "action": {"const": "apply"}, "args": {"type": "object", "required": ["action"]}
-            }, "additionalProperties": false},
-        ]});
-        assert!(validate_schema(&json!({"action": "draw", "args": {}}), &schema).is_ok());
-        let refused = validate_schema(&json!({"action": "apply", "args": {}}), &schema);
-        assert_eq!(
-            refused,
-            Err("as `apply`: property `args` must contain property `action`".into())
-        );
-        let refused = validate_schema(&json!({"action": "paint", "args": 3}), &schema).unwrap_err();
-        assert!(refused.contains("property `args`"), "{refused}");
+            let refused = bind(json!({"pageSize": 1, "scale": 0.25})).unwrap_err();
+            assert_eq!(
+                refused,
+                ArgError::OutOfRange {
+                    name: "scale".into(),
+                    violation: ArgViolation::Minimum { bound: json!(0.5) },
+                }
+            );
+            assert_eq!(refused.to_string(), "argument `scale` must be at least 0.5");
+
+            let nested = bind(json!({"pageSize": 1, "box": {"width": 11}})).unwrap_err();
+            assert!(matches!(nested, ArgError::Constraint { .. }), "{nested:?}");
+            assert_eq!(crate::DoorError::from(nested).failure_details(), None);
+            assert!(bind(json!({"pageSize": 64, "scale": 0.5})).is_ok());
+        }
+
+        phase a_refusal_names_the_alternative_an_enumerated_tag_selects;
+        {
+            let schema = json!({"oneOf": [
+                {"type": "object", "required": ["action"], "properties": {
+                    "action": {"enum": ["draw", "paint"]}, "args": {"type": "object"}
+                }, "additionalProperties": false},
+                {"type": "object", "required": ["action", "args"], "properties": {
+                    "action": {"const": "apply"}, "args": {"type": "object", "required": ["action"]}
+                }, "additionalProperties": false},
+            ]});
+            assert!(validate_schema(&json!({"action": "draw", "args": {}}), &schema).is_ok());
+            let refused = validate_schema(&json!({"action": "apply", "args": {}}), &schema);
+            assert_eq!(
+                refused,
+                Err("as `apply`: property `args` must contain property `action`".into())
+            );
+            let refused = validate_schema(&json!({"action": "paint", "args": 3}), &schema).unwrap_err();
+            assert!(refused.contains("property `args`"), "{refused}");
+        }
     }
 
     fn structured_arguments_are_typed_and_recursively_validated() {
@@ -2412,27 +2420,31 @@ choice_labels
 people
 pick";
 
-    #[test]
-    fn the_vocabulary_is_the_one_pinned_elsewhere() {
-        let listed: Vec<&str> = SCHEMA_ASSERTIONS
-            .iter()
-            .chain(std::iter::once(&"---"))
-            .chain(SCHEMA_ANNOTATIONS)
-            .copied()
-            .collect();
-        assert_eq!(PINNED, listed.join("\n"));
-    }
+    tilo_test_env::scenario! {
+        fn the_schema_vocabulary_is_pinned;
 
-    #[test]
-    fn every_keyword_is_listed_once() {
-        let mut all: Vec<&str> = SCHEMA_ASSERTIONS
-            .iter()
-            .chain(SCHEMA_ANNOTATIONS)
-            .copied()
-            .collect();
-        let listed = all.len();
-        all.sort_unstable();
-        all.dedup();
-        assert_eq!(all.len(), listed, "a keyword is listed twice");
+        phase the_vocabulary_is_the_one_pinned_elsewhere;
+        {
+            let listed: Vec<&str> = SCHEMA_ASSERTIONS
+                .iter()
+                .chain(std::iter::once(&"---"))
+                .chain(SCHEMA_ANNOTATIONS)
+                .copied()
+                .collect();
+            assert_eq!(PINNED, listed.join("\n"));
+        }
+
+        phase every_keyword_is_listed_once;
+        {
+            let mut all: Vec<&str> = SCHEMA_ASSERTIONS
+                .iter()
+                .chain(SCHEMA_ANNOTATIONS)
+                .copied()
+                .collect();
+            let listed = all.len();
+            all.sort_unstable();
+            all.dedup();
+            assert_eq!(all.len(), listed, "a keyword is listed twice");
+        }
     }
 }

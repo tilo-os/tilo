@@ -175,92 +175,96 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_own_device_invocation_round_trips_through_its_argument() {
-        let asked = invocation();
-        let read = Invocation::from_argument(&asked.argument()).expect("reads back");
-        assert_eq!(read, asked);
-        let checked = read.check().expect("valid");
-        assert_eq!(checked.device, [7; 32]);
-        assert_eq!(checked.argument, InvokeArgument::None);
-        assert_eq!(target().provider, PROVIDER);
-    }
+    tilo_test_env::scenario! {
+        fn an_own_device_invocation_travels_in_its_argument;
 
-    #[test]
-    fn a_malformed_own_device_invocation_is_refused() {
-        assert!(Invocation::from_argument(&InvokeArgument::Text("x".into())).is_err());
-        let mut extra = invocation().argument();
-        if let InvokeArgument::Json(map) = &mut extra {
-            map.insert("caller".into(), serde_json::json!("someone else"));
+        phase an_own_device_invocation_round_trips_through_its_argument;
+        {
+            let asked = invocation();
+            let read = Invocation::from_argument(&asked.argument()).expect("reads back");
+            assert_eq!(read, asked);
+            let checked = read.check().expect("valid");
+            assert_eq!(checked.device, [7; 32]);
+            assert_eq!(checked.argument, InvokeArgument::None);
+            assert_eq!(target().provider, PROVIDER);
         }
-        assert!(
-            Invocation::from_argument(&extra).is_err(),
-            "nothing beyond the declared fields is read, least of all a caller"
-        );
-        for broken in [
-            Invocation {
-                device: "AB".repeat(32),
-                ..invocation()
-            },
-            Invocation {
-                device: "ab".into(),
-                ..invocation()
-            },
-            Invocation {
-                app: "workspace:app".into(),
-                ..invocation()
-            },
-            Invocation {
-                action: String::new(),
-                ..invocation()
-            },
-            Invocation {
-                resource: format!("settings.root{}other", crate::KEY_SEP),
-                ..invocation()
-            },
-            Invocation {
-                action: format!("storage-summary{}other", crate::KEY_SEP),
-                ..invocation()
-            },
-        ] {
-            assert!(broken.check().is_err(), "{broken:?}");
-        }
-        assert_eq!(decode_device(&hex::encode([1; 32])), Some([1; 32]));
-    }
 
-    #[test]
-    fn the_forwarded_request_names_the_app_in_the_shared_workspace_under_the_same_id() {
-        let checked = Invocation {
-            arguments: Some(serde_json::Map::from_iter([(
-                "workspace".into(),
-                serde_json::json!("w"),
-            )])),
-            ..invocation()
+        phase a_malformed_own_device_invocation_is_refused;
+        {
+            assert!(Invocation::from_argument(&InvokeArgument::Text("x".into())).is_err());
+            let mut extra = invocation().argument();
+            if let InvokeArgument::Json(map) = &mut extra {
+                map.insert("caller".into(), serde_json::json!("someone else"));
+            }
+            assert!(
+                Invocation::from_argument(&extra).is_err(),
+                "nothing beyond the declared fields is read, least of all a caller"
+            );
+            for broken in [
+                Invocation {
+                    device: "AB".repeat(32),
+                    ..invocation()
+                },
+                Invocation {
+                    device: "ab".into(),
+                    ..invocation()
+                },
+                Invocation {
+                    app: "workspace:app".into(),
+                    ..invocation()
+                },
+                Invocation {
+                    action: String::new(),
+                    ..invocation()
+                },
+                Invocation {
+                    resource: format!("settings.root{}other", crate::KEY_SEP),
+                    ..invocation()
+                },
+                Invocation {
+                    action: format!("storage-summary{}other", crate::KEY_SEP),
+                    ..invocation()
+                },
+            ] {
+                assert!(broken.check().is_err(), "{broken:?}");
+            }
+            assert_eq!(decode_device(&hex::encode([1; 32])), Some([1; 32]));
         }
-        .check()
-        .unwrap();
-        let original = InvokeRequest {
-            on_behalf_of: None,
-            invocation: crate::InvocationId::new(),
-            target: target(),
-            argument: InvokeArgument::None,
-            context: None,
-            confirmation: Some(Confirmation::Witnessed("local-token".into())),
-            revision: None,
-            wait_ms: Some(1),
-            appearance: None,
-        };
-        let forwarded = checked.forwarded("workspace-1", &original);
-        assert_eq!(forwarded.invocation, original.invocation);
-        assert_eq!(
-            application_provider(&forwarded.target.provider),
-            Some(("workspace-1", "so.tilo.settings"))
-        );
-        assert_eq!(forwarded.target.address.action, "storage-summary");
-        assert!(matches!(forwarded.argument, InvokeArgument::Json(_)));
-        assert_eq!(
-            forwarded.confirmation, None,
-            "a token only this device can redeem is not sent"
-        );
+
+        phase the_forwarded_request_names_the_app_in_the_shared_workspace_under_the_same_id;
+        {
+            let checked = Invocation {
+                arguments: Some(serde_json::Map::from_iter([(
+                    "workspace".into(),
+                    serde_json::json!("w"),
+                )])),
+                ..invocation()
+            }
+            .check()
+            .unwrap();
+            let original = InvokeRequest {
+                on_behalf_of: None,
+                invocation: crate::InvocationId::new(),
+                target: target(),
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: Some(Confirmation::Witnessed("local-token".into())),
+                revision: None,
+                wait_ms: Some(1),
+                appearance: None,
+            };
+            let forwarded = checked.forwarded("workspace-1", &original);
+            assert_eq!(forwarded.invocation, original.invocation);
+            assert_eq!(
+                application_provider(&forwarded.target.provider),
+                Some(("workspace-1", "so.tilo.settings"))
+            );
+            assert_eq!(forwarded.target.address.action, "storage-summary");
+            assert!(matches!(forwarded.argument, InvokeArgument::Json(_)));
+            assert_eq!(
+                forwarded.confirmation, None,
+                "a token only this device can redeem is not sent"
+            );
+        }
     }
 }

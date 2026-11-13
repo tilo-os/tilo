@@ -428,71 +428,6 @@ mod tests {
         |reference| store.read(reference)
     }
 
-    /// Long text and byte runs leave the payload as sealed references and
-    /// come back exactly; short values stay inline; a missing part holds.
-    #[test]
-    fn large_parts_are_kept_sealed_and_resolve_back() {
-        let image: Vec<u8> = (0..40_000u32).map(|i| (i % 251) as u8).collect();
-        let original = action(&serde_json::json!({
-            "paste": { "text": "short", "body": "x".repeat(20_000), "image": image },
-            "count": 3,
-        }));
-        let store = ContentStore::memory().sealing();
-        let recorded = recorded(&original, &store);
-        assert!(recorded.payload.len() < 1024, "the payload names its parts");
-        let parts = recorded.content_parts();
-        assert_eq!(parts.len(), 2);
-        assert!(
-            parts
-                .iter()
-                .all(|reference| tilo_content::is_sealed(reference))
-        );
-        assert!(
-            !store.has(blake3::hash(&image).to_hex().as_ref()),
-            "nothing kept in the clear"
-        );
-        let resolved = recorded.resolve_content(&read(&store)).unwrap().unwrap();
-        let back: Value = serde_json::from_slice(&resolved.payload).unwrap();
-        let want: Value = serde_json::from_slice(&original.payload).unwrap();
-        assert_eq!(back, want);
-        assert_eq!(
-            recorded.resolve_content(&|_| None).unwrap(),
-            Err(MissingContent(parts[0].clone()))
-        );
-        // Other bytes than the reference names are not the content.
-        assert!(
-            recorded
-                .resolve_content(&|_| Some(vec![1]))
-                .unwrap()
-                .is_err()
-        );
-    }
-
-    /// A device holding the action as it ran finds, from the recorded form
-    /// alone, each part's bytes, and keeps them exactly as the writer
-    /// sealed them; a recorded form that is not of that action is refused.
-    #[test]
-    fn the_action_as_it_ran_yields_its_parts_exactly() {
-        let original = action(&serde_json::json!({ "body": "y".repeat(30_000), "at": 2 }));
-        let writer = ContentStore::memory().sealing();
-        let recorded = recorded(&original, &writer);
-        let parts = recorded.recorded_parts_of(&original).unwrap();
-        assert_eq!(parts.len(), 1);
-        let elsewhere = ContentStore::memory();
-        for (reference, bytes) in parts {
-            elsewhere.put_as(&reference, &bytes).unwrap();
-            assert_eq!(elsewhere.read(&reference), writer.read(&reference));
-        }
-        let other = action(&serde_json::json!({ "body": "z".repeat(30_000), "at": 2 }));
-        assert!(recorded.recorded_parts_of(&other).is_none());
-        let moved = action(&serde_json::json!({ "body": "y".repeat(30_000), "at": 3 }));
-        assert!(recorded.recorded_parts_of(&moved).is_none());
-        assert_eq!(
-            original.recorded_parts_of(&original),
-            Some(ContentParts::new())
-        );
-    }
-
     /// A long list of small parts (a pasted book's paragraphs) is kept
     /// whole and comes back exactly; the payload's own shape stays inline.
     #[test]
@@ -514,13 +449,82 @@ mod tests {
         assert!(recorded.recorded_parts_of(&original).is_some());
     }
 
-    #[test]
-    fn the_reserved_key_is_refused_in_a_payload() {
-        let forged =
-            action(&serde_json::json!({ "nested": { CONTENT_REFERENCE_KEY: "x", "as": "text" } }));
-        assert!(matches!(
-            forged.with_content_parts(CONTENT_PART_THRESHOLD),
-            Err(ActionError::Refused(_))
-        ));
+    tilo_test_env::scenario! {
+        fn large_parts_of_an_action_are_kept_as_content;
+
+        phase large_parts_are_kept_sealed_and_resolve_back;
+        // Long text and byte runs leave the payload as sealed references and
+        // come back exactly; short values stay inline; a missing part holds.
+        {
+            let image: Vec<u8> = (0..40_000u32).map(|i| (i % 251) as u8).collect();
+            let original = action(&serde_json::json!({
+                "paste": { "text": "short", "body": "x".repeat(20_000), "image": image },
+                "count": 3,
+            }));
+            let store = ContentStore::memory().sealing();
+            let recorded = recorded(&original, &store);
+            assert!(recorded.payload.len() < 1024, "the payload names its parts");
+            let parts = recorded.content_parts();
+            assert_eq!(parts.len(), 2);
+            assert!(
+                parts
+                    .iter()
+                    .all(|reference| tilo_content::is_sealed(reference))
+            );
+            assert!(
+                !store.has(blake3::hash(&image).to_hex().as_ref()),
+                "nothing kept in the clear"
+            );
+            let resolved = recorded.resolve_content(&read(&store)).unwrap().unwrap();
+            let back: Value = serde_json::from_slice(&resolved.payload).unwrap();
+            let want: Value = serde_json::from_slice(&original.payload).unwrap();
+            assert_eq!(back, want);
+            assert_eq!(
+                recorded.resolve_content(&|_| None).unwrap(),
+                Err(MissingContent(parts[0].clone()))
+            );
+            // Other bytes than the reference names are not the content.
+            assert!(
+                recorded
+                    .resolve_content(&|_| Some(vec![1]))
+                    .unwrap()
+                    .is_err()
+            );
+        }
+
+        phase the_action_as_it_ran_yields_its_parts_exactly;
+        // A device holding the action as it ran finds, from the recorded form
+        // alone, each part's bytes, and keeps them exactly as the writer
+        // sealed them; a recorded form that is not of that action is refused.
+        {
+            let original = action(&serde_json::json!({ "body": "y".repeat(30_000), "at": 2 }));
+            let writer = ContentStore::memory().sealing();
+            let recorded = recorded(&original, &writer);
+            let parts = recorded.recorded_parts_of(&original).unwrap();
+            assert_eq!(parts.len(), 1);
+            let elsewhere = ContentStore::memory();
+            for (reference, bytes) in parts {
+                elsewhere.put_as(&reference, &bytes).unwrap();
+                assert_eq!(elsewhere.read(&reference), writer.read(&reference));
+            }
+            let other = action(&serde_json::json!({ "body": "z".repeat(30_000), "at": 2 }));
+            assert!(recorded.recorded_parts_of(&other).is_none());
+            let moved = action(&serde_json::json!({ "body": "y".repeat(30_000), "at": 3 }));
+            assert!(recorded.recorded_parts_of(&moved).is_none());
+            assert_eq!(
+                original.recorded_parts_of(&original),
+                Some(ContentParts::new())
+            );
+        }
+
+        phase the_reserved_key_is_refused_in_a_payload;
+        {
+            let forged =
+                action(&serde_json::json!({ "nested": { CONTENT_REFERENCE_KEY: "x", "as": "text" } }));
+            assert!(matches!(
+                forged.with_content_parts(CONTENT_PART_THRESHOLD),
+                Err(ActionError::Refused(_))
+            ));
+        }
     }
 }

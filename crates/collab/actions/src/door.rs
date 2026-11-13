@@ -1073,17 +1073,6 @@ mod tests {
         )
     }
 
-    /// A descriptor carries nothing that could act, survey annotates only the declared view-open
-    /// action, enumeration leaves the document untouched, and an address survives its string form.
-    /// Runs each phase below in order; every phase builds its own fixture.
-    #[test]
-    fn surveying_through_the_door_describes_without_acting() {
-        a_descriptor_carries_nothing_that_could_act();
-        survey_annotates_only_the_declared_view_open_action();
-        enumeration_leaves_the_document_untouched();
-        an_address_survives_its_string_form();
-    }
-
     /// A descriptor carries no live handle: two trees whose actions *do
     /// different things* survey to equal descriptors — only the address
     /// reaches the closure, and only against a tree handed in again.
@@ -1123,45 +1112,60 @@ mod tests {
         assert_eq!(described.len(), 2);
     }
 
-    /// A survey names the row each action stands in: the resource of the level above it, and
-    /// whether its own resource holds rows below it, so a reader asking a level at a time knows
-    /// where the listing continues and where it ends.
-    #[test]
-    fn a_survey_names_the_row_each_action_stands_in() {
-        let leaf = ResourceSpec::new("notes.note:1", "notes.note", "Harbour")
-            .with_action(ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star).unwrap());
-        let folder = ResourceSpec::new("notes.folder:a", "notes.folder", "Trips")
-            .with_action(
-                ActionSpec::immediate("archive", "Archive", NOTE_TYPE, &Note::Star).unwrap(),
-            )
-            .with_child(leaf);
-        let placed = survey_placed(std::slice::from_ref(&folder));
-        let at = |action: &str| {
-            placed
-                .iter()
-                .find(|placed| placed.action.address.action == action)
-                .expect("the action was surveyed")
-        };
-        let archived = at("archive");
-        assert_eq!(archived.parent, "", "the folder stands at the top level");
-        assert!(archived.has_children, "the folder holds the note below it");
-        let starred = at("star");
-        assert_eq!(starred.parent, "notes.folder:a", "the note is under it");
-        assert!(
-            !starred.has_children,
-            "nothing stands below the note: the listing ends here"
-        );
-        // The flat survey is the same actions, in the same order, without the rows.
-        assert_eq!(
-            survey(std::slice::from_ref(&folder))
-                .iter()
-                .map(|descriptor| descriptor.address.action.clone())
-                .collect::<Vec<_>>(),
-            placed
-                .iter()
-                .map(|placed| placed.action.address.action.clone())
-                .collect::<Vec<_>>(),
-        );
+    tilo_test_env::scenario! {
+        fn a_survey_describes_without_acting;
+
+        phase surveying_through_the_door_describes_without_acting;
+        // A descriptor carries nothing that could act, survey annotates only the declared view-open
+        // action, enumeration leaves the document untouched, and an address survives its string form.
+        // Runs each phase below in order; every phase builds its own fixture.
+        {
+            a_descriptor_carries_nothing_that_could_act();
+            survey_annotates_only_the_declared_view_open_action();
+            enumeration_leaves_the_document_untouched();
+            an_address_survives_its_string_form();
+        }
+
+        phase a_survey_names_the_row_each_action_stands_in;
+        // A survey names the row each action stands in: the resource of the level above it, and
+        // whether its own resource holds rows below it, so a reader asking a level at a time knows
+        // where the listing continues and where it ends.
+        {
+            let leaf = ResourceSpec::new("notes.note:1", "notes.note", "Harbour")
+                .with_action(ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star).unwrap());
+            let folder = ResourceSpec::new("notes.folder:a", "notes.folder", "Trips")
+                .with_action(
+                    ActionSpec::immediate("archive", "Archive", NOTE_TYPE, &Note::Star).unwrap(),
+                )
+                .with_child(leaf);
+            let placed = survey_placed(std::slice::from_ref(&folder));
+            let at = |action: &str| {
+                placed
+                    .iter()
+                    .find(|placed| placed.action.address.action == action)
+                    .expect("the action was surveyed")
+            };
+            let archived = at("archive");
+            assert_eq!(archived.parent, "", "the folder stands at the top level");
+            assert!(archived.has_children, "the folder holds the note below it");
+            let starred = at("star");
+            assert_eq!(starred.parent, "notes.folder:a", "the note is under it");
+            assert!(
+                !starred.has_children,
+                "nothing stands below the note: the listing ends here"
+            );
+            // The flat survey is the same actions, in the same order, without the rows.
+            assert_eq!(
+                survey(std::slice::from_ref(&folder))
+                    .iter()
+                    .map(|descriptor| descriptor.address.action.clone())
+                    .collect::<Vec<_>>(),
+                placed
+                    .iter()
+                    .map(|placed| placed.action.address.action.clone())
+                    .collect::<Vec<_>>(),
+            );
+        }
     }
 
     fn survey_annotates_only_the_declared_view_open_action() {
@@ -1205,20 +1209,6 @@ mod tests {
                 .view
                 .is_none()
         );
-    }
-
-    /// Stale addresses, mismatched arguments and unregistered action types are refused rather than
-    /// redirected or applied; an accepted change is attributed to the caller and ambient task
-    /// context reaches it without overwriting the resource.
-    /// Runs each phase below in order; every phase builds its own fixture.
-    #[test]
-    fn invoking_through_the_door_refuses_mismatches_and_attributes_the_caller() {
-        an_address_that_no_longer_resolves_is_refused_not_redirected();
-        an_argument_that_does_not_match_the_declaration_is_refused();
-        an_unregistered_action_type_is_refused_rather_than_applied();
-        a_payload_its_decoder_cannot_read_is_not_called_unregistered();
-        a_change_through_the_door_is_attributed_to_the_caller();
-        ambient_task_context_reaches_door_actions_without_overwriting_resource();
     }
 
     /// A tree is per-frame presentation, so an address is re-resolved against a
@@ -1270,72 +1260,6 @@ mod tests {
         assert_eq!(doc.get_heads(), before, "a refused call left no change");
         assert!(doc.get(&ROOT, "title").unwrap().is_none());
         assert!(doc.get(&ROOT, "starred").unwrap().is_none());
-    }
-
-    /// A prompt whose only parameter is optional runs when the caller omits
-    /// it, bound through the typed parameters exactly as an omitted optional
-    /// argument is; a required one is still refused.
-    #[test]
-    fn an_optional_only_prompt_runs_without_its_argument() {
-        let tree = vec![
-            ResourceSpec::new("notes.note:1", "notes.note", "Harbour").with_action(
-                ActionSpec::prompted_param(
-                    "retitle",
-                    "Rename",
-                    ActionParam::optional("title", crate::ParamType::Text, "New title"),
-                    "title",
-                    ExecutionLocus::ClientLocal,
-                    |text| encoded(&Note::Retitle(format!("[{text}]"))),
-                ),
-            ),
-        ];
-        let mut doc = AutoCommit::new();
-        perform(&mut doc, &tree, &retitle(), None).unwrap();
-        assert_eq!(
-            doc.get(&ROOT, "title")
-                .unwrap()
-                .unwrap()
-                .0
-                .into_string()
-                .unwrap(),
-            "[]",
-            "the omitted optional text binds as nothing typed"
-        );
-
-        let mut doc = AutoCommit::new();
-        let err = perform(&mut doc, &open(), &retitle(), None).unwrap_err();
-        assert_eq!(err, DoorError::MissingArgument(retitle()));
-    }
-
-    /// A text argument on the wire names no parameter; the descriptor says
-    /// where it goes.
-    #[test]
-    fn a_wire_text_argument_goes_under_the_actions_own_prompt_parameter() {
-        let tree = open();
-        let described = survey(&tree);
-        let retitle_spec = described.iter().find(|d| d.address == retitle()).unwrap();
-        assert_eq!(retitle_spec.prompt_param(), Some("title"));
-        let lone = serde_json::json!({ crate::PROMPTED_PARAM: "Ledger" })
-            .as_object()
-            .unwrap()
-            .clone();
-        assert_eq!(
-            retitle_spec.bind_prompt_text(lone.clone()),
-            serde_json::json!({"title": "Ledger"})
-                .as_object()
-                .unwrap()
-                .clone()
-        );
-        // Already named, or more than one argument: left as given.
-        let named = serde_json::json!({"title": "Ledger"})
-            .as_object()
-            .unwrap()
-            .clone();
-        assert_eq!(retitle_spec.bind_prompt_text(named.clone()), named);
-        // An action that collects no text has no prompt parameter.
-        let star_spec = described.iter().find(|d| d.address == star()).unwrap();
-        assert_eq!(star_spec.prompt_param(), None);
-        assert_eq!(star_spec.bind_prompt_text(lone.clone()), lone);
     }
 
     /// An action the app never registered a decoder for cannot be run, even
@@ -1545,16 +1469,6 @@ mod tests {
         );
     }
 
-    /// Consequential actions and values classified destructive need consent, and effective
-    /// confirmation reads every argument form.
-    /// Runs each phase below in order; every phase builds its own fixture.
-    #[test]
-    fn consequential_door_actions_need_consent_whatever_form_the_argument_takes() {
-        consequential_actions_cannot_cross_the_door_without_consent();
-        a_value_classified_as_destructive_needs_the_same_consent();
-        effective_confirmation_reads_every_argument_form();
-    }
-
     fn consequential_actions_cannot_cross_the_door_without_consent() {
         let resources = vec![
             ResourceSpec::new("notes.note:1", "notes.note", "Harbour").with_action(
@@ -1739,25 +1653,130 @@ mod tests {
         assert_eq!(context.purpose.as_deref(), Some("Remove the draft marks"));
     }
 
-    /// A destructive operation an agent run performs after its policy gate
-    /// confirmed it is recorded within the run, exactly like an unconfirmed
-    /// one — consent is not a reason to lose whose task the change belongs to.
-    #[test]
-    fn a_confirmed_invocation_inside_a_run_is_recorded_with_its_group() {
-        let resources = vec![
-            ResourceSpec::new("notes.note:1", "notes.note", "Harbour").with_action(
-                ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star)
-                    .unwrap()
-                    .destructive(),
-            ),
-        ];
-        let run = agent_run();
-        let provenance = InvocationProvenance::caller(b"agent:ada").within(&run);
-        let mut doc = AutoCommit::new();
-        let mut transport = LocalTransport::new();
+    tilo_test_env::scenario! {
+        fn an_invocation_through_the_door_is_checked_and_recorded;
 
-        assert_eq!(
-            invoke(
+        phase invoking_through_the_door_refuses_mismatches_and_attributes_the_caller;
+        // Stale addresses, mismatched arguments and unregistered action types are refused rather than
+        // redirected or applied; an accepted change is attributed to the caller and ambient task
+        // context reaches it without overwriting the resource.
+        // Runs each phase below in order; every phase builds its own fixture.
+        {
+            an_address_that_no_longer_resolves_is_refused_not_redirected();
+            an_argument_that_does_not_match_the_declaration_is_refused();
+            an_unregistered_action_type_is_refused_rather_than_applied();
+            a_payload_its_decoder_cannot_read_is_not_called_unregistered();
+            a_change_through_the_door_is_attributed_to_the_caller();
+            ambient_task_context_reaches_door_actions_without_overwriting_resource();
+        }
+
+        phase an_optional_only_prompt_runs_without_its_argument;
+        // A prompt whose only parameter is optional runs when the caller omits
+        // it, bound through the typed parameters exactly as an omitted optional
+        // argument is; a required one is still refused.
+        {
+            let tree = vec![
+                ResourceSpec::new("notes.note:1", "notes.note", "Harbour").with_action(
+                    ActionSpec::prompted_param(
+                        "retitle",
+                        "Rename",
+                        ActionParam::optional("title", crate::ParamType::Text, "New title"),
+                        "title",
+                        ExecutionLocus::ClientLocal,
+                        |text| encoded(&Note::Retitle(format!("[{text}]"))),
+                    ),
+                ),
+            ];
+            let mut doc = AutoCommit::new();
+            perform(&mut doc, &tree, &retitle(), None).unwrap();
+            assert_eq!(
+                doc.get(&ROOT, "title")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .into_string()
+                    .unwrap(),
+                "[]",
+                "the omitted optional text binds as nothing typed"
+            );
+
+            let mut doc = AutoCommit::new();
+            let err = perform(&mut doc, &open(), &retitle(), None).unwrap_err();
+            assert_eq!(err, DoorError::MissingArgument(retitle()));
+        }
+
+        phase a_wire_text_argument_goes_under_the_actions_own_prompt_parameter;
+        // A text argument on the wire names no parameter; the descriptor says
+        // where it goes.
+        {
+            let tree = open();
+            let described = survey(&tree);
+            let retitle_spec = described.iter().find(|d| d.address == retitle()).unwrap();
+            assert_eq!(retitle_spec.prompt_param(), Some("title"));
+            let lone = serde_json::json!({ crate::PROMPTED_PARAM: "Ledger" })
+                .as_object()
+                .unwrap()
+                .clone();
+            assert_eq!(
+                retitle_spec.bind_prompt_text(lone.clone()),
+                serde_json::json!({"title": "Ledger"})
+                    .as_object()
+                    .unwrap()
+                    .clone()
+            );
+            // Already named, or more than one argument: left as given.
+            let named = serde_json::json!({"title": "Ledger"})
+                .as_object()
+                .unwrap()
+                .clone();
+            assert_eq!(retitle_spec.bind_prompt_text(named.clone()), named);
+            // An action that collects no text has no prompt parameter.
+            let star_spec = described.iter().find(|d| d.address == star()).unwrap();
+            assert_eq!(star_spec.prompt_param(), None);
+            assert_eq!(star_spec.bind_prompt_text(lone.clone()), lone);
+        }
+
+        phase consequential_door_actions_need_consent_whatever_form_the_argument_takes;
+        // Consequential actions and values classified destructive need consent, and effective
+        // confirmation reads every argument form.
+        // Runs each phase below in order; every phase builds its own fixture.
+        {
+            consequential_actions_cannot_cross_the_door_without_consent();
+            a_value_classified_as_destructive_needs_the_same_consent();
+            effective_confirmation_reads_every_argument_form();
+        }
+
+        phase a_confirmed_invocation_inside_a_run_is_recorded_with_its_group;
+        // A destructive operation an agent run performs after its policy gate
+        // confirmed it is recorded within the run, exactly like an unconfirmed
+        // one — consent is not a reason to lose whose task the change belongs to.
+        {
+            let resources = vec![
+                ResourceSpec::new("notes.note:1", "notes.note", "Harbour").with_action(
+                    ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star)
+                        .unwrap()
+                        .destructive(),
+                ),
+            ];
+            let run = agent_run();
+            let provenance = InvocationProvenance::caller(b"agent:ada").within(&run);
+            let mut doc = AutoCommit::new();
+            let mut transport = LocalTransport::new();
+
+            assert_eq!(
+                invoke(
+                    &mut doc,
+                    &resources,
+                    &star(),
+                    None,
+                    provenance,
+                    &registry(),
+                    &mut transport,
+                )
+                .unwrap_err(),
+                DoorError::ConfirmationRequired
+            );
+            let dispatched = invoke_confirmed(
                 &mut doc,
                 &resources,
                 &star(),
@@ -1766,68 +1785,57 @@ mod tests {
                 &registry(),
                 &mut transport,
             )
-            .unwrap_err(),
-            DoorError::ConfirmationRequired
-        );
-        let dispatched = invoke_confirmed(
-            &mut doc,
-            &resources,
-            &star(),
-            None,
-            provenance,
-            &registry(),
-            &mut transport,
-        )
-        .expect("a confirmed destructive action runs");
+            .expect("a confirmed destructive action runs");
 
-        assert_eq!(
-            dispatched
-                .envelope()
-                .context
-                .as_ref()
-                .and_then(|context| context.group.as_ref())
-                .map(|group| group.id.as_str()),
-            Some("agent-run:7"),
-            "the replicated envelope carries the run too"
-        );
-        assert_recorded_within_run(&mut doc, "star");
-    }
+            assert_eq!(
+                dispatched
+                    .envelope()
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.group.as_ref())
+                    .map(|group| group.id.as_str()),
+                Some("agent-run:7"),
+                "the replicated envelope carries the run too"
+            );
+            assert_recorded_within_run(&mut doc, "star");
+        }
 
-    /// Both typed-argument entry points record the run's context: the
-    /// ordinary value through [`invoke_json`] and the destructive one through
-    /// [`invoke_json_confirmed`].
-    #[test]
-    fn typed_invocations_inside_a_run_are_recorded_with_its_group() {
-        let resources = edit_by_value();
-        let run = agent_run();
-        let provenance = InvocationProvenance::caller(b"agent:ada").within(&run);
-        let mut doc = AutoCommit::new();
-        let mut transport = LocalTransport::new();
+        phase typed_invocations_inside_a_run_are_recorded_with_its_group;
+        // Both typed-argument entry points record the run's context: the
+        // ordinary value through [`invoke_json`] and the destructive one through
+        // [`invoke_json_confirmed`].
+        {
+            let resources = edit_by_value();
+            let run = agent_run();
+            let provenance = InvocationProvenance::caller(b"agent:ada").within(&run);
+            let mut doc = AutoCommit::new();
+            let mut transport = LocalTransport::new();
 
-        invoke_json(
-            &mut doc,
-            &resources,
-            &edit(),
-            &title("Harbour"),
-            provenance,
-            &registry(),
-            &mut transport,
-        )
-        .expect("an ordinary value runs");
-        assert_recorded_within_run(&mut doc, "edit");
+            invoke_json(
+                &mut doc,
+                &resources,
+                &edit(),
+                &title("Harbour"),
+                provenance,
+                &registry(),
+                &mut transport,
+            )
+            .expect("an ordinary value runs");
+            assert_recorded_within_run(&mut doc, "edit");
 
-        invoke_json_confirmed(
-            &mut doc,
-            &resources,
-            &edit(),
-            &title(""),
-            provenance,
-            &registry(),
-            &mut transport,
-        )
-        .expect("a confirmed destructive value runs");
-        assert_eq!(stored_title(&doc).as_deref(), Some(""));
-        assert_recorded_within_run(&mut doc, "edit");
+            invoke_json_confirmed(
+                &mut doc,
+                &resources,
+                &edit(),
+                &title(""),
+                provenance,
+                &registry(),
+                &mut transport,
+            )
+            .expect("a confirmed destructive value runs");
+            assert_eq!(stored_title(&doc).as_deref(), Some(""));
+            assert_recorded_within_run(&mut doc, "edit");
+        }
     }
 
     fn effective_confirmation_reads_every_argument_form() {

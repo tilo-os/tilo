@@ -1081,81 +1081,85 @@ pub fn change_hex(change: &[u8; 32]) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_moment_reads_back_as_written_and_a_bare_page_has_no_title() {
-        let moments = [
-            Now::Running {
-                command: "cargo test".into(),
-                since_ms: -3,
-            },
-            Now::Editing {
-                path: "src/lib.rs".into(),
-                at_ms: 4,
-            },
-            Now::Browsing {
-                url: "https://example.org".into(),
-                title: "Example".into(),
-                at_ms: 5,
-            },
-            Now::Browsing {
-                url: "https://example.org".into(),
-                title: String::new(),
-                at_ms: 6,
-            },
-            Now::Changing {
-                summary: "Renamed a note".into(),
-                at_ms: 7,
-            },
-            Now::Ran {
-                command: "ls".into(),
-                at_ms: 8,
-            },
-        ];
-        for now in moments {
-            let written = serde_json::to_string(&now).unwrap();
+    tilo_test_env::scenario! {
+        fn workspace_activity_reads_back_as_written;
+
+        phase every_moment_reads_back_as_written_and_a_bare_page_has_no_title;
+        {
+            let moments = [
+                Now::Running {
+                    command: "cargo test".into(),
+                    since_ms: -3,
+                },
+                Now::Editing {
+                    path: "src/lib.rs".into(),
+                    at_ms: 4,
+                },
+                Now::Browsing {
+                    url: "https://example.org".into(),
+                    title: "Example".into(),
+                    at_ms: 5,
+                },
+                Now::Browsing {
+                    url: "https://example.org".into(),
+                    title: String::new(),
+                    at_ms: 6,
+                },
+                Now::Changing {
+                    summary: "Renamed a note".into(),
+                    at_ms: 7,
+                },
+                Now::Ran {
+                    command: "ls".into(),
+                    at_ms: 8,
+                },
+            ];
+            for now in moments {
+                let written = serde_json::to_string(&now).unwrap();
+                assert_eq!(
+                    serde_json::from_str::<Now>(&written).unwrap(),
+                    now,
+                    "{written}"
+                );
+                let value = serde_json::to_value(&now).unwrap();
+                assert_eq!(serde_json::from_value::<Now>(value).unwrap(), now);
+            }
+            assert!(serde_json::from_str::<Now>(r#"{"kind":"sleeping","at_ms":1}"#).is_err());
+            assert!(serde_json::from_str::<Now>(r#"{"kind":"ran","at_ms":1}"#).is_err());
             assert_eq!(
-                serde_json::from_str::<Now>(&written).unwrap(),
-                now,
-                "{written}"
+                serde_json::from_str::<Now>(r#"{"kind":"ran","command":"ls","at_ms":1,"more":0}"#)
+                    .unwrap(),
+                Now::Ran {
+                    command: "ls".into(),
+                    at_ms: 1
+                },
+                "a field a newer writer adds is passed over"
             );
-            let value = serde_json::to_value(&now).unwrap();
-            assert_eq!(serde_json::from_value::<Now>(value).unwrap(), now);
         }
-        assert!(serde_json::from_str::<Now>(r#"{"kind":"sleeping","at_ms":1}"#).is_err());
-        assert!(serde_json::from_str::<Now>(r#"{"kind":"ran","at_ms":1}"#).is_err());
-        assert_eq!(
-            serde_json::from_str::<Now>(r#"{"kind":"ran","command":"ls","at_ms":1,"more":0}"#)
-                .unwrap(),
-            Now::Ran {
-                command: "ls".into(),
-                at_ms: 1
-            },
-            "a field a newer writer adds is passed over"
-        );
-    }
 
-    #[test]
-    fn an_entry_id_reads_back_from_its_hex_and_nothing_else_does() {
-        let id = [7_u8; 16];
-        assert_eq!(entry_id(&entry_hex(&id)), Some(id));
-        assert_eq!(entry_id("07"), None);
-        assert_eq!(entry_id(&"zz".repeat(16)), None);
-    }
+        phase an_entry_id_reads_back_from_its_hex_and_nothing_else_does;
+        {
+            let id = [7_u8; 16];
+            assert_eq!(entry_id(&entry_hex(&id)), Some(id));
+            assert_eq!(entry_id("07"), None);
+            assert_eq!(entry_id(&"zz".repeat(16)), None);
+        }
 
-    #[test]
-    fn a_query_reads_back_and_an_empty_one_asks_for_the_first_page() {
-        let query = FeedQuery {
-            scope: Scope::AllWorkspaces,
-            period: Period::Week,
-            author: Some("Ada".into()),
-            lens: Some("app:so.tilo.notes".into()),
-            limit: 400,
-        };
-        let InvokeArgument::Json(map) = argument(&query) else {
-            panic!("a query is an object");
-        };
-        let read: FeedQuery = serde_json::from_value(serde_json::Value::Object(map)).unwrap();
-        assert_eq!(read, query);
-        assert_eq!(FeedQuery::default().page(), FEED_PAGE);
+        phase a_query_reads_back_and_an_empty_one_asks_for_the_first_page;
+        {
+            let query = FeedQuery {
+                scope: Scope::AllWorkspaces,
+                period: Period::Week,
+                author: Some("Ada".into()),
+                lens: Some("app:so.tilo.notes".into()),
+                limit: 400,
+            };
+            let InvokeArgument::Json(map) = argument(&query) else {
+                panic!("a query is an object");
+            };
+            let read: FeedQuery = serde_json::from_value(serde_json::Value::Object(map)).unwrap();
+            assert_eq!(read, query);
+            assert_eq!(FeedQuery::default().page(), FEED_PAGE);
+        }
     }
 }

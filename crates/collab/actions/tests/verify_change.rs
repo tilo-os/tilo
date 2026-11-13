@@ -39,70 +39,6 @@ fn base() -> AutoCommit {
     doc
 }
 
-#[test]
-fn a_received_change_its_action_produces_is_reproduced() {
-    let mut origin = base();
-    let mut peer = origin.fork();
-    let mut transport = LocalTransport::new();
-    dispatch_with_context(
-        &mut origin,
-        &SetCounter(11),
-        EncodedAction::encode("test.counter", &SetCounter(11)).unwrap(),
-        &mut transport,
-        ActionContext::for_resource("r", "k", "l"),
-    )
-    .unwrap();
-    let hash = origin.get_heads()[0];
-    tilo_actions::replay(&mut peer, &transport.replicated[0], &registry()).unwrap();
-    let before = peer.get_heads();
-    assert_eq!(
-        verify_change(&mut peer, hash, &registry()).unwrap(),
-        Verified::Reproduced
-    );
-    assert_eq!(peer.get_heads(), before, "verifying changes nothing");
-}
-
-#[test]
-fn a_change_that_writes_other_than_its_action_is_caught() {
-    let mut doc = base();
-    let context = ActionContext {
-        action: Some(EncodedAction::encode("test.counter", &SetCounter(11)).unwrap()),
-        ..ActionContext::for_resource("r", "k", "l")
-    };
-    // Claims to set the counter to 11, writes 12 and another key.
-    doc.put(ROOT, "counter", 12_i64).unwrap();
-    doc.put(ROOT, "elsewhere", true).unwrap();
-    let hash = doc
-        .commit_with(CommitOptions::default().with_message(context.change_message().unwrap()))
-        .unwrap();
-    assert!(verify_change(&mut doc, hash, &registry()).is_err());
-}
-
-#[test]
-fn a_change_with_no_recorded_action_or_an_unknown_app_is_left_to_others() {
-    let mut doc = base();
-    let genesis = doc.get_heads()[0];
-    assert_eq!(
-        verify_change(&mut doc, genesis, &registry()).unwrap(),
-        Verified::NothingRecorded
-    );
-
-    let mut transport = LocalTransport::new();
-    dispatch_with_context(
-        &mut doc,
-        &SetCounter(3),
-        EncodedAction::encode("test.counter", &SetCounter(3)).unwrap(),
-        &mut transport,
-        ActionContext::for_resource("r", "k", "l"),
-    )
-    .unwrap();
-    let hash = doc.get_heads()[0];
-    assert_eq!(
-        verify_change(&mut doc, hash, &ActionRegistry::new()).unwrap(),
-        Verified::UnknownAction("test.counter".into())
-    );
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 struct Paste(String);
 
@@ -256,72 +192,140 @@ fn typed(doc: &mut AutoCommit, transport: &mut LocalTransport, text: &str) {
     }
 }
 
-#[test]
-fn a_gestures_later_changes_are_short_continuations_of_its_first_entry() {
-    let mut registry = ActionRegistry::new();
-    registry.register::<Type>("test.type");
-    let mut origin = AutoCommit::new();
-    let mut peer = origin.fork();
-    let mut transport = LocalTransport::new();
-    typed(&mut origin, &mut transport, "abc");
-    let changes = origin.get_changes(&[]);
-    let messages: Vec<&str> = changes
-        .iter()
-        .filter_map(|change| change.message())
-        .collect();
-    assert!(
-        messages[0].starts_with(tilo_actions::CHANGE_MESSAGE_PREFIX),
-        "{messages:?}"
-    );
-    for continuation in &messages[1..] {
-        assert!(
-            continuation.starts_with(tilo_actions::CONTINUATION_PREFIX),
-            "{messages:?}"
-        );
-        assert!(continuation.len() * 2 < messages[0].len(), "{messages:?}");
-    }
+tilo_test_env::scenario! {
+    fn a_recorded_change_is_verified_against_its_action;
 
-    // Every change reads as the gesture's entry with its own action.
-    let first = ActionContext::from_change_message(messages[0]).unwrap();
-    let mut listed = tilo_actions::EntryReader::default();
-    for (change, ch) in changes.iter().zip(["a", "b", "c"]) {
-        let entry = tilo_actions::entry_of(origin.committed_document(), change.hash()).unwrap();
-        assert_eq!(entry.resource, first.resource);
-        assert_eq!(entry.gesture, first.gesture);
+    phase a_received_change_its_action_produces_is_reproduced;
+    {
+        let mut origin = base();
+        let mut peer = origin.fork();
+        let mut transport = LocalTransport::new();
+        dispatch_with_context(
+            &mut origin,
+            &SetCounter(11),
+            EncodedAction::encode("test.counter", &SetCounter(11)).unwrap(),
+            &mut transport,
+            ActionContext::for_resource("r", "k", "l"),
+        )
+        .unwrap();
+        let hash = origin.get_heads()[0];
+        tilo_actions::replay(&mut peer, &transport.replicated[0], &registry()).unwrap();
+        let before = peer.get_heads();
         assert_eq!(
-            entry.action,
-            Some(EncodedAction::encode("test.type", &Type(ch.to_owned())).unwrap())
-        );
-        let read = listed
-            .read(&change.actor_id().clone(), change.message())
-            .unwrap();
-        assert_eq!(read.action, entry.action);
-    }
-
-    // A device replays each keystroke, continuation included, to the same
-    // change, and verifies it against its recorded action.
-    for envelope in &transport.replicated {
-        tilo_actions::replay(&mut peer, envelope, &registry).unwrap();
-    }
-    assert_eq!(peer.get_heads(), origin.get_heads());
-    for change in &changes {
-        assert_eq!(
-            verify_change(&mut origin, change.hash(), &registry).unwrap(),
+            verify_change(&mut peer, hash, &registry()).unwrap(),
             Verified::Reproduced
         );
+        assert_eq!(peer.get_heads(), before, "verifying changes nothing");
     }
 
-    // A new gesture starts with its whole entry again.
-    typed(&mut origin, &mut transport, "d");
-    let last = origin
-        .get_changes(&[])
-        .last()
-        .unwrap()
-        .message()
-        .unwrap()
-        .to_owned();
-    assert!(
-        last.starts_with(tilo_actions::CHANGE_MESSAGE_PREFIX),
-        "{last}"
-    );
+    phase a_change_that_writes_other_than_its_action_is_caught;
+    {
+        let mut doc = base();
+        let context = ActionContext {
+            action: Some(EncodedAction::encode("test.counter", &SetCounter(11)).unwrap()),
+            ..ActionContext::for_resource("r", "k", "l")
+        };
+        // Claims to set the counter to 11, writes 12 and another key.
+        doc.put(ROOT, "counter", 12_i64).unwrap();
+        doc.put(ROOT, "elsewhere", true).unwrap();
+        let hash = doc
+            .commit_with(CommitOptions::default().with_message(context.change_message().unwrap()))
+            .unwrap();
+        assert!(verify_change(&mut doc, hash, &registry()).is_err());
+    }
+
+    phase a_change_with_no_recorded_action_or_an_unknown_app_is_left_to_others;
+    {
+        let mut doc = base();
+        let genesis = doc.get_heads()[0];
+        assert_eq!(
+            verify_change(&mut doc, genesis, &registry()).unwrap(),
+            Verified::NothingRecorded
+        );
+
+        let mut transport = LocalTransport::new();
+        dispatch_with_context(
+            &mut doc,
+            &SetCounter(3),
+            EncodedAction::encode("test.counter", &SetCounter(3)).unwrap(),
+            &mut transport,
+            ActionContext::for_resource("r", "k", "l"),
+        )
+        .unwrap();
+        let hash = doc.get_heads()[0];
+        assert_eq!(
+            verify_change(&mut doc, hash, &ActionRegistry::new()).unwrap(),
+            Verified::UnknownAction("test.counter".into())
+        );
+    }
+
+    phase a_gestures_later_changes_are_short_continuations_of_its_first_entry;
+    {
+        let mut registry = ActionRegistry::new();
+        registry.register::<Type>("test.type");
+        let mut origin = AutoCommit::new();
+        let mut peer = origin.fork();
+        let mut transport = LocalTransport::new();
+        typed(&mut origin, &mut transport, "abc");
+        let changes = origin.get_changes(&[]);
+        let messages: Vec<&str> = changes
+            .iter()
+            .filter_map(|change| change.message())
+            .collect();
+        assert!(
+            messages[0].starts_with(tilo_actions::CHANGE_MESSAGE_PREFIX),
+            "{messages:?}"
+        );
+        for continuation in &messages[1..] {
+            assert!(
+                continuation.starts_with(tilo_actions::CONTINUATION_PREFIX),
+                "{messages:?}"
+            );
+            assert!(continuation.len() * 2 < messages[0].len(), "{messages:?}");
+        }
+
+        // Every change reads as the gesture's entry with its own action.
+        let first = ActionContext::from_change_message(messages[0]).unwrap();
+        let mut listed = tilo_actions::EntryReader::default();
+        for (change, ch) in changes.iter().zip(["a", "b", "c"]) {
+            let entry = tilo_actions::entry_of(origin.committed_document(), change.hash()).unwrap();
+            assert_eq!(entry.resource, first.resource);
+            assert_eq!(entry.gesture, first.gesture);
+            assert_eq!(
+                entry.action,
+                Some(EncodedAction::encode("test.type", &Type(ch.to_owned())).unwrap())
+            );
+            let read = listed
+                .read(&change.actor_id().clone(), change.message())
+                .unwrap();
+            assert_eq!(read.action, entry.action);
+        }
+
+        // A device replays each keystroke, continuation included, to the same
+        // change, and verifies it against its recorded action.
+        for envelope in &transport.replicated {
+            tilo_actions::replay(&mut peer, envelope, &registry).unwrap();
+        }
+        assert_eq!(peer.get_heads(), origin.get_heads());
+        for change in &changes {
+            assert_eq!(
+                verify_change(&mut origin, change.hash(), &registry).unwrap(),
+                Verified::Reproduced
+            );
+        }
+
+        // A new gesture starts with its whole entry again.
+        typed(&mut origin, &mut transport, "d");
+        let last = origin
+            .get_changes(&[])
+            .last()
+            .unwrap()
+            .message()
+            .unwrap()
+            .to_owned();
+        assert!(
+            last.starts_with(tilo_actions::CHANGE_MESSAGE_PREFIX),
+            "{last}"
+        );
+    }
 }

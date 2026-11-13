@@ -426,172 +426,176 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_selection_is_in_its_resource_under_a_window_alias_too() {
-        let body = "notes.notebook/pages/p1/body";
-        let alias = format!(
-            "{BOUND_RESOURCE_PREFIX}2a4120d7-2f63-4578-aed8-11cb91ed3628:\
+    tilo_test_env::scenario! {
+        fn a_selection_names_its_place_and_travels_bounded;
+
+        phase a_selection_is_in_its_resource_under_a_window_alias_too;
+        {
+            let body = "notes.notebook/pages/p1/body";
+            let alias = format!(
+                "{BOUND_RESOURCE_PREFIX}2a4120d7-2f63-4578-aed8-11cb91ed3628:\
              c0fe4ad7-b7d0-46c3-ab7e-78d12d5d86f4:6e6f7465732e6e6f7465626f6f6b2f70616765732f70312f626f6479"
-        );
-        assert_eq!(logical_resource_id(&alias), body);
-        assert_eq!(logical_resource_id(body), body);
-        assert_eq!(
-            logical_resource_id(&format!("{BOUND_RESOURCE_PREFIX}a:b:zz")),
-            format!("{BOUND_RESOURCE_PREFIX}a:b:zz"),
-            "a malformed alias is its own id"
-        );
-        let subject = SelectionSubject {
-            app_id: "so.tilo.notes".into(),
-            app_label: "Notes".into(),
-            resource: crate::ActionResource {
-                id: body.into(),
-                kind: "tilo.rich-text".into(),
-                label: "Links".into(),
-            },
-            anchor: anchor(),
-        };
-        assert!(subject.is_in(body));
-        assert!(subject.is_in(&alias));
-        assert!(!subject.is_in("notes.notebook/pages/p2/body"));
-    }
+            );
+            assert_eq!(logical_resource_id(&alias), body);
+            assert_eq!(logical_resource_id(body), body);
+            assert_eq!(
+                logical_resource_id(&format!("{BOUND_RESOURCE_PREFIX}a:b:zz")),
+                format!("{BOUND_RESOURCE_PREFIX}a:b:zz"),
+                "a malformed alias is its own id"
+            );
+            let subject = SelectionSubject {
+                app_id: "so.tilo.notes".into(),
+                app_label: "Notes".into(),
+                resource: crate::ActionResource {
+                    id: body.into(),
+                    kind: "tilo.rich-text".into(),
+                    label: "Links".into(),
+                },
+                anchor: anchor(),
+            };
+            assert!(subject.is_in(body));
+            assert!(subject.is_in(&alias));
+            assert!(!subject.is_in("notes.notebook/pages/p2/body"));
+        }
 
-    #[test]
-    fn a_selection_of_several_items_names_each_and_lists_them() {
-        let anchor = SelectionAnchor::of_items(
-            (0..MAX_SELECTED_ITEMS + 2).map(|n| (format!("file:{n}"), format!("report-{n}.pdf"))),
-        );
-        assert_eq!(anchor.items.len(), MAX_SELECTED_ITEMS);
-        assert_eq!(anchor.items[1], SelectionPlace::item("file:1"));
-        let excerpt = anchor.excerpt.as_deref().unwrap();
-        assert!(excerpt.starts_with("- report-0.pdf\n- report-1.pdf\n"));
-        assert!(excerpt.ends_with(" more"), "{excerpt}");
-        assert!(!excerpt.contains('…'), "the list is never cut mid-name");
-        let listed = excerpt
-            .lines()
-            .filter(|line| line.starts_with("- report-"))
-            .count();
-        assert!(
-            excerpt.ends_with(&format!("- and {} more", MAX_SELECTED_ITEMS + 2 - listed)),
-            "{excerpt}"
-        );
-        assert!(anchor.validate().is_ok());
-        let json = serde_json::to_value(&anchor).unwrap();
-        assert_eq!(json["items"][0], serde_json::json!({"item": "file:0"}));
-        assert_eq!(
-            serde_json::from_value::<SelectionAnchor>(json).unwrap(),
-            anchor
-        );
-        let encoded = postcard::to_allocvec(&anchor).unwrap();
-        assert_eq!(
-            postcard::from_bytes::<SelectionAnchor>(&encoded).unwrap(),
-            anchor
-        );
-        assert!(
-            serde_json::to_value(SelectionAnchor::of_text("x"))
-                .unwrap()
-                .get("items")
-                .is_none(),
-            "a selection inside one item writes what it wrote before"
-        );
-        let too_many = SelectionAnchor {
-            items: vec![SelectionPlace::item("f"); MAX_SELECTED_ITEMS + 1],
-            ..SelectionAnchor::default()
-        };
-        assert!(too_many.validate().is_err());
-    }
+        phase a_selection_of_several_items_names_each_and_lists_them;
+        {
+            let anchor = SelectionAnchor::of_items(
+                (0..MAX_SELECTED_ITEMS + 2).map(|n| (format!("file:{n}"), format!("report-{n}.pdf"))),
+            );
+            assert_eq!(anchor.items.len(), MAX_SELECTED_ITEMS);
+            assert_eq!(anchor.items[1], SelectionPlace::item("file:1"));
+            let excerpt = anchor.excerpt.as_deref().unwrap();
+            assert!(excerpt.starts_with("- report-0.pdf\n- report-1.pdf\n"));
+            assert!(excerpt.ends_with(" more"), "{excerpt}");
+            assert!(!excerpt.contains('…'), "the list is never cut mid-name");
+            let listed = excerpt
+                .lines()
+                .filter(|line| line.starts_with("- report-"))
+                .count();
+            assert!(
+                excerpt.ends_with(&format!("- and {} more", MAX_SELECTED_ITEMS + 2 - listed)),
+                "{excerpt}"
+            );
+            assert!(anchor.validate().is_ok());
+            let json = serde_json::to_value(&anchor).unwrap();
+            assert_eq!(json["items"][0], serde_json::json!({"item": "file:0"}));
+            assert_eq!(
+                serde_json::from_value::<SelectionAnchor>(json).unwrap(),
+                anchor
+            );
+            let encoded = postcard::to_allocvec(&anchor).unwrap();
+            assert_eq!(
+                postcard::from_bytes::<SelectionAnchor>(&encoded).unwrap(),
+                anchor
+            );
+            assert!(
+                serde_json::to_value(SelectionAnchor::of_text("x"))
+                    .unwrap()
+                    .get("items")
+                    .is_none(),
+                "a selection inside one item writes what it wrote before"
+            );
+            let too_many = SelectionAnchor {
+                items: vec![SelectionPlace::item("f"); MAX_SELECTED_ITEMS + 1],
+                ..SelectionAnchor::default()
+            };
+            assert!(too_many.validate().is_err());
+        }
 
-    #[test]
-    fn place_travels_as_the_action_place_parameter_does() {
-        let place = SelectionPlace::range("block-1", 9, 4);
-        assert_eq!(
-            serde_json::to_value(&place).unwrap(),
-            serde_json::json!({"item": "block-1", "start": 4, "end": 9})
-        );
-        assert_eq!(
-            serde_json::to_value(SelectionPlace::caret("b", 2)).unwrap(),
-            serde_json::json!({"item": "b", "at": 2})
-        );
-        assert!(
-            crate::validate_json_schema(
-                &serde_json::to_value(&place).unwrap(),
-                &crate::place_schema()
-            )
-            .is_ok()
-        );
-    }
+        phase place_travels_as_the_action_place_parameter_does;
+        {
+            let place = SelectionPlace::range("block-1", 9, 4);
+            assert_eq!(
+                serde_json::to_value(&place).unwrap(),
+                serde_json::json!({"item": "block-1", "start": 4, "end": 9})
+            );
+            assert_eq!(
+                serde_json::to_value(SelectionPlace::caret("b", 2)).unwrap(),
+                serde_json::json!({"item": "b", "at": 2})
+            );
+            assert!(
+                crate::validate_json_schema(
+                    &serde_json::to_value(&place).unwrap(),
+                    &crate::place_schema()
+                )
+                .is_ok()
+            );
+        }
 
-    #[test]
-    fn malformed_places_are_refused() {
-        assert!(SelectionPlace::item("").validate().is_err());
-        let both = SelectionPlace {
-            at: Some(1),
-            ..SelectionPlace::range("b", 1, 2)
-        };
-        assert!(both.validate().is_err());
-        let open = SelectionPlace {
-            start: Some(3),
-            ..SelectionPlace::item("b")
-        };
-        assert!(open.validate().is_err());
-        let backwards = SelectionPlace {
-            start: Some(3),
-            end: Some(1),
-            ..SelectionPlace::item("b")
-        };
-        assert!(backwards.validate().is_err());
-        assert!(
-            serde_json::from_value::<SelectionPlace>(serde_json::json!({"item":"b","x":1}))
-                .is_err()
-        );
-    }
+        phase malformed_places_are_refused;
+        {
+            assert!(SelectionPlace::item("").validate().is_err());
+            let both = SelectionPlace {
+                at: Some(1),
+                ..SelectionPlace::range("b", 1, 2)
+            };
+            assert!(both.validate().is_err());
+            let open = SelectionPlace {
+                start: Some(3),
+                ..SelectionPlace::item("b")
+            };
+            assert!(open.validate().is_err());
+            let backwards = SelectionPlace {
+                start: Some(3),
+                end: Some(1),
+                ..SelectionPlace::item("b")
+            };
+            assert!(backwards.validate().is_err());
+            assert!(
+                serde_json::from_value::<SelectionPlace>(serde_json::json!({"item":"b","x":1}))
+                    .is_err()
+            );
+        }
 
-    #[test]
-    fn anchor_round_trips_through_json_and_postcard() {
-        let anchor = anchor();
-        let json = serde_json::to_value(&anchor).unwrap();
-        assert_eq!(json["place"]["start"], 4);
-        assert_eq!(json["interaction"]["kind"], "objects");
-        assert_eq!(
-            serde_json::from_value::<SelectionAnchor>(json).unwrap(),
-            anchor
-        );
-        let bytes = postcard::to_allocvec(&anchor).unwrap();
-        assert_eq!(
-            postcard::from_bytes::<SelectionAnchor>(&bytes).unwrap(),
-            anchor
-        );
-    }
+        phase anchor_round_trips_through_json_and_postcard;
+        {
+            let anchor = anchor();
+            let json = serde_json::to_value(&anchor).unwrap();
+            assert_eq!(json["place"]["start"], 4);
+            assert_eq!(json["interaction"]["kind"], "objects");
+            assert_eq!(
+                serde_json::from_value::<SelectionAnchor>(json).unwrap(),
+                anchor
+            );
+            let bytes = postcard::to_allocvec(&anchor).unwrap();
+            assert_eq!(
+                postcard::from_bytes::<SelectionAnchor>(&bytes).unwrap(),
+                anchor
+            );
+        }
 
-    #[test]
-    fn absent_parts_are_omitted_and_older_readers_default_them() {
-        let only_text = SelectionAnchor::of_text("  hello  ");
-        assert_eq!(
-            serde_json::to_value(&only_text).unwrap(),
-            serde_json::json!({"excerpt": "hello"})
-        );
-        assert_eq!(
-            serde_json::from_value::<SelectionAnchor>(serde_json::json!({})).unwrap(),
-            SelectionAnchor::default()
-        );
-        assert!(SelectionAnchor::of_text("   ").non_empty().is_none());
-    }
+        phase absent_parts_are_omitted_and_older_readers_default_them;
+        {
+            let only_text = SelectionAnchor::of_text("  hello  ");
+            assert_eq!(
+                serde_json::to_value(&only_text).unwrap(),
+                serde_json::json!({"excerpt": "hello"})
+            );
+            assert_eq!(
+                serde_json::from_value::<SelectionAnchor>(serde_json::json!({})).unwrap(),
+                SelectionAnchor::default()
+            );
+            assert!(SelectionAnchor::of_text("   ").non_empty().is_none());
+        }
 
-    #[test]
-    fn excerpts_are_bounded_and_cut_visibly() {
-        let long = "word ".repeat(400);
-        let excerpt = excerpt_of(&long).unwrap();
-        assert_eq!(excerpt.chars().count(), MAX_EXCERPT_CHARS + 1);
-        assert!(excerpt.ends_with('…'));
-        assert!(SelectionAnchor::of_text(&long).validate().is_ok());
-        let wide = "界".repeat(MAX_EXCERPT_CHARS * 2);
-        let excerpt = excerpt_of(&wide).unwrap();
-        assert!(excerpt.len() <= MAX_EXCERPT_BYTES);
-        assert!(excerpt.ends_with('…'));
-        assert_eq!(excerpt_of("a\u{7}b\nc").as_deref(), Some("ab\nc"));
-        let forged = SelectionAnchor {
-            excerpt: Some("x".repeat(MAX_EXCERPT_BYTES + 1)),
-            ..SelectionAnchor::default()
-        };
-        assert!(forged.validate().is_err());
+        phase excerpts_are_bounded_and_cut_visibly;
+        {
+            let long = "word ".repeat(400);
+            let excerpt = excerpt_of(&long).unwrap();
+            assert_eq!(excerpt.chars().count(), MAX_EXCERPT_CHARS + 1);
+            assert!(excerpt.ends_with('…'));
+            assert!(SelectionAnchor::of_text(&long).validate().is_ok());
+            let wide = "界".repeat(MAX_EXCERPT_CHARS * 2);
+            let excerpt = excerpt_of(&wide).unwrap();
+            assert!(excerpt.len() <= MAX_EXCERPT_BYTES);
+            assert!(excerpt.ends_with('…'));
+            assert_eq!(excerpt_of("a\u{7}b\nc").as_deref(), Some("ab\nc"));
+            let forged = SelectionAnchor {
+                excerpt: Some("x".repeat(MAX_EXCERPT_BYTES + 1)),
+                ..SelectionAnchor::default()
+            };
+            assert!(forged.validate().is_err());
+        }
     }
 }

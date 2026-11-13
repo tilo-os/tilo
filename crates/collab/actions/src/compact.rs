@@ -445,25 +445,6 @@ fn quote(out: &mut Vec<u8>, text: &str) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn appearance_keys_are_known_words() {
-        for word in [
-            "appearance",
-            "name",
-            "avatar",
-            "persona",
-            "service",
-            "account",
-        ] {
-            // A word reference: `k` and the word's index, never the text.
-            let encoded = encode(&serde_json::json!(word));
-            assert!(
-                encoded.starts_with('k') && encoded.len() <= 3,
-                "{word}: {encoded:?}"
-            );
-        }
-    }
-
     fn round_trip(value: &Value) -> String {
         let text = encode(value);
         let json = decode(&text).unwrap();
@@ -475,53 +456,76 @@ mod tests {
         text
     }
 
-    #[test]
-    fn every_kind_of_value_reads_back_as_written() {
-        let value = serde_json::json!({
-            "did": "edit",
-            "n": [null, true, false, 0, 63, 64, 4095, u64::MAX, -1, i64::MIN, 1.5, -0.25, 1e300],
-            "s": ["", "plain", "größe ✓", "with \"quotes\" and \n", "\u{1}\t\\ \u{1f}", "a".repeat(5000)],
-            "id": "00000000-0000-4000-8000-000000000001",
-            "upper": "00000000-0000-4000-8000-00000000000A",
-            "g": "3637f0e9bb384e6baa8092a0224f4267",
-            "nested": {"z": 1, "a": {"b": [[], {}]}},
-            "again": ["plain", "00000000-0000-4000-8000-000000000001"],
-        });
-        let text = round_trip(&value);
-        assert!(
-            text.bytes().filter(|b| *b >= 0x80).count() < 20,
-            "only string content leaves ASCII"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn compact_values_read_back_as_written;
 
-    #[test]
-    fn repeated_strings_and_known_words_take_two_bytes() {
-        let once = encode(&serde_json::json!(["sheets.workbook"]));
-        let twice = encode(&serde_json::json!(["sheets.workbook", "sheets.workbook"]));
-        assert_eq!(twice.len(), once.len() + 2);
-        assert_eq!(encode(&serde_json::json!("field-edit")).len(), 2);
-        assert_eq!(
-            encode(&serde_json::json!("3637f0e9bb384e6baa8092a0224f4267")).len(),
-            23
-        );
-    }
-
-    #[test]
-    fn what_is_not_one_whole_value_is_refused() {
-        let text = encode(&serde_json::json!({"a": [1, "two"]}));
-        for end in 0..text.len() {
-            if text.is_char_boundary(end) {
-                assert_eq!(decode(&text[..end]), None, "{end}");
+        phase appearance_keys_are_known_words;
+        {
+            for word in [
+                "appearance",
+                "name",
+                "avatar",
+                "persona",
+                "service",
+                "account",
+            ] {
+                // A word reference: `k` and the word's index, never the text.
+                let encoded = encode(&serde_json::json!(word));
+                assert!(
+                    encoded.starts_with('k') && encoded.len() <= 3,
+                    "{word}: {encoded:?}"
+                );
             }
         }
-        assert_eq!(decode(&format!("{text}n")), None);
-        assert_eq!(decode("k\x68\x0f"), None, "no such word");
-        assert_eq!(decode("r\x00"), None, "no earlier string");
-        assert_eq!(decode("Z"), None);
-        assert_eq!(decode(&"[\x01".repeat(100)), None, "nested too deep");
-        assert_eq!(
-            decode("s\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x03"),
-            None
-        );
+
+        phase every_kind_of_value_reads_back_as_written;
+        {
+            let value = serde_json::json!({
+                "did": "edit",
+                "n": [null, true, false, 0, 63, 64, 4095, u64::MAX, -1, i64::MIN, 1.5, -0.25, 1e300],
+                "s": ["", "plain", "größe ✓", "with \"quotes\" and \n", "\u{1}\t\\ \u{1f}", "a".repeat(5000)],
+                "id": "00000000-0000-4000-8000-000000000001",
+                "upper": "00000000-0000-4000-8000-00000000000A",
+                "g": "3637f0e9bb384e6baa8092a0224f4267",
+                "nested": {"z": 1, "a": {"b": [[], {}]}},
+                "again": ["plain", "00000000-0000-4000-8000-000000000001"],
+            });
+            let text = round_trip(&value);
+            assert!(
+                text.bytes().filter(|b| *b >= 0x80).count() < 20,
+                "only string content leaves ASCII"
+            );
+        }
+
+        phase repeated_strings_and_known_words_take_two_bytes;
+        {
+            let once = encode(&serde_json::json!(["sheets.workbook"]));
+            let twice = encode(&serde_json::json!(["sheets.workbook", "sheets.workbook"]));
+            assert_eq!(twice.len(), once.len() + 2);
+            assert_eq!(encode(&serde_json::json!("field-edit")).len(), 2);
+            assert_eq!(
+                encode(&serde_json::json!("3637f0e9bb384e6baa8092a0224f4267")).len(),
+                23
+            );
+        }
+
+        phase what_is_not_one_whole_value_is_refused;
+        {
+            let text = encode(&serde_json::json!({"a": [1, "two"]}));
+            for end in 0..text.len() {
+                if text.is_char_boundary(end) {
+                    assert_eq!(decode(&text[..end]), None, "{end}");
+                }
+            }
+            assert_eq!(decode(&format!("{text}n")), None);
+            assert_eq!(decode("k\x68\x0f"), None, "no such word");
+            assert_eq!(decode("r\x00"), None, "no earlier string");
+            assert_eq!(decode("Z"), None);
+            assert_eq!(decode(&"[\x01".repeat(100)), None, "nested too deep");
+            assert_eq!(
+                decode("s\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x03"),
+                None
+            );
+        }
     }
 }

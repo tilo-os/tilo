@@ -218,54 +218,58 @@ pub struct RunRef {
 mod tests {
     use super::*;
 
-    #[test]
-    fn each_client_connects_with_one_line_naming_the_endpoint() {
-        let endpoint = "https://mcp.example";
-        assert_eq!(
-            Client::ClaudeCode.command(endpoint),
-            "claude mcp add --transport http tilo https://mcp.example"
-        );
-        for client in Client::ALL {
-            let line = client.command(endpoint);
-            assert!(line.contains(endpoint), "{line}");
-            assert!(!line.contains('\n'), "{line}");
+    tilo_test_env::scenario! {
+        fn an_agent_door_names_its_endpoint_and_grants;
+
+        phase each_client_connects_with_one_line_naming_the_endpoint;
+        {
+            let endpoint = "https://mcp.example";
+            assert_eq!(
+                Client::ClaudeCode.command(endpoint),
+                "claude mcp add --transport http tilo https://mcp.example"
+            );
+            for client in Client::ALL {
+                let line = client.command(endpoint);
+                assert!(line.contains(endpoint), "{line}");
+                assert!(!line.contains('\n'), "{line}");
+            }
+            let other: serde_json::Value =
+                serde_json::from_str(&Client::Other.command(endpoint)).expect("the config is JSON");
+            assert_eq!(other["mcpServers"]["tilo"]["url"], endpoint);
         }
-        let other: serde_json::Value =
-            serde_json::from_str(&Client::Other.command(endpoint)).expect("the config is JSON");
-        assert_eq!(other["mcpServers"]["tilo"]["url"], endpoint);
-    }
 
-    #[test]
-    fn a_run_in_history_finds_its_grant_by_the_name_history_gives_it() {
-        let door = Door {
-            grants: vec![Grant {
-                id: "g1".into(),
-                runs: vec![Run {
-                    name: "Claude Code #2".into(),
-                    started_ms: 1,
+        phase a_run_in_history_finds_its_grant_by_the_name_history_gives_it;
+        {
+            let door = Door {
+                grants: vec![Grant {
+                    id: "g1".into(),
+                    runs: vec![Run {
+                        name: "Claude Code #2".into(),
+                        started_ms: 1,
+                    }],
+                    ..Grant::default()
                 }],
-                ..Grant::default()
-            }],
-            ..Door::default()
-        };
-        assert_eq!(
-            door.run("Claude Code #2")
-                .map(|(grant, _)| grant.id.as_str()),
-            Some("g1")
-        );
-        assert!(
-            door.run("Claude Code #1").is_none(),
-            "a run that ended is no longer open"
-        );
-    }
+                ..Door::default()
+            };
+            assert_eq!(
+                door.run("Claude Code #2")
+                    .map(|(grant, _)| grant.id.as_str()),
+                Some("g1")
+            );
+            assert!(
+                door.run("Claude Code #1").is_none(),
+                "a run that ended is no longer open"
+            );
+        }
 
-    #[test]
-    fn a_grant_reference_reads_back_and_refuses_what_it_does_not_name() {
-        let InvokeArgument::Json(map) = argument(&GrantRef { grant: "g1".into() }) else {
-            panic!("a reference is an object");
-        };
-        let read: GrantRef = serde_json::from_value(serde_json::Value::Object(map)).unwrap();
-        assert_eq!(read.grant, "g1");
-        assert!(serde_json::from_str::<GrantRef>(r#"{"grant":"g1","all":true}"#).is_err());
+        phase a_grant_reference_reads_back_and_refuses_what_it_does_not_name;
+        {
+            let InvokeArgument::Json(map) = argument(&GrantRef { grant: "g1".into() }) else {
+                panic!("a reference is an object");
+            };
+            let read: GrantRef = serde_json::from_value(serde_json::Value::Object(map)).unwrap();
+            assert_eq!(read.grant, "g1");
+            assert!(serde_json::from_str::<GrantRef>(r#"{"grant":"g1","all":true}"#).is_err());
+        }
     }
 }

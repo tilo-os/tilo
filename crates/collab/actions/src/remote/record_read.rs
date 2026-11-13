@@ -490,95 +490,99 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_record_reads_as_plain_data_with_its_text_counters_and_bytes() {
-        let mut held = HeldCopies::default();
-        held.0.insert("note".into(), message("hello"));
-        let caller = Caller::local_person("me");
-        let now = tilo_clock::now();
-        let read = read_records(
-            &held,
-            &caller,
-            &[ask("note", false), ask("gone", false)],
-            None,
-            now,
-        )
-        .unwrap();
-        assert_eq!(
-            values(&read),
-            [
-                (
-                    "note".to_owned(),
+    tilo_test_env::scenario! {
+        fn a_record_reads_as_plain_data;
+
+        phase a_record_reads_as_plain_data_with_its_text_counters_and_bytes;
+        {
+            let mut held = HeldCopies::default();
+            held.0.insert("note".into(), message("hello"));
+            let caller = Caller::local_person("me");
+            let now = tilo_clock::now();
+            let read = read_records(
+                &held,
+                &caller,
+                &[ask("note", false), ask("gone", false)],
+                None,
+                now,
+            )
+            .unwrap();
+            assert_eq!(
+                values(&read),
+                [
+                    (
+                        "note".to_owned(),
+                        serde_json::json!({"messages": [
+                            {"text": "hello", "likes": 2, "avatar": {"bytes": 3}}
+                        ]})
+                    ),
+                    ("gone".to_owned(), serde_json::Value::Null),
+                ]
+            );
+        }
+
+        phase a_data_enum_reads_with_its_fields_by_name;
+        {
+            let mut doc = AutoCommit::new();
+            let attached = doc.put_object(ROOT, "attached", ObjType::Map).unwrap();
+            doc.put(&attached, "$variant", "file").unwrap();
+            doc.put(&attached, "$field/file/blob", "ab").unwrap();
+            doc.put(&attached, "$field/file/a%2Fb", 3).unwrap();
+            assert_eq!(
+                RecordCopy::Document(doc.save()).readable().unwrap(),
+                serde_json::json!({"attached": {"$variant": "file", "blob": "ab", "a/b": 3}})
+            );
+        }
+
+        phase a_chain_reads_joined_up_to_its_last_part_and_a_new_part_changes_its_revision;
+        {
+            let mut held = HeldCopies::default();
+            let part = |index| crate::record_sync::record_part("chain", index);
+            held.0.insert(part(0), message("first"));
+            held.0.insert(part(1), message("second"));
+            let caller = Caller::local_person("me");
+            let now = tilo_clock::now();
+            let read = read_records(&held, &caller, &[ask("chain", true)], None, now).unwrap();
+            let texts: Vec<_> = values(&read)
+                .into_iter()
+                .map(|(record, value)| (record, value["messages"][0]["text"].clone()))
+                .collect();
+            assert_eq!(
+                texts,
+                [
+                    (part(0), serde_json::json!("first")),
+                    (part(1), serde_json::json!("second")),
+                ]
+            );
+            let same = read_records(&held, &caller, &[ask("chain", true)], None, now).unwrap();
+            assert_eq!(same.revision, read.revision);
+            held.0.insert(part(2), message("third"));
+            let grown = read_records(
+                &held,
+                &caller,
+                &[ask("chain", true)],
+                Some(&read.revision),
+                now,
+            )
+            .unwrap();
+            assert_ne!(grown.revision, read.revision);
+            assert_eq!(grown.records.len(), 3);
+            // The head is the newest part alone, its revision moved by a new part.
+            let newest_part = crate::record_sync::chain_head("chain");
+            let newest = read_records(&held, &caller, &[ask(&newest_part, false)], None, now).unwrap();
+            assert_eq!(
+                values(&newest),
+                [(
+                    part(2),
                     serde_json::json!({"messages": [
-                        {"text": "hello", "likes": 2, "avatar": {"bytes": 3}}
+                        {"text": "third", "likes": 2, "avatar": {"bytes": 3}}
                     ]})
-                ),
-                ("gone".to_owned(), serde_json::Value::Null),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_data_enum_reads_with_its_fields_by_name() {
-        let mut doc = AutoCommit::new();
-        let attached = doc.put_object(ROOT, "attached", ObjType::Map).unwrap();
-        doc.put(&attached, "$variant", "file").unwrap();
-        doc.put(&attached, "$field/file/blob", "ab").unwrap();
-        doc.put(&attached, "$field/file/a%2Fb", 3).unwrap();
-        assert_eq!(
-            RecordCopy::Document(doc.save()).readable().unwrap(),
-            serde_json::json!({"attached": {"$variant": "file", "blob": "ab", "a/b": 3}})
-        );
-    }
-
-    #[test]
-    fn a_chain_reads_joined_up_to_its_last_part_and_a_new_part_changes_its_revision() {
-        let mut held = HeldCopies::default();
-        let part = |index| crate::record_sync::record_part("chain", index);
-        held.0.insert(part(0), message("first"));
-        held.0.insert(part(1), message("second"));
-        let caller = Caller::local_person("me");
-        let now = tilo_clock::now();
-        let read = read_records(&held, &caller, &[ask("chain", true)], None, now).unwrap();
-        let texts: Vec<_> = values(&read)
-            .into_iter()
-            .map(|(record, value)| (record, value["messages"][0]["text"].clone()))
-            .collect();
-        assert_eq!(
-            texts,
-            [
-                (part(0), serde_json::json!("first")),
-                (part(1), serde_json::json!("second")),
-            ]
-        );
-        let same = read_records(&held, &caller, &[ask("chain", true)], None, now).unwrap();
-        assert_eq!(same.revision, read.revision);
-        held.0.insert(part(2), message("third"));
-        let grown = read_records(
-            &held,
-            &caller,
-            &[ask("chain", true)],
-            Some(&read.revision),
-            now,
-        )
-        .unwrap();
-        assert_ne!(grown.revision, read.revision);
-        assert_eq!(grown.records.len(), 3);
-        // The head is the newest part alone, its revision moved by a new part.
-        let newest_part = crate::record_sync::chain_head("chain");
-        let newest = read_records(&held, &caller, &[ask(&newest_part, false)], None, now).unwrap();
-        assert_eq!(
-            values(&newest),
-            [(
-                part(2),
-                serde_json::json!({"messages": [
-                    {"text": "third", "likes": 2, "avatar": {"bytes": 3}}
-                ]})
-            )]
-        );
-        held.0.insert(part(3), message("fourth"));
-        let moved = read_records(&held, &caller, &[ask(&newest_part, false)], None, now).unwrap();
-        assert_ne!(moved.revision, newest.revision);
-        assert_eq!(moved.records[0].0, part(3));
+                )]
+            );
+            held.0.insert(part(3), message("fourth"));
+            let moved = read_records(&held, &caller, &[ask(&newest_part, false)], None, now).unwrap();
+            assert_ne!(moved.revision, newest.revision);
+            assert_eq!(moved.records[0].0, part(3));
+        }
     }
 }

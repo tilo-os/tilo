@@ -317,52 +317,56 @@ pub fn label_of(name: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_type_reads_from_the_vocabulary_or_older_rust_text() {
-        #[derive(Deserialize)]
-        struct Field {
-            #[serde(deserialize_with = "field_type_or_text")]
-            ty: FieldType,
+    tilo_test_env::scenario! {
+        fn a_field_type_reads_and_declares_its_schema;
+
+        phase a_type_reads_from_the_vocabulary_or_older_rust_text;
+        {
+            #[derive(Deserialize)]
+            struct Field {
+                #[serde(deserialize_with = "field_type_or_text")]
+                ty: FieldType,
+            }
+            let read = |json: &str| {
+                serde_json::from_str::<Field>(json).map_or(FieldType::Any, |field| field.ty)
+            };
+            assert_eq!(read(r#"{"ty": "text"}"#), FieldType::Text);
+            assert_eq!(
+                read(r#"{"ty": {"option": {"named": "Channel"}}}"#),
+                FieldType::Option(Box::new(FieldType::Named("Channel".into())))
+            );
+            assert_eq!(read(r#"{"ty": "String"}"#), FieldType::Any);
+            assert_eq!(
+                read(r#"{"ty": "ui::tilo_resource::Reactions"}"#),
+                FieldType::Reactions
+            );
+            assert!(read(r#"{"ty": "Outbox<Upload>"}"#).is_outbox());
         }
-        let read = |json: &str| {
-            serde_json::from_str::<Field>(json).map_or(FieldType::Any, |field| field.ty)
-        };
-        assert_eq!(read(r#"{"ty": "text"}"#), FieldType::Text);
-        assert_eq!(
-            read(r#"{"ty": {"option": {"named": "Channel"}}}"#),
-            FieldType::Option(Box::new(FieldType::Named("Channel".into())))
-        );
-        assert_eq!(read(r#"{"ty": "String"}"#), FieldType::Any);
-        assert_eq!(
-            read(r#"{"ty": "ui::tilo_resource::Reactions"}"#),
-            FieldType::Reactions
-        );
-        assert!(read(r#"{"ty": "Outbox<Upload>"}"#).is_outbox());
-    }
 
-    #[test]
-    fn a_type_used_twice_is_declared_once_and_names_stay_unique() {
-        let mut types = TypeSet::new();
-        let record = |name: &str| NamedType {
-            name: name.into(),
-            ..NamedType::default()
-        };
-        let first = types.named("a::Step", "Step", |_| record("Step"));
-        let again = types.named("a::Step", "Step", |_| unreachable!());
-        let other = types.named("b::Step", "Step", |_| record("Step"));
-        assert_eq!(first, again);
-        assert_eq!(other, FieldType::Named("Step2".into()));
-        let names: Vec<String> = types.into_types().into_iter().map(|ty| ty.name).collect();
-        assert_eq!(names, ["Step", "Step2"]);
-    }
+        phase a_type_used_twice_is_declared_once_and_names_stay_unique;
+        {
+            let mut types = TypeSet::new();
+            let record = |name: &str| NamedType {
+                name: name.into(),
+                ..NamedType::default()
+            };
+            let first = types.named("a::Step", "Step", |_| record("Step"));
+            let again = types.named("a::Step", "Step", |_| unreachable!());
+            let other = types.named("b::Step", "Step", |_| record("Step"));
+            assert_eq!(first, again);
+            assert_eq!(other, FieldType::Named("Step2".into()));
+            let names: Vec<String> = types.into_types().into_iter().map(|ty| ty.name).collect();
+            assert_eq!(names, ["Step", "Step2"]);
+        }
 
-    #[test]
-    fn a_schema_tells_what_it_can() {
-        let ty = FieldType::from_schema(&serde_json::json!({"type": ["string", "null"]}));
-        assert_eq!(ty, FieldType::Option(Box::new(FieldType::Text)));
-        let ty = FieldType::from_schema(
-            &serde_json::json!({"type": "array", "items": {"type": "integer"}}),
-        );
-        assert_eq!(ty, FieldType::List(Box::new(FieldType::Int)));
+        phase a_schema_tells_what_it_can;
+        {
+            let ty = FieldType::from_schema(&serde_json::json!({"type": ["string", "null"]}));
+            assert_eq!(ty, FieldType::Option(Box::new(FieldType::Text)));
+            let ty = FieldType::from_schema(
+                &serde_json::json!({"type": "array", "items": {"type": "integer"}}),
+            );
+            assert_eq!(ty, FieldType::List(Box::new(FieldType::Int)));
+        }
     }
 }

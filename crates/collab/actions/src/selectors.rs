@@ -80,29 +80,33 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_selector_reads_a_published_resource_by_its_kind_and_label() {
-        let invoice = row("files.file", "Invoice 04.pdf", Some("PDF"));
-        let notes = row("files.file", "Notes.txt", Some("Text"));
-        let selector = Selector::parse(r#"files.file { label in ["Invoice 04.pdf"] }"#).unwrap();
-        assert!(selector.matches(&subject(&invoice)));
-        assert!(!selector.matches(&subject(&notes)));
+    tilo_test_env::scenario! {
+        fn a_selector_reads_published_resources_of_its_kind;
 
-        let pdfs = Selector::kinds(["files.file".to_owned()])
-            .where_(Predicate::new("badge", ["PDF".to_owned()]));
-        assert!(pdfs.matches(&subject(&invoice)));
-        assert!(!pdfs.matches(&subject(&notes)));
-        assert!(
-            !Selector::kinds(["files.file".to_owned()])
-                .where_(Predicate::new("author", ["Ada".to_owned()]))
-                .matches(&subject(&invoice)),
-            "a field the resource does not publish is never met"
-        );
-    }
+        phase a_selector_reads_a_published_resource_by_its_kind_and_label;
+        {
+            let invoice = row("files.file", "Invoice 04.pdf", Some("PDF"));
+            let notes = row("files.file", "Notes.txt", Some("Text"));
+            let selector = Selector::parse(r#"files.file { label in ["Invoice 04.pdf"] }"#).unwrap();
+            assert!(selector.matches(&subject(&invoice)));
+            assert!(!selector.matches(&subject(&notes)));
 
-    #[test]
-    fn a_selector_of_another_kind_picks_out_nothing_here() {
-        let invoices = row("files.file", "Invoice 04.pdf", None);
-        assert!(!Selector::kinds(["ebook.book".to_owned()]).matches(&subject(&invoices)));
+            let pdfs = Selector::kinds(["files.file".to_owned()])
+                .where_(Predicate::new("badge", ["PDF".to_owned()]));
+            assert!(pdfs.matches(&subject(&invoice)));
+            assert!(!pdfs.matches(&subject(&notes)));
+            assert!(
+                !Selector::kinds(["files.file".to_owned()])
+                    .where_(Predicate::new("author", ["Ada".to_owned()]))
+                    .matches(&subject(&invoice)),
+                "a field the resource does not publish is never met"
+            );
+        }
+
+        phase a_selector_of_another_kind_picks_out_nothing_here;
+        {
+            let invoices = row("files.file", "Invoice 04.pdf", None);
+            assert!(!Selector::kinds(["ebook.book".to_owned()]).matches(&subject(&invoices)));
+        }
     }
 }

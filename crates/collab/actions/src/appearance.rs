@@ -250,226 +250,230 @@ mod tests {
         bytes
     }
 
-    #[test]
-    fn a_name_is_trimmed_and_nfc_normalized_once_and_then_must_stay_so() {
-        // "e" + combining acute becomes the single precomposed "é".
-        let made = Appearance::new("  Rene\u{301}  ", None, None).unwrap();
-        assert_eq!(made.name, "Ren\u{e9}");
-        let decomposed = Appearance {
-            name: "Rene\u{301}".into(),
-            avatar: None,
-            persona: None,
-        };
-        assert_eq!(decomposed.validate(), Err(AppearanceError::NotNormalized));
-        let padded = Appearance {
-            name: " alice".into(),
-            avatar: None,
-            persona: None,
-        };
-        assert_eq!(padded.validate(), Err(AppearanceError::NotNormalized));
-    }
+    tilo_test_env::scenario! {
+        fn an_appearance_is_checked_before_it_is_shown;
 
-    #[test]
-    fn a_name_is_one_to_eighty_characters() {
-        assert_eq!(
-            Appearance::new("   ", None, None),
-            Err(AppearanceError::EmptyName)
-        );
-        assert!(Appearance::new(&"é".repeat(80), None, None).is_ok());
-        assert_eq!(
-            Appearance::new(&"é".repeat(81), None, None),
-            Err(AppearanceError::NameTooLong)
-        );
-    }
+        phase a_name_is_trimmed_and_nfc_normalized_once_and_then_must_stay_so;
+        {
+            // "e" + combining acute becomes the single precomposed "é".
+            let made = Appearance::new("  Rene\u{301}  ", None, None).unwrap();
+            assert_eq!(made.name, "Ren\u{e9}");
+            let decomposed = Appearance {
+                name: "Rene\u{301}".into(),
+                avatar: None,
+                persona: None,
+            };
+            assert_eq!(decomposed.validate(), Err(AppearanceError::NotNormalized));
+            let padded = Appearance {
+                name: " alice".into(),
+                avatar: None,
+                persona: None,
+            };
+            assert_eq!(padded.validate(), Err(AppearanceError::NotNormalized));
+        }
 
-    #[test]
-    fn hidden_and_direction_changing_characters_refuse_the_name_rather_than_being_cleaned() {
-        for (name, hidden) in [
-            ("a\u{200B}lice", 0x200B),
-            ("alice\u{202E}", 0x202E),
-            ("\u{2066}alice", 0x2066),
-            ("ali\u{200D}ce", 0x200D),
-            ("ali\u{FEFF}ce", 0xFEFF),
-            ("ali\u{061C}ce", 0x061C),
-            ("ali\u{180E}ce", 0x180E),
-            ("ali\nce", 0x0A),
-        ] {
+        phase a_name_is_one_to_eighty_characters;
+        {
             assert_eq!(
-                Appearance::new(name, None, None),
-                Err(AppearanceError::HiddenCharacter(hidden)),
-                "{name:?}"
+                Appearance::new("   ", None, None),
+                Err(AppearanceError::EmptyName)
+            );
+            assert!(Appearance::new(&"é".repeat(80), None, None).is_ok());
+            assert_eq!(
+                Appearance::new(&"é".repeat(81), None, None),
+                Err(AppearanceError::NameTooLong)
             );
         }
-    }
 
-    #[test]
-    fn an_avatar_names_a_content_hash_and_a_persona_a_service_and_account() {
-        let hash = blake3::hash(b"x").to_hex().to_string();
-        assert!(Appearance::new("alice", Some(hash), None).is_ok());
-        assert_eq!(
-            Appearance::new("alice", Some("../etc/passwd".into()), None),
-            Err(AppearanceError::AvatarNotHash)
-        );
-        let discord = Persona {
-            service: "discord".into(),
-            account: "80351110224678912".into(),
-            linked: None,
-        };
-        assert!(Appearance::new("alice", None, Some(discord)).is_ok());
-        let shouting = Persona {
-            service: "Discord".into(),
-            account: "1".into(),
-            linked: None,
-        };
-        assert_eq!(
-            Appearance::new("alice", None, Some(shouting)),
-            Err(AppearanceError::BadService)
-        );
-        let empty = Persona {
-            service: "discord".into(),
-            account: String::new(),
-            linked: None,
-        };
-        assert_eq!(
-            Appearance::new("alice", None, Some(empty)),
-            Err(AppearanceError::BadAccount)
-        );
-        let linked = |person: &str| Persona {
-            service: "discord".into(),
-            account: "1".into(),
-            linked: Some(person.into()),
-        };
-        assert!(Appearance::new("alice", None, Some(linked(&"ab".repeat(32)))).is_ok());
-        assert_eq!(
-            Appearance::new("alice", None, Some(linked("alice"))),
-            Err(AppearanceError::BadLinked)
-        );
-    }
+        phase hidden_and_direction_changing_characters_refuse_the_name_rather_than_being_cleaned;
+        {
+            for (name, hidden) in [
+                ("a\u{200B}lice", 0x200B),
+                ("alice\u{202E}", 0x202E),
+                ("\u{2066}alice", 0x2066),
+                ("ali\u{200D}ce", 0x200D),
+                ("ali\u{FEFF}ce", 0xFEFF),
+                ("ali\u{061C}ce", 0x061C),
+                ("ali\u{180E}ce", 0x180E),
+                ("ali\nce", 0x0A),
+            ] {
+                assert_eq!(
+                    Appearance::new(name, None, None),
+                    Err(AppearanceError::HiddenCharacter(hidden)),
+                    "{name:?}"
+                );
+            }
+        }
 
-    #[test]
-    fn avatar_bytes_are_a_small_raster_image() {
-        assert_eq!(check_avatar_bytes(&png()), Ok(()));
-        assert_eq!(
-            check_avatar_bytes(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"),
-            Err(AppearanceError::AvatarNotImage)
-        );
-        assert_eq!(
-            check_avatar_bytes(b"hello"),
-            Err(AppearanceError::AvatarNotImage)
-        );
-        let mut big = png();
-        big.resize(MAX_AVATAR_BYTES + 1, 0);
-        assert_eq!(
-            check_avatar_bytes(&big),
-            Err(AppearanceError::AvatarTooLarge)
-        );
-    }
-
-    #[test]
-    fn an_appearance_round_trips_and_leaves_out_what_it_lacks() {
-        let appearance = Appearance::new("alice", None, None).unwrap();
-        let json = serde_json::to_string(&appearance).unwrap();
-        assert_eq!(json, r#"{"name":"alice"}"#);
-        assert_eq!(
-            serde_json::from_str::<Appearance>(&json).unwrap(),
-            appearance
-        );
-    }
-
-    #[test]
-    fn a_door_that_cannot_check_a_bot_refuses_an_appearance() {
-        use crate::remote::{ActionHostError, InvokeArgument, InvokeRequest, RemoteActionTarget};
-        let mut request = InvokeRequest {
-            invocation: crate::InvocationId(uuid::Uuid::from_u128(1)),
-            target: RemoteActionTarget {
-                provider: "p".into(),
-                address: crate::ActionAddress::new("r", "a"),
-            },
-            argument: InvokeArgument::None,
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-        };
-        assert_eq!(refuse_here(&request), Ok(()));
-        request.appearance = Some(Appearance::new("alice", None, None).unwrap());
-        assert!(matches!(
-            refuse_here(&request),
-            Err(ActionHostError::Refused { .. })
-        ));
-    }
-
-    #[test]
-    fn only_a_bot_whose_installation_allows_personas_is_admitted() {
-        use crate::remote::{ActionHostError, Caller};
-        let alice = Appearance::new("alice", None, None).unwrap();
-        let bot = Caller::bot("7f1c", [1; 32], [2; 32]);
-        assert_eq!(
-            admit(
-                &bot,
-                &alice,
-                |installation| installation == "7f1c",
-                |_| None
-            ),
-            Ok(alice.clone())
-        );
-        assert!(matches!(
-            admit(&bot, &alice, |_| false, |_| None),
-            Err(ActionHostError::Refused { .. })
-        ));
-        let person = Caller::local_person("ada");
-        assert!(matches!(
-            admit(&person, &alice, |_| true, |_| None),
-            Err(ActionHostError::Refused { .. })
-        ));
-        let hidden = Appearance {
-            name: "a\u{200B}lice".into(),
-            avatar: None,
-            persona: None,
-        };
-        assert!(matches!(
-            admit(&bot, &hidden, |_| true, |_| None),
-            Err(ActionHostError::InvalidRequest { .. })
-        ));
-    }
-
-    #[test]
-    fn an_avatar_must_be_in_the_store_match_its_hash_and_be_an_image() {
-        use crate::remote::{ActionHostError, Caller};
-        let bot = Caller::bot("7f1c", [1; 32], [2; 32]);
-        let image = png();
-        let hash = blake3::hash(&image).to_hex().to_string();
-        let shown = Appearance::new("alice", Some(hash.clone()), None).unwrap();
-        let stored = |wanted: &str| (wanted == hash).then(|| image.clone());
-        assert_eq!(admit(&bot, &shown, |_| true, stored), Ok(shown.clone()));
-        let refused = |result: Result<Appearance, ActionHostError>, expected: AppearanceError| {
+        phase an_avatar_names_a_content_hash_and_a_persona_a_service_and_account;
+        {
+            let hash = blake3::hash(b"x").to_hex().to_string();
+            assert!(Appearance::new("alice", Some(hash), None).is_ok());
             assert_eq!(
-                result,
-                Err(ActionHostError::InvalidRequest {
-                    reason: expected.to_string()
-                })
+                Appearance::new("alice", Some("../etc/passwd".into()), None),
+                Err(AppearanceError::AvatarNotHash)
             );
-        };
-        refused(
-            admit(&bot, &shown, |_| true, |_| None),
-            AppearanceError::AvatarMissing,
-        );
-        refused(
-            admit(&bot, &shown, |_| true, |_| Some(b"other".to_vec())),
-            AppearanceError::AvatarMismatch,
-        );
-        let text = b"not an image".to_vec();
-        let named = Appearance::new(
-            "alice",
-            Some(blake3::hash(&text).to_hex().to_string()),
-            None,
-        )
-        .unwrap();
-        refused(
-            admit(&bot, &named, |_| true, |_| Some(text.clone())),
-            AppearanceError::AvatarNotImage,
-        );
+            let discord = Persona {
+                service: "discord".into(),
+                account: "80351110224678912".into(),
+                linked: None,
+            };
+            assert!(Appearance::new("alice", None, Some(discord)).is_ok());
+            let shouting = Persona {
+                service: "Discord".into(),
+                account: "1".into(),
+                linked: None,
+            };
+            assert_eq!(
+                Appearance::new("alice", None, Some(shouting)),
+                Err(AppearanceError::BadService)
+            );
+            let empty = Persona {
+                service: "discord".into(),
+                account: String::new(),
+                linked: None,
+            };
+            assert_eq!(
+                Appearance::new("alice", None, Some(empty)),
+                Err(AppearanceError::BadAccount)
+            );
+            let linked = |person: &str| Persona {
+                service: "discord".into(),
+                account: "1".into(),
+                linked: Some(person.into()),
+            };
+            assert!(Appearance::new("alice", None, Some(linked(&"ab".repeat(32)))).is_ok());
+            assert_eq!(
+                Appearance::new("alice", None, Some(linked("alice"))),
+                Err(AppearanceError::BadLinked)
+            );
+        }
+
+        phase avatar_bytes_are_a_small_raster_image;
+        {
+            assert_eq!(check_avatar_bytes(&png()), Ok(()));
+            assert_eq!(
+                check_avatar_bytes(b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"),
+                Err(AppearanceError::AvatarNotImage)
+            );
+            assert_eq!(
+                check_avatar_bytes(b"hello"),
+                Err(AppearanceError::AvatarNotImage)
+            );
+            let mut big = png();
+            big.resize(MAX_AVATAR_BYTES + 1, 0);
+            assert_eq!(
+                check_avatar_bytes(&big),
+                Err(AppearanceError::AvatarTooLarge)
+            );
+        }
+
+        phase an_appearance_round_trips_and_leaves_out_what_it_lacks;
+        {
+            let appearance = Appearance::new("alice", None, None).unwrap();
+            let json = serde_json::to_string(&appearance).unwrap();
+            assert_eq!(json, r#"{"name":"alice"}"#);
+            assert_eq!(
+                serde_json::from_str::<Appearance>(&json).unwrap(),
+                appearance
+            );
+        }
+
+        phase a_door_that_cannot_check_a_bot_refuses_an_appearance;
+        {
+            use crate::remote::{ActionHostError, InvokeArgument, InvokeRequest, RemoteActionTarget};
+            let mut request = InvokeRequest {
+                invocation: crate::InvocationId(uuid::Uuid::from_u128(1)),
+                target: RemoteActionTarget {
+                    provider: "p".into(),
+                    address: crate::ActionAddress::new("r", "a"),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+            };
+            assert_eq!(refuse_here(&request), Ok(()));
+            request.appearance = Some(Appearance::new("alice", None, None).unwrap());
+            assert!(matches!(
+                refuse_here(&request),
+                Err(ActionHostError::Refused { .. })
+            ));
+        }
+
+        phase only_a_bot_whose_installation_allows_personas_is_admitted;
+        {
+            use crate::remote::{ActionHostError, Caller};
+            let alice = Appearance::new("alice", None, None).unwrap();
+            let bot = Caller::bot("7f1c", [1; 32], [2; 32]);
+            assert_eq!(
+                admit(
+                    &bot,
+                    &alice,
+                    |installation| installation == "7f1c",
+                    |_| None
+                ),
+                Ok(alice.clone())
+            );
+            assert!(matches!(
+                admit(&bot, &alice, |_| false, |_| None),
+                Err(ActionHostError::Refused { .. })
+            ));
+            let person = Caller::local_person("ada");
+            assert!(matches!(
+                admit(&person, &alice, |_| true, |_| None),
+                Err(ActionHostError::Refused { .. })
+            ));
+            let hidden = Appearance {
+                name: "a\u{200B}lice".into(),
+                avatar: None,
+                persona: None,
+            };
+            assert!(matches!(
+                admit(&bot, &hidden, |_| true, |_| None),
+                Err(ActionHostError::InvalidRequest { .. })
+            ));
+        }
+
+        phase an_avatar_must_be_in_the_store_match_its_hash_and_be_an_image;
+        {
+            use crate::remote::{ActionHostError, Caller};
+            let bot = Caller::bot("7f1c", [1; 32], [2; 32]);
+            let image = png();
+            let hash = blake3::hash(&image).to_hex().to_string();
+            let shown = Appearance::new("alice", Some(hash.clone()), None).unwrap();
+            let stored = |wanted: &str| (wanted == hash).then(|| image.clone());
+            assert_eq!(admit(&bot, &shown, |_| true, stored), Ok(shown.clone()));
+            let refused = |result: Result<Appearance, ActionHostError>, expected: AppearanceError| {
+                assert_eq!(
+                    result,
+                    Err(ActionHostError::InvalidRequest {
+                        reason: expected.to_string()
+                    })
+                );
+            };
+            refused(
+                admit(&bot, &shown, |_| true, |_| None),
+                AppearanceError::AvatarMissing,
+            );
+            refused(
+                admit(&bot, &shown, |_| true, |_| Some(b"other".to_vec())),
+                AppearanceError::AvatarMismatch,
+            );
+            let text = b"not an image".to_vec();
+            let named = Appearance::new(
+                "alice",
+                Some(blake3::hash(&text).to_hex().to_string()),
+                None,
+            )
+            .unwrap();
+            refused(
+                admit(&bot, &named, |_| true, |_| Some(text.clone())),
+                AppearanceError::AvatarNotImage,
+            );
+        }
     }
 }
