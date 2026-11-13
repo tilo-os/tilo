@@ -354,6 +354,17 @@ scenario "while you were away" -> Task {
     survey
 }
 
+/// A task two colleagues changed while the person looking was away: its page stands their
+/// changes, and the catch-up says the task once, with the two changes it holds.
+scenario "a task two people changed" -> Task {
+    let bo = person("Bo")
+    let scout = agent("Scout")
+    let van = tasks.items.insert(Task(title: "Book the van", due: 2026-07-10))
+    invoke(schedule(van, 2026-07-08), by: bo, at: 2026-06-29T16:20Z)
+    invoke(check(van, true), by: scout, at: 2026-06-29T17:12Z)
+    van
+}
+
 /// A task the person looking wrote, which a colleague changed since: its page says the change is
 /// unseen, and its history says who made it.
 scenario "a task that changed since you looked" -> Task {

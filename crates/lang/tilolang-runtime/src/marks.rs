@@ -69,14 +69,15 @@ pub(crate) const WINDOW_PAGE: usize = 128;
 pub(crate) const CATCH_UP_PAGE: usize = 16;
 
 /// What someone else changed of one record of a window's document since the person last looked:
-/// the newest changes of it read, and how many it holds, which the row says it folds.
+/// the newest changes of it read, and how many it holds of those the person has not seen, which
+/// the row says it folds.
 struct Changed {
     at: ResourceRef,
     /// The newest changes of it since the person's seen mark, oldest first
     /// ([`CATCH_UP_PAGE`] of them at most): the row says the newest.
     versions: Vec<Version>,
-    /// How many changes the record holds since that mark.
-    total: usize,
+    /// How many changes of it the person has not seen: what the row says it folds.
+    changes: usize,
 }
 
 /// The pseudo-field a mark reads versions through: of a resource, every version of it, and of
@@ -629,14 +630,23 @@ impl Core {
             else {
                 continue;
             };
-            let unseen = crate::seen::unseen_after(&since.versions, &viewer.0, &runs);
-            if !unseen.is_empty() {
-                changed.push(Changed {
-                    at: rid,
-                    versions: unseen,
-                    total: since.total,
-                });
+            let fresh = crate::seen::unseen_after(&since.versions, &viewer.0, &runs);
+            if fresh.is_empty() {
+                continue;
             }
+            // What the person catches up on: every change of it since their mark, when the page
+            // holds them all; else how many the record holds since then, which a page of them
+            // leaves the rest of out.
+            let holds = if since.total <= since.versions.len() {
+                fresh.len()
+            } else {
+                since.total
+            };
+            changed.push(Changed {
+                at: rid,
+                versions: fresh,
+                changes: holds,
+            });
         }
         // A change a record made from `resource` stands under both, as that record's own
         // change and as a change to what it was made from: each counts once, where the record
@@ -795,7 +805,7 @@ impl Core {
         let Changed {
             at: rid,
             versions,
-            total,
+            changes,
         } = changed;
         let mut held = UiNode::empty("stack", row_key);
         held.props.insert("gap".to_owned(), Value::text("tight"));
@@ -826,14 +836,14 @@ impl Core {
             .push(self.step_line(&format!("{row_key}~step"), rid, newest, viewer));
         // Changed more than once since the person looked: the row says how many, as history
         // says the changes a step folds.
-        if *total > 1 {
+        if *changes > 1 {
             let mut many = UiNode::empty("ui.Text", &format!("{row_key}~changes"));
             many.props.insert(
                 "value".to_owned(),
                 Value::Text(self.word_args(
                     "tilolang-history-changes",
-                    &[("count".to_owned(), total.to_string())],
-                    &format!("{total} changes"),
+                    &[("count".to_owned(), changes.to_string())],
+                    &format!("{changes} changes"),
                 )),
             );
             many.props.insert("role".to_owned(), Value::text("caption"));

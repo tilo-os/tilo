@@ -87,6 +87,7 @@ scenario "a task made from another" = xf3nasf4
 scenario "a task naming another" = j37l5hin
 scenario "a task that changed since you looked" = c3vinqvx
 scenario "a task that is late" = 2lt743bk
+scenario "a task two people changed" = xqz56lhm
 scenario "a task's subtasks" = ontrpmqo
 scenario "all done" = cjnnrzmg
 scenario "an agent's suggestion" = v4lh5ykd
