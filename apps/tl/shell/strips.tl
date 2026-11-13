@@ -52,18 +52,30 @@ fn maximized_strips(a: Arrangement) -> List<ArrangementStrip> {
 view style_switch(v: Viewing, d: Desk) {
     row(gap: .tight, align: .center, wrap: true) {
         for style in d.styles {
-            ui.Chip(style_label(style), selected: v.style == style.style) {
-                on press: show_style(v, style.style)
+            if style_listed(style) {
+                ui.Chip(style_label(style), selected: v.style == style.style) {
+                    on press: show_style(v, style.style)
+                }
             }
         }
     }
 }
 
 /// A style's one name everywhere — the bar's menu title, its menu items and the Settings page:
-/// its doc line, or its view's name when its author wrote none, so no style is listed by an
-/// empty chip.
+/// its doc line, or its view's name when its author wrote none. A style a package offers but
+/// cannot name — a package that carries no description that reads — is named by its package, so
+/// no menu lists a blank row a person cannot read or pick.
 fn style_label(style: DeskStyle) -> Text {
-    if style.line != "" { style.line } else { style.name }
+    if style.line != "" {
+        style.line
+    } else if style.name != "" { style.name } else { style.package }
+}
+
+/// Whether a style is one a person can pick: a named style, or one whose package is named. A
+/// style nothing names (no view, no doc line, no package) stands for nothing on the desk, so
+/// the switch lists none: an empty row is a band of the panel with nothing in it.
+fn style_listed(style: DeskStyle) -> Bool {
+    style.line != "" or style.name != "" or style.package != ""
 }
 
 /// The style the desk shows, named in the bar's menu by the same name it is listed under
@@ -88,8 +100,10 @@ view style_menu(v: Viewing, d: Desk) {
         icon_only: space.compact,
     ) {
         for style in d.styles {
-            ui.MenuItem(style_label(style), checked: v.style == style.style) {
-                on choose: show_style(v, style.style)
+            if style_listed(style) {
+                ui.MenuItem(style_label(style), checked: v.style == style.style) {
+                    on choose: show_style(v, style.style)
+                }
             }
         }
     }

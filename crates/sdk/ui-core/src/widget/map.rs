@@ -385,9 +385,11 @@ impl Map {
     /// arrives beside another, so what the person was looking at stays where they were looking
     /// rather than being pushed out of the viewport by the pan to what arrived (`shell.md` §3,
     /// "a place next to where it came from"). `keep` is every place standing wholly in the
-    /// viewport: they and what arrived all end up in view — panning the least that does, and
-    /// zooming out only as far as they need, since none of them may be lost. With nothing to keep
-    /// this is [`Self::reveal`].
+    /// viewport: the camera pans the least that holds them all with what arrived, and it never
+    /// changes its zoom — opening a place never resizes the places already there, so a place
+    /// stands as big as the person was reading it. When what arrived and what they were looking
+    /// at cannot all stand in the viewport at that zoom, the camera pans to show what arrived
+    /// whole; the person pans back to the rest, which stands where it did.
     pub fn reveal_with(&mut self, area: Rect, margin: f64, keep: &[Rect]) {
         let Some(together) = keep
             .iter()
@@ -404,23 +406,17 @@ impl Map {
         if width <= 0.0 || height <= 0.0 {
             return;
         }
-        let origin = self.camera.origin;
+        // The zoom is the person's: the camera pans to what arrived and never zooms it out of
+        // the size they were reading it at.
         let zoom = self.camera.zoom;
-        // All of them already stand in sight: the person's view stays their own.
-        let fits = |zoom: f64| {
-            let span = Vec2::new(width, height) / zoom.max(f64::EPSILON);
-            span.x >= together.width() && span.y >= together.height()
-        };
-        // Zoom out only when they cannot all stand in the viewport at the person's zoom, and no
-        // further than they need: the canvas keeps the zoom it can.
-        let zoom = if fits(zoom) {
-            zoom
-        } else {
-            (width / together.width().max(1.0))
-                .min(height / together.height().max(1.0))
-                .clamp(MAP_ZOOM_MIN, MAP_ZOOM_MAX)
-        };
         let span = Vec2::new(width, height) / zoom.max(f64::EPSILON);
+        // What the person was looking at and what arrived cannot all stand in the viewport at
+        // this zoom: show what arrived whole, and leave the rest where it stands.
+        if together.width() > span.x + 0.5 || together.height() > span.y + 0.5 {
+            self.reveal(area, margin);
+            return;
+        }
+        let origin = self.camera.origin;
         // The least pan that holds them all: where they were looking stays where it was as far
         // as that allows, and what arrived joins it, all of them in view.
         let along = |origin: f64, (low_edge, high_edge): (f64, f64), extent: f64| {
@@ -984,9 +980,9 @@ impl Widget for Map {
         // built around it is laid out (`shell.md` §3, "a place next to where it came from"; the
         // session's `open` brings the canvas to what it stood). Only the last pin — the place
         // just put on the canvas — and only when it stands wholly outside the viewport, so a
-        // place already in sight moves nothing. Every place that stood in the viewport stays
-        // there: a place opened beside a conversation never pushes the conversation out of the
-        // viewport, however many were opened before it (`reveal_with`).
+        // place already in sight moves nothing. The pan holds what the person was looking at
+        // wherever it can and never changes the zoom: opening a place never resizes the places
+        // already there, so a place stands as big as the person was reading it (`reveal_with`).
         let arriving = self
             .pins
             .last()
