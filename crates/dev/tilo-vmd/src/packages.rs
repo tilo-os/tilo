@@ -61,39 +61,43 @@ mod tests {
         vec!["xterm".into(), "gtk4-devel-tools".into()]
     }
 
-    #[test]
-    fn a_bootc_image_installs_transiently_with_dnf() {
-        let argv = install_argv(
-            &packages(),
-            with(&["/usr/bin/dnf", "/usr/bin/rpm-ostree", "/run/ostree-booted"]),
-        )
-        .unwrap();
-        assert_eq!(
-            argv.join(" "),
-            "dnf install --assumeyes --transient --setopt=install_weak_deps=False -- xterm gtk4-devel-tools"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn packages_install_with_the_installer_the_system_has;
 
-    #[test]
-    fn a_composefs_bootc_image_installs_transiently_too() {
-        let argv =
-            install_argv(&packages(), with(&["/usr/bin/dnf", "/sysroot/composefs"])).unwrap();
-        assert!(argv.contains(&"--transient".to_owned()), "{argv:?}");
-    }
+        phase a_bootc_image_installs_transiently_with_dnf;
+        {
+            let argv = install_argv(
+                &packages(),
+                with(&["/usr/bin/dnf", "/usr/bin/rpm-ostree", "/run/ostree-booted"]),
+            )
+            .unwrap();
+            assert_eq!(
+                argv.join(" "),
+                "dnf install --assumeyes --transient --setopt=install_weak_deps=False -- xterm gtk4-devel-tools"
+            );
+        }
 
-    #[test]
-    fn a_plain_system_installs_with_dnf_and_rpm_ostree_is_the_fallback() {
-        let plain = install_argv(&packages(), with(&["/usr/bin/dnf"])).unwrap();
-        assert!(!plain.contains(&"--transient".to_owned()), "{plain:?}");
-        let ostree = install_argv(&packages(), with(&["/usr/bin/rpm-ostree"])).unwrap();
-        assert_eq!(ostree[..3], ["rpm-ostree", "install", "--apply-live"]);
-        assert!(install_argv(&packages(), with(&[])).is_err());
-    }
+        phase a_composefs_bootc_image_installs_transiently_too;
+        {
+            let argv =
+                install_argv(&packages(), with(&["/usr/bin/dnf", "/sysroot/composefs"])).unwrap();
+            assert!(argv.contains(&"--transient".to_owned()), "{argv:?}");
+        }
 
-    #[test]
-    fn names_that_are_not_packages_are_refused() {
-        let error = install_argv(&["--installroot=/".into()], with(&["/usr/bin/dnf"])).unwrap_err();
-        assert!(error.contains("not a package name"), "{error}");
-        assert!(install_argv(&[], with(&["/usr/bin/dnf"])).is_err());
+        phase a_plain_system_installs_with_dnf_and_rpm_ostree_is_the_fallback;
+        {
+            let plain = install_argv(&packages(), with(&["/usr/bin/dnf"])).unwrap();
+            assert!(!plain.contains(&"--transient".to_owned()), "{plain:?}");
+            let ostree = install_argv(&packages(), with(&["/usr/bin/rpm-ostree"])).unwrap();
+            assert_eq!(ostree[..3], ["rpm-ostree", "install", "--apply-live"]);
+            assert!(install_argv(&packages(), with(&[])).is_err());
+        }
+
+        phase names_that_are_not_packages_are_refused;
+        {
+            let error = install_argv(&["--installroot=/".into()], with(&["/usr/bin/dnf"])).unwrap_err();
+            assert!(error.contains("not a package name"), "{error}");
+            assert!(install_argv(&[], with(&["/usr/bin/dnf"])).is_err());
+        }
     }
 }

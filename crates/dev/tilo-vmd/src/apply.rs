@@ -1406,125 +1406,218 @@ mod tests {
         g
     }
 
-    #[test]
-    fn slot_identity_environment_quotes_the_actual_account_home() {
-        assert_eq!(
-            slot_identity_environment(std::path::Path::new("/var/home/you")).unwrap(),
-            "Environment=\"TILO_IDENTITY_ROOT=/var/home/you/.local/share/tilo/test-identity\"\n"
-        );
-        assert_eq!(
-            slot_identity_environment(std::path::Path::new("/home/a %u\"b")).unwrap(),
-            "Environment=\"TILO_IDENTITY_ROOT=/home/a %%u\\\"b/.local/share/tilo/test-identity\"\n"
-        );
-        assert!(slot_identity_environment(std::path::Path::new("relative")).is_err());
-        assert!(
-            slot_identity_environment(std::path::Path::new("/home/a\nEnvironment=BAD")).is_err()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn activation_writes_each_slots_identity_tracing_and_restarts;
 
-    #[test]
-    fn frame_cpu_trace_is_generation_scoped_and_stand_in_only() {
-        let mut apply = RecordingApply::default();
-        let mut slot = record("cpu", SlotKind::Headless);
-        let plain = generation(1, &[("shell", "h1", Scope::Session, &[])]);
-        let mut traced = plain.clone();
-        traced.number = 2;
-        traced
-            .components
-            .get_mut("shell")
-            .unwrap()
-            .info
-            .frame_cpu_trace = true;
-        let info = &traced.components["shell"].info;
-        check_scope(&slot, "shell", info).unwrap();
-        for kind in [SlotKind::Vm, SlotKind::Device] {
-            assert!(check_scope(&record("other", kind), "shell", info).is_err());
+        phase slot_identity_environment_quotes_the_actual_account_home;
+        {
+            assert_eq!(
+                slot_identity_environment(std::path::Path::new("/var/home/you")).unwrap(),
+                "Environment=\"TILO_IDENTITY_ROOT=/var/home/you/.local/share/tilo/test-identity\"\n"
+            );
+            assert_eq!(
+                slot_identity_environment(std::path::Path::new("/home/a %u\"b")).unwrap(),
+                "Environment=\"TILO_IDENTITY_ROOT=/home/a %%u\\\"b/.local/share/tilo/test-identity\"\n"
+            );
+            assert!(slot_identity_environment(std::path::Path::new("relative")).is_err());
+            assert!(
+                slot_identity_environment(std::path::Path::new("/home/a\nEnvironment=BAD")).is_err()
+            );
         }
-        assert!(check_scope(&slot, "music", info).is_err());
-        let layers = [PathBuf::from("/var/lib/tilo-vm/layers/h1")];
-        let key = (session_unit("cpu"), LAYERS_DROPIN.into());
-        for (g, enabled) in [(&traced, true), (&plain, false), (&traced, true)] {
+
+        phase frame_cpu_trace_is_generation_scoped_and_stand_in_only;
+        {
+            let mut apply = RecordingApply::default();
+            let mut slot = record("cpu", SlotKind::Headless);
+            let plain = generation(1, &[("shell", "h1", Scope::Session, &[])]);
+            let mut traced = plain.clone();
+            traced.number = 2;
+            traced
+                .components
+                .get_mut("shell")
+                .unwrap()
+                .info
+                .frame_cpu_trace = true;
+            let info = &traced.components["shell"].info;
+            check_scope(&slot, "shell", info).unwrap();
+            for kind in [SlotKind::Vm, SlotKind::Device] {
+                assert!(check_scope(&record("other", kind), "shell", info).is_err());
+            }
+            assert!(check_scope(&slot, "music", info).is_err());
+            let layers = [PathBuf::from("/var/lib/tilo-vm/layers/h1")];
+            let key = (session_unit("cpu"), LAYERS_DROPIN.into());
+            for (g, enabled) in [(&traced, true), (&plain, false), (&traced, true)] {
+                activate(
+                    &mut apply,
+                    &mut slot,
+                    g,
+                    &layers,
+                    Policy::SessionRestart,
+                    &Restarts::default(),
+                    SessionChange::Keep,
+                )
+                .unwrap();
+                assert_eq!(
+                    apply.dropins[&key].contains("Environment=TILO_VM_FRAME_CPU_TRACE=1"),
+                    enabled
+                );
+                assert!(
+                    !apply.dropins[&(user_unit(60_001), LAYERS_DROPIN.into())]
+                        .contains("TILO_VM_FRAME_CPU_TRACE")
+                );
+                for unit in [session_unit("cpu"), user_unit(60_001)] {
+                    assert!(apply.dropins[&(unit, LAYERS_DROPIN.into())].contains(
+                        "Environment=\"TILO_IDENTITY_ROOT=/home/tds-cpu/.local/share/tilo/test-identity\"\n"
+                    ));
+                }
+            }
+        }
+
+        phase only_the_vms_person_runs_without_a_private_identity_root;
+        // This VM's person runs on the machine's identity tree, as a device's
+        // first login does; other stand-ins keep their private, removable root.
+        {
+            for (device_identity, private) in [(false, true), (true, false)] {
+                let mut apply = RecordingApply::default();
+                let mut slot = record("a", SlotKind::Headless);
+                slot.device_identity = device_identity;
+                activate(
+                    &mut apply,
+                    &mut slot,
+                    &Generation::default(),
+                    &[],
+                    Policy::NoRestart,
+                    &Restarts::default(),
+                    SessionChange::Ensure,
+                )
+                .unwrap();
+                let dropin = &apply.dropins[&(session_unit("a"), LAYERS_DROPIN.into())];
+                assert_eq!(dropin.contains("TILO_IDENTITY_ROOT"), private, "{dropin}");
+                // Only the person's session keeps the onboarding a control
+                // socket would otherwise skip.
+                assert_eq!(
+                    dropin.contains("Environment=TILO_TEST_CONTROL_FIRST_USE=keep\n"),
+                    device_identity,
+                    "{dropin}"
+                );
+            }
+        }
+
+        phase component_refresh_does_not_start_inactive_services;
+        {
+            let mut apply = RecordingApply::default();
+            apply.units.insert("fs.service".into(), true);
+            apply.units.insert("tilo-fs-replica.service".into(), false);
+            let mut vm = record("vm", SlotKind::Vm);
             activate(
                 &mut apply,
-                &mut slot,
-                g,
-                &layers,
-                Policy::SessionRestart,
-                &Restarts::default(),
+                &mut vm,
+                &Generation::default(),
+                &[PathBuf::from("/layers/fs")],
+                Policy::VmRefresh,
+                &Restarts {
+                    units: vec!["fs.service".into(), "tilo-fs-replica.service".into()],
+                    ..Restarts::default()
+                },
                 SessionChange::Keep,
             )
             .unwrap();
+            assert_eq!(apply.units.get("fs.service"), Some(&true));
             assert_eq!(
-                apply.dropins[&key].contains("Environment=TILO_VM_FRAME_CPU_TRACE=1"),
-                enabled
+                apply.units.get("tilo-fs-replica.service"),
+                Some(&false),
+                "updating an executable must not enable an optional replica"
             );
-            assert!(
-                !apply.dropins[&(user_unit(60_001), LAYERS_DROPIN.into())]
-                    .contains("TILO_VM_FRAME_CPU_TRACE")
-            );
-            for unit in [session_unit("cpu"), user_unit(60_001)] {
-                assert!(apply.dropins[&(unit, LAYERS_DROPIN.into())].contains(
-                    "Environment=\"TILO_IDENTITY_ROOT=/home/tds-cpu/.local/share/tilo/test-identity\"\n"
-                ));
+        }
+
+        phase vm_greeter_update_preserves_only_a_verified_active_owner_login;
+        {
+            for (name, mut apply, defer) in [
+                ("owner", RecordingApply::with_login("tester"), true),
+                ("ordinary-vm", RecordingApply::default(), false),
+                (
+                    "board-session",
+                    RecordingApply::with_device("tester"),
+                    false,
+                ),
+                (
+                    "logged-out",
+                    {
+                        let mut apply = RecordingApply::with_login("tester");
+                        apply.device = apply.device.take().map(DeviceSession::logged_out);
+                        apply
+                    },
+                    false,
+                ),
+                (
+                    "incomplete-login",
+                    {
+                        let mut apply = RecordingApply::with_login("tester");
+                        apply
+                            .device
+                            .as_mut()
+                            .unwrap()
+                            .login
+                            .as_mut()
+                            .unwrap()
+                            .session = None;
+                        apply
+                    },
+                    false,
+                ),
+            ] {
+                let mut slot = record("vm", SlotKind::Vm);
+                let next = generation(
+                    1,
+                    &[("greeter", "g", Scope::Vm, &[GREETER_UNIT, "fs.service"])],
+                );
+                let (policy, restarts) = policy(&slot, &Generation::default(), &next).unwrap();
+                let layers = vec![PathBuf::from("/var/lib/tilo-vm/layers/greeter")];
+                let actions = activate(
+                    &mut apply,
+                    &mut slot,
+                    &next,
+                    &layers,
+                    policy,
+                    &restarts,
+                    SessionChange::Keep,
+                )
+                .unwrap();
+                assert_eq!(apply.sysext, layers, "{name}: verified layers still merge");
+                assert!(actions.contains(&Action::SysextRefresh));
+                assert!(
+                    apply.calls.contains(&"try-restart fs.service".to_owned()),
+                    "{name}: other required services still activate"
+                );
+                assert_eq!(
+                    apply.calls.contains(&format!("try-restart {GREETER_UNIT}")),
+                    !defer,
+                    "{name}: an active owner's greetd manager must stay running"
+                );
+                assert_eq!(
+                    apply
+                        .calls
+                        .contains(&format!("validate-unit {GREETER_UNIT}")),
+                    defer,
+                    "{name}: a deferred unit still passes installed-unit validation"
+                );
+                assert_eq!(
+                    actions.iter().any(|action| matches!(action,
+                    Action::Deferred { reason } if reason.contains(GREETER_UNIT))),
+                    defer,
+                    "{name}: report the actual deferred manager activation"
+                );
+                assert!(
+                    !apply
+                        .calls
+                        .iter()
+                        .any(|call| call.starts_with("restart_desktop")
+                            || call.starts_with("stop ")
+                            || call.starts_with("start ")),
+                    "{name}: this update cannot authenticate, log out or restart the owner"
+                );
             }
         }
-    }
-
-    /// This VM's person runs on the machine's identity tree, as a device's
-    /// first login does; other stand-ins keep their private, removable root.
-    #[test]
-    fn only_the_vms_person_runs_without_a_private_identity_root() {
-        for (device_identity, private) in [(false, true), (true, false)] {
-            let mut apply = RecordingApply::default();
-            let mut slot = record("a", SlotKind::Headless);
-            slot.device_identity = device_identity;
-            activate(
-                &mut apply,
-                &mut slot,
-                &Generation::default(),
-                &[],
-                Policy::NoRestart,
-                &Restarts::default(),
-                SessionChange::Ensure,
-            )
-            .unwrap();
-            let dropin = &apply.dropins[&(session_unit("a"), LAYERS_DROPIN.into())];
-            assert_eq!(dropin.contains("TILO_IDENTITY_ROOT"), private, "{dropin}");
-            // Only the person's session keeps the onboarding a control
-            // socket would otherwise skip.
-            assert_eq!(
-                dropin.contains("Environment=TILO_TEST_CONTROL_FIRST_USE=keep\n"),
-                device_identity,
-                "{dropin}"
-            );
-        }
-    }
-
-    #[test]
-    fn component_refresh_does_not_start_inactive_services() {
-        let mut apply = RecordingApply::default();
-        apply.units.insert("fs.service".into(), true);
-        apply.units.insert("tilo-fs-replica.service".into(), false);
-        let mut vm = record("vm", SlotKind::Vm);
-        activate(
-            &mut apply,
-            &mut vm,
-            &Generation::default(),
-            &[PathBuf::from("/layers/fs")],
-            Policy::VmRefresh,
-            &Restarts {
-                units: vec!["fs.service".into(), "tilo-fs-replica.service".into()],
-                ..Restarts::default()
-            },
-            SessionChange::Keep,
-        )
-        .unwrap();
-        assert_eq!(apply.units.get("fs.service"), Some(&true));
-        assert_eq!(
-            apply.units.get("tilo-fs-replica.service"),
-            Some(&false),
-            "updating an executable must not enable an optional replica"
-        );
     }
 
     #[test]
@@ -1659,95 +1752,6 @@ mod tests {
             assert_eq!(
                 apply.calls,
                 ["link_sysext 1", "sysext_refresh", "try-restart fs.service"]
-            );
-        }
-    }
-
-    #[test]
-    fn vm_greeter_update_preserves_only_a_verified_active_owner_login() {
-        for (name, mut apply, defer) in [
-            ("owner", RecordingApply::with_login("tester"), true),
-            ("ordinary-vm", RecordingApply::default(), false),
-            (
-                "board-session",
-                RecordingApply::with_device("tester"),
-                false,
-            ),
-            (
-                "logged-out",
-                {
-                    let mut apply = RecordingApply::with_login("tester");
-                    apply.device = apply.device.take().map(DeviceSession::logged_out);
-                    apply
-                },
-                false,
-            ),
-            (
-                "incomplete-login",
-                {
-                    let mut apply = RecordingApply::with_login("tester");
-                    apply
-                        .device
-                        .as_mut()
-                        .unwrap()
-                        .login
-                        .as_mut()
-                        .unwrap()
-                        .session = None;
-                    apply
-                },
-                false,
-            ),
-        ] {
-            let mut slot = record("vm", SlotKind::Vm);
-            let next = generation(
-                1,
-                &[("greeter", "g", Scope::Vm, &[GREETER_UNIT, "fs.service"])],
-            );
-            let (policy, restarts) = policy(&slot, &Generation::default(), &next).unwrap();
-            let layers = vec![PathBuf::from("/var/lib/tilo-vm/layers/greeter")];
-            let actions = activate(
-                &mut apply,
-                &mut slot,
-                &next,
-                &layers,
-                policy,
-                &restarts,
-                SessionChange::Keep,
-            )
-            .unwrap();
-            assert_eq!(apply.sysext, layers, "{name}: verified layers still merge");
-            assert!(actions.contains(&Action::SysextRefresh));
-            assert!(
-                apply.calls.contains(&"try-restart fs.service".to_owned()),
-                "{name}: other required services still activate"
-            );
-            assert_eq!(
-                apply.calls.contains(&format!("try-restart {GREETER_UNIT}")),
-                !defer,
-                "{name}: an active owner's greetd manager must stay running"
-            );
-            assert_eq!(
-                apply
-                    .calls
-                    .contains(&format!("validate-unit {GREETER_UNIT}")),
-                defer,
-                "{name}: a deferred unit still passes installed-unit validation"
-            );
-            assert_eq!(
-                actions.iter().any(|action| matches!(action,
-                Action::Deferred { reason } if reason.contains(GREETER_UNIT))),
-                defer,
-                "{name}: report the actual deferred manager activation"
-            );
-            assert!(
-                !apply
-                    .calls
-                    .iter()
-                    .any(|call| call.starts_with("restart_desktop")
-                        || call.starts_with("stop ")
-                        || call.starts_with("start ")),
-                "{name}: this update cannot authenticate, log out or restart the owner"
             );
         }
     }

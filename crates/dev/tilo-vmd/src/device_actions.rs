@@ -98,86 +98,90 @@ impl Daemon {
 mod tests {
     use super::*;
 
-    #[test]
-    fn canonical_cli_request_reaches_the_declared_console_admission() {
-        use clap::Parser as _;
-        use tilo_vm::cli::{Cli, Command, VmCommand};
+    tilo_test_env::scenario! {
+        fn device_unlock_enrollment_is_admitted_without_carrying_its_secret;
 
-        let cli = Cli::try_parse_from([
-            "tilo-vm",
-            "vm",
-            "actions",
-            "--device",
-            "fixture",
-            "invoke",
-            PROVIDER,
-            "enroll@device-unlock",
-            "--args-stdin",
-        ])
-        .unwrap();
-        let Some(Command::Vm(VmCommand::Actions { command, .. })) = cli.command else {
-            panic!("the maintained CLI did not select device actions");
-        };
-        let input = br#"{"passphrase":"private-fixture-answer","confirm":true}"#;
-        let request = tilo_vm::device_actions::request(command, &input[..]).unwrap();
-        let wire::Request::Invoke { provider, id, args } = wire::parse(&request.line).unwrap()
-        else {
-            panic!("the transport did not carry canonical invocation");
-        };
-        let admitted = catalog::admit(PROVIDER, &resources(), &provider, &id, &args).unwrap();
-        assert_eq!(admitted.encoded.type_id, "device.unlock/v1");
-        assert_eq!(admitted.encoded.payload, br#"{"action":"enroll"}"#);
-        assert!(!format!("{request:?}").contains("private-fixture-answer"));
-    }
+        phase canonical_cli_request_reaches_the_declared_console_admission;
+        {
+            use clap::Parser as _;
+            use tilo_vm::cli::{Cli, Command, VmCommand};
 
-    #[test]
-    fn enrollment_is_a_real_secret_action_and_encoding_carries_no_credential() {
-        let resources = resources();
-        assert_eq!(
-            resources
-                .first()
-                .unwrap()
-                .actions
-                .first()
-                .unwrap()
-                .contract
-                .kind,
-            tilo_actions::ActionKind::Outside
-        );
-        let catalogue = catalog::enumerate(PROVIDER, &resources, "disk unlock");
-        assert_eq!(catalogue["count"], 1);
-        let args = json!({"passphrase":"private-fixture-answer","confirm":true})
-            .as_object()
-            .unwrap()
-            .clone();
-        let admitted = catalog::admit(
-            PROVIDER,
-            &resources,
-            PROVIDER,
-            "enroll@device-unlock",
-            &args,
-        )
-        .unwrap();
-        assert!(
-            !String::from_utf8(admitted.encoded.payload)
-                .unwrap()
-                .contains("private-fixture-answer")
-        );
-        assert_eq!(catalogue["actions"][0]["params"][0]["ty"], "secret");
-        let refused =
-            json!({"passphrase":"private-fixture-answer","device":"/dev/attacker","confirm":true})
+            let cli = Cli::try_parse_from([
+                "tilo-vm",
+                "vm",
+                "actions",
+                "--device",
+                "fixture",
+                "invoke",
+                PROVIDER,
+                "enroll@device-unlock",
+                "--args-stdin",
+            ])
+            .unwrap();
+            let Some(Command::Vm(VmCommand::Actions { command, .. })) = cli.command else {
+                panic!("the maintained CLI did not select device actions");
+            };
+            let input = br#"{"passphrase":"private-fixture-answer","confirm":true}"#;
+            let request = tilo_vm::device_actions::request(command, &input[..]).unwrap();
+            let wire::Request::Invoke { provider, id, args } = wire::parse(&request.line).unwrap()
+            else {
+                panic!("the transport did not carry canonical invocation");
+            };
+            let admitted = catalog::admit(PROVIDER, &resources(), &provider, &id, &args).unwrap();
+            assert_eq!(admitted.encoded.type_id, "device.unlock/v1");
+            assert_eq!(admitted.encoded.payload, br#"{"action":"enroll"}"#);
+            assert!(!format!("{request:?}").contains("private-fixture-answer"));
+        }
+
+        phase enrollment_is_a_real_secret_action_and_encoding_carries_no_credential;
+        {
+            let resources = resources();
+            assert_eq!(
+                resources
+                    .first()
+                    .unwrap()
+                    .actions
+                    .first()
+                    .unwrap()
+                    .contract
+                    .kind,
+                tilo_actions::ActionKind::Outside
+            );
+            let catalogue = catalog::enumerate(PROVIDER, &resources, "disk unlock");
+            assert_eq!(catalogue["count"], 1);
+            let args = json!({"passphrase":"private-fixture-answer","confirm":true})
                 .as_object()
                 .unwrap()
                 .clone();
-        assert!(
-            catalog::admit(
+            let admitted = catalog::admit(
                 PROVIDER,
                 &resources,
                 PROVIDER,
                 "enroll@device-unlock",
-                &refused
+                &args,
             )
-            .is_err()
-        );
+            .unwrap();
+            assert!(
+                !String::from_utf8(admitted.encoded.payload)
+                    .unwrap()
+                    .contains("private-fixture-answer")
+            );
+            assert_eq!(catalogue["actions"][0]["params"][0]["ty"], "secret");
+            let refused =
+                json!({"passphrase":"private-fixture-answer","device":"/dev/attacker","confirm":true})
+                    .as_object()
+                    .unwrap()
+                    .clone();
+            assert!(
+                catalog::admit(
+                    PROVIDER,
+                    &resources,
+                    PROVIDER,
+                    "enroll@device-unlock",
+                    &refused
+                )
+                .is_err()
+            );
+        }
     }
 }

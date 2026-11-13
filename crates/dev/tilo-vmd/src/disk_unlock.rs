@@ -316,74 +316,82 @@ mod tests {
     use super::*;
     use std::io::Read;
 
-    #[test]
-    fn enrollment_secret_is_sealed_and_not_an_argument() {
-        let mut file = private_key_file("private-fixture-answer").unwrap();
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).unwrap();
-        assert_eq!(contents, "private-fixture-answer");
-        assert!(file.write_all(b"replacement").is_err());
-        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) };
-        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+    tilo_test_env::scenario! {
+        fn the_enrollment_secret_is_sealed_and_reaches_only_the_child;
+
+        phase enrollment_secret_is_sealed_and_not_an_argument;
+        {
+            let mut file = private_key_file("private-fixture-answer").unwrap();
+            let mut contents = String::new();
+            file.read_to_string(&mut contents).unwrap();
+            assert_eq!(contents, "private-fixture-answer");
+            assert!(file.write_all(b"replacement").is_err());
+            let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) };
+            assert_ne!(flags & libc::FD_CLOEXEC, 0);
+        }
+
+        phase enrollment_sealed_descriptor_reaches_the_real_bounded_child_without_secret_argv;
+        {
+            let key = private_key_file("private-fixture-answer").unwrap();
+            let mut command = Command::new("/usr/bin/cat");
+            command.arg(format!("/proc/self/fd/{}", key.as_raw_fd()));
+            assert!(command.get_args().all(|argument| {
+                !argument
+                    .to_string_lossy()
+                    .contains("private-fixture-answer")
+            }));
+            inherit_private_key(&mut command, &key);
+            let output = Output::default();
+            assert_eq!(
+                run_bounded(
+                    command,
+                    Duration::from_secs(5),
+                    4096,
+                    output.clone(),
+                    std::io::sink()
+                )
+                .unwrap(),
+                Ended::Exited(0)
+            );
+            assert_eq!(&*output.0.lock().unwrap(), b"private-fixture-answer");
+        }
     }
 
-    #[test]
-    fn enrollment_sealed_descriptor_reaches_the_real_bounded_child_without_secret_argv() {
-        let key = private_key_file("private-fixture-answer").unwrap();
-        let mut command = Command::new("/usr/bin/cat");
-        command.arg(format!("/proc/self/fd/{}", key.as_raw_fd()));
-        assert!(command.get_args().all(|argument| {
-            !argument
-                .to_string_lossy()
-                .contains("private-fixture-answer")
-        }));
-        inherit_private_key(&mut command, &key);
-        let output = Output::default();
-        assert_eq!(
-            run_bounded(
-                command,
-                Duration::from_secs(5),
-                4096,
-                output.clone(),
-                std::io::sink()
-            )
-            .unwrap(),
-            Ended::Exited(0)
-        );
-        assert_eq!(&*output.0.lock().unwrap(), b"private-fixture-answer");
-    }
+    tilo_test_env::scenario! {
+        fn the_root_device_is_read_from_the_mount_table_and_its_one_mapper;
 
-    #[test]
-    fn btrfs_enrollment_requires_one_registered_and_present_mapper() {
-        let root = tempfile::tempdir().unwrap();
-        let filesystem = root.path().join("d460ffbd-45e9-40f8-b5c6-6f468263df34");
-        std::fs::create_dir_all(filesystem.join("devices/dm-0")).unwrap();
-        std::fs::create_dir_all(filesystem.join("devinfo/1")).unwrap();
-        std::fs::write(filesystem.join("devices/dm-0/dev"), "253:0\n").unwrap();
-        assert!(single_btrfs_device(root.path(), "253:0").unwrap());
-        assert!(!single_btrfs_device(root.path(), "253:9").unwrap());
-        // Even an absent second device keeps the root ineligible.
-        std::fs::create_dir_all(filesystem.join("devinfo/2")).unwrap();
-        assert!(!single_btrfs_device(root.path(), "253:0").unwrap());
-        std::fs::remove_dir(filesystem.join("devinfo/2")).unwrap();
-        std::fs::remove_file(filesystem.join("devices/dm-0/dev")).unwrap();
-        assert!(single_btrfs_device(root.path(), "253:0").is_err());
-        let ordinary = RootMount {
-            number: "1:3",
-            filesystem: "ext4",
-            source: "/dev/null",
-        };
-        assert!(mounted_mapper_number(&ordinary, root.path()).is_err());
-    }
+        phase btrfs_enrollment_requires_one_registered_and_present_mapper;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let filesystem = root.path().join("d460ffbd-45e9-40f8-b5c6-6f468263df34");
+            std::fs::create_dir_all(filesystem.join("devices/dm-0")).unwrap();
+            std::fs::create_dir_all(filesystem.join("devinfo/1")).unwrap();
+            std::fs::write(filesystem.join("devices/dm-0/dev"), "253:0\n").unwrap();
+            assert!(single_btrfs_device(root.path(), "253:0").unwrap());
+            assert!(!single_btrfs_device(root.path(), "253:9").unwrap());
+            // Even an absent second device keeps the root ineligible.
+            std::fs::create_dir_all(filesystem.join("devinfo/2")).unwrap();
+            assert!(!single_btrfs_device(root.path(), "253:0").unwrap());
+            std::fs::remove_dir(filesystem.join("devinfo/2")).unwrap();
+            std::fs::remove_file(filesystem.join("devices/dm-0/dev")).unwrap();
+            assert!(single_btrfs_device(root.path(), "253:0").is_err());
+            let ordinary = RootMount {
+                number: "1:3",
+                filesystem: "ext4",
+                source: "/dev/null",
+            };
+            assert!(mounted_mapper_number(&ordinary, root.path()).is_err());
+        }
 
-    #[test]
-    fn encrypted_root_uses_bootc_sysroot_instead_of_container_overlay() {
-        let mounts = "1 0 0:42 / / rw - overlay overlay rw\n2 1 253:0 / /sysroot rw - ext4 /dev/mapper/root rw\n";
-        assert_eq!(root_mount(mounts).unwrap().number, "253:0");
-        let mounts = "1 0 0:42 / / rw - overlay overlay rw\n2 1 0:77 /root /sysroot rw - btrfs /dev/mapper/root rw\n";
-        let root = root_mount(mounts).unwrap();
-        assert_eq!(root.number, "0:77");
-        assert_eq!(root.source, "/dev/mapper/root");
-        assert_eq!(root.filesystem, "btrfs");
+        phase encrypted_root_uses_bootc_sysroot_instead_of_container_overlay;
+        {
+            let mounts = "1 0 0:42 / / rw - overlay overlay rw\n2 1 253:0 / /sysroot rw - ext4 /dev/mapper/root rw\n";
+            assert_eq!(root_mount(mounts).unwrap().number, "253:0");
+            let mounts = "1 0 0:42 / / rw - overlay overlay rw\n2 1 0:77 /root /sysroot rw - btrfs /dev/mapper/root rw\n";
+            let root = root_mount(mounts).unwrap();
+            assert_eq!(root.number, "0:77");
+            assert_eq!(root.source, "/dev/mapper/root");
+            assert_eq!(root.filesystem, "btrfs");
+        }
     }
 }

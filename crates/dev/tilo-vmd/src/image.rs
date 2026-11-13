@@ -336,18 +336,49 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn the_booted_image_is_read_from_the_kernel_command_line() {
-        assert_eq!(
-            booted_image("root=x rw composefs=91e8abc quiet").as_deref(),
-            Some("composefs:91e8abc")
-        );
-        assert_eq!(
-            booted_image("ostree=/ostree/boot.1/default/abc/0 rw").as_deref(),
-            Some("ostree:/ostree/boot.1/default/abc/0")
-        );
-        assert_eq!(booted_image("root=/dev/vda2 composefs= rw"), None);
-        assert_eq!(booted_image("root=/dev/vda2 rw"), None);
+    tilo_test_env::scenario! {
+        fn image_facts_are_read_from_the_command_line_records_and_mounts;
+
+        phase the_booted_image_is_read_from_the_kernel_command_line;
+        {
+            assert_eq!(
+                booted_image("root=x rw composefs=91e8abc quiet").as_deref(),
+                Some("composefs:91e8abc")
+            );
+            assert_eq!(
+                booted_image("ostree=/ostree/boot.1/default/abc/0 rw").as_deref(),
+                Some("ostree:/ostree/boot.1/default/abc/0")
+            );
+            assert_eq!(booted_image("root=/dev/vda2 composefs= rw"), None);
+            assert_eq!(booted_image("root=/dev/vda2 rw"), None);
+        }
+
+        phase a_drop_an_older_tilo_vmd_recorded_still_reads_as_one;
+        {
+            let record = r#"{"from": null, "to": "composefs:1c9ab8", "at": "2026-10-19T19:32:21Z",
+            "dropped": [{"slot": "device", "generation": 106, "components": ["shell"]}],
+            "freed_bytes": 7834890240}"#;
+            let change: ImageChange = serde_json::from_str(record).unwrap();
+            assert!(change.kept.is_empty() && change.held.is_empty());
+            let said = change.describe().join("\n");
+            assert!(said.contains("an older tilo-vmd dropped"), "{said}");
+            assert!(
+                said.contains("slot device left generation 106 (shell)"),
+                "{said}"
+            );
+        }
+
+        phase a_sysext_overlay_on_usr_counts_as_merged;
+        {
+            let merged =
+                "36 25 0:44 / /usr ro,nodev,relatime shared:20 - overlay sysext ro,lowerdir=/x:/usr\n";
+            let image = "25 1 0:33 / / ro,relatime shared:1 - overlay composefs:1c9a ro\n";
+            assert!(usr_merged_in(merged));
+            assert!(!usr_merged_in(image));
+            assert!(!usr_merged_in(
+                "40 25 0:50 / /usr/local rw shared:3 - overlay sysext rw\n"
+            ));
+        }
     }
 
     fn session_info() -> ComponentInfo {
@@ -409,155 +440,175 @@ mod tests {
         (seen, layers.list().unwrap().len())
     }
 
-    /// The laptop whose `vm` slot ran a swapped `tilo-vmd` that records images while the machine
-    /// ran one that did not: its first boot found no `image.json`, counted that as an image change,
-    /// put every slot back on the image and deleted 7.8 GB of layers. An unknown previous image is
-    /// no change: the image is recorded and nothing else moves.
-    #[test]
-    fn an_unknown_previous_image_is_no_change_and_drops_nothing() {
-        let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
-        let layers = LayerStore::new(root.path());
-        slots
-            .create("a", SlotKind::Headless, Owner::default(), &[])
-            .unwrap();
-        let shell = import(&layers, "shell");
-        let vmd = import(&layers, "vmd");
-        swap(&slots, "a", "shell", &shell, session_info());
-        swap(&slots, "vm", "vmd", &vmd, vm_info());
-        std::fs::write(root.path().join(COLLECT_MARKER), b"").unwrap();
-        let before = state(&slots, &layers);
+    tilo_test_env::scenario! {
+        fn reconciling_the_booted_image_keeps_slots_layers_and_its_declaration;
 
-        let change = reconcile(root.path(), &slots, &layers, &image("composefs:1c9ab8")).unwrap();
+        phase an_unknown_previous_image_is_no_change_and_drops_nothing;
+        // The laptop whose `vm` slot ran a swapped `tilo-vmd` that records images while the machine
+        // ran one that did not: its first boot found no `image.json`, counted that as an image change,
+        // put every slot back on the image and deleted 7.8 GB of layers. An unknown previous image is
+        // no change: the image is recorded and nothing else moves.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let slots = SlotStore::new(root.path());
+            let layers = LayerStore::new(root.path());
+            slots
+                .create("a", SlotKind::Headless, Owner::default(), &[])
+                .unwrap();
+            let shell = import(&layers, "shell");
+            let vmd = import(&layers, "vmd");
+            swap(&slots, "a", "shell", &shell, session_info());
+            swap(&slots, "vm", "vmd", &vmd, vm_info());
+            std::fs::write(root.path().join(COLLECT_MARKER), b"").unwrap();
+            let before = state(&slots, &layers);
 
-        assert_eq!(change, None, "no recorded image, so no change");
-        assert_eq!(last_change(root.path()), None);
-        assert_eq!(
-            slots_image(root.path()).as_deref(),
-            Some("composefs:1c9ab8")
-        );
-        assert_eq!(state(&slots, &layers), before, "slots and layers untouched");
-        assert!(held(root.path()).is_empty(), "nothing held");
-        assert!(!root.path().join(COLLECT_MARKER).exists());
-    }
+            let change = reconcile(root.path(), &slots, &layers, &image("composefs:1c9ab8")).unwrap();
 
-    /// Booting another image keeps every slot on its generation and every layer in the store: a
-    /// layer built against the booted base merges, one whose interface versions match merges, any
-    /// other is held and announced.
-    #[test]
-    fn an_image_change_merges_what_fits_and_holds_the_rest_without_deleting() {
-        let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
-        let layers = LayerStore::new(root.path());
-        assert_eq!(
-            reconcile(root.path(), &slots, &layers, &image("composefs:one")).unwrap(),
-            None,
-            "a fresh machine records its image"
-        );
-        let mut same_base = Provenance::local("launcher");
-        same_base.base_image_digest = Some("sha256:new".into());
-        let mut same_interfaces = Provenance::local("install");
-        same_interfaces.base_image_digest = Some("sha256:old".into());
-        same_interfaces.interfaces = interfaces(&[("shell-ui", 10), ("runtime", 2)]);
-        let mut older_interfaces = Provenance::local("shell");
-        older_interfaces.interfaces = interfaces(&[("shell-ui", 9), ("runtime", 2)]);
-        let launcher = import_with(&layers, "launcher", &same_base);
-        let install = import_with(&layers, "install", &same_interfaces);
-        let shell = import_with(&layers, "shell", &older_interfaces);
-        let greeter = import(&layers, "greeter");
-        let device = device_login(&slots);
-        for (component, layer) in [
-            ("launcher", &launcher),
-            ("install", &install),
-            ("shell", &shell),
-        ] {
-            swap(&slots, &device, component, layer, session_info());
+            assert_eq!(change, None, "no recorded image, so no change");
+            assert_eq!(last_change(root.path()), None);
+            assert_eq!(
+                slots_image(root.path()).as_deref(),
+                Some("composefs:1c9ab8")
+            );
+            assert_eq!(state(&slots, &layers), before, "slots and layers untouched");
+            assert!(held(root.path()).is_empty(), "nothing held");
+            assert!(!root.path().join(COLLECT_MARKER).exists());
         }
-        swap(&slots, "vm", "greeter", &greeter, vm_info());
-        let before = state(&slots, &layers);
 
-        let change = reconcile(root.path(), &slots, &layers, &image("composefs:two"))
-            .unwrap()
-            .expect("a change");
+        phase an_image_change_merges_what_fits_and_holds_the_rest_without_deleting;
+        // Booting another image keeps every slot on its generation and every layer in the store: a
+        // layer built against the booted base merges, one whose interface versions match merges, any
+        // other is held and announced.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let slots = SlotStore::new(root.path());
+            let layers = LayerStore::new(root.path());
+            assert_eq!(
+                reconcile(root.path(), &slots, &layers, &image("composefs:one")).unwrap(),
+                None,
+                "a fresh machine records its image"
+            );
+            let mut same_base = Provenance::local("launcher");
+            same_base.base_image_digest = Some("sha256:new".into());
+            let mut same_interfaces = Provenance::local("install");
+            same_interfaces.base_image_digest = Some("sha256:old".into());
+            same_interfaces.interfaces = interfaces(&[("shell-ui", 10), ("runtime", 2)]);
+            let mut older_interfaces = Provenance::local("shell");
+            older_interfaces.interfaces = interfaces(&[("shell-ui", 9), ("runtime", 2)]);
+            let launcher = import_with(&layers, "launcher", &same_base);
+            let install = import_with(&layers, "install", &same_interfaces);
+            let shell = import_with(&layers, "shell", &older_interfaces);
+            let greeter = import(&layers, "greeter");
+            let device = device_login(&slots);
+            for (component, layer) in [
+                ("launcher", &launcher),
+                ("install", &install),
+                ("shell", &shell),
+            ] {
+                swap(&slots, &device, component, layer, session_info());
+            }
+            swap(&slots, "vm", "greeter", &greeter, vm_info());
+            let before = state(&slots, &layers);
 
-        assert_eq!(change.from.as_deref(), Some("composefs:one"));
-        assert_eq!(change.to, "composefs:two");
-        let kept: Vec<(&str, u64)> = change
-            .kept
-            .iter()
-            .map(|k| (k.slot.as_str(), k.generation))
-            .collect();
-        assert_eq!(kept, vec![("device", 3), ("vm", 1)]);
-        let held_now: BTreeMap<&str, &str> = change
-            .held
-            .iter()
-            .map(|h| (h.component.as_str(), h.reason.as_str()))
-            .collect();
-        assert_eq!(
-            held_now.keys().copied().collect::<Vec<_>>(),
-            vec!["greeter", "shell"],
-            "{held_now:?}"
-        );
-        assert!(
-            held_now["shell"].contains("shell-ui 9, the image serves 10"),
-            "{held_now:?}"
-        );
-        assert!(
-            held_now["greeter"]
-                .contains("records neither its base image nor its interface versions"),
-            "{held_now:?}"
-        );
-        assert!(change.dropped.is_empty());
-        assert_eq!(
-            state(&slots, &layers),
-            before,
-            "nothing deleted, no slot moved"
-        );
-        assert_eq!(held(root.path()), change.held);
+            let change = reconcile(root.path(), &slots, &layers, &image("composefs:two"))
+                .unwrap()
+                .expect("a change");
 
-        // What merges leaves the held layers out, in the generation's order.
-        let generation = slots.generation("device", 3).unwrap();
-        assert_eq!(
-            layers.merged_paths(&generation.layers).unwrap(),
-            vec![layers.path(&launcher), layers.path(&install)]
-        );
-        let notice = held_notice(root.path()).expect("the person is told");
-        assert!(notice.contains("shell-ui 9"), "{notice}");
-        let said = change.describe().join("\n");
-        assert!(said.contains("slot device stays on generation 3"), "{said}");
-        assert!(said.contains("held, kept but not merged"), "{said}");
+            assert_eq!(change.from.as_deref(), Some("composefs:one"));
+            assert_eq!(change.to, "composefs:two");
+            let kept: Vec<(&str, u64)> = change
+                .kept
+                .iter()
+                .map(|k| (k.slot.as_str(), k.generation))
+                .collect();
+            assert_eq!(kept, vec![("device", 3), ("vm", 1)]);
+            let held_now: BTreeMap<&str, &str> = change
+                .held
+                .iter()
+                .map(|h| (h.component.as_str(), h.reason.as_str()))
+                .collect();
+            assert_eq!(
+                held_now.keys().copied().collect::<Vec<_>>(),
+                vec!["greeter", "shell"],
+                "{held_now:?}"
+            );
+            assert!(
+                held_now["shell"].contains("shell-ui 9, the image serves 10"),
+                "{held_now:?}"
+            );
+            assert!(
+                held_now["greeter"]
+                    .contains("records neither its base image nor its interface versions"),
+                "{held_now:?}"
+            );
+            assert!(change.dropped.is_empty());
+            assert_eq!(
+                state(&slots, &layers),
+                before,
+                "nothing deleted, no slot moved"
+            );
+            assert_eq!(held(root.path()), change.held);
 
-        // The same image again: nothing changes, the holds stay.
-        assert_eq!(
-            reconcile(root.path(), &slots, &layers, &image("composefs:two")).unwrap(),
-            None
-        );
-        assert_eq!(held(root.path()), change.held);
+            // What merges leaves the held layers out, in the generation's order.
+            let generation = slots.generation("device", 3).unwrap();
+            assert_eq!(
+                layers.merged_paths(&generation.layers).unwrap(),
+                vec![layers.path(&launcher), layers.path(&install)]
+            );
+            let notice = held_notice(root.path()).expect("the person is told");
+            assert!(notice.contains("shell-ui 9"), "{notice}");
+            let said = change.describe().join("\n");
+            assert!(said.contains("slot device stays on generation 3"), "{said}");
+            assert!(said.contains("held, kept but not merged"), "{said}");
 
-        release(root.path(), &shell).unwrap();
-        assert_eq!(
-            layers.merged_paths(&generation.layers).unwrap(),
-            vec![
-                layers.path(&launcher),
-                layers.path(&install),
-                layers.path(&shell)
-            ]
-        );
-    }
+            // The same image again: nothing changes, the holds stay.
+            assert_eq!(
+                reconcile(root.path(), &slots, &layers, &image("composefs:two")).unwrap(),
+                None
+            );
+            assert_eq!(held(root.path()), change.held);
 
-    #[test]
-    fn a_drop_an_older_tilo_vmd_recorded_still_reads_as_one() {
-        let record = r#"{"from": null, "to": "composefs:1c9ab8", "at": "2026-10-19T19:32:21Z",
-            "dropped": [{"slot": "device", "generation": 106, "components": ["shell"]}],
-            "freed_bytes": 7834890240}"#;
-        let change: ImageChange = serde_json::from_str(record).unwrap();
-        assert!(change.kept.is_empty() && change.held.is_empty());
-        let said = change.describe().join("\n");
-        assert!(said.contains("an older tilo-vmd dropped"), "{said}");
-        assert!(
-            said.contains("slot device left generation 106 (shell)"),
-            "{said}"
-        );
+            release(root.path(), &shell).unwrap();
+            assert_eq!(
+                layers.merged_paths(&generation.layers).unwrap(),
+                vec![
+                    layers.path(&launcher),
+                    layers.path(&install),
+                    layers.path(&shell)
+                ]
+            );
+        }
+
+        phase the_image_s_own_declaration_is_recorded_and_a_merged_reading_never_is;
+        // The image's own declaration is what the swap check judges the
+        // image's components by. It is recorded with the image, and recorded
+        // later for an image an older tilo-vmd recorded without it; a reading
+        // taken while layers are merged over `/usr` is never recorded as the
+        // image's.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let slots = SlotStore::new(root.path());
+            let layers = LayerStore::new(root.path());
+            let mut merged = image("composefs:one");
+            merged.declaration = None;
+            reconcile(root.path(), &slots, &layers, &merged).unwrap();
+            assert_eq!(recorded_declaration(root.path()), None);
+
+            let booted = image("composefs:one");
+            assert_eq!(
+                reconcile(root.path(), &slots, &layers, &booted).unwrap(),
+                None,
+                "the same image is no change"
+            );
+            assert_eq!(recorded_declaration(root.path()), booted.declaration);
+
+            reconcile(root.path(), &slots, &layers, &merged).unwrap();
+            assert_eq!(
+                recorded_declaration(root.path()),
+                booted.declaration,
+                "a later merged reading keeps the image's"
+            );
+        }
     }
 
     /// The owner's login slot, as a laptop records it.
@@ -568,48 +619,5 @@ mod tests {
             .unwrap();
         slots.save(&record).unwrap();
         record.name
-    }
-
-    /// The image's own declaration is what the swap check judges the
-    /// image's components by. It is recorded with the image, and recorded
-    /// later for an image an older tilo-vmd recorded without it; a reading
-    /// taken while layers are merged over `/usr` is never recorded as the
-    /// image's.
-    #[test]
-    fn the_image_s_own_declaration_is_recorded_and_a_merged_reading_never_is() {
-        let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
-        let layers = LayerStore::new(root.path());
-        let mut merged = image("composefs:one");
-        merged.declaration = None;
-        reconcile(root.path(), &slots, &layers, &merged).unwrap();
-        assert_eq!(recorded_declaration(root.path()), None);
-
-        let booted = image("composefs:one");
-        assert_eq!(
-            reconcile(root.path(), &slots, &layers, &booted).unwrap(),
-            None,
-            "the same image is no change"
-        );
-        assert_eq!(recorded_declaration(root.path()), booted.declaration);
-
-        reconcile(root.path(), &slots, &layers, &merged).unwrap();
-        assert_eq!(
-            recorded_declaration(root.path()),
-            booted.declaration,
-            "a later merged reading keeps the image's"
-        );
-    }
-
-    #[test]
-    fn a_sysext_overlay_on_usr_counts_as_merged() {
-        let merged =
-            "36 25 0:44 / /usr ro,nodev,relatime shared:20 - overlay sysext ro,lowerdir=/x:/usr\n";
-        let image = "25 1 0:33 / / ro,relatime shared:1 - overlay composefs:1c9a ro\n";
-        assert!(usr_merged_in(merged));
-        assert!(!usr_merged_in(image));
-        assert!(!usr_merged_in(
-            "40 25 0:50 / /usr/local rw shared:3 - overlay sysext rw\n"
-        ));
     }
 }

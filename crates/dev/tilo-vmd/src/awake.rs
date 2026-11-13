@@ -187,79 +187,83 @@ mod tests {
 
     const NOW: u64 = 1_800_000_000;
 
-    /// Every request keeps the machine awake 30 minutes past it, an explicit
-    /// hold sets the deadline itself, and release ends it at once.
-    #[test]
-    fn the_lease_lasts_thirty_minutes_past_the_last_request() {
-        let first = Lease::default().renewed(NOW, Change::Request);
-        assert_eq!(first.deadline(), NOW + 1800);
-        assert!(first.active(NOW + 1799));
-        assert!(!first.active(NOW + 1800));
-        // A later request moves it on; an earlier deadline never shortens it.
-        let later = first.renewed(NOW + 600, Change::Request);
-        assert_eq!(later.deadline(), NOW + 2400);
-        // --for 2h: longer than a request's, and requests inside it keep it.
-        let held = later.renewed(NOW + 600, Change::Hold(7200));
-        assert_eq!(held.deadline(), NOW + 7800);
-        assert_eq!(
-            held.renewed(NOW + 700, Change::Request).deadline(),
-            NOW + 7800
-        );
-        // A shorter hold is what was asked for, until the next request.
-        let short = later.renewed(NOW + 600, Change::Hold(60));
-        assert_eq!(short.deadline(), NOW + 660);
-        let after = held.renewed(NOW + 8000, Change::Request);
-        assert_eq!(after.hold_until, None);
-        assert_eq!(after.deadline(), NOW + 9800);
-        let off = held.renewed(NOW + 700, Change::Off);
-        assert!(!off.active(NOW + 700));
-        assert_eq!(off.hold_until, None);
-    }
+    tilo_test_env::scenario! {
+        fn the_awake_lease_renews_writes_and_inhibits_sleep;
 
-    /// A burst of connections writes the lease once; a hold, a release and a
-    /// lapsed lease always write.
-    #[test]
-    fn renewing_writes_only_when_the_deadline_moves() {
-        let (lease, write) = renewal(None, NOW, Change::Request);
-        assert!(write);
-        assert_eq!(lease.deadline(), NOW + 1800);
-        // Seconds later: nothing to write, the stored lease stands.
-        let (same, write) = renewal(Some(lease), NOW + 30, Change::Request);
-        assert!(!write);
-        assert_eq!(same, lease);
-        let (moved, write) = renewal(Some(lease), NOW + 60, Change::Request);
-        assert!(write);
-        assert_eq!(moved.deadline(), NOW + 1860);
-        // Lapsed: renewed even within the granularity of the old deadline.
-        let lapsed = Lease {
-            idle_until: NOW - 10,
-            hold_until: None,
-        };
-        assert!(renewal(Some(lapsed), NOW, Change::Request).1);
-        assert!(renewal(Some(lease), NOW, Change::Hold(3600)).1);
-        let (off, write) = renewal(Some(lease), NOW, Change::Off);
-        assert!(write);
-        assert!(!off.active(NOW));
-    }
+        phase the_lease_lasts_thirty_minutes_past_the_last_request;
+        // Every request keeps the machine awake 30 minutes past it, an explicit
+        // hold sets the deadline itself, and release ends it at once.
+        {
+            let first = Lease::default().renewed(NOW, Change::Request);
+            assert_eq!(first.deadline(), NOW + 1800);
+            assert!(first.active(NOW + 1799));
+            assert!(!first.active(NOW + 1800));
+            // A later request moves it on; an earlier deadline never shortens it.
+            let later = first.renewed(NOW + 600, Change::Request);
+            assert_eq!(later.deadline(), NOW + 2400);
+            // --for 2h: longer than a request's, and requests inside it keep it.
+            let held = later.renewed(NOW + 600, Change::Hold(7200));
+            assert_eq!(held.deadline(), NOW + 7800);
+            assert_eq!(
+                held.renewed(NOW + 700, Change::Request).deadline(),
+                NOW + 7800
+            );
+            // A shorter hold is what was asked for, until the next request.
+            let short = later.renewed(NOW + 600, Change::Hold(60));
+            assert_eq!(short.deadline(), NOW + 660);
+            let after = held.renewed(NOW + 8000, Change::Request);
+            assert_eq!(after.hold_until, None);
+            assert_eq!(after.deadline(), NOW + 9800);
+            let off = held.renewed(NOW + 700, Change::Off);
+            assert!(!off.active(NOW + 700));
+            assert_eq!(off.hold_until, None);
+        }
 
-    /// The lock is a sleep-only block lock by tilo-vm that names its deadline.
-    #[test]
-    fn the_inhibitor_blocks_sleep_and_names_its_deadline() {
-        let argv = inhibitor_argv(NOW + 1800, NOW);
-        assert_eq!(
-            argv[..4],
-            [
-                "systemd-inhibit",
-                "--what=sleep",
-                "--mode=block",
-                "--who=tilo-vm"
-            ]
-        );
-        assert!(
-            argv[4].contains("until 2027-01-15 08:30 UTC"),
-            "{}",
-            argv[4]
-        );
-        assert_eq!(argv[5..], ["sleep", "1810"]);
+        phase renewing_writes_only_when_the_deadline_moves;
+        // A burst of connections writes the lease once; a hold, a release and a
+        // lapsed lease always write.
+        {
+            let (lease, write) = renewal(None, NOW, Change::Request);
+            assert!(write);
+            assert_eq!(lease.deadline(), NOW + 1800);
+            // Seconds later: nothing to write, the stored lease stands.
+            let (same, write) = renewal(Some(lease), NOW + 30, Change::Request);
+            assert!(!write);
+            assert_eq!(same, lease);
+            let (moved, write) = renewal(Some(lease), NOW + 60, Change::Request);
+            assert!(write);
+            assert_eq!(moved.deadline(), NOW + 1860);
+            // Lapsed: renewed even within the granularity of the old deadline.
+            let lapsed = Lease {
+                idle_until: NOW - 10,
+                hold_until: None,
+            };
+            assert!(renewal(Some(lapsed), NOW, Change::Request).1);
+            assert!(renewal(Some(lease), NOW, Change::Hold(3600)).1);
+            let (off, write) = renewal(Some(lease), NOW, Change::Off);
+            assert!(write);
+            assert!(!off.active(NOW));
+        }
+
+        phase the_inhibitor_blocks_sleep_and_names_its_deadline;
+        // The lock is a sleep-only block lock by tilo-vm that names its deadline.
+        {
+            let argv = inhibitor_argv(NOW + 1800, NOW);
+            assert_eq!(
+                argv[..4],
+                [
+                    "systemd-inhibit",
+                    "--what=sleep",
+                    "--mode=block",
+                    "--who=tilo-vm"
+                ]
+            );
+            assert!(
+                argv[4].contains("until 2027-01-15 08:30 UTC"),
+                "{}",
+                argv[4]
+            );
+            assert_eq!(argv[5..], ["sleep", "1810"]);
+        }
     }
 }

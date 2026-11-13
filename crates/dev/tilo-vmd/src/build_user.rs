@@ -182,39 +182,43 @@ mod tests {
         (uid == 1000).then(|| ("alice".to_owned(), PathBuf::from("/var/home/alice")))
     }
 
-    /// A VM's build root is root's: builds run as the daemon. A laptop's
-    /// build root is its owner's: builds run as the owner. A daemon that is
-    /// not root never switches.
-    #[test]
-    fn builds_run_as_the_build_roots_owner() {
-        assert_eq!(BuildUser::choose(0, 0, 0, account).unwrap(), None);
-        assert_eq!(
-            BuildUser::choose(0, 1000, 1000, account).unwrap(),
-            Some(BuildUser {
+    tilo_test_env::scenario! {
+        fn a_build_user_is_the_build_roots_owner_and_carries_its_home;
+
+        phase builds_run_as_the_build_roots_owner;
+        // A VM's build root is root's: builds run as the daemon. A laptop's
+        // build root is its owner's: builds run as the owner. A daemon that is
+        // not root never switches.
+        {
+            assert_eq!(BuildUser::choose(0, 0, 0, account).unwrap(), None);
+            assert_eq!(
+                BuildUser::choose(0, 1000, 1000, account).unwrap(),
+                Some(BuildUser {
+                    uid: 1000,
+                    gid: 1000,
+                    name: "alice".into(),
+                    home: "/var/home/alice".into(),
+                })
+            );
+            assert_eq!(BuildUser::choose(1000, 1000, 1000, account).unwrap(), None);
+            assert!(BuildUser::choose(0, 4242, 4242, account).is_err());
+        }
+
+        phase a_build_users_command_carries_its_home_and_no_root_cargo_home;
+        {
+            let user = BuildUser {
                 uid: 1000,
                 gid: 1000,
                 name: "alice".into(),
                 home: "/var/home/alice".into(),
-            })
-        );
-        assert_eq!(BuildUser::choose(1000, 1000, 1000, account).unwrap(), None);
-        assert!(BuildUser::choose(0, 4242, 4242, account).is_err());
-    }
-
-    #[test]
-    fn a_build_users_command_carries_its_home_and_no_root_cargo_home() {
-        let user = BuildUser {
-            uid: 1000,
-            gid: 1000,
-            name: "alice".into(),
-            home: "/var/home/alice".into(),
-        };
-        let mut command = Command::new("cargo");
-        command.env("CARGO_HOME", "/root/.cargo");
-        user.apply(&mut command);
-        let envs: Vec<_> = command.get_envs().collect();
-        assert!(envs.contains(&("HOME".as_ref(), Some("/var/home/alice".as_ref()))));
-        assert!(envs.contains(&("CARGO_HOME".as_ref(), None)));
+            };
+            let mut command = Command::new("cargo");
+            command.env("CARGO_HOME", "/root/.cargo");
+            user.apply(&mut command);
+            let envs: Vec<_> = command.get_envs().collect();
+            assert!(envs.contains(&("HOME".as_ref(), Some("/var/home/alice".as_ref()))));
+            assert!(envs.contains(&("CARGO_HOME".as_ref(), None)));
+        }
     }
 
     #[test]

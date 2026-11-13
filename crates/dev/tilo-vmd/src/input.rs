@@ -1269,208 +1269,216 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_tap_is_one_contact_down_then_up() {
-        let steps = events(&[InputAction::TouchTap { x: 300, y: 200 }]).unwrap();
-        let evs = emitted(&steps);
-        assert!(evs.iter().all(|e| e.device == Device::Touch));
-        assert_eq!(
-            on(&steps, Device::Touch, EV_ABS),
-            [
-                (ABS_MT_SLOT, 0),
-                (ABS_MT_TRACKING_ID, 0),
-                (ABS_MT_SLOT, 0),
-                (ABS_MT_POSITION_X, 300),
-                (ABS_MT_POSITION_Y, 200),
-                (ABS_X, 300),
-                (ABS_Y, 200),
-                (ABS_MT_SLOT, 0),
-                (ABS_MT_TRACKING_ID, -1),
-            ]
-        );
-        assert_eq!(
-            on(&steps, Device::Touch, EV_KEY),
-            [
-                (BTN_TOUCH, 1),
-                (BTN_TOOL_FINGER, 1),
-                (BTN_TOUCH, 0),
-                (BTN_TOOL_FINGER, 0)
-            ]
-        );
-        assert!(steps.contains(&Step::WaitMs(TAP_MS)));
-    }
+    tilo_test_env::scenario! {
+        fn touch_and_pen_contacts_are_reported_as_a_screen_reports_them;
 
-    #[test]
-    fn tracking_ids_keep_counting_across_contacts() {
-        let mut encoder = Encoder::default();
-        let ids = |steps: &[Step]| -> Vec<i32> {
-            on(steps, Device::Touch, EV_ABS)
-                .into_iter()
-                .filter(|(code, value)| *code == ABS_MT_TRACKING_ID && *value >= 0)
-                .map(|(_, value)| value)
-                .collect()
-        };
-        let first = encoder
-            .encode(&[InputAction::TouchTap { x: 1, y: 1 }])
+        phase a_tap_is_one_contact_down_then_up;
+        {
+            let steps = events(&[InputAction::TouchTap { x: 300, y: 200 }]).unwrap();
+            let evs = emitted(&steps);
+            assert!(evs.iter().all(|e| e.device == Device::Touch));
+            assert_eq!(
+                on(&steps, Device::Touch, EV_ABS),
+                [
+                    (ABS_MT_SLOT, 0),
+                    (ABS_MT_TRACKING_ID, 0),
+                    (ABS_MT_SLOT, 0),
+                    (ABS_MT_POSITION_X, 300),
+                    (ABS_MT_POSITION_Y, 200),
+                    (ABS_X, 300),
+                    (ABS_Y, 200),
+                    (ABS_MT_SLOT, 0),
+                    (ABS_MT_TRACKING_ID, -1),
+                ]
+            );
+            assert_eq!(
+                on(&steps, Device::Touch, EV_KEY),
+                [
+                    (BTN_TOUCH, 1),
+                    (BTN_TOOL_FINGER, 1),
+                    (BTN_TOUCH, 0),
+                    (BTN_TOOL_FINGER, 0)
+                ]
+            );
+            assert!(steps.contains(&Step::WaitMs(TAP_MS)));
+        }
+
+        phase tracking_ids_keep_counting_across_contacts;
+        {
+            let mut encoder = Encoder::default();
+            let ids = |steps: &[Step]| -> Vec<i32> {
+                on(steps, Device::Touch, EV_ABS)
+                    .into_iter()
+                    .filter(|(code, value)| *code == ABS_MT_TRACKING_ID && *value >= 0)
+                    .map(|(_, value)| value)
+                    .collect()
+            };
+            let first = encoder
+                .encode(&[InputAction::TouchTap { x: 1, y: 1 }])
+                .unwrap();
+            let second = encoder
+                .encode(&[InputAction::TouchPinch {
+                    center: (100, 100),
+                    from_distance: 40,
+                    to_distance: 80,
+                    duration_ms: 20,
+                }])
+                .unwrap();
+            assert_eq!(ids(&first), [0]);
+            assert_eq!(ids(&second), [1, 2]);
+        }
+
+        phase a_hold_waits_between_down_and_up;
+        {
+            let steps = events(&[InputAction::TouchHold {
+                x: 5,
+                y: 5,
+                duration_ms: 800,
+            }])
             .unwrap();
-        let second = encoder
-            .encode(&[InputAction::TouchPinch {
-                center: (100, 100),
-                from_distance: 40,
-                to_distance: 80,
+            let wait = steps.iter().position(|s| *s == Step::WaitMs(800)).unwrap();
+            let up = steps
+                .iter()
+                .position(|s| *s == event(Device::Touch, EV_ABS, ABS_MT_TRACKING_ID, -1))
+                .unwrap();
+            assert!(wait < up);
+        }
+
+        phase a_drag_moves_in_steps_and_ends_on_target;
+        {
+            let steps = events(&[InputAction::TouchDrag {
+                from: (0, 0),
+                to: (100, 50),
+                duration_ms: 100,
+            }])
+            .unwrap();
+            let xs: Vec<i32> = on(&steps, Device::Touch, EV_ABS)
+                .into_iter()
+                .filter(|(code, _)| *code == ABS_MT_POSITION_X)
+                .map(|(_, v)| v)
+                .collect();
+            assert_eq!(xs, [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
+            assert_eq!(
+                steps
+                    .iter()
+                    .filter(|s| matches!(s, Step::WaitMs(_)))
+                    .count(),
+                10
+            );
+            assert_eq!(path((0, 0), (9, 9), 0), [(9, 9)]);
+        }
+
+        phase a_pinch_moves_two_fingers_apart_symmetrically;
+        {
+            let steps = events(&[InputAction::TouchPinch {
+                center: (400, 300),
+                from_distance: 100,
+                to_distance: 300,
                 duration_ms: 20,
             }])
             .unwrap();
-        assert_eq!(ids(&first), [0]);
-        assert_eq!(ids(&second), [1, 2]);
-    }
-
-    #[test]
-    fn a_hold_waits_between_down_and_up() {
-        let steps = events(&[InputAction::TouchHold {
-            x: 5,
-            y: 5,
-            duration_ms: 800,
-        }])
-        .unwrap();
-        let wait = steps.iter().position(|s| *s == Step::WaitMs(800)).unwrap();
-        let up = steps
-            .iter()
-            .position(|s| *s == event(Device::Touch, EV_ABS, ABS_MT_TRACKING_ID, -1))
-            .unwrap();
-        assert!(wait < up);
-    }
-
-    #[test]
-    fn a_drag_moves_in_steps_and_ends_on_target() {
-        let steps = events(&[InputAction::TouchDrag {
-            from: (0, 0),
-            to: (100, 50),
-            duration_ms: 100,
-        }])
-        .unwrap();
-        let xs: Vec<i32> = on(&steps, Device::Touch, EV_ABS)
-            .into_iter()
-            .filter(|(code, _)| *code == ABS_MT_POSITION_X)
-            .map(|(_, v)| v)
-            .collect();
-        assert_eq!(xs, [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
-        assert_eq!(
-            steps
+            let abs = on(&steps, Device::Touch, EV_ABS);
+            let xs: Vec<i32> = abs
                 .iter()
-                .filter(|s| matches!(s, Step::WaitMs(_)))
-                .count(),
-            10
-        );
-        assert_eq!(path((0, 0), (9, 9), 0), [(9, 9)]);
-    }
-
-    #[test]
-    fn a_pinch_moves_two_fingers_apart_symmetrically() {
-        let steps = events(&[InputAction::TouchPinch {
-            center: (400, 300),
-            from_distance: 100,
-            to_distance: 300,
-            duration_ms: 20,
-        }])
-        .unwrap();
-        let abs = on(&steps, Device::Touch, EV_ABS);
-        let xs: Vec<i32> = abs
-            .iter()
-            .filter(|(code, _)| *code == ABS_MT_POSITION_X)
-            .map(|(_, v)| *v)
-            .collect();
-        // Down at 350/450, then 300/500, then 250/550.
-        assert_eq!(xs, [350, 450, 300, 500, 250, 550]);
-        assert_eq!(
-            on(&steps, Device::Touch, EV_KEY),
-            [
-                (BTN_TOUCH, 1),
-                (BTN_TOOL_DOUBLETAP, 1),
-                (BTN_TOUCH, 0),
-                (BTN_TOOL_DOUBLETAP, 0)
-            ]
-        );
-        let lifted = abs
-            .iter()
-            .filter(|(code, value)| *code == ABS_MT_TRACKING_ID && *value == -1)
-            .count();
-        assert_eq!(lifted, 2);
-    }
-
-    #[test]
-    fn a_pen_comes_into_proximity_before_touching() {
-        let steps = events(&[InputAction::PenTap {
-            x: 7,
-            y: 8,
-            pressure: 50,
-        }])
-        .unwrap();
-        let evs = emitted(&steps);
-        assert!(evs.iter().all(|e| e.device == Device::Pen));
-        assert_eq!(evs[0], ev(Device::Pen, EV_KEY, BTN_TOOL_PEN, 1));
-        let touch = evs
-            .iter()
-            .position(|e| *e == ev(Device::Pen, EV_KEY, BTN_TOUCH, 1))
-            .unwrap();
-        assert!(evs[..touch].contains(&ev(Device::Pen, EV_SYN, 0, 0)));
-        assert!(evs.contains(&ev(Device::Pen, EV_ABS, ABS_PRESSURE, PRESSURE_MAX / 2)));
-        assert_eq!(evs[evs.len() - 2], ev(Device::Pen, EV_KEY, BTN_TOOL_PEN, 0));
-    }
-
-    #[test]
-    fn gamepad_combos_hold_then_release_in_reverse() {
-        let steps = events(&[InputAction::GamepadPress {
-            combos: vec!["guide+rt".into(), "up".into()],
-        }])
-        .unwrap();
-        let evs: Vec<(u16, u16, i32)> = emitted(&steps)
-            .into_iter()
-            .filter(|e| e.kind != EV_SYN)
-            .map(|e| (e.kind, e.code, e.value))
-            .collect();
-        assert_eq!(
-            evs,
-            [
-                (EV_KEY, 0x13c, 1),
-                (EV_ABS, ABS_RZ, TRIGGER_MAX),
-                (EV_ABS, ABS_RZ, 0),
-                (EV_KEY, 0x13c, 0),
-                (EV_ABS, ABS_HAT0Y, -1),
-                (EV_ABS, ABS_HAT0Y, 0),
-            ]
-        );
-        assert!(emitted(&steps).iter().all(|e| e.device == Device::Gamepad));
-        assert_eq!(
-            steps
+                .filter(|(code, _)| *code == ABS_MT_POSITION_X)
+                .map(|(_, v)| *v)
+                .collect();
+            // Down at 350/450, then 300/500, then 250/550.
+            assert_eq!(xs, [350, 450, 300, 500, 250, 550]);
+            assert_eq!(
+                on(&steps, Device::Touch, EV_KEY),
+                [
+                    (BTN_TOUCH, 1),
+                    (BTN_TOOL_DOUBLETAP, 1),
+                    (BTN_TOUCH, 0),
+                    (BTN_TOOL_DOUBLETAP, 0)
+                ]
+            );
+            let lifted = abs
                 .iter()
-                .filter(|s| **s == Step::WaitMs(PRESS_MS))
-                .count(),
-            4
-        );
+                .filter(|(code, value)| *code == ABS_MT_TRACKING_ID && *value == -1)
+                .count();
+            assert_eq!(lifted, 2);
+        }
+
+        phase a_pen_comes_into_proximity_before_touching;
+        {
+            let steps = events(&[InputAction::PenTap {
+                x: 7,
+                y: 8,
+                pressure: 50,
+            }])
+            .unwrap();
+            let evs = emitted(&steps);
+            assert!(evs.iter().all(|e| e.device == Device::Pen));
+            assert_eq!(evs[0], ev(Device::Pen, EV_KEY, BTN_TOOL_PEN, 1));
+            let touch = evs
+                .iter()
+                .position(|e| *e == ev(Device::Pen, EV_KEY, BTN_TOUCH, 1))
+                .unwrap();
+            assert!(evs[..touch].contains(&ev(Device::Pen, EV_SYN, 0, 0)));
+            assert!(evs.contains(&ev(Device::Pen, EV_ABS, ABS_PRESSURE, PRESSURE_MAX / 2)));
+            assert_eq!(evs[evs.len() - 2], ev(Device::Pen, EV_KEY, BTN_TOOL_PEN, 0));
+        }
     }
 
-    #[test]
-    fn sticks_deflect_then_spring_back() {
-        let steps = events(&[InputAction::GamepadStick {
-            stick: Stick::Right,
-            x: -100,
-            y: 50,
-            duration_ms: 250,
-        }])
-        .unwrap();
-        assert_eq!(
-            on(&steps, Device::Gamepad, EV_ABS),
-            [
-                (ABS_RX, STICK_MIN),
-                (ABS_RY, 16_383),
-                (ABS_RX, 0),
-                (ABS_RY, 0)
-            ]
-        );
-        assert!(steps.contains(&Step::WaitMs(250)));
-        assert_eq!(stick_value(100), STICK_MAX);
-        assert_eq!(stick_value(0), 0);
+    tilo_test_env::scenario! {
+        fn gamepad_buttons_and_sticks_press_and_release;
+
+        phase gamepad_combos_hold_then_release_in_reverse;
+        {
+            let steps = events(&[InputAction::GamepadPress {
+                combos: vec!["guide+rt".into(), "up".into()],
+            }])
+            .unwrap();
+            let evs: Vec<(u16, u16, i32)> = emitted(&steps)
+                .into_iter()
+                .filter(|e| e.kind != EV_SYN)
+                .map(|e| (e.kind, e.code, e.value))
+                .collect();
+            assert_eq!(
+                evs,
+                [
+                    (EV_KEY, 0x13c, 1),
+                    (EV_ABS, ABS_RZ, TRIGGER_MAX),
+                    (EV_ABS, ABS_RZ, 0),
+                    (EV_KEY, 0x13c, 0),
+                    (EV_ABS, ABS_HAT0Y, -1),
+                    (EV_ABS, ABS_HAT0Y, 0),
+                ]
+            );
+            assert!(emitted(&steps).iter().all(|e| e.device == Device::Gamepad));
+            assert_eq!(
+                steps
+                    .iter()
+                    .filter(|s| **s == Step::WaitMs(PRESS_MS))
+                    .count(),
+                4
+            );
+        }
+
+        phase sticks_deflect_then_spring_back;
+        {
+            let steps = events(&[InputAction::GamepadStick {
+                stick: Stick::Right,
+                x: -100,
+                y: 50,
+                duration_ms: 250,
+            }])
+            .unwrap();
+            assert_eq!(
+                on(&steps, Device::Gamepad, EV_ABS),
+                [
+                    (ABS_RX, STICK_MIN),
+                    (ABS_RY, 16_383),
+                    (ABS_RX, 0),
+                    (ABS_RY, 0)
+                ]
+            );
+            assert!(steps.contains(&Step::WaitMs(250)));
+            assert_eq!(stick_value(100), STICK_MAX);
+            assert_eq!(stick_value(0), 0);
+        }
     }
 
     fn keyboard_events(steps: &[Step]) -> Vec<(Device, u16, i32)> {
@@ -1490,256 +1498,264 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_plugged_keyboard_profile_takes_the_keys_until_it_is_unplugged() {
-        let mut encoder = Encoder::default();
-        let key = |combo: &str| InputAction::Key {
-            combos: vec![combo.into()],
-        };
-        let before = encoder.encode(&[key("y")]).unwrap();
-        assert!(
-            emitted(&before)
+    tilo_test_env::scenario! {
+        fn plugged_profiles_take_input_until_unplugged_and_refuse_what_is_wrong;
+
+        phase a_plugged_keyboard_profile_takes_the_keys_until_it_is_unplugged;
+        {
+            let mut encoder = Encoder::default();
+            let key = |combo: &str| InputAction::Key {
+                combos: vec![combo.into()],
+            };
+            let before = encoder.encode(&[key("y")]).unwrap();
+            assert!(
+                emitted(&before)
+                    .iter()
+                    .all(|e| e.device == Device::Keyboard)
+            );
+
+            let plugged = encoder.encode(&[plug(KB), key("y")]).unwrap();
+            assert_eq!(plugged[0], Step::Plug(KB));
+            assert_eq!(
+                keyboard_events(&plugged),
+                [(Device::Profile(KB), 21, 1), (Device::Profile(KB), 21, 0)]
+            );
+            // Held modifiers go through the same keyboard, up in reverse order.
+            let held = encoder
+                .encode(&[
+                    InputAction::KeyDown {
+                        combo: "ctrl+shift".into(),
+                    },
+                    InputAction::KeyUp {
+                        combo: "ctrl+shift".into(),
+                    },
+                ])
+                .unwrap();
+            assert_eq!(
+                keyboard_events(&held)
+                    .iter()
+                    .map(|(_, c, v)| (*c, *v))
+                    .collect::<Vec<_>>(),
+                [(29, 1), (42, 1), (42, 0), (29, 0)]
+            );
+            assert!(
+                keyboard_events(&held)
+                    .iter()
+                    .all(|(d, _, _)| *d == Device::Profile(KB))
+            );
+
+            let unplugged = encoder
+                .encode(&[InputAction::DeviceUnplug { profile: KB.into() }, key("y")])
+                .unwrap();
+            assert_eq!(unplugged[0], Step::Unplug(KB));
+            assert!(
+                emitted(&unplugged)
+                    .iter()
+                    .all(|e| e.device == Device::Keyboard)
+            );
+        }
+
+        phase plugging_twice_or_unplugging_nothing_is_refused;
+        {
+            let mut encoder = Encoder::default();
+            encoder.encode(&[plug(TP)]).unwrap();
+            assert!(
+                encoder
+                    .encode(&[plug(TP)])
+                    .unwrap_err()
+                    .contains("already plugged")
+            );
+            let error = encoder
+                .encode(&[InputAction::DeviceUnplug { profile: KB.into() }])
+                .unwrap_err();
+            assert!(error.contains("not plugged"), "{error}");
+            let error = encoder.encode(&[plug("nope")]).unwrap_err();
+            assert!(error.contains("lenovo-83ed-mouse"), "{error}");
+        }
+
+        phase a_refused_batch_leaves_no_steps_or_plugs_behind;
+        {
+            let mut encoder = Encoder::default();
+            let error = encoder.encode(&[plug(KB), plug("nope")]).unwrap_err();
+            assert!(error.contains("no device profile"), "{error}");
+            // The keyboard was not plugged by the failed batch, and nothing is queued.
+            let steps = encoder
+                .encode(&[InputAction::Key {
+                    combos: vec!["a".into()],
+                }])
+                .unwrap();
+            assert!(emitted(&steps).iter().all(|e| e.device == Device::Keyboard));
+            assert!(steps.iter().all(|s| !matches!(s, Step::Plug(_))));
+            encoder.encode(&[plug(KB)]).unwrap();
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn touchpad_gestures_move_fingers_on_a_plugged_pad;
+
+        phase a_touchpad_gesture_needs_a_plugged_touchpad;
+        {
+            let error = Encoder::default()
+                .encode(&[InputAction::TouchpadTap { fingers: 1 }])
+                .unwrap_err();
+            assert!(
+                error.contains("device plug lenovo-83ed-touchpad"),
+                "{error}"
+            );
+        }
+
+        phase a_touchpad_tap_is_a_contact_at_the_centre_then_lift;
+        {
+            let steps = Encoder::default()
+                .encode(&[plug(TP), InputAction::TouchpadTap { fingers: 1 }])
+                .unwrap();
+            let pad = Device::Profile(TP);
+            let evs = emitted(&steps);
+            assert!(evs.iter().all(|e| e.device == pad));
+            let abs = on(&steps, pad, EV_ABS);
+            assert!(abs.contains(&(ABS_MT_POSITION_X, 1570)), "{abs:?}");
+            assert!(abs.contains(&(ABS_MT_POSITION_Y, 921)), "{abs:?}");
+            assert!(abs.contains(&(ABS_MT_TOOL_TYPE, 0)));
+            assert_eq!(
+                on(&steps, pad, EV_KEY),
+                [
+                    (BTN_TOUCH, 1),
+                    (BTN_TOOL_FINGER, 1),
+                    (BTN_TOUCH, 0),
+                    (BTN_TOOL_FINGER, 0)
+                ]
+            );
+            assert!(steps.contains(&Step::WaitMs(TAP_MS)));
+        }
+
+        phase a_two_finger_swipe_moves_both_fingers_in_parallel_in_device_units;
+        {
+            let steps = Encoder::default()
+                .encode(&[
+                    plug(TP),
+                    InputAction::TouchpadSwipe {
+                        fingers: 2,
+                        dx_mm: 0,
+                        dy_mm: -20,
+                        duration_ms: 40,
+                        press: false,
+                    },
+                ])
+                .unwrap();
+            let pad = Device::Profile(TP);
+            assert_eq!(
+                on(&steps, pad, EV_KEY),
+                [
+                    (BTN_TOUCH, 1),
+                    (BTN_TOOL_DOUBLETAP, 1),
+                    (BTN_TOUCH, 0),
+                    (BTN_TOOL_DOUBLETAP, 0)
+                ]
+            );
+            let ys: Vec<i32> = on(&steps, pad, EV_ABS)
+                .into_iter()
+                .filter(|(code, _)| *code == ABS_MT_POSITION_Y)
+                .map(|(_, v)| v)
+                .collect();
+            // 20 mm at 24 units/mm is 480 units, centred on y 921 (down at 921+240),
+            // two fingers, four 10 ms steps after the touch-down report.
+            assert_eq!(ys.len(), 2 * (1 + 4));
+            assert_eq!(ys[0], 921 + 240);
+            assert_eq!(ys[ys.len() - 1], 921 - 240);
+            let xs: Vec<i32> = on(&steps, pad, EV_ABS)
+                .into_iter()
+                .filter(|(code, _)| *code == ABS_MT_POSITION_X)
+                .map(|(_, v)| v)
+                .collect();
+            assert_eq!(xs[1] - xs[0], 14 * 24);
+            let max_x = profile(TP).unwrap().axis(ABS_MT_POSITION_X).unwrap().max;
+            assert!(xs.iter().all(|x| (0..=max_x).contains(x)));
+        }
+
+        phase a_pressed_swipe_holds_the_clickpad_down_while_the_finger_moves;
+        {
+            let steps = Encoder::default()
+                .encode(&[
+                    plug(TP),
+                    InputAction::TouchpadSwipe {
+                        fingers: 1,
+                        dx_mm: 40,
+                        dy_mm: 0,
+                        duration_ms: 40,
+                        press: true,
+                    },
+                ])
+                .unwrap();
+            let pad = Device::Profile(TP);
+            assert_eq!(
+                on(&steps, pad, EV_KEY),
+                [
+                    (BTN_TOUCH, 1),
+                    (BTN_TOOL_FINGER, 1),
+                    (BTN_LEFT, 1),
+                    (BTN_LEFT, 0),
+                    (BTN_TOUCH, 0),
+                    (BTN_TOOL_FINGER, 0)
+                ]
+            );
+            let at = |code: u16, value: i32| {
+                steps
+                    .iter()
+                    .position(|step| *step == event(pad, EV_KEY, code, value))
+                    .unwrap()
+            };
+            let moves: Vec<usize> = steps
                 .iter()
-                .all(|e| e.device == Device::Keyboard)
-        );
+                .enumerate()
+                .filter(|(_, step)| {
+                    step.event()
+                        .is_some_and(|e| e.device == pad && e.code == ABS_MT_POSITION_X)
+                })
+                .map(|(index, _)| index)
+                .collect();
+            assert!(moves.len() > 2);
+            assert!(
+                moves[1..]
+                    .iter()
+                    .all(|m| (at(BTN_LEFT, 1)..at(BTN_LEFT, 0)).contains(m)),
+                "every move after the touch-down happens with the button held"
+            );
+        }
 
-        let plugged = encoder.encode(&[plug(KB), key("y")]).unwrap();
-        assert_eq!(plugged[0], Step::Plug(KB));
-        assert_eq!(
-            keyboard_events(&plugged),
-            [(Device::Profile(KB), 21, 1), (Device::Profile(KB), 21, 0)]
-        );
-        // Held modifiers go through the same keyboard, up in reverse order.
-        let held = encoder
-            .encode(&[
-                InputAction::KeyDown {
-                    combo: "ctrl+shift".into(),
-                },
-                InputAction::KeyUp {
-                    combo: "ctrl+shift".into(),
-                },
-            ])
-            .unwrap();
-        assert_eq!(
-            keyboard_events(&held)
-                .iter()
-                .map(|(_, c, v)| (*c, *v))
-                .collect::<Vec<_>>(),
-            [(29, 1), (42, 1), (42, 0), (29, 0)]
-        );
-        assert!(
-            keyboard_events(&held)
-                .iter()
-                .all(|(d, _, _)| *d == Device::Profile(KB))
-        );
+        phase a_swipe_longer_than_the_pad_is_refused;
+        {
+            let error = Encoder::default()
+                .encode(&[
+                    plug(TP),
+                    InputAction::TouchpadSwipe {
+                        fingers: 1,
+                        dx_mm: 200,
+                        dy_mm: 0,
+                        duration_ms: 400,
+                        press: true,
+                    },
+                ])
+                .unwrap_err();
+            assert!(error.contains("130 x 76 mm"), "{error}");
+        }
 
-        let unplugged = encoder
-            .encode(&[InputAction::DeviceUnplug { profile: KB.into() }, key("y")])
-            .unwrap();
-        assert_eq!(unplugged[0], Step::Unplug(KB));
-        assert!(
-            emitted(&unplugged)
-                .iter()
-                .all(|e| e.device == Device::Keyboard)
-        );
-    }
-
-    #[test]
-    fn plugging_twice_or_unplugging_nothing_is_refused() {
-        let mut encoder = Encoder::default();
-        encoder.encode(&[plug(TP)]).unwrap();
-        assert!(
-            encoder
-                .encode(&[plug(TP)])
-                .unwrap_err()
-                .contains("already plugged")
-        );
-        let error = encoder
-            .encode(&[InputAction::DeviceUnplug { profile: KB.into() }])
-            .unwrap_err();
-        assert!(error.contains("not plugged"), "{error}");
-        let error = encoder.encode(&[plug("nope")]).unwrap_err();
-        assert!(error.contains("lenovo-83ed-mouse"), "{error}");
-    }
-
-    #[test]
-    fn a_refused_batch_leaves_no_steps_or_plugs_behind() {
-        let mut encoder = Encoder::default();
-        let error = encoder.encode(&[plug(KB), plug("nope")]).unwrap_err();
-        assert!(error.contains("no device profile"), "{error}");
-        // The keyboard was not plugged by the failed batch, and nothing is queued.
-        let steps = encoder
-            .encode(&[InputAction::Key {
-                combos: vec!["a".into()],
-            }])
-            .unwrap();
-        assert!(emitted(&steps).iter().all(|e| e.device == Device::Keyboard));
-        assert!(steps.iter().all(|s| !matches!(s, Step::Plug(_))));
-        encoder.encode(&[plug(KB)]).unwrap();
-    }
-
-    #[test]
-    fn a_touchpad_gesture_needs_a_plugged_touchpad() {
-        let error = Encoder::default()
-            .encode(&[InputAction::TouchpadTap { fingers: 1 }])
-            .unwrap_err();
-        assert!(
-            error.contains("device plug lenovo-83ed-touchpad"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn a_touchpad_tap_is_a_contact_at_the_centre_then_lift() {
-        let steps = Encoder::default()
-            .encode(&[plug(TP), InputAction::TouchpadTap { fingers: 1 }])
-            .unwrap();
-        let pad = Device::Profile(TP);
-        let evs = emitted(&steps);
-        assert!(evs.iter().all(|e| e.device == pad));
-        let abs = on(&steps, pad, EV_ABS);
-        assert!(abs.contains(&(ABS_MT_POSITION_X, 1570)), "{abs:?}");
-        assert!(abs.contains(&(ABS_MT_POSITION_Y, 921)), "{abs:?}");
-        assert!(abs.contains(&(ABS_MT_TOOL_TYPE, 0)));
-        assert_eq!(
-            on(&steps, pad, EV_KEY),
-            [
-                (BTN_TOUCH, 1),
-                (BTN_TOOL_FINGER, 1),
-                (BTN_TOUCH, 0),
-                (BTN_TOOL_FINGER, 0)
-            ]
-        );
-        assert!(steps.contains(&Step::WaitMs(TAP_MS)));
-    }
-
-    #[test]
-    fn a_two_finger_swipe_moves_both_fingers_in_parallel_in_device_units() {
-        let steps = Encoder::default()
-            .encode(&[
-                plug(TP),
-                InputAction::TouchpadSwipe {
-                    fingers: 2,
-                    dx_mm: 0,
-                    dy_mm: -20,
-                    duration_ms: 40,
-                    press: false,
-                },
-            ])
-            .unwrap();
-        let pad = Device::Profile(TP);
-        assert_eq!(
-            on(&steps, pad, EV_KEY),
-            [
-                (BTN_TOUCH, 1),
-                (BTN_TOOL_DOUBLETAP, 1),
-                (BTN_TOUCH, 0),
-                (BTN_TOOL_DOUBLETAP, 0)
-            ]
-        );
-        let ys: Vec<i32> = on(&steps, pad, EV_ABS)
-            .into_iter()
-            .filter(|(code, _)| *code == ABS_MT_POSITION_Y)
-            .map(|(_, v)| v)
-            .collect();
-        // 20 mm at 24 units/mm is 480 units, centred on y 921 (down at 921+240),
-        // two fingers, four 10 ms steps after the touch-down report.
-        assert_eq!(ys.len(), 2 * (1 + 4));
-        assert_eq!(ys[0], 921 + 240);
-        assert_eq!(ys[ys.len() - 1], 921 - 240);
-        let xs: Vec<i32> = on(&steps, pad, EV_ABS)
-            .into_iter()
-            .filter(|(code, _)| *code == ABS_MT_POSITION_X)
-            .map(|(_, v)| v)
-            .collect();
-        assert_eq!(xs[1] - xs[0], 14 * 24);
-        let max_x = profile(TP).unwrap().axis(ABS_MT_POSITION_X).unwrap().max;
-        assert!(xs.iter().all(|x| (0..=max_x).contains(x)));
-    }
-
-    #[test]
-    fn a_pressed_swipe_holds_the_clickpad_down_while_the_finger_moves() {
-        let steps = Encoder::default()
-            .encode(&[
-                plug(TP),
-                InputAction::TouchpadSwipe {
-                    fingers: 1,
-                    dx_mm: 40,
-                    dy_mm: 0,
-                    duration_ms: 40,
-                    press: true,
-                },
-            ])
-            .unwrap();
-        let pad = Device::Profile(TP);
-        assert_eq!(
-            on(&steps, pad, EV_KEY),
-            [
-                (BTN_TOUCH, 1),
-                (BTN_TOOL_FINGER, 1),
-                (BTN_LEFT, 1),
-                (BTN_LEFT, 0),
-                (BTN_TOUCH, 0),
-                (BTN_TOOL_FINGER, 0)
-            ]
-        );
-        let at = |code: u16, value: i32| {
-            steps
-                .iter()
-                .position(|step| *step == event(pad, EV_KEY, code, value))
-                .unwrap()
-        };
-        let moves: Vec<usize> = steps
-            .iter()
-            .enumerate()
-            .filter(|(_, step)| {
-                step.event()
-                    .is_some_and(|e| e.device == pad && e.code == ABS_MT_POSITION_X)
-            })
-            .map(|(index, _)| index)
-            .collect();
-        assert!(moves.len() > 2);
-        assert!(
-            moves[1..]
-                .iter()
-                .all(|m| (at(BTN_LEFT, 1)..at(BTN_LEFT, 0)).contains(m)),
-            "every move after the touch-down happens with the button held"
-        );
-    }
-
-    #[test]
-    fn a_swipe_longer_than_the_pad_is_refused() {
-        let error = Encoder::default()
-            .encode(&[
-                plug(TP),
-                InputAction::TouchpadSwipe {
-                    fingers: 1,
-                    dx_mm: 200,
-                    dy_mm: 0,
-                    duration_ms: 400,
-                    press: true,
-                },
-            ])
-            .unwrap_err();
-        assert!(error.contains("130 x 76 mm"), "{error}");
-    }
-
-    #[test]
-    fn a_clickpad_click_presses_the_button_with_a_finger_on_the_pad() {
-        let steps = Encoder::default()
-            .encode(&[plug(TP), InputAction::TouchpadClick])
-            .unwrap();
-        let keys = on(&steps, Device::Profile(TP), EV_KEY);
-        assert_eq!(
-            keys,
-            [
-                (BTN_TOUCH, 1),
-                (BTN_TOOL_FINGER, 1),
-                (BTN_LEFT, 1),
-                (BTN_LEFT, 0),
-                (BTN_TOUCH, 0),
-                (BTN_TOOL_FINGER, 0)
-            ]
-        );
+        phase a_clickpad_click_presses_the_button_with_a_finger_on_the_pad;
+        {
+            let steps = Encoder::default()
+                .encode(&[plug(TP), InputAction::TouchpadClick])
+                .unwrap();
+            let keys = on(&steps, Device::Profile(TP), EV_KEY);
+            assert_eq!(
+                keys,
+                [
+                    (BTN_TOUCH, 1),
+                    (BTN_TOOL_FINGER, 1),
+                    (BTN_LEFT, 1),
+                    (BTN_LEFT, 0),
+                    (BTN_TOUCH, 0),
+                    (BTN_TOOL_FINGER, 0)
+                ]
+            );
+        }
     }
 }
