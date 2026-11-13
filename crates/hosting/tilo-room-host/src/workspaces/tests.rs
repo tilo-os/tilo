@@ -1322,6 +1322,26 @@ async fn a_renamed_room_shows_its_new_name_to_members_and_after_a_restart() {
         "the same name changes nothing"
     );
     assert!(workspaces.rename(&created.workspace, " ").await.is_err());
+    // Each name a workspace cannot take is refused, and changes nothing.
+    let too_long = "x".repeat(81);
+    for (name, what) in [
+        ("", "no name"),
+        (too_long.as_str(), "81 characters"),
+        ("a\u{7}b", "a bell inside"),
+        ("a\nb", "a newline inside"),
+    ] {
+        let refused = workspaces.rename(&created.workspace, name).await;
+        assert!(refused.is_err(), "{what} ({name:?}) renamed the room");
+    }
+    let kept = workspaces
+        .rename(&created.workspace, "Plaza")
+        .await
+        .unwrap();
+    assert_eq!(kept.name, "Plaza");
+    assert_eq!(
+        kept.generation, renamed.generation,
+        "a refused name changes nothing"
+    );
     let path = {
         let state = workspaces.workspace(&created.workspace).await.unwrap();
         let governed = state.lock().await;
