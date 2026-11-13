@@ -214,6 +214,14 @@ mod tests {
 
     #[test]
     fn every_block_stays_reachable_page_by_page() {
+        // A body this large records its text as content the window keeps, as
+        // the host lends every window a store to keep it in.
+        let window = ui::wake::WakeScope::new();
+        ui::tilo_resource::content::register(
+            &window.handle(),
+            tilo_content::ContentStore::memory(),
+        );
+        let _in_the_window = window.enter();
         let texts: Vec<String> = (0..3_000).map(|n| format!("ordinary record {n}")).collect();
         let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
         let (mut notebook, pages) = populated();
