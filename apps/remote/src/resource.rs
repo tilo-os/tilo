@@ -226,138 +226,142 @@ mod tests {
         list.into_iter().next().unwrap()
     }
 
-    #[test]
-    fn connections_round_trip_and_edits_write_only_their_fields() {
-        for kind in ConnectionKind::all() {
-            let mut remote = Replica::<Remote>::new();
-            let mut connection = sample(Uuid::new_v4(), "Build Box");
-            connection.kind = kind;
-            connection.auth = AuthMethod::available_for(kind)[0];
-            if kind == ConnectionKind::Tilo {
-                connection.host = Atom(iroh_base::SecretKey::generate().public().to_string());
-                connection.port = 0;
+    tilo_test_env::scenario! {
+        fn the_saved_connections_round_trip_validate_and_converge;
+
+        phase connections_round_trip_and_edits_write_only_their_fields;
+        {
+            for kind in ConnectionKind::all() {
+                let mut remote = Replica::<Remote>::new();
+                let mut connection = sample(Uuid::new_v4(), "Build Box");
+                connection.kind = kind;
+                connection.auth = AuthMethod::available_for(kind)[0];
+                if kind == ConnectionKind::Tilo {
+                    connection.host = Atom(iroh_base::SecretKey::generate().public().to_string());
+                    connection.port = 0;
+                }
+                save(&mut remote, &connection);
+                assert_eq!(only(&remote), connection, "{kind:?} round-trips");
             }
+
+            let mut remote = Replica::<Remote>::new();
+            let id = Uuid::new_v4();
+            let connection = sample(id, "Box");
             save(&mut remote, &connection);
-            assert_eq!(only(&remote), connection, "{kind:?} round-trips");
-        }
-
-        let mut remote = Replica::<Remote>::new();
-        let id = Uuid::new_v4();
-        let connection = sample(id, "Box");
-        save(&mut remote, &connection);
-        let paths = Remote::paths().connections.item(&Remote::item(id));
-        remote
-            .apply(Invoke::edit(&paths.favorite.set(true)).unwrap())
-            .unwrap();
-        remote
-            .apply(Remote::MARK_USED.with(remote::MarkUsed {
-                connection: Remote::item(id),
-                at_ms: 5_000,
-            }))
-            .unwrap();
-        let mut edited = connection.clone();
-        edited.name = "Box (renamed)".into();
-        edited.host = Atom("10.0.0.10".into());
-        let edits = paths.path().edits(&connection, &edited);
-        remote
-            .apply(Invoke::group(
-                edits.iter().map(|edit| Invoke::edit(edit).unwrap()),
-            ))
-            .unwrap();
-        let back = only(&remote);
-        assert_eq!(back.name, "Box (renamed)");
-        assert_eq!(back.host.0, "10.0.0.10");
-        assert!(back.favorite, "the edit kept the pin");
-        assert_eq!(back.last_used_ms, Some(5_000), "and the recorded use");
-        assert!(
+            let paths = Remote::paths().connections.item(&Remote::item(id));
             remote
-                .apply(Invoke::edit(&paths.last_used_ms.set(Some(1))).unwrap())
-                .is_err(),
-            "only opening a session records a use"
-        );
-    }
-
-    /// The latest use wins; deleting asks first; a verb on a connection
-    /// that is gone is refused and changes nothing.
-    #[test]
-    fn uses_deletion_and_missing_connections() {
-        let mut remote = Replica::<Remote>::new();
-        let id = Uuid::new_v4();
-        save(&mut remote, &sample(id, "Box"));
-        let used = |at_ms| {
-            Remote::MARK_USED.with(remote::MarkUsed {
-                connection: Remote::item(id),
-                at_ms,
-            })
-        };
-        remote.apply(used(2_000)).unwrap();
-        remote.apply(used(1_000)).unwrap();
-        assert_eq!(
-            only(&remote).last_used_ms,
-            Some(2_000),
-            "a late, older record does not move last used back"
-        );
-
-        let delete = || {
-            Remote::DELETE_CONNECTION.with(remote::DeleteConnection {
-                connection: Remote::item(id),
-            })
-        };
-        assert!(remote.apply(delete()).is_err(), "deleting asks first");
-        remote.apply_confirmed(delete()).unwrap();
-        assert!(remote.state().unwrap().list().is_empty());
-        assert!(remote.apply(used(3_000)).is_err());
-        assert!(remote.apply_confirmed(delete()).is_err());
-    }
-
-    /// Whatever writes a connection is held to what a saved connection
-    /// is: a name, a host, a usable port and a supported sign-in.
-    #[test]
-    fn the_invariant_refuses_unusable_profiles() {
-        let mut remote = Replica::<Remote>::new();
-        let id = Uuid::new_v4();
-        save(&mut remote, &sample(id, "Box"));
-        let paths = Remote::paths().connections.item(&Remote::item(id));
-        for refused in [
-            Invoke::edit(&paths.name.replace("  ")).unwrap(),
-            Invoke::edit(&paths.host.set(Atom(String::new()))).unwrap(),
-            Invoke::edit(&paths.port.set(0)).unwrap(),
-            Invoke::edit(&paths.auth.set(AuthMethod::DeviceIdentity)).unwrap(),
-        ] {
-            assert!(remote.apply(refused).is_err());
+                .apply(Invoke::edit(&paths.favorite.set(true)).unwrap())
+                .unwrap();
+            remote
+                .apply(Remote::MARK_USED.with(remote::MarkUsed {
+                    connection: Remote::item(id),
+                    at_ms: 5_000,
+                }))
+                .unwrap();
+            let mut edited = connection.clone();
+            edited.name = "Box (renamed)".into();
+            edited.host = Atom("10.0.0.10".into());
+            let edits = paths.path().edits(&connection, &edited);
+            remote
+                .apply(Invoke::group(
+                    edits.iter().map(|edit| Invoke::edit(edit).unwrap()),
+                ))
+                .unwrap();
+            let back = only(&remote);
+            assert_eq!(back.name, "Box (renamed)");
+            assert_eq!(back.host.0, "10.0.0.10");
+            assert!(back.favorite, "the edit kept the pin");
+            assert_eq!(back.last_used_ms, Some(5_000), "and the recorded use");
+            assert!(
+                remote
+                    .apply(Invoke::edit(&paths.last_used_ms.set(Some(1))).unwrap())
+                    .is_err(),
+                "only opening a session records a use"
+            );
         }
-        assert_eq!(only(&remote), sample(id, "Box"));
-    }
 
-    /// Two devices editing the list at once converge: both new machines
-    /// land, renames merge as text, the pin and the port both hold.
-    #[test]
-    fn concurrent_edits_converge() {
-        let mut ours = Replica::<Remote>::new();
-        let id = Uuid::new_v4();
-        save(&mut ours, &sample(id, "Box"));
-        let mut theirs = ours.fork();
-        let paths = Remote::paths().connections.item(&Remote::item(id));
-        save(&mut ours, &sample(Uuid::new_v4(), "A"));
-        save(&mut theirs, &sample(Uuid::new_v4(), "B"));
-        ours.apply(Invoke::edit(&paths.name.splice(3, 0, " one")).unwrap())
-            .unwrap();
-        theirs
-            .apply(Invoke::edit(&paths.name.splice(0, 0, "Lab ")).unwrap())
-            .unwrap();
-        ours.apply(Invoke::edit(&paths.favorite.set(true)).unwrap())
-            .unwrap();
-        theirs
-            .apply(Invoke::edit(&paths.port.set(2222)).unwrap())
-            .unwrap();
-        ours.sync_with(&mut theirs).unwrap();
-        assert_eq!(ours.state().unwrap(), theirs.state().unwrap());
-        let list = ours.state().unwrap().list();
-        let mut names: Vec<_> = list.iter().map(|c| c.name.clone()).collect();
-        names.sort();
-        assert_eq!(names, ["A", "B", "Lab Box one"]);
-        let merged = list.iter().find(|c| c.id == id).unwrap();
-        assert!(merged.favorite && merged.port == 2222);
+        phase uses_deletion_and_missing_connections;
+        // The latest use wins; deleting asks first; a verb on a connection
+        // that is gone is refused and changes nothing.
+        {
+            let mut remote = Replica::<Remote>::new();
+            let id = Uuid::new_v4();
+            save(&mut remote, &sample(id, "Box"));
+            let used = |at_ms| {
+                Remote::MARK_USED.with(remote::MarkUsed {
+                    connection: Remote::item(id),
+                    at_ms,
+                })
+            };
+            remote.apply(used(2_000)).unwrap();
+            remote.apply(used(1_000)).unwrap();
+            assert_eq!(
+                only(&remote).last_used_ms,
+                Some(2_000),
+                "a late, older record does not move last used back"
+            );
+
+            let delete = || {
+                Remote::DELETE_CONNECTION.with(remote::DeleteConnection {
+                    connection: Remote::item(id),
+                })
+            };
+            assert!(remote.apply(delete()).is_err(), "deleting asks first");
+            remote.apply_confirmed(delete()).unwrap();
+            assert!(remote.state().unwrap().list().is_empty());
+            assert!(remote.apply(used(3_000)).is_err());
+            assert!(remote.apply_confirmed(delete()).is_err());
+        }
+
+        phase the_invariant_refuses_unusable_profiles;
+        // Whatever writes a connection is held to what a saved connection
+        // is: a name, a host, a usable port and a supported sign-in.
+        {
+            let mut remote = Replica::<Remote>::new();
+            let id = Uuid::new_v4();
+            save(&mut remote, &sample(id, "Box"));
+            let paths = Remote::paths().connections.item(&Remote::item(id));
+            for refused in [
+                Invoke::edit(&paths.name.replace("  ")).unwrap(),
+                Invoke::edit(&paths.host.set(Atom(String::new()))).unwrap(),
+                Invoke::edit(&paths.port.set(0)).unwrap(),
+                Invoke::edit(&paths.auth.set(AuthMethod::DeviceIdentity)).unwrap(),
+            ] {
+                assert!(remote.apply(refused).is_err());
+            }
+            assert_eq!(only(&remote), sample(id, "Box"));
+        }
+
+        phase concurrent_edits_converge;
+        // Two devices editing the list at once converge: both new machines
+        // land, renames merge as text, the pin and the port both hold.
+        {
+            let mut ours = Replica::<Remote>::new();
+            let id = Uuid::new_v4();
+            save(&mut ours, &sample(id, "Box"));
+            let mut theirs = ours.fork();
+            let paths = Remote::paths().connections.item(&Remote::item(id));
+            save(&mut ours, &sample(Uuid::new_v4(), "A"));
+            save(&mut theirs, &sample(Uuid::new_v4(), "B"));
+            ours.apply(Invoke::edit(&paths.name.splice(3, 0, " one")).unwrap())
+                .unwrap();
+            theirs
+                .apply(Invoke::edit(&paths.name.splice(0, 0, "Lab ")).unwrap())
+                .unwrap();
+            ours.apply(Invoke::edit(&paths.favorite.set(true)).unwrap())
+                .unwrap();
+            theirs
+                .apply(Invoke::edit(&paths.port.set(2222)).unwrap())
+                .unwrap();
+            ours.sync_with(&mut theirs).unwrap();
+            assert_eq!(ours.state().unwrap(), theirs.state().unwrap());
+            let list = ours.state().unwrap().list();
+            let mut names: Vec<_> = list.iter().map(|c| c.name.clone()).collect();
+            names.sort();
+            assert_eq!(names, ["A", "B", "Lab Box one"]);
+            let merged = list.iter().find(|c| c.id == id).unwrap();
+            assert!(merged.favorite && merged.port == 2222);
+        }
     }
 
     /// Adding validates the profile and mints its id.

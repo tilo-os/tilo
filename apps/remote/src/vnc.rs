@@ -375,9 +375,10 @@ mod tests {
         (port, keep_open)
     }
 
-    #[test]
-    fn vnc_client_reads_real_framebuffer_and_reports_refusal_honestly() {
-        eprintln!("phase real_vnc_round_trip_reads_framebuffer");
+    tilo_test_env::scenario! {
+        fn vnc_client_reads_real_framebuffer_and_reports_refusal_honestly;
+
+        phase real_vnc_round_trip_reads_framebuffer;
         {
             let pixels = vec![
                 [255, 0, 0, 255],
@@ -413,7 +414,7 @@ mod tests {
             }
         }
 
-        eprintln!("phase refused_connection_is_honest_failure");
+        phase refused_connection_is_honest_failure;
         {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();

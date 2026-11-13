@@ -224,61 +224,185 @@ mod tests {
         }
     }
 
-    #[test]
-    fn connect_is_offered_only_for_connectable_profiles() {
-        eprintln!("phase tilo_connect_action_is_available_without_the_ssh_vnc_dev_gate");
+    tilo_test_env::scenario! {
+        fn connections_and_sessions_publish_the_actions_they_can_take;
+
+        phase connect_is_offered_only_for_connectable_profiles;
         {
-            let mut connection = sample(Uuid::new_v4(), "Tilo device");
-            connection.kind = ConnectionKind::Tilo;
-            connection.auth = AuthMethod::DeviceIdentity;
-            connection.host = Atom(iroh_base::SecretKey::generate().public().to_string());
+            eprintln!("phase tilo_connect_action_is_available_without_the_ssh_vnc_dev_gate");
+            {
+                let mut connection = sample(Uuid::new_v4(), "Tilo device");
+                connection.kind = ConnectionKind::Tilo;
+                connection.auth = AuthMethod::DeviceIdentity;
+                connection.host = Atom(iroh_base::SecretKey::generate().public().to_string());
+                assert!(
+                    connect_spec(&connection)
+                        .contract
+                        .availability
+                        .is_available()
+                );
+            }
+
+            eprintln!("phase malformed_tilo_profile_is_not_offered_as_connectable");
+            {
+                let mut connection = sample(Uuid::new_v4(), "Tilo device");
+                connection.kind = ConnectionKind::Tilo;
+                connection.auth = AuthMethod::DeviceIdentity;
+                connection.host = Atom("friendly-name".into());
+                let spec = connect_spec(&connection);
+                assert!(matches!(
+                    &spec.contract.availability,
+                    tilo_actions::Availability::Unavailable { code, reason }
+                        if code == "invalid_connection_profile"
+                            && reason.contains("exact endpoint id")
+                ));
+            }
+
+            eprintln!("phase legacy_rdp_resource_names_the_missing_backend_instead_of_a_generic_gate");
+            {
+                let mut connection = sample(Uuid::new_v4(), "Old Windows host");
+                connection.kind = ConnectionKind::Rdp;
+                connection.auth = AuthMethod::Password;
+                let row = connection_row(&connection).into_resource();
+                let connect = row
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "connect")
+                    .expect("RDP profile stays manageable");
+                assert!(matches!(
+                    &connect.contract.availability,
+                    tilo_actions::Availability::Unavailable { code, reason }
+                        if code == "transport_backend_unavailable"
+                            && reason.contains("but not RDP")
+                ));
+                assert!(
+                    connect
+                        .description
+                        .as_deref()
+                        .is_some_and(|description| description.contains("but not RDP")),
+                    "search and agents receive the actionable reason"
+                );
+            }
+        }
+
+        phase ssh_sessions_offer_file_transfer_in_both_directions;
+        {
+            let (_, actions) = session_actions(&sample(Uuid::new_v4(), "Build Box"), None);
+            for id in ["put-file", "fetch-file"] {
+                let action = actions
+                    .iter()
+                    .find(|action| action.id == id)
+                    .unwrap_or_else(|| panic!("an SSH session offers {id}"));
+                assert_eq!(action.contract.risk, RiskLevel::Privileged, "{id}");
+                assert_eq!(action.contract.result, ResultSpec::Job, "{id}");
+                for path in ["local_path", "remote_path"] {
+                    assert!(
+                        action
+                            .params()
+                            .iter()
+                            .any(|param| param.name == path && param.ty == ParamType::Text),
+                        "{id} asks for {path}"
+                    );
+                }
+            }
+            // A relative local path is refused: it would land wherever Remote runs.
+            let arguments = serde_json::Map::from_iter([
+                ("connection".to_owned(), serde_json::json!(Uuid::new_v4())),
+                ("remote_path".to_owned(), serde_json::json!("/srv/log.txt")),
+                ("local_path".to_owned(), serde_json::json!("log.txt")),
+            ]);
+            let refused = RemoteEffect::decode("fetch-file", &arguments).unwrap_err();
             assert!(
-                connect_spec(&connection)
-                    .contract
-                    .availability
-                    .is_available()
+                matches!(
+                    &refused,
+                    ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                        if name == "local_path" && source.to_string().contains("absolute")
+                ),
+                "{refused}"
+            );
+            let mut desktop = sample(Uuid::new_v4(), "Desktop");
+            desktop.kind = ConnectionKind::Vnc;
+            let (_, actions) = session_actions(&desktop, None);
+            assert!(
+                !actions.iter().any(|action| action.id == "put-file"),
+                "a framebuffer session has no shell to move a file through"
             );
         }
 
-        eprintln!("phase malformed_tilo_profile_is_not_offered_as_connectable");
+        phase session_effects_declare_permissions_lifecycle_and_trust;
         {
-            let mut connection = sample(Uuid::new_v4(), "Tilo device");
-            connection.kind = ConnectionKind::Tilo;
-            connection.auth = AuthMethod::DeviceIdentity;
-            connection.host = Atom("friendly-name".into());
-            let spec = connect_spec(&connection);
-            assert!(matches!(
-                &spec.contract.availability,
-                tilo_actions::Availability::Unavailable { code, reason }
-                    if code == "invalid_connection_profile"
-                        && reason.contains("exact endpoint id")
-            ));
-        }
+            eprintln!("phase remote_effects_declare_confirmation_permissions_and_non_repeatability");
+            {
+                let mut connection = sample(Uuid::new_v4(), "Tilo device");
+                connection.kind = ConnectionKind::Tilo;
+                connection.auth = AuthMethod::DeviceIdentity;
+                connection.host = Atom(iroh_base::SecretKey::generate().public().to_string());
+                let connect = connect_spec(&connection);
+                assert_eq!(connect.contract.kind, ActionKind::Read);
+                assert_eq!(connect.contract.risk, RiskLevel::Privileged);
+                assert_eq!(connect.contract.confirmation, ConfirmationPolicy::Confirm);
+                assert_eq!(connect.contract.retry, RetryPolicy::AtMostOnce);
+                assert_eq!(connect.contract.result, ResultSpec::Job);
 
-        eprintln!("phase legacy_rdp_resource_names_the_missing_backend_instead_of_a_generic_gate");
-        {
-            let mut connection = sample(Uuid::new_v4(), "Old Windows host");
-            connection.kind = ConnectionKind::Rdp;
-            connection.auth = AuthMethod::Password;
-            let row = connection_row(&connection).into_resource();
-            let connect = row
-                .actions
-                .iter()
-                .find(|action| action.id == "connect")
-                .expect("RDP profile stays manageable");
-            assert!(matches!(
-                &connect.contract.availability,
-                tilo_actions::Availability::Unavailable { code, reason }
-                    if code == "transport_backend_unavailable"
-                        && reason.contains("but not RDP")
-            ));
-            assert!(
-                connect
-                    .description
-                    .as_deref()
-                    .is_some_and(|description| description.contains("but not RDP")),
-                "search and agents receive the actionable reason"
-            );
+                let input = RemoteEffect::specs()
+                    .into_iter()
+                    .find(|action| action.id == "send-text")
+                    .expect("typed input action");
+                assert_eq!(input.contract.kind, ActionKind::Outside);
+                assert_eq!(input.contract.risk, RiskLevel::Privileged);
+                assert_eq!(input.contract.confirmation, ConfirmationPolicy::Confirm);
+                assert_eq!(input.contract.retry, RetryPolicy::AtMostOnce);
+                assert_eq!(input.contract.result, ResultSpec::Job);
+            }
+
+            eprintln!("phase active_session_exports_lifecycle_and_typed_input");
+            {
+                let id = Uuid::new_v4();
+                let (row, actions) = session_actions(&sample(id, "Build Box"), None);
+                assert_eq!(row, format!("remote.session:{id}"));
+                let disconnect = actions.iter().find(|a| a.id == "disconnect").unwrap();
+                assert_eq!(disconnect.contract.retry, RetryPolicy::Idempotent);
+                let input = RemoteEffect::specs()
+                    .into_iter()
+                    .find(|a| a.id == "send-text")
+                    .unwrap();
+                assert!(
+                    input
+                        .params()
+                        .iter()
+                        .any(|param| param.name == "text" && param.ty == ParamType::Text)
+                );
+            }
+
+            eprintln!("phase first_contact_exports_an_explicit_device_private_trust_action");
+            {
+                let issue = crate::ssh::HostKeyIssue::FirstContact {
+                    observed: crate::ssh::HostKeyIdentity {
+                        algorithm: "ssh-ed25519".into(),
+                        fingerprint: "SHA256:example".into(),
+                    },
+                };
+                let trust = session_actions(&sample(Uuid::new_v4(), "Build Box"), Some(&issue))
+                    .1
+                    .into_iter()
+                    .find(|action| action.id == "trust-host-key")
+                    .expect("first contact publishes a trust action");
+                assert_eq!(trust.contract.confirmation, ConfirmationPolicy::Confirm);
+                assert_eq!(trust.contract.risk, RiskLevel::Privileged);
+                assert!(
+                    trust
+                        .contract
+                        .tags
+                        .iter()
+                        .any(|tag| tag == "device-private")
+                );
+                assert!(
+                    trust
+                        .description
+                        .as_deref()
+                        .is_some_and(|description| description.contains("SHA256:example"))
+                );
+            }
         }
     }
 
@@ -288,125 +412,5 @@ mod tests {
     ) -> (String, Vec<ActionSpec>) {
         let row = session_row(connection, issue).into_resource();
         (row.id.as_str().to_owned(), row.actions)
-    }
-
-    #[test]
-    fn ssh_sessions_offer_file_transfer_in_both_directions() {
-        let (_, actions) = session_actions(&sample(Uuid::new_v4(), "Build Box"), None);
-        for id in ["put-file", "fetch-file"] {
-            let action = actions
-                .iter()
-                .find(|action| action.id == id)
-                .unwrap_or_else(|| panic!("an SSH session offers {id}"));
-            assert_eq!(action.contract.risk, RiskLevel::Privileged, "{id}");
-            assert_eq!(action.contract.result, ResultSpec::Job, "{id}");
-            for path in ["local_path", "remote_path"] {
-                assert!(
-                    action
-                        .params()
-                        .iter()
-                        .any(|param| param.name == path && param.ty == ParamType::Text),
-                    "{id} asks for {path}"
-                );
-            }
-        }
-        // A relative local path is refused: it would land wherever Remote runs.
-        let arguments = serde_json::Map::from_iter([
-            ("connection".to_owned(), serde_json::json!(Uuid::new_v4())),
-            ("remote_path".to_owned(), serde_json::json!("/srv/log.txt")),
-            ("local_path".to_owned(), serde_json::json!("log.txt")),
-        ]);
-        let refused = RemoteEffect::decode("fetch-file", &arguments).unwrap_err();
-        assert!(
-            matches!(
-                &refused,
-                ui::tilo_resource::EffectDecodeError::Argument { name, source }
-                    if name == "local_path" && source.to_string().contains("absolute")
-            ),
-            "{refused}"
-        );
-        let mut desktop = sample(Uuid::new_v4(), "Desktop");
-        desktop.kind = ConnectionKind::Vnc;
-        let (_, actions) = session_actions(&desktop, None);
-        assert!(
-            !actions.iter().any(|action| action.id == "put-file"),
-            "a framebuffer session has no shell to move a file through"
-        );
-    }
-
-    #[test]
-    fn session_effects_declare_permissions_lifecycle_and_trust() {
-        eprintln!("phase remote_effects_declare_confirmation_permissions_and_non_repeatability");
-        {
-            let mut connection = sample(Uuid::new_v4(), "Tilo device");
-            connection.kind = ConnectionKind::Tilo;
-            connection.auth = AuthMethod::DeviceIdentity;
-            connection.host = Atom(iroh_base::SecretKey::generate().public().to_string());
-            let connect = connect_spec(&connection);
-            assert_eq!(connect.contract.kind, ActionKind::Read);
-            assert_eq!(connect.contract.risk, RiskLevel::Privileged);
-            assert_eq!(connect.contract.confirmation, ConfirmationPolicy::Confirm);
-            assert_eq!(connect.contract.retry, RetryPolicy::AtMostOnce);
-            assert_eq!(connect.contract.result, ResultSpec::Job);
-
-            let input = RemoteEffect::specs()
-                .into_iter()
-                .find(|action| action.id == "send-text")
-                .expect("typed input action");
-            assert_eq!(input.contract.kind, ActionKind::Outside);
-            assert_eq!(input.contract.risk, RiskLevel::Privileged);
-            assert_eq!(input.contract.confirmation, ConfirmationPolicy::Confirm);
-            assert_eq!(input.contract.retry, RetryPolicy::AtMostOnce);
-            assert_eq!(input.contract.result, ResultSpec::Job);
-        }
-
-        eprintln!("phase active_session_exports_lifecycle_and_typed_input");
-        {
-            let id = Uuid::new_v4();
-            let (row, actions) = session_actions(&sample(id, "Build Box"), None);
-            assert_eq!(row, format!("remote.session:{id}"));
-            let disconnect = actions.iter().find(|a| a.id == "disconnect").unwrap();
-            assert_eq!(disconnect.contract.retry, RetryPolicy::Idempotent);
-            let input = RemoteEffect::specs()
-                .into_iter()
-                .find(|a| a.id == "send-text")
-                .unwrap();
-            assert!(
-                input
-                    .params()
-                    .iter()
-                    .any(|param| param.name == "text" && param.ty == ParamType::Text)
-            );
-        }
-
-        eprintln!("phase first_contact_exports_an_explicit_device_private_trust_action");
-        {
-            let issue = crate::ssh::HostKeyIssue::FirstContact {
-                observed: crate::ssh::HostKeyIdentity {
-                    algorithm: "ssh-ed25519".into(),
-                    fingerprint: "SHA256:example".into(),
-                },
-            };
-            let trust = session_actions(&sample(Uuid::new_v4(), "Build Box"), Some(&issue))
-                .1
-                .into_iter()
-                .find(|action| action.id == "trust-host-key")
-                .expect("first contact publishes a trust action");
-            assert_eq!(trust.contract.confirmation, ConfirmationPolicy::Confirm);
-            assert_eq!(trust.contract.risk, RiskLevel::Privileged);
-            assert!(
-                trust
-                    .contract
-                    .tags
-                    .iter()
-                    .any(|tag| tag == "device-private")
-            );
-            assert!(
-                trust
-                    .description
-                    .as_deref()
-                    .is_some_and(|description| description.contains("SHA256:example"))
-            );
-        }
     }
 }

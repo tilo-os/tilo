@@ -95,9 +95,10 @@ fn pending_confirmation_is(app: &RemoteApp, id: ConnectionId) -> bool {
         .is_some_and(|pending| pending.id() == id)
 }
 
-#[test]
-fn the_live_app_starts_empty_and_the_samples_are_complete() {
-    eprintln!("phase live_new_starts_empty_and_writes_nothing");
+tilo_test_env::scenario! {
+    fn the_live_app_starts_empty_and_the_samples_are_complete;
+
+    phase live_new_starts_empty_and_writes_nothing;
     {
         let app = RemoteApp::new();
         assert!(app.state().workspace.connections().is_empty());
@@ -112,7 +113,7 @@ fn the_live_app_starts_empty_and_the_samples_are_complete() {
         );
     }
 
-    eprintln!("phase sample_connections_are_valid_and_lived_in");
+    phase sample_connections_are_valid_and_lived_in;
     {
         let connections = sample_connections();
         assert_eq!(connections.len(), 8);
@@ -203,9 +204,10 @@ fn rows_say_when_a_machine_was_used_or_why_it_cannot_open() {
     assert_eq!(app.state().rows().len(), 2);
 }
 
-#[test]
-fn the_form_saves_through_the_resource_and_reports_problems_at_save() {
-    eprintln!("phase an_incomplete_draft_names_each_problem_by_its_field");
+tilo_test_env::scenario! {
+    fn the_form_saves_through_the_resource_and_reports_problems_at_save;
+
+    phase an_incomplete_draft_names_each_problem_by_its_field;
     {
         let mut app = demo();
         app.apply(Action::NewConnection);
@@ -228,7 +230,7 @@ fn the_form_saves_through_the_resource_and_reports_problems_at_save() {
         assert!(app.state().submitted.borrow().is_empty(), "nothing written");
     }
 
-    eprintln!("phase a_complete_draft_is_written_and_marked_in_the_list");
+    phase a_complete_draft_is_written_and_marked_in_the_list;
     {
         let mut app = demo();
         app.apply(Action::NewConnection);
@@ -254,7 +256,7 @@ fn the_form_saves_through_the_resource_and_reports_problems_at_save() {
         );
     }
 
-    eprintln!("phase switching_protocol_keeps_typed_text_and_resets_the_port");
+    phase switching_protocol_keeps_typed_text_and_resets_the_port;
     {
         let mut app = demo();
         app.apply(Action::NewConnection);
@@ -279,7 +281,7 @@ fn the_form_saves_through_the_resource_and_reports_problems_at_save() {
         assert!(app.state().form_model(None).devices[1].picked);
     }
 
-    eprintln!("phase after_a_failed_save_problems_follow_each_edit");
+    phase after_a_failed_save_problems_follow_each_edit;
     {
         let mut app = demo();
         app.apply(Action::NewConnection);
@@ -361,9 +363,10 @@ fn deletion_goes_through_the_document_actions() {
     assert_eq!(sent(&app).last(), Some(&as_sent(&removal(id))));
 }
 
-#[test]
-fn hosted_controls_change_the_resource_and_keep_credentials_on_the_device() {
-    eprintln!("phase pinning_is_one_undo_step");
+tilo_test_env::scenario! {
+    fn hosted_controls_change_the_resource_and_keep_credentials_on_the_device;
+
+    phase pinning_is_one_undo_step;
     {
         let mut app = hosted_sample();
         let id = sample_id(3);
@@ -383,7 +386,7 @@ fn hosted_controls_change_the_resource_and_keep_credentials_on_the_device() {
         assert!(!pinned(&app), "one undo takes it back");
     }
 
-    eprintln!("phase a_collaborators_deletion_leaves_no_ghost_row");
+    phase a_collaborators_deletion_leaves_no_ghost_row;
     {
         let mut app = hosted_sample();
         let id = sample_id(5);
@@ -416,7 +419,7 @@ fn hosted_controls_change_the_resource_and_keep_credentials_on_the_device() {
         );
     }
 
-    eprintln!("phase save_writes_the_profile_and_keeps_the_password_on_this_device");
+    phase save_writes_the_profile_and_keeps_the_password_on_this_device;
     {
         let mut app = demo();
         app.state().secrets = Some(ui::storage::secrets(RemoteShell::ID));
@@ -468,9 +471,10 @@ fn hosted_controls_change_the_resource_and_keep_credentials_on_the_device() {
     }
 }
 
-#[test]
-fn connecting_asks_first_revalidates_and_explains_unavailable_transports() {
-    eprintln!("phase connect_requires_confirmation_before_opening_a_broker_route");
+tilo_test_env::scenario! {
+    fn connecting_asks_first_revalidates_and_explains_unavailable_transports;
+
+    phase connect_requires_confirmation_before_opening_a_broker_route;
     {
         let mut app = demo();
         let id = app.state().first_of_kind(ConnectionKind::Tilo).unwrap();
@@ -480,7 +484,7 @@ fn connecting_asks_first_revalidates_and_explains_unavailable_transports() {
         assert!(app.session.borrow().collab_outbox.is_empty());
     }
 
-    eprintln!("phase confirmation_revalidates_a_collaboratively_changed_target");
+    phase confirmation_revalidates_a_collaboratively_changed_target;
     {
         let mut app = demo();
         let id = app.state().first_of_kind(ConnectionKind::Tilo).unwrap();
@@ -496,7 +500,7 @@ fn connecting_asks_first_revalidates_and_explains_unavailable_transports() {
         );
     }
 
-    eprintln!("phase unavailable_transports_open_a_recovery_state_without_a_socket");
+    phase unavailable_transports_open_a_recovery_state_without_a_socket;
     {
         let mut app = demo();
         let ssh = app.state().first_of_kind(ConnectionKind::Ssh).unwrap();
@@ -537,7 +541,7 @@ fn connecting_asks_first_revalidates_and_explains_unavailable_transports() {
         assert!(app.state().session_for.is_none());
     }
 
-    eprintln!("phase exhausted_session_generation_fails_closed_without_reuse");
+    phase exhausted_session_generation_fails_closed_without_reuse;
     {
         let app = demo();
         let id = app.state().first_of_kind(ConnectionKind::Tilo).unwrap();
@@ -604,9 +608,10 @@ fn staged_sessions_show_a_connected_surface_and_record_nothing() {
     }
 }
 
-#[test]
-fn opening_a_session_marks_the_machine_used_and_this_device_observes_it() {
-    eprintln!("phase opening_marks_last_used_for_every_device");
+tilo_test_env::scenario! {
+    fn opening_a_session_marks_the_machine_used_and_this_device_observes_it;
+
+    phase opening_marks_last_used_for_every_device;
     {
         let app = demo();
         let id = app.state().first_of_kind(ConnectionKind::Tilo).unwrap();
@@ -628,7 +633,7 @@ fn opening_a_session_marks_the_machine_used_and_this_device_observes_it() {
         );
     }
 
-    eprintln!("phase the_outcome_is_observed_on_this_device_only");
+    phase the_outcome_is_observed_on_this_device_only;
     {
         let app = demo();
         let id = app.state().first_of_kind(ConnectionKind::Ssh).unwrap();
@@ -644,7 +649,7 @@ fn opening_a_session_marks_the_machine_used_and_this_device_observes_it() {
         );
     }
 
-    eprintln!("phase a_capture_reaches_nothing");
+    phase a_capture_reaches_nothing;
     {
         let app = demo();
         app.state().capture = true;
@@ -658,7 +663,7 @@ fn opening_a_session_marks_the_machine_used_and_this_device_observes_it() {
         assert!(app.state().submitted.borrow().is_empty());
     }
 
-    eprintln!("phase a_preview_observes_nothing");
+    phase a_preview_observes_nothing;
     {
         let app = demo();
         app.state()

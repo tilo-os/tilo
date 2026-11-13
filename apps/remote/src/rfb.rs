@@ -589,15 +589,16 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    #[test]
-    fn pixel_formats_round_trip_and_decode() {
-        eprintln!("phase pixel_format_roundtrips");
+    tilo_test_env::scenario! {
+        fn pixel_formats_round_trip_and_decode;
+
+        phase pixel_format_roundtrips;
         {
             let f = PixelFormat::rgb888();
             assert_eq!(PixelFormat::parse(&f.to_bytes()), f);
         }
 
-        eprintln!("phase decode_pixel_32bpp_bgrx");
+        phase decode_pixel_32bpp_bgrx;
         {
             let f = PixelFormat::rgb888();
             assert_eq!(
@@ -606,7 +607,7 @@ mod tests {
             );
         }
 
-        eprintln!("phase decode_pixel_16bpp_565");
+        phase decode_pixel_16bpp_565;
         {
             let f = PixelFormat {
                 bits_per_pixel: 16,
@@ -624,16 +625,17 @@ mod tests {
             assert_eq!(f.decode_pixel(&[0x1F, 0x00]), [0, 0, 255, 255]);
         }
 
-        eprintln!("phase mirror_bits_reverses_byte");
+        phase mirror_bits_reverses_byte;
         {
             assert_eq!(mirror_bits(0b0000_0001), 0b1000_0000);
             assert_eq!(mirror_bits(0b1010_0000), 0b0000_0101);
         }
     }
 
-    #[test]
-    fn rectangle_encodings_paint_the_framebuffer() {
-        eprintln!("phase raw_rect_lands_in_framebuffer");
+    tilo_test_env::scenario! {
+        fn rectangle_encodings_paint_the_framebuffer;
+
+        phase raw_rect_lands_in_framebuffer;
         {
             let f = PixelFormat::rgb888();
             let mut fb = Framebuffer::new(2, 2);
@@ -655,7 +657,7 @@ mod tests {
             assert_eq!(fb.generation, 1);
         }
 
-        eprintln!("phase copy_rect_moves_pixels");
+        phase copy_rect_moves_pixels;
         {
             let f = PixelFormat::rgb888();
             let mut fb = Framebuffer::new(2, 1);
@@ -672,7 +674,7 @@ mod tests {
             assert_eq!(&fb.data[4..8], &[255, 0, 0, 255]);
         }
 
-        eprintln!("phase rre_fills_background_and_subrects");
+        phase rre_fills_background_and_subrects;
         {
             let f = PixelFormat::rgb888();
             let mut fb = Framebuffer::new(2, 2);
@@ -695,9 +697,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn handshake_parses_versions_security_and_server_init() {
-        eprintln!("phase server_init_parses");
+    tilo_test_env::scenario! {
+        fn handshake_parses_versions_security_and_server_init;
+
+        phase server_init_parses;
         {
             let mut bytes = Vec::new();
             bytes.extend_from_slice(&800u16.to_be_bytes());
@@ -711,14 +714,14 @@ mod tests {
             assert_eq!(si.format, PixelFormat::rgb888());
         }
 
-        eprintln!("phase protocol_version_parse_and_offer");
+        phase protocol_version_parse_and_offer;
         {
             assert_eq!(parse_protocol_version(b"RFB 003.008\n"), Some((3, 8)));
             assert_eq!(&client_protocol_version(3, 8), b"RFB 003.008\n");
             assert_eq!(&client_protocol_version(3, 3), b"RFB 003.003\n");
         }
 
-        eprintln!("phase security_negotiation");
+        phase security_negotiation;
         {
             assert_eq!(
                 choose_security(&[security::NONE, security::VNC_AUTH]),
@@ -732,9 +735,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn hostile_geometry_is_rejected_before_allocation_or_painting() {
-        eprintln!("phase oversized_server_geometry_is_rejected_before_allocation");
+    tilo_test_env::scenario! {
+        fn hostile_geometry_is_rejected_before_allocation_or_painting;
+
+        phase oversized_server_geometry_is_rejected_before_allocation;
         {
             let mut bytes = Vec::new();
             bytes.extend_from_slice(&u16::MAX.to_be_bytes());
@@ -744,7 +748,7 @@ mod tests {
             assert!(ServerInit::read(&mut Cursor::new(bytes)).is_err());
         }
 
-        eprintln!("phase overflowing_rectangle_coordinates_do_not_panic");
+        phase overflowing_rectangle_coordinates_do_not_panic;
         {
             let f = PixelFormat::rgb888();
             let mut fb = Framebuffer::new(2, 2);
@@ -758,7 +762,7 @@ mod tests {
             assert!(decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).is_ok());
         }
 
-        eprintln!("phase exhausted_framebuffer_generation_fails_without_reuse");
+        phase exhausted_framebuffer_generation_fails_without_reuse;
         {
             let f = PixelFormat::rgb888();
             let mut fb = Framebuffer::new(1, 1);
@@ -776,7 +780,7 @@ mod tests {
             assert!(Arc::ptr_eq(&fb.data, &before));
         }
 
-        eprintln!("phase rre_rejects_oversized_background_before_painting");
+        phase rre_rejects_oversized_background_before_painting;
         {
             let f = PixelFormat::rgb888();
             let mut fb = Framebuffer::new(2, 2);
@@ -791,7 +795,7 @@ mod tests {
             assert_eq!(&fb.data[..], &[0; 16]);
         }
 
-        eprintln!("phase rre_rejects_cumulative_subrectangle_pixel_work_before_painting");
+        phase rre_rejects_cumulative_subrectangle_pixel_work_before_painting;
         {
             let f = PixelFormat::rgb888();
             let mut fb = Framebuffer::new(2, 2);
@@ -815,9 +819,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn client_messages_and_vnc_auth_are_exact() {
-        eprintln!("phase client_encoders_are_exact");
+    tilo_test_env::scenario! {
+        fn client_messages_and_vnc_auth_are_exact;
+
+        phase client_encoders_are_exact;
         {
             assert_eq!(
                 encode_framebuffer_update_request(true, 0, 0, 800, 600),
@@ -834,7 +839,7 @@ mod tests {
             assert_eq!(&spf[4..20], &PixelFormat::rgb888().to_bytes());
         }
 
-        eprintln!("phase vnc_auth_matches_independent_des_oracle");
+        phase vnc_auth_matches_independent_des_oracle;
         {
             let challenge: [u8; 16] = [
                 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
