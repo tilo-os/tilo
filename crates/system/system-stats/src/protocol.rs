@@ -189,10 +189,15 @@ pub enum Request {
         #[serde(default)]
         processes: bool,
     },
-    Unsubscribe { subscription: u64 },
+    Unsubscribe {
+        subscription: u64,
+    },
     /// Put the permission prompt in front of the person for `grant`. The
     /// answer is [`Reply::Grants`] under `request`.
-    AskGrant { request: u64, grant: Grant },
+    AskGrant {
+        request: u64,
+        grant: Grant,
+    },
     EndApp {
         request: u64,
         app: String,
@@ -208,7 +213,9 @@ pub enum Request {
     },
     /// Describe the machine's storage once. The answer is [`Reply::Storage`]
     /// under `request`, or [`Reply::Refused`].
-    Storage { request: u64 },
+    Storage {
+        request: u64,
+    },
 }
 
 /// What the service answers.
@@ -226,11 +233,26 @@ pub enum Reply {
         snapshot: Box<Snapshot>,
     },
     /// `subscription` was refused, and nothing will be pushed for it.
-    SubscriptionRefused { subscription: u64, refusal: Refusal },
-    Grants { request: u64, grants: Grants },
-    Ended { request: u64, ended: u32 },
-    Refused { request: u64, refusal: Refusal },
-    Storage { request: u64, storage: Box<Storage> },
+    SubscriptionRefused {
+        subscription: u64,
+        refusal: Refusal,
+    },
+    Grants {
+        request: u64,
+        grants: Grants,
+    },
+    Ended {
+        request: u64,
+        ended: u32,
+    },
+    Refused {
+        request: u64,
+        refusal: Refusal,
+    },
+    Storage {
+        request: u64,
+        storage: Box<Storage>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -297,14 +319,20 @@ impl<'de> Deserialize<'de> for Reply {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "kebab-case")]
 pub enum Refusal {
-    NotGranted { grant: Grant },
+    NotGranted {
+        grant: Grant,
+    },
     NotYours,
     NotAnApp,
     Gone,
     Declined,
-    Invalid { detail: String },
+    Invalid {
+        detail: String,
+    },
     /// The operating system refused.
-    Failed { detail: String },
+    Failed {
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for Refusal {
