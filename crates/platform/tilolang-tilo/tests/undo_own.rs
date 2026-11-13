@@ -11,7 +11,7 @@ use tilolang_runtime::{ResourceRef, Value};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::instance::record::HostHistoryEdit;
 
-use crate::fixtures::{Replica, field_id};
+use crate::fixtures::{Replica, field_id, target};
 use crate::legibility::call;
 
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
@@ -41,13 +41,6 @@ fn workspace() -> (Replica, Replica) {
     let ben = ada.fork("ben", &packages());
     ben.host.sync_from(&ben.doc);
     (ada, ben)
-}
-
-fn target(v: &Value) -> ResourceRef {
-    match v {
-        Value::Ref(r) => (*r.target).clone(),
-        other => panic!("a resource: {other:?}"),
-    }
 }
 
 fn root(r: &Replica, app: &str) -> Value {

@@ -5,7 +5,7 @@
 use automerge::AutoCommit;
 use tilolang_runtime::{Principal, ResourceRef, UiNode, Value, ViewInstance};
 
-use crate::fixtures::Replica;
+use crate::fixtures::{Replica, target};
 use crate::legibility::call;
 
 const NOTES_APP: &str = "so.tilo.lang.notes";
@@ -24,13 +24,6 @@ fn workspace() -> (Replica, ResourceRef) {
     ada.commit();
     let notebook = ada.host.root_of(NOTES_APP).expect("the notebook");
     (ada, notebook)
-}
-
-fn target(v: &Value) -> ResourceRef {
-    match v {
-        Value::Ref(r) => std::rc::Rc::unwrap_or_clone(r.target.clone()),
-        other => panic!("a resource: {other:?}"),
-    }
 }
 
 /// The notes the notebook holds, in the order the record keeps them.

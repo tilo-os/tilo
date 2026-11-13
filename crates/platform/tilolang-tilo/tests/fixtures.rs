@@ -4,6 +4,7 @@ use automerge::AutoCommit;
 use tilo_actions::{ActionContext, ActionEnvelope, ActionInvoker};
 use tilo_automerge::ApplyIncoming as _;
 use tilolang_runtime::meta::Meta;
+use tilolang_runtime::value::Value;
 use tilolang_runtime::{Principal, ViewInstance};
 use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::{Host, Package};
@@ -248,6 +249,14 @@ pub fn type_id(meta: &Meta, ty: &str) -> String {
         .find(|declared| declared.name == ty)
         .map(|declared| declared.id.clone())
         .unwrap()
+}
+
+/// The resource `value` refers to.
+pub fn target(value: &Value) -> tilolang_runtime::ResourceRef {
+    match value {
+        Value::Ref(r) => (*r.target).clone(),
+        other => panic!("a resource: {other:?}"),
+    }
 }
 
 /// The id the action `name` of `meta` is stored and planned by.

@@ -8,7 +8,7 @@ use automerge::AutoCommit;
 use tilolang_runtime::{ResourceRef, Store, UiNode, UndoAsk, Value, ViewEvent, ViewInstance};
 use tilolang_tilo::instance::HistoryAsk;
 
-use crate::fixtures::Replica;
+use crate::fixtures::{Replica, target};
 use crate::legibility::{AGENT, NOTES_APP, RUN, Tidied, a_run_in_notes_and_tasks, call};
 
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
@@ -109,13 +109,6 @@ fn button(node: &UiNode, label: &str) -> String {
             || panic!("a `{label}` button: {node:#?}"),
             |n| n.key.clone(),
         )
-}
-
-fn target(v: &Value) -> ResourceRef {
-    match v {
-        Value::Ref(r) => (*r.target).clone(),
-        other => panic!("a resource: {other:?}"),
-    }
 }
 
 fn field(r: &Replica, app: &str, at: &ResourceRef, ty: &str, name: &str) -> Value {

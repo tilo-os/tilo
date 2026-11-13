@@ -13,7 +13,7 @@ use tilolang_runtime::run::WebRequest;
 use tilolang_runtime::web::{WebReply, WebTransport};
 use tilolang_runtime::{InvokeOutcome, Principal, UiNode, Value, ViewInstance};
 
-use crate::fixtures::{Replica, action_id};
+use crate::fixtures::{Replica, action_id, target};
 
 const APP: &str = "so.tilo.lang.pictures";
 
@@ -253,13 +253,6 @@ fn last_button(view: &ViewInstance, label: &str) -> String {
     keys.last()
         .cloned()
         .unwrap_or_else(|| panic!("a `{label}` button: {:#?}", shown(view)))
-}
-
-fn target(v: &Value) -> tilolang_runtime::ResourceRef {
-    match v {
-        Value::Ref(r) => (*r.target).clone(),
-        other => panic!("a resource: {other:?}"),
-    }
 }
 
 /// The page's `picture`, as the store reads it.
