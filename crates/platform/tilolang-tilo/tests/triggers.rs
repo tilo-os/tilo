@@ -51,6 +51,11 @@ action chime(bell: Bell) { bell.chimes += 1 }
 
 action ring(r: Reminder) { r.rings += 1 }
 
+/// Rings the rack's newest bell once for each bell the rack holds.
+action ring_newest(r: Rack) {
+    if let b = r.bells.last() { b.chimes += r.bells.count() }
+}
+
 action remind(r: Reminder, at: Time) { r.at = .some(at) }
 
 trigger often(b: Board) every 30m: tick(b)
@@ -373,6 +378,47 @@ fn a_large_collection_is_read_at_its_next_instant_not_whole() {
     assert_eq!(
         after_large, after_small,
         "and what it wakes for is the same"
+    );
+}
+
+/// An action that reads the end of a collection and how many it holds reads those, not every
+/// item: replying in a large mailbox costs what replying in a small one does.
+#[test]
+fn an_action_reads_the_end_and_count_of_a_large_collection_not_its_items() {
+    let now = tilolang::calendar::instant("2026-10-27T10:07:30Z").unwrap();
+    let work = |n: usize| {
+        let (mut ada, _, _) = workspace();
+        let rack = rack(&mut ada, n, 0, now);
+        let subject = ResourceRef::root(rack, type_id(&ada, "Rack"));
+        let before = ada.host.store().read_stats();
+        run(&mut ada, "ring_newest", vec![Value::resource(&subject)]);
+        let after = ada.host.store().read_stats();
+        (
+            chimes(&ada, n - 1),
+            chimes(&ada, n - 2),
+            after.doc.entries - before.doc.entries,
+            after.index.pages - before.index.pages,
+        )
+    };
+    let (newest, other, small_entries, small_pages) = work(20);
+    assert_eq!(
+        (newest, other),
+        (20, 0),
+        "the newest bell rings once a bell"
+    );
+    let (newest, other, entries, pages) = work(10_000);
+    assert_eq!(
+        (newest, other),
+        (10_000, 0),
+        "the newest bell rings once a bell"
+    );
+    assert!(
+        entries <= small_entries,
+        "reading {entries} record entries, against {small_entries} of twenty"
+    );
+    assert!(
+        pages <= small_pages + 1,
+        "reading {pages} index pages, against {small_pages} of twenty"
     );
 }
 

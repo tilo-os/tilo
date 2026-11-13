@@ -39,7 +39,7 @@ impl Core {
                 self.result(decode(&registry, &text, &ty, &app))
             }
             Imp::JsonEncode => {
-                let value = self.val(a.h(0)?)?;
+                let value = self.val_whole(a.h(0)?)?;
                 let registry = self.registry.borrow();
                 match encode(&registry, &value) {
                     Ok(json) => self.ret_h(Value::Text(json.to_string())),

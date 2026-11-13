@@ -283,7 +283,7 @@ impl Core {
                 }
             },
             Imp::FileAt => Held::At(self.text(a.h(1)?)?),
-            Imp::FileZip => match self.val(a.h(1)?)? {
+            Imp::FileZip => match self.val_whole(a.h(1)?)? {
                 Value::List(items) => Held::Files(files_of_list(&items)?),
                 other => {
                     return trap(format!(

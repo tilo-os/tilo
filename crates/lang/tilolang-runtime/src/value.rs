@@ -268,9 +268,9 @@ mod shared_filter {
     }
 }
 
-/// A collection field read in a view: the field, not its items. A view reads what it uses of it
-/// (its length, an item, its first or last) through the store's listing, item by item, and its
-/// boundary depends on exactly that; nothing builds a reference per item. Two compare equal when
+/// A collection field read: the field, not its items. Code reads what it uses of it (its length,
+/// an item, its first or last) through the store's listing, item by item; nothing builds a
+/// reference per item. A view's boundary depends on exactly what it read. Two compare equal when
 /// they are the same field of the same resource with the same filter, whatever it holds: what a
 /// view read of it is tracked as the view's own reads.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -294,6 +294,31 @@ pub struct CollRef {
     /// collection's own when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order: Option<crate::query::Order>,
+    /// The listing it reads, where code outside a view read it.
+    #[serde(skip)]
+    pub pinned: Pinned,
+}
+
+/// The listing of a collection read outside a view, kept from its first read: what an action
+/// reads of it stays what it read, whatever the action writes after, as a list of its items
+/// would. `None` for a view's, which reads the store's listing each run. It says nothing of
+/// which collection it is, so two collections compare equal whatever each listed.
+#[derive(Clone, Debug, Default)]
+pub struct Pinned(pub Option<std::cell::OnceCell<Rc<crate::store::Listing>>>);
+
+impl Pinned {
+    /// The pin of a collection drawn from one with this pin: kept from its own first read when
+    /// that one was read outside a view.
+    #[must_use]
+    pub fn derived(&self) -> Self {
+        Self(self.0.as_ref().map(|_| std::cell::OnceCell::new()))
+    }
+}
+
+impl PartialEq for Pinned {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl CollRef {
@@ -306,6 +331,7 @@ impl CollRef {
         };
         Self {
             filter: Some(Rc::new(pred)),
+            pinned: self.pinned.derived(),
             ..self.clone()
         }
     }
@@ -369,7 +395,7 @@ pub enum Value {
     /// A `RichText` value: tilo-doc's rich text (see [`crate::rich`]).
     Rich(crate::rich::RichValue),
     List(Vec<Value>),
-    /// A collection field read in a view, read item by item (see [`CollRef`]). Wherever its
+    /// A collection field read, read item by item (see [`CollRef`]). Wherever its
     /// items are needed as values (stored, sorted, put in a list) it is read whole into a
     /// [`Value::List`] first; it never goes into another value.
     Coll(Rc<CollRef>),
