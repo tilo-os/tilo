@@ -4,7 +4,7 @@
 //! logical size, with the frame passes and named scopes each step ran.
 //! Reports only: the numbers say where the frame goes.
 //!
-//! `cargo test -p chat --profile fast --test perf_interaction -- --nocapture`
+//! `cargo test -p chat --profile fast --test it perf_interaction -- --nocapture`
 #![allow(
     clippy::expect_used,
     reason = "a measurement fails loudly when the app does not open"

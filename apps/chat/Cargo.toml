@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "chat"
 version = "0.1.0"
 edition = "2024"
@@ -16,6 +18,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "chat"
 path = "src/main.rs"
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 # Calls run through the shell's native voice service (`ui::native_media`),
 # which a page build reaches through its host; the app itself has no media
