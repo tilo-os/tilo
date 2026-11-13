@@ -147,12 +147,17 @@ impl Profile {
     fn content(&self) -> tilo_content::ContentStore {
         match self {
             Self::Temporary(directory, ..) | Self::Window(directory, ..) => {
-                super::app::profile_content(directory.path())
+                window_content(directory.path())
             }
-            Self::DataDir(directory) => data_dir_content(directory),
+            Self::DataDir(directory) => data_dir_content(directory).for_one_workspace(),
         }
-        .for_one_workspace()
     }
+}
+
+/// The content store of the temporary profile `directory`, as a window of it
+/// holds it: one workspace's, named by plain address.
+pub(super) fn window_content(directory: &std::path::Path) -> tilo_content::ContentStore {
+    super::app::profile_content(directory).for_one_workspace()
 }
 
 /// One framework app mounted headlessly: a test, a fixture seeder or an

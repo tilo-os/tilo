@@ -18970,6 +18970,7 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-resource",
+ "tilo-wake",
  "url",
  "workspace-hack",
 ]

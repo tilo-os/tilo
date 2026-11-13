@@ -6586,8 +6586,12 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
 
         let (carets, _) = wp.remote_presence_overlays(&presence);
         assert_eq!(carets.len(), 1);
-        assert_eq!(carets[0].label, peer);
-        assert!(!carets[0].label.trim().is_empty());
+        assert_eq!(
+            carets[0].label,
+            ui::presence::guest_label(),
+            "a person nobody named is a guest, never their key",
+        );
+        assert_eq!(carets[0].user.0, peer, "the id stays the identity");
     }
 }
 

@@ -443,6 +443,11 @@ fn an_empty_table_still_replays_as_it_always_has() {
 /// A text longer than one text may hold is refused, and nothing is written.
 #[test]
 fn a_paragraph_pasted_past_a_mebibyte_is_kept() {
+    // The window's code runs in a wake scope whose content store keeps the large parts of
+    // the actions it records, as the host lends every window one.
+    let window = tilo_wake::WakeScope::new();
+    tilo_actions::content::register(&window.handle(), tilo_content::ContentStore::memory());
+    let _in_the_window = window.enter();
     let mut replica = document(1);
     let id = replica.state().unwrap().body().id_at(1).unwrap().to_owned();
     let paste = |ins: String| RichTextAction::ReplaceSelection {

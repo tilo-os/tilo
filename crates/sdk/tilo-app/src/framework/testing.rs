@@ -146,7 +146,7 @@ pub fn drive_live_window_writing_after<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::App) -> T,
 ) -> Result<T, LaunchError> {
     let profile = profile_directory().map_err(operation)?;
-    let mut host = ApplicationHost::with_store(
+    let host = ApplicationHost::with_store(
         std::rc::Rc::new(app_state::FsStore::with_debounce(
             profile.path().join("state"),
             debounce,
@@ -157,19 +157,33 @@ pub fn drive_live_window_writing_after<A: ResourceApp, T>(
         role_permissions(AUTHOR, Role::Owner),
         tilo_actions::ActionContext::default(),
     )?;
+    let mut app = live_window::<A>(host, profile.path())?;
+    let seen = drive(&mut app);
+    app.close_components();
+    Ok(seen)
+}
+
+/// The live window `A` opens on the profile at `directory`, mounted on `host`
+/// as a real window is: the component, with the content store the host lends
+/// every window, so an action past the history budget keeps its large parts
+/// there rather than being refused.
+fn live_window<A: ResourceApp>(
+    mut host: ApplicationHost,
+    directory: &std::path::Path,
+) -> Result<ui_core::App, LaunchError> {
     let definition = definition::<A>();
-    let prepared = prepare_on(
+    let mut prepared = prepare_on(
         &mut host,
         definition,
         INSTANCE,
         None,
         ComponentRunnerInputs::from_native_process(),
     )?;
+    prepared
+        .context
+        .provide_content(super::headless::window_content(directory));
     let component = definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
-    let mut app = ui_core::App::from_component(component, prepared.runner_inputs)?;
-    let seen = drive(&mut app);
-    app.close_components();
-    Ok(seen)
+    ui_core::App::from_component(component, prepared.runner_inputs)
 }
 
 /// The record window `instance` of `A` kept in the test workspace while `A` kept
@@ -208,7 +222,7 @@ pub fn drive_live_embedded<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::app::EmbeddedApp) -> T,
 ) -> Result<T, LaunchError> {
     let profile = profile_directory().map_err(operation)?;
-    let mut host = ApplicationHost::new(
+    let host = ApplicationHost::new(
         profile.path().join("state"),
         "test-device".into(),
         "test-workspace",
@@ -216,16 +230,7 @@ pub fn drive_live_embedded<A: ResourceApp, T>(
         role_permissions(AUTHOR, Role::Owner),
         tilo_actions::ActionContext::default(),
     )?;
-    let definition = definition::<A>();
-    let prepared = prepare_on(
-        &mut host,
-        definition,
-        INSTANCE,
-        None,
-        ComponentRunnerInputs::from_native_process(),
-    )?;
-    let component = definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
-    let app = ui_core::App::from_component(component, prepared.runner_inputs)?;
+    let app = live_window::<A>(host, profile.path())?;
     let mut tile = ui_core::app::EmbeddedApp::new(app, |_| {})?;
     let seen = drive(&mut tile);
     tile.app_mut().close_components();
