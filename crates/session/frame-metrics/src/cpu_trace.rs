@@ -249,6 +249,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic the lint skips in a #[test]")]
         fn the_cpu_trace_tells_work_from_sleep_and_stays_bounded;
 
         phase cpu_trace_distinguishes_main_thread_work_sleep_and_worker_cpu;

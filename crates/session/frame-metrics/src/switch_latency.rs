@@ -253,6 +253,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic the lint skips in a #[test]")]
         fn a_workspace_switch_is_timed_from_its_chord_on_either_presenter;
 
         phase a_workspace_switch_is_timed_from_its_chord_to_its_first_and_resting_frames;

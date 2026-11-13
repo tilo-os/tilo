@@ -1156,6 +1156,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic the lint skips in a #[test]")]
         fn a_frame_is_late_only_by_its_own_work_after_it_was_wanted;
 
         phase a_frame_after_an_idle_park_is_late_only_by_its_own_work;
@@ -1268,6 +1269,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic the lint skips in a #[test]")]
         fn a_summary_counts_cadence_work_and_backpressure_of_real_frames;
 
         phase summarize_drops_the_first_sample_from_the_cadence_series;
@@ -1420,6 +1422,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic the lint skips in a #[test]")]
         fn the_recorder_measures_input_to_the_exact_presented_frame_and_names_its_slowest_step;
 
         phase disabled_recorder_retains_nothing;
@@ -1617,6 +1620,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic the lint skips in a #[test]")]
         fn trace_rows_and_the_metrics_cli_are_well_formed;
 
         phase csv_row_column_count_matches_the_header;
