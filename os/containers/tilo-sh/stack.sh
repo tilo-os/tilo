@@ -94,6 +94,10 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
             http://127.0.0.1:BASE+23; stack.sh mail lists what it kept
   discord   with --discord, the fake Discord (crates/dev/fake-discord)
 
+A running stack belongs to the checkout that started it: up, down and restart
+from another checkout refuse (TILO_SH_TAKE_OVER=1 takes it over). Give each
+checkout its own TILO_SH_STATE and TILO_SH_PORT_BASE instead.
+
 Natively: the programs are t's lounge-gate build (the release's code and
 opt-level without its whole-program link) in ./target/lounge-gate, built by
 t, or by the cargo drop-in TILO_SH_CARGO names; Caddy is
@@ -215,6 +219,21 @@ lock_state() {
   exec 9>"$state/lock"
   flock -n 9 || die "another stack.sh is working on $state (its pid: $(cat "$state/lock.pid" 2>/dev/null || echo unknown)); wait for it, or give this one its own TILO_SH_STATE and TILO_SH_PORT_BASE"
   echo $$ > "$state/lock.pid"
+  claim_state
+}
+# claim_state: a running stack belongs to the checkout that started it. Another
+# checkout stopping or restarting it took someone's stack down under them (an
+# agent that forgot its own TILO_SH_STATE stopped the one a person was using),
+# so that asks for TILO_SH_TAKE_OVER=1; a stack with nothing running is anyone's.
+claim_state() {
+  local owner svc
+  owner=$(cat "$state/checkout" 2>/dev/null || true)
+  if [[ -n $owner && $owner != "$repo" && ${TILO_SH_TAKE_OVER:-0} != 1 ]]; then
+    for svc in tls relay api web; do
+      running "$svc" && die "the stack in $state runs from $owner, not this checkout ($repo): give this one its own TILO_SH_STATE and TILO_SH_PORT_BASE, or TILO_SH_TAKE_OVER=1 to take that one over"
+    done
+  fi
+  printf '%s\n' "$repo" > "$state/checkout"
 }
 running() {
   if [[ $mode == native ]]; then
