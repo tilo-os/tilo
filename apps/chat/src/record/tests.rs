@@ -1941,6 +1941,34 @@ fn a_retry_moves_the_question_to_its_next_attempt_and_a_stale_press_asks_nothing
     );
 }
 
+/// An edit is held to the length a post is: one byte past the longest text is
+/// refused and leaves the message as it read, and the longest text is taken whole.
+fn an_edit_is_held_to_the_longest_text_a_message_may_hold() {
+    let mut ada = Talk::new();
+    ada.apply(post("short")).unwrap();
+    let message = ada.said("short");
+    let edit = |text: String| {
+        ChatPart::EDIT_MESSAGE.with(chat_part::EditMessage {
+            message: message.clone(),
+            text,
+            body: None,
+            mentions: None,
+        })
+    };
+    assert!(
+        ada.apply(edit("x".repeat(MAX_MESSAGE_TEXT_BYTES + 1)))
+            .is_err(),
+        "one byte past the longest text"
+    );
+    let row = ada.rows("c_chat").remove(0);
+    assert_eq!(row.text, "short", "a refused edit changes nothing");
+    assert!(!row.edited, "and records no edit");
+    ada.apply(edit("x".repeat(MAX_MESSAGE_TEXT_BYTES))).unwrap();
+    let row = ada.rows("c_chat").remove(0);
+    assert_eq!(row.text.len(), MAX_MESSAGE_TEXT_BYTES);
+    assert!(row.edited);
+}
+
 /// What changes a message after it was posted.
 /// Each case was a test of its own, on a fixture of its own; a failure
 /// names the cases that failed.
@@ -1949,6 +1977,7 @@ fn reactions_edits_agent_work_and_retries_change_a_message() {
     crate::testing::cases!(
         reactions_are_each_persons_own,
         an_edit_keeps_the_earlier_text_and_a_delete_removes_the_message,
+        an_edit_is_held_to_the_longest_text_a_message_may_hold,
         an_agent_records_its_work_on_its_own_reply_to_the_summons,
         a_retry_moves_the_question_to_its_next_attempt_and_a_stale_press_asks_nothing,
     );

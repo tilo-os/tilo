@@ -1912,6 +1912,8 @@ mod tests {
             (640.0, 360.0, PictureSource::Camera, PictureLayer::Mid),
             (641.0, 360.0, PictureSource::Camera, PictureLayer::High),
             (320.0, 180.0, PictureSource::Screen, PictureLayer::Low),
+            (0.0, 0.0, PictureSource::Camera, PictureLayer::Low),
+            (0.0, 0.0, PictureSource::Screen, PictureLayer::Low),
             (321.0, 180.0, PictureSource::Screen, PictureLayer::High),
         ] {
             assert_eq!(

@@ -36,6 +36,26 @@ fn a_conversation_is_named_by_its_participants_once() {
         "the id names its participants back"
     );
     assert_eq!(Chat::direct_participants(&"c_general".into()), None);
+    // A conversation with oneself names one person; an id that names nobody,
+    // or holds a key that is no member, names no conversation.
+    let cy = MemberId::person("c1".repeat(32));
+    let alone = Chat::direct_id([cy.clone()]);
+    assert_eq!(
+        Chat::direct_participants(&alone),
+        Some(vec![cy]),
+        "a conversation with oneself"
+    );
+    assert_eq!(
+        Chat::direct_participants(&Chat::direct_id(std::iter::empty::<MemberId>())),
+        None,
+        "an id that names nobody"
+    );
+    let dangling = format!("{}|", alone.as_str());
+    assert_eq!(
+        Chat::direct_participants(&dangling.as_str().into()),
+        None,
+        "a key that is no member"
+    );
 }
 
 fn an_agent_and_a_person_converse_apart_from_the_pair_of_people() {

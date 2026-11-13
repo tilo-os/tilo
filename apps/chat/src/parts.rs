@@ -175,6 +175,19 @@ mod tests {
         let early = ReadMark { part: 2, seen: 900 };
         let later = ReadMark { part: 3, seen: 1 };
         assert!(later > early);
+        assert!(
+            ReadMark { part: 2, seen: 901 } > early,
+            "one message further in the same part"
+        );
+        assert_eq!(
+            ReadMark { part: 2, seen: 900 },
+            early,
+            "the same place is no further"
+        );
+        assert!(
+            ReadMark { part: 0, seen: 1 } > ReadMark::default(),
+            "any reading is past none"
+        );
     }
 
     /// Part ids, the part a post goes to, and the order of read marks.
