@@ -262,7 +262,6 @@ async fn revoked_or_closed_resources_leave_the_index_and_open_nothing() {
     search.refresh().await.unwrap();
     let tax = search.search("tax", 5).pop().unwrap();
 
-    // The grant is revoked: the catalogue offers the owner one page less.
     host.edit(|catalogue| catalogue.rows.retain(|r| r.resource.id != "page:2"));
     // Before the next walk the index still names it, but opening rechecks.
     assert_eq!(
@@ -277,7 +276,6 @@ async fn revoked_or_closed_resources_leave_the_index_and_open_nothing() {
     assert!(titles(&search, "tax").is_empty());
     assert!(search.entry(&tax.id.to_string()).is_none());
 
-    // The app closes without keeping its actions launchable.
     host.edit(|catalogue| catalogue.rows.clear());
     assert_eq!(search.refresh().await.unwrap().removed.len(), 1);
     assert!(titles(&search, "travel").is_empty());
@@ -291,7 +289,6 @@ async fn opening_invokes_the_exact_action_as_the_owner_through_the_host() {
     search.refresh().await.unwrap();
     let travel = search.search("travel", 5).pop().unwrap();
 
-    // The app restarts as another publisher: nothing a host shows changed.
     host.edit(|catalogue| catalogue.rows = vec![row("9", "page:1", "Travel plans", "open")]);
     assert!(search.refresh().await.unwrap().is_empty());
 

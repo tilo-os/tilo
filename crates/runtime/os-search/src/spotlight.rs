@@ -1,11 +1,8 @@
-//! Spotlight: its own copy of the index.
-//!
-//! Spotlight keeps what it is given, so [`apply`] hands it each walk's
+//! Spotlight keeps its own copy of the index: [`apply`] hands it each walk's
 //! [`Changes`] and [`reset`] clears what a previous run left. Items belong to
-//! the app bundle that indexed them: a process without a bundle identifier
-//! (a binary run from `target/`) cannot index, and [`bundled`] says so.
-//! Choosing a result starts or wakes that bundle's app (in `Tilo.app`, the
-//! Store), which hands the entry back to the daemon (`tilo-host-search`).
+//! the app bundle that indexed them, so a process without a bundle identifier
+//! cannot index; choosing a result wakes that bundle's app, which hands the
+//! entry back to the daemon.
 
 use block2::RcBlock;
 use objc2::AllocAnyThread;
@@ -20,7 +17,6 @@ use crate::{Changes, SearchEntry};
 /// exactly them.
 const DOMAIN: &str = "so.tilo.runtime.resources";
 
-/// Whether this process is an app bundle Spotlight can index for.
 pub fn bundled() -> bool {
     NSBundle::mainBundle().bundleIdentifier().is_some()
 }
@@ -54,7 +50,6 @@ pub fn reset() {
     }
 }
 
-/// Hand Spotlight one walk's changes.
 pub fn apply(changes: &Changes) {
     let Some(index) = index() else { return };
     if !changes.removed.is_empty() {
