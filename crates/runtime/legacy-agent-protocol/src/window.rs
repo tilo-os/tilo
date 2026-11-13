@@ -1,15 +1,11 @@
-//! How a legacy VM's windows are named on the host.
-//!
-//! The host's `waypipe client` runs with [`GUEST_ENV`] set to the guest OS.
-//! The compositor reads it from the connecting process and rewrites every
-//! app id that connection announces to [`host_app_id`], so the shell can tell
-//! a legacy window from a native one and name it after the guest. Claiming to
-//! be legacy only ever lowers what a window is trusted with, so the marker
-//! needs no authentication.
+//! How a legacy VM's windows are named on the host: the `waypipe client` runs
+//! with [`GUEST_ENV`] set to the guest OS, and the compositor rewrites every app
+//! id that process announces to [`host_app_id`], so the shell can tell a legacy
+//! window from a native one. Claiming to be legacy only lowers what a window is
+//! trusted with, so the marker needs no authentication.
 
 use crate::GuestOs;
 
-/// Set on the host forwarder's environment: `linux` or `windows`.
 pub const GUEST_ENV: &str = "TILO_LEGACY_GUEST";
 
 const PREFIX: &str = "legacy.";
@@ -22,7 +18,6 @@ pub fn host_app_id(guest: GuestOs, app_id: Option<&str>) -> String {
     format!("{PREFIX}{}.{}", guest.as_str(), app_id.unwrap_or("window"))
 }
 
-/// The guest and the app's own id, when `app_id` came from a legacy VM.
 #[must_use]
 pub fn split_host_app_id(app_id: &str) -> Option<(GuestOs, &str)> {
     let rest = app_id.strip_prefix(PREFIX)?;
@@ -31,8 +26,6 @@ pub fn split_host_app_id(app_id: &str) -> Option<(GuestOs, &str)> {
     (!inner.is_empty()).then_some((guest, inner))
 }
 
-/// The guest named by a forwarder process's environment block
-/// (`/proc/<pid>/environ`: `NAME=value` entries separated by NUL).
 #[must_use]
 pub fn guest_from_environ(environ: &[u8]) -> Option<GuestOs> {
     let needle = format!("{GUEST_ENV}=");
