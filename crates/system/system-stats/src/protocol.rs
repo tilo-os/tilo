@@ -1,28 +1,9 @@
 //! The wire contract between the session's service and an app.
 //!
-//! One connection carries, in order:
-//!
-//! 1. the launcher's [`Handoff`] behind [`HANDOFF_MAGIC`], written before the
-//!    app holds the descriptor: which app this is, in which room, and what
-//!    it was granted;
-//! 2. then [`Request`]s from the app and [`Reply`]s from the service, each a
-//!    JSON payload in a [`FRAMING`] frame.
-//!
-//! Snapshots are pushed: the app subscribes once at an interval and the
-//! service sends a [`Snapshot`] each interval until it unsubscribes or the
-//! connection closes. Nothing is read per field and nothing is read for a
-//! connection that holds no subscription.
-//!
 //! The machine's storage (its block devices, their partitions, filesystems
 //! and encryption, and each drive's health) is not a reading at an interval
 //! but an answer: the app asks with [`Request::Storage`] when it opens and
 //! when the person rescans, and is sent one [`Storage`].
-//!
-//! What a snapshot carries is bounded by the connection's [`Grants`]:
-//! machine-wide readings need [`Grant::SystemInfo`]; running apps and the
-//! process list need [`Grant::Processes`], and a process's command line needs
-//! [`Grant::CommandLines`] on top. No field ever carries a process's
-//! environment, open files or memory contents.
 
 use serde::{Deserialize, Serialize};
 
@@ -30,7 +11,6 @@ use serde::{Deserialize, Serialize};
 /// and the app finds its descriptor in `TILO_SVC_SYSTEM-STATS_FD`.
 pub const SERVICE: &str = "system-stats";
 
-/// Version of this contract.
 pub const PROTOCOL: u16 = 1;
 
 /// Prefix of the launcher's handoff, before any frame.
@@ -41,7 +21,6 @@ pub const HANDOFF_MAGIC: [u8; 4] = *b"QSS1";
 pub const FRAMING: wire_frame::Framing =
     wire_frame::Framing::little_endian(16 << 20).reject_empty();
 
-/// The handoff's own frame limit: it names an app and a room.
 pub const HANDOFF_FRAMING: wire_frame::Framing =
     wire_frame::Framing::little_endian(4 << 10).reject_empty();
 
@@ -49,10 +28,8 @@ pub const HANDOFF_FRAMING: wire_frame::Framing =
 /// not a monitor any more, it is load of its own.
 pub const MIN_INTERVAL_MS: u32 = 250;
 
-/// The longest interval a subscription may ask for.
 pub const MAX_INTERVAL_MS: u32 = 60_000;
 
-/// What one permission covers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Grant {
@@ -92,7 +69,6 @@ impl Grant {
     }
 }
 
-/// What a connection may see and do.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Grants {
     #[serde(default)]
@@ -104,21 +80,18 @@ pub struct Grants {
 }
 
 impl Grants {
-    /// Everything but command lines: what an app the image ships receives.
     pub const IMAGE_DEFAULT: Self = Self {
         system_info: true,
         processes: true,
         command_lines: false,
     };
 
-    /// Everything.
     pub const ALL: Self = Self {
         system_info: true,
         processes: true,
         command_lines: true,
     };
 
-    /// What both hold.
     #[must_use]
     pub const fn within(self, ceiling: Self) -> Self {
         Self {
@@ -128,7 +101,6 @@ impl Grants {
         }
     }
 
-    /// Whether `grant` is held.
     #[must_use]
     pub const fn holds(self, grant: Grant) -> bool {
         match grant {
@@ -150,20 +122,16 @@ impl Grants {
         self
     }
 
-    /// Whether anything at all is held.
     #[must_use]
     pub const fn any(self) -> bool {
         self.system_info || self.processes
     }
 }
 
-/// The launcher's first words on a connection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Handoff {
     pub protocol: u16,
-    /// The signed package id of the app holding the connection.
     pub app_id: String,
-    /// The room it was launched into, when it was.
     #[serde(default)]
     pub workspace_id: Option<String>,
     /// What the launcher granted: the image's default for the apps it ships,
@@ -174,7 +142,6 @@ pub struct Handoff {
     pub ceiling: Grants,
 }
 
-/// Write `handoff` as the first bytes on `stream`.
 pub fn write_handoff<W: std::io::Write + ?Sized>(
     stream: &mut W,
     handoff: &Handoff,
@@ -185,7 +152,6 @@ pub fn write_handoff<W: std::io::Write + ?Sized>(
     stream.flush()
 }
 
-/// Read the handoff a launcher wrote.
 pub fn read_handoff<R: std::io::Read + ?Sized>(stream: &mut R) -> std::io::Result<Handoff> {
     let mut magic = [0_u8; 4];
     stream.read_exact(&mut magic)?;
@@ -212,7 +178,6 @@ pub fn read_handoff<R: std::io::Read + ?Sized>(stream: &mut R) -> std::io::Resul
     Ok(handoff)
 }
 
-/// What the app asks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum Request {
@@ -224,19 +189,16 @@ pub enum Request {
         #[serde(default)]
         processes: bool,
     },
-    /// Stop pushing `subscription`.
     Unsubscribe { subscription: u64 },
     /// Put the permission prompt in front of the person for `grant`. The
     /// answer is [`Reply::Grants`] under `request`.
     AskGrant { request: u64, grant: Grant },
-    /// End every process of `app` (an app id as [`AppUsage::app`] names it).
     EndApp {
         request: u64,
         app: String,
         #[serde(default)]
         force: bool,
     },
-    /// End the process `pid` of the lifetime `started_at` names.
     EndProcess {
         request: u64,
         pid: u32,
@@ -259,20 +221,15 @@ pub enum Request {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum Reply {
-    /// One reading for `subscription`.
     Snapshot {
         subscription: u64,
         snapshot: Box<Snapshot>,
     },
     /// `subscription` was refused, and nothing will be pushed for it.
     SubscriptionRefused { subscription: u64, refusal: Refusal },
-    /// The connection's grants, after an [`Request::AskGrant`].
     Grants { request: u64, grants: Grants },
-    /// An end request was carried out: `ended` processes were signalled.
     Ended { request: u64, ended: u32 },
-    /// A request was refused.
     Refused { request: u64, refusal: Refusal },
-    /// The machine's storage, after a [`Request::Storage`].
     Storage { request: u64, storage: Box<Storage> },
 }
 
@@ -340,17 +297,11 @@ impl<'de> Deserialize<'de> for Reply {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "kebab-case")]
 pub enum Refusal {
-    /// The connection does not hold `grant`.
     NotGranted { grant: Grant },
-    /// The target belongs to someone else.
     NotYours,
-    /// The target is part of the system or the session, not an app.
     NotAnApp,
-    /// The target is no longer running.
     Gone,
-    /// The person declined, or nobody could be asked.
     Declined,
-    /// The request is malformed.
     Invalid { detail: String },
     /// The operating system refused.
     Failed { detail: String },
@@ -369,7 +320,6 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-/// One reading of the machine, cut to what the subscriber may see.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     /// When it was taken, in milliseconds since the Unix epoch.
@@ -377,14 +327,12 @@ pub struct Snapshot {
     /// The window its rates were measured over, in milliseconds; zero for
     /// the first reading, whose rates are not known yet.
     pub window_ms: u64,
-    /// Machine-wide readings; `None` without [`Grant::SystemInfo`].
     #[serde(default)]
     pub system: Option<SystemStats>,
     /// Running apps, busiest first; empty without [`Grant::Processes`] or
     /// when the subscription did not ask for processes.
     #[serde(default)]
     pub apps: Vec<AppUsage>,
-    /// The process list; empty under the same conditions as `apps`.
     #[serde(default)]
     pub processes: Vec<ProcessStats>,
     /// Whether the process list was part of this reading (it may be
@@ -393,17 +341,14 @@ pub struct Snapshot {
     pub processes_included: bool,
 }
 
-/// Machine-wide readings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SystemStats {
     pub host: HostInfo,
-    /// Processor load; `None` on the first reading, which has no interval.
     #[serde(default)]
     pub cpu: Option<CpuStats>,
     /// The load averages over 1, 5 and 15 minutes.
     pub load_average: [f32; 3],
     pub memory: MemoryStats,
-    /// Pressure stall information, where the kernel offers it.
     #[serde(default)]
     pub pressure: Option<Pressure>,
     pub disks: Vec<DiskStats>,
@@ -413,13 +358,10 @@ pub struct SystemStats {
     pub thermal: Vec<ThermalZone>,
 }
 
-/// What the machine is.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostInfo {
     pub hostname: String,
-    /// The kernel release (`7.0.9-200.fc44.x86_64`).
     pub kernel: String,
-    /// The processor's model name, where the kernel names it.
     #[serde(default)]
     pub cpu_model: Option<String>,
     pub logical_cpus: u32,
@@ -437,14 +379,12 @@ pub struct CpuStats {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryStats {
     pub total: u64,
-    /// What can still be given to programs without swapping.
     pub available: u64,
     pub swap_total: u64,
     pub swap_free: u64,
 }
 
 impl MemoryStats {
-    /// Memory in use: what is not available.
     #[must_use]
     pub const fn used(&self) -> u64 {
         self.total.saturating_sub(self.available)
@@ -465,7 +405,6 @@ pub struct Pressure {
     pub io: PressureLine,
 }
 
-/// One resource's pressure.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PressureLine {
     pub some_avg10: f32,
@@ -473,12 +412,9 @@ pub struct PressureLine {
     pub full_avg10: Option<f32>,
 }
 
-/// One mounted disk.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DiskStats {
-    /// The block device (`nvme0n1`).
     pub device: String,
-    /// Where its file system is mounted, when it is.
     #[serde(default)]
     pub mount: Option<String>,
     pub total_bytes: u64,
@@ -487,7 +423,6 @@ pub struct DiskStats {
     pub write_bytes_per_sec: f32,
 }
 
-/// Network throughput over every interface but loopback.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct NetworkStats {
     pub rx_bytes_per_sec: f32,
@@ -495,7 +430,6 @@ pub struct NetworkStats {
     pub interfaces: Vec<InterfaceStats>,
 }
 
-/// One interface's throughput.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct InterfaceStats {
     pub name: String,
@@ -503,10 +437,8 @@ pub struct InterfaceStats {
     pub tx_bytes_per_sec: f32,
 }
 
-/// One graphics processor, with what its driver reports.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct GpuStats {
-    /// The driver (`amdgpu`, `msm`, `i915`).
     pub driver: String,
     #[serde(default)]
     pub busy_percent: Option<f32>,
@@ -523,76 +455,59 @@ pub struct BatteryStats {
     /// `Charging`, `Discharging`, `Full`, `Not charging` or `Unknown`, as the
     /// kernel spells it.
     pub status: String,
-    /// Power flowing in or out, in watts, where the battery reports it.
     #[serde(default)]
     pub power_watts: Option<f32>,
 }
 
-/// One temperature sensor.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ThermalZone {
     pub name: String,
     pub celsius: f32,
 }
 
-/// One running app: its processes taken together.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppUsage {
-    /// The app id (`so.tilo.notes`, or another desktop's application id).
     pub app: String,
     pub processes: u32,
     /// Processor use in percent of the whole machine.
     pub cpu: f32,
-    /// Resident memory in bytes.
     pub memory_bytes: u64,
-    /// Whether the person may end it.
     pub endable: bool,
 }
 
-/// One process, with only the fields a monitor needs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProcessStats {
     pub pid: u32,
-    /// The parent's pid, for the process tree.
     #[serde(default)]
     pub ppid: Option<u32>,
     /// The process's start time in clock ticks since boot: with `pid`, the
     /// identity of this one lifetime, which an end request repeats.
     pub started_at: u64,
-    /// The executable's short name (the kernel's `comm`).
     pub name: String,
-    /// The app it belongs to, when it belongs to one.
     #[serde(default)]
     pub app: Option<String>,
     pub uid: u32,
-    /// The owner's account name, or the uid when it has none.
     pub user: String,
     /// Processor use in percent of the whole machine.
     pub cpu: f32,
-    /// Resident memory in bytes.
     pub memory_bytes: u64,
     pub virtual_bytes: u64,
     pub threads: u32,
     pub state: ProcessState,
     /// Seconds since it started.
     pub run_secs: u64,
-    /// A kernel thread rather than a program.
     pub kernel_thread: bool,
-    /// The command line; only with [`Grant::CommandLines`].
     #[serde(default)]
     pub command: Option<String>,
-    /// Whether the person may end it.
     pub endable: bool,
 }
 
-/// A process's scheduling state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProcessState {
     Running,
     #[default]
     Sleeping,
-    /// Waiting uninterruptibly, usually on a disk.
     Waiting,
     Stopped,
     Zombie,
@@ -601,7 +516,6 @@ pub enum ProcessState {
 }
 
 impl ProcessState {
-    /// The state `/proc/<pid>/stat` spells as `code`.
     #[must_use]
     pub const fn from_code(code: char) -> Self {
         match code {
@@ -615,7 +529,6 @@ impl ProcessState {
         }
     }
 
-    /// The state as a person reads it.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -630,7 +543,6 @@ impl ProcessState {
     }
 }
 
-/// The machine's storage: every block device `lsblk` lists, as a tree.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Storage {
     pub devices: Vec<StorageDevice>,
@@ -647,7 +559,6 @@ pub struct StorageDevice {
     /// `/dev` and `UDisks2` know it by.
     #[serde(default)]
     pub kernel_name: Option<String>,
-    /// `disk`, `part`, `crypt`, `lvm`, `loop`, `rom`, ...
     pub kind: String,
     /// In bytes.
     pub size: u64,
@@ -655,7 +566,6 @@ pub struct StorageDevice {
     pub model: Option<String>,
     #[serde(default)]
     pub serial: Option<String>,
-    /// How it is attached: `nvme`, `sata`, `usb`, ...
     #[serde(default)]
     pub transport: Option<String>,
     #[serde(default)]
@@ -668,10 +578,8 @@ pub struct StorageDevice {
     /// `crypto_LUKS`.
     #[serde(default)]
     pub fstype: Option<String>,
-    /// The version of what it holds: `2` for LUKS2.
     #[serde(default)]
     pub fs_version: Option<String>,
-    /// A partition's type GUID (`c12a7328-…` for an EFI system partition).
     #[serde(default)]
     pub part_type: Option<String>,
     /// What that type is called (`EFI System`, `Microsoft reserved`).
@@ -683,7 +591,6 @@ pub struct StorageDevice {
     pub uuid: Option<String>,
     #[serde(default)]
     pub fs_used: Option<u64>,
-    /// Where its filesystem is mounted, when it is.
     #[serde(default)]
     pub mountpoint: Option<String>,
     #[serde(default)]
@@ -734,15 +641,12 @@ pub struct DriveHealth {
     pub bytes_written: Option<u64>,
     #[serde(default)]
     pub bytes_read: Option<u64>,
-    /// `NVMe` unrecovered data integrity errors.
     #[serde(default)]
     pub media_errors: Option<u64>,
     #[serde(default)]
     pub unsafe_shutdowns: Option<u64>,
-    /// ATA reallocated and pending sectors together.
     #[serde(default)]
     pub bad_sectors: Option<u64>,
-    /// ATA attributes past their threshold now.
     #[serde(default)]
     pub failing_attributes: Option<u32>,
     /// The last self-test's outcome as `UDisks2` names it (`success`,
@@ -751,7 +655,6 @@ pub struct DriveHealth {
     pub self_test: Option<String>,
 }
 
-/// Encode one request or reply as a frame on `stream`.
 pub fn write_message<W: std::io::Write + ?Sized, T: Serialize>(
     stream: &mut W,
     message: &T,
@@ -761,7 +664,6 @@ pub fn write_message<W: std::io::Write + ?Sized, T: Serialize>(
     stream.flush()
 }
 
-/// Read one request or reply; `None` when the peer closed between frames.
 pub fn read_message<R: std::io::Read + ?Sized, T: serde::de::DeserializeOwned>(
     stream: &mut R,
 ) -> std::io::Result<Option<T>> {

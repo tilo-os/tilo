@@ -143,7 +143,6 @@ impl FakeDevice {
     ) -> zbus::Result<()>;
 }
 
-/// A Wi-Fi device whose scans finish when the test says so.
 struct FakeWireless {
     last_scan: i64,
     refusal: Option<String>,
@@ -158,7 +157,6 @@ impl FakeWireless {
     }
 
     fn request_scan(&self, options: HashMap<String, OwnedValue>) -> zbus::fdo::Result<()> {
-        // A plain "scan now": no SSIDs to probe for.
         if let Some(option) = options.into_keys().next() {
             return Err(zbus::fdo::Error::InvalidArgs(option));
         }
@@ -174,7 +172,6 @@ fn path(path: &str) -> OwnedObjectPath {
     OwnedObjectPath::try_from(path).unwrap()
 }
 
-/// A connected Wi-Fi primary with full connectivity, metering as given.
 fn wifi_nm(metered: u32, checks: Arc<AtomicUsize>) -> FakeNm {
     FakeNm {
         state: 70,
@@ -363,7 +360,6 @@ async fn a_wifi_scan_returns_when_the_device_reports_it_finished() {
     tilo_test_env::within("the scan is requested", requested.recv())
         .await
         .unwrap();
-    // Requested but not finished: the scan is still waiting.
     tokio::task::yield_now().await;
     assert!(
         !scan.is_finished(),
@@ -415,7 +411,6 @@ async fn a_refused_or_impossible_wifi_scan_says_why() {
     ));
 }
 
-/// Wi-Fi up and the "Work" VPN in `state`, both active connections.
 async fn serve_vpn(state: u32) -> (Connection, Connection) {
     let mut nm = wifi_nm(2, Arc::default());
     nm.active.push(path(VPN));
@@ -454,7 +449,6 @@ async fn serve_vpn(state: u32) -> (Connection, Connection) {
     (server.unwrap(), client.unwrap())
 }
 
-/// The VPN goes to `state` for `reason`, signalled as `NetworkManager` does.
 async fn vpn_goes(server: &Connection, state: u32, reason: u32) {
     let iface = server
         .object_server()
@@ -469,7 +463,6 @@ async fn vpn_goes(server: &Connection, state: u32, reason: u32) {
     iface.get().await.state_changed(emitter).await.unwrap();
 }
 
-/// The VPN's active connection goes away, as `NetworkManager` drops it.
 async fn vpn_gone(server: &Connection) {
     let iface = server
         .object_server()
@@ -515,7 +508,6 @@ async fn the_vpn_watch_follows_active_vpns_and_counts_turning_off_on_purpose() {
     }
     assert!(reading.ended_on_purpose.is_empty());
 
-    // Turned off: deactivating, deactivated, gone; counted once.
     vpn_goes(&server, 3, 2).await;
     vpn_goes(&server, 4, 2).await;
     vpn_gone(&server).await;
@@ -535,7 +527,6 @@ async fn a_vpn_that_drops_is_not_counted_as_turned_off() {
     let (server, client) = serve_vpn(2).await;
     let mut watch = NmClient::new(client).watch_vpns().await.unwrap();
     assert_eq!(watch.current().active, work(ActiveState::Activated));
-    // The service stopped (4): not the person's doing.
     vpn_goes(&server, 4, 4).await;
     vpn_gone(&server).await;
     loop {
@@ -588,7 +579,6 @@ async fn the_change_watch_counts_what_settings_shows() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert_eq!(changes.count(), 1, "a finished scan is not a change");
 
-    // Metered and the primary connection: two root properties.
     update(&server, |nm| nm.metered = 1).await;
     while changes.count() < 3 {
         tilo_test_env::within("the root's properties are changes", changes.changed())
@@ -596,7 +586,6 @@ async fn the_change_watch_counts_what_settings_shows() {
             .expect("the follower is still running");
     }
 
-    // The interfaces hold the server's connection too.
     drop((wireless, device, server));
     tilo_test_env::within("the watch ends with the connection", async {
         while changes.changed().await.is_some() {}

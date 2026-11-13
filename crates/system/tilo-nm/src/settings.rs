@@ -1,17 +1,12 @@
 //! A saved connection profile's settings as `NetworkManager` hands them over
 //! D-Bus (`a{sa{sv}}`), and the properties Tilo reads and writes in them,
 //! typed. No bus here.
-//!
-//! `NetworkManager` leaves a property out when it holds its default, so a
-//! reader answers with the default `NetworkManager` documents for a missing
-//! one, never "unknown".
 
 use std::collections::HashMap;
 use std::net::IpAddr;
 
 use zbus::zvariant::{OwnedValue, Value};
 
-/// One setting's properties (`ssid`, `psk`, `method`, …).
 pub type Setting = HashMap<String, OwnedValue>;
 
 /// A profile's settings: setting name (`connection`, `ipv4`,
@@ -19,7 +14,6 @@ pub type Setting = HashMap<String, OwnedValue>;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Settings(pub HashMap<String, Setting>);
 
-/// An address family's setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IpFamily {
     V4,
@@ -27,7 +21,6 @@ pub enum IpFamily {
 }
 
 impl IpFamily {
-    /// The setting it is kept in.
     #[must_use]
     pub const fn setting(self) -> &'static str {
         match self {
@@ -51,13 +44,11 @@ fn owned(value: Value<'_>) -> Option<OwnedValue> {
 }
 
 impl Settings {
-    /// A property's raw value.
     #[must_use]
     pub fn get(&self, setting: &str, key: &str) -> Option<&OwnedValue> {
         self.0.get(setting)?.get(key)
     }
 
-    /// Whether the profile has `setting` at all.
     #[must_use]
     pub fn has(&self, setting: &str) -> bool {
         self.0.contains_key(setting)
@@ -90,7 +81,6 @@ impl Settings {
         u64::try_from(self.get(setting, key)?).ok()
     }
 
-    /// A string list (`as`); empty when missing.
     #[must_use]
     pub fn strings(&self, setting: &str, key: &str) -> Vec<String> {
         self.get(setting, key)
@@ -123,7 +113,6 @@ impl Settings {
             .unwrap_or_default()
     }
 
-    /// Set a property, making its setting when there is none.
     pub fn set<'v>(&mut self, setting: &str, key: &str, value: impl Into<Value<'v>>) {
         if let Some(value) = owned(value.into()) {
             self.0
@@ -133,20 +122,17 @@ impl Settings {
         }
     }
 
-    /// Set a property to `NetworkManager`'s default by leaving it out.
     pub fn remove(&mut self, setting: &str, key: &str) {
         if let Some(properties) = self.0.get_mut(setting) {
             properties.remove(key);
         }
     }
 
-    /// The profile's name (`connection.id`).
     #[must_use]
     pub fn id(&self) -> String {
         self.string("connection", "id").unwrap_or_default()
     }
 
-    /// The profile's stable identity (`connection.uuid`).
     #[must_use]
     pub fn uuid(&self) -> String {
         self.string("connection", "uuid").unwrap_or_default()
@@ -159,7 +145,6 @@ impl Settings {
         self.string("connection", "type").unwrap_or_default()
     }
 
-    /// Whether it connects by itself; on by default.
     #[must_use]
     pub fn autoconnect(&self) -> bool {
         self.boolean("connection", "autoconnect").unwrap_or(true)
@@ -173,7 +158,6 @@ impl Settings {
             .filter(|stamp| *stamp > 0)
     }
 
-    /// `connection.metered` as `NMMetered` (`0` unknown, the default).
     #[must_use]
     pub fn metered(&self) -> u32 {
         self.int("connection", "metered")
@@ -181,7 +165,6 @@ impl Settings {
             .unwrap_or(0)
     }
 
-    /// An address family's method (`auto`, `manual`, `disabled`, …).
     #[must_use]
     pub fn method(&self, family: IpFamily) -> Option<String> {
         self.string(family.setting(), "method")
@@ -200,7 +183,6 @@ impl Settings {
             .collect()
     }
 
-    /// The family's own gateway.
     #[must_use]
     pub fn gateway(&self, family: IpFamily) -> Option<String> {
         self.string(family.setting(), "gateway")
@@ -278,7 +260,6 @@ impl Settings {
         Ok(())
     }
 
-    /// Give the family its own gateway, or (`None`) none.
     pub fn set_gateway(&mut self, family: IpFamily, gateway: Option<&str>) -> Result<(), String> {
         let setting = family.setting();
         match gateway.filter(|gateway| !gateway.is_empty()) {
@@ -296,7 +277,6 @@ impl Settings {
         Ok(())
     }
 
-    /// Give the family these name servers (empty: none of its own).
     pub fn set_dns(&mut self, family: IpFamily, servers: &[String]) -> Result<(), String> {
         let setting = family.setting();
         let mut v4 = Vec::new();
@@ -331,7 +311,6 @@ impl Settings {
         (!path.is_empty()).then(|| path.to_owned())
     }
 
-    /// Name a certificate or key by `path`; empty removes it.
     pub fn set_path(&mut self, setting: &str, key: &str, path: &str) {
         if path.is_empty() {
             self.remove(setting, key);
@@ -343,7 +322,6 @@ impl Settings {
     }
 }
 
-/// One `WireGuard` peer of a profile (`wireguard.peers`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WireGuardPeer {
     pub public_key: String,
@@ -356,7 +334,6 @@ pub struct WireGuardPeer {
 }
 
 impl Settings {
-    /// The profile's `WireGuard` peers.
     #[must_use]
     pub fn wireguard_peers(&self) -> Vec<WireGuardPeer> {
         self.dicts("wireguard", "peers")

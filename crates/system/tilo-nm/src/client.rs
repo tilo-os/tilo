@@ -1,11 +1,6 @@
 //! The `NetworkManager` client: one reading, a followed reading, an explicit
 //! connectivity check, an explicit Wi-Fi scan, the captive-portal URI, and
 //! the followed list of active VPNs.
-//!
-//! Everything goes to `org.freedesktop.NetworkManager` on the **system** bus.
-//! Reading its properties is open to every local client under the stock D-Bus
-//! policy; `CheckConnectivity` and `RequestScan` are subject to polkit, which
-//! may refuse callers outside an active session.
 
 use std::collections::{HashMap, HashSet};
 
@@ -20,27 +15,19 @@ use crate::model::{
     VpnReading, ended_on_purpose, is_vpn_type, metered_from_raw,
 };
 
-/// `NetworkManager`'s bus name.
 pub const BUS_NAME: &str = "org.freedesktop.NetworkManager";
-/// The root object, which carries the global state.
 pub const ROOT_PATH: &str = "/org/freedesktop/NetworkManager";
-/// The root object's interface.
 pub const ROOT_INTERFACE: &str = "org.freedesktop.NetworkManager";
-/// An active connection's interface.
 pub const ACTIVE_INTERFACE: &str = "org.freedesktop.NetworkManager.Connection.Active";
 pub(crate) const DEVICE_INTERFACE: &str = "org.freedesktop.NetworkManager.Device";
-/// The saved profiles' interface: a profile added or removed.
 pub(crate) const SETTINGS_INTERFACE: &str = "org.freedesktop.NetworkManager.Settings";
-/// One saved profile's interface: it was edited or removed.
 pub(crate) const PROFILE_INTERFACE: &str = "org.freedesktop.NetworkManager.Settings.Connection";
-/// A Wi-Fi device's interface: `RequestScan` and the `LastScan` it advances.
 pub const WIRELESS_INTERFACE: &str = "org.freedesktop.NetworkManager.Device.Wireless";
 pub(crate) const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 /// Signals buffered per stream before the oldest is dropped. Every signal
 /// triggers a full re-read, so a dropped one loses nothing.
 pub(crate) const SIGNAL_QUEUE: usize = 64;
 
-/// Why `NetworkManager` could not be asked.
 #[derive(Debug, thiserror::Error)]
 pub enum NmError {
     #[error("cannot reach NetworkManager: {0}")]
@@ -61,7 +48,6 @@ pub enum NmError {
     Refused(String),
     #[error("{0}")]
     NotFound(String),
-    /// An activation ended without the connection coming up.
     #[error("{0}")]
     ActivationFailed(&'static str),
     #[error("NetworkManager did not finish in time")]
@@ -82,7 +68,6 @@ impl NmError {
     }
 }
 
-/// A handle on `NetworkManager` over one D-Bus connection.
 #[derive(Clone, Debug)]
 pub struct NmClient {
     pub(crate) connection: Connection,
@@ -134,7 +119,6 @@ impl NmClient {
     ///
     /// [`NmError::Bus`] when the signal subscriptions cannot be made.
     pub async fn watch(&self) -> Result<NmWatch, NmError> {
-        // Subscribe before the first read so no change can fall between them.
         let changes = MessageStream::for_match_rule(
             MatchRule::builder()
                 .msg_type(zbus::message::Type::Signal)
@@ -367,7 +351,6 @@ impl NmClient {
                         return Err(NmError::WifiDeviceRemoved);
                     }
                 }
-                // The daemon left (or was replaced): its scans are gone.
                 signal = owners.next() => {
                     return Err(if signal.is_some() { NmError::NotRunning } else { NmError::Disconnected });
                 }
@@ -385,7 +368,6 @@ impl NmClient {
         let mut refused = None;
         for device in devices {
             let wireless = proxy(&self.connection, device.as_str(), WIRELESS_INTERFACE).await?;
-            // Not a Wi-Fi device: it has no `LastScan`.
             let Ok(before) = wireless.get_property::<i64>("LastScan").await else {
                 continue;
             };
@@ -423,14 +405,12 @@ impl NmClient {
     }
 }
 
-/// A followed [`NetworkState`]. Cloning shares the same follower.
 #[derive(Clone, Debug)]
 pub struct NmWatch {
     receiver: watch::Receiver<NetworkState>,
 }
 
 impl NmWatch {
-    /// The latest reading.
     #[must_use]
     pub fn current(&self) -> NetworkState {
         self.receiver.borrow().clone()
@@ -453,7 +433,6 @@ pub struct NmChanges {
 }
 
 impl NmChanges {
-    /// How many changes there were so far.
     #[must_use]
     pub fn count(&self) -> u64 {
         *self.receiver.borrow()
@@ -467,7 +446,6 @@ impl NmChanges {
     }
 }
 
-/// A followed [`VpnReading`]. Cloning shares the same follower.
 #[derive(Clone, Debug)]
 pub struct VpnWatch {
     receiver: watch::Receiver<VpnReading>,
@@ -481,7 +459,6 @@ impl VpnWatch {
         Self { receiver }
     }
 
-    /// The latest reading.
     #[must_use]
     pub fn current(&self) -> VpnReading {
         self.receiver.borrow().clone()
@@ -496,7 +473,6 @@ impl VpnWatch {
     }
 }
 
-/// The signals the VPN follower wakes on.
 struct VpnSignals {
     root: MessageStream,
     properties: MessageStream,
@@ -504,7 +480,6 @@ struct VpnSignals {
     owners: MessageStream,
 }
 
-/// What the VPN follower keeps between readings.
 #[derive(Default)]
 struct VpnFollower {
     reading: VpnReading,
@@ -512,7 +487,6 @@ struct VpnFollower {
     /// those of the last two readings, since a reading may already miss a
     /// connection whose going down is still queued.
     profiles: HashMap<String, String>,
-    /// The objects of the last reading alone.
     last: HashMap<String, String>,
     /// The active connections already counted as gone down on purpose: one
     /// going down signals more than once (deactivating, deactivated).
@@ -537,7 +511,6 @@ impl VpnFollower {
         self.reading.active = active.into_iter().map(|(_, vpn)| vpn).collect();
     }
 
-    /// Count an active connection going down on purpose.
     fn state_changed(&mut self, signal: &zbus::Message) {
         let header = signal.header();
         let Some(path) = header.path().map(|path| path.as_str().to_owned()) else {
@@ -710,7 +683,6 @@ fn last_scan_of(signal: &zbus::Message) -> Option<(String, i64)> {
     Some((device, scanned))
 }
 
-/// `NetworkManager` joining or leaving the bus.
 async fn name_owner_changes(connection: &Connection) -> zbus::Result<MessageStream> {
     MessageStream::for_match_rule(
         MatchRule::builder()
@@ -740,7 +712,6 @@ async fn follow(
             signal = owners.next() => signal,
         };
         if signal.is_none() {
-            // The connection is gone; nothing is known any more.
             publish(&sender, NetworkState::unknown());
             return;
         }
@@ -763,7 +734,6 @@ async fn follow_changes(
             () = sender.closed() => return,
             signal = signals.next() => signal,
         };
-        // Every stream ends with the connection.
         if signal.is_none() {
             return;
         }
