@@ -1,22 +1,8 @@
-//! `tilo-runtime-bundle` — CLI over the [`runtime_bundle`] crate.
+//! `tilo-runtime-bundle` — CLI over the [`runtime_bundle`] crate; `--help` lists the commands.
 //!
-//! ```text
-//! tilo-runtime-bundle build   --version <ver> --out <dir> [--from <host-path>] \
-//!                            [--arch <arch>] [--identity <path>]
-//! tilo-runtime-bundle build   --release <rel> --out-root <dir> [--version-out <file>] ...
-//!                            # names the bundle <rel>+native.<abi digest>
-//! tilo-runtime-bundle verify  <dir> [--require-publisher <hex>]
-//!                                  [--require-signature]
-//!                                  [--require-arch <arch>] [--record]
-//! tilo-runtime-bundle path    --version <ver>            # print resolved default
-//! tilo-runtime-bundle key generate --out <path>          # write a fresh identity
-//! tilo-runtime-bundle font-index <catalog>               # record a font catalog's faces
-//! ```
-//!
-//! The default `path` lookup order matches the launcher:
-//! `$XDG_DATA_HOME/tilo-runtime/<v>/` if it exists, otherwise
-//! `/usr/lib/tilo-runtime/<v>/`, otherwise print the per-user path
-//! (which is where `tilo-install runtime install` would write to).
+//! The default `path` lookup order matches the launcher: `$XDG_DATA_HOME/tilo-runtime/<v>/` if it
+//! exists, then `/usr/lib/tilo-runtime/<v>/`, then the per-user path, which is where
+//! `tilo-install runtime install` writes.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

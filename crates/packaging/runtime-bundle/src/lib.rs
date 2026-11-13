@@ -1,14 +1,11 @@
-//! Tilo runtime bundle producer + verifier.
+//! Tilo runtime bundle producer and verifier.
 //!
-//! A bundle is a directory (`bundle.toml` + `lib/` + optional
-//! `etc/ld.so.cache`) holding a host-copied loader/libc; it is
-//! content-addressed — `bundle.toml.root_hash` is a BLAKE3 root over
-//! the sorted `(path, blake3(file))` pairs, so any byte change flips it.
+//! A bundle is a directory (`bundle.toml`, `lib/`, optional `etc/ld.so.cache`) holding a host-copied
+//! loader and libc. It is content-addressed: `bundle.toml.root_hash` is a BLAKE3 root over the sorted
+//! `(path, blake3(file))` pairs, so any byte change flips it.
 //!
-//! The source paths to copy are architecture-specific
-//! ([`host_minimal_paths_for`]); at build time each is probed against
-//! the host and silently skipped if absent, since Debian and Fedora
-//! layouts differ and only what exists is copied.
+//! The source paths are architecture-specific ([`host_minimal_paths_for`]) and each is probed against
+//! the host, since Debian and Fedora layouts differ and only what exists is copied.
 
 pub mod component_pins;
 pub mod gc;
@@ -111,24 +108,18 @@ pub struct BundleManifest {
     pub verity_signature_hex: Option<String>,
 }
 
-/// One `(payload-relative-path, hash)` entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleFile {
     /// Path relative to the bundle root, always `/`-separated for portable encoding.
     pub path: String,
     /// BLAKE3 hash of the file bytes. Hex, lowercase.
     pub hash: String,
-    /// Size in bytes.
     pub size: u64,
-    /// The file's fs-verity digest (SHA-256, 4 KiB blocks, no salt; see
-    /// [`verity`]), hex. Covered by [`BundleManifest::verity_signature_hex`];
-    /// a launch that measures this digest on a verity-enabled file trusts
-    /// the file without reading it.
+    /// The file's fs-verity digest (SHA-256, 4 KiB blocks, no salt; see [`enable_bundle_verity`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verity: Option<String>,
 }
 
-/// Errors produced by the builder + verifier.
 #[derive(Debug, thiserror::Error)]
 pub enum BundleError {
     #[error("i/o: {0}")]
@@ -232,12 +223,11 @@ pub fn host_minimal_paths_for(arch: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-/// List every architecture [`host_minimal_paths_for`] has a table for.
 pub fn supported_archs() -> Vec<&'static str> {
     vec!["x86_64", "aarch64"]
 }
 
-/// `std::env::consts::ARCH` at build time; the default target for `build_bundle` when unset.
+/// The host's architecture, the default target.
 pub fn host_arch() -> &'static str {
     std::env::consts::ARCH
 }
@@ -245,13 +235,11 @@ pub fn host_arch() -> &'static str {
 /// `x86_64` loader + libc set: Fedora (/lib64), Debian
 /// (/lib/x86_64-linux-gnu via symlink), and legacy /lib/ld-linux.so.2.
 pub const HOST_MINIMAL_PATHS_X86_64: &[&str] = &[
-    // Dynamic loader itself.
     "/lib64/ld-linux-x86-64.so.2",
     "/lib/ld-linux-x86-64.so.2",
     "/lib/ld-linux.so.2",
     "/usr/lib64/ld-linux-x86-64.so.2",
     "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
-    // libc + friends that most Rust binaries need.
     "/lib64/libc.so.6",
     "/lib64/libgcc_s.so.1",
     "/lib64/libm.so.6",
@@ -259,7 +247,6 @@ pub const HOST_MINIMAL_PATHS_X86_64: &[&str] = &[
     "/lib64/libpthread.so.0",
     "/lib64/librt.so.1",
     "/lib64/libutil.so.1",
-    // Debian-ish alternatives — bundle-hash reflects whichever exist.
     "/lib/x86_64-linux-gnu/libc.so.6",
     "/lib/x86_64-linux-gnu/libgcc_s.so.1",
     "/lib/x86_64-linux-gnu/libm.so.6",
@@ -271,7 +258,6 @@ pub const HOST_MINIMAL_PATHS_X86_64: &[&str] = &[
 
 /// aarch64 loader + libc set: Debian (/lib/aarch64-linux-gnu) and Fedora (/lib64, same convention as `x86_64`).
 pub const HOST_MINIMAL_PATHS_AARCH64: &[&str] = &[
-    // Dynamic loader itself.
     "/lib/ld-linux-aarch64.so.1",
     "/lib64/ld-linux-aarch64.so.1",
     "/usr/lib64/ld-linux-aarch64.so.1",
@@ -292,7 +278,6 @@ pub const HOST_MINIMAL_PATHS_AARCH64: &[&str] = &[
     "/usr/lib64/libpthread.so.0",
     "/usr/lib64/librt.so.1",
     "/usr/lib64/libutil.so.1",
-    // Debian-ish alternatives.
     "/lib/aarch64-linux-gnu/libc.so.6",
     "/lib/aarch64-linux-gnu/libgcc_s.so.1",
     "/lib/aarch64-linux-gnu/libm.so.6",
@@ -326,14 +311,6 @@ pub fn bundle_root() -> Result<PathBuf, BundleError> {
     bundle_root_from(std::env::var_os(RUNTIME_DIR_ENV))
 }
 
-/// [`bundle_root`] with the override supplied by the caller instead of read
-/// from [`RUNTIME_DIR_ENV`]. The launcher passes only an override its own
-/// build policy allows; `None` (or empty) means the platform data directory.
-///
-/// # Errors
-///
-/// Returns [`BundleError::NoDataDir`] if `root_override` is unset and the
-/// platform data directory can't be resolved.
 pub fn bundle_root_from(root_override: Option<std::ffi::OsString>) -> Result<PathBuf, BundleError> {
     if let Some(dir) = root_override
         && !dir.is_empty()
@@ -355,13 +332,6 @@ pub fn default_bundle_path(version: &str) -> Result<PathBuf, BundleError> {
     Ok(bundle_root()?.join(version))
 }
 
-/// [`default_bundle_path`] under [`bundle_root_from`]'s caller-supplied
-/// override.
-///
-/// # Errors
-///
-/// Returns [`BundleError::NoDataDir`] under the same condition as
-/// [`bundle_root_from`].
 pub fn default_bundle_path_from(
     root_override: Option<std::ffi::OsString>,
     version: &str,
@@ -392,7 +362,6 @@ pub fn resolve_bundle_path(version: &str) -> Option<PathBuf> {
     None
 }
 
-/// Optional knobs for [`build_bundle_with`].
 #[derive(Default, Debug, Clone)]
 pub struct BuildOptions<'a> {
     /// Host root each source path is resolved against; `None` = `/`.
@@ -433,22 +402,11 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// Load from a key file on disk.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BundleError::IdentityIo`] if `path` can't be read, or
-    /// [`BundleError::IdentityParse`] if it is no key file.
     pub fn load(path: &Path) -> Result<Self, BundleError> {
         let bytes = fs::read(path).map_err(|e| BundleError::IdentityIo(e.to_string()))?;
         Self::from_json_bytes(&bytes)
     }
 
-    /// Parse a key file's contents.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BundleError::IdentityParse`] if `bytes` is no key file.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, BundleError> {
         let text =
             std::str::from_utf8(bytes).map_err(|e| BundleError::IdentityParse(e.to_string()))?;
@@ -457,7 +415,6 @@ impl Identity {
         Ok(Self { signing_key })
     }
 
-    /// Generate a fresh random identity; used by tests and the CLI's `key generate`.
     pub fn generate() -> Self {
         let mut rng = UnwrapErr(SysRng);
         Self {
@@ -465,12 +422,10 @@ impl Identity {
         }
     }
 
-    /// Serialise as the key file `load` reads.
     pub fn to_json_bytes(&self) -> Vec<u8> {
         registry_types::key_file::encode(&self.signing_key).into_bytes()
     }
 
-    /// The 32-byte Ed25519 public key.
     pub fn public_key_bytes(&self) -> [u8; 32] {
         self.signing_key.verifying_key().to_bytes()
     }
@@ -515,11 +470,6 @@ pub fn verity_signing_preimage(
     *hasher.finalize().as_bytes()
 }
 
-/// Build a bundle at `out` for the host architecture; see [`build_bundle_with`] for the full entry point.
-///
-/// # Errors
-///
-/// See [`build_bundle_with`].
 pub fn build_bundle(
     out: &Path,
     version: &str,
@@ -537,22 +487,17 @@ pub fn build_bundle(
 
 /// Build (or rebuild) a bundle at `out`.
 ///
-/// `version` is written into `bundle.toml`; `opts.from` overrides the
-/// host-root prefix each source path resolves against (default `/`);
-/// `opts.arch` picks the source-path table (default [`host_arch`]);
-/// `opts.identity`, if set, signs the bundle. Missing source paths
-/// are silently skipped, but if *no* source resolves this returns
-/// `NoSources` so a wrong `--from` or arch mismatch surfaces immediately.
+/// `opts.from` overrides the host root each source path resolves against (default `/`), `opts.arch`
+/// picks the source-path table, and `opts.identity` signs the bundle. Missing source paths are
+/// skipped, but if no source resolves the build fails with `NoSources` so a wrong `--from` or arch
+/// mismatch surfaces at once.
 ///
 /// # Errors
 ///
-/// Returns [`BundleError::UnsupportedArch`] if `opts.arch` (or
-/// [`host_arch`]) has no source-path table; [`BundleError::NoSources`]
-/// if none of that architecture's candidate paths exist under
-/// `opts.from`; [`BundleError::IncludeMissing`]/[`IncludeUnnamed`] for
-/// a bad `opts.extra_libs` entry; [`BundleError::Io`] on a filesystem
-/// failure while copying or writing `bundle.toml`; and any error
-/// [`Identity::load`] returns when `opts.identity` is set.
+/// [`BundleError::UnsupportedArch`] with no source-path table, [`BundleError::NoSources`] when none
+/// of that architecture's candidate paths exist, [`BundleError::IncludeMissing`] or
+/// [`BundleError::IncludeUnnamed`] for a bad `opts.extra_libs` entry, [`BundleError::Io`] while
+/// copying, and any error [`Identity::load`] returns.
 ///
 /// [`IncludeUnnamed`]: BundleError::IncludeUnnamed
 pub fn build_bundle_with(
@@ -564,20 +509,18 @@ pub fn build_bundle_with(
     seal(out, version.to_string(), arch, files, opts.identity)
 }
 
-/// Build a bundle at `out` that holds `binaries` under `bin/` and nothing else: no loader, libc
-/// or `ld.so.cache`.
+/// Build a bundle at `out` that holds `binaries` under `bin/` and nothing else: no loader, libc or
+/// `ld.so.cache`.
 ///
-/// This is the shape of a runtime that apps name as their entrypoint runtime (the tilolang
-/// runtime). The launcher mounts such a bundle beside the app's own runtime and changes no
-/// loader path, so the app runtime's loader runs its binary and the binary finds its libraries
-/// in that runtime's `lib/`. A loader set of its own would be signed, shipped and installed with
-/// every version of the bundle, and never read.
+/// This is the shape of a runtime an app names as its entrypoint runtime. The launcher mounts it
+/// beside the app's own runtime and changes no loader path, so the app runtime's loader runs the
+/// binary and the binary finds its libraries there; a loader set of its own would be shipped with
+/// every version and never read.
 ///
 /// # Errors
 ///
-/// [`BundleError::UnsupportedArch`] for an architecture without a source-path table,
-/// [`BundleError::NoSources`] when `binaries` is empty, everything [`copy_binaries`] refuses, and
-/// [`BundleError::Io`] or an [`Identity::load`] error as for [`build_bundle_with`].
+/// [`BundleError::UnsupportedArch`], [`BundleError::NoSources`] when `binaries` is empty, what
+/// [`copy_binaries`] refuses, and [`BundleError::Io`] or an [`Identity::load`] error.
 pub fn build_binaries_bundle(
     out: &Path,
     version: &str,
@@ -601,18 +544,14 @@ pub fn build_binaries_bundle(
     seal(out, version.to_string(), arch.to_string(), files, identity)
 }
 
-/// Build the runtime build of `release` under `out_root`, named by its ABI:
-/// the bundle lands at `<out_root>/<release>+native.<digest>/` with that
-/// version in its signed `bundle.toml`, where the digest is
-/// [`abi_digest`] of the payload. Returns the manifest and the bundle's
-/// directory. An existing bundle at that path is replaced: same name, same
-/// bytes.
+/// Build the runtime build of `release` under `out_root`, named by its ABI: the bundle lands at
+/// `<out_root>/<release>+native.<digest>/`, the digest being [`abi_digest`] of the payload, and an
+/// existing bundle at that path is replaced.
 ///
 /// # Errors
 ///
-/// [`BundleError::InvalidRelease`] for a release that cannot be a path
-/// component or carry the marker, plus everything [`build_bundle_with`]
-/// returns.
+/// [`BundleError::InvalidRelease`] for a release that cannot be a path component or carry the
+/// marker, plus everything [`build_bundle_with`] returns.
 pub fn build_abi_bundle(
     out_root: &Path,
     release: &str,
@@ -645,8 +584,6 @@ pub fn build_abi_bundle(
     Ok((manifest, dest))
 }
 
-/// Copy the payload into `out` and hash it; returns the architecture and the
-/// sorted file list.
 fn stage_payload(
     out: &Path,
     opts: &BuildOptions<'_>,
@@ -691,7 +628,6 @@ fn stage_payload(
     copy_includes(out, opts.extra_libs, &loaders, &mut written)?;
     copy_binaries(out, opts.extra_bins, &mut written)?;
 
-    // Optional ld.so.cache.
     let cache_src = resolve_from(host_root, HOST_LD_SO_CACHE);
     if cache_src.exists() {
         let rel_in_bundle = "etc/ld.so.cache".to_string();
@@ -739,7 +675,6 @@ fn seal(
 ) -> Result<BundleManifest, BundleError> {
     let root_hash = compute_root_hash(&files);
 
-    // Optional signing.
     let (publisher_hex, signature_hex, verity_signature_hex) = match identity {
         Some(id_path) => {
             use ed25519_dalek::Signer;
@@ -771,7 +706,6 @@ fn seal(
         verity_signature_hex,
     };
 
-    // Persist bundle.toml.
     let toml =
         toml::to_string_pretty(&manifest).map_err(|e| BundleError::ManifestParse(e.to_string()))?;
     fs::write(out.join(BUNDLE_MANIFEST_FILENAME), toml)?;
@@ -779,10 +713,6 @@ fn seal(
     Ok(manifest)
 }
 
-/// Verification policy — how strict [`verify_bundle_with`] should be.
-/// [`verify_bundle`]'s `default()`: checks any present signature
-/// (rejects a bad one), does not require one, and does not enforce a
-/// specific publisher.
 #[derive(Default, Debug, Clone)]
 pub struct VerifyOptions {
     /// If set, require the bundle to be signed AND its publisher hex to equal this string.
@@ -833,7 +763,6 @@ pub fn verify_bundle_with(
     verify_bundle_impl(root, opts, PayloadMode::Hash).map(|(manifest, _, _)| manifest)
 }
 
-/// How a verification established the payload bytes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PayloadCheck {
     /// Files accepted by their kernel-measured fs-verity digest, unread.
@@ -841,32 +770,22 @@ pub struct PayloadCheck {
     /// Files accepted by the identity a full verification recorded for them
     /// ([`VerificationRecord`]), unread.
     pub by_record: usize,
-    /// Files whose bytes were read and BLAKE3-hashed.
     pub hashed: usize,
-    /// Payload bytes read to hash them.
     pub hashed_bytes: u64,
 }
 
-/// [`verify_bundle_with`] for the launch path: the same checks and the same
-/// guarantee that every payload byte is the signed byte, without reading
-/// the files fs-verity already vouches for.
+/// [`verify_bundle_with`] for the launch path: the same checks and the same guarantee that every
+/// payload byte is the signed byte, without reading what fs-verity already vouches for.
 ///
-/// A file is accepted unread only when the manifest's
-/// [`BundleManifest::verity_signature_hex`] verifies against the bundle's
-/// publisher, the file has fs-verity enabled, and the kernel's measured
-/// digest equals the signed [`BundleFile::verity`]. fs-verity makes such a
-/// file's contents immutable and checks every page read against the
-/// measured tree, so equal digests mean equal bytes for as long as the file
-/// exists. Every other file (no digest in the manifest, no fs-verity on the
-/// filesystem, a digest that differs) is BLAKE3-hashed as
-/// [`verify_bundle_with`] does, so this never accepts a byte the full
-/// verification would refuse.
+/// A file is accepted unread only when the manifest's [`BundleManifest::verity_signature_hex`]
+/// verifies against the bundle's publisher, the file has fs-verity enabled, and the kernel's measured
+/// digest equals the signed [`BundleFile::verity`]. fs-verity makes the file immutable and checks
+/// every page read against the measured tree, so equal digests mean equal bytes while the file
+/// exists. Everything else is hashed as [`verify_bundle_with`] does.
 ///
 /// # Errors
 ///
-/// Everything [`verify_bundle_with`] returns, plus
-/// [`BundleError::BadVeritySignature`] for a verity signature that does not
-/// verify.
+/// Everything [`verify_bundle_with`] returns, plus [`BundleError::BadVeritySignature`].
 pub fn verify_bundle_verity_with(
     root: &Path,
     opts: &VerifyOptions,
@@ -875,18 +794,14 @@ pub fn verify_bundle_verity_with(
         .map(|(manifest, check, _)| (manifest, check))
 }
 
-/// [`verify_bundle_with`] for a bundle a person installed into their own
-/// store, on a launch's critical path.
+/// [`verify_bundle_with`] for a bundle a person installed into their own store, on a launch's critical
+/// path.
 ///
-/// Reads no payload byte a previous launch already proved: a file is
-/// accepted unread when the kernel vouches for it (as
-/// [`verify_bundle_verity_with`]) or when `records` holds a record proving
-/// that the file is still the file that was verified — same inode, size and
-/// modification and change times ([`VerificationRecord`]). Everything else is
-/// hashed, and the verification that proved every file is recorded in
-/// `records` for the next launch. `records` is a directory the sandboxed apps
-/// of this user cannot write; `None` verifies without recording or trusting a
-/// record.
+/// Reads no payload byte a previous launch already proved: a file is accepted unread when the kernel
+/// vouches for it (as [`verify_bundle_verity_with`]) or when `records` holds a record with the same
+/// inode, size, modification and change times ([`VerificationRecord`]). Everything else is hashed,
+/// and the verification that proved every file is recorded in `records`, a directory the sandboxed
+/// apps cannot write; `None` neither records nor trusts a record.
 ///
 /// # Errors
 ///
@@ -975,10 +890,8 @@ pub fn verify_bundle_metadata_with(
     verify_bundle_impl(root, opts, PayloadMode::Size).map(|(manifest, _, _)| manifest)
 }
 
-/// How [`verify_bundle_impl`] establishes each payload file.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PayloadMode<'a> {
-    /// Read and hash every byte.
     Hash,
     /// Compare sizes only; the caller proves immutability.
     Size,
@@ -1010,7 +923,6 @@ fn verify_bundle_impl(
     let manifest: BundleManifest =
         toml::from_str(&text).map_err(|e| BundleError::ManifestParse(e.to_string()))?;
 
-    // Optional arch policy.
     if let Some(required) = opts.require_arch.as_deref()
         && manifest.arch != required
     {
@@ -1085,9 +997,7 @@ fn verify_bundle_impl(
     Ok((manifest, check, fresh))
 }
 
-/// What the listed files of a payload still owe this verification.
 struct UnreadPayload<'a> {
-    /// The files whose bytes have to be read.
     to_hash: Vec<(PathBuf, &'a BundleFile)>,
     /// The identity of every listed file, as this verification found it: what
     /// the record a later launch reads is made of. A file whose bytes are
@@ -1169,12 +1079,10 @@ fn list_payload<'a>(
     Ok(unread)
 }
 
-/// What [`accept_unread`] decided about one listed file.
 enum Accepted {
     /// Established without reading it, with the file's identity as this pass
     /// saw it.
     Unread(Option<FileIdentity>),
-    /// Its bytes have to be read.
     Read,
 }
 
@@ -1358,7 +1266,6 @@ fn eq_hex_ignore_case(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }
 
-/// List the immediate contents of the bundle root that constitute the payload (used by `verify_bundle`); recursive.
 fn walk_payload(root: &Path, out: &mut BTreeMap<String, PathBuf>) -> std::io::Result<()> {
     fn recurse(
         base: &Path,
@@ -1398,11 +1305,9 @@ fn compute_root_hash(files: &[BundleFile]) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-/// A payload file's digests.
 struct FileDigests {
     /// BLAKE3, hex: the file's identity in the manifest and the root hash.
     blake3: String,
-    /// fs-verity digest, hex, when asked for.
     verity: Option<String>,
     size: u64,
     /// The identity of the inode these bytes were read from, when it held
@@ -1440,7 +1345,6 @@ fn hash_payload_files<'a>(
             .map(|(path, expected)| Ok((digest_file(path, false)?, *expected)))
             .collect();
     }
-    // Largest first, so the last worker is not left with one huge file.
     let mut order: Vec<usize> = (0..files.len()).collect();
     order.sort_by_key(|&index| std::cmp::Reverse(files.get(index).map_or(0, |f| f.1.size)));
     let next = AtomicUsize::new(0);
@@ -1459,7 +1363,6 @@ fn hash_payload_files<'a>(
                         let failed = digest.is_err();
                         mine.push((index, digest));
                         if failed {
-                            // Nothing after a read error can be accepted.
                             next.store(order.len(), Ordering::Relaxed);
                             break;
                         }
@@ -1513,7 +1416,6 @@ fn digest_file(path: &Path, with_verity: bool) -> Result<FileDigests, BundleErro
     let before = FileIdentity::of_file(&f).ok();
     let mut hasher = blake3::Hasher::new();
     let mut verity = with_verity.then(verity::VerityHasher::new);
-    // Large reads let BLAKE3 hash many chunks in parallel SIMD lanes.
     let mut buf = vec![0u8; 64 * 1024];
     let mut total = 0u64;
     loop {
@@ -1547,7 +1449,6 @@ fn is_loader(name: &str) -> bool {
     name.starts_with("ld-linux")
 }
 
-/// The included regular files by the name they get at the top of `lib/`.
 fn included_files(includes: &[PathBuf]) -> BTreeMap<&str, &Path> {
     let mut files = BTreeMap::new();
     for include in includes {
@@ -1683,8 +1584,6 @@ fn binary_is_executable(metadata: &fs::Metadata) -> bool {
     }
 }
 
-/// Copy the tree at `src` to `dst`, recording each file as `rel/<path>`.
-/// Links and special files are refused: a bundle is plain bytes.
 fn copy_tree(
     src: &Path,
     dst: &Path,
@@ -1835,7 +1734,6 @@ mod tests {
         fs::write(&identity_path, identity.to_json_bytes()).unwrap();
         let bundle = work.path().join("bundle");
 
-        // This machine's loader and libc exist, and none of them is taken.
         let manifest = build_binaries_bundle(
             &bundle,
             "0.1.0+tilolang",
@@ -2078,7 +1976,6 @@ mod tests {
             )
             .expect("build");
             assert_eq!(m.arch, "aarch64");
-            // Fedora layout: loader at /lib/, libc at /lib64/.
             let paths: Vec<&str> = m.files.iter().map(|f| f.path.as_str()).collect();
             assert!(
                 paths
@@ -2171,9 +2068,6 @@ mod tests {
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
 
-            // Two stand-in shared objects a thin app links dynamically (Rust std
-            // + Tilo runtime dylib); content is arbitrary — the point is they land
-            // in the bundle, content-addressed, and pass verification.
             let extras_dir = tempfile::tempdir().unwrap();
             let libstd = extras_dir.path().join("libstd-deadbeef.so");
             let libruntime = extras_dir.path().join("libruntime_dylib.so");
@@ -2194,17 +2088,13 @@ mod tests {
             )
             .expect("build with extras");
 
-            // Both extras appear at the TOP of lib/ (by file name) for soname resolution via LD_LIBRARY_PATH.
             assert!(out.path().join("lib/libstd-deadbeef.so").exists());
             assert!(out.path().join("lib/libruntime_dylib.so").exists());
 
-            // Both are recorded in the manifest — hashed, covered by the root hash, and thus any signature.
             let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
             assert!(paths.contains(&"lib/libstd-deadbeef.so"), "{paths:?}");
             assert!(paths.contains(&"lib/libruntime_dylib.so"), "{paths:?}");
 
-            // Full verify roundtrips — proves the extras are part of the
-            // content-addressed set, not loose files verify would reject.
             verify_bundle(out.path()).expect("verify with extras");
         }
         // phase: an_included_directory_keeps_its_tree
@@ -2360,8 +2250,6 @@ mod tests {
 
     #[test]
     fn a_library_in_the_loader_set_and_the_includes_is_signed_once() {
-        // x86_64: the shared runtime includes its `ldd` closure, which names the
-        // host's libc and loader again.
         let host = tempfile::tempdir().unwrap();
         fake_x86_64_host(host.path());
         let runtime = host.path().join("libruntime_dylib.so");
@@ -2384,9 +2272,6 @@ mod tests {
             },
         )
         .unwrap();
-        // libc where LD_LIBRARY_PATH finds it, libm (no include) where it
-        // always was; the loader where the launcher binds it for INTERP and
-        // where soname-following tools find it.
         assert_eq!(
             payload_paths(&manifest),
             [
@@ -2403,8 +2288,6 @@ mod tests {
         );
         verify_bundle(out.path()).expect("the deduplicated bundle verifies");
 
-        // aarch64 Fedora lists libc under both /lib64 and /usr/lib64: neither
-        // copy stays beside the included one.
         let host = tempfile::tempdir().unwrap();
         fake_aarch64_fedora_host(host.path());
         let usr = host.path().join("usr/lib64");
@@ -2481,7 +2364,6 @@ mod tests {
     }
 
     fn fake_aarch64_fedora_host(root: &Path) {
-        // Fedora-style aarch64 rootfs: loader at /lib/, libc at /lib64/.
         for rel in [
             "lib/ld-linux-aarch64.so.1",
             "lib64/libc.so.6",
@@ -2690,7 +2572,6 @@ mod tests {
             let v = verify_bundle(out.path()).expect("verify");
             assert_eq!(v.publisher_hex, manifest.publisher_hex);
 
-            // require_publisher matching same key accepts.
             verify_bundle_with(
                 out.path(),
                 &VerifyOptions {
@@ -2757,9 +2638,6 @@ mod tests {
             )
             .unwrap();
 
-            // Root-hash tampering is caught by the integrity check before the
-            // signature; to test the signature path specifically, flip a byte in
-            // signature_hex instead.
             let bundle_toml = out.path().join(BUNDLE_MANIFEST_FILENAME);
             let text = fs::read_to_string(&bundle_toml).unwrap();
             let mut manifest: BundleManifest = toml::from_str(&text).unwrap();
@@ -2805,7 +2683,6 @@ mod tests {
             let c = signing_preimage("v1", "bb");
             assert_ne!(a, b);
             assert_ne!(a, c);
-            // Domain prefix cannot be reproduced from bare inputs.
             let hasher_bare = {
                 let mut h = blake3::Hasher::new();
                 h.update(b"v1");

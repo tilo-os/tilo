@@ -1,20 +1,14 @@
-//! What a full verification leaves behind, so the next launch can trust the
-//! same bytes without reading them.
+//! What a full verification leaves behind, so the next launch can trust the same bytes without
+//! reading them.
 //!
-//! Verifying a bundle a person installed into their own store reads its whole
-//! payload: hundreds of megabytes on a launch's critical path, on every
-//! launch. Install-time verification proved the bytes once; this record lets
-//! every later launch prove that the files are *still the same files* without
-//! reading them. It holds, per payload file, the identity the file had when
-//! it was verified: device, inode, size, modification time and change time.
-//! Rewriting a file, replacing it, or restoring its modification time all move
+//! Verifying a bundle a person installed reads its whole payload, hundreds of megabytes on every
+//! launch. The record holds, per payload file, the identity it had when it was verified: device,
+//! inode, size, modification time and change time. Rewriting, replacing or back-dating a file moves
 //! one of those, and no unprivileged process can set a change time back.
 //!
-//! The record is evidence, not authority: a launch still checks the signed
-//! manifest, its root hash and the publisher, and it reads any file the
-//! record does not vouch for. It lives beside the other per-user state the
-//! launcher keeps (never inside the bundle, whose file set is signed), where a
-//! sandboxed app cannot write it.
+//! The record is evidence, not authority: a launch still checks the signed manifest, root hash and
+//! publisher, and reads any file the record does not vouch for. It sits beside the launcher's other
+//! per-user state, never inside the bundle, where a sandboxed app cannot write it.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -50,7 +44,6 @@ pub struct VerificationRecord {
     /// The root hash the identities were proven to: the record answers only
     /// for the bundle whose manifest names it.
     root_hash: String,
-    /// One entry per payload file, by payload-relative path.
     files: Vec<RecordedFile>,
 }
 
@@ -61,8 +54,6 @@ struct RecordedFile {
 }
 
 impl VerificationRecord {
-    /// A record of `files`, the identities a verification just proved, for the
-    /// bundle whose payload hashes to `root_hash`.
     #[must_use]
     pub fn new(root_hash: &str, files: Vec<(String, Identity)>) -> Self {
         Self {
@@ -75,8 +66,6 @@ impl VerificationRecord {
         }
     }
 
-    /// Whether this record vouches that the payload file `path` holds, right
-    /// now, the bytes it was verified with.
     #[must_use]
     pub fn holds(&self, path: &str, now: Identity) -> bool {
         self.files
@@ -84,10 +73,6 @@ impl VerificationRecord {
             .any(|file| file.path == path && file.identity == now)
     }
 
-    /// The record `dir` holds for the bundle whose payload hashes to
-    /// `root_hash`, when it holds one this build wrote and can read. A
-    /// missing, unreadable, malformed or foreign record is no record: every
-    /// file it does not vouch for is verified the way it always was.
     #[must_use]
     pub fn read(dir: &Path, root_hash: &str) -> Option<Self> {
         let path = dir.join(format!("{root_hash}.json"));
@@ -98,14 +83,6 @@ impl VerificationRecord {
         (record.version == VERSION && record.root_hash == root_hash).then_some(record)
     }
 
-    /// Record these identities for `root_hash` in `dir`, replacing what was
-    /// there.
-    ///
-    /// # Errors
-    ///
-    /// A directory that cannot be written fails this and nothing else: the
-    /// launch that proved the bundle has its answer already, and the cost is
-    /// a later launch skipping the verification this one could not leave.
     pub fn write(&self, dir: &Path) -> std::io::Result<()> {
         let bytes = serde_json::to_vec(self).map_err(std::io::Error::other)?;
         let path = dir.join(format!("{}.json", self.root_hash));
