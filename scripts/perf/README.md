@@ -90,27 +90,6 @@ executable stand-alone; the higher-level flow is described below.
   login opens it with minted first. The performance run runs it as the
   `agent` group.
 
-- `agent_task.py (--socket PATH | --spawn SHELL [--mcp CLIENT])` —
-  a whole agent task the way an agent in a terminal of a Tilo login runs it:
-  a scripted model, streamed like the Messages API from a loopback fake,
-  drives `tilo-runtime-mcp --connect`, which relays to the session's agent
-  door. The person admits the client (the session asks on a sheet; the run
-  answers that question's published action, allow once, on the control
-  socket) and it works as them, as a REPL does; then, one tool call per turn,
-  the agent finds Notes' new-note, creates a note, finds the note by its
-  title, appends its body and reads it back. Records the task's wall time,
-  the time in Tilo, in the (fake) model and in the agent loop, the turns,
-  the calls asked again because the note was not there yet, and each step.
-  `--think-ms` and `--tokens-per-s` model a real provider; both default to
-  0. `--spawn` starts a headless session on a scratch profile, mints the
-  throwaway identity a development login opens its desk with, and serves its
-  agent door in the profile; `--socket` takes a device's admin-control.sock
-  (its agent.sock beside it). Either way the task works in a workspace of its
-  own and the client leaves with the session. It needs a session where apps
-  start, with Notes installed: a dev session on a machine, not a builder,
-  whose containers start no app. The scheduled lane therefore times the
-  agent's calls (`agent_rtt.py`) and the agent's own task loop (`agent-native`).
-
 ## Optimise (three-step PGO + optional BOLT)
 
 1. `pgo-instrument.sh` — build tilo-session + terminal + file-explorer +

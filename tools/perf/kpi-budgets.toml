@@ -429,9 +429,8 @@ source = "provisional: derived from the no-op p50 target"
 # ms in order, 105 ms pipelined and 1.7 idle round trips per step. `idle` is
 # the host round trips per step that brought no news while a step ran (the
 # plan in order). Reported, not enforced, until three nightly records exist.
-# A whole app task is not this lane's: a builder starts no app, so
-# `scripts/perf/agent_task.py` measures it where apps start (a session on a
-# machine with them), and its records carry no budget here.
+# A whole app task is not this lane's: a builder starts no app, so only the
+# agent's own loop is timed here.
 [kpi."agent.task.native.pipelined.wall"]
 unit = "ms"
 p50 = 150.0

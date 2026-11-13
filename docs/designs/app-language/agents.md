@@ -233,9 +233,13 @@ get parts of long requests wrong most often. `history task` lists the steps; `un
 
 ## 9. Evals
 
-Reusing what exists (`scripts/perf/agent_task.py` with its fake model, agent-participant's
-`campaign_bench` and `campaign_replay`, `crates/dev/ai-bench`, the `instruction_mode_eval`
-scorer): a seeded simulated workspace (chat, mail, notes, files, tasks), about 30 tasks with
-checkable outcomes, cheap and strong models, and four interfaces: today's `tilo_*` tools,
-tilolang chaining, tilolang with pipe sugar (`|` as the same chain), and TypeScript against the
-same API. Measured: first-try errors, tokens, calls, correctness. The syntax follows the results.
+One mechanism, the agent's own: `apps/agent/tests/data/instruction_mode_eval.jsonl` holds the
+cases, `apps/agent/tests/instruction_mode_eval.rs` scores the production transform against them
+in the test suite, and `apps/agent/examples/instruction_mode_eval.rs` records a real provider
+over the same set and prints accuracy and latency. Growing the evals is adding cases there.
+
+What this does not cover yet, and the shape that would: a seeded simulated workspace (chat,
+mail, notes, files, tasks), about 30 tasks with checkable outcomes, cheap and strong models,
+and four interfaces: today's `tilo_*` tools, tilolang chaining, tilolang with pipe sugar (`|`
+as the same chain), and TypeScript against the same API. Measured: first-try errors, tokens,
+calls, correctness. The syntax follows the results.

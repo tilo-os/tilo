@@ -1683,10 +1683,8 @@ const SCHEMA_ANNOTATIONS: &[&str] = &[
 /// expression or an unsupported format: callers must be able to trust every
 /// schema they enumerate.
 ///
-/// [`SCHEMA_ASSERTIONS`] and [`SCHEMA_ANNOTATIONS`] are stated a second time
-/// by `tilo-ai-bench`, which has to check the shapes that app's quality cases
-/// declare without linking this crate; a test in each crate pins this list
-/// byte for byte so neither can grow a keyword the other refuses.
+/// [`SCHEMA_ASSERTIONS`] and [`SCHEMA_ANNOTATIONS`] are pinned, word for
+/// word, by a test here: a keyword cannot be added without a check behind it.
 pub(crate) fn validate_schema_definition(schema: &serde_json::Value) -> Result<(), String> {
     let object = schema
         .as_object()

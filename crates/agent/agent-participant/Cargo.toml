@@ -206,7 +206,7 @@ tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs" }
 tilo-doc = { path = "../../doc/tilo-doc" }
 # The desktop's search over a workspace's record index, as a person finds a record.
 tilo-desktop-search = { path = "../../session/desktop-search" }
-# The campaign benchmark's `TILO_BENCH_TRACE`.
+# The subscriber the `api-on-relay` example traces with.
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
 [package.metadata.cargo-machete]

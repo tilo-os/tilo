@@ -1436,8 +1436,7 @@ readers = ["apps/pdf-viewer/build.rs"]
 [[cargo]]
 package = "tilo-agent-participant"
 # The session tests mount apps against the controlled font fixture and share
-# the browser peer's relay test support; the campaign benchmark runs its
-# confined workers inside the test environment script.
+# the browser peer's relay test support.
 inputs = [
   "crates/sdk/ui-core/assets/fonts/",
   "crates/session/client/tests/support/",
@@ -1447,7 +1446,6 @@ inputs = [
 # examples reuse the workspace-actions one.
 readers = [
   "crates/agent/agent-participant/tests/it.rs",
-  "crates/agent/agent-participant/tests/campaign_bench.rs",
   "crates/agent/agent-participant/examples/api-on-relay.rs",
   "crates/agent/agent-participant/examples/mounted-resource.rs",
 ]

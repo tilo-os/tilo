@@ -27,7 +27,6 @@ service.
 
 ## Developer tools and fixtures
 
-- `dev/frame-link`: encoded-frame network simulator and `flatpak-share-demo`.
 - `dev/nested-session-bus`: the build environment's dbus-daemon in a cargo-built executable, the
   private session bus of a nested session on hosts without one.
 - `dev/click-test-client`: the minimal Wayland client the shell's sandbox and desktop tests drive.

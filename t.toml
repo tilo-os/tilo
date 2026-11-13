@@ -149,7 +149,7 @@ name = "test-deep"
 tool = "nextest"
 wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
-packages = ["frame-link", "tilo-doc-codecs", "tilo-reference", "tilo-render-protocol"]
+packages = ["tilo-doc-codecs", "tilo-reference", "tilo-render-protocol"]
 env = { PROPTEST_CASES = "256", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 heavy = true
 on = ["dispatch"]

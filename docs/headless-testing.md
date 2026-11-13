@@ -451,8 +451,6 @@ For a source-matched fixture, opt into `TILO_FRAME_CPU_TRACE` through its suppor
 
 `scripts/perf/agent_rtt.py` times the control socket: `actions list`, `state dump`, a no-op invoke and throughput under concurrent clients. `--socket PATH` drives a running session; `--spawn SHELL` starts one through `real_apps.ScriptedSession` and removes it on exit.
 
-`scripts/perf/agent_task.py` times a whole task the way an agent in the login runs it: a scripted, streamed fake model drives `tilo-runtime-mcp --connect` through the session's agent door, creates a note in Notes, writes its body, finds it by title and reads it back, and the record splits the time between Tilo, the model and the agent loop. It needs a session where apps start, with Notes installed.
-
 ## Idle wakeups and idle memory
 
 An idle desktop should leave the CPU asleep and hold little memory.
