@@ -263,60 +263,162 @@ mod tests {
     use super::*;
     use crate::Published as _;
 
-    #[test]
-    fn a_held_stream_is_published_until_the_person_stops_it() {
-        let sessions = Sessions::default();
-        let captures = Captures::new(&sessions);
-        let stopped = Arc::new(AtomicBool::new(false));
-        let hook = Arc::clone(&stopped);
-        let path = "/org/freedesktop/portal/desktop/session/1_2/s";
-        captures
-            .hold_stream(
-                path,
-                &PortalCaller::new("org.example.Share"),
-                "Desk",
-                7,
-                Arc::new(move || hook.store(true, Ordering::SeqCst)),
-            )
-            .expect("held");
-        let published = captures.resources();
-        assert_eq!(published.len(), 1);
-        assert_eq!(published[0].label, "org.example.Share");
-        let resource = published[0].id.as_str().to_owned();
-        assert_eq!(
-            captures.read(&resource).expect("read")["source"],
-            Value::from("Desk")
-        );
-        let stopped_now = captures.invoke(&published, &resource, "stop", &Map::new());
-        assert!(matches!(stopped_now, Some(Ok(_))), "{stopped_now:?}");
-        assert!(stopped.load(Ordering::SeqCst), "its stream stopped");
-        assert!(captures.resources().is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn a_held_capture_is_published_until_the_person_its_session_or_lockdown_ends_it;
 
-    #[test]
-    fn an_ended_session_releases_its_streams() {
-        let sessions = Sessions::default();
-        let captures = Captures::new(&sessions);
-        let path = "/org/freedesktop/portal/desktop/session/1_2/s";
-        captures
-            .hold_stream(
-                path,
-                &PortalCaller::new("org.example.Share"),
-                "Desk",
-                7,
-                Arc::new(|| {}),
-            )
-            .expect("held");
-        captures.session_ended(path);
-        assert!(captures.resources().is_empty());
-        assert!(
+        phase a_held_stream_is_published_until_the_person_stops_it;
+        {
+            let sessions = Sessions::default();
+            let captures = Captures::new(&sessions);
+            let stopped = Arc::new(AtomicBool::new(false));
+            let hook = Arc::clone(&stopped);
+            let path = "/org/freedesktop/portal/desktop/session/1_2/s";
             captures
-                .broker()
-                .lock_recover()
-                .enumerate(CaptureKind::Screen)
-                .is_empty(),
-            "its sources are gone too"
-        );
+                .hold_stream(
+                    path,
+                    &PortalCaller::new("org.example.Share"),
+                    "Desk",
+                    7,
+                    Arc::new(move || hook.store(true, Ordering::SeqCst)),
+                )
+                .expect("held");
+            let published = captures.resources();
+            assert_eq!(published.len(), 1);
+            assert_eq!(published[0].label, "org.example.Share");
+            let resource = published[0].id.as_str().to_owned();
+            assert_eq!(
+                captures.read(&resource).expect("read")["source"],
+                Value::from("Desk")
+            );
+            let stopped_now = captures.invoke(&published, &resource, "stop", &Map::new());
+            assert!(matches!(stopped_now, Some(Ok(_))), "{stopped_now:?}");
+            assert!(stopped.load(Ordering::SeqCst), "its stream stopped");
+            assert!(captures.resources().is_empty());
+        }
+
+        phase an_ended_session_releases_its_streams;
+        {
+            let sessions = Sessions::default();
+            let captures = Captures::new(&sessions);
+            let path = "/org/freedesktop/portal/desktop/session/1_2/s";
+            captures
+                .hold_stream(
+                    path,
+                    &PortalCaller::new("org.example.Share"),
+                    "Desk",
+                    7,
+                    Arc::new(|| {}),
+                )
+                .expect("held");
+            captures.session_ended(path);
+            assert!(captures.resources().is_empty());
+            assert!(
+                captures
+                    .broker()
+                    .lock_recover()
+                    .enumerate(CaptureKind::Screen)
+                    .is_empty(),
+                "its sources are gone too"
+            );
+        }
+
+        phase taking_the_camera_away_ends_the_stream_and_leaves_the_app_running;
+        {
+            let sessions = Sessions::default();
+            let captures = Captures::new(&sessions);
+            let stopped = Arc::new(AtomicBool::new(false));
+            let kept = Arc::new(AtomicBool::new(false));
+            camera_lease(
+                &captures,
+                "camera-0",
+                "so.tilo.meet",
+                "room-1",
+                Arc::clone(&stopped),
+            );
+            camera_lease(
+                &captures,
+                "camera-1",
+                "so.tilo.camera",
+                "room-2",
+                Arc::clone(&kept),
+            );
+            assert_eq!(captures.resources().len(), 2);
+
+            let ended = captures.keep_only(|app, _, _| app != "so.tilo.meet");
+            assert_eq!(ended, 1, "only the app that lost the camera");
+            assert!(
+                stopped.load(Ordering::SeqCst),
+                "the stream the broker handed out stopped"
+            );
+            assert!(
+                !kept.load(Ordering::SeqCst),
+                "the other app keeps capturing"
+            );
+            assert_eq!(captures.resources().len(), 1);
+            assert!(
+                captures
+                    .broker()
+                    .lock_recover()
+                    .live()
+                    .iter()
+                    .all(|capture| capture.app_id != "so.tilo.meet"),
+                "the app keeps running; what it may no longer capture is gone"
+            );
+        }
+
+        phase a_capture_the_desk_still_allows_is_left_alone;
+        {
+            let sessions = Sessions::default();
+            let captures = Captures::new(&sessions);
+            let stopped = Arc::new(AtomicBool::new(false));
+            camera_lease(
+                &captures,
+                "camera-0",
+                "so.tilo.meet",
+                "room-1",
+                Arc::clone(&stopped),
+            );
+            assert_eq!(captures.keep_only(|_, _, _| true), 0);
+            assert!(!stopped.load(Ordering::SeqCst));
+            assert_eq!(captures.resources().len(), 1);
+        }
+
+        phase the_lockdown_switch_stops_what_captures_and_answers_no_next_ask;
+        {
+            let sessions = Sessions::default();
+            let captures = Captures::new(&sessions);
+            let stopped = Arc::new(AtomicBool::new(false));
+            camera_lease(
+                &captures,
+                "camera-0",
+                "so.tilo.meet",
+                "room-1",
+                Arc::clone(&stopped),
+            );
+            captures.set_lockdown(CaptureKind::Camera, true);
+            assert!(stopped.load(Ordering::SeqCst), "capturing stopped");
+            assert!(captures.resources().is_empty());
+            let binding = CaptureSessionBinding::new("so.tilo.meet", "room-1", "/session/2", "device")
+                .expect("binding");
+            assert_eq!(
+                captures.broker().lock_recover().authorize(
+                    &binding,
+                    "camera-0",
+                    CaptureKind::Camera,
+                    Instant::now()
+                ),
+                Err(CaptureBrokerError::Disabled)
+            );
+            captures.set_lockdown(CaptureKind::Camera, false);
+            assert!(
+                captures
+                    .broker()
+                    .lock_recover()
+                    .authorize(&binding, "camera-0", CaptureKind::Camera, Instant::now())
+                    .is_ok(),
+                "turning the switch off lets the camera be asked for again"
+            );
+        }
     }
 
     /// A camera lease for `app` in `workspace`, stopping `hook` when it is
@@ -355,103 +457,5 @@ mod tests {
             )
             .expect("hook");
         lease
-    }
-
-    #[test]
-    fn taking_the_camera_away_ends_the_stream_and_leaves_the_app_running() {
-        let sessions = Sessions::default();
-        let captures = Captures::new(&sessions);
-        let stopped = Arc::new(AtomicBool::new(false));
-        let kept = Arc::new(AtomicBool::new(false));
-        camera_lease(
-            &captures,
-            "camera-0",
-            "so.tilo.meet",
-            "room-1",
-            Arc::clone(&stopped),
-        );
-        camera_lease(
-            &captures,
-            "camera-1",
-            "so.tilo.camera",
-            "room-2",
-            Arc::clone(&kept),
-        );
-        assert_eq!(captures.resources().len(), 2);
-
-        let ended = captures.keep_only(|app, _, _| app != "so.tilo.meet");
-        assert_eq!(ended, 1, "only the app that lost the camera");
-        assert!(
-            stopped.load(Ordering::SeqCst),
-            "the stream the broker handed out stopped"
-        );
-        assert!(
-            !kept.load(Ordering::SeqCst),
-            "the other app keeps capturing"
-        );
-        assert_eq!(captures.resources().len(), 1);
-        assert!(
-            captures
-                .broker()
-                .lock_recover()
-                .live()
-                .iter()
-                .all(|capture| capture.app_id != "so.tilo.meet"),
-            "the app keeps running; what it may no longer capture is gone"
-        );
-    }
-
-    #[test]
-    fn a_capture_the_desk_still_allows_is_left_alone() {
-        let sessions = Sessions::default();
-        let captures = Captures::new(&sessions);
-        let stopped = Arc::new(AtomicBool::new(false));
-        camera_lease(
-            &captures,
-            "camera-0",
-            "so.tilo.meet",
-            "room-1",
-            Arc::clone(&stopped),
-        );
-        assert_eq!(captures.keep_only(|_, _, _| true), 0);
-        assert!(!stopped.load(Ordering::SeqCst));
-        assert_eq!(captures.resources().len(), 1);
-    }
-
-    #[test]
-    fn the_lockdown_switch_stops_what_captures_and_answers_no_next_ask() {
-        let sessions = Sessions::default();
-        let captures = Captures::new(&sessions);
-        let stopped = Arc::new(AtomicBool::new(false));
-        camera_lease(
-            &captures,
-            "camera-0",
-            "so.tilo.meet",
-            "room-1",
-            Arc::clone(&stopped),
-        );
-        captures.set_lockdown(CaptureKind::Camera, true);
-        assert!(stopped.load(Ordering::SeqCst), "capturing stopped");
-        assert!(captures.resources().is_empty());
-        let binding = CaptureSessionBinding::new("so.tilo.meet", "room-1", "/session/2", "device")
-            .expect("binding");
-        assert_eq!(
-            captures.broker().lock_recover().authorize(
-                &binding,
-                "camera-0",
-                CaptureKind::Camera,
-                Instant::now()
-            ),
-            Err(CaptureBrokerError::Disabled)
-        );
-        captures.set_lockdown(CaptureKind::Camera, false);
-        assert!(
-            captures
-                .broker()
-                .lock_recover()
-                .authorize(&binding, "camera-0", CaptureKind::Camera, Instant::now())
-                .is_ok(),
-            "turning the switch off lets the camera be asked for again"
-        );
     }
 }

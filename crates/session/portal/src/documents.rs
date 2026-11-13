@@ -114,146 +114,150 @@ mod tests {
         format!("file://{}", path.display()).replace(' ', "%20")
     }
 
-    #[test]
-    fn an_export_the_chooser_made_resolves_to_the_file_it_stands_for() {
-        let picked = tempfile::tempdir().unwrap();
-        let chosen = picked.path().join("my picture.png");
-        std::fs::write(&chosen, b"pixels").unwrap();
-        let documents = Documents::new();
-        let caller = caller();
+    tilo_test_env::scenario! {
+        fn a_document_uri_resolves_only_for_its_app_and_only_inside_the_store;
 
-        let export = doc_store::exports(
-            &documents,
-            &caller,
-            std::slice::from_ref(&chosen),
-            Kind::Read,
-        )
-        .pop()
-        .unwrap();
-        assert!(export.app_path.starts_with(SANDBOX_DIR));
-        assert_eq!(
-            exported_file(&documents, &caller, &uri(&export.app_path)),
-            Ok(chosen.canonicalize().unwrap()),
-            "what the chooser handed out comes back as the chosen file"
-        );
-        assert_eq!(
-            read_exported(&documents, &caller, &uri(&export.app_path), 1024),
-            Ok(b"pixels".to_vec())
-        );
-    }
-
-    #[test]
-    fn only_that_apps_documents_resolve() {
-        let picked = tempfile::tempdir().unwrap();
-        let chosen = picked.path().join("chosen.txt");
-        std::fs::write(&chosen, b"chosen").unwrap();
-        let secret = picked.path().join("secret.txt");
-        std::fs::write(&secret, b"secret").unwrap();
-        let documents = Documents::new();
-        let caller = caller();
-        let export = doc_store::exports(
-            &documents,
-            &caller,
-            std::slice::from_ref(&chosen),
-            Kind::Read,
-        )
-        .pop()
-        .unwrap();
-
-        // A host file: no document of the app names it.
-        assert!(exported_file(&documents, &caller, &uri(&secret)).is_err());
-        // Another app's document, in the same room and in another.
-        let token = export.app_path.parent().unwrap();
-        for other in [
-            AppKey::new("studio", "so.tilo.other").unwrap(),
-            AppKey::new("elsewhere", "so.tilo.notes").unwrap(),
-        ] {
+        phase an_export_the_chooser_made_resolves_to_the_file_it_stands_for;
+        {
+            let picked = tempfile::tempdir().unwrap();
+            let chosen = picked.path().join("my picture.png");
+            std::fs::write(&chosen, b"pixels").unwrap();
             let documents = Documents::new();
-            let theirs = documents
-                .grant(&other, &secret, Kind::Read)
-                .expect("the other app's document");
-            assert!(
-                exported_file(&documents, &caller, &uri(&theirs)).is_err(),
-                "{other:?}'s export is not this app's"
+            let caller = caller();
+
+            let export = doc_store::exports(
+                &documents,
+                &caller,
+                std::slice::from_ref(&chosen),
+                Kind::Read,
+            )
+            .pop()
+            .unwrap();
+            assert!(export.app_path.starts_with(SANDBOX_DIR));
+            assert_eq!(
+                exported_file(&documents, &caller, &uri(&export.app_path)),
+                Ok(chosen.canonicalize().unwrap()),
+                "what the chooser handed out comes back as the chosen file"
+            );
+            assert_eq!(
+                read_exported(&documents, &caller, &uri(&export.app_path), 1024),
+                Ok(b"pixels".to_vec())
             );
         }
-        // A name beside the document, in its own token directory.
-        assert!(
-            exported_file(&documents, &caller, &uri(&token.join("secret.txt"))).is_err(),
-            "a name the app made up beside its document"
-        );
-        // The document itself still resolves.
-        assert!(exported_file(&documents, &caller, &uri(&export.app_path)).is_ok());
-    }
 
-    #[test]
-    fn a_link_out_of_the_store_is_not_followed() {
-        let picked = tempfile::tempdir().unwrap();
-        let chosen = picked.path().join("chosen.txt");
-        std::fs::write(&chosen, b"chosen").unwrap();
-        let secret = picked.path().join("secret.txt");
-        std::fs::write(&secret, b"secret").unwrap();
-        let documents = Documents::new();
-        let caller = caller();
-        let export = doc_store::exports(
-            &documents,
-            &caller,
-            std::slice::from_ref(&chosen),
-            Kind::Read,
-        )
-        .pop()
-        .unwrap();
-
-        // What a sandbox could plant in its own view of the store: a link
-        // where its document is, pointing out. The store opens the chosen
-        // name beneath the chosen item, never following it.
-        std::fs::remove_file(&chosen).unwrap();
-        std::os::unix::fs::symlink(&secret, &chosen).unwrap();
-        assert!(
-            exported_file(&documents, &caller, &uri(&export.app_path)).is_err(),
-            "a link swapped in where the document was"
-        );
-
-        // A link planted as a document of its own never was one.
-        let planted = Path::new(SANDBOX_DIR).join("0000").join("secret.txt");
-        assert!(exported_file(&documents, &caller, &uri(&planted)).is_err());
-    }
-
-    #[test]
-    fn a_caller_without_documents_has_nothing_to_resolve() {
-        let documents = Documents::new();
-        let host = PortalCaller::new("org.example");
-        assert!(
-            exported_file(&documents, &host, "file:///home/someone/notes.txt").is_err(),
-            "a host app reads its own files itself"
-        );
-        // The same export, for a caller the session knows runs sandboxed.
-        assert!(
-            exported_file(
+        phase only_that_apps_documents_resolve;
+        {
+            let picked = tempfile::tempdir().unwrap();
+            let chosen = picked.path().join("chosen.txt");
+            std::fs::write(&chosen, b"chosen").unwrap();
+            let secret = picked.path().join("secret.txt");
+            std::fs::write(&secret, b"secret").unwrap();
+            let documents = Documents::new();
+            let caller = caller();
+            let export = doc_store::exports(
                 &documents,
-                &caller(),
-                "file:///run/tilo/documents/ffff/notes.txt"
+                &caller,
+                std::slice::from_ref(&chosen),
+                Kind::Read,
             )
-            .is_err()
-        );
-    }
+            .pop()
+            .unwrap();
 
-    #[test]
-    fn malformed_uris_are_refused_before_any_resolution() {
-        let documents = Documents::new();
-        let caller = caller();
-        let token = format!("{SANDBOX_DIR}/ffff/notes.txt");
-        for text in [
-            "https://example.org/x".to_owned(),
-            "file://example.org/doc/x".to_owned(),
-            format!("file://{token}\u{0}"),
-            format!("file://{SANDBOX_DIR}/ffff/../../etc/passwd"),
-            format!(" file://{token}"),
-        ] {
+            // A host file: no document of the app names it.
+            assert!(exported_file(&documents, &caller, &uri(&secret)).is_err());
+            // Another app's document, in the same room and in another.
+            let token = export.app_path.parent().unwrap();
+            for other in [
+                AppKey::new("studio", "so.tilo.other").unwrap(),
+                AppKey::new("elsewhere", "so.tilo.notes").unwrap(),
+            ] {
+                let documents = Documents::new();
+                let theirs = documents
+                    .grant(&other, &secret, Kind::Read)
+                    .expect("the other app's document");
+                assert!(
+                    exported_file(&documents, &caller, &uri(&theirs)).is_err(),
+                    "{other:?}'s export is not this app's"
+                );
+            }
+            // A name beside the document, in its own token directory.
             assert!(
-                exported_file(&documents, &caller, &text).is_err(),
-                "{text:?} is no document URI"
+                exported_file(&documents, &caller, &uri(&token.join("secret.txt"))).is_err(),
+                "a name the app made up beside its document"
             );
+            // The document itself still resolves.
+            assert!(exported_file(&documents, &caller, &uri(&export.app_path)).is_ok());
+        }
+
+        phase a_link_out_of_the_store_is_not_followed;
+        {
+            let picked = tempfile::tempdir().unwrap();
+            let chosen = picked.path().join("chosen.txt");
+            std::fs::write(&chosen, b"chosen").unwrap();
+            let secret = picked.path().join("secret.txt");
+            std::fs::write(&secret, b"secret").unwrap();
+            let documents = Documents::new();
+            let caller = caller();
+            let export = doc_store::exports(
+                &documents,
+                &caller,
+                std::slice::from_ref(&chosen),
+                Kind::Read,
+            )
+            .pop()
+            .unwrap();
+
+            // What a sandbox could plant in its own view of the store: a link
+            // where its document is, pointing out. The store opens the chosen
+            // name beneath the chosen item, never following it.
+            std::fs::remove_file(&chosen).unwrap();
+            std::os::unix::fs::symlink(&secret, &chosen).unwrap();
+            assert!(
+                exported_file(&documents, &caller, &uri(&export.app_path)).is_err(),
+                "a link swapped in where the document was"
+            );
+
+            // A link planted as a document of its own never was one.
+            let planted = Path::new(SANDBOX_DIR).join("0000").join("secret.txt");
+            assert!(exported_file(&documents, &caller, &uri(&planted)).is_err());
+        }
+
+        phase a_caller_without_documents_has_nothing_to_resolve;
+        {
+            let documents = Documents::new();
+            let host = PortalCaller::new("org.example");
+            assert!(
+                exported_file(&documents, &host, "file:///home/someone/notes.txt").is_err(),
+                "a host app reads its own files itself"
+            );
+            // The same export, for a caller the session knows runs sandboxed.
+            assert!(
+                exported_file(
+                    &documents,
+                    &caller(),
+                    "file:///run/tilo/documents/ffff/notes.txt"
+                )
+                .is_err()
+            );
+        }
+
+        phase malformed_uris_are_refused_before_any_resolution;
+        {
+            let documents = Documents::new();
+            let caller = caller();
+            let token = format!("{SANDBOX_DIR}/ffff/notes.txt");
+            for text in [
+                "https://example.org/x".to_owned(),
+                "file://example.org/doc/x".to_owned(),
+                format!("file://{token}\u{0}"),
+                format!("file://{SANDBOX_DIR}/ffff/../../etc/passwd"),
+                format!(" file://{token}"),
+            ] {
+                assert!(
+                    exported_file(&documents, &caller, &text).is_err(),
+                    "{text:?} is no document URI"
+                );
+            }
         }
     }
 }

@@ -330,74 +330,78 @@ mod tests {
         }
     }
 
-    #[test]
-    fn restore_data_is_a_standard_vendor_tuple() {
-        let key = uuid::Uuid::new_v4().to_string();
-        let mut options = HashMap::new();
-        options.insert(
-            "restore_data".into(),
-            restore_data(key.clone()).expect("data"),
-        );
-        let (vendor, version, payload): (String, u32, OwnedValue) = options["restore_data"]
-            .try_clone()
-            .expect("clone")
-            .try_into()
-            .expect("(suv)");
-        assert_eq!((vendor.as_str(), version), ("tilo", 1));
-        assert_eq!(Variant::from(payload).downcast::<String>().expect("s"), key);
-        assert_eq!(restore_key(&options).as_deref(), Some(key.as_str()));
-        options.insert(
-            "restore_data".into(),
-            OwnedValue::from(zbus::zvariant::Str::from("not-a-tuple")),
-        );
-        assert_eq!(restore_key(&options), None);
-    }
+    tilo_test_env::scenario! {
+        fn restore_grants_are_app_bound_and_durable_only_in_private_state;
 
-    #[test]
-    fn grants_are_app_bound_durable_and_forgettable() {
-        let dir = tempfile::tempdir().expect("directory");
-        let path = dir.path().join("restore.json");
-        let grants = Grants::load(Some(path.clone()));
-        let key = grants.insert(grant(2)).expect("kept");
-        let transient = grants.insert(grant(1)).expect("kept");
-        assert!(grants.get(&key, "org.example.Other").is_none(), "app-bound");
-        let restarted = Grants::load(Some(path.clone()));
-        let kept = restarted.get(&key, "org.example.Share").expect("survives");
-        assert_eq!(kept.sources[0].id, "DP-1");
-        assert!(restarted.get(&transient, "org.example.Share").is_none());
-        assert_eq!(restarted.resources().len(), 1);
-        assert!(restarted.forget(&kept.id));
-        assert!(
-            Grants::load(Some(path))
-                .get(&key, "org.example.Share")
-                .is_none()
-        );
-        grants.app_exited("org.example.Share");
-        assert!(grants.get(&transient, "org.example.Share").is_none());
-    }
+        phase restore_data_is_a_standard_vendor_tuple;
+        {
+            let key = uuid::Uuid::new_v4().to_string();
+            let mut options = HashMap::new();
+            options.insert(
+                "restore_data".into(),
+                restore_data(key.clone()).expect("data"),
+            );
+            let (vendor, version, payload): (String, u32, OwnedValue) = options["restore_data"]
+                .try_clone()
+                .expect("clone")
+                .try_into()
+                .expect("(suv)");
+            assert_eq!((vendor.as_str(), version), ("tilo", 1));
+            assert_eq!(Variant::from(payload).downcast::<String>().expect("s"), key);
+            assert_eq!(restore_key(&options).as_deref(), Some(key.as_str()));
+            options.insert(
+                "restore_data".into(),
+                OwnedValue::from(zbus::zvariant::Str::from("not-a-tuple")),
+            );
+            assert_eq!(restore_key(&options), None);
+        }
 
-    #[test]
-    fn a_corrupt_store_grants_nothing_and_is_kept_aside() {
-        let dir = tempfile::tempdir().expect("directory");
-        let path = dir.path().join("restore.json");
-        std::fs::write(&path, b"not json").expect("fixture");
-        assert!(Grants::load(Some(path.clone())).all().is_empty());
-        assert!(!path.exists());
-        assert!(
-            std::fs::read_dir(dir.path())
-                .expect("entries")
-                .any(|entry| entry
-                    .expect("entry")
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("restore.corrupt-"))
-        );
-    }
+        phase grants_are_app_bound_durable_and_forgettable;
+        {
+            let dir = tempfile::tempdir().expect("directory");
+            let path = dir.path().join("restore.json");
+            let grants = Grants::load(Some(path.clone()));
+            let key = grants.insert(grant(2)).expect("kept");
+            let transient = grants.insert(grant(1)).expect("kept");
+            assert!(grants.get(&key, "org.example.Other").is_none(), "app-bound");
+            let restarted = Grants::load(Some(path.clone()));
+            let kept = restarted.get(&key, "org.example.Share").expect("survives");
+            assert_eq!(kept.sources[0].id, "DP-1");
+            assert!(restarted.get(&transient, "org.example.Share").is_none());
+            assert_eq!(restarted.resources().len(), 1);
+            assert!(restarted.forget(&kept.id));
+            assert!(
+                Grants::load(Some(path))
+                    .get(&key, "org.example.Share")
+                    .is_none()
+            );
+            grants.app_exited("org.example.Share");
+            assert!(grants.get(&transient, "org.example.Share").is_none());
+        }
 
-    #[test]
-    fn without_private_state_only_transient_grants_are_given() {
-        let grants = Grants::load(None);
-        assert!(grants.insert(grant(1)).is_ok());
-        assert!(grants.insert(grant(2)).is_err());
+        phase a_corrupt_store_grants_nothing_and_is_kept_aside;
+        {
+            let dir = tempfile::tempdir().expect("directory");
+            let path = dir.path().join("restore.json");
+            std::fs::write(&path, b"not json").expect("fixture");
+            assert!(Grants::load(Some(path.clone())).all().is_empty());
+            assert!(!path.exists());
+            assert!(
+                std::fs::read_dir(dir.path())
+                    .expect("entries")
+                    .any(|entry| entry
+                        .expect("entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("restore.corrupt-"))
+            );
+        }
+
+        phase without_private_state_only_transient_grants_are_given;
+        {
+            let grants = Grants::load(None);
+            assert!(grants.insert(grant(1)).is_ok());
+            assert!(grants.insert(grant(2)).is_err());
+        }
     }
 }

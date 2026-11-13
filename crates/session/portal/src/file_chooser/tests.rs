@@ -73,17 +73,88 @@ fn uris_of(results: &Results) -> Vec<String> {
     Vec::<String>::try_from(results["uris"].try_clone().unwrap()).unwrap()
 }
 
-#[test]
-fn writable_directory_requires_explicit_single_directory_request() {
-    assert!(!writable_directory_requested(&HashMap::new()));
-    assert!(!writable_directory_requested(&destination_options(false)));
-    let mut options = destination_options(true);
-    assert!(writable_directory_requested(&options));
-    options.insert("multiple".into(), OwnedValue::from(true));
-    assert!(!writable_directory_requested(&options));
-    options.remove("multiple");
-    options.insert("choices".into(), OwnedValue::from(false));
-    assert!(!writable_directory_requested(&options));
+tilo_test_env::scenario! {
+    fn chooser_options_filters_and_chosen_paths_are_decoded_and_encoded;
+
+    phase writable_directory_requires_explicit_single_directory_request;
+    {
+        assert!(!writable_directory_requested(&HashMap::new()));
+        assert!(!writable_directory_requested(&destination_options(false)));
+        let mut options = destination_options(true);
+        assert!(writable_directory_requested(&options));
+        options.insert("multiple".into(), OwnedValue::from(true));
+        assert!(!writable_directory_requested(&options));
+        options.remove("multiple");
+        options.insert("choices".into(), OwnedValue::from(false));
+        assert!(!writable_directory_requested(&options));
+    }
+
+    phase open_options_decode_selection_mode_independently;
+    {
+        let plain = decode_open_options("Open".into(), &HashMap::new());
+        assert!(!plain.directory && !plain.multiple);
+        let options = HashMap::from([
+            ("directory".to_owned(), OwnedValue::from(true)),
+            ("multiple".to_owned(), OwnedValue::from(true)),
+            (
+                "accept_label".to_owned(),
+                OwnedValue::try_from(Value::new("Attach folder".to_string())).unwrap(),
+            ),
+        ]);
+        let decoded = decode_open_options("Choose".into(), &options);
+        assert!(decoded.directory && decoded.multiple);
+        assert_eq!(decoded.accept_label.as_deref(), Some("Attach folder"));
+        assert_eq!(
+            FileChooserQuestion::default()
+                .parent_window("  ")
+                .parent_window,
+            None
+        );
+    }
+
+    phase chosen_paths_map_to_portal_responses_and_encoded_uris;
+    {
+        let direct = |path: &str| Export {
+            app_path: PathBuf::from(path),
+            host_path: PathBuf::from(path),
+        };
+        let (code, results) = reply(paths_to_open_response(
+            Some(vec![direct("/tmp/a.txt")]),
+            false,
+        ));
+        assert_eq!(code, 0);
+        assert_eq!(uris_of(&results), ["file:///tmp/a.txt"]);
+        assert_eq!(option::<bool>(&results, "writable"), Some(false));
+        assert_eq!(reply(paths_to_open_response(None, false)).0, 1);
+        assert_eq!(reply(paths_to_open_response(Some(vec![]), false)).0, 1);
+
+        let path = PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/a #\xff.txt"));
+        assert_eq!(
+            file_uri(&path).as_deref(),
+            Some("file:///tmp/a%20%23%FF.txt")
+        );
+        assert_eq!(
+            path_of_uri("file:///tmp/a%20%23%FF.txt").as_deref(),
+            Some(path.as_path())
+        );
+        assert!(file_uri(std::path::Path::new("relative.txt")).is_none());
+    }
+
+    phase picker_filters_reduce_globs_and_keep_mime_types;
+    {
+        let f = PickerFilter::from_pairs("Images", &[(0, "*.PNG".into()), (0, "*.jpg".into())]);
+        assert_eq!(f.extensions, vec!["png", "jpg"]);
+        assert!(f.mimetypes.is_empty());
+        assert!(!f.is_catch_all());
+        let f = PickerFilter::from_pairs("Images", &[(1, "image/PNG".into())]);
+        assert_eq!(f.mimetypes, vec!["image/png"]);
+        // `*.p?g` cannot be reduced to one extension: matching nothing would
+        // hide files the app would have accepted, so the filter opens up.
+        let f = PickerFilter::from_pairs("Odd", &[(0, "*.p?g".into()), (0, "*.png".into())]);
+        assert!(f.is_catch_all(), "{f:?}");
+        assert!(PickerFilter::from_pairs("All", &[(0, "*".into())]).is_catch_all());
+        assert!(PickerFilter::from_pairs("All", &[(0, "*.*".into())]).is_catch_all());
+    }
 }
 
 #[tokio::test]
@@ -335,71 +406,4 @@ async fn only_local_files_and_only_as_many_as_asked_are_accepted() {
     }
     let (_, (code, _)) = picked(FileChooserQuestion::default(), Some(Vec::new())).await;
     assert_eq!(code, 1, "nothing chosen is a cancel");
-}
-
-#[test]
-fn open_options_decode_selection_mode_independently() {
-    let plain = decode_open_options("Open".into(), &HashMap::new());
-    assert!(!plain.directory && !plain.multiple);
-    let options = HashMap::from([
-        ("directory".to_owned(), OwnedValue::from(true)),
-        ("multiple".to_owned(), OwnedValue::from(true)),
-        (
-            "accept_label".to_owned(),
-            OwnedValue::try_from(Value::new("Attach folder".to_string())).unwrap(),
-        ),
-    ]);
-    let decoded = decode_open_options("Choose".into(), &options);
-    assert!(decoded.directory && decoded.multiple);
-    assert_eq!(decoded.accept_label.as_deref(), Some("Attach folder"));
-    assert_eq!(
-        FileChooserQuestion::default()
-            .parent_window("  ")
-            .parent_window,
-        None
-    );
-}
-
-#[test]
-fn chosen_paths_map_to_portal_responses_and_encoded_uris() {
-    let direct = |path: &str| Export {
-        app_path: PathBuf::from(path),
-        host_path: PathBuf::from(path),
-    };
-    let (code, results) = reply(paths_to_open_response(
-        Some(vec![direct("/tmp/a.txt")]),
-        false,
-    ));
-    assert_eq!(code, 0);
-    assert_eq!(uris_of(&results), ["file:///tmp/a.txt"]);
-    assert_eq!(option::<bool>(&results, "writable"), Some(false));
-    assert_eq!(reply(paths_to_open_response(None, false)).0, 1);
-    assert_eq!(reply(paths_to_open_response(Some(vec![]), false)).0, 1);
-
-    let path = PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/a #\xff.txt"));
-    assert_eq!(
-        file_uri(&path).as_deref(),
-        Some("file:///tmp/a%20%23%FF.txt")
-    );
-    assert_eq!(
-        path_of_uri("file:///tmp/a%20%23%FF.txt").as_deref(),
-        Some(path.as_path())
-    );
-    assert!(file_uri(std::path::Path::new("relative.txt")).is_none());
-}
-
-#[test]
-fn picker_filters_reduce_globs_and_keep_mime_types() {
-    let f = PickerFilter::from_pairs("Images", &[(0, "*.PNG".into()), (0, "*.jpg".into())]);
-    assert_eq!(f.extensions, vec!["png", "jpg"]);
-    assert!(f.mimetypes.is_empty());
-    assert!(!f.is_catch_all());
-    let f = PickerFilter::from_pairs("Images", &[(1, "image/PNG".into())]);
-    assert_eq!(f.mimetypes, vec!["image/png"]);
-    // `*.p?g` cannot be reduced to one extension: matching nothing would
-    // hide files the app would have accepted, so the filter opens up.
-    let f = PickerFilter::from_pairs("Odd", &[(0, "*.p?g".into()), (0, "*.png".into())]);
-    assert!(f.is_catch_all(), "{f:?}");
-    assert!(PickerFilter::from_pairs("All", &[(0, "*".into())]).is_catch_all());
-    assert!(PickerFilter::from_pairs("All", &[(0, "*.*".into())]).is_catch_all());
 }

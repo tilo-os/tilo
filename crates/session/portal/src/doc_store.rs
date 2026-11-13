@@ -149,122 +149,126 @@ mod tests {
         std::fs::read(target.host_path()).expect("the document reads")
     }
 
-    #[test]
-    fn a_sandboxed_caller_is_answered_with_a_store_path_holding_the_picked_file() {
-        let picked = tempfile::tempdir().unwrap();
-        let chosen = picked.path().join("notes.txt");
-        std::fs::write(&chosen, b"the file the person picked").unwrap();
-        let documents = Documents::new();
-        let caller = caller(Some("studio"), true);
+    tilo_test_env::scenario! {
+        fn a_chosen_file_is_answered_as_the_path_its_caller_can_open;
 
-        let exported = exports(
-            &documents,
-            &caller,
-            std::slice::from_ref(&chosen),
-            Kind::Read,
-        );
-        assert_eq!(exported.len(), 1);
-        let export = &exported[0];
-        assert_eq!(
-            export.host_path,
-            chosen.canonicalize().unwrap(),
-            "the export names the file the store keeps the choice as"
-        );
-        assert!(
-            export.app_path.starts_with(SANDBOX_DIR),
-            "answered with a path inside the store, not {}",
-            export.app_path.display()
-        );
-        assert_eq!(
-            export.app_path.file_name(),
-            Some(chosen.file_name().unwrap())
-        );
+        phase a_sandboxed_caller_is_answered_with_a_store_path_holding_the_picked_file;
+        {
+            let picked = tempfile::tempdir().unwrap();
+            let chosen = picked.path().join("notes.txt");
+            std::fs::write(&chosen, b"the file the person picked").unwrap();
+            let documents = Documents::new();
+            let caller = caller(Some("studio"), true);
 
-        // The token path is the app's view of exactly this file: read
-        // through the store it is the bytes the person picked.
-        let key = key_of(&caller).expect("a sandboxed caller in a room has a key");
-        assert_eq!(
-            read(&documents, &key, &export.app_path),
-            b"the file the person picked"
-        );
-        let (token, inner) =
-            tilo_documents::split_sandbox_path(&export.app_path).expect("a token path");
-        assert_eq!(inner, std::path::Path::new("notes.txt"));
-        let document = documents.document(&key, &token).expect("the document");
-        assert_eq!(document.host, chosen.canonicalize().unwrap());
-    }
-
-    #[test]
-    fn a_save_is_answered_with_a_writable_path_carrying_the_typed_name() {
-        let folder = tempfile::tempdir().unwrap();
-        let chosen = folder.path().join("report.final.txt");
-        let documents = Documents::new();
-        let caller = caller(Some("studio"), true);
-
-        let export = exports(&documents, &caller, &[chosen], Kind::Save)
-            .pop()
-            .unwrap();
-        assert!(export.app_path.starts_with(SANDBOX_DIR));
-        assert_eq!(
-            export.host_path,
-            folder
-                .path()
-                .canonicalize()
-                .unwrap()
-                .join("report.final.txt"),
-            "the store keeps the file the save will make"
-        );
-        assert_eq!(
-            export.app_path.file_name(),
-            Some("report.final.txt".as_ref()),
-            "the store keeps the name the person typed, extension and all"
-        );
-        let key = key_of(&caller).unwrap();
-        let (token, _) = tilo_documents::split_sandbox_path(&export.app_path).unwrap();
-        assert_eq!(
-            documents
-                .document(&key, &token)
-                .map(|document| document.kind),
-            Some(Kind::Save)
-        );
-    }
-
-    #[test]
-    fn a_host_caller_is_answered_with_the_picked_path_itself() {
-        let folder = tempfile::tempdir().unwrap();
-        let chosen = folder.path().join("notes.txt");
-        std::fs::write(&chosen, b"x").unwrap();
-        for caller in [
-            // A host app, whose only name is the one the frontend gave.
-            caller(Some("studio"), false),
-            // An app in no room this session knows.
-            caller(None, true),
-        ] {
-            let export = exports(
-                &Documents::new(),
+            let exported = exports(
+                &documents,
                 &caller,
                 std::slice::from_ref(&chosen),
+                Kind::Read,
+            );
+            assert_eq!(exported.len(), 1);
+            let export = &exported[0];
+            assert_eq!(
+                export.host_path,
+                chosen.canonicalize().unwrap(),
+                "the export names the file the store keeps the choice as"
+            );
+            assert!(
+                export.app_path.starts_with(SANDBOX_DIR),
+                "answered with a path inside the store, not {}",
+                export.app_path.display()
+            );
+            assert_eq!(
+                export.app_path.file_name(),
+                Some(chosen.file_name().unwrap())
+            );
+
+            // The token path is the app's view of exactly this file: read
+            // through the store it is the bytes the person picked.
+            let key = key_of(&caller).expect("a sandboxed caller in a room has a key");
+            assert_eq!(
+                read(&documents, &key, &export.app_path),
+                b"the file the person picked"
+            );
+            let (token, inner) =
+                tilo_documents::split_sandbox_path(&export.app_path).expect("a token path");
+            assert_eq!(inner, std::path::Path::new("notes.txt"));
+            let document = documents.document(&key, &token).expect("the document");
+            assert_eq!(document.host, chosen.canonicalize().unwrap());
+        }
+
+        phase a_save_is_answered_with_a_writable_path_carrying_the_typed_name;
+        {
+            let folder = tempfile::tempdir().unwrap();
+            let chosen = folder.path().join("report.final.txt");
+            let documents = Documents::new();
+            let caller = caller(Some("studio"), true);
+
+            let export = exports(&documents, &caller, &[chosen], Kind::Save)
+                .pop()
+                .unwrap();
+            assert!(export.app_path.starts_with(SANDBOX_DIR));
+            assert_eq!(
+                export.host_path,
+                folder
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .join("report.final.txt"),
+                "the store keeps the file the save will make"
+            );
+            assert_eq!(
+                export.app_path.file_name(),
+                Some("report.final.txt".as_ref()),
+                "the store keeps the name the person typed, extension and all"
+            );
+            let key = key_of(&caller).unwrap();
+            let (token, _) = tilo_documents::split_sandbox_path(&export.app_path).unwrap();
+            assert_eq!(
+                documents
+                    .document(&key, &token)
+                    .map(|document| document.kind),
+                Some(Kind::Save)
+            );
+        }
+
+        phase a_host_caller_is_answered_with_the_picked_path_itself;
+        {
+            let folder = tempfile::tempdir().unwrap();
+            let chosen = folder.path().join("notes.txt");
+            std::fs::write(&chosen, b"x").unwrap();
+            for caller in [
+                // A host app, whose only name is the one the frontend gave.
+                caller(Some("studio"), false),
+                // An app in no room this session knows.
+                caller(None, true),
+            ] {
+                let export = exports(
+                    &Documents::new(),
+                    &caller,
+                    std::slice::from_ref(&chosen),
+                    Kind::Read,
+                )
+                .pop()
+                .unwrap();
+                assert_eq!(export.app_path, chosen);
+                assert_eq!(export.host_path, chosen);
+            }
+        }
+
+        phase a_choice_the_store_does_not_take_is_still_answered;
+        {
+            // A folder where the app asked for a file: the store keeps files.
+            let folder = tempfile::tempdir().unwrap();
+            let export = exports(
+                &Documents::new(),
+                &caller(Some("studio"), true),
+                &[folder.path().to_path_buf()],
                 Kind::Read,
             )
             .pop()
             .unwrap();
-            assert_eq!(export.app_path, chosen);
-            assert_eq!(export.host_path, chosen);
+            assert_eq!(export.app_path, folder.path());
         }
-    }
-
-    #[test]
-    fn a_choice_the_store_does_not_take_is_still_answered() {
-        // A folder where the app asked for a file: the store keeps files.
-        let folder = tempfile::tempdir().unwrap();
-        let export = exports(
-            &Documents::new(),
-            &caller(Some("studio"), true),
-            &[folder.path().to_path_buf()],
-            Kind::Read,
-        )
-        .pop()
-        .unwrap();
-        assert_eq!(export.app_path, folder.path());
     }
 }

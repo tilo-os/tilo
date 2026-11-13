@@ -204,81 +204,85 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_message_becomes_one_mailto_link() {
-        let (documents, caller) = sandboxed();
-        let message = EmailQuestion::from_options(
-            &documents,
-            &caller,
-            &options(vec![
-                (
-                    "address",
-                    OwnedValue::from(zbus::zvariant::Str::from("ada@example.org")),
-                ),
-                ("cc", list(&["bob@example.org"])),
-                (
-                    "subject",
-                    OwnedValue::from(zbus::zvariant::Str::from("Hi & bye")),
-                ),
-            ]),
-        )
-        .unwrap();
-        let message = EmailQuestion {
-            attachments: vec!["file:///run/tilo/documents/ab12/notes.txt".into()],
-            ..message
-        };
-        assert_eq!(
-            message.mailto(),
-            "mailto:ada@example.org?cc=bob@example.org&subject=Hi%20%26%20bye\
-             &attachment=file%3A%2F%2F%2Frun%2Ftilo%2Fdocuments%2Fab12%2Fnotes.txt"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_composed_email_is_one_mailto_link_with_only_what_the_app_was_given;
 
-    #[test]
-    fn controls_and_host_paths_are_refused() {
-        let (documents, caller) = sandboxed();
-        assert!(
-            EmailQuestion::from_options(
+        phase a_message_becomes_one_mailto_link;
+        {
+            let (documents, caller) = sandboxed();
+            let message = EmailQuestion::from_options(
                 &documents,
                 &caller,
-                &options(vec![("cc", list(&["a\nb"]))])
+                &options(vec![
+                    (
+                        "address",
+                        OwnedValue::from(zbus::zvariant::Str::from("ada@example.org")),
+                    ),
+                    ("cc", list(&["bob@example.org"])),
+                    (
+                        "subject",
+                        OwnedValue::from(zbus::zvariant::Str::from("Hi & bye")),
+                    ),
+                ]),
             )
-            .is_none()
-        );
-        for attachment in [
-            "/etc/passwd",
-            "file:///etc/passwd",
-            "file:///run/tilo/documents/ffff/notes.txt",
-        ] {
+            .unwrap();
+            let message = EmailQuestion {
+                attachments: vec!["file:///run/tilo/documents/ab12/notes.txt".into()],
+                ..message
+            };
+            assert_eq!(
+                message.mailto(),
+                "mailto:ada@example.org?cc=bob@example.org&subject=Hi%20%26%20bye\
+             &attachment=file%3A%2F%2F%2Frun%2Ftilo%2Fdocuments%2Fab12%2Fnotes.txt"
+            );
+        }
+
+        phase controls_and_host_paths_are_refused;
+        {
+            let (documents, caller) = sandboxed();
             assert!(
                 EmailQuestion::from_options(
                     &documents,
                     &caller,
-                    &options(vec![("attachments", list(&[attachment]))])
+                    &options(vec![("cc", list(&["a\nb"]))])
                 )
-                .is_none(),
-                "{attachment} is no document of the app's"
+                .is_none()
             );
+            for attachment in [
+                "/etc/passwd",
+                "file:///etc/passwd",
+                "file:///run/tilo/documents/ffff/notes.txt",
+            ] {
+                assert!(
+                    EmailQuestion::from_options(
+                        &documents,
+                        &caller,
+                        &options(vec![("attachments", list(&[attachment]))])
+                    )
+                    .is_none(),
+                    "{attachment} is no document of the app's"
+                );
+            }
         }
-    }
 
-    #[test]
-    fn an_attachment_the_app_was_given_is_taken() {
-        let picked = tempfile::tempdir().unwrap();
-        let chosen = picked.path().join("notes.txt");
-        std::fs::write(&chosen, b"x").unwrap();
-        let (documents, caller) = sandboxed();
-        let export =
-            crate::doc_store::exports(&documents, &caller, &[chosen], tilo_documents::Kind::Read)
-                .pop()
-                .unwrap();
-        let uri = crate::file_chooser::file_uri(&export.app_path).unwrap();
-        let message = EmailQuestion::from_options(
-            &documents,
-            &caller,
-            &options(vec![("attachments", list(&[uri.as_str()]))]),
-        )
-        .expect("an export of the app's is an attachment");
-        assert_eq!(message.attachments, [uri]);
+        phase an_attachment_the_app_was_given_is_taken;
+        {
+            let picked = tempfile::tempdir().unwrap();
+            let chosen = picked.path().join("notes.txt");
+            std::fs::write(&chosen, b"x").unwrap();
+            let (documents, caller) = sandboxed();
+            let export =
+                crate::doc_store::exports(&documents, &caller, &[chosen], tilo_documents::Kind::Read)
+                    .pop()
+                    .unwrap();
+            let uri = crate::file_chooser::file_uri(&export.app_path).unwrap();
+            let message = EmailQuestion::from_options(
+                &documents,
+                &caller,
+                &options(vec![("attachments", list(&[uri.as_str()]))]),
+            )
+            .expect("an export of the app's is an attachment");
+            assert_eq!(message.attachments, [uri]);
+        }
     }
 }

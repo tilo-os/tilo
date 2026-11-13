@@ -228,37 +228,41 @@ impl DynamicLauncher {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_https_sites_and_byte_icons_are_taken() {
-        assert!(safe_web_target("https://example.test"));
-        assert!(!safe_web_target("https:///path"));
-        assert!(!safe_web_target("http://example.test"));
-        assert!(!safe_web_target("file:///tmp/a"));
-        let icon = bytes_icon(MONOGRAM_ICON.as_bytes().to_vec()).unwrap();
-        assert!(icon_bytes(&icon).is_some_and(|bytes| valid_icon_payload(&bytes)));
-        let path_icon = OwnedValue::try_from(Value::new((
-            "file",
-            Value::new("/home/person/.ssh/id_ed25519"),
-        )))
-        .unwrap();
-        assert_eq!(icon_bytes(&path_icon), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_launcher_request_takes_only_plain_names_https_sites_and_safe_icons;
 
-    #[test]
-    fn scripted_or_remote_svgs_are_refused() {
-        assert!(!valid_icon_payload(b"<svg><script>alert(1)</script></svg>"));
-        assert!(!valid_icon_payload(
-            b"<svg><image href=\"https://x/y.png\"/></svg>"
-        ));
-        assert!(valid_icon_payload(WEB_ICON.as_bytes()));
-        assert!(data_uri(WEB_ICON.as_bytes()).starts_with("data:image/svg+xml;base64,"));
-    }
+        phase only_https_sites_and_byte_icons_are_taken;
+        {
+            assert!(safe_web_target("https://example.test"));
+            assert!(!safe_web_target("https:///path"));
+            assert!(!safe_web_target("http://example.test"));
+            assert!(!safe_web_target("file:///tmp/a"));
+            let icon = bytes_icon(MONOGRAM_ICON.as_bytes().to_vec()).unwrap();
+            assert!(icon_bytes(&icon).is_some_and(|bytes| valid_icon_payload(&bytes)));
+            let path_icon = OwnedValue::try_from(Value::new((
+                "file",
+                Value::new("/home/person/.ssh/id_ed25519"),
+            )))
+            .unwrap();
+            assert_eq!(icon_bytes(&path_icon), None);
+        }
 
-    #[test]
-    fn names_are_plain_and_not_blank() {
-        assert!(valid_name("Notes"));
-        assert!(!valid_name(" Notes"));
-        assert!(!valid_name("   "));
-        assert!(!valid_name("a\nb"));
+        phase scripted_or_remote_svgs_are_refused;
+        {
+            assert!(!valid_icon_payload(b"<svg><script>alert(1)</script></svg>"));
+            assert!(!valid_icon_payload(
+                b"<svg><image href=\"https://x/y.png\"/></svg>"
+            ));
+            assert!(valid_icon_payload(WEB_ICON.as_bytes()));
+            assert!(data_uri(WEB_ICON.as_bytes()).starts_with("data:image/svg+xml;base64,"));
+        }
+
+        phase names_are_plain_and_not_blank;
+        {
+            assert!(valid_name("Notes"));
+            assert!(!valid_name(" Notes"));
+            assert!(!valid_name("   "));
+            assert!(!valid_name("a\nb"));
+        }
     }
 }

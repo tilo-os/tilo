@@ -915,124 +915,128 @@ mod tests {
         );
     }
 
-    #[test]
-    fn crossing_an_edge_barrier_activates_once_and_takes_the_input() {
-        let captures = InputCaptures::default();
-        captures.set_zones(vec![zone()]);
-        let _ = captures.take_signals();
-        let right_edge = Barrier {
-            id: 7,
-            x1: 100,
-            y1: 0,
-            x2: 100,
-            y2: 100,
-        };
-        armed(&captures, "/s/b", right_edge.clone());
-        armed(&captures, "/s/a", right_edge);
-        let motion = CapturedInput::PointerMotion {
-            x: 101.,
-            y: 50.,
-            dx: 11.,
-            dy: 0.,
-        };
-        assert!(captures.observe(motion));
-        assert!(matches!(
-            captures.take_signals().as_slice(),
-            [Signal::Activated { session, barrier_id: 7, .. }] if session == "/s/a"
-        ));
-        assert!(
-            captures.observe(CapturedInput::Keyboard {
-                keycode: 30,
-                pressed: true
-            }),
-            "an active capture takes the keyboard too"
-        );
-        assert!(captures.take_signals().is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn an_input_capture_follows_its_zones_barriers_and_clipboard;
 
-    #[test]
-    fn new_zones_drop_barriers_and_end_an_active_capture() {
-        let captures = InputCaptures::default();
-        captures.set_zones(vec![zone()]);
-        armed(
-            &captures,
-            "/s/a",
-            Barrier {
-                id: 1,
+        phase crossing_an_edge_barrier_activates_once_and_takes_the_input;
+        {
+            let captures = InputCaptures::default();
+            captures.set_zones(vec![zone()]);
+            let _ = captures.take_signals();
+            let right_edge = Barrier {
+                id: 7,
                 x1: 100,
                 y1: 0,
                 x2: 100,
                 y2: 100,
-            },
-        );
-        captures
-            .state
-            .lock_recover()
-            .captures
-            .get_mut("/s/a")
-            .expect("armed")
-            .active = true;
-        let _ = captures.take_signals();
-        captures.set_zones(vec![CaptureZone {
-            width: 200,
-            ..zone()
-        }]);
-        let signals = captures.take_signals();
-        assert!(matches!(
-            signals.as_slice(),
-            [Signal::Deactivated { .. }, Signal::ZonesChanged { .. }]
-        ));
-        assert!(!captures.observe(CapturedInput::Keyboard {
-            keycode: 30,
-            pressed: true
-        }));
-    }
-
-    #[test]
-    fn barriers_lie_on_zone_edges() {
-        let inside = Barrier {
-            id: 1,
-            x1: 5,
-            y1: 0,
-            x2: 5,
-            y2: 10,
-        };
-        assert!(!valid_barrier(&inside, &[zone()]));
-        let edge = Barrier {
-            id: 1,
-            x1: 0,
-            y1: 0,
-            x2: 0,
-            y2: 100,
-        };
-        assert!(valid_barrier(&edge, &[zone()]));
-        let mut raw = HashMap::new();
-        raw.insert("barrier_id".into(), OwnedValue::from(3_u32));
-        raw.insert(
-            "position".into(),
-            OwnedValue::try_from(Value::new((0_i32, 0_i32, 10_i32, 10_i32))).expect("tuple"),
-        );
-        assert!(parse_barrier(&raw).is_none(), "a diagonal is no barrier");
-    }
-
-    #[test]
-    fn the_clipboard_is_asked_for_before_the_start_and_held_only_while_active() {
-        let captures = InputCaptures::default();
-        captures
-            .state
-            .lock_recover()
-            .captures
-            .insert("/s/a".into(), Capture::default());
-        assert!(captures.request_clipboard("/s/a"));
-        assert!(!captures.clipboard("/s/a"));
-        {
-            let mut state = captures.state.lock_recover();
-            let capture = state.captures.get_mut("/s/a").expect("live");
-            capture.started = true;
-            capture.active = true;
-            drop(state);
+            };
+            armed(&captures, "/s/b", right_edge.clone());
+            armed(&captures, "/s/a", right_edge);
+            let motion = CapturedInput::PointerMotion {
+                x: 101.,
+                y: 50.,
+                dx: 11.,
+                dy: 0.,
+            };
+            assert!(captures.observe(motion));
+            assert!(matches!(
+                captures.take_signals().as_slice(),
+                [Signal::Activated { session, barrier_id: 7, .. }] if session == "/s/a"
+            ));
+            assert!(
+                captures.observe(CapturedInput::Keyboard {
+                    keycode: 30,
+                    pressed: true
+                }),
+                "an active capture takes the keyboard too"
+            );
+            assert!(captures.take_signals().is_empty());
         }
-        assert!(captures.clipboard("/s/a"));
-        assert!(!captures.request_clipboard("/s/a"));
+
+        phase new_zones_drop_barriers_and_end_an_active_capture;
+        {
+            let captures = InputCaptures::default();
+            captures.set_zones(vec![zone()]);
+            armed(
+                &captures,
+                "/s/a",
+                Barrier {
+                    id: 1,
+                    x1: 100,
+                    y1: 0,
+                    x2: 100,
+                    y2: 100,
+                },
+            );
+            captures
+                .state
+                .lock_recover()
+                .captures
+                .get_mut("/s/a")
+                .expect("armed")
+                .active = true;
+            let _ = captures.take_signals();
+            captures.set_zones(vec![CaptureZone {
+                width: 200,
+                ..zone()
+            }]);
+            let signals = captures.take_signals();
+            assert!(matches!(
+                signals.as_slice(),
+                [Signal::Deactivated { .. }, Signal::ZonesChanged { .. }]
+            ));
+            assert!(!captures.observe(CapturedInput::Keyboard {
+                keycode: 30,
+                pressed: true
+            }));
+        }
+
+        phase barriers_lie_on_zone_edges;
+        {
+            let inside = Barrier {
+                id: 1,
+                x1: 5,
+                y1: 0,
+                x2: 5,
+                y2: 10,
+            };
+            assert!(!valid_barrier(&inside, &[zone()]));
+            let edge = Barrier {
+                id: 1,
+                x1: 0,
+                y1: 0,
+                x2: 0,
+                y2: 100,
+            };
+            assert!(valid_barrier(&edge, &[zone()]));
+            let mut raw = HashMap::new();
+            raw.insert("barrier_id".into(), OwnedValue::from(3_u32));
+            raw.insert(
+                "position".into(),
+                OwnedValue::try_from(Value::new((0_i32, 0_i32, 10_i32, 10_i32))).expect("tuple"),
+            );
+            assert!(parse_barrier(&raw).is_none(), "a diagonal is no barrier");
+        }
+
+        phase the_clipboard_is_asked_for_before_the_start_and_held_only_while_active;
+        {
+            let captures = InputCaptures::default();
+            captures
+                .state
+                .lock_recover()
+                .captures
+                .insert("/s/a".into(), Capture::default());
+            assert!(captures.request_clipboard("/s/a"));
+            assert!(!captures.clipboard("/s/a"));
+            {
+                let mut state = captures.state.lock_recover();
+                let capture = state.captures.get_mut("/s/a").expect("live");
+                capture.started = true;
+                capture.active = true;
+                drop(state);
+            }
+            assert!(captures.clipboard("/s/a"));
+            assert!(!captures.request_clipboard("/s/a"));
+        }
     }
 }

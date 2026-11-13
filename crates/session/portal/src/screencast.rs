@@ -702,89 +702,93 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_answer_picks_only_offered_sources_and_one_unless_multiple() {
-        let offered = [output("DP-1"), output("HDMI-A-1"), window("w1", "org.a")];
-        assert_eq!(
-            picked(&answered(&["output:DP-1"]), &offered, false),
-            Some(vec![output("DP-1")])
-        );
-        assert_eq!(
-            picked(&answered(&["output:DP-1", "window:w1"]), &offered, false),
-            None
-        );
-        assert_eq!(
-            picked(&answered(&["output:DP-1", "window:w1"]), &offered, true)
-                .map(|picked| picked.len()),
-            Some(2)
-        );
-        assert_eq!(picked(&answered(&["output:DP-2"]), &offered, true), None);
-        assert_eq!(picked(&answered(&[]), &offered, true), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_screencast_keeps_to_the_sources_offered_when_picked_restored_and_streamed;
 
-    #[test]
-    fn a_restored_share_finds_its_outputs_by_name_and_windows_by_app() {
-        let grant = Grant {
-            id: String::new(),
-            app_id: "org.example.Share".into(),
-            persist_mode: 2,
-            issued_unix_seconds: 0,
-            sources: vec![output("DP-1"), window("old", "org.a")],
-            cursor_mode: cursor_mode::HIDDEN,
-            devices: 0,
-        };
-        let now = [output("DP-1"), window("new", "org.a")];
-        assert_eq!(
-            restored_sources(&grant, &now),
-            Some(vec![output("DP-1"), window("new", "org.a")])
-        );
-        assert_eq!(restored_sources(&grant, &[output("DP-1")]), None);
-    }
+        phase an_answer_picks_only_offered_sources_and_one_unless_multiple;
+        {
+            let offered = [output("DP-1"), output("HDMI-A-1"), window("w1", "org.a")];
+            assert_eq!(
+                picked(&answered(&["output:DP-1"]), &offered, false),
+                Some(vec![output("DP-1")])
+            );
+            assert_eq!(
+                picked(&answered(&["output:DP-1", "window:w1"]), &offered, false),
+                None
+            );
+            assert_eq!(
+                picked(&answered(&["output:DP-1", "window:w1"]), &offered, true)
+                    .map(|picked| picked.len()),
+                Some(2)
+            );
+            assert_eq!(picked(&answered(&["output:DP-2"]), &offered, true), None);
+            assert_eq!(picked(&answered(&[]), &offered, true), None);
+        }
 
-    #[test]
-    fn selections_keep_to_what_the_session_offers() {
-        let mut options = HashMap::new();
-        let selection = selection_of(&options, 3, cursor_mode::ALL).expect("defaults");
-        assert_eq!(
-            (selection.types, selection.cursor_mode),
-            (source_type::MONITOR, cursor_mode::HIDDEN)
-        );
-        options.insert("types".into(), OwnedValue::from(source_type::VIRTUAL));
-        assert!(selection_of(&options, 3, cursor_mode::ALL).is_none());
-        options.insert("types".into(), OwnedValue::from(3_u32));
-        options.insert("cursor_mode".into(), OwnedValue::from(6_u32));
-        let selection = selection_of(&options, 3, cursor_mode::ALL).expect("selected");
-        assert_eq!((selection.types, selection.cursor_mode), (3, 2));
-        options.insert("persist_mode".into(), OwnedValue::from(3_u32));
-        assert!(selection_of(&options, 3, cursor_mode::ALL).is_none());
-    }
+        phase a_restored_share_finds_its_outputs_by_name_and_windows_by_app;
+        {
+            let grant = Grant {
+                id: String::new(),
+                app_id: "org.example.Share".into(),
+                persist_mode: 2,
+                issued_unix_seconds: 0,
+                sources: vec![output("DP-1"), window("old", "org.a")],
+                cursor_mode: cursor_mode::HIDDEN,
+                devices: 0,
+            };
+            let now = [output("DP-1"), window("new", "org.a")];
+            assert_eq!(
+                restored_sources(&grant, &now),
+                Some(vec![output("DP-1"), window("new", "org.a")])
+            );
+            assert_eq!(restored_sources(&grant, &[output("DP-1")]), None);
+        }
 
-    #[test]
-    fn persistence_until_revoked_needs_the_persons_say() {
-        assert_eq!(granted_persist_mode(2, true), 2);
-        assert_eq!(granted_persist_mode(2, false), 1);
-        assert_eq!(granted_persist_mode(1, false), 1);
-        assert_eq!(granted_persist_mode(0, true), 0);
-    }
+        phase selections_keep_to_what_the_session_offers;
+        {
+            let mut options = HashMap::new();
+            let selection = selection_of(&options, 3, cursor_mode::ALL).expect("defaults");
+            assert_eq!(
+                (selection.types, selection.cursor_mode),
+                (source_type::MONITOR, cursor_mode::HIDDEN)
+            );
+            options.insert("types".into(), OwnedValue::from(source_type::VIRTUAL));
+            assert!(selection_of(&options, 3, cursor_mode::ALL).is_none());
+            options.insert("types".into(), OwnedValue::from(3_u32));
+            options.insert("cursor_mode".into(), OwnedValue::from(6_u32));
+            let selection = selection_of(&options, 3, cursor_mode::ALL).expect("selected");
+            assert_eq!((selection.types, selection.cursor_mode), (3, 2));
+            options.insert("persist_mode".into(), OwnedValue::from(3_u32));
+            assert!(selection_of(&options, 3, cursor_mode::ALL).is_none());
+        }
 
-    #[test]
-    fn streams_carry_their_node_size_type_and_an_outputs_place() {
-        let stream = Stream {
-            node_id: 42,
-            size: (640, 480),
-            position: Some((100, 200)),
-        };
-        let (node, properties) = stream_tuple(&output("DP-1"), &stream);
-        assert_eq!(node, 42);
-        let size: (i32, i32) = properties["size"]
-            .try_clone()
-            .expect("clone")
-            .try_into()
-            .expect("(ii)");
-        assert_eq!(size, (640, 480));
-        assert!(properties.contains_key("position"));
-        let (_, properties) = stream_tuple(&window("w", "org.a"), &stream);
-        assert!(!properties.contains_key("position"), "monitors only");
-        assert!(streams_value(&[(output("DP-1"), stream)]).is_some());
+        phase persistence_until_revoked_needs_the_persons_say;
+        {
+            assert_eq!(granted_persist_mode(2, true), 2);
+            assert_eq!(granted_persist_mode(2, false), 1);
+            assert_eq!(granted_persist_mode(1, false), 1);
+            assert_eq!(granted_persist_mode(0, true), 0);
+        }
+
+        phase streams_carry_their_node_size_type_and_an_outputs_place;
+        {
+            let stream = Stream {
+                node_id: 42,
+                size: (640, 480),
+                position: Some((100, 200)),
+            };
+            let (node, properties) = stream_tuple(&output("DP-1"), &stream);
+            assert_eq!(node, 42);
+            let size: (i32, i32) = properties["size"]
+                .try_clone()
+                .expect("clone")
+                .try_into()
+                .expect("(ii)");
+            assert_eq!(size, (640, 480));
+            assert!(properties.contains_key("position"));
+            let (_, properties) = stream_tuple(&window("w", "org.a"), &stream);
+            assert!(!properties.contains_key("position"), "monitors only");
+            assert!(streams_value(&[(output("DP-1"), stream)]).is_some());
+        }
     }
 }

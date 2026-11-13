@@ -204,48 +204,52 @@ impl ScreenSaver {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_cookie_holds_the_screen_on_until_its_owner_releases_it() {
-        let inhibitions = Inhibitions::default();
-        let service = ScreenSaver::new(inhibitions.clone());
-        let cookie = service.inhibit(":1.42", "Google Chrome", "Playing video");
-        assert_ne!(cookie, 0);
-        assert!(inhibitions.registry().is_inhibited_for(IDLE));
-        assert_eq!(
-            inhibitions.held(),
-            [(hold_path(cookie), "Google Chrome".to_owned(), IDLE)]
-        );
-        assert!(
-            !service.uninhibit(":1.7", cookie),
-            "another client must not release someone else's hold"
-        );
-        assert!(service.uninhibit(":1.42", cookie));
-        assert!(!inhibitions.registry().is_inhibited_for(IDLE));
-    }
+    tilo_test_env::scenario! {
+        fn a_screensaver_hold_is_named_and_lasts_until_its_owner_releases_it_or_leaves;
 
-    #[test]
-    fn a_caller_leaving_the_bus_releases_every_hold_it_took() {
-        let inhibitions = Inhibitions::default();
-        let service = ScreenSaver::new(inhibitions.clone());
-        service.inhibit(":1.42", "VLC", "");
-        service.inhibit(":1.42", "VLC", "");
-        let other = service.inhibit(":1.43", "", "");
-        assert_eq!(service.release_owner(":1.42"), 2);
-        assert_eq!(inhibitions.held().len(), 1);
-        assert_eq!(inhibitions.held()[0].1, ":1.43", "named by its bus name");
-        assert!(service.uninhibit(":1.43", other));
-        assert!(!inhibitions.registry().is_inhibited_for(IDLE));
-    }
+        phase a_cookie_holds_the_screen_on_until_its_owner_releases_it;
+        {
+            let inhibitions = Inhibitions::default();
+            let service = ScreenSaver::new(inhibitions.clone());
+            let cookie = service.inhibit(":1.42", "Google Chrome", "Playing video");
+            assert_ne!(cookie, 0);
+            assert!(inhibitions.registry().is_inhibited_for(IDLE));
+            assert_eq!(
+                inhibitions.held(),
+                [(hold_path(cookie), "Google Chrome".to_owned(), IDLE)]
+            );
+            assert!(
+                !service.uninhibit(":1.7", cookie),
+                "another client must not release someone else's hold"
+            );
+            assert!(service.uninhibit(":1.42", cookie));
+            assert!(!inhibitions.registry().is_inhibited_for(IDLE));
+        }
 
-    #[test]
-    fn the_name_is_cleaned_for_display() {
-        assert_eq!(
-            display_name("  VLC media player \n", "x"),
-            "VLC media player"
-        );
-        assert_eq!(
-            display_name(&"x".repeat(200), "y").chars().count(),
-            MAX_NAME_CHARS
-        );
+        phase a_caller_leaving_the_bus_releases_every_hold_it_took;
+        {
+            let inhibitions = Inhibitions::default();
+            let service = ScreenSaver::new(inhibitions.clone());
+            service.inhibit(":1.42", "VLC", "");
+            service.inhibit(":1.42", "VLC", "");
+            let other = service.inhibit(":1.43", "", "");
+            assert_eq!(service.release_owner(":1.42"), 2);
+            assert_eq!(inhibitions.held().len(), 1);
+            assert_eq!(inhibitions.held()[0].1, ":1.43", "named by its bus name");
+            assert!(service.uninhibit(":1.43", other));
+            assert!(!inhibitions.registry().is_inhibited_for(IDLE));
+        }
+
+        phase the_name_is_cleaned_for_display;
+        {
+            assert_eq!(
+                display_name("  VLC media player \n", "x"),
+                "VLC media player"
+            );
+            assert_eq!(
+                display_name(&"x".repeat(200), "y").chars().count(),
+                MAX_NAME_CHARS
+            );
+        }
     }
 }

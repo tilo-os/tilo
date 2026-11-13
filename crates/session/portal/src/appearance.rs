@@ -325,188 +325,196 @@ mod tests {
             .2
     }
 
-    #[test]
-    fn a_missing_settings_file_publishes_the_dark_default_everywhere() {
-        let appearance = LegacyAppearance::from_settings_text("", false);
-        let settings = appearance.portal_settings();
-        assert_eq!(
-            lookup(&settings, APPEARANCE, "color-scheme"),
-            &PortalSetting::Unsigned(1)
-        );
-        assert_eq!(
-            lookup(&settings, APPEARANCE, "reduced-motion"),
-            &PortalSetting::Unsigned(0)
-        );
-        assert_eq!(
-            lookup(&settings, GNOME_INTERFACE, "color-scheme"),
-            &PortalSetting::Text("prefer-dark".into())
-        );
-        assert_eq!(
-            lookup(&settings, GNOME_INTERFACE, "gtk-theme"),
-            &PortalSetting::Text("Adwaita-dark".into())
-        );
-        assert_eq!(
-            lookup(&settings, GNOME_INTERFACE, "font-name"),
-            &PortalSetting::Text(format!("{} 11", ui::text_render::UI_SANS_FAMILY))
-        );
-        assert_eq!(
-            lookup(&settings, GNOME_INTERFACE, "monospace-font-name"),
-            &PortalSetting::Text(format!("{} 11", ui::text_render::UI_MONOSPACE_FAMILY))
-        );
-        assert_eq!(
-            lookup(&settings, GNOME_INTERFACE, "text-scaling-factor"),
-            &PortalSetting::Double(1.0)
-        );
-        assert_eq!(
-            lookup(&settings, GNOME_INTERFACE, "cursor-theme"),
-            &PortalSetting::Text("Adwaita".into())
-        );
-        assert_eq!(
-            lookup(&settings, GNOME_INTERFACE, "cursor-size"),
-            &PortalSetting::Int(24)
-        );
-        assert_eq!(
-            lookup(&settings, GNOME_INTERFACE, "enable-animations"),
-            &PortalSetting::Bool(true)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_persons_appearance_reaches_every_settings_namespace;
 
-    /// The pointer theme the person chose is what the toolkits draw with; an
-    /// untouched machine reports the Adwaita the desktop ships with.
-    #[test]
-    fn the_pointer_theme_the_person_chose_is_the_one_published() {
-        let text = r#"{
+        phase a_missing_settings_file_publishes_the_dark_default_everywhere;
+        {
+            let appearance = LegacyAppearance::from_settings_text("", false);
+            let settings = appearance.portal_settings();
+            assert_eq!(
+                lookup(&settings, APPEARANCE, "color-scheme"),
+                &PortalSetting::Unsigned(1)
+            );
+            assert_eq!(
+                lookup(&settings, APPEARANCE, "reduced-motion"),
+                &PortalSetting::Unsigned(0)
+            );
+            assert_eq!(
+                lookup(&settings, GNOME_INTERFACE, "color-scheme"),
+                &PortalSetting::Text("prefer-dark".into())
+            );
+            assert_eq!(
+                lookup(&settings, GNOME_INTERFACE, "gtk-theme"),
+                &PortalSetting::Text("Adwaita-dark".into())
+            );
+            assert_eq!(
+                lookup(&settings, GNOME_INTERFACE, "font-name"),
+                &PortalSetting::Text(format!("{} 11", ui::text_render::UI_SANS_FAMILY))
+            );
+            assert_eq!(
+                lookup(&settings, GNOME_INTERFACE, "monospace-font-name"),
+                &PortalSetting::Text(format!("{} 11", ui::text_render::UI_MONOSPACE_FAMILY))
+            );
+            assert_eq!(
+                lookup(&settings, GNOME_INTERFACE, "text-scaling-factor"),
+                &PortalSetting::Double(1.0)
+            );
+            assert_eq!(
+                lookup(&settings, GNOME_INTERFACE, "cursor-theme"),
+                &PortalSetting::Text("Adwaita".into())
+            );
+            assert_eq!(
+                lookup(&settings, GNOME_INTERFACE, "cursor-size"),
+                &PortalSetting::Int(24)
+            );
+            assert_eq!(
+                lookup(&settings, GNOME_INTERFACE, "enable-animations"),
+                &PortalSetting::Bool(true)
+            );
+        }
+
+        phase the_pointer_theme_the_person_chose_is_the_one_published;
+        // The pointer theme the person chose is what the toolkits draw with; an
+        // untouched machine reports the Adwaita the desktop ships with.
+        {
+            let text = r#"{
             "accessibility": {"cursor_theme": "Bibata-Modern-Ice"}
         }"#;
-        let settings = LegacyAppearance::from_settings_text(text, false).portal_settings();
-        assert_eq!(
-            lookup(&settings, GNOME_INTERFACE, "cursor-theme"),
-            &PortalSetting::Text("Bibata-Modern-Ice".into())
-        );
-    }
+            let settings = LegacyAppearance::from_settings_text(text, false).portal_settings();
+            assert_eq!(
+                lookup(&settings, GNOME_INTERFACE, "cursor-theme"),
+                &PortalSetting::Text("Bibata-Modern-Ice".into())
+            );
+        }
 
-    #[test]
-    fn a_light_theme_with_accessibility_choices_reaches_every_namespace() {
-        let text = r#"{
+        phase a_light_theme_with_accessibility_choices_reaches_every_namespace;
+        {
+            let text = r#"{
             "appearance": {"mode": "light", "reduce_motion": true, "text_scale": 1.25},
             "accessibility": {"large_cursor": true, "cursor_size": 48, "cursor_theme": "Bibata-Modern-Ice"}
         }"#;
-        let appearance = LegacyAppearance::from_settings_text(text, false);
-        let settings = appearance.portal_settings();
-        assert_eq!(
-            lookup(&settings, APPEARANCE, "color-scheme"),
-            &PortalSetting::Unsigned(2)
-        );
-        assert_eq!(
-            lookup(&settings, APPEARANCE, "reduced-motion"),
-            &PortalSetting::Unsigned(1)
-        );
-        assert_eq!(
-            lookup(&settings, GNOME_INTERFACE, "color-scheme"),
-            &PortalSetting::Text("prefer-light".into())
-        );
-        assert_eq!(
-            lookup(&settings, GNOME_INTERFACE, "gtk-theme"),
-            &PortalSetting::Text("Adwaita".into())
-        );
-        assert_eq!(
-            lookup(&settings, GNOME_INTERFACE, "enable-animations"),
-            &PortalSetting::Bool(false)
-        );
-        assert_eq!(
-            lookup(&settings, GNOME_INTERFACE, "text-scaling-factor"),
-            &PortalSetting::Double(1.25)
-        );
-        assert_eq!(
-            lookup(&settings, GNOME_INTERFACE, "cursor-size"),
-            &PortalSetting::Int(48)
-        );
-        assert_eq!(
-            lookup(&settings, GNOME_INTERFACE, "cursor-theme"),
-            &PortalSetting::Text("Bibata-Modern-Ice".into()),
-            "the theme the person chose, beside its size"
-        );
-    }
-
-    #[test]
-    fn high_contrast_is_honoured_as_a_flag_and_as_a_theme_and_keeps_its_polarity() {
-        for (text, scheme) in [
-            (
-                r#"{"appearance": {"mode": "light", "high_contrast": true}}"#,
-                2,
-            ),
-            (r#"{"appearance": {"dark_theme": "high-contrast"}}"#, 1),
-        ] {
-            let settings = LegacyAppearance::from_settings_text(text, false).portal_settings();
-            assert_eq!(
-                lookup(&settings, APPEARANCE, "contrast"),
-                &PortalSetting::Unsigned(1),
-                "{text}"
-            );
-            assert_eq!(
-                lookup(&settings, GNOME_A11Y_INTERFACE, "high-contrast"),
-                &PortalSetting::Bool(true),
-                "{text}"
-            );
+            let appearance = LegacyAppearance::from_settings_text(text, false);
+            let settings = appearance.portal_settings();
             assert_eq!(
                 lookup(&settings, APPEARANCE, "color-scheme"),
-                &PortalSetting::Unsigned(scheme),
-                "high contrast keeps the mode's polarity: {text}"
+                &PortalSetting::Unsigned(2)
             );
+            assert_eq!(
+                lookup(&settings, APPEARANCE, "reduced-motion"),
+                &PortalSetting::Unsigned(1)
+            );
+            assert_eq!(
+                lookup(&settings, GNOME_INTERFACE, "color-scheme"),
+                &PortalSetting::Text("prefer-light".into())
+            );
+            assert_eq!(
+                lookup(&settings, GNOME_INTERFACE, "gtk-theme"),
+                &PortalSetting::Text("Adwaita".into())
+            );
+            assert_eq!(
+                lookup(&settings, GNOME_INTERFACE, "enable-animations"),
+                &PortalSetting::Bool(false)
+            );
+            assert_eq!(
+                lookup(&settings, GNOME_INTERFACE, "text-scaling-factor"),
+                &PortalSetting::Double(1.25)
+            );
+            assert_eq!(
+                lookup(&settings, GNOME_INTERFACE, "cursor-size"),
+                &PortalSetting::Int(48)
+            );
+            assert_eq!(
+                lookup(&settings, GNOME_INTERFACE, "cursor-theme"),
+                &PortalSetting::Text("Bibata-Modern-Ice".into()),
+                "the theme the person chose, beside its size"
+            );
+        }
+
+        phase high_contrast_is_honoured_as_a_flag_and_as_a_theme_and_keeps_its_polarity;
+        {
+            for (text, scheme) in [
+                (
+                    r#"{"appearance": {"mode": "light", "high_contrast": true}}"#,
+                    2,
+                ),
+                (r#"{"appearance": {"dark_theme": "high-contrast"}}"#, 1),
+            ] {
+                let settings = LegacyAppearance::from_settings_text(text, false).portal_settings();
+                assert_eq!(
+                    lookup(&settings, APPEARANCE, "contrast"),
+                    &PortalSetting::Unsigned(1),
+                    "{text}"
+                );
+                assert_eq!(
+                    lookup(&settings, GNOME_A11Y_INTERFACE, "high-contrast"),
+                    &PortalSetting::Bool(true),
+                    "{text}"
+                );
+                assert_eq!(
+                    lookup(&settings, APPEARANCE, "color-scheme"),
+                    &PortalSetting::Unsigned(scheme),
+                    "high contrast keeps the mode's polarity: {text}"
+                );
+            }
+        }
+
+        phase the_session_reduced_motion_request_wins_over_the_file;
+        {
+            let appearance = LegacyAppearance::from_settings_text("{}", true);
+            assert!(appearance.reduce_motion);
         }
     }
 
-    #[test]
-    fn the_session_reduced_motion_request_wins_over_the_file() {
-        let appearance = LegacyAppearance::from_settings_text("{}", true);
-        assert!(appearance.reduce_motion);
-    }
+    tilo_test_env::scenario! {
+        fn appearance_is_written_in_gnomes_own_names_and_dconf_keys;
 
-    #[test]
-    fn accent_maps_to_the_nearest_gnome_name() {
-        let mut appearance = LegacyAppearance::from_settings_text("", false);
-        appearance.accent = [0xe0, 0x30, 0x40];
-        assert_eq!(appearance.gnome_accent(), "red");
-        appearance.accent = [0x30, 0x80, 0xe0];
-        assert_eq!(appearance.gnome_accent(), "blue");
-    }
+        phase accent_maps_to_the_nearest_gnome_name;
+        {
+            let mut appearance = LegacyAppearance::from_settings_text("", false);
+            appearance.accent = [0xe0, 0x30, 0x40];
+            assert_eq!(appearance.gnome_accent(), "red");
+            appearance.accent = [0x30, 0x80, 0xe0];
+            assert_eq!(appearance.gnome_accent(), "blue");
+        }
 
-    #[test]
-    fn client_drawn_frames_are_told_to_show_no_window_controls() {
-        let appearance = LegacyAppearance::from_settings_text("", false);
-        assert_eq!(
-            lookup(
-                &appearance.portal_settings(),
-                GNOME_WM_PREFERENCES,
-                "button-layout"
-            ),
-            &PortalSetting::Text(":".into()),
-            "no leading and no trailing buttons: the desktop draws the controls"
-        );
-        assert!(
-            appearance
-                .dconf_keyfile()
-                .contains("\n[org/gnome/desktop/wm/preferences]\nbutton-layout=':'\n"),
-            "unsandboxed host apps read the same layout from dconf"
-        );
-    }
+        phase client_drawn_frames_are_told_to_show_no_window_controls;
+        {
+            let appearance = LegacyAppearance::from_settings_text("", false);
+            assert_eq!(
+                lookup(
+                    &appearance.portal_settings(),
+                    GNOME_WM_PREFERENCES,
+                    "button-layout"
+                ),
+                &PortalSetting::Text(":".into()),
+                "no leading and no trailing buttons: the desktop draws the controls"
+            );
+            assert!(
+                appearance
+                    .dconf_keyfile()
+                    .contains("\n[org/gnome/desktop/wm/preferences]\nbutton-layout=':'\n"),
+                "unsandboxed host apps read the same layout from dconf"
+            );
+        }
 
-    #[test]
-    fn dconf_keyfile_carries_only_gsettings_keys_in_typed_text_form() {
-        let mut appearance = LegacyAppearance::from_settings_text("", false);
-        appearance.sans_family = "O'Brien Sans".into();
-        let keyfile = appearance.dconf_keyfile();
-        assert!(keyfile.starts_with("[org/gnome/desktop/interface]\n"));
-        assert!(keyfile.contains("\n[org/gnome/desktop/a11y/interface]\nhigh-contrast=false\n"));
-        assert!(keyfile.contains("\ncolor-scheme='prefer-dark'\n"));
-        assert!(keyfile.contains("\nfont-name='O\\'Brien Sans 11'\n"));
-        assert!(keyfile.contains("\ntext-scaling-factor=1.0\n"));
-        assert!(keyfile.contains("\ncursor-size=24\n"));
-        assert!(keyfile.contains("\ncursor-theme='Adwaita'\n"));
-        assert!(keyfile.contains("\nenable-animations=true\n"));
-        assert!(
-            !keyfile.contains("reduced-motion") && !keyfile.contains("contrast=uint32"),
-            "org.freedesktop.appearance is portal-only: {keyfile}"
-        );
+        phase dconf_keyfile_carries_only_gsettings_keys_in_typed_text_form;
+        {
+            let mut appearance = LegacyAppearance::from_settings_text("", false);
+            appearance.sans_family = "O'Brien Sans".into();
+            let keyfile = appearance.dconf_keyfile();
+            assert!(keyfile.starts_with("[org/gnome/desktop/interface]\n"));
+            assert!(keyfile.contains("\n[org/gnome/desktop/a11y/interface]\nhigh-contrast=false\n"));
+            assert!(keyfile.contains("\ncolor-scheme='prefer-dark'\n"));
+            assert!(keyfile.contains("\nfont-name='O\\'Brien Sans 11'\n"));
+            assert!(keyfile.contains("\ntext-scaling-factor=1.0\n"));
+            assert!(keyfile.contains("\ncursor-size=24\n"));
+            assert!(keyfile.contains("\ncursor-theme='Adwaita'\n"));
+            assert!(keyfile.contains("\nenable-animations=true\n"));
+            assert!(
+                !keyfile.contains("reduced-motion") && !keyfile.contains("contrast=uint32"),
+                "org.freedesktop.appearance is portal-only: {keyfile}"
+            );
+        }
     }
 }

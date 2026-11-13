@@ -181,40 +181,87 @@ fn unescape_unit(escaped: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn app_units_name_their_app() {
-        let id = |line: &str| app_of_cgroup_line(line);
-        assert_eq!(
-            id("0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-org.gnome.Nautilus-4242.scope")
-                .as_deref(),
-            Some("org.gnome.Nautilus")
-        );
-        assert_eq!(
-            id("0::/user.slice/user@1000.service/app.slice/app-org.example.Editor@a1b2.service")
-                .as_deref(),
-            Some("org.example.Editor")
-        );
-        assert_eq!(
-            id("0::/user.slice/user@1000.service/app.slice/app-flatpak-org.example.Big\\x2dApp-77.scope")
-                .as_deref(),
-            Some("org.example.Big-App")
-        );
-        assert_eq!(
-            id("0::/user.slice/user@1000.service/session.slice/org.gnome.Shell@wayland.service"),
-            None,
-            "a session service is no app"
-        );
-        assert_eq!(
-            id("0::/user.slice/user@1000.service/app.slice/app-terminal-42.scope"),
-            None,
-            "an id without a dot names no app"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_requester_is_named_from_its_unit_entry_or_process;
 
-    #[test]
-    fn the_parent_is_read_past_a_command_with_parentheses() {
-        assert_eq!(parent_of("42 (a) b (c)) S 7 42 42 0"), Some(7));
-        assert_eq!(parent_of("garbage"), None);
+        phase app_units_name_their_app;
+        {
+            let id = |line: &str| app_of_cgroup_line(line);
+            assert_eq!(
+                id("0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-org.gnome.Nautilus-4242.scope")
+                    .as_deref(),
+                Some("org.gnome.Nautilus")
+            );
+            assert_eq!(
+                id("0::/user.slice/user@1000.service/app.slice/app-org.example.Editor@a1b2.service")
+                    .as_deref(),
+                Some("org.example.Editor")
+            );
+            assert_eq!(
+                id("0::/user.slice/user@1000.service/app.slice/app-flatpak-org.example.Big\\x2dApp-77.scope")
+                    .as_deref(),
+                Some("org.example.Big-App")
+            );
+            assert_eq!(
+                id("0::/user.slice/user@1000.service/session.slice/org.gnome.Shell@wayland.service"),
+                None,
+                "a session service is no app"
+            );
+            assert_eq!(
+                id("0::/user.slice/user@1000.service/app.slice/app-terminal-42.scope"),
+                None,
+                "an id without a dot names no app"
+            );
+        }
+
+        phase the_parent_is_read_past_a_command_with_parentheses;
+        {
+            assert_eq!(parent_of("42 (a) b (c)) S 7 42 42 0"), Some(7));
+            assert_eq!(parent_of("garbage"), None);
+        }
+
+        phase an_unnamed_requester_is_named_by_unit_entry_or_executable;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let proc_root = dir.path().join("proc");
+            let apps = dir.path().join("applications");
+            let bin = dir.path().join("bin");
+            std::fs::create_dir_all(&apps).unwrap();
+            std::fs::create_dir_all(&bin).unwrap();
+            let editor = bin.join("editor");
+            let tool = bin.join("tool");
+            std::fs::write(&editor, "").unwrap();
+            std::fs::write(&tool, "").unwrap();
+            std::fs::write(
+                apps.join("org.example.Editor.desktop"),
+                format!(
+                    "[Desktop Entry]\nType=Application\nName=Editor\nExec={} %F\n",
+                    editor.display()
+                ),
+            )
+            .unwrap();
+            let plain = "0::/user.slice/user@1000.service/app.slice/vte-spawn-1.scope";
+            // A helper whose parent runs in an app unit.
+            process(
+                &proc_root,
+                10,
+                1,
+                "0::/user.slice/user@1000.service/app.slice/app-gnome-org.example.Mail-10.scope",
+                None,
+            );
+            process(&proc_root, 11, 10, plain, None);
+            process(&proc_root, 20, 1, plain, Some(&editor));
+            process(&proc_root, 30, 1, plain, Some(&tool));
+            let requesters = Requesters::at(proc_root, vec![apps]);
+            let named = |pid| requesters.identify(pid).map(|caller| caller.app_id);
+            assert_eq!(named(11).as_deref(), Some("org.example.Mail"));
+            assert_eq!(named(20).as_deref(), Some("org.example.Editor"));
+            assert_eq!(
+                named(30),
+                Some(tool.canonicalize().unwrap().display().to_string())
+            );
+            assert_eq!(named(99), None, "a process that is gone");
+        }
     }
 
     fn process(root: &Path, pid: u32, parent: u32, cgroup: &str, exe: Option<&Path>) {
@@ -225,48 +272,5 @@ mod tests {
         if let Some(exe) = exe {
             std::os::unix::fs::symlink(exe, dir.join("exe")).unwrap();
         }
-    }
-
-    #[test]
-    fn an_unnamed_requester_is_named_by_unit_entry_or_executable() {
-        let dir = tempfile::tempdir().unwrap();
-        let proc_root = dir.path().join("proc");
-        let apps = dir.path().join("applications");
-        let bin = dir.path().join("bin");
-        std::fs::create_dir_all(&apps).unwrap();
-        std::fs::create_dir_all(&bin).unwrap();
-        let editor = bin.join("editor");
-        let tool = bin.join("tool");
-        std::fs::write(&editor, "").unwrap();
-        std::fs::write(&tool, "").unwrap();
-        std::fs::write(
-            apps.join("org.example.Editor.desktop"),
-            format!(
-                "[Desktop Entry]\nType=Application\nName=Editor\nExec={} %F\n",
-                editor.display()
-            ),
-        )
-        .unwrap();
-        let plain = "0::/user.slice/user@1000.service/app.slice/vte-spawn-1.scope";
-        // A helper whose parent runs in an app unit.
-        process(
-            &proc_root,
-            10,
-            1,
-            "0::/user.slice/user@1000.service/app.slice/app-gnome-org.example.Mail-10.scope",
-            None,
-        );
-        process(&proc_root, 11, 10, plain, None);
-        process(&proc_root, 20, 1, plain, Some(&editor));
-        process(&proc_root, 30, 1, plain, Some(&tool));
-        let requesters = Requesters::at(proc_root, vec![apps]);
-        let named = |pid| requesters.identify(pid).map(|caller| caller.app_id);
-        assert_eq!(named(11).as_deref(), Some("org.example.Mail"));
-        assert_eq!(named(20).as_deref(), Some("org.example.Editor"));
-        assert_eq!(
-            named(30),
-            Some(tool.canonicalize().unwrap().display().to_string())
-        );
-        assert_eq!(named(99), None, "a process that is gone");
     }
 }

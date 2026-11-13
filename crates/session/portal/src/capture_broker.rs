@@ -970,413 +970,417 @@ mod tests {
         broker
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn capture_authorization_is_one_shot_exact_and_broker_scoped() {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        #[allow(
+            clippy::too_many_lines,
+            reason = "each phase keeps one former test's body verbatim"
+        )]
+        fn capture_leases_are_authorized_once_scoped_renewed_and_revoked_exactly;
+
+        phase capture_authorization_is_one_shot_exact_and_broker_scoped;
         {
-            let mut broker = broker();
-            let owner = binding("so.tilo.chat", "work", "session-batch");
-            let now = Instant::now();
-            assert!(
-                broker
+            {
+                let mut broker = broker();
+                let owner = binding("so.tilo.chat", "work", "session-batch");
+                let now = Instant::now();
+                assert!(
+                    broker
+                        .authorize_batch(
+                            &owner,
+                            &[
+                                ("mic-main".into(), CaptureKind::Microphone),
+                                ("missing-camera".into(), CaptureKind::Camera),
+                            ],
+                            now,
+                        )
+                        .is_err()
+                );
+                assert!(broker.authorizations.is_empty());
+
+                let ids = broker
                     .authorize_batch(
                         &owner,
                         &[
                             ("mic-main".into(), CaptureKind::Microphone),
-                            ("missing-camera".into(), CaptureKind::Camera),
+                            ("camera-front".into(), CaptureKind::Camera),
                         ],
                         now,
                     )
-                    .is_err()
-            );
-            assert!(broker.authorizations.is_empty());
-
-            let ids = broker
-                .authorize_batch(
-                    &owner,
-                    &[
-                        ("mic-main".into(), CaptureKind::Microphone),
-                        ("camera-front".into(), CaptureKind::Camera),
-                    ],
-                    now,
-                )
-                .unwrap();
-            assert_eq!(ids.len(), 2);
-            assert_eq!(broker.authorizations.len(), 2);
-            assert_eq!(broker.revoke_authorizations(&ids), 2);
-            assert!(broker.authorizations.is_empty());
-            assert_eq!(broker.revoke_authorizations(&ids), 0);
-        }
-        {
-            let mut broker = broker();
-            let now = Instant::now();
-            let owner = binding("meet", "work", "call-1");
-            let other = binding("meet", "work", "call-2");
-            let auth = broker
-                .authorize(&owner, "camera-front", CaptureKind::Camera, now)
-                .unwrap();
-            assert_eq!(
-                broker.acquire(auth, &other, "camera-front", CaptureKind::Camera, now),
-                Err(CaptureBrokerError::BindingMismatch)
-            );
-            let lease = broker
-                .acquire(auth, &owner, "camera-front", CaptureKind::Camera, now)
-                .unwrap();
-            assert!(matches!(
-                broker.resolve(lease, &owner, now),
-                Ok(BorrowedCaptureHandle::PipeWireNode(41))
-            ));
-        }
-        {
-            let now = Instant::now();
-            let owner = binding("meet", "work", "call");
-            let mut first = broker();
-            let auth = first
-                .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
-                .unwrap();
-            assert_eq!(
-                first.acquire(
-                    auth,
-                    &owner,
-                    "mic-main",
-                    CaptureKind::Microphone,
-                    now + CAPTURE_AUTHORIZATION_TTL + Duration::from_millis(1)
-                ),
-                Err(CaptureBrokerError::InvalidAuthorization)
-            );
-            let mut second = broker();
-            assert_eq!(
-                second.acquire(auth, &owner, "mic-main", CaptureKind::Microphone, now),
-                Err(CaptureBrokerError::InvalidAuthorization)
-            );
-        }
-        {
-            let now = Instant::now();
-            let owner = binding("meet", "work", "call");
-            let mut broker = broker();
-            let authorization = broker
-                .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
-                .unwrap();
-            let opaque = authorization.to_opaque();
-            assert_eq!(opaque.len(), OPAQUE_ID_BYTES * 2);
-            assert_eq!(
-                CaptureAuthorizationId::from_opaque(&opaque).unwrap(),
-                authorization
-            );
-            assert_eq!(
-                CaptureAuthorizationId::from_opaque(&opaque.to_ascii_uppercase()),
-                Err(CaptureBrokerError::InvalidAuthorization)
-            );
-            assert_eq!(
-                CaptureAuthorizationId::from_opaque("00"),
-                Err(CaptureBrokerError::InvalidAuthorization)
-            );
-        }
-        {
-            let now = Instant::now();
-            let owner = binding("meet", "work", "call-1");
-            let wrong_session = binding("meet", "work", "call-2");
-            let wrong_target =
-                CaptureSessionBinding::new("meet", "work", "call-1", "target-other").unwrap();
-            let mut broker = broker();
-            let microphone = broker
-                .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
-                .unwrap();
-            let camera = broker
-                .authorize(&owner, "camera-front", CaptureKind::Camera, now)
-                .unwrap();
-            let required = [CaptureKind::Microphone, CaptureKind::Camera];
-
-            assert_eq!(
-                broker.acquire_required(&[microphone], &owner, &required, now),
-                Err(CaptureBrokerError::IncompleteAuthorizationSet)
-            );
-            assert_eq!(
-                broker.acquire_required(&[microphone, camera], &wrong_session, &required, now),
-                Err(CaptureBrokerError::BindingMismatch)
-            );
-            assert_eq!(
-                broker.acquire_required(&[microphone, camera], &wrong_target, &required, now),
-                Err(CaptureBrokerError::BindingMismatch)
-            );
-            let grants = broker
-                .acquire_required(&[microphone, camera], &owner, &required, now)
-                .unwrap();
-            assert_eq!(grants.len(), 2);
-            assert!(
-                grants
-                    .iter()
-                    .all(|grant| broker.resolve(grant.lease_id, &owner, now).is_ok())
-            );
-            assert_eq!(
-                broker.acquire_required(&[microphone, camera], &owner, &required, now),
-                Err(CaptureBrokerError::InvalidAuthorization)
-            );
-        }
-    }
-
-    #[test]
-    fn capture_sources_stay_local_kind_scoped_and_lease_bound() {
-        {
-            let broker = broker();
-            assert_eq!(broker.enumerate(CaptureKind::Camera)[0].id, "camera-front");
-            assert_eq!(broker.enumerate(CaptureKind::Microphone)[0].id, "mic-main");
-            assert_eq!(
-                broker.enumerate(CaptureKind::SystemAudio)[0].id,
-                "share-audio"
-            );
-            assert!(broker.enumerate(CaptureKind::Screen).is_empty());
-        }
-        {
-            let mut broker = broker();
-            let owner = binding("meet", "work", "call");
-            broker.set_kill_switch(CaptureKind::Camera, true);
-            assert!(broker.enumerate(CaptureKind::Camera).is_empty());
-            assert_eq!(
-                broker.authorize(&owner, "camera-front", CaptureKind::Camera, Instant::now()),
-                Err(CaptureBrokerError::Disabled)
-            );
-            assert_eq!(broker.enumerate(CaptureKind::Microphone).len(), 1);
-        }
-        {
-            let file = std::fs::File::open("/dev/null").unwrap();
-            let expected = file.as_fd().as_raw_fd();
-            let mut broker = CaptureBroker::new();
-            broker
-                .register_source(
-                    "screen",
-                    "Screen",
-                    CaptureKind::Screen,
-                    LocalCaptureHandle::FileDescriptor(file.into()),
-                )
-                .unwrap();
-            let owner = binding("share", "work", "room");
-            let now = Instant::now();
-            let auth = broker
-                .authorize(&owner, "screen", CaptureKind::Screen, now)
-                .unwrap();
-            let lease = broker
-                .acquire(auth, &owner, "screen", CaptureKind::Screen, now)
-                .unwrap();
-            let BorrowedCaptureHandle::FileDescriptor(fd) =
-                broker.resolve(lease, &owner, now).unwrap()
-            else {
-                panic!("expected fd");
-            };
-            assert_eq!(fd.as_raw_fd(), expected);
-        }
-    }
-
-    #[test]
-    fn a_renewed_lease_outlives_its_first_term_and_a_revoked_one_cannot_be_renewed() {
-        let mut broker = broker();
-        let owner = binding("meet", "work", "call");
-        let start = Instant::now();
-        let auth = broker
-            .authorize(&owner, "camera-front", CaptureKind::Camera, start)
-            .unwrap();
-        let lease = broker
-            .acquire(auth, &owner, "camera-front", CaptureKind::Camera, start)
-            .unwrap();
-        let halfway = start + CAPTURE_LEASE_TTL / 2;
-        broker.renew(lease, &owner, halfway).unwrap();
-        let past_first_term = start + CAPTURE_LEASE_TTL + Duration::from_secs(1);
-        broker.reap_expired(past_first_term);
-        assert!(
-            broker.resolve(lease, &owner, past_first_term).is_ok(),
-            "a renewed lease lasts past its first term"
-        );
-        let other = binding("meet", "work", "other-call");
-        assert!(broker.renew(lease, &other, past_first_term).is_err());
-        let far = past_first_term + CAPTURE_LEASE_TTL + Duration::from_secs(1);
-        broker.reap_expired(far);
-        assert!(
-            broker.renew(lease, &owner, far).is_err(),
-            "an expired lease stays expired"
-        );
-
-        let auth = broker
-            .authorize(&owner, "camera-front", CaptureKind::Camera, far)
-            .unwrap();
-        let lease = broker
-            .acquire(auth, &owner, "camera-front", CaptureKind::Camera, far)
-            .unwrap();
-        broker.set_kill_switch(CaptureKind::Camera, true);
-        assert!(broker.renew(lease, &owner, far).is_err());
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn capture_teardown_revokes_exact_leases_and_is_audited() {
-        {
-            let now = Instant::now();
-            let first = binding("meet", "work", "call-1");
-            let second = binding("meet", "work", "call-2");
-            let mut broker = broker();
-            let first_authorization = broker
-                .authorize(&first, "mic-main", CaptureKind::Microphone, now)
-                .unwrap();
-            let second_authorization = broker
-                .authorize(&second, "camera-front", CaptureKind::Camera, now)
-                .unwrap();
-            let first_lease = broker
-                .acquire(
-                    first_authorization,
-                    &first,
-                    "mic-main",
-                    CaptureKind::Microphone,
-                    now,
-                )
-                .unwrap();
-            let second_lease = broker
-                .acquire(
-                    second_authorization,
-                    &second,
-                    "camera-front",
-                    CaptureKind::Camera,
-                    now,
-                )
-                .unwrap();
-
-            broker.session_ended(&first);
-            assert!(matches!(
-                broker.resolve(first_lease, &first, now),
-                Err(CaptureBrokerError::InvalidLease)
-            ));
-            assert!(broker.resolve(second_lease, &second, now).is_ok());
-            assert!(broker.take_privacy_events().iter().any(|event| matches!(
-                event,
-                CapturePrivacyEvent::Stopped {
-                    lease_id,
-                    reason: CaptureRevocation::SessionEnded,
-                    ..
-                } if *lease_id == first_lease
-            )));
-        }
-        {
-            let now = Instant::now();
-            let owner = binding("meet", "work", "call");
-            for reason in [
-                CaptureRevocation::SessionEnded,
-                CaptureRevocation::AppExited,
-                CaptureRevocation::ScreenLocked,
-                CaptureRevocation::DeviceLost,
-                CaptureRevocation::KillSwitch,
-                CaptureRevocation::Expired,
-                CaptureRevocation::GrantRevoked,
-            ] {
+                    .unwrap();
+                assert_eq!(ids.len(), 2);
+                assert_eq!(broker.authorizations.len(), 2);
+                assert_eq!(broker.revoke_authorizations(&ids), 2);
+                assert!(broker.authorizations.is_empty());
+                assert_eq!(broker.revoke_authorizations(&ids), 0);
+            }
+            {
                 let mut broker = broker();
+                let now = Instant::now();
+                let owner = binding("meet", "work", "call-1");
+                let other = binding("meet", "work", "call-2");
                 let auth = broker
-                    .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
+                    .authorize(&owner, "camera-front", CaptureKind::Camera, now)
                     .unwrap();
+                assert_eq!(
+                    broker.acquire(auth, &other, "camera-front", CaptureKind::Camera, now),
+                    Err(CaptureBrokerError::BindingMismatch)
+                );
                 let lease = broker
-                    .acquire(auth, &owner, "mic-main", CaptureKind::Microphone, now)
+                    .acquire(auth, &owner, "camera-front", CaptureKind::Camera, now)
                     .unwrap();
-                match reason {
-                    CaptureRevocation::SessionEnded => broker.session_ended(&owner),
-                    CaptureRevocation::AppExited => broker.app_exited("meet", "work"),
-                    CaptureRevocation::ScreenLocked => broker.screen_locked(),
-                    CaptureRevocation::DeviceLost => {
-                        broker.remove_source("mic-main");
-                    }
-                    CaptureRevocation::KillSwitch => {
-                        broker.set_kill_switch(CaptureKind::Microphone, true);
-                    }
-                    CaptureRevocation::Expired => {
-                        broker.reap_expired(now + CAPTURE_LEASE_TTL + Duration::from_millis(1));
-                    }
-                    CaptureRevocation::GrantRevoked => {
-                        broker.revoke_unkept(CaptureRevocation::GrantRevoked, |_, _, _| false);
-                    }
-                    CaptureRevocation::Released | CaptureRevocation::Stopped => continue,
-                }
                 assert!(matches!(
                     broker.resolve(lease, &owner, now),
-                    Err(CaptureBrokerError::InvalidLease)
+                    Ok(BorrowedCaptureHandle::PipeWireNode(41))
                 ));
-                let events = broker.take_privacy_events();
+            }
+            {
+                let now = Instant::now();
+                let owner = binding("meet", "work", "call");
+                let mut first = broker();
+                let auth = first
+                    .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
+                    .unwrap();
+                assert_eq!(
+                    first.acquire(
+                        auth,
+                        &owner,
+                        "mic-main",
+                        CaptureKind::Microphone,
+                        now + CAPTURE_AUTHORIZATION_TTL + Duration::from_millis(1)
+                    ),
+                    Err(CaptureBrokerError::InvalidAuthorization)
+                );
+                let mut second = broker();
+                assert_eq!(
+                    second.acquire(auth, &owner, "mic-main", CaptureKind::Microphone, now),
+                    Err(CaptureBrokerError::InvalidAuthorization)
+                );
+            }
+            {
+                let now = Instant::now();
+                let owner = binding("meet", "work", "call");
+                let mut broker = broker();
+                let authorization = broker
+                    .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
+                    .unwrap();
+                let opaque = authorization.to_opaque();
+                assert_eq!(opaque.len(), OPAQUE_ID_BYTES * 2);
+                assert_eq!(
+                    CaptureAuthorizationId::from_opaque(&opaque).unwrap(),
+                    authorization
+                );
+                assert_eq!(
+                    CaptureAuthorizationId::from_opaque(&opaque.to_ascii_uppercase()),
+                    Err(CaptureBrokerError::InvalidAuthorization)
+                );
+                assert_eq!(
+                    CaptureAuthorizationId::from_opaque("00"),
+                    Err(CaptureBrokerError::InvalidAuthorization)
+                );
+            }
+            {
+                let now = Instant::now();
+                let owner = binding("meet", "work", "call-1");
+                let wrong_session = binding("meet", "work", "call-2");
+                let wrong_target =
+                    CaptureSessionBinding::new("meet", "work", "call-1", "target-other").unwrap();
+                let mut broker = broker();
+                let microphone = broker
+                    .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
+                    .unwrap();
+                let camera = broker
+                    .authorize(&owner, "camera-front", CaptureKind::Camera, now)
+                    .unwrap();
+                let required = [CaptureKind::Microphone, CaptureKind::Camera];
+
+                assert_eq!(
+                    broker.acquire_required(&[microphone], &owner, &required, now),
+                    Err(CaptureBrokerError::IncompleteAuthorizationSet)
+                );
+                assert_eq!(
+                    broker.acquire_required(&[microphone, camera], &wrong_session, &required, now),
+                    Err(CaptureBrokerError::BindingMismatch)
+                );
+                assert_eq!(
+                    broker.acquire_required(&[microphone, camera], &wrong_target, &required, now),
+                    Err(CaptureBrokerError::BindingMismatch)
+                );
+                let grants = broker
+                    .acquire_required(&[microphone, camera], &owner, &required, now)
+                    .unwrap();
+                assert_eq!(grants.len(), 2);
                 assert!(
-                    matches!(events.as_slice(), [CapturePrivacyEvent::Started { .. }, CapturePrivacyEvent::Stopped { reason: event_reason, .. }] if *event_reason == reason)
+                    grants
+                        .iter()
+                        .all(|grant| broker.resolve(grant.lease_id, &owner, now).is_ok())
+                );
+                assert_eq!(
+                    broker.acquire_required(&[microphone, camera], &owner, &required, now),
+                    Err(CaptureBrokerError::InvalidAuthorization)
                 );
             }
         }
+
+        phase capture_sources_stay_local_kind_scoped_and_lease_bound;
         {
-            let now = Instant::now();
-            let owner = binding("meet", "work", "call");
-            let mut broker = broker();
-            let old = broker
-                .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
-                .unwrap();
-            broker
-                .register_source(
-                    "mic-main",
-                    "Replacement mic",
-                    CaptureKind::Microphone,
-                    LocalCaptureHandle::PipeWireNode(99),
-                )
-                .unwrap();
-            assert_eq!(
-                broker.acquire(old, &owner, "mic-main", CaptureKind::Microphone, now),
-                Err(CaptureBrokerError::InvalidAuthorization)
-            );
-            for _ in 0..MAX_PRIVACY_EVENTS.saturating_add(8) {
+            {
+                let broker = broker();
+                assert_eq!(broker.enumerate(CaptureKind::Camera)[0].id, "camera-front");
+                assert_eq!(broker.enumerate(CaptureKind::Microphone)[0].id, "mic-main");
+                assert_eq!(
+                    broker.enumerate(CaptureKind::SystemAudio)[0].id,
+                    "share-audio"
+                );
+                assert!(broker.enumerate(CaptureKind::Screen).is_empty());
+            }
+            {
+                let mut broker = broker();
+                let owner = binding("meet", "work", "call");
+                broker.set_kill_switch(CaptureKind::Camera, true);
+                assert!(broker.enumerate(CaptureKind::Camera).is_empty());
+                assert_eq!(
+                    broker.authorize(&owner, "camera-front", CaptureKind::Camera, Instant::now()),
+                    Err(CaptureBrokerError::Disabled)
+                );
+                assert_eq!(broker.enumerate(CaptureKind::Microphone).len(), 1);
+            }
+            {
+                let file = std::fs::File::open("/dev/null").unwrap();
+                let expected = file.as_fd().as_raw_fd();
+                let mut broker = CaptureBroker::new();
+                broker
+                    .register_source(
+                        "screen",
+                        "Screen",
+                        CaptureKind::Screen,
+                        LocalCaptureHandle::FileDescriptor(file.into()),
+                    )
+                    .unwrap();
+                let owner = binding("share", "work", "room");
+                let now = Instant::now();
                 let auth = broker
-                    .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
+                    .authorize(&owner, "screen", CaptureKind::Screen, now)
                     .unwrap();
                 let lease = broker
-                    .acquire(auth, &owner, "mic-main", CaptureKind::Microphone, now)
+                    .acquire(auth, &owner, "screen", CaptureKind::Screen, now)
                     .unwrap();
-                assert!(broker.release(lease));
+                let BorrowedCaptureHandle::FileDescriptor(fd) =
+                    broker.resolve(lease, &owner, now).unwrap()
+                else {
+                    panic!("expected fd");
+                };
+                assert_eq!(fd.as_raw_fd(), expected);
             }
-            assert_eq!(broker.events.len(), MAX_PRIVACY_EVENTS);
         }
-    }
 
-    #[test]
-    fn a_held_lease_lasts_until_stopped_and_is_listed_meanwhile() {
-        let mut broker = broker();
-        let owner = binding("org.example.Share", "", "/session/1");
-        let now = Instant::now();
-        let auth = broker
-            .authorize(&owner, "share-audio", CaptureKind::SystemAudio, now)
-            .unwrap();
-        let lease = broker
-            .acquire_held(auth, &owner, "share-audio", CaptureKind::SystemAudio, now)
-            .unwrap();
-        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let hook = std::sync::Arc::clone(&stopped);
-        broker
-            .stop_on_revoke(
-                lease,
-                &owner,
-                now,
-                std::sync::Arc::new(move || {
-                    hook.store(true, std::sync::atomic::Ordering::SeqCst);
-                }),
-            )
-            .unwrap();
-        let far = now + CAPTURE_LEASE_TTL * 4;
-        broker.reap_expired(far);
-        let live = broker.live();
-        assert_eq!(live.len(), 1, "a held lease does not expire");
-        assert_eq!(live[0].source, "System audio");
-        assert_eq!(broker.lease_of(&lease.to_opaque()), Some(lease));
-        assert_eq!(broker.lease_of("00"), None);
-        assert!(broker.stop(lease));
-        assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(broker.live().is_empty());
-        assert!(broker.take_privacy_events().iter().any(|event| matches!(
-            event,
-            CapturePrivacyEvent::Stopped {
-                reason: CaptureRevocation::Stopped,
-                ..
+        phase a_renewed_lease_outlives_its_first_term_and_a_revoked_one_cannot_be_renewed;
+        {
+            let mut broker = broker();
+            let owner = binding("meet", "work", "call");
+            let start = Instant::now();
+            let auth = broker
+                .authorize(&owner, "camera-front", CaptureKind::Camera, start)
+                .unwrap();
+            let lease = broker
+                .acquire(auth, &owner, "camera-front", CaptureKind::Camera, start)
+                .unwrap();
+            let halfway = start + CAPTURE_LEASE_TTL / 2;
+            broker.renew(lease, &owner, halfway).unwrap();
+            let past_first_term = start + CAPTURE_LEASE_TTL + Duration::from_secs(1);
+            broker.reap_expired(past_first_term);
+            assert!(
+                broker.resolve(lease, &owner, past_first_term).is_ok(),
+                "a renewed lease lasts past its first term"
+            );
+            let other = binding("meet", "work", "other-call");
+            assert!(broker.renew(lease, &other, past_first_term).is_err());
+            let far = past_first_term + CAPTURE_LEASE_TTL + Duration::from_secs(1);
+            broker.reap_expired(far);
+            assert!(
+                broker.renew(lease, &owner, far).is_err(),
+                "an expired lease stays expired"
+            );
+
+            let auth = broker
+                .authorize(&owner, "camera-front", CaptureKind::Camera, far)
+                .unwrap();
+            let lease = broker
+                .acquire(auth, &owner, "camera-front", CaptureKind::Camera, far)
+                .unwrap();
+            broker.set_kill_switch(CaptureKind::Camera, true);
+            assert!(broker.renew(lease, &owner, far).is_err());
+        }
+
+        phase capture_teardown_revokes_exact_leases_and_is_audited;
+        {
+            {
+                let now = Instant::now();
+                let first = binding("meet", "work", "call-1");
+                let second = binding("meet", "work", "call-2");
+                let mut broker = broker();
+                let first_authorization = broker
+                    .authorize(&first, "mic-main", CaptureKind::Microphone, now)
+                    .unwrap();
+                let second_authorization = broker
+                    .authorize(&second, "camera-front", CaptureKind::Camera, now)
+                    .unwrap();
+                let first_lease = broker
+                    .acquire(
+                        first_authorization,
+                        &first,
+                        "mic-main",
+                        CaptureKind::Microphone,
+                        now,
+                    )
+                    .unwrap();
+                let second_lease = broker
+                    .acquire(
+                        second_authorization,
+                        &second,
+                        "camera-front",
+                        CaptureKind::Camera,
+                        now,
+                    )
+                    .unwrap();
+
+                broker.session_ended(&first);
+                assert!(matches!(
+                    broker.resolve(first_lease, &first, now),
+                    Err(CaptureBrokerError::InvalidLease)
+                ));
+                assert!(broker.resolve(second_lease, &second, now).is_ok());
+                assert!(broker.take_privacy_events().iter().any(|event| matches!(
+                    event,
+                    CapturePrivacyEvent::Stopped {
+                        lease_id,
+                        reason: CaptureRevocation::SessionEnded,
+                        ..
+                    } if *lease_id == first_lease
+                )));
             }
-        )));
+            {
+                let now = Instant::now();
+                let owner = binding("meet", "work", "call");
+                for reason in [
+                    CaptureRevocation::SessionEnded,
+                    CaptureRevocation::AppExited,
+                    CaptureRevocation::ScreenLocked,
+                    CaptureRevocation::DeviceLost,
+                    CaptureRevocation::KillSwitch,
+                    CaptureRevocation::Expired,
+                    CaptureRevocation::GrantRevoked,
+                ] {
+                    let mut broker = broker();
+                    let auth = broker
+                        .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
+                        .unwrap();
+                    let lease = broker
+                        .acquire(auth, &owner, "mic-main", CaptureKind::Microphone, now)
+                        .unwrap();
+                    match reason {
+                        CaptureRevocation::SessionEnded => broker.session_ended(&owner),
+                        CaptureRevocation::AppExited => broker.app_exited("meet", "work"),
+                        CaptureRevocation::ScreenLocked => broker.screen_locked(),
+                        CaptureRevocation::DeviceLost => {
+                            broker.remove_source("mic-main");
+                        }
+                        CaptureRevocation::KillSwitch => {
+                            broker.set_kill_switch(CaptureKind::Microphone, true);
+                        }
+                        CaptureRevocation::Expired => {
+                            broker.reap_expired(now + CAPTURE_LEASE_TTL + Duration::from_millis(1));
+                        }
+                        CaptureRevocation::GrantRevoked => {
+                            broker.revoke_unkept(CaptureRevocation::GrantRevoked, |_, _, _| false);
+                        }
+                        CaptureRevocation::Released | CaptureRevocation::Stopped => continue,
+                    }
+                    assert!(matches!(
+                        broker.resolve(lease, &owner, now),
+                        Err(CaptureBrokerError::InvalidLease)
+                    ));
+                    let events = broker.take_privacy_events();
+                    assert!(
+                        matches!(events.as_slice(), [CapturePrivacyEvent::Started { .. }, CapturePrivacyEvent::Stopped { reason: event_reason, .. }] if *event_reason == reason)
+                    );
+                }
+            }
+            {
+                let now = Instant::now();
+                let owner = binding("meet", "work", "call");
+                let mut broker = broker();
+                let old = broker
+                    .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
+                    .unwrap();
+                broker
+                    .register_source(
+                        "mic-main",
+                        "Replacement mic",
+                        CaptureKind::Microphone,
+                        LocalCaptureHandle::PipeWireNode(99),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    broker.acquire(old, &owner, "mic-main", CaptureKind::Microphone, now),
+                    Err(CaptureBrokerError::InvalidAuthorization)
+                );
+                for _ in 0..MAX_PRIVACY_EVENTS.saturating_add(8) {
+                    let auth = broker
+                        .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
+                        .unwrap();
+                    let lease = broker
+                        .acquire(auth, &owner, "mic-main", CaptureKind::Microphone, now)
+                        .unwrap();
+                    assert!(broker.release(lease));
+                }
+                assert_eq!(broker.events.len(), MAX_PRIVACY_EVENTS);
+            }
+        }
+
+        phase a_held_lease_lasts_until_stopped_and_is_listed_meanwhile;
+        {
+            let mut broker = broker();
+            let owner = binding("org.example.Share", "", "/session/1");
+            let now = Instant::now();
+            let auth = broker
+                .authorize(&owner, "share-audio", CaptureKind::SystemAudio, now)
+                .unwrap();
+            let lease = broker
+                .acquire_held(auth, &owner, "share-audio", CaptureKind::SystemAudio, now)
+                .unwrap();
+            let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let hook = std::sync::Arc::clone(&stopped);
+            broker
+                .stop_on_revoke(
+                    lease,
+                    &owner,
+                    now,
+                    std::sync::Arc::new(move || {
+                        hook.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }),
+                )
+                .unwrap();
+            let far = now + CAPTURE_LEASE_TTL * 4;
+            broker.reap_expired(far);
+            let live = broker.live();
+            assert_eq!(live.len(), 1, "a held lease does not expire");
+            assert_eq!(live[0].source, "System audio");
+            assert_eq!(broker.lease_of(&lease.to_opaque()), Some(lease));
+            assert_eq!(broker.lease_of("00"), None);
+            assert!(broker.stop(lease));
+            assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
+            assert!(broker.live().is_empty());
+            assert!(broker.take_privacy_events().iter().any(|event| matches!(
+                event,
+                CapturePrivacyEvent::Stopped {
+                    reason: CaptureRevocation::Stopped,
+                    ..
+                }
+            )));
+        }
     }
 }

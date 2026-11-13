@@ -246,34 +246,38 @@ mod tests {
         );
     }
 
-    #[test]
-    fn only_the_owning_frontend_closes_a_request_and_only_once() {
-        let requests = Requests::default();
-        let closes = Arc::new(AtomicUsize::new(0));
-        counted(
-            &requests,
-            "/org/freedesktop/portal/desktop/request/1_2/t",
-            ":1.7",
-            &closes,
-        );
-        assert!(!requests.close("/org/freedesktop/portal/desktop/request/1_2/t", ":1.8"));
-        assert!(requests.close("/org/freedesktop/portal/desktop/request/1_2/t", ":1.7"));
-        assert!(!requests.close("/org/freedesktop/portal/desktop/request/1_2/t", ":1.7"));
-        assert_eq!(closes.load(Ordering::SeqCst), 1);
-    }
+    tilo_test_env::scenario! {
+        fn a_request_belongs_to_its_frontend_by_path_and_closes_once;
 
-    #[test]
-    fn request_paths_stay_under_the_frontends_request_tree() {
-        assert!(valid_request_path(
-            "/org/freedesktop/portal/desktop/request/1_42/t1"
-        ));
-        assert!(!valid_request_path(
-            "/org/freedesktop/portal/desktop/session/1_42/t1"
-        ));
-        assert!(!valid_request_path("/org/example/request/1_42/t1"));
-        assert!(!valid_request_path(&format!(
-            "/org/freedesktop/portal/desktop/request/{}",
-            "a".repeat(600)
-        )));
+        phase only_the_owning_frontend_closes_a_request_and_only_once;
+        {
+            let requests = Requests::default();
+            let closes = Arc::new(AtomicUsize::new(0));
+            counted(
+                &requests,
+                "/org/freedesktop/portal/desktop/request/1_2/t",
+                ":1.7",
+                &closes,
+            );
+            assert!(!requests.close("/org/freedesktop/portal/desktop/request/1_2/t", ":1.8"));
+            assert!(requests.close("/org/freedesktop/portal/desktop/request/1_2/t", ":1.7"));
+            assert!(!requests.close("/org/freedesktop/portal/desktop/request/1_2/t", ":1.7"));
+            assert_eq!(closes.load(Ordering::SeqCst), 1);
+        }
+
+        phase request_paths_stay_under_the_frontends_request_tree;
+        {
+            assert!(valid_request_path(
+                "/org/freedesktop/portal/desktop/request/1_42/t1"
+            ));
+            assert!(!valid_request_path(
+                "/org/freedesktop/portal/desktop/session/1_42/t1"
+            ));
+            assert!(!valid_request_path("/org/example/request/1_42/t1"));
+            assert!(!valid_request_path(&format!(
+                "/org/freedesktop/portal/desktop/request/{}",
+                "a".repeat(600)
+            )));
+        }
     }
 }

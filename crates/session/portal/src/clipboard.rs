@@ -459,17 +459,45 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn types_and_payloads_are_bounded() {
-        assert!(valid_mime("text/plain"));
-        assert!(!valid_mime("text/plain\n"));
-        assert!(!valid_mime("not-a-mime"));
-        let (reader, mut writer) = UnixStream::pair().expect("pair");
-        let writing = std::thread::spawn(move || {
-            let _ = writer.write_all(&vec![0; MAX_TRANSFER_BYTES + 1]);
-        });
-        assert!(bounded_read(&reader).is_err());
-        writing.join().expect("written");
+    tilo_test_env::scenario! {
+        fn clipboard_transfers_are_bounded_and_end_with_their_session;
+
+        phase types_and_payloads_are_bounded;
+        {
+            assert!(valid_mime("text/plain"));
+            assert!(!valid_mime("text/plain\n"));
+            assert!(!valid_mime("not-a-mime"));
+            let (reader, mut writer) = UnixStream::pair().expect("pair");
+            let writing = std::thread::spawn(move || {
+                let _ = writer.write_all(&vec![0; MAX_TRANSFER_BYTES + 1]);
+            });
+            assert!(bounded_read(&reader).is_err());
+            writing.join().expect("written");
+        }
+
+        phase an_ended_session_takes_its_offer_off_the_desktop;
+        {
+            let sessions = Sessions::default();
+            let clipboards = Clipboards::new(&sessions, Remotes::default(), InputCaptures::default());
+            let cleared = Arc::new(Cleared(AtomicBool::new(false)));
+            clipboards.set(Arc::clone(&cleared) as Arc<dyn Clipboard>);
+            let path = "/org/freedesktop/portal/desktop/session/1_2/r";
+            {
+                let mut state = clipboards.state.lock_recover();
+                state.offers.insert(path.into(), vec!["image/png".into()]);
+                state.owner = Some(path.into());
+            }
+            assert!(clipboards.ask_transfer(path, "image/png").is_some());
+            assert!(
+                clipboards.ask_transfer(path, "text/plain").is_none(),
+                "not offered"
+            );
+            clipboards.session_ended(path);
+            let state = clipboards.state.lock_recover();
+            assert!(state.offers.is_empty() && state.asked.is_empty() && state.owner.is_none());
+            drop(state);
+            assert!(cleared.0.load(Ordering::SeqCst));
+        }
     }
 
     struct Cleared(AtomicBool);
@@ -490,29 +518,5 @@ mod tests {
         fn clear(&self) {
             self.0.store(true, Ordering::SeqCst);
         }
-    }
-
-    #[test]
-    fn an_ended_session_takes_its_offer_off_the_desktop() {
-        let sessions = Sessions::default();
-        let clipboards = Clipboards::new(&sessions, Remotes::default(), InputCaptures::default());
-        let cleared = Arc::new(Cleared(AtomicBool::new(false)));
-        clipboards.set(Arc::clone(&cleared) as Arc<dyn Clipboard>);
-        let path = "/org/freedesktop/portal/desktop/session/1_2/r";
-        {
-            let mut state = clipboards.state.lock_recover();
-            state.offers.insert(path.into(), vec!["image/png".into()]);
-            state.owner = Some(path.into());
-        }
-        assert!(clipboards.ask_transfer(path, "image/png").is_some());
-        assert!(
-            clipboards.ask_transfer(path, "text/plain").is_none(),
-            "not offered"
-        );
-        clipboards.session_ended(path);
-        let state = clipboards.state.lock_recover();
-        assert!(state.offers.is_empty() && state.asked.is_empty() && state.owner.is_none());
-        drop(state);
-        assert!(cleared.0.load(Ordering::SeqCst));
     }
 }

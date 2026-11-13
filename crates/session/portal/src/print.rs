@@ -643,77 +643,81 @@ mod tests {
     use super::*;
     use zbus::zvariant::Type as _;
 
-    #[test]
-    fn the_introspection_advertises_the_arguments_decoded() {
-        let signature = |method| dispatch::advertised_in_signature(PRINT_INTROSPECTION, method);
-        assert_eq!(
-            format!("({})", signature("PreparePrint")),
-            PreparePrintArgs::SIGNATURE.to_string()
-        );
-        assert_eq!(
-            format!("({})", signature("Print")),
-            PrintArgs::SIGNATURE.to_string()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_print_request_is_bounded_spooled_and_printed_once_per_token;
 
-    #[test]
-    fn titles_lose_controls_bidi_and_dashes() {
-        assert_eq!(sanitise_title("a\nb").as_deref(), Some("a b"));
-        assert_eq!(sanitise_title("--force").as_deref(), Some("force"));
-        assert_eq!(
-            sanitise_title("fdp\u{202E}.exe").as_deref(),
-            Some("fdp .exe")
-        );
-        assert_eq!(sanitise_title(" \u{7} ").as_deref(), None);
-        assert!(sanitise_title(&"é".repeat(300)).unwrap().len() <= MAX_TITLE_BYTES);
-    }
+        phase the_introspection_advertises_the_arguments_decoded;
+        {
+            let signature = |method| dispatch::advertised_in_signature(PRINT_INTROSPECTION, method);
+            assert_eq!(
+                format!("({})", signature("PreparePrint")),
+                PreparePrintArgs::SIGNATURE.to_string()
+            );
+            assert_eq!(
+                format!("({})", signature("Print")),
+                PrintArgs::SIGNATURE.to_string()
+            );
+        }
 
-    #[test]
-    fn destinations_and_copies_are_bounded() {
-        assert!(valid_destination("Office_LaserJet-2"));
-        assert!(!valid_destination("-oraw"));
-        assert!(!valid_destination("a b"));
-        assert_eq!(clamp_copies(None), 1);
-        assert_eq!(clamp_copies(Some(0)), 1);
-        assert_eq!(clamp_copies(Some(u32::MAX)), MAX_COPIES);
-        let gtk = HashMap::from([(
-            "n-copies".to_owned(),
-            OwnedValue::from(zbus::zvariant::Str::from("3")),
-        )]);
-        assert_eq!(copies_of(&gtk), Some(3));
-    }
+        phase titles_lose_controls_bidi_and_dashes;
+        {
+            assert_eq!(sanitise_title("a\nb").as_deref(), Some("a b"));
+            assert_eq!(sanitise_title("--force").as_deref(), Some("force"));
+            assert_eq!(
+                sanitise_title("fdp\u{202E}.exe").as_deref(),
+                Some("fdp .exe")
+            );
+            assert_eq!(sanitise_title(" \u{7} ").as_deref(), None);
+            assert!(sanitise_title(&"é".repeat(300)).unwrap().len() <= MAX_TITLE_BYTES);
+        }
 
-    #[test]
-    fn a_token_prints_once_and_only_for_its_app() {
-        let tokens = Tokens::default();
-        let notes = PortalCaller::new("so.tilo.notes");
-        let token = tokens.mint(Prepared {
-            caller: notes.clone(),
-            destination: "Office".into(),
-            copies: 2,
-            issued: Instant::now(),
-        });
-        assert_ne!(token, 0);
-        assert!(
-            tokens
-                .redeem(token, &PortalCaller::new("so.tilo.mail"))
-                .is_none()
-        );
-        assert_eq!(tokens.redeem(token, &notes).map(|job| job.copies), Some(2));
-        assert!(tokens.redeem(token, &notes).is_none(), "used once");
-    }
+        phase destinations_and_copies_are_bounded;
+        {
+            assert!(valid_destination("Office_LaserJet-2"));
+            assert!(!valid_destination("-oraw"));
+            assert!(!valid_destination("a b"));
+            assert_eq!(clamp_copies(None), 1);
+            assert_eq!(clamp_copies(Some(0)), 1);
+            assert_eq!(clamp_copies(Some(u32::MAX)), MAX_COPIES);
+            let gtk = HashMap::from([(
+                "n-copies".to_owned(),
+                OwnedValue::from(zbus::zvariant::Str::from("3")),
+            )]);
+            assert_eq!(copies_of(&gtk), Some(3));
+        }
 
-    #[test]
-    fn only_a_regular_file_is_spooled() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("doc.pdf");
-        std::fs::write(&path, b"%PDF-1.7").unwrap();
-        let file = std::fs::File::open(&path).unwrap();
-        assert_eq!(spool_from_fd(file.into()).unwrap(), b"%PDF-1.7");
-        let (_read, write) = std::io::pipe().unwrap();
-        assert!(spool_from_fd(write.into()).is_err());
-        let empty = dir.path().join("empty");
-        std::fs::write(&empty, b"").unwrap();
-        assert!(spool_from_fd(std::fs::File::open(&empty).unwrap().into()).is_err());
+        phase a_token_prints_once_and_only_for_its_app;
+        {
+            let tokens = Tokens::default();
+            let notes = PortalCaller::new("so.tilo.notes");
+            let token = tokens.mint(Prepared {
+                caller: notes.clone(),
+                destination: "Office".into(),
+                copies: 2,
+                issued: Instant::now(),
+            });
+            assert_ne!(token, 0);
+            assert!(
+                tokens
+                    .redeem(token, &PortalCaller::new("so.tilo.mail"))
+                    .is_none()
+            );
+            assert_eq!(tokens.redeem(token, &notes).map(|job| job.copies), Some(2));
+            assert!(tokens.redeem(token, &notes).is_none(), "used once");
+        }
+
+        phase only_a_regular_file_is_spooled;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("doc.pdf");
+            std::fs::write(&path, b"%PDF-1.7").unwrap();
+            let file = std::fs::File::open(&path).unwrap();
+            assert_eq!(spool_from_fd(file.into()).unwrap(), b"%PDF-1.7");
+            let (_read, write) = std::io::pipe().unwrap();
+            assert!(spool_from_fd(write.into()).is_err());
+            let empty = dir.path().join("empty");
+            std::fs::write(&empty, b"").unwrap();
+            assert!(spool_from_fd(std::fs::File::open(&empty).unwrap().into()).is_err());
+        }
     }
 }
