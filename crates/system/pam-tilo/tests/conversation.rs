@@ -397,32 +397,38 @@ fn the_daemons_answer_to_a_secret_is_the_answer_of_the_stack() {
 /// of its own and is named as that test was.
 #[test]
 fn without_the_daemon_nothing_is_asked_and_nothing_else_answers() {
-    let rows: [(&str, &str, fn(&Libpam) -> Phase); 2] = [
-        (
-            "without_the_daemon_nothing_else_checks_a_secret_and_nothing_is_asked",
-            SIGN_IN,
-            authenticate,
-        ),
-        (
-            "without_the_daemon_no_old_password_is_changed_either",
-            PASSWORD,
-            chauthtok,
-        ),
+    struct Row {
+        case: &'static str,
+        stack: &'static str,
+        phase: fn(&Libpam) -> Phase,
+    }
+    let rows = [
+        Row {
+            case: "without_the_daemon_nothing_else_checks_a_secret_and_nothing_is_asked",
+            stack: SIGN_IN,
+            phase: authenticate,
+        },
+        Row {
+            case: "without_the_daemon_no_old_password_is_changed_either",
+            stack: PASSWORD,
+            phase: chauthtok,
+        },
     ];
-    for (case, stack, phase) in rows {
+    for row in rows {
         let dir = tempfile::tempdir().unwrap();
         let out = run(
             dir.path(),
             &dir.path().join("no-such-socket"),
-            stack,
+            row.stack,
             "ada",
             &[],
-            phase,
+            row.phase,
         );
-        assert_eq!(out.status, PAM_AUTHINFO_UNAVAIL, "{case}");
+        assert_eq!(out.status, PAM_AUTHINFO_UNAVAIL, "{}", row.case);
         assert!(
             out.person.prompts.is_empty(),
-            "{case}: the module asked before knowing it could check"
+            "{}: the module asked before knowing it could check",
+            row.case
         );
     }
 }
