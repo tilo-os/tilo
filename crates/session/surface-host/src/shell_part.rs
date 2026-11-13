@@ -125,6 +125,10 @@ const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/strips.tl"),
     ),
     (
+        "style_settings.tl",
+        include_str!("../../../../apps/tl/shell/style_settings.tl"),
+    ),
+    (
         "switcher.tl",
         include_str!("../../../../apps/tl/shell/switcher.tl"),
     ),
