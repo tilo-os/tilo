@@ -1501,108 +1501,112 @@ mod tests {
         assert!(!answer_is_notable(StatusCode::PARTIAL_CONTENT));
     }
 
-    #[test]
-    fn private_and_reserved_addresses_are_not_public() {
-        for address in [
-            "0.0.0.0",
-            "10.1.2.3",
-            "100.64.0.1",
-            "127.0.0.1",
-            "169.254.169.254",
-            "172.16.0.1",
-            "172.31.255.255",
-            "192.168.1.1",
-            "192.0.2.1",
-            "198.18.0.1",
-            "224.0.0.1",
-            "255.255.255.255",
-            "::",
-            "::1",
-            "::ffff:127.0.0.1",
-            "::ffff:10.0.0.1",
-            "64:ff9b::a00:1",
-            "2002:a00:1::",
-            "fc00::1",
-            "fd12:3456::1",
-            "fe80::1",
-            "ff02::1",
-            "2001:db8::1",
-            "2001::1",
-        ] {
-            assert!(
-                !is_public(address.parse().unwrap()),
-                "{address} must not be public"
-            );
-        }
-        for address in [
-            "1.1.1.1",
-            "93.184.216.34",
-            "172.32.0.1",
-            "100.128.0.1",
-            "2606:4700:4700::1111",
-            "::ffff:1.1.1.1",
-            "64:ff9b::101:101",
-        ] {
-            assert!(is_public(address.parse().unwrap()), "{address} is public");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn the_proxy_host_guards_where_a_request_goes_what_it_carries_and_how_often;
 
-    #[test]
-    fn the_page_credentials_and_caller_address_never_leave() {
-        let mut incoming = HeaderMap::new();
-        for (name, value) in [
-            ("x-tilo-proxy", "1"),
-            ("x-tilo-session", "secret"),
-            ("cookie", "page=1"),
-            ("origin", "https://tilo.example"),
-            ("referer", "https://tilo.example/"),
-            ("x-forwarded-for", "203.0.113.9"),
-            ("cf-connecting-ip", "203.0.113.9"),
-            ("sec-fetch-mode", "cors"),
-            ("user-agent", "Browser"),
-            ("accept", "application/json"),
-            ("authorization", "Bearer app"),
-            ("x-tilo-forward-user-agent", "App/1"),
-            ("x-tilo-forward-cookie", "app=2"),
-            ("x-tilo-forward-x-tilo-session", "smuggled"),
-            ("x-tilo-forward-host", "internal"),
-        ] {
-            incoming.append(name, HeaderValue::from_static(value));
+        phase private_and_reserved_addresses_are_not_public;
+        {
+            for address in [
+                "0.0.0.0",
+                "10.1.2.3",
+                "100.64.0.1",
+                "127.0.0.1",
+                "169.254.169.254",
+                "172.16.0.1",
+                "172.31.255.255",
+                "192.168.1.1",
+                "192.0.2.1",
+                "198.18.0.1",
+                "224.0.0.1",
+                "255.255.255.255",
+                "::",
+                "::1",
+                "::ffff:127.0.0.1",
+                "::ffff:10.0.0.1",
+                "64:ff9b::a00:1",
+                "2002:a00:1::",
+                "fc00::1",
+                "fd12:3456::1",
+                "fe80::1",
+                "ff02::1",
+                "2001:db8::1",
+                "2001::1",
+            ] {
+                assert!(
+                    !is_public(address.parse().unwrap()),
+                    "{address} must not be public"
+                );
+            }
+            for address in [
+                "1.1.1.1",
+                "93.184.216.34",
+                "172.32.0.1",
+                "100.128.0.1",
+                "2606:4700:4700::1111",
+                "::ffff:1.1.1.1",
+                "64:ff9b::101:101",
+            ] {
+                assert!(is_public(address.parse().unwrap()), "{address} is public");
+            }
         }
-        let sent = outgoing_headers(&incoming);
-        assert_eq!(sent["user-agent"], "App/1");
-        assert_eq!(sent.get_all("user-agent").iter().count(), 1);
-        assert_eq!(sent["cookie"], "app=2");
-        assert_eq!(sent["accept"], "application/json");
-        assert_eq!(sent["authorization"], "Bearer app");
-        for name in [
-            "x-tilo-proxy",
-            "x-tilo-session",
-            "origin",
-            "referer",
-            "x-forwarded-for",
-            "cf-connecting-ip",
-            "sec-fetch-mode",
-            "host",
-        ] {
-            assert!(!sent.contains_key(name), "{name} must not be sent");
-        }
-    }
 
-    #[test]
-    fn a_device_out_of_requests_waits_for_its_bucket() {
-        let rate = Rate {
-            burst: 2.0,
-            per_minute: 60.0,
-        };
-        let mut buckets = Buckets::new(rate);
-        let now = Instant::now();
-        let device = Caller([1; 32]);
-        assert!(buckets.take(&device, 1.0, now).is_ok());
-        assert!(buckets.take(&device, 1.0, now).is_ok());
-        assert_eq!(buckets.take(&device, 1.0, now), Err(Duration::from_secs(1)));
-        assert!(buckets.take(&Caller([2; 32]), 1.0, now).is_ok());
-        let later = now.checked_add(Duration::from_secs(1)).unwrap();
-        assert!(buckets.take(&device, 1.0, later).is_ok());
+        phase the_page_credentials_and_caller_address_never_leave;
+        {
+            let mut incoming = HeaderMap::new();
+            for (name, value) in [
+                ("x-tilo-proxy", "1"),
+                ("x-tilo-session", "secret"),
+                ("cookie", "page=1"),
+                ("origin", "https://tilo.example"),
+                ("referer", "https://tilo.example/"),
+                ("x-forwarded-for", "203.0.113.9"),
+                ("cf-connecting-ip", "203.0.113.9"),
+                ("sec-fetch-mode", "cors"),
+                ("user-agent", "Browser"),
+                ("accept", "application/json"),
+                ("authorization", "Bearer app"),
+                ("x-tilo-forward-user-agent", "App/1"),
+                ("x-tilo-forward-cookie", "app=2"),
+                ("x-tilo-forward-x-tilo-session", "smuggled"),
+                ("x-tilo-forward-host", "internal"),
+            ] {
+                incoming.append(name, HeaderValue::from_static(value));
+            }
+            let sent = outgoing_headers(&incoming);
+            assert_eq!(sent["user-agent"], "App/1");
+            assert_eq!(sent.get_all("user-agent").iter().count(), 1);
+            assert_eq!(sent["cookie"], "app=2");
+            assert_eq!(sent["accept"], "application/json");
+            assert_eq!(sent["authorization"], "Bearer app");
+            for name in [
+                "x-tilo-proxy",
+                "x-tilo-session",
+                "origin",
+                "referer",
+                "x-forwarded-for",
+                "cf-connecting-ip",
+                "sec-fetch-mode",
+                "host",
+            ] {
+                assert!(!sent.contains_key(name), "{name} must not be sent");
+            }
+        }
+
+        phase a_device_out_of_requests_waits_for_its_bucket;
+        {
+            let rate = Rate {
+                burst: 2.0,
+                per_minute: 60.0,
+            };
+            let mut buckets = Buckets::new(rate);
+            let now = Instant::now();
+            let device = Caller([1; 32]);
+            assert!(buckets.take(&device, 1.0, now).is_ok());
+            assert!(buckets.take(&device, 1.0, now).is_ok());
+            assert_eq!(buckets.take(&device, 1.0, now), Err(Duration::from_secs(1)));
+            assert!(buckets.take(&Caller([2; 32]), 1.0, now).is_ok());
+            let later = now.checked_add(Duration::from_secs(1)).unwrap();
+            assert!(buckets.take(&device, 1.0, later).is_ok());
+        }
     }
 }
