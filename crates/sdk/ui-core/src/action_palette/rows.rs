@@ -503,35 +503,39 @@ mod tests {
         entry
     }
 
-    #[test]
-    fn a_declared_shortcut_shows_in_the_palette_as_the_platforms_keys() {
-        let entry = row_with("Ctrl+Enter");
-        let linux = PlatformConventions::new(Platform::Linux);
-        assert_eq!(
-            entry.keycap_labels(linux),
-            Some(vec!["Ctrl".to_owned(), "Enter".to_owned()]),
-            "the declared chord, key in its legend"
-        );
-        assert_eq!(entry.keybinding_label(linux).as_deref(), Some("Ctrl+Enter"));
-        assert_eq!(
-            entry
-                .keybinding_label(PlatformConventions::new(Platform::MacOs))
-                .as_deref(),
-            Some("⌘↩"),
-            "the command modifier a Mac presses, as a Mac paints it"
-        );
-        assert!(entry.keybinding.is_none(), "shown as a shortcut, not text");
-    }
+    tilo_test_env::scenario! {
+        fn a_declared_shortcut_shows_as_keys_or_stays_text;
 
-    #[test]
-    fn a_bare_key_is_a_shortcut_and_other_text_stays_a_keybinding() {
-        let key = row_with("e");
-        assert_eq!(
-            key.keycap_labels(PlatformConventions::new(Platform::Linux)),
-            Some(vec!["E".to_owned()])
-        );
-        let text = row_with("Double click");
-        assert_eq!(text.keybinding.as_deref(), Some("Double click"));
-        assert!(text.shortcut.is_none());
+        phase a_declared_shortcut_shows_in_the_palette_as_the_platforms_keys;
+        {
+            let entry = row_with("Ctrl+Enter");
+            let linux = PlatformConventions::new(Platform::Linux);
+            assert_eq!(
+                entry.keycap_labels(linux),
+                Some(vec!["Ctrl".to_owned(), "Enter".to_owned()]),
+                "the declared chord, key in its legend"
+            );
+            assert_eq!(entry.keybinding_label(linux).as_deref(), Some("Ctrl+Enter"));
+            assert_eq!(
+                entry
+                    .keybinding_label(PlatformConventions::new(Platform::MacOs))
+                    .as_deref(),
+                Some("⌘↩"),
+                "the command modifier a Mac presses, as a Mac paints it"
+            );
+            assert!(entry.keybinding.is_none(), "shown as a shortcut, not text");
+        }
+
+        phase a_bare_key_is_a_shortcut_and_other_text_stays_a_keybinding;
+        {
+            let key = row_with("e");
+            assert_eq!(
+                key.keycap_labels(PlatformConventions::new(Platform::Linux)),
+                Some(vec!["E".to_owned()])
+            );
+            let text = row_with("Double click");
+            assert_eq!(text.keybinding.as_deref(), Some("Double click"));
+            assert!(text.shortcut.is_none());
+        }
     }
 }

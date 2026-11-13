@@ -1,251 +1,255 @@
 use std::sync::atomic::Ordering;
 
-#[test]
-fn palette_search_is_budgeted_grouped_and_reaches_exact_matches() {
-    let _settled = crate::motion::testing::settled();
+tilo_test_env::scenario! {
+    fn palette_search_is_budgeted_and_takes_committed_text;
+
+    phase palette_search_is_budgeted_grouped_and_reaches_exact_matches;
     {
-        let materialized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut palette =
-            ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        let _settled = crate::motion::testing::settled();
+        {
+            let materialized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut palette =
+                ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                    SearchField::with_language("en_US")
+                });
+            palette.load_open_resources(&[]);
+            palette.set_providers(vec![Box::new(LazyCorpus {
+                materialized: Arc::clone(&materialized),
+            })]);
+            materialized.store(0, Ordering::Relaxed);
+            palette.open();
+            assert_eq!(materialized.load(Ordering::Relaxed), PROVIDER_HIT_BUDGET);
+            assert_eq!(palette.len(), PER_GROUP_CAP);
+            palette.activate_selected();
+            assert!(
+                palette.take_operation().is_none(),
+                "provider discovery must not become dispatch authority"
+            );
+        }
+
+        {
+            let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
                 SearchField::with_language("en_US")
             });
-        palette.load_open_resources(&[]);
-        palette.set_providers(vec![Box::new(LazyCorpus {
-            materialized: Arc::clone(&materialized),
-        })]);
-        materialized.store(0, Ordering::Relaxed);
-        palette.open();
-        assert_eq!(materialized.load(Ordering::Relaxed), PROVIDER_HIT_BUDGET);
-        assert_eq!(palette.len(), PER_GROUP_CAP);
-        palette.activate_selected();
-        assert!(
-            palette.take_operation().is_none(),
-            "provider discovery must not become dispatch authority"
-        );
+            p.load_open_resources(&[thing_resource()]);
+            p.set_providers(vec![Box::new(People)]);
+            p.open();
+
+            let groups: Vec<String> = p.results.groups().iter().map(|g| g.kind.clone()).collect();
+            assert!(
+                groups.contains(&ACTIONS_KIND.to_string()),
+                "Actions group present: {groups:?}"
+            );
+            assert!(
+                groups.contains(&"People".to_string()),
+                "content group present: {groups:?}"
+            );
+            assert_eq!(groups.last(), Some(&ACTIONS_KIND.to_owned()), "{groups:?}");
+
+            let labels = p.result_labels();
+            assert!(labels.iter().any(|l| l.contains("Mark done")), "{labels:?}");
+            assert!(labels.iter().any(|l| l == "Ada Lovelace"), "{labels:?}");
+        }
     }
 
+    phase progressive_palette_reaches_exact_match_beyond_one_hundred_thousand_candidates;
     {
-        let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-            SearchField::with_language("en_US")
-        });
-        p.load_open_resources(&[thing_resource()]);
-        p.set_providers(vec![Box::new(People)]);
-        p.open();
-
-        let groups: Vec<String> = p.results.groups().iter().map(|g| g.kind.clone()).collect();
-        assert!(
-            groups.contains(&ACTIONS_KIND.to_string()),
-            "Actions group present: {groups:?}"
-        );
-        assert!(
-            groups.contains(&"People".to_string()),
-            "content group present: {groups:?}"
-        );
-        assert_eq!(groups.last(), Some(&ACTIONS_KIND.to_owned()), "{groups:?}");
-
-        let labels = p.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Mark done")), "{labels:?}");
-        assert!(labels.iter().any(|l| l == "Ada Lovelace"), "{labels:?}");
-    }
-}
-
-#[test]
-fn progressive_palette_reaches_exact_match_beyond_one_hundred_thousand_candidates() {
-    let _settled = crate::motion::testing::settled();
-    let catalog = crate::search::SearchCatalog::new("Adversarial corpus");
-    for id in 0..100_000usize {
-        let resource_id = format!("item:{id:06}");
+        let _settled = crate::motion::testing::settled();
+        let catalog = crate::search::SearchCatalog::new("Adversarial corpus");
+        for id in 0..100_000usize {
+            let resource_id = format!("item:{id:06}");
+            catalog
+                .upsert_record(
+                    crate::search::SearchRecord::new(
+                        &resource_id,
+                        SearchResult::for_action(
+                            "Items",
+                            format!("Broad candidate {id}"),
+                            tilo_actions::ActionAddress::new(&resource_id, "open"),
+                        ),
+                    )
+                    .field("abc c d", crate::search::FieldWeight::UNRANKED),
+                )
+                .expect("valid broad candidate");
+        }
+        let target_id = "item:999999";
         catalog
             .upsert_record(
                 crate::search::SearchRecord::new(
-                    &resource_id,
+                    target_id,
                     SearchResult::for_action(
                         "Items",
-                        format!("Broad candidate {id}"),
-                        tilo_actions::ActionAddress::new(&resource_id, "open"),
+                        "The only exact abc d result",
+                        tilo_actions::ActionAddress::new(target_id, "open"),
                     ),
                 )
-                .field("abc c d", crate::search::FieldWeight::UNRANKED),
+                .field("abc d", crate::search::FieldWeight::UNRANKED),
             )
-            .expect("valid broad candidate");
-    }
-    let target_id = "item:999999";
-    catalog
-        .upsert_record(
-            crate::search::SearchRecord::new(
-                target_id,
-                SearchResult::for_action(
-                    "Items",
-                    "The only exact abc d result",
-                    tilo_actions::ActionAddress::new(target_id, "open"),
-                ),
-            )
-            .field("abc d", crate::search::FieldWeight::UNRANKED),
-        )
-        .expect("valid exact target");
+            .expect("valid exact target");
 
-    let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-        SearchField::with_language("en_US")
-    });
-    palette.set_providers(vec![Box::new(catalog)]);
-    // The whitespace-bearing query intentionally cannot take the token
-    // fast path. Every false candidate shares its n-grams, so this proves
-    // progressive exact verification continues across work pages.
-    palette.set_query("abc d");
-    let generation = palette.search_generation;
-    let mut ticks = 0usize;
-    while !palette
-        .result_labels()
-        .iter()
-        .any(|label| label == "The only exact abc d result")
-    {
-        let progress = palette.advance_search_page();
-        assert!(progress.inspected <= PROVIDER_HIT_BUDGET);
-        assert_eq!(progress.generation, generation);
-        ticks = ticks.saturating_add(1);
-        assert!(progress.pending || ticks <= 3_126, "target was skipped");
-        assert!(ticks <= 3_126, "search did not finish in bounded pages");
-    }
-    assert!(
-        palette
-            .referenced_action_resource_ids()
-            .iter()
-            .any(|resource_id| resource_id == target_id),
-        "the exact result must retain its canonical resource action"
-    );
-    assert!(
-        palette
-            .take_search_announcement()
-            .is_some_and(|announcement| announcement.contains("result"))
-    );
-
-    palette.set_query("a different query");
-    assert_ne!(palette.search_generation, generation);
-    assert!(
-        !palette
+        let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("en_US")
+        });
+        palette.set_providers(vec![Box::new(catalog)]);
+        // The whitespace-bearing query intentionally cannot take the token
+        // fast path. Every false candidate shares its n-grams, so this proves
+        // progressive exact verification continues across work pages.
+        palette.set_query("abc d");
+        let generation = palette.search_generation;
+        let mut ticks = 0usize;
+        while !palette
             .result_labels()
             .iter()
             .any(|label| label == "The only exact abc d result")
-    );
-    let restarted = palette.advance_search_page();
-    assert_eq!(restarted.generation, palette.search_generation);
-    assert!(restarted.inspected <= PROVIDER_HIT_BUDGET);
-}
+        {
+            let progress = palette.advance_search_page();
+            assert!(progress.inspected <= PROVIDER_HIT_BUDGET);
+            assert_eq!(progress.generation, generation);
+            ticks = ticks.saturating_add(1);
+            assert!(progress.pending || ticks <= 3_126, "target was skipped");
+            assert!(ticks <= 3_126, "search did not finish in bounded pages");
+        }
+        assert!(
+            palette
+                .referenced_action_resource_ids()
+                .iter()
+                .any(|resource_id| resource_id == target_id),
+            "the exact result must retain its canonical resource action"
+        );
+        assert!(
+            palette
+                .take_search_announcement()
+                .is_some_and(|announcement| announcement.contains("result"))
+        );
 
-#[test]
-fn committed_text_goes_into_the_query_field_at_the_caret() {
-    let _settled = crate::motion::testing::settled();
-    let key = [7u8; 32];
-    let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-        SearchField::with_language("en_US")
-    });
-    assert!(
-        palette.query_field(&key).is_none(),
-        "a closed palette has no field to write into"
-    );
-    assert!(!palette.commit_query_text("nobody"), "and takes nothing");
+        palette.set_query("a different query");
+        assert_ne!(palette.search_generation, generation);
+        assert!(
+            !palette
+                .result_labels()
+                .iter()
+                .any(|label| label == "The only exact abc d result")
+        );
+        let restarted = palette.advance_search_page();
+        assert_eq!(restarted.generation, palette.search_generation);
+        assert!(restarted.inspected <= PROVIDER_HIT_BUDGET);
+    }
 
-    palette.open();
-    palette.set_query("hello");
-    let field = palette
-        .query_field(&key)
-        .expect("the open palette's query field takes committed text");
-    assert!(!field.secret);
-    assert!(palette.commit_query_text(" world"));
-    assert_eq!(palette.query(), "hello world");
+    phase committed_text_goes_into_the_query_field_at_the_caret;
+    {
+        let _settled = crate::motion::testing::settled();
+        let key = [7u8; 32];
+        let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("en_US")
+        });
+        assert!(
+            palette.query_field(&key).is_none(),
+            "a closed palette has no field to write into"
+        );
+        assert!(!palette.commit_query_text("nobody"), "and takes nothing");
 
-    let moved = palette.query_field(&key).expect("still the field");
-    assert_ne!(
-        moved.fingerprint, field.fingerprint,
-        "the field's text changed, so its revision did"
-    );
+        palette.open();
+        palette.set_query("hello");
+        let field = palette
+            .query_field(&key)
+            .expect("the open palette's query field takes committed text");
+        assert!(!field.secret);
+        assert!(palette.commit_query_text(" world"));
+        assert_eq!(palette.query(), "hello world");
 
-    palette.close();
-    assert!(palette.query_field(&key).is_none());
-    assert!(!palette.commit_query_text("late"), "it closed meanwhile");
-}
+        let moved = palette.query_field(&key).expect("still the field");
+        assert_ne!(
+            moved.fingerprint, field.fingerprint,
+            "the field's text changed, so its revision did"
+        );
 
-#[test]
-fn committed_text_narrows_the_rows_a_host_fed() {
-    let _settled = crate::motion::testing::settled();
-    let key = [7u8; 32];
-    let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-        SearchField::with_language("en_US")
-    });
-    palette.set_entries(vec![
-        CommandEntry::new("sheets", "Sheets"),
-        CommandEntry::new("notes", "Notes"),
-        CommandEntry::new("sheet music", "Sheet music"),
-    ]);
-    palette.open();
-    assert!(
-        palette.query_field(&key).is_some(),
-        "a palette over a host's rows has its own query field"
-    );
+        palette.close();
+        assert!(palette.query_field(&key).is_none());
+        assert!(!palette.commit_query_text("late"), "it closed meanwhile");
+    }
 
-    assert!(palette.commit_query_text("sheets"));
-    assert_eq!(palette.query(), "sheets");
-    let shown: Vec<&str> = palette
-        .visible_entries()
-        .iter()
-        .map(|entry| entry.id.as_str())
-        .collect();
-    assert!(
-        !shown.contains(&"notes"),
-        "the rows narrowed by what was committed: {shown:?}"
-    );
+    phase committed_text_narrows_the_rows_a_host_fed;
+    {
+        let _settled = crate::motion::testing::settled();
+        let key = [7u8; 32];
+        let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("en_US")
+        });
+        palette.set_entries(vec![
+            CommandEntry::new("sheets", "Sheets"),
+            CommandEntry::new("notes", "Notes"),
+            CommandEntry::new("sheet music", "Sheet music"),
+        ]);
+        palette.open();
+        assert!(
+            palette.query_field(&key).is_some(),
+            "a palette over a host's rows has its own query field"
+        );
 
-    let moved = palette.query_field(&key).expect("still the field");
-    assert!(palette.commit_query_text(" notes"));
-    assert_eq!(palette.query(), "sheets notes");
-    assert_ne!(palette.query_field(&key), Some(moved));
-}
+        assert!(palette.commit_query_text("sheets"));
+        assert_eq!(palette.query(), "sheets");
+        let shown: Vec<&str> = palette
+            .visible_entries()
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect();
+        assert!(
+            !shown.contains(&"notes"),
+            "the rows narrowed by what was committed: {shown:?}"
+        );
 
-/// A query nothing matches leaves a line that names what was typed, and says
-/// what to try instead — never a bare "no matches", and never that hint on a
-/// card where nothing has been typed yet.
-#[test]
-fn a_query_that_matches_nothing_is_named_in_the_empty_list() {
-    let _settled = crate::motion::testing::settled();
-    let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-        SearchField::with_language("en_US")
-    });
-    palette.open();
-    assert_eq!(
-        palette.empty_text(),
-        "Nothing to show",
-        "nothing typed yet, and nothing to show for it"
-    );
-    assert_eq!(
-        palette.empty_hint(),
-        None,
-        "a card with nothing typed does not talk about spelling"
-    );
-    palette.set_query("zzzz");
-    assert!(palette.is_empty());
-    assert_eq!(
-        palette.empty_text(),
-        "No results for \u{201c}zzzz\u{201d}",
-        "the line names the query"
-    );
-    assert_eq!(
-        palette.empty_hint(),
-        Some("Check the spelling, or try another word")
-    );
+        let moved = palette.query_field(&key).expect("still the field");
+        assert!(palette.commit_query_text(" notes"));
+        assert_eq!(palette.query(), "sheets notes");
+        assert_ne!(palette.query_field(&key), Some(moved));
+    }
 
-    let mut fed = ActionPalette::rows(vec![
-        CommandEntry::new("sheets", "Sheets").group("Apps"),
-        CommandEntry::new("notes", "Notes").group("Apps"),
-    ]);
-    fed.open();
-    fed.set_query("zzzz");
-    assert!(fed.visible_entries().is_empty());
-    assert_eq!(fed.empty_text(), "No results for \u{201c}zzzz\u{201d}");
-    assert_eq!(
-        fed.empty_hint(),
-        Some("Check the spelling, or try another word")
-    );
-    fed.set_query("");
-    assert_eq!(fed.empty_text(), "Nothing to show");
-    assert_eq!(fed.empty_hint(), None);
+    // A query nothing matches leaves a line that names what was typed, and says
+    // what to try instead — never a bare "no matches", and never that hint on a
+    // card where nothing has been typed yet.
+    phase a_query_that_matches_nothing_is_named_in_the_empty_list;
+    {
+        let _settled = crate::motion::testing::settled();
+        let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("en_US")
+        });
+        palette.open();
+        assert_eq!(
+            palette.empty_text(),
+            "Nothing to show",
+            "nothing typed yet, and nothing to show for it"
+        );
+        assert_eq!(
+            palette.empty_hint(),
+            None,
+            "a card with nothing typed does not talk about spelling"
+        );
+        palette.set_query("zzzz");
+        assert!(palette.is_empty());
+        assert_eq!(
+            palette.empty_text(),
+            "No results for \u{201c}zzzz\u{201d}",
+            "the line names the query"
+        );
+        assert_eq!(
+            palette.empty_hint(),
+            Some("Check the spelling, or try another word")
+        );
+
+        let mut fed = ActionPalette::rows(vec![
+            CommandEntry::new("sheets", "Sheets").group("Apps"),
+            CommandEntry::new("notes", "Notes").group("Apps"),
+        ]);
+        fed.open();
+        fed.set_query("zzzz");
+        assert!(fed.visible_entries().is_empty());
+        assert_eq!(fed.empty_text(), "No results for \u{201c}zzzz\u{201d}");
+        assert_eq!(
+            fed.empty_hint(),
+            Some("Check the spelling, or try another word")
+        );
+        fed.set_query("");
+        assert_eq!(fed.empty_text(), "Nothing to show");
+        assert_eq!(fed.empty_hint(), None);
+    }
 }

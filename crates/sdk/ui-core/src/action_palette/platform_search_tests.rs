@@ -51,37 +51,126 @@ impl SearchProvider for Snippets {
     }
 }
 
-#[test]
-fn typed_and_picked_facets_reach_the_provider_structured() {
-    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let mut palette = platform_palette();
-    palette.set_providers(vec![Box::new(Snippets { seen: seen.clone() })]);
-    palette.open();
-    assert_eq!(palette.facets().len(), 1);
+tilo_test_env::scenario! {
+    fn platform_search_providers_page_facet_and_select;
 
-    palette.set_query("parse language:rust");
-    let query = seen.borrow().last().cloned().unwrap();
-    assert_eq!(query.text(), "parse", "the token leaves the free text");
-    assert_eq!(
-        query.filters(),
-        [crate::search::FacetFilter::new("language", "rust")]
-    );
-    assert_eq!(palette.result_labels(), ["Parse JSON"]);
-    assert!(matches!(
-        palette.results.selected().and_then(|hit| hit.row.as_ref()),
-        Some(crate::search::SearchRow::FileHit { .. })
-    ));
+    phase typed_and_picked_facets_reach_the_provider_structured;
+    {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut palette = platform_palette();
+        palette.set_providers(vec![Box::new(Snippets { seen: seen.clone() })]);
+        palette.open();
+        assert_eq!(palette.facets().len(), 1);
 
-    palette.toggle_facet(&crate::search::FacetFilter::new("language", "rust"));
-    assert_eq!(palette.query(), "parse");
-    assert_eq!(palette.result_labels().len(), 2);
+        palette.set_query("parse language:rust");
+        let query = seen.borrow().last().cloned().unwrap();
+        assert_eq!(query.text(), "parse", "the token leaves the free text");
+        assert_eq!(
+            query.filters(),
+            [crate::search::FacetFilter::new("language", "rust")]
+        );
+        assert_eq!(palette.result_labels(), ["Parse JSON"]);
+        assert!(matches!(
+            palette.results.selected().and_then(|hit| hit.row.as_ref()),
+            Some(crate::search::SearchRow::FileHit { .. })
+        ));
 
-    palette.toggle_facet(&crate::search::FacetFilter::new("language", "go"));
-    assert_eq!(palette.result_labels(), ["Parse flags"]);
-    assert_eq!(
-        seen.borrow().last().unwrap().filters(),
-        [crate::search::FacetFilter::new("language", "go")]
-    );
+        palette.toggle_facet(&crate::search::FacetFilter::new("language", "rust"));
+        assert_eq!(palette.query(), "parse");
+        assert_eq!(palette.result_labels().len(), 2);
+
+        palette.toggle_facet(&crate::search::FacetFilter::new("language", "go"));
+        assert_eq!(palette.result_labels(), ["Parse flags"]);
+        assert_eq!(
+            seen.borrow().last().unwrap().filters(),
+            [crate::search::FacetFilter::new("language", "go")]
+        );
+    }
+
+    phase a_provider_answering_the_query_again_replaces_its_earlier_rows;
+    {
+        let mut palette = platform_palette();
+        palette.set_providers(vec![Box::new(Reanswering)]);
+        palette.open();
+        palette.set_query("invoice");
+        assert_eq!(palette.result_labels(), ["Search for invoic"]);
+        let answered = palette.advance_search_page();
+        assert!(!answered.pending);
+        let mut labels = palette.result_labels();
+        labels.sort();
+        assert_eq!(
+            labels,
+            ["Invoice walkthrough", "Search for invoice"],
+            "the answer stands alone, without the row for the earlier text"
+        );
+    }
+
+    phase a_slow_providers_pages_append_under_a_loading_row;
+    {
+        let ready = std::rc::Rc::new(std::cell::Cell::new(false));
+        let mut palette = platform_palette();
+        palette.set_providers(vec![Box::new(SlowMail {
+            ready: ready.clone(),
+        })]);
+        palette.open();
+        palette.set_query("invoice");
+        assert_eq!(palette.result_labels(), ["Cached invoice"]);
+        assert!(palette.results.is_loading(), "a loading row ends the list");
+        let waiting = palette.advance_search_page();
+        assert!(waiting.pending, "the palette keeps asking");
+        assert_eq!(palette.result_labels(), ["Cached invoice"]);
+
+        ready.set(true);
+        let arrived = palette.advance_search_page();
+        assert_eq!(arrived.added, 1);
+        assert!(!arrived.pending);
+        let mut labels = palette.result_labels();
+        labels.sort();
+        assert_eq!(
+            labels,
+            ["Cached invoice", "Server invoice"],
+            "appended to the same list"
+        );
+        assert!(!palette.results.is_loading());
+
+        ready.set(false);
+        palette.set_query("receipt");
+        assert!(palette.results.is_loading());
+    }
+
+    phase select_resource_puts_the_row_of_that_resource_under_the_cursor;
+    {
+        let _settled = crate::motion::testing::settled();
+        let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("en_US")
+        });
+        palette.load_open_resources(&[]);
+        palette.set_providers(vec![Box::new(LazyCorpus {
+            materialized: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })]);
+        palette.open();
+        palette.set_query("Item");
+        assert!(palette.len() > 2, "the corpus lists several rows");
+
+        assert!(palette.select_resource("lazy.item:3"));
+        let labels = palette.result_labels();
+        assert_eq!(
+            labels.get(palette.cursor()).map(String::as_str),
+            Some("Item 3"),
+            "the row that opens the resource is under the cursor: {labels:?}"
+        );
+
+        let cursor = palette.cursor();
+        assert!(
+            !palette.select_resource("lazy.item:nonexistent"),
+            "a resource the search does not list selects nothing"
+        );
+        assert_eq!(
+            palette.cursor(),
+            cursor,
+            "and leaves the cursor where it was"
+        );
+    }
 }
 
 struct SlowMail {
@@ -169,89 +258,4 @@ impl SearchProvider for Reanswering {
             None,
         ))
     }
-}
-
-#[test]
-fn a_provider_answering_the_query_again_replaces_its_earlier_rows() {
-    let mut palette = platform_palette();
-    palette.set_providers(vec![Box::new(Reanswering)]);
-    palette.open();
-    palette.set_query("invoice");
-    assert_eq!(palette.result_labels(), ["Search for invoic"]);
-    let answered = palette.advance_search_page();
-    assert!(!answered.pending);
-    let mut labels = palette.result_labels();
-    labels.sort();
-    assert_eq!(
-        labels,
-        ["Invoice walkthrough", "Search for invoice"],
-        "the answer stands alone, without the row for the earlier text"
-    );
-}
-
-#[test]
-fn a_slow_providers_pages_append_under_a_loading_row() {
-    let ready = std::rc::Rc::new(std::cell::Cell::new(false));
-    let mut palette = platform_palette();
-    palette.set_providers(vec![Box::new(SlowMail {
-        ready: ready.clone(),
-    })]);
-    palette.open();
-    palette.set_query("invoice");
-    assert_eq!(palette.result_labels(), ["Cached invoice"]);
-    assert!(palette.results.is_loading(), "a loading row ends the list");
-    let waiting = palette.advance_search_page();
-    assert!(waiting.pending, "the palette keeps asking");
-    assert_eq!(palette.result_labels(), ["Cached invoice"]);
-
-    ready.set(true);
-    let arrived = palette.advance_search_page();
-    assert_eq!(arrived.added, 1);
-    assert!(!arrived.pending);
-    let mut labels = palette.result_labels();
-    labels.sort();
-    assert_eq!(
-        labels,
-        ["Cached invoice", "Server invoice"],
-        "appended to the same list"
-    );
-    assert!(!palette.results.is_loading());
-
-    ready.set(false);
-    palette.set_query("receipt");
-    assert!(palette.results.is_loading());
-}
-
-#[test]
-fn select_resource_puts_the_row_of_that_resource_under_the_cursor() {
-    let _settled = crate::motion::testing::settled();
-    let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-        SearchField::with_language("en_US")
-    });
-    palette.load_open_resources(&[]);
-    palette.set_providers(vec![Box::new(LazyCorpus {
-        materialized: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-    })]);
-    palette.open();
-    palette.set_query("Item");
-    assert!(palette.len() > 2, "the corpus lists several rows");
-
-    assert!(palette.select_resource("lazy.item:3"));
-    let labels = palette.result_labels();
-    assert_eq!(
-        labels.get(palette.cursor()).map(String::as_str),
-        Some("Item 3"),
-        "the row that opens the resource is under the cursor: {labels:?}"
-    );
-
-    let cursor = palette.cursor();
-    assert!(
-        !palette.select_resource("lazy.item:nonexistent"),
-        "a resource the search does not list selects nothing"
-    );
-    assert_eq!(
-        palette.cursor(),
-        cursor,
-        "and leaves the cursor where it was"
-    );
 }

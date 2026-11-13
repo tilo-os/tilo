@@ -3114,90 +3114,94 @@ mod tests {
     };
     use winit::event::KeyEvent;
 
-    #[test]
-    fn capacity_counts_the_rows_that_are_coming_in_their_own_bands() {
-        let mut palette = ActionPalette::rows(Vec::new());
-        palette.set_max_list_height(420.0);
-        let groups = 4;
-        let one_line = palette.entry_row_capacity_for(groups, false);
-        let two_line = palette.entry_row_capacity_for(groups, true);
-        assert!(
-            two_line < one_line,
-            "four headers leave area for {one_line} bare names but {two_line} rows with a line \
-             under each, and those are the taller rows"
-        );
-        let no_headers = palette.entry_row_capacity_for(0, true);
-        assert!(
-            two_line < no_headers,
-            "{groups} headers leave area for {two_line} rows, fewer than the {no_headers} that \
-             fit without them"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_palette_card_is_sized_and_placed_by_its_room;
 
-    /// The palette of an app in a window narrower than the screen is
-    /// centred in that window and inside it, never spilling past its edge.
-    #[test]
-    fn the_palette_stands_centred_inside_its_window() {
-        for window in [
-            Rect::new(0.0, 0.0, 1440.0, 900.0),
-            Rect::new(0.0, 40.0, 960.0, 900.0),
-            Rect::new(480.0, 40.0, 1440.0, 900.0),
-            Rect::new(100.0, 40.0, 420.0, 600.0),
-        ] {
-            let (origin, width) = placement(window, &Theme::dark());
+        phase capacity_counts_the_rows_that_are_coming_in_their_own_bands;
+        {
+            let mut palette = ActionPalette::rows(Vec::new());
+            palette.set_max_list_height(420.0);
+            let groups = 4;
+            let one_line = palette.entry_row_capacity_for(groups, false);
+            let two_line = palette.entry_row_capacity_for(groups, true);
             assert!(
-                (origin.x + width / 2.0 - window.center().x).abs() < 1e-9,
-                "centred across {window:?}"
+                two_line < one_line,
+                "four headers leave area for {one_line} bare names but {two_line} rows with a line \
+                 under each, and those are the taller rows"
             );
+            let no_headers = palette.entry_row_capacity_for(0, true);
             assert!(
-                origin.x >= window.x0 && origin.x + width <= window.x1,
-                "inside {window:?}: x {} width {width}",
-                origin.x
-            );
-            assert!(
-                origin.y > window.y0 && origin.y < window.y1,
-                "below the top of {window:?}"
+                two_line < no_headers,
+                "{groups} headers leave area for {two_line} rows, fewer than the {no_headers} that \
+                 fit without them"
             );
         }
-    }
 
-    /// A card standing on the display — a shell search — takes
-    /// three fifths of it, between 360 and 640 wide, a little below its
-    /// top, and its list grows with the display's height: the same rule a
-    /// card in a window follows, so the display's card needs no size of
-    /// its.
-    #[test]
-    fn the_card_on_a_display_follows_the_display() {
-        let theme = Theme::dark();
-        for (display, width, top) in [
-            (Rect::new(0.0, 0.0, 1280.0, 800.0), 640.0, 96.0),
-            (Rect::new(0.0, 0.0, 1000.0, 700.0), 600.0, 84.0),
-            (Rect::new(0.0, 0.0, 2000.0, 1200.0), 640.0, 144.0),
-            (Rect::new(1920.0, 0.0, 3200.0, 800.0), 640.0, 96.0),
-        ] {
-            let (origin, card) = placement(display, &theme);
-            assert!(
-                (card - width).abs() < 1e-9,
-                "a card on {display:?} is {card} wide, not {width}"
-            );
-            assert!(
-                (origin.x + card / 2.0 - display.center().x).abs() < 1e-9,
-                "centred across {display:?}"
-            );
-            assert!(
-                (origin.y - display.y0 - top).abs() < 1e-9,
-                "a card on {display:?} stands at {}, not {top}",
-                origin.y - display.y0
-            );
+        // The palette of an app in a window narrower than the screen is
+        // centred in that window and inside it, never spilling past its edge.
+        phase the_palette_stands_centred_inside_its_window;
+        {
+            for window in [
+                Rect::new(0.0, 0.0, 1440.0, 900.0),
+                Rect::new(0.0, 40.0, 960.0, 900.0),
+                Rect::new(480.0, 40.0, 1440.0, 900.0),
+                Rect::new(100.0, 40.0, 420.0, 600.0),
+            ] {
+                let (origin, width) = placement(window, &Theme::dark());
+                assert!(
+                    (origin.x + width / 2.0 - window.center().x).abs() < 1e-9,
+                    "centred across {window:?}"
+                );
+                assert!(
+                    origin.x >= window.x0 && origin.x + width <= window.x1,
+                    "inside {window:?}: x {} width {width}",
+                    origin.x
+                );
+                assert!(
+                    origin.y > window.y0 && origin.y < window.y1,
+                    "below the top of {window:?}"
+                );
+            }
         }
-        let (origin, card) = placement(Rect::new(0.0, 0.0, 600.0, 800.0), &theme);
-        assert!((card - (600.0 - 16.0)).abs() < 1e-9, "{card} wide");
-        assert!((origin.x - 8.0).abs() < 1e-9, "at {}", origin.x);
 
-        let tall = |height| list_cap(Rect::new(0.0, 0.0, 1280.0, height), &theme);
-        assert!((tall(800.0) - 640.0).abs() < 1e-9);
-        assert!((tall(1200.0) - 660.0).abs() < 1e-9);
-        assert!((tall(200.0) - 160.0).abs() < 1e-9);
+        // A card standing on the display — a shell search — takes
+        // three fifths of it, between 360 and 640 wide, a little below its
+        // top, and its list grows with the display's height: the same rule a
+        // card in a window follows, so the display's card needs no size of
+        // its.
+        phase the_card_on_a_display_follows_the_display;
+        {
+            let theme = Theme::dark();
+            for (display, width, top) in [
+                (Rect::new(0.0, 0.0, 1280.0, 800.0), 640.0, 96.0),
+                (Rect::new(0.0, 0.0, 1000.0, 700.0), 600.0, 84.0),
+                (Rect::new(0.0, 0.0, 2000.0, 1200.0), 640.0, 144.0),
+                (Rect::new(1920.0, 0.0, 3200.0, 800.0), 640.0, 96.0),
+            ] {
+                let (origin, card) = placement(display, &theme);
+                assert!(
+                    (card - width).abs() < 1e-9,
+                    "a card on {display:?} is {card} wide, not {width}"
+                );
+                assert!(
+                    (origin.x + card / 2.0 - display.center().x).abs() < 1e-9,
+                    "centred across {display:?}"
+                );
+                assert!(
+                    (origin.y - display.y0 - top).abs() < 1e-9,
+                    "a card on {display:?} stands at {}, not {top}",
+                    origin.y - display.y0
+                );
+            }
+            let (origin, card) = placement(Rect::new(0.0, 0.0, 600.0, 800.0), &theme);
+            assert!((card - (600.0 - 16.0)).abs() < 1e-9, "{card} wide");
+            assert!((origin.x - 8.0).abs() < 1e-9, "at {}", origin.x);
+
+            let tall = |height| list_cap(Rect::new(0.0, 0.0, 1280.0, height), &theme);
+            assert!((tall(800.0) - 640.0).abs() < 1e-9);
+            assert!((tall(1200.0) - 660.0).abs() < 1e-9);
+            assert!((tall(200.0) - 160.0).abs() < 1e-9);
+        }
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3349,430 +3353,484 @@ mod tests {
         }
     }
 
-    #[test]
-    fn palette_activation_dispatches_navigates_prompts_or_queues() {
-        let _settled = crate::motion::testing::settled();
+    tilo_test_env::scenario! {
+        fn palette_activation_dispatches_confirms_and_refuses;
+
+        phase palette_activation_dispatches_navigates_prompts_or_queues;
         {
-            let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-                SearchField::with_language("en_US")
-            });
-            p.load_open_resources(&[thing_resource()]);
-            p.open();
+            let _settled = crate::motion::testing::settled();
+            {
+                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                    SearchField::with_language("en_US")
+                });
+                p.load_open_resources(&[thing_resource()]);
+                p.open();
 
-            let idx = p
-                .result_labels()
-                .iter()
-                .position(|l| l.contains("Mark done"))
-                .expect("mark row");
-            p.set_cursor(idx);
-            p.activate_selected();
+                let idx = p
+                    .result_labels()
+                    .iter()
+                    .position(|l| l.contains("Mark done"))
+                    .expect("mark row");
+                p.set_cursor(idx);
+                p.activate_selected();
 
-            let mut doc = automerge::AutoCommit::new();
-            assert!(doc.get(&ROOT, "marked").unwrap().is_none());
-            let mut tx = LocalTransport::new();
-            let d = p
-                .take_dispatch(
-                    &mut crate::widget::Edits::lend(&mut doc),
-                    &registry(),
-                    &mut tx,
-                )
-                .expect("an action was pending")
-                .expect("dispatch ok");
-            assert!(matches!(d, Dispatched::AppliedLocal(_)));
-            let context = d.envelope().context.as_ref().expect("palette provenance");
-            let Some(tilo_actions::Did::Verb(verb)) = &context.what else {
-                panic!("the published action is recorded: {context:?}");
-            };
-            assert_eq!(
-                (verb.action.kind.as_str(), verb.action.action.as_str()),
-                ("test.thing", "mark")
-            );
-            assert_eq!(
-                context
-                    .resource
-                    .as_ref()
-                    .map(|resource| resource.label.as_str()),
-                Some("Thing")
-            );
-            assert_eq!(
-                doc.get(&ROOT, "marked")
-                    .unwrap()
-                    .and_then(|(v, _)| v.as_str().map(str::to_string)),
-                Some("yes".to_string()),
-            );
-            assert!(!p.is_open(), "an immediate action closes the palette");
-            assert!(
-                p.take_navigation().is_none(),
-                "an action is not a navigation"
-            );
-        }
-
-        {
-            let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-                SearchField::with_language("en_US")
-            });
-            p.load_open_resources(&[thing_resource()]);
-            p.set_ambient_context(Some(
-                ActionContext::default()
-                    .with_app("org.tilo.Agent", "Agent")
-                    .with_purpose("Prepare launch")
-                    .with_group("issue:42", "Launch", "issue"),
-            ));
-            p.open();
-            p.activate_selected();
-
-            let mut doc = automerge::AutoCommit::new();
-            let mut tx = LocalTransport::new();
-            let dispatched = p
-                .take_dispatch(
-                    &mut crate::widget::Edits::lend(&mut doc),
-                    &registry(),
-                    &mut tx,
-                )
-                .expect("action pending")
-                .expect("dispatch succeeds");
-            let context = dispatched.envelope().context.as_ref().expect("context");
-            assert_eq!(context.purpose.as_deref(), Some("Prepare launch"));
-            assert_eq!(
-                context.group.as_ref().map(|group| group.id.as_str()),
-                Some("issue:42")
-            );
-            assert_eq!(
-                context
-                    .resource
-                    .as_ref()
-                    .map(|resource| resource.id.as_str()),
-                Some("test.thing:1"),
-                "the concrete palette resource wins over ambient provenance"
-            );
-        }
-
-        {
-            let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-                SearchField::with_language("en_US")
-            });
-            p.set_providers(vec![Box::new(People)]);
-            p.open();
-            p.set_query("ada");
-
-            let idx = p
-                .result_labels()
-                .iter()
-                .position(|l| l == "Ada Lovelace")
-                .expect("ada row");
-            p.set_cursor(idx);
-            p.activate_selected();
-
-            let mut doc = automerge::AutoCommit::new();
-            let mut tx = LocalTransport::new();
-            assert!(
-                p.take_dispatch(
-                    &mut crate::widget::Edits::lend(&mut doc),
-                    &registry(),
-                    &mut tx
-                )
-                .is_none(),
-                "a content row is not a dispatch"
-            );
-            assert_eq!(
-                p.take_navigation().as_deref(),
-                Some("person:Ada Lovelace"),
-                "the opaque provider id is handed back for navigation"
-            );
-            assert!(!p.is_open(), "navigation closes the palette");
-        }
-
-        // Case `activating_canonical_search_hit_queues_pending_operation`:
-        // Canonical provider hits are broker operations, not opaque navigation
-        // callbacks. This is the per-app migration contract.
-        {
-            let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-                SearchField::with_language("en_US")
-            });
-            p.load_open_resources(&[thing_resource()]);
-            p.set_providers(vec![Box::new(CanonicalPeople)]);
-            p.open();
-            p.set_query("ada");
-
-            assert_eq!(p.result_labels(), vec!["Ada Lovelace"]);
-            p.activate_selected();
-
-            let pending = p.take_operation().expect("broker operation pending");
-            assert_eq!(
-                pending.address,
-                tilo_actions::ActionAddress::new("test.thing:1", "mark")
-            );
-            assert_eq!(
-                pending.encoded().expect("fixed encoding").type_id,
-                NOTE_TYPE
-            );
-            assert_eq!(pending.kind, OperationKind::Document);
-            assert_eq!(
-                pending
-                    .context
-                    .resource
-                    .as_ref()
-                    .map(|resource| resource.id.as_str()),
-                Some("test.thing:1")
-            );
-            assert!(
-                p.take_navigation().is_none(),
-                "canonical hits never enter the legacy navigation callback"
-            );
-            assert!(!p.is_open());
-        }
-
-        {
-            let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-                SearchField::with_language("en_US")
-            });
-            p.load_open_resources(&[thing_resource()]);
-            p.open();
-
-            let idx = p
-                .result_labels()
-                .iter()
-                .position(|l| l.contains("Rename"))
-                .expect("rename row");
-            p.set_cursor(idx);
-            p.activate_selected();
-            assert!(
-                p.in_argument_mode(),
-                "a prompted action opens the argument step"
-            );
-            assert!(p.is_open(), "still open while collecting the argument");
-
-            p.field.set_query("Sprocket");
-            let mut doc = automerge::AutoCommit::new();
-            let root = ROOT;
-            let mods = Modifiers::default();
-            p.handle_key(
-                &enter(),
-                &mods,
-                &mut crate::widget::Edits::lend(&mut doc),
-                &root,
-            );
-
-            let mut tx = LocalTransport::new();
-            let d = p
-                .take_dispatch(
-                    &mut crate::widget::Edits::lend(&mut doc),
-                    &registry(),
-                    &mut tx,
-                )
-                .expect("prompted action pending")
-                .expect("dispatch ok");
-            assert!(matches!(d, Dispatched::AppliedLocal(_)));
-            assert_eq!(
-                doc.get(&ROOT, "name")
-                    .unwrap()
-                    .and_then(|(v, _)| v.as_str().map(str::to_string)),
-                Some("Sprocket".to_string()),
-                "the action carries the typed argument",
-            );
-        }
-    }
-
-    #[test]
-    fn removed_or_disabled_actions_are_refused_at_activation_and_dispatch() {
-        let _settled = crate::motion::testing::settled();
-        {
-            let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-                SearchField::with_language("en_US")
-            });
-            p.load_open_resources(&[thing_resource()]);
-            p.set_providers(vec![Box::new(CanonicalPeople)]);
-            p.open();
-            p.set_query("ada");
-
-            p.refresh_open_resources(&[]);
-            p.activate_selected();
-
-            assert!(p.take_operation().is_none());
-            assert!(p.take_navigation().is_none());
-            assert!(p.is_open(), "a stale selection leaves the palette usable");
-            assert!(
-                !p.is_empty(),
-                "discovery may remain visible so a later permission/resource refresh can enable it"
-            );
-        }
-
-        {
-            let mut disabled = thing_resource();
-            disabled.actions[0].type_mut().contract.availability =
-                tilo_actions::Availability::Unavailable {
-                    code: "offline".into(),
-                    reason: "The service went offline".into(),
+                let mut doc = automerge::AutoCommit::new();
+                assert!(doc.get(&ROOT, "marked").unwrap().is_none());
+                let mut tx = LocalTransport::new();
+                let d = p
+                    .take_dispatch(
+                        &mut crate::widget::Edits::lend(&mut doc),
+                        &registry(),
+                        &mut tx,
+                    )
+                    .expect("an action was pending")
+                    .expect("dispatch ok");
+                assert!(matches!(d, Dispatched::AppliedLocal(_)));
+                let context = d.envelope().context.as_ref().expect("palette provenance");
+                let Some(tilo_actions::Did::Verb(verb)) = &context.what else {
+                    panic!("the published action is recorded: {context:?}");
                 };
+                assert_eq!(
+                    (verb.action.kind.as_str(), verb.action.action.as_str()),
+                    ("test.thing", "mark")
+                );
+                assert_eq!(
+                    context
+                        .resource
+                        .as_ref()
+                        .map(|resource| resource.label.as_str()),
+                    Some("Thing")
+                );
+                assert_eq!(
+                    doc.get(&ROOT, "marked")
+                        .unwrap()
+                        .and_then(|(v, _)| v.as_str().map(str::to_string)),
+                    Some("yes".to_string()),
+                );
+                assert!(!p.is_open(), "an immediate action closes the palette");
+                assert!(
+                    p.take_navigation().is_none(),
+                    "an action is not a navigation"
+                );
+            }
 
-            let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-                SearchField::with_language("en_US")
-            });
-            p.load_open_resources(&[thing_resource()]);
-            p.set_providers(vec![Box::new(CanonicalPeople)]);
-            p.open();
-            p.set_query("ada");
-            p.refresh_open_resources(&[disabled]);
-            p.activate_selected();
+            {
+                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                    SearchField::with_language("en_US")
+                });
+                p.load_open_resources(&[thing_resource()]);
+                p.set_ambient_context(Some(
+                    ActionContext::default()
+                        .with_app("org.tilo.Agent", "Agent")
+                        .with_purpose("Prepare launch")
+                        .with_group("issue:42", "Launch", "issue"),
+                ));
+                p.open();
+                p.activate_selected();
 
-            assert!(p.take_operation().is_none());
-            assert!(p.take_navigation().is_none());
-            assert!(!p.is_empty());
+                let mut doc = automerge::AutoCommit::new();
+                let mut tx = LocalTransport::new();
+                let dispatched = p
+                    .take_dispatch(
+                        &mut crate::widget::Edits::lend(&mut doc),
+                        &registry(),
+                        &mut tx,
+                    )
+                    .expect("action pending")
+                    .expect("dispatch succeeds");
+                let context = dispatched.envelope().context.as_ref().expect("context");
+                assert_eq!(context.purpose.as_deref(), Some("Prepare launch"));
+                assert_eq!(
+                    context.group.as_ref().map(|group| group.id.as_str()),
+                    Some("issue:42")
+                );
+                assert_eq!(
+                    context
+                        .resource
+                        .as_ref()
+                        .map(|resource| resource.id.as_str()),
+                    Some("test.thing:1"),
+                    "the concrete palette resource wins over ambient provenance"
+                );
+            }
+
+            {
+                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                    SearchField::with_language("en_US")
+                });
+                p.set_providers(vec![Box::new(People)]);
+                p.open();
+                p.set_query("ada");
+
+                let idx = p
+                    .result_labels()
+                    .iter()
+                    .position(|l| l == "Ada Lovelace")
+                    .expect("ada row");
+                p.set_cursor(idx);
+                p.activate_selected();
+
+                let mut doc = automerge::AutoCommit::new();
+                let mut tx = LocalTransport::new();
+                assert!(
+                    p.take_dispatch(
+                        &mut crate::widget::Edits::lend(&mut doc),
+                        &registry(),
+                        &mut tx
+                    )
+                    .is_none(),
+                    "a content row is not a dispatch"
+                );
+                assert_eq!(
+                    p.take_navigation().as_deref(),
+                    Some("person:Ada Lovelace"),
+                    "the opaque provider id is handed back for navigation"
+                );
+                assert!(!p.is_open(), "navigation closes the palette");
+            }
+
+            // Case `activating_canonical_search_hit_queues_pending_operation`:
+            // Canonical provider hits are broker operations, not opaque navigation
+            // callbacks. This is the per-app migration contract.
+            {
+                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                    SearchField::with_language("en_US")
+                });
+                p.load_open_resources(&[thing_resource()]);
+                p.set_providers(vec![Box::new(CanonicalPeople)]);
+                p.open();
+                p.set_query("ada");
+
+                assert_eq!(p.result_labels(), vec!["Ada Lovelace"]);
+                p.activate_selected();
+
+                let pending = p.take_operation().expect("broker operation pending");
+                assert_eq!(
+                    pending.address,
+                    tilo_actions::ActionAddress::new("test.thing:1", "mark")
+                );
+                assert_eq!(
+                    pending.encoded().expect("fixed encoding").type_id,
+                    NOTE_TYPE
+                );
+                assert_eq!(pending.kind, OperationKind::Document);
+                assert_eq!(
+                    pending
+                        .context
+                        .resource
+                        .as_ref()
+                        .map(|resource| resource.id.as_str()),
+                    Some("test.thing:1")
+                );
+                assert!(
+                    p.take_navigation().is_none(),
+                    "canonical hits never enter the legacy navigation callback"
+                );
+                assert!(!p.is_open());
+            }
+
+            {
+                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                    SearchField::with_language("en_US")
+                });
+                p.load_open_resources(&[thing_resource()]);
+                p.open();
+
+                let idx = p
+                    .result_labels()
+                    .iter()
+                    .position(|l| l.contains("Rename"))
+                    .expect("rename row");
+                p.set_cursor(idx);
+                p.activate_selected();
+                assert!(
+                    p.in_argument_mode(),
+                    "a prompted action opens the argument step"
+                );
+                assert!(p.is_open(), "still open while collecting the argument");
+
+                p.field.set_query("Sprocket");
+                let mut doc = automerge::AutoCommit::new();
+                let root = ROOT;
+                let mods = Modifiers::default();
+                p.handle_key(
+                    &enter(),
+                    &mods,
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &root,
+                );
+
+                let mut tx = LocalTransport::new();
+                let d = p
+                    .take_dispatch(
+                        &mut crate::widget::Edits::lend(&mut doc),
+                        &registry(),
+                        &mut tx,
+                    )
+                    .expect("prompted action pending")
+                    .expect("dispatch ok");
+                assert!(matches!(d, Dispatched::AppliedLocal(_)));
+                assert_eq!(
+                    doc.get(&ROOT, "name")
+                        .unwrap()
+                        .and_then(|(v, _)| v.as_str().map(str::to_string)),
+                    Some("Sprocket".to_string()),
+                    "the action carries the typed argument",
+                );
+            }
         }
 
+        phase removed_or_disabled_actions_are_refused_at_activation_and_dispatch;
         {
-            let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-                SearchField::with_language("en_US")
-            });
-            p.load_open_resources(&[thing_resource()]);
-            p.set_providers(vec![Box::new(CanonicalPeople)]);
-            p.open();
-            p.set_query("ada");
-            p.activate_selected();
+            let _settled = crate::motion::testing::settled();
+            {
+                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                    SearchField::with_language("en_US")
+                });
+                p.load_open_resources(&[thing_resource()]);
+                p.set_providers(vec![Box::new(CanonicalPeople)]);
+                p.open();
+                p.set_query("ada");
 
-            p.refresh_open_resources(&[]);
-            assert!(p.take_operation().is_none());
-            assert!(p.take_navigation().is_none());
+                p.refresh_open_resources(&[]);
+                p.activate_selected();
+
+                assert!(p.take_operation().is_none());
+                assert!(p.take_navigation().is_none());
+                assert!(p.is_open(), "a stale selection leaves the palette usable");
+                assert!(
+                    !p.is_empty(),
+                    "discovery may remain visible so a later permission/resource refresh can enable it"
+                );
+            }
+
+            {
+                let mut disabled = thing_resource();
+                disabled.actions[0].type_mut().contract.availability =
+                    tilo_actions::Availability::Unavailable {
+                        code: "offline".into(),
+                        reason: "The service went offline".into(),
+                    };
+
+                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                    SearchField::with_language("en_US")
+                });
+                p.load_open_resources(&[thing_resource()]);
+                p.set_providers(vec![Box::new(CanonicalPeople)]);
+                p.open();
+                p.set_query("ada");
+                p.refresh_open_resources(&[disabled]);
+                p.activate_selected();
+
+                assert!(p.take_operation().is_none());
+                assert!(p.take_navigation().is_none());
+                assert!(!p.is_empty());
+            }
+
+            {
+                let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                    SearchField::with_language("en_US")
+                });
+                p.load_open_resources(&[thing_resource()]);
+                p.set_providers(vec![Box::new(CanonicalPeople)]);
+                p.open();
+                p.set_query("ada");
+                p.activate_selected();
+
+                p.refresh_open_resources(&[]);
+                assert!(p.take_operation().is_none());
+                assert!(p.take_navigation().is_none());
+            }
         }
-    }
 
-    #[test]
-    fn consequential_actions_confirm_by_exact_value() {
-        let _settled = crate::motion::testing::settled();
+        phase consequential_actions_confirm_by_exact_value;
         {
-            let resource = ResourceSpec::new("test.thing:1", "test.thing", "Thing").with_action(
-                ActionSpec::immediate(
-                    "mark",
-                    "Mark done",
-                    NOTE_TYPE,
-                    &Note {
-                        key: "marked".into(),
-                        value: "yes".into(),
+            let _settled = crate::motion::testing::settled();
+            {
+                let resource = ResourceSpec::new("test.thing:1", "test.thing", "Thing").with_action(
+                    ActionSpec::immediate(
+                        "mark",
+                        "Mark done",
+                        NOTE_TYPE,
+                        &Note {
+                            key: "marked".into(),
+                            value: "yes".into(),
+                        },
+                    )
+                    .unwrap()
+                    .with_contract(tilo_actions::ActionContract {
+                        confirmation: ConfirmationPolicy::Phrase {
+                            phrase: "MARK THING".into(),
+                        },
+                        ..tilo_actions::ActionContract::default()
+                    }),
+                );
+                let mut palette =
+                    ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+                        SearchField::with_language("en_US")
+                    });
+                palette.load_open_resources(&[resource]);
+                palette.open();
+                palette.activate_selected();
+                assert!(palette.in_argument_mode());
+
+                let mut doc = automerge::AutoCommit::new();
+                let mut transport = LocalTransport::new();
+                assert!(
+                    palette
+                        .take_dispatch(
+                            &mut crate::widget::Edits::lend(&mut doc),
+                            &registry(),
+                            &mut transport
+                        )
+                        .is_none(),
+                    "activation alone must not queue the operation"
+                );
+
+                focus_confirmation(&mut palette, &mut doc);
+                palette.handle_key(
+                    &enter(),
+                    &Modifiers::default(),
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &ROOT,
+                );
+                assert!(palette.take_operation().is_none(), "not without the name");
+                assert!(palette.asking().is_some(), "it keeps asking");
+                type_confirmation(&mut palette, "MARK THING", &mut doc);
+                press(&mut palette, "submit", &mut doc);
+                let pending = palette.take_operation().expect("the typed name goes ahead");
+                assert_eq!(
+                    pending.confirmation_evidence(),
+                    &serde_json::json!({ "confirmation_phrase": "MARK THING" }),
+                    "the broker receives the evidence the action declared"
+                );
+                ActionPalette::dispatch_encoded(
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    pending.encoded().expect("fixed encoding"),
+                    &registry(),
+                    &mut transport,
+                    pending.context.clone(),
+                )
+                .expect("confirmed dispatch succeeds");
+                assert_eq!(
+                    doc.get(&ROOT, "marked")
+                        .unwrap()
+                        .and_then(|(value, _)| value.as_str().map(str::to_owned)),
+                    Some("yes".into())
+                );
+            }
+
+            // Case `programmatic_actions_are_not_rows_but_confirm_by_value`:
+            // A programmatic generic edit is never a row, yet a control that submits
+            // a destructive value of it still gets the palette's confirmation step,
+            // and an ordinary value queues directly.
+            {
+                let edit = ActionSpec::typed(
+                    "edit",
+                    "Edit thing",
+                    "value",
+                    ExecutionLocus::ClientLocal,
+                    vec![tilo_actions::ActionParam::required(
+                        "value",
+                        tilo_actions::ParamType::Text,
+                        "Value",
+                    )],
+                    |args| {
+                        EncodedAction::encode(
+                            NOTE_TYPE,
+                            &Note {
+                                key: "value".into(),
+                                value: args.text("value").unwrap_or("").into(),
+                            },
+                        )
+                        .unwrap()
                     },
                 )
-                .unwrap()
-                .with_contract(tilo_actions::ActionContract {
-                    confirmation: ConfirmationPolicy::Phrase {
-                        phrase: "MARK THING".into(),
-                    },
-                    ..tilo_actions::ActionContract::default()
-                }),
-            );
+                .for_audience(tilo_actions::Audience::Agents)
+                .with_risk(|args| {
+                    if args.text("value") == Some("wipe") {
+                        tilo_actions::RiskLevel::Destructive
+                    } else {
+                        tilo_actions::RiskLevel::Low
+                    }
+                });
+                let resource = thing_resource().with_action(edit);
+                let address = tilo_actions::ActionAddress::new("test.thing:1", "edit");
+                let value = |value: &str| {
+                    serde_json::Map::from_iter([("value".to_owned(), serde_json::json!(value))])
+                };
+                let mut palette = ActionPalette::new();
+                palette.load_open_resources(&[resource]);
+                palette.open();
+                let labels = palette.result_labels();
+                assert!(labels.iter().any(|l| l.contains("Mark done")), "{labels:?}");
+                assert!(
+                    !labels.iter().any(|l| l.contains("Edit thing")),
+                    "a programmatic action is never offered as a row: {labels:?}"
+                );
+
+                assert!(palette.activate_address_with_arguments(&address, &value("tidy")));
+                assert!(
+                    palette.take_operation().is_some(),
+                    "an ordinary value needs no confirmation"
+                );
+
+                palette.open();
+                assert!(palette.activate_address_with_arguments(&address, &value("wipe")));
+                assert!(
+                    palette.take_operation().is_none(),
+                    "a destructive value waits for confirmation"
+                );
+                let mut doc = automerge::AutoCommit::new();
+                palette.handle_key(
+                    &enter(),
+                    &Modifiers::default(),
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &ROOT,
+                );
+                let pending = palette
+                    .take_operation()
+                    .expect("the confirmed destructive value queues");
+                assert_eq!(pending.address, address);
+            }
+        }
+
+        phase history_suspends_the_same_palette_draft_and_ready_dispatch;
+        {
+            let _settled = crate::motion::testing::settled();
             let mut palette =
                 ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
                     SearchField::with_language("en_US")
                 });
-            palette.load_open_resources(&[resource]);
+            palette.load_open_resources(&[thing_resource()]);
             palette.open();
+            palette.set_query("mark");
+            let idx = palette
+                .result_labels()
+                .iter()
+                .position(|label| label.contains("Mark done"))
+                .unwrap();
+            palette.set_cursor(idx);
             palette.activate_selected();
-            assert!(palette.in_argument_mode());
+            assert!(!palette.is_open());
 
-            let mut doc = automerge::AutoCommit::new();
-            let mut transport = LocalTransport::new();
-            assert!(
-                palette
-                    .take_dispatch(
-                        &mut crate::widget::Edits::lend(&mut doc),
-                        &registry(),
-                        &mut transport
-                    )
-                    .is_none(),
-                "activation alone must not queue the operation"
-            );
-
-            focus_confirmation(&mut palette, &mut doc);
-            palette.handle_key(
-                &enter(),
-                &Modifiers::default(),
-                &mut crate::widget::Edits::lend(&mut doc),
-                &ROOT,
-            );
-            assert!(palette.take_operation().is_none(), "not without the name");
-            assert!(palette.asking().is_some(), "it keeps asking");
-            type_confirmation(&mut palette, "MARK THING", &mut doc);
-            press(&mut palette, "submit", &mut doc);
-            let pending = palette.take_operation().expect("the typed name goes ahead");
-            assert_eq!(
-                pending.confirmation_evidence(),
-                &serde_json::json!({ "confirmation_phrase": "MARK THING" }),
-                "the broker receives the evidence the action declared"
-            );
-            ActionPalette::dispatch_encoded(
-                &mut crate::widget::Edits::lend(&mut doc),
-                pending.encoded().expect("fixed encoding"),
-                &registry(),
-                &mut transport,
-                pending.context.clone(),
-            )
-            .expect("confirmed dispatch succeeds");
-            assert_eq!(
-                doc.get(&ROOT, "marked")
-                    .unwrap()
-                    .and_then(|(value, _)| value.as_str().map(str::to_owned)),
-                Some("yes".into())
-            );
-        }
-
-        // Case `programmatic_actions_are_not_rows_but_confirm_by_value`:
-        // A programmatic generic edit is never a row, yet a control that submits
-        // a destructive value of it still gets the palette's confirmation step,
-        // and an ordinary value queues directly.
-        {
-            let edit = ActionSpec::typed(
-                "edit",
-                "Edit thing",
-                "value",
-                ExecutionLocus::ClientLocal,
-                vec![tilo_actions::ActionParam::required(
-                    "value",
-                    tilo_actions::ParamType::Text,
-                    "Value",
-                )],
-                |args| {
-                    EncodedAction::encode(
-                        NOTE_TYPE,
-                        &Note {
-                            key: "value".into(),
-                            value: args.text("value").unwrap_or("").into(),
-                        },
-                    )
-                    .unwrap()
-                },
-            )
-            .for_audience(tilo_actions::Audience::Agents)
-            .with_risk(|args| {
-                if args.text("value") == Some("wipe") {
-                    tilo_actions::RiskLevel::Destructive
-                } else {
-                    tilo_actions::RiskLevel::Low
-                }
-            });
-            let resource = thing_resource().with_action(edit);
-            let address = tilo_actions::ActionAddress::new("test.thing:1", "edit");
-            let value = |value: &str| {
-                serde_json::Map::from_iter([("value".to_owned(), serde_json::json!(value))])
-            };
-            let mut palette = ActionPalette::new();
-            palette.load_open_resources(&[resource]);
-            palette.open();
-            let labels = palette.result_labels();
-            assert!(labels.iter().any(|l| l.contains("Mark done")), "{labels:?}");
-            assert!(
-                !labels.iter().any(|l| l.contains("Edit thing")),
-                "a programmatic action is never offered as a row: {labels:?}"
-            );
-
-            assert!(palette.activate_address_with_arguments(&address, &value("tidy")));
-            assert!(
-                palette.take_operation().is_some(),
-                "an ordinary value needs no confirmation"
-            );
-
-            palette.open();
-            assert!(palette.activate_address_with_arguments(&address, &value("wipe")));
+            palette.suspend_for_history();
+            assert!(palette.is_history_suspended());
             assert!(
                 palette.take_operation().is_none(),
-                "a destructive value waits for confirmation"
+                "return cannot auto-take ready work"
+            );
+            assert_eq!(
+                palette.query(),
+                "mark",
+                "the original field instance keeps its draft"
+            );
+
+            palette.resume_after_history();
+            assert!(!palette.is_history_suspended());
+            assert!(
+                palette.take_operation().is_none(),
+                "Back to live keeps ready work behind explicit continuation"
             );
             let mut doc = automerge::AutoCommit::new();
             palette.handle_key(
@@ -3783,8 +3841,103 @@ mod tests {
             );
             let pending = palette
                 .take_operation()
-                .expect("the confirmed destructive value queues");
-            assert_eq!(pending.address, address);
+                .expect("ready work remains in the same palette");
+            assert_eq!(pending.address.resource, "test.thing:1");
+            assert_eq!(pending.address.action, "mark");
+        }
+
+        phase visible_refresh_keeps_exact_selection_through_reorder_revocation_and_restore;
+        {
+            let _settled = crate::motion::testing::settled();
+            let resource = |id: &str, label: &str| {
+                let mut value = thing_resource();
+                value.id = tilo_actions::ResourceId::new(id);
+                value.label = label.into();
+                value.actions.truncate(1);
+                value
+            };
+            let a = resource("a", "Alpha");
+            let b = resource("b", "Beta");
+            let c = resource("c", "Aardvark");
+            let mut palette = ActionPalette::new();
+            palette.load_open_resources(&[a.clone(), b.clone()]);
+            palette.open();
+            palette.set_cursor(1);
+            palette.refresh_visible_resources(&[c, a.clone(), b.clone()]);
+            assert_eq!(palette.results.selected_action_id(), Some("b\u{1f}mark"));
+            palette.refresh_visible_resources(std::slice::from_ref(&a));
+            assert_eq!(palette.result_labels(), vec!["Mark done"]);
+            assert!(palette.results.selected().is_none());
+            palette.activate_selected();
+            assert!(palette.take_operation().is_none());
+            palette.refresh_visible_resources(&[a, b]);
+            palette.activate_selected();
+            assert_eq!(palette.take_operation().unwrap().address.resource, "b");
+        }
+
+        phase invalid_arguments_stay_visible_before_confirmation_and_can_be_corrected;
+        {
+            let _settled = crate::motion::testing::settled();
+            let mut spec = ActionSpec::typed(
+                "number",
+                "Number",
+                "",
+                ExecutionLocus::ClientLocal,
+                vec![tilo_actions::ActionParam::required(
+                    "rows",
+                    tilo_actions::ParamType::Number,
+                    "Rows",
+                )],
+                |_| EncodedAction {
+                    type_id: "fixture".into(),
+                    payload: vec![],
+                },
+            );
+            spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
+            let resource = ResourceSpec::new("document", "document", "Document").with_action(spec);
+            let mut palette = ActionPalette::new();
+            palette.load_open_resources(&[resource]);
+            palette.open();
+            palette.activate_selected();
+            palette.field.set_query("{\"rows\":\"bad\"}");
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            let enter =
+                crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
+            palette.handle_key(
+                &enter,
+                &Modifiers::default(),
+                &mut crate::widget::Edits::lend(&mut doc),
+                &root,
+            );
+            assert!(palette.confirm.is_none());
+            assert!(palette.arg.is_some());
+            assert!(palette.is_open());
+            assert!(palette.take_operation().is_none());
+            assert!(
+                serde_json::to_string(&palette.results.accessibility())
+                    .unwrap()
+                    .contains("Invalid arguments")
+            );
+            palette.field.set_query("{\"rows\":2}");
+            palette.handle_key(
+                &enter,
+                &Modifiers::default(),
+                &mut crate::widget::Edits::lend(&mut doc),
+                &root,
+            );
+            assert!(palette.confirm.is_some());
+            assert!(palette.take_operation().is_none());
+            palette.handle_key(
+                &enter,
+                &Modifiers::default(),
+                &mut crate::widget::Edits::lend(&mut doc),
+                &root,
+            );
+            assert_eq!(
+                palette.take_operation().unwrap().confirmation_evidence(),
+                &serde_json::json!({"confirm":true})
+            );
         }
     }
 
@@ -3794,151 +3947,6 @@ mod tests {
 
     fn enter() -> WindowEvent {
         crate::synthetic_input::keyboard_input(enter_key())
-    }
-
-    #[test]
-    fn history_suspends_the_same_palette_draft_and_ready_dispatch() {
-        let _settled = crate::motion::testing::settled();
-        let mut palette =
-            ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-                SearchField::with_language("en_US")
-            });
-        palette.load_open_resources(&[thing_resource()]);
-        palette.open();
-        palette.set_query("mark");
-        let idx = palette
-            .result_labels()
-            .iter()
-            .position(|label| label.contains("Mark done"))
-            .unwrap();
-        palette.set_cursor(idx);
-        palette.activate_selected();
-        assert!(!palette.is_open());
-
-        palette.suspend_for_history();
-        assert!(palette.is_history_suspended());
-        assert!(
-            palette.take_operation().is_none(),
-            "return cannot auto-take ready work"
-        );
-        assert_eq!(
-            palette.query(),
-            "mark",
-            "the original field instance keeps its draft"
-        );
-
-        palette.resume_after_history();
-        assert!(!palette.is_history_suspended());
-        assert!(
-            palette.take_operation().is_none(),
-            "Back to live keeps ready work behind explicit continuation"
-        );
-        let mut doc = automerge::AutoCommit::new();
-        palette.handle_key(
-            &enter(),
-            &Modifiers::default(),
-            &mut crate::widget::Edits::lend(&mut doc),
-            &ROOT,
-        );
-        let pending = palette
-            .take_operation()
-            .expect("ready work remains in the same palette");
-        assert_eq!(pending.address.resource, "test.thing:1");
-        assert_eq!(pending.address.action, "mark");
-    }
-
-    #[test]
-    fn visible_refresh_keeps_exact_selection_through_reorder_revocation_and_restore() {
-        let _settled = crate::motion::testing::settled();
-        let resource = |id: &str, label: &str| {
-            let mut value = thing_resource();
-            value.id = tilo_actions::ResourceId::new(id);
-            value.label = label.into();
-            value.actions.truncate(1);
-            value
-        };
-        let a = resource("a", "Alpha");
-        let b = resource("b", "Beta");
-        let c = resource("c", "Aardvark");
-        let mut palette = ActionPalette::new();
-        palette.load_open_resources(&[a.clone(), b.clone()]);
-        palette.open();
-        palette.set_cursor(1);
-        palette.refresh_visible_resources(&[c, a.clone(), b.clone()]);
-        assert_eq!(palette.results.selected_action_id(), Some("b\u{1f}mark"));
-        palette.refresh_visible_resources(std::slice::from_ref(&a));
-        assert_eq!(palette.result_labels(), vec!["Mark done"]);
-        assert!(palette.results.selected().is_none());
-        palette.activate_selected();
-        assert!(palette.take_operation().is_none());
-        palette.refresh_visible_resources(&[a, b]);
-        palette.activate_selected();
-        assert_eq!(palette.take_operation().unwrap().address.resource, "b");
-    }
-
-    #[test]
-    fn invalid_arguments_stay_visible_before_confirmation_and_can_be_corrected() {
-        let _settled = crate::motion::testing::settled();
-        let mut spec = ActionSpec::typed(
-            "number",
-            "Number",
-            "",
-            ExecutionLocus::ClientLocal,
-            vec![tilo_actions::ActionParam::required(
-                "rows",
-                tilo_actions::ParamType::Number,
-                "Rows",
-            )],
-            |_| EncodedAction {
-                type_id: "fixture".into(),
-                payload: vec![],
-            },
-        );
-        spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
-        let resource = ResourceSpec::new("document", "document", "Document").with_action(spec);
-        let mut palette = ActionPalette::new();
-        palette.load_open_resources(&[resource]);
-        palette.open();
-        palette.activate_selected();
-        palette.field.set_query("{\"rows\":\"bad\"}");
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let enter =
-            crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
-        palette.handle_key(
-            &enter,
-            &Modifiers::default(),
-            &mut crate::widget::Edits::lend(&mut doc),
-            &root,
-        );
-        assert!(palette.confirm.is_none());
-        assert!(palette.arg.is_some());
-        assert!(palette.is_open());
-        assert!(palette.take_operation().is_none());
-        assert!(
-            serde_json::to_string(&palette.results.accessibility())
-                .unwrap()
-                .contains("Invalid arguments")
-        );
-        palette.field.set_query("{\"rows\":2}");
-        palette.handle_key(
-            &enter,
-            &Modifiers::default(),
-            &mut crate::widget::Edits::lend(&mut doc),
-            &root,
-        );
-        assert!(palette.confirm.is_some());
-        assert!(palette.take_operation().is_none());
-        palette.handle_key(
-            &enter,
-            &Modifiers::default(),
-            &mut crate::widget::Edits::lend(&mut doc),
-            &root,
-        );
-        assert_eq!(
-            palette.take_operation().unwrap().confirmation_evidence(),
-            &serde_json::json!({"confirm":true})
-        );
     }
 
     #[cfg(feature = "native")]
