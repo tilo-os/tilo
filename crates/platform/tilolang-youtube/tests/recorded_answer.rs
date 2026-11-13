@@ -206,14 +206,14 @@ fn card_of(host: &tilolang_tilo::host::Host) -> (String, Vec<String>) {
     let Value::List(items) = host.runtime().read(&root, "videos").unwrap() else {
         panic!("the client holds its videos")
     };
-    // The grid takes the videos it draws, and for what: the search that found them, as a
-    // place that lists them gives it.
+    // The grid takes the videos it draws and what it says while it holds none, as the place
+    // that lists them gives it.
     let rendered = host
         .runtime()
         .open_view(
             &tilolang_tilo::runtime::Principal::new("Ada"),
             &view,
-            vec![Value::List(items), Value::text(""), Value::text("")],
+            vec![Value::List(items), Value::text("")],
         )
         .expect("the view runs");
     let card = media_card(rendered.tree())
