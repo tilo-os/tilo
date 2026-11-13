@@ -26,7 +26,6 @@ const GROUNDS: [u32; 7] = [
     0xf4_ef_e3, 0xff_ff_ff, 0xec_e4_d0, 0xd9_cc_b0, 0xb8_a0_7e, 0x3a_3a_38, 0x1f_24_30,
 ]; // document colours
 
-/// Showing a chosen swatch while building a picker.
 trait Selecting {
     fn selecting(self, index: Option<usize>) -> Self;
 }
@@ -42,7 +41,6 @@ impl Selecting for ColorSwatchPicker {
 /// inspector.
 const SWATCH: f32 = ui::tokens::Metrics::BASE.bar_control_height;
 
-/// `#rrggbb` as `0xrrggbb`.
 fn packed(hex: &str) -> Option<u32> {
     let digits = hex.strip_prefix('#')?;
     u32::from_str_radix(digits.get(..6)?, 16).ok()
@@ -129,7 +127,6 @@ pub fn panel(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     })
 }
 
-/// Groups of controls, kept apart so each reads as one thing.
 pub(super) fn spaced(groups: Vec<Element>) -> Element {
     let mut column = Column::new()
         .with_no_padding()
@@ -141,7 +138,6 @@ pub(super) fn spaced(groups: Vec<Element>) -> Element {
     Box::new(column)
 }
 
-/// A label and the control it names, close together.
 pub(super) fn tight(children: Vec<Element>) -> Element {
     let mut column = Column::new()
         .with_no_padding()
@@ -164,7 +160,6 @@ pub(super) fn section(children: Vec<Element>) -> Element {
     Box::new(column)
 }
 
-/// A label on the left and its value on the right.
 pub(super) fn labelled(label: &str, value: Element) -> Element {
     Box::new(
         Row::new()
@@ -190,7 +185,6 @@ fn field(label: &str, control: Element) -> Element {
     )
 }
 
-/// A control taking the width a row leaves.
 pub(super) fn grow(control: Element) -> Element {
     Box::new(
         Container::new()
@@ -244,7 +238,6 @@ fn brush_and_artwork(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     ])
 }
 
-/// The chosen layer's colour and tone, folded away until asked for.
 fn layer_adjust(cx: &ViewCx<Artwork>, tools: &Tools, layer: &str) -> Element {
     let chosen = layer.to_owned();
     let state = cx.value(move |art: &Artwork| {
@@ -409,7 +402,6 @@ fn tool_heading(tools: &Tools, medium: Option<&crate::media::MediumSpec>, tool: 
     )
 }
 
-/// How much paint a painted layer's brush carries, starting at `load`.
 fn load_slider(tools: &Tools, load: f64) -> Element {
     tools.load.set(load);
     let load_label = {
@@ -565,7 +557,6 @@ fn area_tool(cx: &ViewCx<Artwork>, tools: &Tools, tool: Tool) -> Element {
     section(parts)
 }
 
-/// How unlike a colour the magic wand and the bucket still take in.
 fn tolerance(tools: &Tools) -> Element {
     fraction("canvas-tolerance", &tools.tolerance, "canvas-tolerance")
 }
@@ -683,7 +674,6 @@ fn brush_palette(
     )
 }
 
-/// The pigment whose masstone is nearest `colour`.
 fn nearest(
     colour: ui::vello::peniko::Color,
     pigments: &[crate::media::PigmentSpec],
@@ -776,12 +766,10 @@ fn artwork(cx: &ViewCx<Artwork>) -> Element {
     ])
 }
 
-/// The selected marks, read again whenever one of them changes so every
-/// control starts from what is there now.
-/// The selection's heading, a picture's controls, then the rest. The rest
-/// is built again whenever a selected mark changes; a picture's controls
-/// follow the artwork in place, built again only when the selection is, so
-/// a drag begun as another slider's edit lands is not lost.
+/// The selection's heading, a picture's controls, then the rest. The rest is
+/// built again whenever a selected mark changes; a picture's controls follow
+/// the artwork in place, so a drag begun as another slider's edit lands is
+/// not lost.
 fn selection(cx: &ViewCx<Artwork>, ids: Vec<String>, tools: &Tools) -> Element {
     let summary = {
         let ids = ids.clone();
@@ -970,7 +958,6 @@ fn marks_inspector(cx: &ViewCx<Artwork>, marks: &[Mark], tools: &Tools) -> Eleme
 enum Paint {
     Fill,
     Stroke,
-    /// One stop of the fill's gradient, by index.
     Stop(crate::model::Gradient, usize),
 }
 
@@ -1021,7 +1008,6 @@ impl Paint {
     }
 }
 
-/// Swatches of the layer's paints (or inks) and the colour as text.
 fn paints(
     cx: &ViewCx<Artwork>,
     ids: &[String],
@@ -1315,7 +1301,6 @@ fn choice(
     Box::new(cx.actions().bind(dropdown, action))
 }
 
-/// Opacity, blend and shadow.
 fn appearance(cx: &ViewCx<Artwork>, ids: &[String], mark: &Mark) -> Element {
     let style = &mark.style;
     let opacity = LocalState::new(style.opacity());
@@ -1489,7 +1474,6 @@ fn text_style(cx: &ViewCx<Artwork>, mark: &Mark) -> Element {
     ])
 }
 
-/// Bring to the front or send to the back, and remove.
 fn arrange(cx: &ViewCx<Artwork>, ids: &[String]) -> Element {
     let to = |icon, name: &str, to: &str| {
         Box::new(icon_button(

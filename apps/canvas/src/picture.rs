@@ -61,7 +61,6 @@ pub fn accepted(bytes: &[u8]) -> Result<ui::image_codec::Format, String> {
     }
 }
 
-/// A picture's size in pixels, read from its header.
 pub fn dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
     ui::image_codec::dimensions(bytes).ok_or_else(|| "its size cannot be read".to_owned())
 }
@@ -190,7 +189,6 @@ impl Placement {
         }
     }
 
-    /// The image shape with this placement.
     pub fn apply(&self, shape: &mut Shape) {
         if let Shape::Image {
             x,
@@ -277,7 +275,6 @@ fn halve(image: &ImageData) -> ImageData {
     image_of(out, half_w, half_h)
 }
 
-/// RGBA bytes as an image.
 pub fn image_of(pixels: Vec<u8>, width: usize, height: usize) -> ImageData {
     ui::raster::rgba8(
         pixels,
@@ -294,7 +291,6 @@ pub struct Treatment {
     /// Blur radius and sharpen amount, in pixels of the full picture.
     pub blur: f64,
     pub sharpen: f64,
-    /// What the treatment is, for telling two apart.
     pub key: String,
 }
 
@@ -354,7 +350,6 @@ const KEPT_BYTES: usize = 384 << 20;
 /// The most pictures kept decoded.
 const KEPT_PICTURES: usize = 12;
 
-/// A picture decoded, and its halved copies made, off the UI thread.
 type Decoding = std::sync::mpsc::Receiver<Option<Vec<ImageData>>>;
 
 /// Decoded pictures and treated copies, kept between frames.
@@ -362,7 +357,6 @@ pub struct Pictures {
     decoded: HashMap<String, Option<Pyramid>>,
     treated: Vec<(String, ImageData, u64)>,
     clock: u64,
-    /// Pictures being decoded in the background, by address.
     decoding: HashMap<String, Decoding>,
     /// Whether a picture not decoded yet is waited for (a look, an
     /// export: they must show it) or decoded in the background while a
@@ -407,7 +401,6 @@ async fn decode_all(
 }
 
 impl Pictures {
-    /// Read the pictures' bytes from `content` from now on.
     pub fn read_from(&mut self, content: tilo_content::ContentStore) {
         self.content = Some(content);
     }
@@ -422,7 +415,6 @@ impl Pictures {
         !self.decoding.is_empty()
     }
 
-    /// Keep the pictures whose background decoding has finished.
     fn collect(&mut self) {
         let finished: Vec<(String, Option<Vec<ImageData>>)> = self
             .decoding
@@ -509,7 +501,6 @@ impl Pictures {
         !waiting
     }
 
-    /// The full picture at `address`, decoded once.
     pub fn full(&mut self, address: &str) -> Option<ImageData> {
         self.pyramid(address).map(|pyramid| pyramid.level(0))
     }
@@ -673,7 +664,6 @@ mod tests {
         assert_eq!(half.data.data(), &[128, 128, 128, 255]);
     }
 
-    /// A 6 by 4 picture in the store `content`, and its address.
     fn stored(content: &tilo_content::ContentStore) -> String {
         let png = ui::png::encode_rgba8(6, 4, &[230, 30, 20, 255].repeat(6 * 4))
             .expect("the fixture encodes");

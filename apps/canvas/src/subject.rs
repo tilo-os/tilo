@@ -4,11 +4,10 @@
 //! worked out on a background one ([`Prepared::finish`]).
 //!
 //! The subject is found by the on-device segmentation model the person set
-//! up (through the model gateway; nothing leaves the device). Its edge, or
-//! any selection's, is then fitted to the picture's own edges
-//! (`tilo_subject::refine_edge`), which keeps fur and hair soft. What is
-//! found is plain data: the area as path data, and the soft edge as a
-//! picture kept by its content, so every replica applies the same.
+//! up (nothing leaves the device). Its edge, or any selection's, is then
+//! fitted to the picture's own edges (`tilo_subject::refine_edge`), which
+//! keeps fur and hair soft. What is found is plain data, so every replica
+//! applies the same.
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "kurbo's float geometry and pixel sizes bounded by the render's"
@@ -25,15 +24,11 @@ use crate::render::{Options, Renderer};
 use crate::resource::FindArea;
 use crate::selection::UseSelection;
 
-/// The closest a refined edge is looked at, in pixels per unit.
 use crate::content_geometry::MOST_PIXELS_PER_UNIT;
-/// The most a caller may ask an edge be fitted over, in units.
 use crate::content_geometry::MOST_REFINE;
 /// How far a subject's edge is fitted to the picture when the caller names
 /// no reach, in pixels of the picture it is found in.
 pub use crate::content_geometry::REFINE_PIXELS;
-/// The longest side of the picture a subject is found and refined in, in
-/// pixels.
 use crate::content_geometry::SIDE;
 
 /// What the model said about a subject it found, for the answer the
@@ -50,8 +45,8 @@ pub struct Found {
 pub const SET_UP: &str = "settings://models/u2net-subject";
 
 /// What the artwork shows, ready for the model and the edge filter: the
-/// part drawn on the window's thread; [`Prepared::finish`] does the slow
-/// part anywhere, so a person's window keeps drawing meanwhile.
+/// part drawn on the window's thread, the slow part done anywhere by
+/// [`Prepared::finish`].
 pub struct Prepared {
     content: tilo_content::ContentStore,
     rgba: Vec<u8>,
@@ -59,18 +54,14 @@ pub struct Prepared {
     height: u32,
     view: ui::vello::kurbo::Rect,
     to_cells: Affine,
-    /// The point `at` names, in the render's pixels.
     at: Option<(usize, usize)>,
-    /// Where `at` was, in units, for a refusal.
     at_units: Option<[f64; 2]>,
     subject: bool,
-    /// The selection to refine when there is no subject to find, as cells.
     current: Option<Vec<bool>>,
     reach: f64,
     bounds: ui::vello::kurbo::Rect,
 }
 
-/// Draw what `select` needs to find its area.
 pub fn prepare(
     select: &FindArea,
     renderer: &mut Renderer,
@@ -320,7 +311,6 @@ fn matte_picture(matte: &tilo_subject::Matte) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("the matte could not be kept: {error}"))
 }
 
-/// The first characters of a revision, enough to tell it.
 fn short(revision: &str) -> &str {
     revision.get(..12).unwrap_or(revision)
 }
@@ -375,7 +365,6 @@ pub fn clean(using: &mut UseSelection) -> Result<(), String> {
     Ok(())
 }
 
-/// A matte picture's coverage.
 fn matte_alpha(
     content: &tilo_content::ContentStore,
     matte: &Matte,
@@ -512,7 +501,6 @@ fn encode_like(picture: &ui::image_codec::DecodedImage, source: &[u8]) -> Result
 /// The quality a cleaned JPEG photograph is kept at.
 const CLEANED_JPEG_QUALITY: u8 = 95;
 
-/// `matte` at a point between pixel centres, interpolated; 0 outside.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,

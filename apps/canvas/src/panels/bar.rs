@@ -20,9 +20,7 @@ pub(crate) const MENU: &str = "canvas.menu";
 /// Undo the last step, and bring back what the last undo took back.
 pub(crate) const UNDO: &str = "canvas.undo";
 pub(crate) const REDO: &str = "canvas.redo";
-/// Place a picture on the artwork.
 pub(crate) const ADD_PICTURE: &str = "canvas.add-picture";
-/// The export dialog.
 pub(crate) const EXPORT: &str = "canvas.export";
 /// The zoom controls, and the zoom the canvas is at in their name. Never
 /// sent: its items are.
@@ -31,7 +29,6 @@ pub(crate) const ZOOM_IN: &str = "canvas.zoom-in";
 pub(crate) const ZOOM_OUT: &str = "canvas.zoom-out";
 pub(crate) const ZOOM_FIT: &str = "canvas.zoom-fit";
 pub(crate) const ZOOM_ACTUAL: &str = "canvas.zoom-actual";
-/// Show the tools, or put them away.
 pub(crate) const TOOLS: &str = "canvas.tools";
 
 /// How the artwork menu's commands are told from the bar's own actions: the
@@ -202,8 +199,7 @@ impl WindowBar {
     }
 
     /// Say what the canvas is doing — finding a subject, a save that failed —
-    /// in the window's bar, where a transient notice belongs. It used to be
-    /// small text under the artwork's title, in the row this bar replaced.
+    /// in the window's bar, where a transient notice belongs.
     fn publish_notice(&self) {
         let notice = self.tools.notice.get();
         let mut published = self.notice.borrow_mut();

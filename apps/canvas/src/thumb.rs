@@ -23,7 +23,6 @@ use crate::render::{Options, Renderer};
 /// it), the region of it, and whether it is drawn without its ground.
 pub type Framing = Rc<dyn Fn(&Rc<Artwork>) -> Option<(Rc<Artwork>, Rect, bool)>>;
 
-/// The artwork, or one of its layers, fitted into a fixed box.
 pub struct Thumb {
     rect: Rect,
     size: (f32, f32),
@@ -37,7 +36,6 @@ pub struct Thumb {
     /// The chosen layer, and this picture's: ringed while they agree, so a
     /// layer with a mask shows which of the two is being painted.
     target: Option<(LocalState<String>, String)>,
-    /// A part of the artwork instead of all of it, as an export takes it.
     framing: Option<Framing>,
     /// The ring it last painted, so a change of selection repaints it.
     ringed: bool,
@@ -71,14 +69,12 @@ impl Thumb {
         }
     }
 
-    /// Show the part `framing` takes of the artwork, as it changes.
     #[must_use]
     pub fn framed(mut self, framing: Framing) -> Self {
         self.framing = Some(framing);
         self
     }
 
-    /// Ring the picture while `chosen` holds `id`.
     #[must_use]
     pub fn ringed_while(mut self, chosen: &LocalState<String>, id: &str) -> Self {
         self.target = Some((chosen.clone(), id.to_owned()));
@@ -218,7 +214,6 @@ impl Widget for Thumb {
     }
 }
 
-/// The squares that say "transparent" under a picture without its ground.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,

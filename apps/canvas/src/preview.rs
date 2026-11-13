@@ -16,7 +16,6 @@ use crate::model::Artwork;
 use crate::render::{Options, Renderer};
 use ui::widget::DrawChild;
 
-/// The canvas, with the version `preview` names drawn over it.
 pub struct VersionPreview {
     canvas: Element,
     preview: LocalState<Option<String>>,
@@ -46,7 +45,6 @@ impl VersionPreview {
         }
     }
 
-    /// The artwork at `version`, a change id or a checkpoint name.
     fn read(doc: &AutoCommit, version: &str) -> Option<Artwork> {
         let heads = ui::history_source::steps::resolve(doc, version).ok()?;
         let mut past = doc.committed_fork_at(&heads).ok()?;

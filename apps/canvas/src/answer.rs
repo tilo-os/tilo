@@ -48,7 +48,6 @@ pub fn answer(doc: &Doc, action: &str, changes: &[Patch]) -> Option<Value> {
     }
 }
 
-/// The marks `changes` created: entries put into the marks map.
 fn added(changes: &[Patch]) -> Vec<String> {
     changes
         .iter()

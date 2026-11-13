@@ -40,7 +40,6 @@ pub enum AreaDrag {
     Lasso { points: Vec<Point> },
 }
 
-/// The area tools' state between events.
 #[derive(Clone, Debug, Default)]
 pub struct AreaGesture {
     pub drag: Option<AreaDrag>,
@@ -136,7 +135,6 @@ impl AreaGesture {
             .flatten()
     }
 
-    /// Drop whatever is under way.
     pub fn cancel(&mut self) {
         self.drag = None;
         self.polygon.clear();
@@ -183,7 +181,6 @@ fn select(select: Select, mode: Option<String>) -> Invoke<Artwork> {
     Artwork::SELECT.with(Select { mode, ..select })
 }
 
-/// Select nothing.
 pub fn none() -> Invoke<Artwork> {
     select(Select::default(), Some("none".into()))
 }
@@ -200,7 +197,6 @@ fn lasso(points: &[Point], mode: Option<String>) -> Option<Invoke<Artwork>> {
     })
 }
 
-/// The selection of an area found by colour.
 pub fn found(region: &Region, mode: Option<String>) -> Invoke<Artwork> {
     select(
         Select {
@@ -243,7 +239,6 @@ pub fn draw_outline(scene: &mut Scene, path: &BezPath, phase: f64) {
     crate::render::selection_outline(scene, path, 1.0, phase);
 }
 
-/// The selection's outline where the screen shows it.
 pub fn selection_path(art: &Artwork, to_screen: Affine) -> Option<BezPath> {
     let selection = art.selection.as_ref()?;
     let mut path = BezPath::from_svg(&selection.d).ok()?;

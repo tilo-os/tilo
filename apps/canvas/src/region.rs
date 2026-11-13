@@ -31,13 +31,11 @@ pub const MAX_CORNERS: usize = 24_000;
 
 type Contour = Vec<[f64; 2]>;
 
-/// An area: shapes, each an outer edge and its holes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Region {
     shapes: Vec<Vec<Contour>>,
 }
 
-/// How two regions are combined.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
     /// Everything either covers.
@@ -116,7 +114,6 @@ impl Region {
         self.shapes.iter().all(Vec::is_empty)
     }
 
-    /// `self` combined with `other`.
     #[must_use]
     pub fn combine(&self, other: &Self, op: Op) -> Self {
         if other.is_empty() {
@@ -157,7 +154,6 @@ impl Region {
         Self::of_rect(bounds).combine(self, Op::Subtract)
     }
 
-    /// The box around the region.
     pub fn bounds(&self) -> Option<Rect> {
         let mut points = self.shapes.iter().flatten().flatten();
         let first = points.next()?;
@@ -165,7 +161,6 @@ impl Region {
         Some(points.fold(start, |rect, [x, y]| rect.union_pt((*x, *y))))
     }
 
-    /// How much it covers, in square units.
     pub fn area(&self) -> f64 {
         self.shapes
             .iter()
@@ -175,17 +170,14 @@ impl Region {
             .abs()
     }
 
-    /// How many separate shapes it is made of.
     pub fn parts(&self) -> usize {
         self.shapes.len()
     }
 
-    /// How many corners its polygons have.
     pub fn corners(&self) -> usize {
         self.shapes.iter().flatten().map(Vec::len).sum()
     }
 
-    /// The polygons as a path: straight edges, every contour closed.
     pub fn to_path(&self) -> BezPath {
         let mut path = BezPath::new();
         for contour in self.shapes.iter().flatten() {
@@ -264,7 +256,6 @@ impl Region {
         }
     }
 
-    /// Whether `point` is inside.
     pub fn contains(&self, point: Point) -> bool {
         self.to_path().contains(point)
     }
@@ -421,7 +412,6 @@ fn distance(a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - b[0]).hypot(a[1] - b[1])
 }
 
-/// How far `point` is from the line through `a` and `b`.
 fn off_line(point: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     let length = distance(a, b);
     if length < 1e-12 {

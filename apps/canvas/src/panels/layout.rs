@@ -1,6 +1,5 @@
-//! Canvas panel composition resolves its measure from the current theme.
-//! This decorator only changes layout; shared widgets retain interaction,
-//! accessibility, drawing and resource state.
+//! Canvas panel composition resolves its measure from the current theme; this
+//! decorator only changes layout.
 
 use std::collections::HashMap;
 
@@ -66,7 +65,6 @@ pub(super) fn width(
 }
 
 /// Layout cache announcing the viewport's size class to retained composition.
-/// It holds no artwork state and delegates all controls and input unchanged.
 pub(crate) struct ViewportMode<T: Widget> {
     child: T,
     compact: ui::LocalState<bool>,

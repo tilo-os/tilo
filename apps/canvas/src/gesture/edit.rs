@@ -68,7 +68,6 @@ pub fn marquee(art: &Artwork, area: Rect) -> Vec<String> {
     with_groups(art, &touched)
 }
 
-/// Every shown mark, for select-all.
 pub fn everything(art: &Artwork) -> Vec<String> {
     art.marks
         .iter()
@@ -182,7 +181,6 @@ pub fn group(art: &Artwork, ids: &[String]) -> Option<Invoke<Artwork>> {
     })
 }
 
-/// Take `ids` out of their groups.
 pub fn ungroup(art: &Artwork, ids: &[String]) -> Option<Invoke<Artwork>> {
     let grouped: Vec<String> = ids
         .iter()
@@ -198,7 +196,6 @@ pub fn ungroup(art: &Artwork, ids: &[String]) -> Option<Invoke<Artwork>> {
     })
 }
 
-/// A mark as `draw` would make it again.
 pub fn new_mark(mark: &Mark) -> NewMark {
     let style = &mark.style;
     NewMark {
@@ -228,7 +225,6 @@ pub fn new_mark(mark: &Mark) -> NewMark {
     }
 }
 
-/// Marks as they travel on the clipboard: each with the layer it was on.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Clip {
     /// Tells a canvas clipboard apart from any other JSON.
@@ -236,7 +232,6 @@ pub struct Clip {
     pub marks: Vec<(String, NewMark)>,
 }
 
-/// The clipboard text for `ids`, bottom to top.
 pub fn copy(art: &Artwork, ids: &[String]) -> Option<String> {
     let marks: Vec<(String, NewMark)> = art
         .marks
@@ -336,7 +331,6 @@ pub fn place(
     (actions, placed)
 }
 
-/// Copies of `ids` beside them.
 pub fn duplicate(
     art: &Artwork,
     ids: &[String],
@@ -351,7 +345,6 @@ pub fn duplicate(
     place(art, marks, offset, None)
 }
 
-/// What the clipboard's text pastes as: copied marks, or SVG markup.
 pub fn paste(
     art: &Artwork,
     text: &str,

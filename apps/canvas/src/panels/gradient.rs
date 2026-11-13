@@ -23,7 +23,6 @@ use super::icon_button;
 use crate::model::Artwork;
 use crate::model::{Gradient, Mark};
 
-/// How a fill is painted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Solid,
@@ -83,7 +82,6 @@ pub fn across(kind: Kind, area: Rect, degrees: f64, stops: Vec<(f64, String)>) -
     }
 }
 
-/// The colour a gradient has at `at`, between its stops, as `#rrggbb`.
 fn colour_at(stops: &[(f64, String)], at: f64) -> String {
     let parse = |text: &str| crate::render::colour(text, &[]);
     let mut sorted: Vec<&(f64, String)> = stops.iter().collect();
@@ -127,13 +125,11 @@ fn colour_at(stops: &[(f64, String)], at: f64) -> String {
     )
 }
 
-/// The bar showing a gradient, with a grip for each stop.
 pub struct GradientBar {
     rect: Rect,
     gradient: Gradient,
     /// The stop the swatches recolour.
     active: LocalState<usize>,
-    /// The stop being dragged and where it is now, `0..=1`.
     dragging: Option<(usize, f64, bool)>,
     cursor: Point,
     commit: Rc<dyn Fn(Gradient)>,
@@ -402,7 +398,6 @@ impl Widget for GradientBar {
     }
 }
 
-/// The fill's kind, and for a gradient its bar, direction and stops.
 pub fn editor(
     cx: &ViewCx<Artwork>,
     ids: &[String],

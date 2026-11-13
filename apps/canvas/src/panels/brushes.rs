@@ -156,7 +156,6 @@ pub fn preset_name(presets: &[Preset], index: usize) -> String {
         .unwrap_or_default()
 }
 
-/// Showing a picked swatch while building a picker.
 trait Selecting {
     fn selecting(self, index: Option<usize>) -> Self;
 }
