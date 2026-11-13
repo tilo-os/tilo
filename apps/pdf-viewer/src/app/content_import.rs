@@ -20,21 +20,6 @@ pub(super) const NO_PDF: &str =
 /// The name a PDF opened from content without one is shown under.
 const UNNAMED: &str = "Document.pdf";
 
-/// The content reference `address` names: a `tilo.content:<reference>`
-/// address or the bare reference, as it is (a reference's key is
-/// case-sensitive).
-fn content_reference(address: &str) -> Result<String, String> {
-    let address = address.trim();
-    let reference = ui::tilo_actions::content_hash(address).unwrap_or(address);
-    if tilo_content::valid_reference(reference) {
-        Ok(reference.to_owned())
-    } else {
-        Err(format!(
-            "`{address}` names no content: give the PDF's `tilo.content:<reference>`"
-        ))
-    }
-}
-
 impl PdfApp {
     /// Pin the PDF `address` names in the content store as the document the
     /// record marks up, under `name`, and answer with its name and page
@@ -51,10 +36,15 @@ impl PdfApp {
         name: Option<&str>,
         cx: &EffectCx<PdfMarkup>,
     ) -> Result<serde_json::Value, String> {
-        let reference = content_reference(address)?;
+        // What the caller named: the content's reference, as it is (a
+        // reference's key is case-sensitive), or the bare reference a plan
+        // that carried the content gives.
+        let reference = ui::tilo_actions::named_reference(address).ok_or_else(|| {
+            format!("`{address}` names no content: give the PDF's `tilo.content:<reference>`")
+        })?;
         let bytes = self
             .content
-            .read(&reference)
+            .read(reference)
             .ok_or_else(|| format!("content `{reference}` is not in this workspace's store"))?;
         // The bytes themselves name the document: the reference that opens
         // them may differ between devices.
@@ -95,13 +85,13 @@ impl PdfApp {
             // The bytes are already where the workspace keeps content under
             // this reference: the record pins exactly that, sealed as it is.
             cx.submit(Invoke::group([
-                crate::actions::pin_source_action(&Bytes::kept_as(&bytes, &reference), name),
+                crate::actions::pin_source_action(&Bytes::kept_as(&bytes, reference), name),
                 PdfMarkup::START_PAGE_PLAN.with(pages),
             ]));
             name.to_owned()
         };
         Ok(serde_json::json!({
-            "content": ui::tilo_actions::content_resource(&reference),
+            "content": ui::tilo_actions::content_resource(reference),
             "name": name,
             "page_count": pages,
             "already_held": held.is_some(),
@@ -211,6 +201,59 @@ mod tests {
         assert!(app.effect(&import("report.pdf", None)).is_err());
         app.settle();
         assert!(app.state().pinned_source().is_none());
+    }
+
+    /// The workspace keeps its content sealed: import-content takes the
+    /// reference that opens the PDF, reads the document through it and pins
+    /// that same reference, so the record carries what opens it. A reference
+    /// this workspace does not hold is refused for what it is, never for how
+    /// it is spelled.
+    #[serial(pdfium)]
+    #[test]
+    fn a_sealed_reference_is_imported_as_the_document_it_opens() {
+        let mut app = TestApp::<PdfViewerShell>::new().expect("the reader opens");
+        let bytes = fixture("sample.pdf");
+        let writer = app.content().sealing();
+        let reference = writer.put(&bytes).expect("stored");
+        assert!(
+            tilo_content::is_sealed(&reference),
+            "the window's store seals: {reference}"
+        );
+        let address = tilo_content::content_address(&reference).expect("a reference");
+        assert_ne!(
+            app.content().read(&address).as_deref(),
+            Some(bytes.as_slice()),
+            "the store keeps ciphertext under the address"
+        );
+        let answer = app
+            .effect(&import(&reference, Some("sealed.pdf")))
+            .expect("the PDF opens")
+            .value
+            .expect("the import answers");
+        assert_eq!(answer["name"], "sealed.pdf");
+        app.settle();
+        let pinned = app
+            .state()
+            .pinned_source()
+            .expect("the record pins the PDF");
+        assert_eq!(pinned.hash(), tilo_content::hash_bytes(&bytes));
+        assert_eq!(
+            pinned.source.reference().as_deref(),
+            Some(reference.as_str()),
+            "pinned by the reference that opens it"
+        );
+
+        // A workspace holding none of it answers so, rather than that the
+        // reference is no content.
+        let mut elsewhere = TestApp::<PdfViewerShell>::new().expect("the reader opens");
+        let refused = elsewhere
+            .effect(&import(&reference, None))
+            .expect_err("not held here")
+            .to_string();
+        assert!(
+            refused.contains("is not in this workspace's store"),
+            "{refused}"
+        );
     }
 
     /// A Word file whose package holds only its main part, stored.

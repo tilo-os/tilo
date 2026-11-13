@@ -215,7 +215,7 @@ pub enum PdfEffect {
     /// already answers again, another is refused.
     #[effect(kind = "undoable", returns, idempotent, audience = "agents")]
     ImportPdfContent {
-        #[param(content, "The PDF's content address, `tilo.content:<hash>`")]
+        #[param(content, "The PDF's content reference, `tilo.content:<reference>`")]
         content: String,
         #[param("The file's name, such as report.pdf; Document.pdf when omitted")]
         name: Option<String>,

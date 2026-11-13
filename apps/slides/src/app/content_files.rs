@@ -21,11 +21,9 @@ impl Store {
         // What the caller named: the content's reference, as it is (its key
         // is case-sensitive), or the bare reference a plan that carried the
         // content gives.
-        let reference = ui::tilo_actions::content_hash(content.trim())
-            .or_else(|| tilo_content::valid_reference(content.trim()).then(|| content.trim()))
-            .ok_or_else(|| {
-                format!("`{content}` names no content: give `tilo.content:<reference>`")
-            })?;
+        let reference = ui::tilo_actions::named_reference(content).ok_or_else(|| {
+            format!("`{content}` names no content: give `tilo.content:<reference>`")
+        })?;
         if !cx.live().get().is_untouched() {
             return Err(
                 "this deck has slides someone wrote, which an import would replace: open a new \

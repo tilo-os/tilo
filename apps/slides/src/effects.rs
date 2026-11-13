@@ -119,7 +119,7 @@ pub enum SlidesEffect {
     /// someone wrote is never replaced. Answers the imported outline.
     #[effect(returns, kind = "undoable", audience = "agents")]
     ImportPptxContent {
-        #[param(content, "The deck's content address, `tilo.content:<hash>`")]
+        #[param(content, "The deck's content reference, `tilo.content:<reference>`")]
         content: String,
     },
     /// Export presentation as content

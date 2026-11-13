@@ -123,8 +123,8 @@ fn sample_media() -> Option<PathBuf> {
     SAMPLE_MEDIA.lock().ok().and_then(|s| s.clone())
 }
 
-/// Where a source imported from content (`tilo.content:<hash>`) is read
-/// from: a directory holding each by its hash. The render helper points it
+/// Where a source imported from content (`tilo.content:<reference>`) is read
+/// from: a directory holding each by its address. The render helper points it
 /// at its job directory, where the host laid out the sources a render
 /// places; a path naming content resolves nowhere else.
 static CONTENT_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -138,14 +138,13 @@ pub fn set_content_root(dir: Option<PathBuf>) {
 }
 
 /// The file a content-addressed `path` names under the content root, when
-/// one is set.
+/// one is set: the bytes a render laid out under the content's address, which
+/// the reference that opens them names.
 fn content_file(path: &str) -> Option<PathBuf> {
-    let hash = tilo_actions::content_hash(path)?;
-    if !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
+    let reference = tilo_actions::content_hash(path)?;
+    let address = ui::framework::content::content_address(reference)?;
     let root = CONTENT_ROOT.lock().ok()?.clone()?;
-    Some(root.join(hash.to_ascii_lowercase()))
+    Some(root.join(address))
 }
 
 /// Resolve a media `path` to an absolute [`MediaSource`], reporting whether its

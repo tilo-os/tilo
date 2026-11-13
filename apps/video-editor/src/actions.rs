@@ -97,12 +97,12 @@ pub enum VideoEditorEffect {
     /// Import content.
     ///
     /// Brings a video, sound or picture the workspace holds, by its content
-    /// address, into the bin. Its kind, length, frame size and rate come
+    /// reference, into the bin. Its kind, length, frame size and rate come
     /// from its container. Answers the new source: place it with add-clip.
     /// Importing the same content again answers the source already there.
     #[effect(kind = "undoable", returns, idempotent, audience = "agents")]
     ImportContent {
-        #[param(content, "The media's content address, tilo.content:<hash>")]
+        #[param(content, "The media's content reference, `tilo.content:<reference>`")]
         content: String,
         #[param("The source's name in the bin, e.g. interview.mp4; made up when omitted")]
         name: Option<String>,
