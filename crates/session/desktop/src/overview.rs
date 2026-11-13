@@ -20,6 +20,7 @@ use tilo_sort::CompactSort as _;
 
 use crate::i18n::{t, t_args};
 use crate::window_switcher::{WindowApp, WindowSource};
+use tilo_desktop_surface::names;
 
 /// What the overview needs from its host beyond the desktop tree.
 pub trait OverviewHost: WindowSource {
@@ -348,7 +349,7 @@ pub fn workspace_cards(
         .iter()
         .map(|ws| WorkspaceCard {
             id: ws.slot,
-            name: ws.name.clone(),
+            name: names::workspace(&ws.name),
             is_current: ws.slot == tree.active,
             people: workspace_people(ws, tree, host, now),
             shares: workspace_shares(ws, tree, host, now),
@@ -368,11 +369,12 @@ fn overview_strips(
     let active_strip = tree.active_strip.get(&ws.slot).copied();
     ws.strips
         .iter()
-        .map(|strip| {
+        .enumerate()
+        .map(|(at, strip)| {
             let active_group = tree.active_group_for(strip.id);
             OverviewStrip {
                 id: strip.id,
-                name: strip.name.clone(),
+                name: names::strip_named(&strip.name, at),
                 is_current: ws.slot == tree.active && active_strip == Some(strip.id),
                 groups: strip
                     .window_groups

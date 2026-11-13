@@ -19,6 +19,7 @@ pub mod floating_layer;
 pub mod history_log;
 pub mod host;
 pub mod i18n;
+pub mod names;
 pub mod navigation;
 pub mod notifications;
 pub mod now_playing;

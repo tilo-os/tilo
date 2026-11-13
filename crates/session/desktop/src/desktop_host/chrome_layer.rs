@@ -8,7 +8,7 @@ use tilo_desktop_model::{
     DesktopTree, Strip, StripId, TabId, Workspace, WorkspaceId, WorkspaceSlot,
 };
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, Destination};
-use tilo_desktop_surface::{DesktopHandle, HostActionSource, NotificationLayer};
+use tilo_desktop_surface::{DesktopHandle, HostActionSource, NotificationLayer, names};
 use tilo_resource::Effect;
 use ui::presence::PresenceCtx;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
@@ -1282,7 +1282,7 @@ impl DesktopChrome {
                 tree.workspaces
                     .iter()
                     .find(|workspace| workspace.slot == id)
-                    .map(|workspace| (workspace.id(), workspace.name.clone()))
+                    .map(|workspace| (workspace.id(), names::workspace(&workspace.name)))
             })
             .ok_or_else(|| crate::i18n::t("desktop-workspace-gone"))?;
         let (workspace, name) = named;
@@ -1358,7 +1358,7 @@ impl DesktopChrome {
         let id = workspace.slot;
         let go = go || tree.active_workspace().is_none();
         if fresh_strip {
-            let strip = Strip::new(StripId(self.handle.mint_id()), "Main");
+            let strip = Strip::new(StripId(self.handle.mint_id()), "");
             let strip_id = strip.id;
             workspace.strips.push(strip);
             tree.active_strip.insert(id, strip_id);
@@ -1988,12 +1988,9 @@ impl DesktopChrome {
             // The workspace edit path of the strip switcher's own button,
             // so an agent or a page makes a strip the way the person does.
             ChromeEffect::NewStrip { name } => {
-                let name = name.clone().unwrap_or_else(|| {
-                    crate::strip_switcher::default_strip_name(self.handle.read(|tree| {
-                        tree.active_workspace()
-                            .map_or(0, |workspace| workspace.strips.len())
-                    }))
-                });
+                // A strip made here keeps no name until the person gives it one: the desk names it
+                // by its place, in the language of whoever reads it.
+                let name = name.clone().unwrap_or_default();
                 if !self.add_strip(name) {
                     return Err(crate::i18n::t("strip-switcher-refused"));
                 }

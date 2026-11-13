@@ -1,6 +1,9 @@
+# Was der Schreibtisch nennt, was niemand benannt hat
+desk-unnamed-workspace = Arbeitsbereich
+desk-unnamed-strip = Leiste { $number }
+
 # Obere Leiste
 continuity-dismiss = Ausblenden
-topbar-workspace-fallback = Arbeitsbereich
 topbar-sharing-agent-controls = Agent steuert: { $name }
 topbar-sharing-agent-viewing = Agent sieht zu: { $name }
 topbar-sharing-person-controls = Steuert: { $name }
@@ -625,7 +628,6 @@ workspace-settings-review-activity = Zuerst Aktivität prüfen
 workspace-settings-remove-person = Person entfernen
 workspace-settings-keep-permission = Berechtigung behalten
 workspace-settings-revoke-permission = Berechtigung entziehen
-workspace-settings-workspace-fallback = Arbeitsbereich
 workspace-settings-identity-title = Identität des Arbeitsbereichs
 workspace-settings-identity-description = Dieser Name erscheint in der oberen Leiste, in Einladungen und in geteilten Aktivitäten.
 workspace-settings-name-label = Name des Arbeitsbereichs
@@ -923,7 +925,6 @@ activity-morning-next = Nächste ausgewählte Quelle
 desktop-window-opened-elsewhere = { $person } hat { $app } geöffnet
 # Strip switcher: the strip ribbon grown into labels, one per strip of the workspace.
 strip-switcher-a11y = Leisten
-strip-switcher-unnamed = Leiste { $number }
 strip-switcher-new-strip = Neue Leiste
 strip-switcher-rename-named = { $name } umbenennen
 strip-switcher-name-placeholder = Name der Leiste

@@ -1483,10 +1483,10 @@ impl WorkspaceActivityPane {
     }
 
     fn defer_pending_tree(&mut self, tree: &impl ActivityTree) {
-        self.workspace_name = tree
-            .active_workspace()
-            .map(|workspace| workspace.name.clone())
-            .unwrap_or_default();
+        self.workspace_name = tree.active_workspace().map_or_else(
+            || crate::names::workspace(""),
+            |workspace| crate::names::workspace(&workspace.name),
+        );
         self.last_heads.clear();
         self.last_active = None;
         self.derived.clear();

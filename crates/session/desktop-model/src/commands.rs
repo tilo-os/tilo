@@ -576,7 +576,7 @@ fn place(
     match placement {
         TabPlacement::EmptyWorkspace => workspace.strips.push(Strip {
             id: StripId(new_strip.ok_or("fresh strip identity missing")?),
-            name: "Main".into(),
+            name: String::new(),
             window_groups: vec![WindowGroup {
                 id: group_id,
                 active_tab: tab.id,
@@ -1083,7 +1083,7 @@ pub fn move_tab_to_workspace(
         strip.id
     } else {
         let strip = StripId(mint()?);
-        destination.strips.push(Strip::new(strip, "Main"));
+        destination.strips.push(Strip::new(strip, ""));
         strip
     };
     let gap_index = tree

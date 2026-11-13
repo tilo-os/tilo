@@ -16,6 +16,7 @@ static STRIP_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::ChevronRight];
 
 use crate::text_entry::{self, Edit, Mods};
 use tilo_desktop_model::{DesktopTree, StripId};
+use tilo_desktop_surface::names;
 use ui::text_render::TextStyle;
 use ui::text_selection::Selection;
 use ui::widget::{FieldFace, TextInput, Widget};
@@ -87,7 +88,7 @@ impl TopBarChrome {
     }
 
     /// The shown strip's name, which the bar names after the workspace (Home, a chevron, Research):
-    /// only for a strip with a name.
+    /// only for a strip with a name, so a strip nobody named leaves the bar to the workspace.
     pub(super) fn strip_name(&self) -> Option<&str> {
         let active = self.strips.active?;
         self.strips
@@ -298,7 +299,13 @@ impl TopBarChrome {
     /// Start renaming the workspace in place, from its current name, as the workspace menu's Rename
     /// asks.
     pub fn begin_workspace_rename(&mut self) {
-        let text = self.workspace_name.clone();
+        // The field starts from the name the workspace holds: a workspace nobody named has none, so
+        // typing a name does not first erase the desk's word for it.
+        let text = if self.workspace_name == names::workspace("") {
+            String::new()
+        } else {
+            self.workspace_name.clone()
+        };
         let end = text.len();
         self.strips.naming = Some(Naming {
             text,

@@ -31,6 +31,7 @@ use crate::chrome::{
 };
 use crate::i18n::{t, t_args};
 use tilo_desktop_model::DesktopTree;
+use tilo_desktop_surface::names;
 use ui::TextRole;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextStyle;
@@ -1023,8 +1024,8 @@ impl TopBarChrome {
             .enumerate()
             .find(|(_, w)| w.slot == tree.active)
             .map_or_else(
-                || (0, t("topbar-workspace-fallback")),
-                |(i, w)| (i, w.name.clone()),
+                || (0, names::workspace("")),
+                |(at, w)| (at, names::workspace(&w.name)),
             );
         self.workspace_index = idx;
         self.workspace_name = name;

@@ -696,7 +696,11 @@ fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
     WorkspaceMembership::with_workspace(&reopened, &tree.workspaces[0].id(), &mut |workspace| {
         seen = Some(workspace.name.clone());
     });
-    assert_eq!(seen.as_deref(), Some("Home"));
+    assert_eq!(
+        seen.as_deref(),
+        Some(""),
+        "a workspace nobody named keeps no name of its own"
+    );
     WorkspaceMembership::with_workspace(&reopened, &WorkspaceId::new(), &mut |_| {
         panic!("no such workspace");
     });

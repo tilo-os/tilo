@@ -698,7 +698,7 @@ impl Arrangement {
             // Another part of the desk made it first: its row stands.
             return Ok(row.id);
         }
-        held.strips.push(Strip::new(id, "Main"));
+        held.strips.push(Strip::new(id, ""));
         tree.active_strip.insert(workspace, id);
         self.handle.replace_tree(tree);
         Ok(id)

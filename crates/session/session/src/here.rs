@@ -104,7 +104,7 @@ impl Shared {
                     WorkspaceHere {
                         id: workspace.slot.0,
                         workspace: workspace_id,
-                        name: workspace.name.clone(),
+                        name: tilo_desktop_surface::names::workspace(&workspace.name),
                         active: workspace.slot == tree.active,
                         people,
                         windows,

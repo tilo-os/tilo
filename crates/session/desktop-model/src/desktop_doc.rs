@@ -842,7 +842,7 @@ fn rebuild_strips(doc: &AutoCommit, entry: &ObjId, ws: &mut Workspace) {
             ws.strips.get_mut(at)
         } else {
             ws.strips
-                .push(Strip::new(strip_id, name.as_deref().unwrap_or("Main")));
+                .push(Strip::new(strip_id, name.as_deref().unwrap_or_default()));
             ws.strips.last_mut()
         };
         let Some(strip) = strip else {

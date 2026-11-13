@@ -272,8 +272,8 @@ impl NotesApp {
             .get(page)
             .ok_or("the note no longer exists")?
             .title
-            .trim();
-        let label = if title.is_empty() { "Untitled" } else { title };
+            .clone();
+        let label = crate::metadata::note_title(&title);
         if !self
             .link_copy
             .watch(ui::try_clipboard_copy(&format!("[[{label}]]")))
@@ -283,7 +283,7 @@ impl NotesApp {
         self.notify(
             crate::metadata::CATALOG.t_args(
                 "notes-link-copied",
-                &[("title", ui::i18n::ArgValue::from(label.to_string()))],
+                &[("title", ui::i18n::ArgValue::from(label))],
             ),
             ui::widget::toast::ToastKind::Success,
         );

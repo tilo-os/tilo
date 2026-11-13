@@ -16,6 +16,10 @@ fn untitled() -> String {
 struct Standing<'a> {
     workspace: &'a Workspace,
     strip: &'a Strip,
+    /// What the workspace and the strip are called as a person reads them: the names they were
+    /// given, or the desk's words for what nobody named.
+    workspace_name: &'a str,
+    strip_name: &'a str,
     group: &'a WindowGroup,
     /// The share of its strip's width the window keeps.
     share: f64,
@@ -68,9 +72,9 @@ fn window_reading(tab: &Tab, at: Standing<'_>, handle: &DesktopHandle) -> shell:
         origin_app: String::new(),
         app_key: app,
         icon,
-        strip: at.strip.name.trim().to_owned(),
+        strip: at.strip_name.to_owned(),
         strip_key: at.strip.id.0.to_string(),
-        workspace: at.workspace.name.clone(),
+        workspace: at.workspace_name.to_owned(),
         workspace_key: at.workspace.slot.0.to_string(),
         group_key: at.group.id.to_string(),
         tab_index: at.tab_index,
@@ -118,8 +122,10 @@ pub(crate) fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell::
     let mut focused_tab = None;
     for workspace in workspaces {
         let in_front = workspace.slot == front.slot;
+        let workspace_name = tilo_desktop_surface::names::workspace(&workspace.name);
         let mut place = 0_i64;
-        for strip in &workspace.strips {
+        for (at_strip, strip) in workspace.strips.iter().enumerate() {
+            let strip_name = tilo_desktop_surface::names::strip_named(&strip.name, at_strip);
             let active_group = if in_front {
                 tree.active_group_for(strip.id)
                     .filter(|id| strip.window_groups.iter().any(|group| group.id == *id))
@@ -157,6 +163,8 @@ pub(crate) fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell::
                         Standing {
                             workspace,
                             strip,
+                            workspace_name: &workspace_name,
+                            strip_name: &strip_name,
                             group,
                             share,
                             place,

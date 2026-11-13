@@ -642,7 +642,8 @@ fn windows(
 ) -> Vec<WindowEntry> {
     let mut out = Vec::new();
     for workspace in &tree.workspaces {
-        for strip in &workspace.strips {
+        for (at, strip) in workspace.strips.iter().enumerate() {
+            let strip_name = crate::names::strip_named(&strip.name, at);
             for group in &strip.window_groups {
                 for tab in &group.tabs {
                     let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile);
@@ -656,7 +657,7 @@ fn windows(
                         .get(&tab.id)
                         .map(|holder| holder.name.clone())
                         .into_iter()
-                        .chain([workspace.name.clone(), strip.name.clone()])
+                        .chain([crate::names::workspace(&workspace.name), strip_name.clone()])
                         .collect();
                     // A window bar that only says what the app is called names no place: the row is
                     // the app, so the bar's words for it are dropped rather than repeated as a
@@ -804,7 +805,7 @@ fn commands(
                     tilo_desktop_search::WORKSPACE_COMMAND_PREFIX,
                     workspace.slot.0
                 ),
-                title: format!("Switch to {}", workspace.name),
+                title: format!("Switch to {}", crate::names::workspace(&workspace.name)),
                 subtitle: Some("Workspace".into()),
                 icon: Some(ui::icons::Icon::LayoutGrid),
                 unasked: false,

@@ -1085,10 +1085,10 @@ impl Panel {
         let mut tree = self.handle.read(Clone::clone);
         (self.here)(&mut tree);
         let (rows, _) = collaborator_roster_rows_named(&tree, &own, None);
-        let workspace = tree
-            .active_workspace()
-            .map(|workspace| workspace.name.clone())
-            .unwrap_or_default();
+        let workspace = tree.active_workspace().map_or_else(
+            || tilo_desktop_surface::names::workspace(""),
+            |workspace| tilo_desktop_surface::names::workspace(&workspace.name),
+        );
         let front = tree
             .active_workspace()
             .map(|workspace| workspace.id().to_string());

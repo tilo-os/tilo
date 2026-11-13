@@ -1,6 +1,9 @@
+# What the desk calls what nobody has named
+desk-unnamed-workspace = Workspace
+desk-unnamed-strip = Strip { $number }
+
 # Top bar
 continuity-dismiss = Dismiss
-topbar-workspace-fallback = Workspace
 topbar-sharing-agent-controls = Agent in control: { $name }
 topbar-sharing-agent-viewing = Agent watching: { $name }
 topbar-sharing-person-controls = In control: { $name }
@@ -606,7 +609,6 @@ workspace-settings-review-activity = Review activity first
 workspace-settings-remove-person = Remove person
 workspace-settings-keep-permission = Keep permission
 workspace-settings-revoke-permission = Revoke permission
-workspace-settings-workspace-fallback = Workspace
 workspace-settings-identity-title = Workspace identity
 workspace-settings-identity-description = This name appears in the top bar, invites, and shared activity.
 workspace-settings-name-label = Workspace name
@@ -903,7 +905,6 @@ activity-morning-next = Next chosen source
 desktop-window-opened-elsewhere = { $person } opened { $app }
 # Strip switcher: the strip ribbon grown into labels, one per strip of the workspace.
 strip-switcher-a11y = Strips
-strip-switcher-unnamed = Strip { $number }
 strip-switcher-new-strip = New strip
 strip-switcher-rename-named = Rename { $name }
 strip-switcher-name-placeholder = Strip name

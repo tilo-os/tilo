@@ -1515,7 +1515,10 @@ impl SessionDoors {
                     let host = engine.awaited_host(workspace.id())?;
                     Some((
                         workspace.id().to_string(),
-                        awaited_sentence(&workspace.name, &host),
+                        awaited_sentence(
+                            &tilo_desktop_surface::names::workspace(&workspace.name),
+                            &host,
+                        ),
                     ))
                 })
                 .collect()
@@ -1564,7 +1567,7 @@ impl SessionDoors {
                 .map(|workspace| {
                     [
                         workspace.slot.0.to_string(),
-                        workspace.name.clone(),
+                        tilo_desktop_surface::names::workspace(&workspace.name),
                         workspace.id().to_string(),
                     ]
                 })

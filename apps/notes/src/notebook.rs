@@ -31,8 +31,10 @@ use crate::model::PageId;
 /// ([`Bytes::to_keep`]).
 pub const MAX_ASSET_BYTES: usize = 1024 * 1024;
 
-/// The title a note gets when none is given.
-pub const UNTITLED: &str = "Untitled";
+/// The title a note nobody has named holds: none. A title is only ever what a person typed, so a
+/// note that has none reads as the word for an unnamed note in whoever opens it, in their own
+/// language.
+pub const NO_TITLE: &str = "";
 
 /// The notebook.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
@@ -113,13 +115,11 @@ impl Tag {
 }
 
 impl Page {
-    /// A new note titled `title` (the untitled title when blank) under
-    /// `parent`.
+    /// A new note titled `title` (no title at all when blank) under `parent`.
     #[must_use]
     pub fn titled(title: &str, parent: Option<Id>) -> Self {
-        let title = title.trim();
         Self {
-            title: if title.is_empty() { UNTITLED } else { title }.to_owned(),
+            title: title.trim().to_owned(),
             parent,
             ..Self::default()
         }

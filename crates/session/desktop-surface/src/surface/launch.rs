@@ -26,7 +26,7 @@ pub(super) fn open(
     let strip = if let Some(strip) = shown {
         strip
     } else {
-        let strip = Strip::new(StripId(shared.minter.mint()), "Main");
+        let strip = Strip::new(StripId(shared.minter.mint()), "");
         let id = strip.id;
         let workspace = shared.tree.workspaces.iter_mut().find(|w| w.slot == slot)?;
         workspace.strips.push(strip);

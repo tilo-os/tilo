@@ -12,6 +12,19 @@ use ui::history_source::{SchemaObjectId, schema_changes_since};
 // a widget built on its own loads them as it is made.
 ui::embedded_catalog!(pub static CATALOG, ["en-US", "de"]);
 
+/// What a note is called wherever this app shows one: the title it was given, or the word for a
+/// note nobody named. A title is only ever what a person typed, so the word stands in at every
+/// surface — the page tree, the palette, a toast, the note's heading — rather than being stored.
+#[must_use]
+pub fn note_title(title: &str) -> String {
+    let title = title.trim();
+    if title.is_empty() {
+        CATALOG.t("notes-title-placeholder")
+    } else {
+        title.to_owned()
+    }
+}
+
 /// Load the toolkit's widget messages and [`CATALOG`] on this thread, and
 /// offer the Unicode emoji a page's reactions pick from.
 pub fn register_messages() {

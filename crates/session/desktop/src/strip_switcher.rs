@@ -29,6 +29,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::i18n::{t, t_args};
 use tilo_desktop_model::{DesktopTree, StripId};
+use tilo_desktop_surface::names;
 use ui::widget::DrawChild;
 
 /// Longest strip name a person or an agent may give, in characters: what the strip switcher's row
@@ -181,20 +182,13 @@ impl SwitcherModel {
         }
     }
 
-    /// The name a strip shows: its own, or "Strip N" while it has none.
+    /// The name a strip shows: its own, or the place it stands in while it has none.
     fn shown_name(&self, i: usize) -> String {
-        match self.strips.get(i) {
-            Some(strip) if !strip.name.trim().is_empty() => strip.name.clone(),
-            _ => default_strip_name(i),
-        }
+        self.strips.get(i).map_or_else(
+            || names::strip_named("", i),
+            |strip| names::strip_named(&strip.name, i),
+        )
     }
-}
-
-pub(crate) fn default_strip_name(i: usize) -> String {
-    t_args(
-        "strip-switcher-unnamed",
-        &[("number", i.saturating_add(1).to_string().into())],
-    )
 }
 
 /// The strip of the active workspace that `participant_id` has open, from the tab their presence
@@ -919,7 +913,10 @@ impl StripSwitcher {
             Row::NewStrip => {
                 self.name_when_listed = true;
                 self.selected = Some(Row::NewStrip);
-                Press::Command(Command::Create(default_strip_name(self.model.strips.len())))
+                Press::Command(Command::Create(names::strip_named(
+                    "",
+                    self.model.strips.len(),
+                )))
             }
         }
     }

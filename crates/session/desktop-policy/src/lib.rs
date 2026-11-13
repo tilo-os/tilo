@@ -434,11 +434,12 @@ pub struct DesktopPolicy {
 
 impl DesktopPolicy {
     /// A policy over a desktop of one workspace with one empty strip, and
-    /// the surface the compositor hosts under its windows.
+    /// the surface the compositor hosts under its windows. Nothing of it is named: the desk names
+    /// what nobody named when it shows it, in the language of whoever reads it.
     #[must_use]
     pub fn new(salt: u16) -> (Self, DesktopSurface) {
         let mut minter = IdMinter::new(salt);
-        Self::with_tree(seed_tree(&mut minter, "Desk", Vec::new()), salt)
+        Self::with_tree(seed_tree(&mut minter, "", Vec::new()), salt)
     }
 
     /// A policy over `tree`, the desktop as last kept, minting under `salt`:

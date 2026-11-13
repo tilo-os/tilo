@@ -2764,3 +2764,40 @@ fn a_control_hint_stands_in_the_room_beside_the_clock() {
     lay_out_and_draw(&mut bar, 1280.0);
     assert_eq!(bar.hint_room(), None, "a hidden bar shows no hint");
 }
+
+/// A desk nobody named says so in German on a German desk: the workspace is the German word for a
+/// workspace and the strip it comes with stands in the first place, never the English a default
+/// name used to be stored as.
+#[test]
+fn a_german_bar_names_what_nobody_named_in_german() {
+    crate::i18n::ensure();
+    ui::i18n::I18nManager::set_locale("de-DE");
+    let mut minter = tilo_desktop_model::IdMinter::default();
+    let tree = tilo_desktop_surface::seed_tree(&mut minter, "", Vec::new());
+    let chrome = super::fixture::FixtureChrome::new(tree.clone());
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+    lay_out_and_draw(&mut bar, 1600.0);
+
+    let node = bar.accessibility().expect("topbar semantics");
+    let named = |target: &str| {
+        node.children
+            .iter()
+            .find(|child| child.action_target.as_deref() == Some(target))
+            .and_then(|child| child.name.clone())
+    };
+    assert_eq!(
+        named(TopBarChrome::CONTROL_WORKSPACE_SETTINGS).as_deref(),
+        Some("Arbeitsbereich: Arbeitsbereiche, Übersicht und Leisten")
+    );
+    assert_eq!(
+        named(TopBarChrome::CONTROL_STRIP_NAME),
+        None,
+        "the desk's own strip keeps no name, so the bar leaves it to the workspace"
+    );
+    assert_eq!(
+        tilo_desktop_surface::names::strip_named("", 0),
+        "Leiste 1",
+        "and the strip switcher names it in German where it is listed"
+    );
+    ui::i18n::I18nManager::set_locale("en-US");
+}
