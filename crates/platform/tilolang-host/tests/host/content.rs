@@ -39,6 +39,12 @@ fn body_of(host: &TilolangHost, target: &patch::ResourceRef) -> String {
     }
 }
 
+/// The heads of the record's own document, as the instance holds it.
+fn record_heads(host: &TilolangHost) -> Vec<automerge::ChangeHash> {
+    let record = host.instances().next().unwrap().record();
+    record.doc().clone().get_heads()
+}
+
 /// The body field of the note the window shows beside the list, and that note.
 fn body_field(window: &Window) -> (String, patch::ResourceRef) {
     let field = node_with(
@@ -123,7 +129,9 @@ fn one_paragraph_pasted_past_a_mebibyte_is_kept_and_undoes() {
 /// A paragraph longer than one text may hold is refused: Ada hears what happened and what to do,
 /// in the words every window says, and the note keeps what she typed. A text is held to its
 /// bytes, so two bytes a character runs out at half the characters, and one byte more than the
-/// limit is already too many. Each paste is made in a notebook of its own.
+/// limit is already too many. A refused paste leaves nothing behind: the record holds what it
+/// held, and nothing of it goes to the workspace or is offered on the record's route. Each paste
+/// is made in a notebook of its own.
 #[test]
 fn a_paragraph_past_what_a_text_may_hold_is_refused_aloud() {
     let notes = notes();
@@ -135,7 +143,7 @@ fn a_paragraph_past_what_a_text_may_hold_is_refused_aloud() {
     ] {
         let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
         let mut host = TilolangHost::new(None, wake());
-        let (mut window, _sent, _inbox) = instance_on(
+        let (mut window, sent, _inbox) = instance_on(
             &mut host,
             spec(1, "ada", &route),
             notes.clone(),
@@ -148,15 +156,19 @@ fn a_paragraph_past_what_a_text_may_hold_is_refused_aloud() {
         press_new_note(&mut window);
         settle(&mut host, &mut window);
         let (field, note) = body_field(&window);
-        for text in ["draft", pasted.as_str()] {
-            window.send(&[ToApp::EditRich {
-                lane: Lane::Root,
-                target: note.clone(),
-                key: field.clone(),
-                rich: typed_rich(text),
-            }]);
-            settle(&mut host, &mut window);
-        }
+        let edit = |text: &str| ToApp::EditRich {
+            lane: Lane::Root,
+            target: note.clone(),
+            key: field.clone(),
+            rich: typed_rich(text),
+        };
+        window.send(&[edit("draft")]);
+        settle(&mut host, &mut window);
+        // What the record and its workspace hold once she typed, before the paste.
+        let typed = (record_heads(&host), documents_sent(&sent));
+        assert!(typed.1 > 0, "{row}: what was typed went to the workspace");
+        window.send(&[edit(&pasted)]);
+        settle(&mut host, &mut window);
         assert_eq!(
             body_of(&host, &note),
             "draft",
@@ -169,6 +181,15 @@ fn a_paragraph_past_what_a_text_may_hold_is_refused_aloud() {
                 args: vec![("limit".to_owned(), "8 MB".to_owned())],
             }],
             "{row}: Ada hears why the paste was not kept, and what to do"
+        );
+        assert_eq!(
+            (record_heads(&host), documents_sent(&sent)),
+            typed,
+            "{row}: neither the record nor its workspace holds anything of the refused paste"
+        );
+        assert!(
+            offered(&sent).is_empty(),
+            "{row}: nothing of the refused paste is offered on the record's route"
         );
     }
 }
