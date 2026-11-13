@@ -1358,9 +1358,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn snapshots_never_truncate_and_die_with_their_lifetime() {
-        // phase: snapshot_capacity_never_returns_truncated_success
+    tilo_test_env::scenario! {
+        fn snapshots_never_truncate_and_die_with_their_lifetime;
+
+        phase snapshot_capacity_never_returns_truncated_success;
         {
             let (temp, _authority, session, root) = fixture();
             for name in ["a", "b", "c", "d"] {
@@ -1374,7 +1375,8 @@ mod tests {
             assert_eq!(final_page.entries.len(), 1);
             assert!(final_page.next.is_none());
         }
-        // phase: dead_lifetime_releases_retained_snapshot
+
+        phase dead_lifetime_releases_retained_snapshot;
         {
             let (temp, authority, session, root) = fixture();
             for name in ["a", "b", "c"] {
@@ -1395,7 +1397,8 @@ mod tests {
             ));
             assert!(lock(&authority.inner.state).unwrap().snapshots.is_empty());
         }
-        // phase: evicted_snapshot_cursor_is_stale
+
+        phase evicted_snapshot_cursor_is_stale;
         {
             let (temp, _authority, session, root) = fixture();
             for name in ["a", "b", "c"] {

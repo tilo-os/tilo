@@ -1349,36 +1349,95 @@ pub(super) mod tests {
             .expect("typed publication error");
         assert_eq!(publication.state(), expected);
     }
-    #[test]
-    fn receipt_publication_initial_admission_phases() {
-        use tilo_files::native::atomic::{
-            PublicationState as State,
-            test_support::{Checkpoint, with_failure},
-        };
-        for (fault, state) in [
-            (Checkpoint::BeforeDataFlush, State::NotPublished),
-            (Checkpoint::PublishSubmitted, State::PublicationUnknown),
-            (Checkpoint::AfterPublish, State::PublicationUnknown),
-            (Checkpoint::BeforeCommit, State::PublishedDurabilityUnknown),
-        ] {
-            let f = Fixture::new();
-            fs::write(f.source("a"), b"source").unwrap();
-            let failed = with_failure(fault, || f.session.start(f.copy("a")));
-            let error = failed
-                .err()
-                .expect("receipt publication must fail before job admission");
-            assert_publication(&error, state);
-            assert_eq!(f.store.submissions.load(Ordering::SeqCst), 0);
-            assert!(!f.dest("a").exists());
-            if state == State::NotPublished {
-                let mut job = f.session.start(f.copy("a")).unwrap();
-                drain(&mut job);
-            } else {
-                assert!(matches!(
-                    f.session.start(f.copy("a")),
-                    Err(FsError::StoreUnavailable)
-                ));
+    tilo_test_env::scenario! {
+        fn receipt_publication_in_a_session;
+
+        phase receipt_publication_initial_admission_phases;
+        {
+            use tilo_files::native::atomic::{
+                PublicationState as State,
+                test_support::{Checkpoint, with_failure},
+            };
+            for (fault, state) in [
+                (Checkpoint::BeforeDataFlush, State::NotPublished),
+                (Checkpoint::PublishSubmitted, State::PublicationUnknown),
+                (Checkpoint::AfterPublish, State::PublicationUnknown),
+                (Checkpoint::BeforeCommit, State::PublishedDurabilityUnknown),
+            ] {
+                let f = Fixture::new();
+                fs::write(f.source("a"), b"source").unwrap();
+                let failed = with_failure(fault, || f.session.start(f.copy("a")));
+                let error = failed
+                    .err()
+                    .expect("receipt publication must fail before job admission");
+                assert_publication(&error, state);
+                assert_eq!(f.store.submissions.load(Ordering::SeqCst), 0);
+                assert!(!f.dest("a").exists());
+                if state == State::NotPublished {
+                    let mut job = f.session.start(f.copy("a")).unwrap();
+                    drain(&mut job);
+                } else {
+                    assert!(matches!(
+                        f.session.start(f.copy("a")),
+                        Err(FsError::StoreUnavailable)
+                    ));
+                }
             }
+        }
+
+        phase receipt_publication_restore_preserves_committed_user_bytes;
+        {
+            let f = Fixture::new();
+            fs::write(f.source("a"), b"restore bytes").unwrap();
+            f.hooks(Hooks {
+                stop_after_stage: true,
+                ..Hooks::default()
+            });
+            f.run(f.copy("a"));
+            let recovery = f.store.recoveries().unwrap().remove(0);
+            let stage = f.stage();
+            f.hooks(Hooks {
+                publication_failure: Some((
+                    "Published",
+                    tilo_files::native::atomic::test_support::Checkpoint::BeforeDataFlush,
+                )),
+                ..Hooks::default()
+            });
+            let mut job = f
+                .store
+                .resolve(
+                    &recovery.id,
+                    &f.session,
+                    RecoveryResolution::RestoreKnown {
+                        parent: f.dst.clone(),
+                        name: name("restored"),
+                    },
+                )
+                .unwrap();
+            let deadline = tilo_test_env::hang_deadline();
+            let error = loop {
+                if let Err(error) = job.poll() {
+                    break error;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            };
+            assert_publication(
+                &error,
+                tilo_files::native::atomic::PublicationState::NotPublished,
+            );
+            assert_eq!(fs::read(f.dest("restored")).unwrap(), b"restore bytes");
+            assert!(!stage.exists());
+            assert!(
+                !f.store
+                    .recoveries()
+                    .unwrap()
+                    .iter()
+                    .find(|r| r.id == recovery.id)
+                    .unwrap()
+                    .acknowledged
+            );
+            assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));
         }
     }
     #[test]
@@ -1473,60 +1532,6 @@ pub(super) mod tests {
                 }
             }
         }
-    }
-    #[test]
-    fn receipt_publication_restore_preserves_committed_user_bytes() {
-        let f = Fixture::new();
-        fs::write(f.source("a"), b"restore bytes").unwrap();
-        f.hooks(Hooks {
-            stop_after_stage: true,
-            ..Hooks::default()
-        });
-        f.run(f.copy("a"));
-        let recovery = f.store.recoveries().unwrap().remove(0);
-        let stage = f.stage();
-        f.hooks(Hooks {
-            publication_failure: Some((
-                "Published",
-                tilo_files::native::atomic::test_support::Checkpoint::BeforeDataFlush,
-            )),
-            ..Hooks::default()
-        });
-        let mut job = f
-            .store
-            .resolve(
-                &recovery.id,
-                &f.session,
-                RecoveryResolution::RestoreKnown {
-                    parent: f.dst.clone(),
-                    name: name("restored"),
-                },
-            )
-            .unwrap();
-        let deadline = tilo_test_env::hang_deadline();
-        let error = loop {
-            if let Err(error) = job.poll() {
-                break error;
-            }
-            assert!(Instant::now() < deadline);
-            std::thread::yield_now();
-        };
-        assert_publication(
-            &error,
-            tilo_files::native::atomic::PublicationState::NotPublished,
-        );
-        assert_eq!(fs::read(f.dest("restored")).unwrap(), b"restore bytes");
-        assert!(!stage.exists());
-        assert!(
-            !f.store
-                .recoveries()
-                .unwrap()
-                .iter()
-                .find(|r| r.id == recovery.id)
-                .unwrap()
-                .acknowledged
-        );
-        assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));
     }
     #[derive(Clone, Default)]
     #[allow(
@@ -1801,13 +1806,14 @@ pub(super) mod tests {
             std::thread::yield_now();
         }
     }
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn recovery_state_is_durable_before_and_after_every_effect() {
-        // phase: recovery_storage_failure_prevents_first_effect
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario, one labelled phase per merged case"
+        )]
+        fn recovery_state_is_durable_before_and_after_every_effect;
+
+        phase recovery_storage_failure_prevents_first_effect;
         {
             let f = Fixture::new();
             fs::write(f.source("a"), b"original").unwrap();
@@ -1823,7 +1829,8 @@ pub(super) mod tests {
             assert_eq!(fs::read_dir(f.dest("")).unwrap().count(), 0);
             assert!(f.receipt_bytes().is_empty());
         }
-        // phase: restart_known_stage_requires_new_grant
+
+        phase restart_known_stage_requires_new_grant;
         {
             let f = Fixture::new();
             fs::write(f.source("a"), b"recover me").unwrap();
@@ -1896,7 +1903,8 @@ pub(super) mod tests {
                     .acknowledged
             );
         }
-        // phase: recovery_quota_never_deletes_staged_user_bytes
+
+        phase recovery_quota_never_deletes_staged_user_bytes;
         {
             use std::os::unix::fs::MetadataExt;
             let f = Fixture::new();
@@ -1920,7 +1928,8 @@ pub(super) mod tests {
             assert_eq!(f.receipt_bytes(), receipts);
             assert_eq!(f.store.recoveries().unwrap().len(), 1);
         }
-        // phase: failed_publish_checkpoint_keeps_durable_stage_recovery
+
+        phase failed_publish_checkpoint_keeps_durable_stage_recovery;
         {
             let f = Fixture::new();
             fs::write(f.source("a"), b"recoverable").unwrap();
@@ -1944,13 +1953,14 @@ pub(super) mod tests {
             assert_eq!(f.store.recoveries().unwrap().len(), 1);
         }
     }
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn cancellation_revocation_and_teardown_keep_committed_work() {
-        // phase: worker_teardown_joins_after_last_owner
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario, one labelled phase per merged case"
+        )]
+        fn cancellation_revocation_and_teardown_keep_committed_work;
+
+        phase worker_teardown_joins_after_last_owner;
         {
             let f = Fixture::new();
             fs::write(f.source("a"), vec![17; 2 * 1024 * 1024]).unwrap();
@@ -1972,9 +1982,14 @@ pub(super) mod tests {
             assert_ne!(store.report(&id).unwrap().state, OperationState::Running);
         }
     }
-    #[test]
-    fn queue_item_and_candidate_limits_precede_effects() {
-        // phase: worker_queue_and_item_limits_precede_effects
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn queue_item_and_candidate_limits_precede_effects;
+
+        phase worker_queue_and_item_limits_precede_effects;
         {
             let f = Fixture::new();
             fs::write(f.source("a"), b"queued").unwrap();
@@ -2038,7 +2053,8 @@ pub(super) mod tests {
                 drain(&mut j);
             }
         }
-        // phase: keep_both_exhaustion_preserves_every_candidate
+
+        phase keep_both_exhaustion_preserves_every_candidate;
         {
             let f = Fixture::new();
             fs::write(f.dest("a"), b"one").unwrap();
@@ -2058,13 +2074,14 @@ pub(super) mod tests {
             assert_eq!(fs::read(f.dest("a 2")).unwrap(), b"two");
         }
     }
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn stages_are_published_or_cleaned_only_when_owned_and_accounted() {
-        // phase: replaced_stage_is_never_published_or_cleaned_as_owned
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario, one labelled phase per merged case"
+        )]
+        fn stages_are_published_or_cleaned_only_when_owned_and_accounted;
+
+        phase replaced_stage_is_never_published_or_cleaned_as_owned;
         {
             let f = Fixture::new();
             let bytes = vec![37; 2 * 1024 * 1024];
@@ -2087,7 +2104,8 @@ pub(super) mod tests {
             assert_eq!(fs::read(&stage).unwrap(), b"unrelated replacement");
             assert_eq!(fs::read(f.source("a")).unwrap(), bytes);
         }
-        // phase: fix1_cleanup_sync_failure_never_claims_known_stage
+
+        phase fix1_cleanup_sync_failure_never_claims_known_stage;
         {
             let f = Fixture::new();
             fs::write(f.source("a"), b"source bytes").unwrap();
@@ -2112,7 +2130,8 @@ pub(super) mod tests {
             assert_eq!(fs::read(f.dest("a")).unwrap(), b"collision bytes");
             assert_eq!(fs::read(f.source("a")).unwrap(), b"source bytes");
         }
-        // phase: fix1_conflict_cleanup_failure_preserves_restorable_stage
+
+        phase fix1_conflict_cleanup_failure_preserves_restorable_stage;
         {
             let f = Fixture::new();
             fs::write(f.source("a"), b"staged bytes").unwrap();
@@ -2143,7 +2162,8 @@ pub(super) mod tests {
             assert_eq!(fs::read(f.dest("restored")).unwrap(), b"staged bytes");
             assert_eq!(fs::read(f.dest("a")).unwrap(), b"existing bytes");
         }
-        // phase: fix1_stage_fingerprint_and_cleanup_errors_keep_unresolved_receipt
+
+        phase fix1_stage_fingerprint_and_cleanup_errors_keep_unresolved_receipt;
         {
             let f = Fixture::new();
             fs::write(f.source("a"), b"unverified bytes").unwrap();
@@ -2166,7 +2186,8 @@ pub(super) mod tests {
             assert!(f.store.acknowledge_report(&id).is_err());
             assert_eq!(fs::read(f.stage()).unwrap(), b"unverified bytes");
         }
-        // phase: fix1_cancel_during_stage_fingerprint_accounts_for_stage
+
+        phase fix1_cancel_during_stage_fingerprint_accounts_for_stage;
         {
             let f = Fixture::new();
             fs::write(f.source("a"), b"copied bytes").unwrap();
@@ -2198,13 +2219,14 @@ pub(super) mod tests {
             f.store.acknowledge_report(&id).unwrap();
         }
     }
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    fn restore_binds_fresh_separate_grants_and_reports_its_commit() {
-        // phase: restore_rejects_unbound_changed_and_revoked_stages
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario, one labelled phase per merged case"
+        )]
+        fn restore_binds_fresh_separate_grants_and_reports_its_commit;
+
+        phase restore_rejects_unbound_changed_and_revoked_stages;
         {
             let f = Fixture::new();
             fs::write(f.source("a"), b"expected").unwrap();
@@ -2270,7 +2292,8 @@ pub(super) mod tests {
             );
             assert!(!f.store.recoveries().unwrap()[0].acknowledged);
         }
-        // phase: restore_checkpoint_failure_reports_committed_destination
+
+        phase restore_checkpoint_failure_reports_committed_destination;
         {
             let f = Fixture::new();
             fs::write(f.source("a"), b"restore bytes").unwrap();
@@ -2310,7 +2333,8 @@ pub(super) mod tests {
                     .acknowledged
             );
         }
-        // phase: restore_uses_separate_read_and_create_grants
+
+        phase restore_uses_separate_read_and_create_grants;
         {
             let f = Fixture::new();
             fs::write(f.source("a"), b"separate rights").unwrap();

@@ -63,115 +63,119 @@ fn owner() -> FsOwner {
     }
 }
 
-#[test]
-fn mit_selected_client_keeps_only_the_admitted_inode_and_observes_revocation() {
-    let disk = tempfile::tempdir().unwrap();
-    let chosen = disk.path().join("chosen");
-    std::fs::write(&chosen, b"held bytes").unwrap();
-    std::fs::write(disk.path().join("sibling"), b"private bytes").unwrap();
-    let authority = NativeGrantAuthority::new();
-    let file = authority
-        .admit_file(File::open(&chosen).unwrap(), owner(), vec![FsRight::Read])
-        .unwrap();
-    let session = authority
-        .bind(
-            owner(),
-            uuid::Uuid::new_v4(),
-            &[],
-            std::slice::from_ref(&file),
-        )
-        .unwrap();
-    let backend = SelectedFileBackend::new(session, file.clone()).unwrap();
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .unwrap();
-    let (host, app) = UnixStream::pair().unwrap();
-    let server =
-        serve_workspace_connected(host, Arc::new(backend), runtime.handle().clone()).unwrap();
-    let client = SelectedFileConnection::connected(app).unwrap();
-    let held = client.open(OpenMode::Read).unwrap();
-    std::fs::rename(&chosen, disk.path().join("retained")).unwrap();
-    std::fs::write(&chosen, b"replacement bytes").unwrap();
-    assert_eq!(client.read(held, 0, 64).unwrap(), b"held bytes");
-    assert!(client.open(OpenMode::ReadWriteExisting).is_err());
-    assert!(client.write(held, 0, b"unauthorized").is_err());
-    authority.revoke_file(&file).unwrap();
-    assert!(client.check_scope(held).is_err());
-    assert!(client.read(held, 0, 64).is_err());
-    assert_eq!(std::fs::read(&chosen).unwrap(), b"replacement bytes");
-    assert_eq!(
-        std::fs::read(disk.path().join("sibling")).unwrap(),
-        b"private bytes"
-    );
-    drop(client);
-    server.retire().unwrap();
-}
+tilo_test_env::scenario! {
+    fn mit_clients_hold_only_what_was_admitted;
 
-#[test]
-fn mit_directory_client_cannot_promote_read_custody_to_creation_or_history_authority() {
-    let disk = tempfile::tempdir().unwrap();
-    std::fs::write(disk.path().join("chosen"), b"read only").unwrap();
-    let authority = NativeGrantAuthority::new();
-    let root = authority
-        .admit_directory(
-            File::open(disk.path()).unwrap(),
-            owner(),
-            vec![FsRight::Enumerate, FsRight::Read],
-        )
-        .unwrap();
-    let session = authority
-        .bind(
-            owner(),
-            uuid::Uuid::new_v4(),
-            std::slice::from_ref(&root),
-            &[],
-        )
-        .unwrap();
-    let journal = tempfile::Builder::new()
-        .permissions(std::fs::Permissions::from_mode(0o700))
-        .tempdir()
-        .unwrap();
-    let store =
-        runtime_fs::recovery::OperationOwner::open(File::open(journal.path()).unwrap(), owner())
+    phase mit_selected_client_keeps_only_the_admitted_inode_and_observes_revocation;
+    {
+        let disk = tempfile::tempdir().unwrap();
+        let chosen = disk.path().join("chosen");
+        std::fs::write(&chosen, b"held bytes").unwrap();
+        std::fs::write(disk.path().join("sibling"), b"private bytes").unwrap();
+        let authority = NativeGrantAuthority::new();
+        let file = authority
+            .admit_file(File::open(&chosen).unwrap(), owner(), vec![FsRight::Read])
             .unwrap();
-    authority.attach_operations(store).unwrap();
-    let backend = DirectoryWorkspaceBackend::new(session, root.clone()).unwrap();
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .unwrap();
-    let (host, app) = UnixStream::pair().unwrap();
-    let server =
-        serve_workspace_connected(host, Arc::new(backend), runtime.handle().clone()).unwrap();
-    let client = DirectoryConnection::connected(app).unwrap();
-    let chosen = EntryName::new("chosen".into()).unwrap();
-    let listing: runtime_fs::directory_backend::DirectoryRows =
-        client.list(ROOT_DIRECTORY, 0).unwrap();
-    assert_eq!(listing.entries.len(), 1);
-    let held = client
-        .open(ROOT_DIRECTORY, &chosen, OpenMode::Read)
-        .unwrap();
-    assert_eq!(client.read(held, 0, 64).unwrap(), b"read only");
-    assert!(
-        client
-            .open(ROOT_DIRECTORY, &chosen, OpenMode::Write)
-            .is_err()
-    );
-    let ungranted = EntryName::new("ungranted".into()).unwrap();
-    let refused = client.create_file(ROOT_DIRECTORY, &ungranted).unwrap();
-    assert_failed_job(&client, refused);
-    assert!(client.recoveries(ROOT_DIRECTORY, &[]).is_err());
-    assert!(!disk.path().join("ungranted").exists());
-    authority.revoke_directory(&root).unwrap();
-    assert!(client.read(held, 0, 64).is_err());
-    assert!(client.list(ROOT_DIRECTORY, 0).is_err());
-    assert_eq!(
-        std::fs::read(disk.path().join("chosen")).unwrap(),
-        b"read only"
-    );
-    drop(client);
-    server.retire().unwrap();
+        let session = authority
+            .bind(
+                owner(),
+                uuid::Uuid::new_v4(),
+                &[],
+                std::slice::from_ref(&file),
+            )
+            .unwrap();
+        let backend = SelectedFileBackend::new(session, file.clone()).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (host, app) = UnixStream::pair().unwrap();
+        let server =
+            serve_workspace_connected(host, Arc::new(backend), runtime.handle().clone()).unwrap();
+        let client = SelectedFileConnection::connected(app).unwrap();
+        let held = client.open(OpenMode::Read).unwrap();
+        std::fs::rename(&chosen, disk.path().join("retained")).unwrap();
+        std::fs::write(&chosen, b"replacement bytes").unwrap();
+        assert_eq!(client.read(held, 0, 64).unwrap(), b"held bytes");
+        assert!(client.open(OpenMode::ReadWriteExisting).is_err());
+        assert!(client.write(held, 0, b"unauthorized").is_err());
+        authority.revoke_file(&file).unwrap();
+        assert!(client.check_scope(held).is_err());
+        assert!(client.read(held, 0, 64).is_err());
+        assert_eq!(std::fs::read(&chosen).unwrap(), b"replacement bytes");
+        assert_eq!(
+            std::fs::read(disk.path().join("sibling")).unwrap(),
+            b"private bytes"
+        );
+        drop(client);
+        server.retire().unwrap();
+    }
+
+    phase mit_directory_client_cannot_promote_read_custody_to_creation_or_history_authority;
+    {
+        let disk = tempfile::tempdir().unwrap();
+        std::fs::write(disk.path().join("chosen"), b"read only").unwrap();
+        let authority = NativeGrantAuthority::new();
+        let root = authority
+            .admit_directory(
+                File::open(disk.path()).unwrap(),
+                owner(),
+                vec![FsRight::Enumerate, FsRight::Read],
+            )
+            .unwrap();
+        let session = authority
+            .bind(
+                owner(),
+                uuid::Uuid::new_v4(),
+                std::slice::from_ref(&root),
+                &[],
+            )
+            .unwrap();
+        let journal = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
+        let store =
+            runtime_fs::recovery::OperationOwner::open(File::open(journal.path()).unwrap(), owner())
+                .unwrap();
+        authority.attach_operations(store).unwrap();
+        let backend = DirectoryWorkspaceBackend::new(session, root.clone()).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (host, app) = UnixStream::pair().unwrap();
+        let server =
+            serve_workspace_connected(host, Arc::new(backend), runtime.handle().clone()).unwrap();
+        let client = DirectoryConnection::connected(app).unwrap();
+        let chosen = EntryName::new("chosen".into()).unwrap();
+        let listing: runtime_fs::directory_backend::DirectoryRows =
+            client.list(ROOT_DIRECTORY, 0).unwrap();
+        assert_eq!(listing.entries.len(), 1);
+        let held = client
+            .open(ROOT_DIRECTORY, &chosen, OpenMode::Read)
+            .unwrap();
+        assert_eq!(client.read(held, 0, 64).unwrap(), b"read only");
+        assert!(
+            client
+                .open(ROOT_DIRECTORY, &chosen, OpenMode::Write)
+                .is_err()
+        );
+        let ungranted = EntryName::new("ungranted".into()).unwrap();
+        let refused = client.create_file(ROOT_DIRECTORY, &ungranted).unwrap();
+        assert_failed_job(&client, refused);
+        assert!(client.recoveries(ROOT_DIRECTORY, &[]).is_err());
+        assert!(!disk.path().join("ungranted").exists());
+        authority.revoke_directory(&root).unwrap();
+        assert!(client.read(held, 0, 64).is_err());
+        assert!(client.list(ROOT_DIRECTORY, 0).is_err());
+        assert_eq!(
+            std::fs::read(disk.path().join("chosen")).unwrap(),
+            b"read only"
+        );
+        drop(client);
+        server.retire().unwrap();
+    }
 }
