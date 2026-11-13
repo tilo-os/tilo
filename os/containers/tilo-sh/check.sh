@@ -442,8 +442,15 @@ if [[ $hosted == 1 ]]; then
       # session that exited before its window came up says why there.
       echo '--- the browser session in the VM said:' >&2
       sudo -n podman exec tilo-sh-vm-host-0 sh -c \
-        'find /var /srv -name "browser*.log" 2>/dev/null | while read -r log; do echo "$log:"; tail -60 "$log"; done' \
+        'find /var /srv -name "browser*.log" 2>/dev/null | while read -r log; do echo "$log:"; cat "$log"; done' \
         >&2 2>/dev/null || true
+      echo '--- what the relay said of the Browser:' >&2
+      bash "$here/stack.sh" logs relay 2>/dev/null \
+        | grep -iE 'browser|environment|hosted|placed|peer session|refus|enrol|way in|device' | tail -80 >&2 || true
+      echo '--- the relay said, to its end:' >&2
+      bash "$here/stack.sh" logs relay 2>/dev/null | tail -60 >&2 || true
+      echo '--- the member said, to its end:' >&2
+      sudo -n podman logs --tail 60 tilo-sh-vm-host-0 2>&1 | grep -v 'net_report' >&2 || true
       echo '--- what the guest was shown of the workspace:' >&2
       sudo -n podman exec tilo-sh-vm-host-0 sh -c \
         'ls -la --time-style=full-iso /srv/tilo-member/home/Tilo 2>&1; find /srv/tilo-member/home -maxdepth 4 -name browser -type d 2>/dev/null | head -3' \
@@ -487,7 +494,14 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
     hosted_run --fill 2>&1 | tee "$work/hosted-fill.log"
     fill_status=${PIPESTATUS[0]}
     set -e
-    [[ $fill_status == 0 ]] || fail "the hosted Browser flow failed (see $work/hosted-fill.log)"
+    if [[ $fill_status != 0 ]]; then
+      # The person at their desk, in their own browser: what their page said,
+      # and what they saw of the hosted window, when the flow stopped.
+      echo '--- the person at their desk said:' >&2
+      sed -n '1,200p' "$work/hosted/desk.jsonl" >&2 2>/dev/null || true
+      tail -40 "$work/hosted/desk.log" >&2 2>/dev/null || true
+      fail "the hosted Browser flow failed (see $work/hosted-fill.log)"
+    fi
     echo "ok: the hosted Browser ran in $((SECONDS - launch))s, its open taking ${hosted_seconds}s"
   fi
 

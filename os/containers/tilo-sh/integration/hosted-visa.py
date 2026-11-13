@@ -284,7 +284,7 @@ class Desk:
         """Their browser goes, as one a person closes does: the watcher is
         told to finish, and is stopped only if it does not."""
         try:
-            (Path(OUT) / "stop").write_text("")
+            (Path(OUT) / "desk" / "stop").write_text("")
         except OSError:
             pass
         try:
