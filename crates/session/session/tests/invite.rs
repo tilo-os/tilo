@@ -212,8 +212,8 @@ fn bar_control(session: &Session) -> Option<(f64, f64, f64, f64)> {
     session
         .controls()
         .into_iter()
-        .find(|(name, _)| name == "Invite" || name == "topbar:invite")
-        .map(|(_, rect)| rect)
+        .find(|control| control.name == "Invite" || control.name == "topbar:invite")
+        .map(|control| control.rect)
 }
 
 /// A press at the centre of `rect` , through the compositor's own input.

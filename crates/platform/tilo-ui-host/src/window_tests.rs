@@ -63,6 +63,7 @@ fn titled_page() -> Vec<ToUi> {
     let mut input = UiNode::empty("ui.TextInput", "title");
     input.binding = Some(crate::Binding {
         field: Some(("doc/notes:a".to_owned(), "title".to_owned())),
+        kind: Some("notes.Note".to_owned()),
         name: "Title".to_owned(),
     });
     let mut page = UiNode::empty("stack", "page");
@@ -261,6 +262,7 @@ fn opened_note(id: &str, title: &str) -> Vec<ToUi> {
     let mut input = UiNode::empty("ui.TextInput", "title");
     input.binding = Some(crate::Binding {
         field: Some((format!("{id}/notes:a"), "title".to_owned())),
+        kind: Some("notes.Note".to_owned()),
         name: "Title".to_owned(),
     });
     let mut page = UiNode::empty("stack", "note");
@@ -810,6 +812,7 @@ fn a_press_runs_the_action_of_the_item_the_keyboard_is_on() {
         let mut title = UiNode::empty("ui.TextInput", &format!("{key}#title"));
         title.binding = Some(crate::Binding {
             field: Some((format!("doc/tasks:{key}"), "title".to_owned())),
+            kind: Some("tasks.Task".to_owned()),
             name: name.to_owned(),
         });
         title
@@ -942,6 +945,7 @@ fn bound_page(kind: &str, props: &[(&str, Value)], value: Value) -> Vec<ToUi> {
     let mut control = UiNode::empty(kind, "field");
     control.binding = Some(crate::Binding {
         field: Some(("doc/notes:a".to_owned(), "field".to_owned())),
+        kind: Some("notes.Note".to_owned()),
         name: "Field".to_owned(),
     });
     control
@@ -1941,4 +1945,129 @@ fn the_window_s_search_narrows_the_list_its_frame_declares() {
         InPlace::Query,
         "the search closes, the frame stays"
     );
+}
+
+/// A window over one record, with the record's `new` action in its bar: nothing listed, or a
+/// list of one thing — the composition that moves the action out of the bar into the columns'
+/// header row.
+fn action_shell(listing: bool) -> Vec<ToUi> {
+    use wire::Event;
+    let slot = |name: &str| {
+        let mut node = UiNode::empty(SLOT, &format!("shell#{name}"));
+        node.props.insert("name".to_owned(), Value::text(name));
+        node
+    };
+    let mut button = UiNode::empty(&kind("Button"), "shell#new");
+    button
+        .props
+        .insert("label".to_owned(), Value::text("New note"));
+    button.events.insert(
+        "press".to_owned(),
+        Event {
+            invokes: Some(("1".to_owned(), "new".to_owned())),
+            ..Event::default()
+        },
+    );
+    let mut actions = slot("actions");
+    actions.children.push(button);
+    let mut overview = slot("overview");
+    if listing {
+        let mut row = UiNode::empty(&kind("ListRow"), "shell#row");
+        row.props.insert("title".to_owned(), Value::text("First"));
+        overview.children.push(row);
+    } else {
+        let mut state = UiNode::empty(&kind("EmptyState"), "shell#none");
+        state
+            .props
+            .insert("title".to_owned(), Value::text("No notes yet"));
+        overview.children.push(state);
+    }
+    let mut content = slot("content");
+    let mut unopened = UiNode::empty(&kind("EmptyState"), "shell#unopened");
+    unopened
+        .props
+        .insert("title".to_owned(), Value::text("No note open"));
+    content.children.push(unopened);
+    let mut shell = UiNode::empty(&kind("NavShell"), "shell");
+    shell.children.extend([overview, content, actions]);
+    let mut target = doc();
+    target.id = "1".to_owned();
+    target.ty = "test.tasks".to_owned();
+    vec![
+        ToUi::Open {
+            lane: Lane::Root,
+            target,
+            tree: shell,
+            front: None,
+        },
+        ToUi::Actions(wire::ActionCatalogue::All(catalogue_of("New note", None))),
+    ]
+}
+
+/// What the window's tree says the control called `name` does.
+fn identity_named(harness: &ui::headless::FrameHarness, name: &str) -> Option<String> {
+    harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some(name))
+        .and_then(|(_, node)| node.author_id().map(str::to_owned))
+}
+
+/// Where the control called `name` stands in the window, as assistive technology reads it.
+fn at_named(harness: &ui::headless::FrameHarness, name: &str) -> (f64, f64, f64, f64) {
+    let bounds = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some(name))
+        .and_then(|(_, node)| node.bounds())
+        .expect("the control is drawn where a press reaches it");
+    (bounds.x0, bounds.y0, bounds.x1, bounds.y1)
+}
+
+#[test]
+fn the_first_item_moves_the_windows_action_and_not_what_it_does() {
+    let (mut app, mut window) = window();
+    send(&mut app, &action_shell(false));
+    window.receive();
+    let mut harness =
+        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (1280, 800));
+    harness.relayout();
+    let identity = "test.tasks\u{1f}new";
+    assert_eq!(
+        identity_named(&harness, "New note").as_deref(),
+        Some(identity),
+        "the bar's button says what it does: {:?}",
+        harness
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| Some((node.label()?.to_owned(), node.author_id()?.to_owned())))
+            .collect::<Vec<_>>()
+    );
+    let in_the_bar = at_named(&harness, "New note");
+
+    // The first note: the window's columns come back, and the action stands in their header row.
+    send(&mut app, &action_shell(true));
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    let in_the_columns = at_named(&harness, "New note");
+    assert_ne!(
+        in_the_bar, in_the_columns,
+        "the composition draws the control somewhere else"
+    );
+    assert_eq!(
+        identity_named(&harness, "New note").as_deref(),
+        Some(identity),
+        "and what it does is where it was, whatever the window composed around it"
+    );
+    // One control of one action drawn in two places keeps a node each, so no two nodes of the
+    // tree share an id.
+    let ids: Vec<u64> = harness
+        .a11y_nodes()
+        .into_iter()
+        .map(|(id, _)| id.0)
+        .collect();
+    let mut unique = ids.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(ids.len(), unique.len(), "every node keeps an id of its own");
 }

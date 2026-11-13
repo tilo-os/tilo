@@ -649,15 +649,18 @@ impl crate::Published for DesktopHost {
     /// them, the controls the apps that draw the windows describe of their
     /// own content ([`ui::window_targets`]): a window's app keeps its widget
     /// tree to itself, so this is the one place they are named.
-    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+    fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
         let mut shown = crate::Published::controls(&mut self.desk.borrow_mut().host);
         // Every window's own controls stand where they stand, beside the desk's: two windows go
         // by the same names — each window's sidebar toggle, each window's "More actions" — and
         // each is named where it is drawn. A window's control is never the desk's because they
         // share a name; a press by name reaches the window in front ([`Self::press_action`]).
-        for (name, rect) in self.desk.borrow().policy.handle().window_controls() {
-            if !shown.iter().any(|(seen, at)| seen == &name && *at == rect) {
-                shown.push((name, rect));
+        for control in self.desk.borrow().policy.handle().window_controls() {
+            if !shown
+                .iter()
+                .any(|seen| seen.name == control.name && seen.rect == control.rect)
+            {
+                shown.push(control);
             }
         }
         shown
@@ -665,6 +668,35 @@ impl crate::Published for DesktopHost {
 
     fn press(&mut self, name: &str) -> Result<(), String> {
         self.press_action(name, ui::window_targets::TargetAction::Activate)
+    }
+
+    /// Act on the control that does `identity`, in whichever window draws it: the one the desk
+    /// lists, so what the window composed around the control and what the person's language
+    /// calls it are not in the way.
+    fn press_identity(
+        &mut self,
+        identity: &str,
+        action: ui::window_targets::TargetAction,
+    ) -> Result<(), String> {
+        let mut desk = self.desk.borrow_mut();
+        // The window in front answers first, where it draws the control: a person pointing at it
+        // presses that window's, never one behind it.
+        let front = desk.policy.handle().window_in_front();
+        if front.is_some_and(|tab| desk.policy.handle().window_does(tab, identity)) {
+            return desk
+                .policy
+                .handle()
+                .press_window_control_doing(identity, action);
+        }
+        if desk
+            .policy
+            .handle()
+            .press_window_control_doing(identity, action)
+            .is_ok()
+        {
+            return Ok(());
+        }
+        crate::Published::press_identity(&mut desk.host, identity, action)
     }
 
     fn press_action(
@@ -685,17 +717,17 @@ impl crate::Published for DesktopHost {
                 handle
                     .window_controls()
                     .iter()
-                    .any(|(shown, _)| shown == name),
+                    .any(|control| control.name == name),
             )
         };
         let chrome = crate::Published::controls(&mut desk.host);
         // A control the desk draws in the front window's own chrome — its bar's buttons — is that
         // window's: it answers for it as its app's content does.
         let in_fronts_chrome = front_window.is_some_and(|window| {
-            chrome.iter().any(|(shown, rect)| {
-                let (x, y, width, height) = *rect;
+            chrome.iter().any(|control| {
+                let (x, y, width, height) = control.rect;
                 let (centre_x, centre_y) = (x + width / 2.0, y + height / 2.0);
-                shown == name
+                control.name == name
                     && centre_x >= window.x0
                     && centre_x < window.x1
                     && centre_y >= window.y0
@@ -714,7 +746,7 @@ impl crate::Published for DesktopHost {
                 .handle()
                 .press_window_control_in(front, name, action);
         }
-        if chrome.iter().any(|(shown, _)| shown == name) {
+        if chrome.iter().any(|control| control.name == name) {
             return crate::Published::press_action(&mut desk.host, name, action);
         }
         // The control is one a window's app draws: the press reaches it as its
@@ -1318,6 +1350,7 @@ mod tests {
             vec![WindowTarget {
                 role: "Row".to_owned(),
                 name: "Documents".to_owned(),
+                identity: None,
                 rect: [10.0, 20.0, 110.0, 40.0],
                 actions: vec![TargetAction::Activate],
             }],
@@ -1333,7 +1366,7 @@ mod tests {
         assert_eq!(
             listed
                 .iter()
-                .map(|(name, _)| name.as_str())
+                .map(|control| control.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["Documents"],
             "the frame after the declaration carries the window's controls"

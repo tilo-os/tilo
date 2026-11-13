@@ -692,8 +692,9 @@ impl crate::Published for WidgetHost {
 
     /// The tree's controls: the widgets addressed by a target (a place's
     /// switch, a tab's pill, an onboarding step) and the elements it names
-    /// in its accessibility tree, each where it stands on the desktop.
-    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+    /// in its accessibility tree, each where it stands on the desktop, and
+    /// by what it does where it does something the app publishes.
+    fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
         let mut found: Vec<(String, vello::kurbo::Rect)> =
             self.host.targets().into_iter().collect();
         // The controls of an app the tree shows as its own (setup's steps),
@@ -725,7 +726,11 @@ impl crate::Published for WidgetHost {
         }
         shown
             .into_iter()
-            .map(|(name, rect)| (name, self.logical(rect)))
+            .map(|(name, rect)| ui::window_targets::WindowControl {
+                name,
+                identity: None,
+                rect: self.logical(rect),
+            })
             .collect()
     }
 

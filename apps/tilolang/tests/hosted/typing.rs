@@ -215,7 +215,7 @@ fn steps(session: &Session, person: &str) -> Vec<usize> {
 /// "+", a title typed, and a click in the body: the note is made, its title is a burst of its own,
 /// and the keyboard stands where a person types next.
 fn new_note_with_title(session: &mut Session, title: &str) {
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.settle();
     session.window.type_text(title);
@@ -228,7 +228,7 @@ fn new_note_with_title(session: &mut Session, title: &str) {
 /// The keyboard moved to the note's title: what a person clicking it does, and what ends the burst
 /// their typing in the body is.
 fn click_title(session: &mut Session) {
-    let title = session.field("Untitled");
+    let title = session.field("title");
     session.window.click_at(title.0, title.1);
     session.settle();
 }
@@ -337,7 +337,7 @@ fn a_pause_ends_the_burst_the_person_is_typing_in_the_frame_harness() {
 /// Turning to another field ends the burst: the title is a step, the body another, and neither is
 /// split into its letters.
 fn title_then_body_is_two_steps(mut session: Session) {
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.settle();
     session.window.type_text("Groceries");

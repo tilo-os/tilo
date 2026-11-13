@@ -141,6 +141,7 @@ impl Convert<'_> {
             field: binding
                 .field()
                 .map(|(target, field)| (target.id_string(), field.clone())),
+            kind: binding.field().map(|(target, _)| target.ty.clone()),
             name: (self.field_name)(binding),
         }
     }

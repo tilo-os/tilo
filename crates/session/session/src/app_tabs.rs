@@ -1163,13 +1163,18 @@ impl Answers<'_> {
         let presses = self
             .desktop
             .with_policy(|policy| policy.handle().take_target_presses());
-        for (connection, name, role, action) in presses {
-            let Some(link) = self.links.get(&connection) else {
+        for press in presses {
+            let Some(link) = self.links.get(&press.connection) else {
                 continue;
             };
             tell(
                 &link.writer,
-                &FloatingSurfaceHostMessage::PressTarget { name, role, action },
+                &FloatingSurfaceHostMessage::PressTarget {
+                    name: press.name,
+                    role: press.role,
+                    identity: press.identity,
+                    action: press.action,
+                },
                 &link.app,
             );
         }

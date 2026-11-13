@@ -105,8 +105,9 @@ pub trait Published {
     fn accessible_labels(&mut self) -> Vec<String>;
 
     /// The controls it shows by name, each with where it stands, logical
-    /// `(x, y, w, h)` of the desktop: what a test or a tool presses by name.
-    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+    /// `(x, y, w, h)` of the desktop, and what it does when it runs an app
+    /// action: what a test or a tool looks up, by name or by identity.
+    fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
         Vec::new()
     }
 
@@ -117,6 +118,27 @@ pub trait Published {
     /// It shows no control by that name, or the control refused.
     fn press(&mut self, name: &str) -> Result<(), String> {
         Err(format!("no control named {name}"))
+    }
+
+    /// Act on the control that does `identity` (`so.tilo.lang.notes.Notebook`
+    /// and `new_note`): the one `controls` lists, wherever the window's
+    /// composition draws it and whatever the person's language calls it.
+    ///
+    /// # Errors
+    /// It shows no control doing that, it answers nothing of `action`, or the
+    /// control refused.
+    fn press_identity(
+        &mut self,
+        identity: &str,
+        action: ui::window_targets::TargetAction,
+    ) -> Result<(), String> {
+        let name = self
+            .controls()
+            .into_iter()
+            .find(|control| control.identity.as_deref() == Some(identity))
+            .map(|control| control.name)
+            .ok_or_else(|| format!("no control does {identity}"))?;
+        self.press_action(&name, action)
     }
 
     /// Act on the control `name` it shows as `action` says: the activation
@@ -415,7 +437,7 @@ impl Doors {
     /// listed, so the one a person sees is found where they see it; a press by name reaches the
     /// frontmost surface's ([`Self::press_action`]).
     #[must_use]
-    pub fn controls(&self) -> Vec<(String, (f64, f64, f64, f64))> {
+    pub fn controls(&self) -> Vec<ui::window_targets::WindowControl> {
         self.offered()
             .into_iter()
             .rev()
@@ -436,11 +458,39 @@ impl Doors {
     ) -> Result<(), String> {
         for (_, surface) in self.offered().into_iter().rev() {
             let mut surface = surface.borrow_mut();
-            if surface.controls().iter().any(|(shown, _)| shown == name) {
+            if surface
+                .controls()
+                .iter()
+                .any(|control| control.name == name)
+            {
                 return surface.press_action(name, action);
             }
         }
         Err(format!("no control named {name}"))
+    }
+
+    /// Act on the control that does `identity` on the surface showing it, as
+    /// [`Self::press_action`] acts on one by name: the first one, which is
+    /// what [`Self::controls`] lists.
+    ///
+    /// # Errors
+    /// No offered surface shows it, or the surface refused.
+    pub fn press_identity(
+        &self,
+        identity: &str,
+        action: ui::window_targets::TargetAction,
+    ) -> Result<(), String> {
+        for (_, surface) in self.offered().into_iter().rev() {
+            let mut surface = surface.borrow_mut();
+            let shows = surface
+                .controls()
+                .iter()
+                .any(|control| control.identity.as_deref() == Some(identity));
+            if shows {
+                return surface.press_identity(identity, action);
+            }
+        }
+        Err(format!("no control does {identity}"))
     }
 
     /// The surfaces offering now, each with its place in the door: what the

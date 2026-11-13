@@ -220,6 +220,11 @@ impl Value {
 pub struct Binding {
     /// The resource and field it edits; `None` for the view's own state.
     pub field: Option<(String, String)>,
+    /// The kind of record that field is of (`so.tilo.lang.notes.Note`), when it edits one: what
+    /// names the place a control edits however the window composes around it, where the record
+    /// it edits names one document. Every field is written, `None` included: the batch is postcard,
+    /// which cannot skip one.
+    pub kind: Option<String>,
     /// What it is called, for assistive technology.
     pub name: String,
 }

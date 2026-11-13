@@ -129,10 +129,10 @@ fn a_raised_notification_shows_a_banner_that_expires() {
     // What the banner offers answers the person like any window's buttons
     // do: each is a control of the desk, standing on the banner.
     assert!(
-        session
-            .controls()
-            .into_iter()
-            .any(|(_, (x, y, w, h))| stack.contains((x + w / 2.0, y + h / 2.0))),
+        session.controls().into_iter().any(|control| {
+            let (x, y, w, h) = control.rect;
+            stack.contains((x + w / 2.0, y + h / 2.0))
+        }),
         "the banner's buttons are the desk's controls: {:?}",
         session.controls()
     );

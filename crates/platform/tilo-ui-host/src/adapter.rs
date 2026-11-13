@@ -178,6 +178,12 @@ impl Published {
         self.holding(resource)
             .is_some_and(|held| tilo_actions::ActionBinding::unit_for(held, action).is_ok())
     }
+
+    /// The kind of record `resource` is, as it publishes it (`so.tilo.lang.notes.Notebook`):
+    /// what an identity names instead of the one record, which is the window's business.
+    fn kind(&self, resource: &str) -> Option<&str> {
+        Some(self.holding(resource)?.kind.as_str())
+    }
 }
 
 /// Note where each resource of `resources` stands at `path`, and where those it holds under it
@@ -223,6 +229,30 @@ impl Adapter {
     /// window publishes now.
     pub(crate) fn holds(&self, resource: &str, action: &str) -> bool {
         self.published.borrow().holds(resource, action)
+    }
+
+    /// What the control `node` of a view does, as the identity anyone looks it up by: the kind
+    /// of record it acts on and the operation, in the app's ids.
+    ///
+    /// A control that runs an app action does that action; one that edits a record's field
+    /// edits that field. The window's composition moves the control between the bar, an empty
+    /// state and a header row, and the person's language renames it; neither changes what it
+    /// does, so neither changes this.
+    pub(crate) fn identity_of(&self, node: &UiNode) -> Option<String> {
+        // One event per control runs what the person presses it for; a node that runs an action
+        // from any event is that action's, and the maps are ordered, so this is the same one
+        // every frame.
+        if let Some((resource, action)) = node
+            .events
+            .values()
+            .find_map(|event| event.invokes.as_ref())
+        {
+            let kind = self.published.borrow().kind(resource)?.to_owned();
+            return Some(tilo_actions::ActionAddress::new(kind, action).encode());
+        }
+        let (_, field) = node.binding.as_ref()?.field()?;
+        let kind = node.binding.as_ref()?.kind.as_deref()?;
+        Some(tilo_actions::ActionAddress::new(kind, field).encode())
     }
 
     /// What the components reported since the last call, as what the window applies.
@@ -1231,6 +1261,7 @@ mod tests {
         let mut input = node("TextInput", "i", &[("bind", Value::text("value"))]);
         input.binding = Some(Binding {
             field: Some(("doc".to_owned(), "title".to_owned())),
+            kind: Some("notes.Note".to_owned()),
             name: "Title".to_owned(),
         });
         let description = description_of(&input).expect("described");

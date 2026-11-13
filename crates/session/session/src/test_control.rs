@@ -1121,13 +1121,30 @@ fn asked_of_desk(
                 .doors
                 .controls()
                 .into_iter()
-                .map(|(name, (x, y, w, h))| json!({"name": name, "rect": [x, y, w, h]}))
+                .map(|control| {
+                    let (x, y, w, h) = control.rect;
+                    match control.identity {
+                        Some(identity) => json!({
+                            "name": control.name,
+                            "identity": identity,
+                            "rect": [x, y, w, h],
+                        }),
+                        None => json!({"name": control.name, "rect": [x, y, w, h]}),
+                    }
+                })
                 .collect();
             json!({"targets": targets})
         }
         Op::ClickNamed => {
-            let Some(name) = request.get("name").and_then(Json::as_str) else {
-                return Some(refusal("parse_error", "`click_named` takes `name`"));
+            // What the control does, where the caller names it that way: the identity it keeps
+            // wherever the window's composition draws it, in whatever language.
+            let identity = request.get("identity").and_then(Json::as_str);
+            let name = request.get("name").and_then(Json::as_str);
+            let Some(name) = name.or(identity) else {
+                return Some(refusal(
+                    "parse_error",
+                    "`click_named` takes `name` or `identity`",
+                ));
             };
             // The verb names the action to take on the control: a press (`activate`, the default)
             // or the context menu it opens without a point aimed at where it is drawn.
@@ -1141,7 +1158,12 @@ fn asked_of_desk(
                     ));
                 }
             };
-            match desk.doors.press_action(name, action) {
+            let pressed = if let Some(identity) = identity {
+                desk.doors.press_identity(identity, action)
+            } else {
+                desk.doors.press_action(name, action)
+            };
+            match pressed {
                 Ok(()) => json!({"ok": {}}),
                 Err(error) => refusal("unknown_target", &error),
             }

@@ -697,6 +697,16 @@ class Session:
         self.control({"op": "pointer_button", "pressed": True, "button": "right"})
         self.control({"op": "pointer_button", "pressed": False, "button": "right"})
 
+    def click_doing(self, identity: str, verb: str = "activate") -> dict:
+        """Press the control that does `identity` (an app action's, as `tilolang-e2e`'s `doing`
+        writes it): wherever the window's composition draws it, in whatever language."""
+        return self.control({"op": "click_named", "identity": identity, "verb": verb})
+
+    def wait_doing(self, identity: str, deadline: float = 60.0) -> dict:
+        """The control that does `identity`, once the window draws it."""
+        return until(f"a control doing {identity!r}", lambda: next(
+            (t for t in self.targets() if t.get("identity") == identity), None), deadline)
+
     def click_named(self, name: str, verb: str = "activate") -> dict:
         """Press the control `name`; `verb` is `activate` or `show-context-menu`."""
         return self.control({"op": "click_named", "name": name, "verb": verb})

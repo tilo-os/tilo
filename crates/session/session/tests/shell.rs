@@ -2764,13 +2764,13 @@ fn a_press_on_a_quick_settings_tile_works_at_every_scale() {
             session
                 .controls()
                 .iter()
-                .any(|(name, _)| name == "Dark mode")
+                .any(|control| control.name == "Dark mode")
         });
         let (x, y, w, h) = session
             .controls()
             .into_iter()
-            .find(|(name, _)| name == "Dark mode")
-            .map(|(_, rect)| rect)
+            .find(|control| control.name == "Dark mode")
+            .map(|control| control.rect)
             .expect("the panel shows its Dark mode tile");
         let dark = serde_json::json!("dark");
         let was = appearance_mode(&session) == dark;

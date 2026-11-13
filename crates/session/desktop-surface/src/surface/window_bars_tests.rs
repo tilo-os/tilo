@@ -356,6 +356,7 @@ fn a_windows_app_describes_its_controls_and_the_press_goes_back_on_its_connectio
         vec![WindowTarget {
             role: "ListItem".to_owned(),
             name: "Documents".to_owned(),
+            identity: None,
             rect: [10.0, 20.0, 110.0, 40.0],
             actions: vec![TargetAction::Activate, TargetAction::ShowContextMenu],
         }],
@@ -371,14 +372,15 @@ fn a_windows_app_describes_its_controls_and_the_press_goes_back_on_its_connectio
         .map(|(_, content)| content)
         .expect("the window is drawn");
     let listed = handle.window_controls();
-    let (name, (x, y, w, h)) = listed.first().expect("the window's control is listed");
-    assert_eq!(name, "Documents");
+    let control = listed.first().expect("the window's control is listed");
+    assert_eq!(control.name, "Documents");
+    let (x, y, w, h) = control.rect;
     assert_eq!(
-        (*x, *y),
+        (x, y),
         (content.x0 + 10.0, content.y0 + 20.0),
         "listed where it is drawn in its window"
     );
-    assert_eq!((*w, *h), (100.0, 20.0));
+    assert_eq!((w, h), (100.0, 20.0));
 
     assert_eq!(
         handle.press_window_control("Documents", TargetAction::ShowContextMenu),
@@ -386,12 +388,13 @@ fn a_windows_app_describes_its_controls_and_the_press_goes_back_on_its_connectio
     );
     assert_eq!(
         handle.take_target_presses(),
-        vec![(
-            41,
-            "Documents".to_owned(),
-            "ListItem".to_owned(),
-            TargetAction::ShowContextMenu
-        )],
+        vec![crate::surface::window_bars::TargetPress {
+            connection: 41,
+            name: "Documents".to_owned(),
+            role: "ListItem".to_owned(),
+            identity: None,
+            action: TargetAction::ShowContextMenu,
+        }],
         "the press goes back on the connection that described the control"
     );
 

@@ -64,6 +64,9 @@ mod offers;
 #[path = "hosted/typing.rs"]
 mod typing;
 
+#[path = "hosted/controls.rs"]
+mod controls;
+
 const NOTES: &str = "so.tilo.lang.notes";
 /// The test's own notebook, whose notes' bodies are rich text.
 const RICHBODY: &str = "so.tilo.lang.richbody";
@@ -429,6 +432,8 @@ impl Window {
 
 /// A person at a window whose instance a tilolang host runs.
 struct Session {
+    /// The app whose window it is: what its actions' identities name before the operation.
+    app: String,
     host: TilolangHost,
     window: Window,
     /// The requests the instance's connection sent.
@@ -617,6 +622,7 @@ impl Session {
         let woken = Arc::new(Woken::default());
         let wake: tilolang_tilo::background::Waker = woken.waker();
         let mut host = TilolangHost::new(storage, Arc::clone(&wake));
+        let app = spec.app.clone();
         let kept = host.kept(&spec.app).unwrap();
         let bundle = package(package_of(&spec.app));
         let (ours, theirs) = Channel::pair().unwrap();
@@ -633,6 +639,7 @@ impl Session {
         );
         host.add(hosted, Some(watched));
         Self {
+            app,
             host,
             window: window(HostedWindow::over(theirs)),
             sent,
@@ -826,69 +833,6 @@ impl Session {
         }
         titles
     }
-
-    /// The centre of the open note's body.
-    fn body(&mut self) -> (f64, f64) {
-        let body = self.field_key("Write something");
-        let rect = widget_by_id(self.window.root(), &body)
-            .expect("the open note's body is laid out")
-            .get_rect();
-        (rect.center().x, rect.center().y)
-    }
-
-    /// The key in the composed tree of the open note's field whose placeholder is
-    /// `placeholder`.
-    fn field_key(&mut self, placeholder: &str) -> String {
-        let view = self.hosted().view().expect("the window is connected");
-        let field = |tree: &tilo_ui_host::UiNode| {
-            find(tree, &|node| {
-                matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == placeholder)
-            })
-            .unwrap_or_else(|| panic!("the open note has a field {placeholder:?}"))
-            .key
-            .clone()
-        };
-        // A window whose page is another's after it opens the page in the lane after its own;
-        // one whose page is its own (a tree beside what it shows) draws it in its content.
-        if let Some(detail) = view.detail_tree() {
-            return format!("{}{}", tilo_ui_host::shell::DETAIL, field(&detail));
-        }
-        let root = view.root_tree().expect("the window's view");
-        let mut page = Vec::new();
-        content_nodes(&root, &mut page);
-        page.iter()
-            .find_map(|node| {
-                find(node, &|node| {
-                    matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == placeholder)
-                })
-            })
-            .unwrap_or_else(|| panic!("the open note has a field {placeholder:?}"))
-            .key
-            .clone()
-    }
-
-    /// The centre of the open note's field whose placeholder is `placeholder`.
-    fn field(&mut self, placeholder: &str) -> (f64, f64) {
-        let id = self.field_key(placeholder);
-        let rect = widget_by_id(self.window.root(), &id)
-            .unwrap_or_else(|| panic!("the field {id} is laid out"))
-            .get_rect();
-        (rect.center().x, rect.center().y)
-    }
-
-    /// What the open note's field whose placeholder is `placeholder` shows.
-    fn field_value(&mut self, placeholder: &str) -> Option<tilo_ui_host::Value> {
-        let id = self.field_key(placeholder);
-        self.hosted().view()?.bound_value(&id)
-    }
-
-    /// The centre of the header's New note button.
-    fn new_note_button(&mut self) -> (f64, f64) {
-        let mut found = Vec::new();
-        named(self.window.root(), "New note", &mut found);
-        let rect = *found.last().expect("the window offers New note");
-        (rect.center().x, rect.center().y)
-    }
 }
 
 /// The title a window's row shows of its item: a tree's row names it in its node's label, a
@@ -1011,15 +955,15 @@ fn apart(one: &[[u8; 4]], other: &[[u8; 4]]) -> f64 {
 /// key typed before the host answered, three times over: each new note takes the keyboard in
 /// its title.
 fn new_notes_take_the_keys_typed_right_after_new_note(mut session: Session) {
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.settle();
-    let title = session.field("Untitled");
+    let title = session.field("title");
     session.window.click_at(title.0, title.1);
     session.window.type_text("First ");
     session.settle();
     for _ in 0..3 {
-        let plus = session.new_note_button();
+        let plus = session.control(&session.doing("Notebook", "new_note"));
         session.window.click_at(plus.0, plus.1);
         session.window.type_text("Note title");
         session.settle();
@@ -1054,7 +998,7 @@ fn keys_typed_right_after_new_note_land_in_the_new_notes_title_in_the_live_windo
 fn keys_typed_after_each_of_several_presses_land_in_the_note_that_press_made(mut session: Session) {
     let names = ["Alpha", "Beta", "Gamma"];
     for name in names {
-        let plus = session.new_note_button();
+        let plus = session.control(&session.doing("Notebook", "new_note"));
         session.window.click_at(plus.0, plus.1);
         session.window.type_text(name);
     }
@@ -1084,13 +1028,13 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_workspac
     let busy = Arc::new(AtomicBool::new(false));
     let changes = Arc::default();
     let mut session = Session::crowded_notes(&busy, &changes);
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.settle();
     // The connection's queue fills up while the person types fast into notes, open and new.
     busy.store(true, Ordering::SeqCst);
     let before = changes.lock().unwrap().len();
-    let title = session.field("Untitled");
+    let title = session.field("title");
     session.window.click_at(title.0 + 40.0, title.1);
     for key in ["Be", "ta", "Gam", "ma"] {
         session.window.type_text(key);
@@ -1100,7 +1044,7 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_workspac
     session.window.click_at(body.0, body.1);
     session.window.type_text("Body");
     session.settle();
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.window.type_text("WV");
     session.settle();
@@ -1141,7 +1085,7 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_workspac
 #[test]
 fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() {
     let mut session = Session::live_notes();
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.settle();
     for round in 1..=2_u8 {
@@ -1152,7 +1096,7 @@ fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() 
         session.window.click_at(body.0 + shift, body.1);
         session.window.type_text("Body");
         session.settle();
-        let title = session.field("Untitled");
+        let title = session.field("title");
         session.window.click_at(title.0 + shift, title.1);
         session.window.type_text("XY");
         session.settle();
@@ -1162,7 +1106,7 @@ fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() 
             titles.len() == 1 && titles[0].contains(&wanted),
             "round {round}: the keys went to the title the person clicked: {titles:?}"
         );
-        let body = format!("{:?}", session.field_value("Write something"));
+        let body = format!("{:?}", session.field_value("body"));
         assert!(
             body.contains(&"Body".repeat(usize::from(round))) && !body.contains("XY"),
             "round {round}: and none on into the body: {body}"
@@ -1212,9 +1156,10 @@ fn who_edited_a_page_reads_as_the_name_the_window_knows_them_by_never_their_key(
     );
 }
 
-/// The person presses New note in the header row of the live window, which the desktop hosts.
+/// The person presses New note, where the window offers it now: the bar of a window that lists
+/// nothing yet, the columns' header row once it does. What it does is where it stands.
 fn press_new_note(session: &mut Session) {
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
 }
 
@@ -1270,7 +1215,7 @@ fn press_between_the_keys(session: &mut Session) {
 /// The texts of the open note's title and body, as the window shows them. The title is a plain
 /// field; the body is rich text, read a line per paragraph.
 fn open_note(session: &mut Session) -> (String, String) {
-    let title = match session.field_value("Untitled") {
+    let title = match session.field_value("title") {
         Some(tilo_ui_host::Value::Text(text)) => text,
         None => String::new(),
         Some(other) => panic!("a title: {other:?}"),
@@ -1328,7 +1273,7 @@ fn typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
         }
         session.window.type_text("Note title");
         session.settle();
-        let title = match session.field_value("Untitled") {
+        let title = match session.field_value("title") {
             Some(tilo_ui_host::Value::Text(text)) => text,
             other => panic!("a title: {other:?}"),
         };
@@ -1346,7 +1291,7 @@ fn typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
 
 /// The text of the open note's body, a line per paragraph, whether it is plain or rich.
 fn body_text(session: &mut Session) -> String {
-    match session.field_value("Write something") {
+    match session.field_value("body") {
         Some(tilo_ui_host::Value::Text(text)) => text,
         Some(tilo_ui_host::Value::Rich(rich)) => rich
             .blocks
@@ -1362,7 +1307,7 @@ fn body_text(session: &mut Session) -> String {
 /// "+", the title, Enter, the body: Enter in the title, which submits nothing, moves the
 /// keyboard to the body, as native Notes does.
 fn enter_in_a_new_notes_title_moves_to_its_body(mut session: Session) {
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.settle();
     session.window.type_text("Groceries");
@@ -1458,7 +1403,7 @@ fn what_the_instance_sends_wakes_the_component_that_took_the_window_over() {
 /// bound field, as one step of the person's, and redo brings it back. One undo, the record's: the
 /// field keeps no history of its own beside it, and a burst of typing is one step of it.
 fn typing_in_a_title_is_undone_and_redone(mut session: Session) {
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.settle();
     session.window.type_text("Groceries");
@@ -1472,7 +1417,7 @@ fn typing_in_a_title_is_undone_and_redone(mut session: Session) {
         "Ctrl+Z takes back the typing, and the note stays, untitled"
     );
     assert_eq!(
-        session.field_value("Untitled"),
+        session.field_value("title"),
         Some(tilo_ui_host::Value::Text(String::new())),
         "the field shows it"
     );
@@ -1531,7 +1476,7 @@ fn note_row(session: &mut Session, title: &str) -> (f64, f64) {
 
 /// A new note named `title`, its body open for typing.
 fn new_note(session: &mut Session, title: &str) {
-    let plus = session.new_note_button();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.settle();
     session.window.type_text(title);
@@ -1566,7 +1511,7 @@ fn a_rich_body_is_a_document_and_markdown_typed_into_it_becomes_its_paragraphs()
     }
     session.window.type_text("**bold**");
     session.settle();
-    let blocks = match session.field_value("Write something") {
+    let blocks = match session.field_value("body") {
         Some(tilo_ui_host::Value::Rich(rich)) => rich.blocks,
         other => panic!("a rich body: {other:?}"),
     };
@@ -1635,7 +1580,7 @@ fn a_document_typed_after_a_list_stays_on_the_page_level_and_fills_its_editor() 
     }
     session.window.type_text("fn main() {}");
     session.settle();
-    let blocks = match session.field_value("Write something") {
+    let blocks = match session.field_value("body") {
         Some(tilo_ui_host::Value::Rich(rich)) => rich.blocks,
         other => panic!("a rich body: {other:?}"),
     };
@@ -1731,7 +1676,7 @@ fn a_rich_body_comes_back_as_its_document_when_its_note_is_opened_again() {
     let (title, body) = open_note(&mut session);
     assert_eq!(title, "Groceries");
     assert_eq!(body, "Plan\nmilk", "the document as it was written");
-    let kinds: Vec<String> = match session.field_value("Write something") {
+    let kinds: Vec<String> = match session.field_value("body") {
         Some(tilo_ui_host::Value::Rich(rich)) => {
             rich.blocks.iter().map(|block| block.kind.clone()).collect()
         }
@@ -1742,7 +1687,7 @@ fn a_rich_body_comes_back_as_its_document_when_its_note_is_opened_again() {
 
 /// The blocks of the open note's body as the window holds them: each paragraph's kind and text.
 fn body_blocks(session: &mut Session) -> Vec<(String, String)> {
-    match session.field_value("Write something") {
+    match session.field_value("body") {
         Some(tilo_ui_host::Value::Rich(rich)) => rich
             .blocks
             .iter()
@@ -1754,7 +1699,7 @@ fn body_blocks(session: &mut Session) -> Vec<(String, String)> {
 
 /// The level a block of the open note's body carries, when it is a heading.
 fn heading_level(session: &mut Session, block: usize) -> Option<i64> {
-    match session.field_value("Write something") {
+    match session.field_value("body") {
         Some(tilo_ui_host::Value::Rich(rich)) => match rich.blocks.get(block)?.attrs.get("level") {
             Some(tilo_render_protocol::patch::rich::Attr::Int(level)) => Some(*level),
             _ => None,
@@ -2789,7 +2734,7 @@ fn described(
 fn controls_of(app: &mut ui::App) -> Vec<String> {
     app.window_controls()
         .into_iter()
-        .map(|(name, _)| name)
+        .map(|control| control.name)
         .collect()
 }
 

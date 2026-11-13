@@ -73,6 +73,7 @@ fn press(shell: &mut UnixStream, name: &str, role: &str, action: TargetAction) {
     let mut frame = serde_json::to_vec(&FloatingSurfaceHostMessage::PressTarget {
         name: name.to_owned(),
         role: role.to_owned(),
+        identity: None,
         action,
     })
     .expect("a shell-ui frame");
