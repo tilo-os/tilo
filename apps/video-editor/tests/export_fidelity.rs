@@ -500,23 +500,31 @@ fn real_mp4_cuts_concatenate_without_padding_and_marks_rebase_the_file() {
     }
 }
 
+/// A source outside the marked range is not needed by this export, even when its bytes are
+/// completely unavailable.
+///
+/// That the same source inside the range fails the export, naming it and leaving no file, is
+/// `export::tests::a_good_first_clip_cannot_hide_a_broken_later_clip_in_an_mp4_export`, which
+/// sits beside the export so that it can choose how long a frame is waited for.
 #[test]
 #[serial_test::serial(video_editor_gst)]
-fn a_good_first_clip_cannot_hide_a_broken_later_clip_in_an_mp4_export() {
+fn a_source_outside_the_marked_range_is_not_needed_by_an_mp4_export() {
     assert!(
         generated_clip::media_stack(),
         "MP4 regression requires the media stack"
     );
     let dir = tempfile::tempdir().expect("export artifacts");
-    let broken = dir.path().join("broken.mp4");
-    std::fs::write(&broken, b"not an MP4 bitstream").unwrap();
     let mut project = project_over(&demo_clip(), 0.4, "partly broken");
     let media = uuid::Uuid::new_v4();
     project.media.push(MediaItem {
         id: media,
         name: "broken second clip".into(),
         kind: MediaKind::Video,
-        path: broken.to_string_lossy().into_owned(),
+        path: dir
+            .path()
+            .join("missing.mp4")
+            .to_string_lossy()
+            .into_owned(),
         duration: 0.2,
         width: generated_clip::WIDTH,
         height: generated_clip::HEIGHT,
@@ -528,26 +536,6 @@ fn a_good_first_clip_cannot_hide_a_broken_later_clip_in_an_mp4_export() {
         ..Default::default()
     };
     let output = dir.path().join("incomplete.mp4");
-    let status = video_editor::export::start_export(&project, &settings, output.clone()).join();
-    match status {
-        ExportStatus::Failed { reason } => {
-            assert!(reason.contains("broken second clip"), "{reason}");
-            assert!(reason.contains("stand-in"), "{reason}");
-        }
-        other => panic!("export must refuse a partly synthetic file, got {other:?}"),
-    }
-    assert!(
-        !output.exists(),
-        "failed MP4 export must remove its partial file"
-    );
-
-    // A source outside the marked range is not needed by this export,
-    // even when its bytes are completely unavailable.
-    project.media[1].path = dir
-        .path()
-        .join("missing.mp4")
-        .to_string_lossy()
-        .into_owned();
     project.set_mark_out(0.3);
     let status = video_editor::export::start_export(&project, &settings, output.clone()).join();
     assert!(matches!(status, ExportStatus::Done { .. }), "{status:?}");

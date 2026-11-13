@@ -1305,6 +1305,82 @@ mod tests {
         assert!(!out.exists(), "and no file is left behind");
     }
 
+    /// A first clip that decodes cannot hide a later one that does not: the export fails
+    /// naming the later source and removes the part of the file it had written, and the
+    /// same destination then takes an export that does not need that source.
+    ///
+    /// The patience is the test's own: far longer than the clip that decodes needs for a
+    /// picture on a loaded machine, and a sixth of the two minutes an export gives a source
+    /// by default, which is all the test would otherwise spend waiting.
+    #[test]
+    #[cfg(feature = "gst")]
+    #[serial_test::serial(video_editor_gst)]
+    fn a_good_first_clip_cannot_hide_a_broken_later_clip_in_an_mp4_export() {
+        use crate::model::{MediaItem, MediaKind};
+        assert!(
+            generated_clip::media_stack(),
+            "MP4 regression requires the media stack"
+        );
+        let dir = tempfile::tempdir().expect("export artifacts");
+        let broken = dir.path().join("broken.mp4");
+        std::fs::write(&broken, b"not an MP4 bitstream").unwrap();
+        let mut project = project_over(&demo_clip(), 0.0, 0.4);
+        project.name = "partly broken".into();
+        let media = uuid::Uuid::new_v4();
+        project.media.push(MediaItem {
+            id: media,
+            name: "broken second clip".into(),
+            kind: MediaKind::Video,
+            path: broken.to_string_lossy().into_owned(),
+            duration: 0.2,
+            width: generated_clip::WIDTH,
+            height: generated_clip::HEIGHT,
+            ..Default::default()
+        });
+        let track = project.tracks[0].id;
+        project.add_clip(track, media, 0.4).unwrap();
+        let settings = ExportSettings {
+            resolution: Resolution::P720,
+            ..Default::default()
+        };
+        let output = dir.path().join("incomplete.mp4");
+        let status = start_export_with_patience(
+            &project,
+            settings,
+            output.clone(),
+            std::time::Duration::from_secs(20),
+        )
+        .join();
+        match status {
+            ExportStatus::Failed { reason } => {
+                assert!(reason.contains("broken second clip"), "{reason}");
+                assert!(reason.contains("stand-in"), "{reason}");
+                assert!(
+                    !reason.contains("\"demo\""),
+                    "the clip that decodes is not the one named: {reason}"
+                );
+            }
+            other => panic!("export must refuse a partly synthetic file, got {other:?}"),
+        }
+        assert!(
+            !output.exists(),
+            "failed MP4 export must remove its partial file"
+        );
+
+        // A source outside the marked range is not needed by this export,
+        // even when its bytes are completely unavailable. What the file then
+        // holds is decoded in `tests/export_fidelity.rs`.
+        project.media[1].path = dir
+            .path()
+            .join("missing.mp4")
+            .to_string_lossy()
+            .into_owned();
+        project.set_mark_out(0.3);
+        let status = start_export(&project, &settings, output.clone()).join();
+        assert!(matches!(status, ExportStatus::Done { .. }), "{status:?}");
+        assert!(output.exists(), "the destination took the later export");
+    }
+
     #[test]
     fn exporting_over_source_media_is_refused_without_changing_its_bytes() {
         let dir = tempfile::tempdir().expect("source fixture directory");
