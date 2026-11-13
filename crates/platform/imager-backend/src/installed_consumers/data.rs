@@ -1,10 +1,7 @@
-//! Closed installed Home and applications consumer contracts. Digests bind
-//! artifacts, not execution.
+//! Closed installed Home and applications consumer contracts: digests bind artifacts, not execution.
 //!
-//! Applications qualification is exclusively the owned-disposable factory in
-//! the prepared setup helper. Read-only checks revalidate its protected native
-//! receipt and signed source cohort; they never rerun capture or manufacture a
-//! successful qualification.
+//! Applications qualification is only the owned-disposable factory in the prepared setup helper;
+//! read-only checks revalidate its protected receipt and signed source cohort and never rerun capture.
 use super::{field, invalid, json, require};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -60,15 +57,13 @@ const NATIVE_KEYS: [&str; 10] = [
     "applications_ciphertext_sha256",
     "receiving",
 ];
-/// Rootless admission checks stay finite; only the root producer gets the
-/// long budget the actual capture and receiving qualification needs.
+/// Rootless admission checks stay finite; only the root producer gets the long budget a real capture
+/// and receiving qualification need.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(120);
 const PRODUCER_TIMEOUT: Duration = Duration::from_secs(1800);
 
-/// Probe executor: command, stdout/stderr bound, deadline.
 pub type Runner<'a> = dyn FnMut(&[OsString], usize, Duration) -> io::Result<Vec<u8>> + 'a;
 
-/// The production executor.
 pub fn invoke(command: &[OsString], limit: usize, timeout: Duration) -> io::Result<Vec<u8>> {
     super::invoke::run_fixed(command, limit, timeout)
 }
@@ -117,8 +112,8 @@ fn shape<'v>(value: &'v Value, keys: &[&str], protocols: &[(&str, i64)]) -> io::
     Ok(value)
 }
 
-/// The fixed installed namespace. `root` and `owner` are test seams only; the
-/// installed entry points always use [`Store::installed`].
+/// `root` and `owner` are test seams only; the installed entry points always use
+/// [`Store::installed`].
 pub struct Store {
     root: PathBuf,
     owner: u32,
@@ -152,7 +147,6 @@ impl Store {
         Self { root, owner }
     }
 
-    /// Map a fixed absolute image path into this namespace.
     pub fn path(&self, name: &str) -> io::Result<PathBuf> {
         let relative = name
             .strip_prefix('/')
@@ -161,8 +155,8 @@ impl Store {
         Ok(self.root.join(relative))
     }
 
-    /// Check every namespace edge, the root included: owned, not foreign
-    /// writable, and never a redirecting symlink.
+    /// Check every namespace edge, the root included: owned, not foreign-writable, and never a
+    /// redirecting symlink.
     fn trusted(&self, path: &Path) -> io::Result<Metadata> {
         let relative = path
             .strip_prefix(&self.root)
@@ -218,7 +212,6 @@ impl Store {
         Ok(data)
     }
 
-    /// Stream an installed executable (or data file) into its SHA-256.
     pub fn digest(&self, name: &str, limit: u64, executable: bool) -> io::Result<String> {
         let path = self.path(name)?;
         let before = self.trusted(&path)?;
@@ -258,12 +251,11 @@ impl Store {
         Ok(std::fs::symlink_metadata(self.path(&format!("/usr/share/tilo/{name}"))?).is_ok())
     }
 
-    /// Only the namespace owner (root for the installed image) may publish.
+    /// Only the namespace owner, root for the installed image, may publish.
     fn owner_acts(&self) -> bool {
         rustix::process::geteuid().as_raw() == self.owner
     }
 
-    /// Atomically publish a new receipt; an existing one is never replaced.
     fn publish(&self, name: &str, data: &[u8], limit: usize) -> io::Result<()> {
         require(self.owner_acts(), "consumer publication requires root")?;
         require(
@@ -286,14 +278,12 @@ impl Store {
         temporary.write_all(data)?;
         temporary.flush()?;
         temporary.as_file().sync_all()?;
-        // linkat without AT_SYMLINK_FOLLOW: atomic and fails if the name exists.
         std::fs::hard_link(temporary.path(), &target)?;
         OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
             .open(&parent)?
             .sync_all()
-        // Dropping `temporary` unlinks its private name.
     }
 }
 
@@ -311,10 +301,9 @@ pub(super) fn home_facts(store: &Store) -> io::Result<Value> {
     }))
 }
 
-/// Produce (root) or read-only check (rootless) the installed Home consumers.
 pub fn home(store: &Store, check: bool, runner: &mut Runner<'_>) -> io::Result<Value> {
-    // The verifier is the helper itself, already bound by its digest; this
-    // pins the compiled firstboot files helper the probe relies on.
+    // The verifier is the helper itself, already bound by its digest; this pins the compiled
+    // firstboot files helper the probe relies on.
     let infrastructure = || store.digest("/usr/libexec/tilo-firstboot-files", 64 << 20, true);
     let pinned = infrastructure()?;
     let before = home_facts(store)?;
@@ -433,7 +422,6 @@ fn native_proof(native: &Value, capability: &Value, facts: &AppsArtifacts) -> io
     )
 }
 
-/// Run the root factory, or read-only check (rootless) its published receipts.
 #[allow(
     clippy::too_many_lines,
     reason = "one linear contract: each step gates the next"
@@ -462,9 +450,8 @@ pub fn applications(store: &Store, check: bool, runner: &mut Runner<'_>) -> io::
                 "native qualification must begin without previous receipts",
             )?;
         }
-        // No path/receipt/boolean input: the factory checks disposable ownership,
-        // real original-user grants, signed source6 cohort, target restore/retry
-        // and retirement.
+        // No path, receipt or boolean input: the factory checks disposable ownership, real
+        // original-user grants, the signed source cohort, target restore and retirement.
         let output = runner(
             &[
                 helper.clone().into(),
@@ -504,8 +491,8 @@ pub fn applications(store: &Store, check: bool, runner: &mut Runner<'_>) -> io::
         "applications artifacts changed during qualification",
     )?;
     if let Some(original_source) = &original_source {
-        // The app capability is the completion marker, published LAST. A crash
-        // before it leaves admission unavailable; no read-only check repairs it.
+        // The app capability is the completion marker, published last, so a crash before it leaves
+        // admission unavailable and no read-only check repairs it.
         let mut bytes = json::canonical(original_source);
         bytes.push(b'\n');
         store.publish(ORIGINAL, &bytes, 8192)?;
@@ -557,16 +544,13 @@ pub fn applications(store: &Store, check: bool, runner: &mut Runner<'_>) -> io::
     Ok(capability)
 }
 
-/// Checked installed facts for the release signer's catalog or manifest.
-///
-/// Run in the exact final native target root before freezing its image. This
-/// signs nothing: the fields travel in the existing authenticated catalog,
-/// never as a freestanding trusted sidecar.
+/// Run in the exact final native target root before freezing its image. This signs nothing: the fields
+/// travel in the existing authenticated catalog, never as a freestanding trusted sidecar.
 pub fn catalog_facts(store: &Store, runner: &mut Runner<'_>) -> io::Result<Value> {
     let mut facts = Map::new();
     facts.insert("home_archive".into(), home(store, true, runner)?);
-    // An incomplete attempted native producer fails publication rather than
-    // silently downgrading the release to Home-only support.
+    // An incomplete native producer fails publication rather than silently downgrading the release to
+    // Home-only support.
     if store.exists(APPS)? || store.exists(NATIVE)? {
         facts.insert("applications".into(), applications(store, true, runner)?);
         facts.insert("original_source".into(), store.receipt(ORIGINAL, 8192)?);

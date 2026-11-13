@@ -1,5 +1,5 @@
-//! Read-only cookie extraction from one explicitly granted browser profile.
-//! Only fixed cookie stores are opened; values never enter diagnostics.
+//! Read-only cookie extraction from one explicitly granted browser profile: only fixed cookie stores
+//! are opened, and values never enter diagnostics.
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -27,13 +27,11 @@ pub mod slack_locator;
 #[cfg(target_os = "linux")]
 mod slack_modules;
 
-/// Private native adapter, bound to the exact owner-selected profile directory.
-/// Implementations must authenticate schema 24's raw host hash before returning
-/// the value, and must never expose keys or values through diagnostics.
+/// Private native adapter bound to the exact owner-selected profile directory. Implementations
+/// authenticate schema 24's raw host hash before returning a value, and never expose keys or values
+/// through diagnostics.
 pub trait ChromiumDecryptor: Send + Sync {
     fn approved_profile(&self) -> (u32, u64, u64);
-    /// # Errors
-    /// Refuses unavailable keys, invalid ciphertext or host binding, and unknown formats.
     fn decrypt(
         &self,
         host_key: &str,
@@ -45,16 +43,14 @@ pub trait ChromiumDecryptor: Send + Sync {
 const MAX_DATABASE_BYTES: u64 = 64 * 1024 * 1024;
 const CHROMIUM_EPOCH_MICROS: i64 = 11_644_473_600_000_000;
 
-/// The caller supplies the exact owner-approved profile handle, never a path
-/// discovered by this reader or permission inferred from a running browser.
+/// The caller supplies the exact owner-approved profile handle, never a path discovered by this
+/// reader or permission inferred from a running browser.
 pub struct SourceGrant {
     profile: File,
     provider: Provider,
     decryptor: Option<std::sync::Arc<dyn ChromiumDecryptor>>,
 }
 impl SourceGrant {
-    /// # Errors
-    /// Refuses foreign or non-directory grants without modifying permissions.
     pub fn new(profile: File, provider: Provider) -> Result<Self, SourceError> {
         let directory = StorageDirectory::from_file(profile.try_clone().map_err(unavailable)?)
             .map_err(unavailable)?;
@@ -68,7 +64,6 @@ impl SourceGrant {
         })
     }
 
-    /// Attach only after the owner explicitly selects this browser's sessions.
     pub fn with_chromium_decryptor(
         mut self,
         decryptor: std::sync::Arc<dyn ChromiumDecryptor>,
@@ -84,7 +79,6 @@ impl SourceGrant {
     }
 }
 
-/// Source bytes have no fabricated destination identity or setup authority.
 pub struct CapturedCookies {
     pub cookies: Vec<Cookie>,
     pub source_snapshot_digest: [u8; 32],
@@ -246,7 +240,6 @@ fn snapshot(
     {
         return Err(SourceError::Changed);
     }
-    // Reattest every name after the complete second capture, including absence.
     let current = directory
         .open_read(OsStr::new(name), Privacy::Inherit)
         .map_err(unavailable)?;
@@ -326,15 +319,14 @@ fn host(raw: &str) -> (String, bool) {
     )
 }
 
-/// Bounded, value-free counts for one selected service's cookie store.
-/// Counting never decrypts a cookie and never establishes an account.
+/// Bounded, value-free counts for one selected service's cookie store; counting never decrypts a
+/// cookie and never establishes an account.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SelectedCounts {
     pub cookies: u64,
     pub origins: u64,
 }
 
-/// Count matching cookie rows and distinct hosts without reading values.
 /// The source is copied consistently and only the private copy is queried.
 pub fn count_selected(
     grant: &SourceGrant,
@@ -391,14 +383,10 @@ pub fn count_selected(
     })
 }
 
-/// Read every cookie for exactly the selected Slack or Discord domain family.
-/// The source store is copied consistently; only private copies are queried by
-/// `SQLite`. Encrypted cookies require an explicitly attached, profile-bound
-/// adapter. Partitioned selected cookies fail explicitly.
-///
-/// # Errors
-/// Refuses unavailable/changed sources, unsupported attributes, or bounded data
-/// limits. No source permissions, database, WAL, or SHM contents are modified.
+/// Reads every cookie for exactly the selected Slack or Discord domain family from a consistent
+/// private copy. An explicitly attached, profile-bound adapter supplies encrypted cookies;
+/// partitioned selected cookies fail explicitly. Refuses unavailable or changed sources,
+/// unsupported attributes or bounded data limits.
 pub fn read_selected(
     grant: &SourceGrant,
     service: Service,
@@ -471,8 +459,8 @@ fn firefox(connection: &Connection, service: Service) -> Result<Vec<Cookie>, Sou
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(sqlite)?;
-    // Schema 15 removed rawSameSite, including the distinction between unset
-    // and explicit None. Schema 16 changed persistent expiry to milliseconds.
+    // Schema 15 removed rawSameSite, including the distinction between unset and explicit None;
+    // schema 16 changed persistent expiry to milliseconds.
     if !matches!(version, 15..=17) {
         return Err(SourceError::UnsupportedSchema);
     }
@@ -500,8 +488,8 @@ fn firefox(connection: &Connection, service: Service) -> Result<Vec<Cookie>, Sou
         } else {
             expiry
         };
-        // Firefox does not persist session cookies in cookies.sqlite. A zero
-        // expiry must never turn an expired persistent credential into a session.
+        // Firefox does not persist session cookies, so a zero expiry must never turn an expired
+        // persistent credential into a session.
         push_cookie(
             &mut cookies,
             Cookie {
@@ -911,8 +899,8 @@ mod tests {
     }
 }
 
-// The native fixture observes the canonical held-source snapshot. It never
-// constructs a cookie database or supplies encrypted rows to the reader.
+// The native fixture observes the canonical held-source snapshot; it never constructs a cookie
+// database or supplies encrypted rows to the reader.
 #[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
 pub(super) fn verify_official_fixture_store(grant: &SourceGrant) -> Result<bool, SourceError> {
     let (_stage, database, _digest) = snapshot(grant, Service::Slack)?;

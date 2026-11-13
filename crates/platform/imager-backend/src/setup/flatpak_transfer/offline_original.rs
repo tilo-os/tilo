@@ -1,5 +1,5 @@
-//! Protected original selection -> held source projections -> canonical exporter.
-//! No serialized claim grants access outside the root-admitted worker capsule.
+//! Protected original selection to held source projections and the canonical exporter; no serialized
+//! claim grants access outside the root-admitted worker capsule.
 #[cfg(any(feature = "capture-worker", test))]
 use super::ReadOnlySource;
 use super::portable::NativeOfflineRunner;
@@ -87,8 +87,8 @@ impl TryFrom<OriginalFlatpakClaimWire> for OriginalFlatpakClaim {
         Ok(claim)
     }
 }
-/// Native protected-record authority, not a serialized inventory or pathname.
-/// The root source reader creates this only from its exact Store-owned child.
+/// The root source reader creates this only from its exact Store-owned child, never from a serialized
+/// inventory or pathname.
 pub struct OriginalInventoryGrant {
     inventory: HandoffInventory,
     bytes: Vec<u8>,
@@ -318,8 +318,8 @@ pub struct OriginalFlatpakSources {
     runner: SourceScopedRunner<NativeOfflineRunner>,
 }
 impl OriginalFlatpakSources {
-    /// Close immutable inventory and projection descriptors before native mount
-    /// retirement; root callers combine these with Home's retained resolver.
+    /// Close immutable inventory and projection descriptors before native mount retirement; root
+    /// callers combine these with Home's retained resolver.
     pub fn into_retirement_sources(
         self,
     ) -> io::Result<Vec<Arc<crate::setup::migration_handoff::ResolvedSource>>> {
@@ -333,9 +333,7 @@ impl OriginalFlatpakSources {
         drop((claim, inventory, original_inventory, inventory_file));
         runner.into_original_sources()
     }
-    /// Only the verified root-owned original record can select source roots.
     pub fn review(original: &SourceReadContext) -> io::Result<Option<Self>> {
-        // SAFETY: read-only native effective credential query.
         if rustix::process::geteuid().as_raw() != 0 {
             return Err(refused(
                 "Original application admission requires root controller",
@@ -397,8 +395,6 @@ impl OriginalFlatpakSources {
     pub fn inventory_file(&self) -> io::Result<File> {
         self.inventory_file.try_clone()
     }
-    /// Lease ownership remains with this source set and the root read admission
-    /// until canonical child quiescence; returned descriptors are not credentials.
     pub fn source_plans(&self) -> io::Result<Vec<Vec<u8>>> {
         self.files()?;
         Ok(self
@@ -489,9 +485,8 @@ impl OriginalFlatpakClaim {
         }
         Ok(())
     }
-    /// Call only after the canonical OriginalWrite request authenticates this
-    /// claim in its admitted digest. Fixed capsule mounts supply authority; a
-    /// password-sealed declaration or claim bytes alone never supplies it.
+    /// Only after the canonical OriginalWrite request authenticates this claim in its admitted digest:
+    /// fixed capsule mounts supply authority, and claim bytes alone never do.
     #[cfg(any(feature = "capture-worker", test))]
     pub fn review_reader(
         &self,
@@ -527,7 +522,6 @@ impl OriginalFlatpakClaim {
     ) -> io::Result<Arc<PortableFlatpakSource>> {
         self.validate_shape(operation)?;
         crate::setup::migration::check_cancel(cancel)?;
-        // SAFETY: read-only current credentials. Root worker fallback forbidden.
         if rustix::process::geteuid().as_raw() != self.original_uid {
             return Err(refused("Original application reader credentials differ"));
         }
@@ -574,8 +568,6 @@ impl OriginalFlatpakClaim {
                 {
                     return Err("Original capsule source inode differs".into());
                 }
-                // Kernel readonly and retained fixed capsule identity are rechecked
-                // by the constructor and canonical resolve/closed review.
                 ReadOnlySource::from_resolved(&path, pin, Arc::new(()))
             })
             .map_err(io::Error::other)?;
@@ -598,7 +590,6 @@ pub fn projection_path(index: u32) -> PathBuf {
 }
 
 fn sealed_inventory(bytes: &[u8]) -> io::Result<File> {
-    // SAFETY: fixed native name, no borrowed pointer retained by the kernel.
     let raw = unsafe {
         libc::memfd_create(
             c"tilo-original-flatpak-inventory".as_ptr(),
@@ -608,13 +599,11 @@ fn sealed_inventory(bytes: &[u8]) -> io::Result<File> {
     if raw < 0 {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: successful memfd_create returned a new owned descriptor.
     let mut file = unsafe { File::from_raw_fd(raw) };
     file.write_all(bytes)?;
     use std::os::unix::fs::PermissionsExt;
     file.set_permissions(std::fs::Permissions::from_mode(0o444))?;
     file.rewind()?;
-    // SAFETY: live held descriptor and a closed native seal mask.
     if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, SEALS) } < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -635,7 +624,6 @@ impl OriginalFlatpakClaim {
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(INVENTORY_PATH)?;
         let facts = file.metadata()?;
-        // SAFETY: querying immutable seals of a held descriptor.
         let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
         if !facts.is_file()
             || facts.uid() != 0
@@ -657,8 +645,8 @@ impl OriginalFlatpakClaim {
         HandoffInventory::parse(&bytes).map_err(io::Error::other)
     }
 }
-/// The canonical launcher pins the signed /usr/bin/ostree ELF and its closure.
-/// Ambient environment never selects an executable or dependency search path.
+/// The canonical launcher pins the signed `/usr/bin/ostree` ELF and its closure; the ambient
+/// environment never selects an executable or dependency search path.
 pub(in crate::setup::flatpak_transfer) fn configure_ostree(
     command: &mut std::process::Command,
 ) -> io::Result<()> {
@@ -673,7 +661,6 @@ pub(in crate::setup::flatpak_transfer) fn configure_ostree(
         Err(error) => return Err(error),
     };
     let facts = file.metadata()?;
-    // SAFETY: live file descriptor, read-only kernel seal query.
     let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
     if !facts.is_file()
         || facts.uid() != 0
@@ -686,9 +673,9 @@ pub(in crate::setup::flatpak_transfer) fn configure_ostree(
     }
     command
         .env("LD_LIBRARY_PATH", "/run/tilo/migration/tools/lib")
-        // Original-source bootstrap drops root to the source owner. Its /tmp
-        // remains root-owned; OSTree's GPGME context needs owner-private scratch.
-        // Use only the already granted private app directory after sealed proof.
+        // The original-source bootstrap drops root to the source owner while /tmp stays root-owned,
+        // and OSTree's GPGME context needs owner-private scratch: use only the granted private app
+        // directory after sealed proof.
         .env("TMPDIR", "/run/tilo/app");
     Ok(())
 }
@@ -760,7 +747,6 @@ mod tests {
         file.read_to_end(&mut bytes).unwrap();
         assert_eq!(bytes, b"exact inventory");
         assert!(file.write_all(b"changed").is_err());
-        // SAFETY: live fixture descriptor and read-only kernel query.
         assert_eq!(
             unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) } & SEALS,
             SEALS

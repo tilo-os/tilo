@@ -1,5 +1,5 @@
-//! Non-overwriting adoption of a verified home quarantine. Existing target
-//! contents and selected Tilo custody survive; every retained item has a receipt.
+//! Non-overwriting adoption of a verified home quarantine: existing target contents and selected
+//! Tilo custody survive, and every retained item has a receipt.
 use super::super::{
     destination_security,
     migration::{OwnedTemporary, PinnedDirectory, changed},
@@ -51,8 +51,8 @@ mod tree;
 pub use recovery::AdoptionWitness;
 use storage::{Row, Sequence, Store};
 const MAX: usize = 64 * 1024 * 1024;
-// Atomic replacement retains the current durable journal while its successor
-// is written and synced. Archive index scratch cannot spend either copy.
+// Atomic replacement keeps the current durable journal while its successor is written and synced;
+// archive index scratch cannot spend either copy.
 pub const JOURNAL_RESERVE: u64 = 2 * MAX as u64;
 const ENTRIES: usize = 1_000_000;
 #[derive(Clone, Serialize)]
@@ -126,9 +126,8 @@ impl PromotionWorker {
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
-    /// A terminal event is observable only after the actual owned thread has
-    /// returned and has been joined. Sending a response or disconnecting its
-    /// channel cannot release the caller's operation/receive authority.
+    /// A terminal event is observable only after the owned thread returned and was joined; sending a
+    /// response or disconnecting its channel cannot release the caller's authority.
     pub fn try_next(&mut self) -> Option<PromotionEvent> {
         if self.finished {
             return None;
@@ -147,9 +146,8 @@ impl PromotionWorker {
         if !self.observe_stopped() {
             return None;
         }
-        // The send may race with the first empty try_recv before the join.
-        // After actual retirement, read its queued result rather than replacing
-        // a genuine completed report with a fabricated disconnect failure.
+        // The send may race the first empty try_recv before the join; read the queued result rather
+        // than replacing a genuine report with a fabricated disconnect failure.
         if self.pending.is_none() {
             self.pending = Some(match self.receiver.try_recv() {
                 Ok(value) => value,
@@ -162,8 +160,7 @@ impl PromotionWorker {
         self.finished = true;
         Some(event)
     }
-    /// Nonblocking kernel-thread ownership observation. `is_finished` proves
-    /// return before joining, so this never waits for a running worker. A panic
+    /// `is_finished` proves return before joining, so this never waits for a running worker. A panic
     /// proves retirement but replaces a purported success with terminal failure.
     pub fn observe_stopped(&mut self) -> bool {
         let Some(thread) = self.thread.as_ref() else {
@@ -246,7 +243,6 @@ fn roots(
     Ok((quarantine, home, journal))
 }
 impl PromotionReview {
-    /// Simulate a process stopping after a reviewed move but before its checkpoint.
     #[cfg(feature = "test-support")]
     pub fn move_one_without_checkpoint_for_test(&self, relative: &Path) -> Result<(), String> {
         let (q, h, j) = roots(&self.quarantine, &self.home, &self.journal)
@@ -360,7 +356,6 @@ impl PromotionReview {
         }
         Ok(self)
     }
-    /// Authenticated application consent controls activation, never raw Home bytes.
     pub fn with_application_consent(mut self, allowed: bool) -> Result<Self, String> {
         if self
             .journal
@@ -677,8 +672,8 @@ fn process(
         }
     }
 }
-/// Repair only a retained parent inode with the exact temporary permission
-/// change this plan authorized. A matching source or moved inode is required.
+/// Repairs only a retained parent inode with the exact temporary permission change this plan
+/// authorized; a matching source or moved inode is required.
 fn repair_parent_modes(
     plan: &Plan,
     quarantine: &Arc<PinnedDirectory>,
@@ -767,8 +762,8 @@ fn validate_plan(plan: &Plan) -> io::Result<()> {
     for entry in plan.entries.iter() {
         let entry = entry?;
         let path = decoded(&entry.path)?;
-        // Review captures structural proof for exactly the moved entries that
-        // may hold installed applications; recovery relies on it being there.
+        // Review captures structural proof for exactly the moved entries that may hold installed
+        // applications, and recovery relies on it being there.
         if entry.structure.is_some()
             != (matches!(entry.kind, Kind::Move) && structure::needed(&path))
         {
@@ -890,8 +885,7 @@ fn plan_digest(plan: &Plan) -> io::Result<[u8; 32]> {
 }
 const MAGIC: [u8; 8] = *b"TILOADP2";
 type Reservation = crate::migration_review::storage::scratch::MetadataReservation;
-/// The adoption journal on the shared framed log: the segmented plan's
-/// manifest, published with the header, then one receipt per completed move.
+/// The segmented plan's manifest, published with the header, then one receipt per completed move.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 enum Record {
@@ -958,9 +952,9 @@ impl Log {
         drop(log);
         #[cfg(test)]
         crate::migration_journal::crash_injection::boundary("adoption_root_published");
-        // Once the root name exists, even an uncertain directory sync must
-        // retain referenced segments. Error recovery can verify that root;
-        // uncommitted cleanup must never leave it pointing to removed files.
+        // Once the root name exists, even an uncertain directory sync must retain referenced
+        // segments: error recovery verifies that root, and cleanup must never leave it pointing at
+        // removed files.
         let reservation = pending.commit()?;
         Self::open_with_reservation(
             parent,
@@ -1080,8 +1074,8 @@ impl Log {
             log.sequence += 1;
             end = log.file.stream_position()?;
         }
-        // An interrupted last append has no durable receipt; its move is
-        // revalidated and repeated. No earlier receipt is removed.
+        // An interrupted last append has no durable receipt, so its move is revalidated and
+        // repeated; no earlier receipt is removed.
         log.repair(end, || Ok(()))?;
         Ok(Self {
             log,
@@ -1124,9 +1118,8 @@ impl Log {
     }
 }
 
-/// Publish one exact owned private inode with atomic no-replace semantics.
-/// A crash leaves either its temporary name or committed name, never a second
-/// writable hardlink alias that would invalidate immutable-file custody.
+/// Publishes one exact owned private inode with atomic no-replace semantics: a crash leaves either
+/// its temporary or its committed name, never a second writable hardlink alias.
 fn publish_temporary(
     parent: &Arc<PinnedDirectory>,
     temporary: &OwnedTemporary,
@@ -1153,7 +1146,6 @@ fn publish_temporary(
     Ok(())
 }
 
-/// The exact framed size of every receipt the journal may still append.
 fn checkpoint_reserve(plan: &Plan) -> io::Result<u64> {
     let last = plan.entries.len().saturating_sub(1);
     let entries = (plan.entries.len() as u64)

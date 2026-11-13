@@ -1,5 +1,5 @@
-//! Native host-worker descriptor handoff. Existing runtime transport owns every
-//! received descriptor and process binding pins the executing task before data.
+//! Native host-worker descriptor handoff: existing runtime transport owns every received
+//! descriptor, and process binding pins the executing task before data.
 use super::failure;
 use runtime_portal::{fd_transport, process_binding};
 use std::os::fd::AsFd;
@@ -11,16 +11,15 @@ use std::{
     time::Duration,
 };
 
-/// Opaque proof that this directory descriptor was transferred by the exact
-/// live authenticated original caller, rather than opened ambiently by root.
+/// Proof that this descriptor came from the live authenticated original caller, not opened
+/// ambiently by root.
 pub struct RetainedHomeInput {
     file: File,
     peer: std::sync::Arc<process_binding::ExecutingPeer>,
 }
 impl RetainedHomeInput {
-    /// # Errors
-    /// Rejects a stale or different authenticated peer, a non-directory or foreign-owned
-    /// source, or mismatched inode or mount identity; propagates metadata lookup errors.
+    /// Rejects a stale or different peer, a non-directory or foreign-owned source, or mismatched
+    /// inode or mount identity.
     pub fn validate(&self, channel: &HostChannel, named: &File) -> io::Result<()> {
         use std::os::unix::fs::MetadataExt;
         let held = self.file.metadata()?;
@@ -43,8 +42,8 @@ impl RetainedHomeInput {
 }
 pub const CHANNEL_FD: i32 = 70;
 
-/// Authenticated transport does not authorize caller-authored output proofs.
-/// Only the backend's descriptor-bound host session may send those proofs.
+/// Authenticated transport does not authorize caller-authored output proofs; only the backend's
+/// descriptor-bound host session may send those.
 ///
 /// ```compile_fail,E0624
 /// use imager_backend::capture::transport::HostChannel;
@@ -68,15 +67,12 @@ impl HostChannel {
             Err(io::ErrorKind::BrokenPipe.into())
         }
     }
-    /// # Errors
     /// Fails if the live peer cannot certify non-root original-caller credentials.
     pub fn original_caller_facts(&self) -> io::Result<super::original_caller::OriginalCallerFacts> {
         self.original_peer().original_caller_facts()
     }
 
-    /// # Errors
-    /// Propagates socket and authentication errors; rejects a peer whose PID, UID or
-    /// live process identity does not match the expected child.
+    /// Rejects a peer whose PID, UID or live process identity does not match the expected child.
     pub fn authenticate(mut stream: UnixStream, child_pid: u32, uid: u32) -> io::Result<Self> {
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
@@ -108,8 +104,8 @@ impl HostChannel {
             return Err(failure("capture host exited"));
         }
         fd_transport::send_with_fd(self.stream.as_fd(), &[tag], file.as_fd())?;
-        // One acknowledged descriptor per frame; adjacent Unix-stream rights
-        // cannot coalesce into an ambiguous source/output/input declaration.
+        // One acknowledged descriptor per frame: adjacent Unix-stream rights cannot coalesce into
+        // an ambiguous declaration.
         let mut ack = [0];
         self.stream.read_exact(&mut ack)?;
         if ack != [tag] || !self.peer.current() {
@@ -118,9 +114,7 @@ impl HostChannel {
         Ok(())
     }
 
-    /// # Errors
-    /// Rejects a zero quota, an expired peer or an unexpected acknowledgment;
-    /// propagates descriptor-transfer and socket errors.
+    /// Rejects a zero quota, an expired peer or an unexpected acknowledgment.
     pub fn send_inventory_scratch(&mut self, file: &File, quota: u64) -> io::Result<()> {
         self.validate_peer()?;
         if quota == 0 {
@@ -141,8 +135,8 @@ impl HostChannel {
         &mut self.stream
     }
 
-    /// Reverse authentication is implemented by the launcher's native proof
-    /// constructor. No claims are sent before the exact child was admitted.
+    /// Reverse authentication happens in the launcher's native proof constructor; no claims are
+    /// sent before the exact child is admitted.
     pub(in crate::capture) fn output_admission(&mut self, frame: &[u8; 64]) -> io::Result<()> {
         if !self.peer.current() {
             return Err(failure("capture host exited before output admission"));
@@ -166,14 +160,12 @@ impl HostChannel {
         Ok(())
     }
 
-    /// Distinct source-input receiver; output's directory-only gate stays intact.
     pub fn receive_mounted_input(&mut self, tag: u8, directory: bool) -> io::Result<File> {
         self.validate_peer()?;
         let (bytes, descriptor) = fd_transport::recv_with_fd(self.stream.as_fd())?;
         let file =
             File::from(descriptor.ok_or_else(|| failure("mounted input descriptor missing"))?);
         let metadata = file.metadata()?;
-        // A transferred source input never supplies writer authority.
         let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
         if flags < 0 {
             return Err(io::Error::last_os_error());
@@ -199,9 +191,7 @@ impl HostChannel {
             peer: self.peer.clone(),
         })
     }
-    /// # Errors
-    /// Rejects an expired peer, missing descriptor, wrong tag or non-directory output;
-    /// propagates transport, metadata and acknowledgment errors.
+    /// Rejects an expired peer, a missing descriptor, a wrong tag or a non-directory output.
     pub fn receive(&mut self, tag: u8) -> io::Result<File> {
         if !self.peer.current() {
             return Err(failure("capture caller exited"));
@@ -250,9 +240,7 @@ impl WorkerChannel {
         Ok(Self { stream, root: None })
     }
 
-    /// # Errors
-    /// Propagates transport and authentication errors; rejects a root peer whose
-    /// PID or live process identity differs from the expected helper.
+    /// Rejects a root peer whose PID or live process identity differs from the expected helper.
     pub fn authenticate_root(&mut self, expected_pid: u32) -> io::Result<()> {
         process_binding::arm(&self.stream)?;
         let mut challenge = [0; 32];
@@ -269,9 +257,7 @@ impl WorkerChannel {
         Ok(())
     }
 
-    /// # Errors
-    /// Rejects an unauthenticated or expired root peer or an unexpected acknowledgment;
-    /// propagates descriptor-transfer and socket errors.
+    /// Rejects an unauthenticated or expired root peer, or an unexpected acknowledgment.
     pub fn send(&mut self, tag: u8, file: &File) -> io::Result<()> {
         if !self
             .root
@@ -286,15 +272,13 @@ impl WorkerChannel {
         if ack != [tag] {
             return Err(failure("capture output acknowledgment changed"));
         }
-        // A socket clone can outlive the admitted root process. A delayed ACK
-        // from that clone must never acknowledge retired authority.
+        // A socket clone can outlive the admitted root process, and a delayed ACK from it must
+        // never acknowledge retired authority.
         self.validate_root()?;
         Ok(())
     }
 
-    /// # Errors
-    /// Rejects a missing descriptor, wrong tag or unexpected file kind; propagates
-    /// descriptor-transfer, metadata and acknowledgment errors.
+    /// Rejects a missing descriptor, a wrong tag or an unexpected file kind.
     pub fn receive(&mut self, tag: u8, directory: bool) -> io::Result<File> {
         let (bytes, descriptor) = fd_transport::recv_with_fd(self.stream.as_fd())?;
         let file = File::from(descriptor.ok_or_else(|| failure("capture descriptor missing"))?);
@@ -313,9 +297,7 @@ impl WorkerChannel {
     }
 }
 
-/// # Errors
-/// Propagates descriptor-flag and metadata errors; returns `PermissionDenied`
-/// unless the descriptor is a read-only block device.
+/// Returns `PermissionDenied` unless the descriptor is a read-only block device.
 pub fn validate_read_only_block_device(file: &File) -> io::Result<()> {
     use std::os::unix::fs::FileTypeExt;
     // SAFETY: fcntl F_GETFL observes the held descriptor without a pointer.
@@ -330,10 +312,8 @@ pub fn validate_read_only_block_device(file: &File) -> io::Result<()> {
     Ok(())
 }
 impl WorkerChannel {
-    /// # Errors
-    /// Rejects an unauthenticated or expired root peer, malformed frame, missing
-    /// descriptor, zero quota, or a scratch directory with the wrong owner or mode;
-    /// propagates transport, metadata and acknowledgment errors.
+    /// Rejects an unauthenticated or expired root peer, a malformed frame, a missing descriptor, a
+    /// zero quota or a scratch directory with the wrong owner or mode.
     pub fn receive_inventory_scratch(&mut self) -> io::Result<(File, u64)> {
         use std::os::unix::fs::MetadataExt;
         self.validate_root()?;
@@ -361,7 +341,6 @@ impl WorkerChannel {
         self.stream.write_all(&[4])?;
         Ok((file, quota))
     }
-    /// # Errors
     /// Returns `PermissionDenied` unless an authenticated root peer is still current.
     pub fn validate_root(&self) -> io::Result<()> {
         if self
@@ -374,10 +353,8 @@ impl WorkerChannel {
             Err(io::ErrorKind::PermissionDenied.into())
         }
     }
-    /// # Errors
-    /// Rejects a stale or unauthenticated root peer, a missing descriptor, wrong tag
-    /// or a descriptor that is not a read-only block device; propagates transport,
-    /// descriptor inspection and acknowledgment errors.
+    /// Rejects a stale or unauthenticated root peer, a missing descriptor, a wrong tag or a
+    /// descriptor that is not a read-only block device.
     pub fn receive_read_only_media(&mut self) -> io::Result<File> {
         self.validate_root()?;
         let (bytes, descriptor) = fd_transport::recv_with_fd(self.stream.as_fd())?;

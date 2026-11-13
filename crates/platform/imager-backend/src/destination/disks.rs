@@ -1,42 +1,27 @@
-//! Target-disk and partition discovery.
+//! Target-disk and partition discovery from `lsblk -J -b -p`.
 //!
-//! Devices come from `lsblk -J -b -p` with [`LSBLK_COLUMNS`], parsed by the
-//! shared `block-devices` inventory. Only `TYPE == "disk"` rows with a real
-//! size are candidates; memory- and loop-backed pseudo disks never are, and a
-//! disk whose holder tree carries a live system mount is marked as the
-//! running system.
+//! Only whole disks with a real size are candidates; memory- and loop-backed pseudo disks never
+//! are, and a disk whose holder tree carries a live system mount is the running system.
 //!
-//! [`parse_lsblk`] still accepts the older whitespace form of
-//! `lsblk -dnpo NAME,SIZE,MODEL,TYPE`: the first token is `NAME`, the second
-//! `SIZE`, the **last** `TYPE`, and everything in between `MODEL`, which keeps
-//! multi-word model strings intact without depending on column widths.
+//! [`parse_lsblk`] also reads the whitespace form of `lsblk -dnpo NAME,SIZE,MODEL,TYPE`: name,
+//! size, the model words, and the type last.
 
 use std::time::Duration;
 
 use block_devices::{BlockDevice, Lsblk, lsblk};
 use serde_json::Value;
 
-/// GPT type used for an ordinary Linux data/filesystem partition.
 pub const LINUX_FILESYSTEM_GUID: &str = "0fc63daf-8483-4772-8e79-3d69d8477de4";
-/// Tilo-owned root GPT type used for target-independent same-disk discovery.
 pub const TILO_ROOT_GUID: &str = "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab";
-/// GPT type of the root a staged live installer boots from. Only the live
-/// installer UKI resolves it (os/usr/libexec/tilo-root-discover), so it never
+/// The root a staged live installer boots from; only the installer UKI resolves it, so it never
 /// competes with the Tilo root installed beside it.
 pub const TILO_STAGING_ROOT_GUID: &str = "d4c4daf6-f72c-43ee-b8e3-5ba32550311d";
-/// GPT type used for an EFI System Partition.
 pub const EFI_SYSTEM_GUID: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
-/// Minimum prepared root accepted by the guided alongside flow (32 GiB).
 pub const MIN_ALONGSIDE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
-/// Minimum ESP accepted for an alongside install (2 GiB).
-///
-/// Tilo keeps several signed UKIs for rollback, staged updates, and repair.
-/// A typical 100--512 MiB Windows/Linux ESP cannot safely hold that lifecycle,
-/// even if the first install happens to fit.
+/// Tilo keeps several signed UKIs for rollback and repair, which a 100--512 MiB ESP cannot hold.
 pub const MIN_ALONGSIDE_ESP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-/// Keep partition starts and ends on MiB boundaries. Besides avoiding poor
-/// flash/4Kn alignment, the first/last MiB conservatively stay clear of both
-/// copies of the GPT metadata.
+/// Keeps the first and last MiB clear of both GPT copies, and starts and ends aligned for flash
+/// and 4Kn.
 const PARTITION_ALIGNMENT_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,8 +31,8 @@ pub struct PartitionExtent {
     pub size_bytes: u64,
 }
 
-/// A non-destructive plan that appends Tilo's three partitions inside one exact
-/// unallocated GPT extent. It never represents space reclaimed by resizing.
+/// Appends Tilo's three partitions inside one unallocated GPT extent; it never reclaims space by
+/// resizing.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GuidedAlongsidePlan {
     pub free_start_bytes: u64,
@@ -61,9 +46,7 @@ pub struct GuidedAlongsidePlan {
 }
 
 impl GuidedAlongsidePlan {
-    /// Restrict the existing append-only plan to an explicitly chosen allocation.
-    /// The free extent in the returned plan is the exact write authorization,
-    /// not all the unused space that happened to be available at discovery.
+    /// The returned extent is the write authorization, not all the free space discovery saw.
     pub fn with_capacity_bytes(&self, bytes: u64) -> Option<Self> {
         let overhead = MIN_ALONGSIDE_ESP_BYTES.checked_add(1 << 30)?;
         let minimum = overhead.checked_add(MIN_ALONGSIDE_BYTES)?;
@@ -94,11 +77,10 @@ impl GuidedAlongsidePlan {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DiskPartition {
     pub name: String,
-    /// Byte offset from the start of the parent disk.
     pub start_bytes: u64,
     pub size_bytes: u64,
-    /// GPT partition UUID used to bind the reviewed partition across device
-    /// renumbering. Empty means discovery could not establish its identity.
+    /// Binds the reviewed partition across device renumbering; empty when discovery cannot
+    /// establish it.
     pub part_uuid: String,
     pub filesystem: String,
     pub label: String,
@@ -107,9 +89,8 @@ pub struct DiskPartition {
 }
 
 impl DiskPartition {
-    /// A dual-boot root must be explicitly typed for Linux, unmounted, large
-    /// enough, and have no filesystem signature. The backend repeats these
-    /// checks immediately before formatting it.
+    /// A dual-boot root must be Linux-typed, unmounted, large enough and signature-free; the
+    /// backend repeats these checks before formatting it.
     pub fn is_alongside_candidate(&self) -> bool {
         self.size_bytes >= MIN_ALONGSIDE_BYTES
             && !self.part_uuid.is_empty()
@@ -141,21 +122,16 @@ impl DiskPartition {
     }
 }
 
-/// One installable target disk.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Disk {
-    /// Full device path, e.g. `/dev/sda`.
     pub name: String,
-    /// Human-readable size as `lsblk` prints it, e.g. `238.5G`.
     pub size: String,
-    /// Device model, e.g. `Samsung SSD 860 EVO`. May be empty.
     pub model: String,
     pub size_bytes: u64,
     pub partition_table: String,
     pub partition_table_uuid: String,
     pub logical_sector_size: u64,
-    /// Kernel device number observed during discovery. This is always bound,
-    /// while WWN/serial add durable hardware identity when the device exports it.
+    /// Always bound; WWN and serial add durable identity when the device exports them.
     pub major_minor: String,
     pub wwn: String,
     pub serial: String,
@@ -163,18 +139,15 @@ pub struct Disk {
     pub read_only: bool,
     pub is_system: bool,
     pub partitions: Vec<DiskPartition>,
-    /// Device nodes directly below this disk (or the disk itself) whose
-    /// subtree carries a running-system mount. For a staged (USB-free)
-    /// installation these must be exactly the staging partitions.
+    /// Nodes whose subtree carries a running-system mount; for a staged install these are exactly
+    /// the staging partitions.
     pub live_system_nodes: Vec<String>,
-    /// Set only on the running-system disk that also holds a verified staged
-    /// installer: the single guided plan that fills the staged target extent.
-    /// Whole-disk erase and prepared partitions are never offered there.
+    /// Set on the running-system disk that holds a verified staged installer: the one guided plan
+    /// that fills the staged target extent.
     pub internal_plan: Option<GuidedAlongsidePlan>,
 }
 
 impl Disk {
-    /// Two representative disks for screenshots and tests.
     #[must_use]
     pub fn samples() -> Vec<Self> {
         vec![
@@ -268,7 +241,6 @@ impl Disk {
         ]
     }
 
-    /// Single-line label shown on the disk-selection row.
     pub fn label(&self) -> String {
         if self.model.is_empty() {
             format!("{}  —  {}", self.name, self.size)
@@ -301,10 +273,8 @@ impl Disk {
         )
     }
 
-    /// Explain why discovery cannot select a prepared ESP using only metadata
-    /// available to the unprivileged UI. FAT integrity and free bytes on an
-    /// unmounted filesystem are intentionally absent: the privileged backend
-    /// probes those immediately before installation.
+    /// Why discovery cannot select a prepared ESP from unprivileged metadata. FAT integrity and
+    /// free bytes are probed by the backend just before install.
     pub fn prepared_efi_issue(&self) -> Option<String> {
         let eligible = self
             .partitions
@@ -363,10 +333,8 @@ impl Disk {
             && self.efi_partition().is_some()
     }
 
-    /// Whether discovery found storage normally managed by Windows. This is a
-    /// preparation hint, not proof that a bootable Windows installation is
-    /// present: an NTFS data partition is enough reason to avoid implying Tilo
-    /// can safely clear hibernation state or resize it.
+    /// A preparation hint, not proof of a bootable Windows: an NTFS data partition already means
+    /// hibernation state must not be cleared blindly.
     pub fn has_windows_storage(&self) -> bool {
         self.partitions.iter().any(|partition| {
             matches!(
@@ -376,8 +344,7 @@ impl Disk {
         })
     }
 
-    /// A preparation hint, not proof of a bootable Linux installation. Never
-    /// infer unallocated device space from free bytes inside these filesystems.
+    /// A hint, not proof; free bytes inside these filesystems say nothing about unallocated space.
     pub fn has_linux_storage(&self) -> bool {
         self.partitions.iter().any(|partition| {
             matches!(
@@ -406,9 +373,8 @@ impl Disk {
         Some(extents)
     }
 
-    /// Return every unallocated GPT extent that can hold a dedicated 2 GiB
-    /// ESP plus a 1 GiB boot and >=32 GiB root, in on-disk order. Callers must require an
-    /// explicit choice when this returns more than one plan.
+    /// Every unallocated extent that fits a 2 GiB ESP, a 1 GiB boot and a 32 GiB root. Callers must
+    /// require an explicit choice when there is more than one.
     pub fn guided_alongside_plans(&self) -> Vec<GuidedAlongsidePlan> {
         if let Some(plan) = &self.internal_plan {
             return vec![plan.clone()];
@@ -489,34 +455,26 @@ impl Disk {
         candidates
     }
 
-    /// Convenience for flows that can proceed only when discovery is
-    /// unambiguous. Multiple safe extents are never silently resolved.
+    /// Only when discovery is unambiguous; multiple safe extents are never resolved silently.
     pub fn guided_alongside_plan(&self) -> Option<GuidedAlongsidePlan> {
         exactly_one_owned(self.guided_alongside_plans().into_iter())
     }
 
-    /// Whether this disk holds the running installer and cannot be a target.
     /// A verified staged installation is the one exception.
     pub fn blocks_install(&self) -> bool {
         self.is_system && self.internal_plan.is_none()
     }
 
-    /// Whether this is the running-system disk that holds a verified staged
-    /// installer (and therefore also the retained OS).
     pub fn hosts_staged_installer(&self) -> bool {
         self.internal_plan.is_some()
     }
 
-    /// Bind a staged (USB-free) installation to this disk. It applies only to
-    /// the disk the installer is running from, and only when the disk, both
-    /// staging partitions and the free target extent are exactly as staged
-    /// and nothing but the staging partitions carries the running system.
-    /// The privileged backend repeats every check before writing anything.
+    /// Binds a staged install to the disk the installer runs from, and only when the disk, both
+    /// staging partitions and the free extent are exactly as staged. The backend repeats every
+    /// check before writing.
     ///
-    /// # Errors
-    ///
-    /// Returns why the handoff does not describe this disk; the disk then
-    /// stays unavailable exactly like any other running-system disk.
+    /// Returns why the handoff does not describe this disk; the disk then stays unavailable like
+    /// any other running-system disk.
     pub fn apply_internal_handoff(
         &mut self,
         handoff: &crate::destination::internal_handoff::Handoff,
@@ -568,7 +526,6 @@ impl Disk {
         self.staged_target_plan(handoff.target_extent)
     }
 
-    /// Inclusive LBA range of `partition` in this disk's logical sectors.
     fn lba_range(&self, partition: &DiskPartition) -> Option<(u64, u64)> {
         let sector = self.logical_sector_size;
         if sector == 0
@@ -604,9 +561,8 @@ impl Disk {
         Ok(partition)
     }
 
-    /// The guided plan that fills the staged target extent exactly: a 2 GiB
-    /// ESP at its start and a root that ends where the staged installer
-    /// begins, so reclaim can later grow the root in place.
+    /// A 2 GiB ESP at the extent's start and a root that ends where the installer begins, so
+    /// reclaim can grow the root in place.
     fn staged_target_plan(
         &self,
         target: crate::destination::internal_handoff::Extent,
@@ -657,18 +613,15 @@ impl Disk {
         })
     }
 
-    /// Minimum identity needed for any destructive handoff. Device number
-    /// closes same-session path reuse, while at least one hardware identifier
-    /// keeps the binding durable across kernel renumbering.
+    /// The device number closes same-session path reuse; one hardware identifier keeps the binding
+    /// durable across kernel renumbering.
     pub fn identity_ready(&self) -> bool {
         self.size_bytes > 0
             && !self.major_minor.is_empty()
             && (!self.wwn.is_empty() || !self.serial.is_empty())
     }
 
-    /// The filesystems the disk's partitions carry, in partition order, for a
-    /// surface to name in the person's language. A partition without a
-    /// recognised filesystem adds none.
+    /// A partition without a recognised filesystem adds none.
     pub fn partition_filesystems(&self) -> Vec<&str> {
         self.partitions
             .iter()
@@ -678,9 +631,8 @@ impl Disk {
     }
 }
 
-/// Return the candidate only when discovery is unambiguous. Formatting the
-/// "first" blank partition is not safe: signature-free storage can still
-/// contain unrecognised data, and enumeration order is not user consent.
+/// Formatting the "first" blank partition is not safe: signature-free storage can still hold
+/// unrecognised data, and enumeration order is not consent.
 fn exactly_one<'a>(
     mut candidates: impl Iterator<Item = &'a DiskPartition>,
 ) -> Option<&'a DiskPartition> {
@@ -708,7 +660,7 @@ fn align_down(value: u64, alignment: u64) -> u64 {
     value / alignment * alignment
 }
 
-/// Exactly the columns discovery reads, listed by full device path.
+/// The columns discovery reads, by full device path.
 pub const LSBLK_COLUMNS: &str = "NAME,SIZE,START,MODEL,TYPE,FSTYPE,LABEL,MOUNTPOINTS,PARTTYPE,PARTUUID,PTTYPE,PTUUID,LOG-SEC,RM,RO,WWN,SERIAL,MAJ:MIN";
 
 fn lsblk() -> Lsblk {
@@ -718,8 +670,7 @@ fn lsblk() -> Lsblk {
         .timeout(Duration::from_secs(10))
 }
 
-/// `bytes` as `lsblk` prints a size: binary units, one decimal where it is
-/// not whole (`64G`, `238.5G`).
+/// As `lsblk` prints a size: binary units, one decimal when not whole.
 fn lsblk_size(bytes: u64) -> String {
     const UNITS: [&str; 7] = ["B", "K", "M", "G", "T", "P", "E"];
     let mut unit = 0;
@@ -737,22 +688,19 @@ fn lsblk_size(bytes: u64) -> String {
     }
 }
 
-/// Parse the output of `lsblk -dnpo NAME,SIZE,MODEL,TYPE` into the set of
-/// whole-disk devices. Rows that aren't `TYPE == "disk"`, blank lines,
-/// and malformed lines (fewer than the three mandatory columns) are
+/// Parses `lsblk -dnpo NAME,SIZE,MODEL,TYPE` into whole disks; other rows and malformed lines are
 /// skipped.
 pub fn parse_lsblk(output: &str) -> Vec<Disk> {
     if let Ok(json) = serde_json::from_str::<Value>(output) {
         return parse_lsblk_json(&json);
     }
-    // Compatibility with old fixtures and unusually old util-linux builds.
+    // Still read the whitespace form that old fixtures and util-linux print.
     let mut disks = Vec::new();
     for raw in output.lines() {
         let line = raw.trim();
         if line.is_empty() {
             continue;
         }
-        // NAME SIZE [MODEL ...] TYPE — at minimum NAME, SIZE, TYPE.
         let tokens: Vec<&str> = line.split_whitespace().collect();
         let Some((&ty, rest)) = tokens.split_last() else {
             continue;
@@ -760,8 +708,6 @@ pub fn parse_lsblk(output: &str) -> Vec<Disk> {
         if ty != "disk" {
             continue;
         }
-        // Middle tokens (if any) are the model; empty when `rest` holds
-        // exactly NAME and SIZE.
         let [name, size, model_tokens @ ..] = rest else {
             continue;
         };
@@ -803,13 +749,9 @@ fn disks_from(devices: &[BlockDevice]) -> Vec<Disk> {
             }
             let partitions: Vec<DiskPartition> =
                 d.children.iter().filter_map(parse_partition).collect();
-            // A normal encrypted Fedora/Tilo root is not mounted directly from
-            // the partition: lsblk reports disk -> part -> crypt (and often
-            // -> lvm) before the node carrying `/` or `/sysroot`. Keep only
-            // direct partitions in the install plan, but inspect the complete
-            // holder tree when deciding whether the whole disk is the running
-            // system. Otherwise the UI offers a disk that the privileged
-            // backend correctly rejects only after the user has reviewed it.
+            // lsblk nests disk -> part -> crypt -> lvm before the node carrying `/`; keep only
+            // direct partitions in the plan, but check the whole holder tree for a running system,
+            // or the UI offers a disk the backend rejects after review.
             let tree_is_live = |device: &BlockDevice| {
                 device
                     .descendants()
@@ -861,8 +803,7 @@ fn parse_partition(device: &BlockDevice) -> Option<DiskPartition> {
     }
     Some(DiskPartition {
         name: device.name.clone(),
-        // util-linux documents START in 512-byte sectors even when the device
-        // has a different logical sector size.
+        // util-linux prints START in 512-byte sectors whatever the logical sector size.
         start_bytes: device.start.unwrap_or(0).saturating_mul(512),
         size_bytes: device.size,
         part_uuid: text(device.partuuid.as_ref()),
@@ -873,11 +814,8 @@ fn parse_partition(device: &BlockDevice) -> Option<DiskPartition> {
     })
 }
 
-/// A single `MOUNTPOINT` is not sufficient here: on a Btrfs system one
-/// partition commonly backs `/`, `/var`, and `/home`, and lsblk may choose any
-/// one of them for the singular column. Keep a newline-separated
-/// representation of every mount so existing empty/mounted checks remain
-/// simple while running-system detection sees every mount.
+/// One MOUNTPOINT misses a Btrfs partition that backs `/`, `/var` and `/home`; keep every mount
+/// newline-separated so empty and mounted checks stay simple.
 fn mountpoints(device: &BlockDevice) -> String {
     device.all_mountpoints().join("\n")
 }
@@ -897,8 +835,7 @@ fn text(value: Option<&String>) -> String {
     value.cloned().unwrap_or_default()
 }
 
-/// Run `lsblk` and parse its output. Returns an empty vec when `lsblk`
-/// is missing or fails — the UI surfaces that as "No disks found".
+/// An empty vec when `lsblk` is missing or fails; the UI shows "No disks found".
 pub fn read_disks() -> Vec<Disk> {
     lsblk()
         .output()
@@ -912,8 +849,6 @@ mod tests {
     #[test]
     fn lsblk_inventory_parses_json_and_text_forms() {
         {
-            // Real `lsblk` output for exactly LSBLK_COLUMNS, and the disks this
-            // module derived from it before the shared parser existed.
             let disks = parse_lsblk(include_str!(
                 "../../../../../crates/system/block-devices/tests/fixtures/installer.json"
             ));
@@ -937,7 +872,6 @@ mod tests {
             assert_eq!(disks[0].model, "Samsung SSD 860 EVO");
         }
         {
-            // No model column: only NAME, SIZE, TYPE present.
             let out = "/dev/vda 64G disk\n";
             let disks = parse_lsblk(out);
             assert_eq!(disks.len(), 1);
@@ -959,8 +893,6 @@ mod tests {
         {
             let out = "\n/dev/sda 238.5G Samsung disk\n\ngarbage\n/dev/sdb\n/dev/sdc 1T  disk\n";
             let disks = parse_lsblk(out);
-            // "garbage" (1 token) and "/dev/sdb" (1 token) are dropped;
-            // /dev/sda and /dev/sdc (empty model) survive.
             let names: Vec<&str> = disks.iter().map(|d| d.name.as_str()).collect();
             assert_eq!(names, vec!["/dev/sda", "/dev/sdc"]);
             assert_eq!(disks[1].model, "");

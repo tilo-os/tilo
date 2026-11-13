@@ -121,7 +121,6 @@ fn from_wide(buf: &[u16]) -> String {
         .into_owned()
 }
 
-/// An owned kernel handle.
 #[derive(Debug)]
 pub struct Handle(HANDLE);
 

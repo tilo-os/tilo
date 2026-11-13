@@ -1,6 +1,4 @@
 //! Installed root admission on the existing mutually authenticated native stream.
-//! Caller labels select a request, never credentials, source paths or authority.
-//! No public dispatcher, process spawn or positive launch status lives here.
 use super::{
     home_capture::{RetainedSourceAuthority, RetainedSourceProjection},
     prepared_setup::{AuthenticatedInstalledRetained, IdentityKind, InstalledPersonAnchor},
@@ -56,15 +54,13 @@ fn launch_binding(
     Ok(value)
 }
 
-/// Implemented ONLY by the paired root-native installed custody adapter.
-/// There is no CLI constructor/default and no wire-selected certificate store.
-/// Every current() must reopen/revalidate its canonical installed certificate
-/// and CURRENT revocations; errors cannot fall back to an old snapshot.
+/// Implemented only by the paired root-native installed custody adapter; no default and no
+/// wire-selected certificate store. `current()` reopens the installed certificate and current
+/// revocations.
 pub(in crate::setup) trait RootInstalledPersonAnchor: Send + Sync {
     fn current(&self) -> io::Result<(DeviceCert, RevocationList)>;
-    /// Only entries extracted after fresh exact proof/device/root-signature
-    /// verification reach this seam. The real adapter must validate signatures
-    /// again and preserve every previously authenticated entry monotonically.
+    /// Only entries extracted after fresh exact proof, device and root-signature verification; the
+    /// adapter validates again and keeps earlier entries monotonic.
     fn refresh_verified(&self, entries: &[tilo_user_identity::RevocationEntry]) -> io::Result<()>;
 }
 
@@ -113,7 +109,6 @@ impl ProofClient {
             let binding = launch_binding(request, &peer)?;
             stream.write_all(&[1])?;
             // The Shell pins this exact root task before it signs any fresh reply.
-            process_binding::complete(&mut stream)?;
             // complete() clears its handshake timeouts: restore bounded proof I/O.
             stream.set_read_timeout(Some(Duration::from_secs(10)))?;
             stream.set_write_timeout(Some(Duration::from_secs(10)))?;
@@ -158,8 +153,8 @@ impl ProofClient {
             .map_err(io::Error::other)?
             .ok_or_else(refused)?;
         let proof = SignedRetainedPersonProof::decode(&bytes)?;
-        // Extract only after authenticating this exact fresh response against
-        // the installed certificate and already protected root revocations.
+        // Extract only after authenticating this fresh response against the installed certificate and
+        // the protected root revocations.
         let entries = proof.authenticated_revocations(
             &self.binding,
             &nonce,
@@ -169,8 +164,8 @@ impl ProofClient {
         )?;
         anchor.refresh_verified(&entries)?;
         let (current, current_revocations) = anchor.current()?;
-        // Refresh is monotonic and reload is mandatory. Newly learned device
-        // revocation or replaced certificate must refuse BEFORE epoch admission.
+        // Refresh is monotonic and reload is mandatory: a newly learned device revocation or a
+        // replaced certificate refuses before epoch admission.
         match &self.epoch {
             Some(epoch) => {
                 epoch.revalidate(&proof, &nonce, &self.peer, &current, &current_revocations)?;
@@ -189,8 +184,8 @@ impl ProofClient {
     }
 }
 
-/// Private constructor; request JSON, a serialized declaration, FD or signer
-/// labels cannot mint this admission. It is not Serialize/Deserialize/Clone.
+/// Private constructor: request JSON, a serialized declaration, an FD or signer labels cannot mint
+/// this admission, and it is not Serialize, Deserialize or Clone.
 pub struct ReviewedInstalledRetainedLaunch {
     installed: Arc<AuthenticatedInstalledRetained>,
     source: Arc<RetainedSourceAuthority>,
@@ -205,9 +200,8 @@ impl ReviewedInstalledRetainedLaunch {
         RetainedSourceAuthority::unknown_retirement()
     }
 
-    /// The caller supplies only the EXISTING connected Shell/root stream and
-    /// closed scope. Root custody is opened internally from authenticated A;
-    /// callers cannot inject an anchor. Nothing is launched or advertised.
+    /// The caller supplies only the existing connected Shell/root stream and closed scope; the
+    /// anchor is opened internally and nothing is launched.
     pub(in crate::setup) fn review(
         stream: UnixStream,
         request: LaunchRequest,
@@ -223,9 +217,8 @@ impl ReviewedInstalledRetainedLaunch {
             .retained_home()
             .ok_or_else(refused)?
             .as_plan();
-        // Original credentials remain authenticated source facts. The target
-        // identity is independently verified from the actual executing Shell
-        // and installed certified personal session, not inferred from this UID.
+        // Original credentials remain authenticated source facts; the target identity is verified from
+        // the executing Shell and its installed certified session, not inferred from this UID.
         if plan.home_uid() == 0 {
             return Err(refused());
         }
@@ -233,8 +226,8 @@ impl ReviewedInstalledRetainedLaunch {
             return Err(refused());
         }
         let person = manifest.identity_public_key;
-        // B's initial retained group route is exclusively the canonical personal
-        // room. Reject shared-workspace context BEFORE opening any RW source.
+        // B's initial retained group route is exclusively the canonical personal workspace. Reject
+        // shared-workspace context BEFORE opening any RW source.
         if request.room() != runtime_collab::retained_person::personal_cluster(&person) {
             return Err(refused());
         }
@@ -303,8 +296,8 @@ impl ReviewedInstalledRetainedLaunch {
     pub fn binding(&self) -> &RetainedLaunchBinding {
         &self.binding
     }
-    /// Share only the kernel peer authenticated by this actor's fresh certified
-    /// context. Routing a consuming child never rewrites the original Shell PID.
+    /// Routes a consuming child from the kernel peer this actor authenticated; the original Shell
+    /// PID is never rewritten.
     pub fn target_peer(&self, cancel: &AtomicBool) -> io::Result<Arc<ExecutingPeer>> {
         self.revalidate(cancel)?;
         let peer = {
@@ -324,8 +317,8 @@ impl ReviewedInstalledRetainedLaunch {
         Ok(peer)
     }
     fn target_credentials(&self, cancel: &AtomicBool) -> io::Result<(u32, u32)> {
-        // Target native credentials belong to the authenticated live Shell peer,
-        // never the original filesystem owner or a target-side NSS lookup.
+        // Target native credentials belong to the authenticated live Shell peer, never the original
+        // filesystem owner or a target-side NSS lookup.
         self.revalidate(cancel)?;
         let credentials = {
             let proof = self.proof.lock().map_err(|_| refused())?;
@@ -389,8 +382,8 @@ impl ReviewedInstalledRetainedLaunch {
         }
         Ok(())
     }
-    /// The canonical namespace owner MUST retain this inseparable input until
-    /// actual namespace death. No cloned directory alone is a valid handoff.
+    /// The canonical namespace owner must keep this inseparable input until actual namespace death;
+    /// no cloned directory alone is a valid handoff.
     pub fn launch_input(
         self: &Arc<Self>,
         cancel: &AtomicBool,
@@ -403,8 +396,8 @@ impl ReviewedInstalledRetainedLaunch {
             projection,
         })
     }
-    /// Call only AFTER supervised namespace death and input/launcher custody
-    /// have actually been dropped. Outstanding custody refuses retirement.
+    /// Call only after supervised namespace death and after input and launcher custody were dropped;
+    /// outstanding custody refuses retirement.
     pub fn retire(self: Arc<Self>) -> io::Result<()> {
         let value = Arc::try_unwrap(self).map_err(|_| refused())?;
         let Self {
@@ -422,14 +415,13 @@ impl ReviewedInstalledRetainedLaunch {
 }
 
 /// Native launcher adapter only. No wire constructor and no positive status;
-/// retain in the actual NamespaceOwner through observation of namespace death.
 pub struct InstalledRetainedLaunchInput {
     reviewed: Arc<ReviewedInstalledRetainedLaunch>,
     projection: RetainedSourceProjection,
 }
 impl InstalledRetainedLaunchInput {
-    /// Canonical enrolled material from the held installed anchor; a daemon
-    /// certificate or public verifier record can never select these keys.
+    /// Canonical enrolled material from the held installed anchor; a daemon certificate or public
+    /// verifier record can never select these keys.
     pub fn current_history_material(
         &self,
         cancel: &AtomicBool,
@@ -569,13 +561,12 @@ mod tests {
         .unwrap_err();
         writer.join().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        // The payload trickles in over more than a second, so a deadline
-        // renewed by progress would have read it whole.
+        // The payload trickles in over more than a second, so a deadline renewed by progress would
+        // have read it whole.
         assert!(
             progress.load(Ordering::Acquire) >= 2,
             "actual partial payload arrived"
         );
-        // Shutdown is confined to the held proof socket, not another transport.
         peer.write_all(&[9]).unwrap();
         let mut byte = [0];
         unrelated.read_exact(&mut byte).unwrap();
@@ -622,7 +613,6 @@ mod tests {
             let mut nonce = [0; 32];
             peer.read_exact(&mut nonce).unwrap();
             assert_ne!(nonce, [0; 32]);
-            // No credentials, certificate, ACK or positive authority is forged.
             peer_cancel.store(true, Ordering::Release);
             assert_eq!(peer.read(&mut [0]).unwrap(), 0);
         });
@@ -702,9 +692,8 @@ mod different_uid_native {
         let executable =
             File::open("/proc/self/exe").expect("exact running executable, including memfd");
         let (mut root_stream, child_stream) = UnixStream::pair().expect("owned private stream");
-        // Keep originals above both fixed destinations so dup2 ordering cannot
-        // overwrite either source descriptor. No ambient executable path enters
-        // the credential-dropped child.
+        // Keep originals above both fixed destinations so dup2 ordering cannot overwrite either
+        // source descriptor.
         fn duplicate(file: &impl AsRawFd) -> File {
             let raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 64) };
             assert!(raw >= 64, "owned descriptor duplication");
@@ -775,7 +764,7 @@ mod different_uid_native {
         };
         assert!(status.success());
         assert!(!peer.current(), "kernel task lifetime cannot be replayed");
-        // This is kernel observation only. No InstalledRetainedLaunchInput,
-        // person proof, file grant, projection or successful edit is minted.
+        // Kernel observation only: no launch input, person proof, file grant, projection or successful
+        // edit is minted.
     }
 }

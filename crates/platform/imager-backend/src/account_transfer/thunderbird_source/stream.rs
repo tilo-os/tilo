@@ -1,14 +1,8 @@
-//! Streamed import of a reviewed Thunderbird source into the destination
-//! canonical Mail account store and cache.
+//! Streamed import of a reviewed Thunderbird source into the destination Mail account store and
+//! cache.
 //!
-//! The same-computer route keeps the source Home and reads it directly after
-//! first boot. Building one JSON bundle of every message would hold the whole
-//! mailbox, and its ciphertext, in memory before anything is published; an
-//! ordinary account of a few thousand messages already exceeds that. This
-//! module reads a folder in fixed chunks, publishes one message at a time, and
-//! keeps only the per-account kept file the Mail app itself reads. The sealed
-//! artifact in the parent module stays the route for a transfer that has to
-//! pass through installation media.
+//! One JSON bundle of every message would hold the whole mailbox and its ciphertext in memory, so
+//! this module reads a folder in fixed chunks and publishes one message at a time.
 
 use std::collections::BTreeSet;
 use std::io::{self, BufReader, Read, Write};
@@ -36,18 +30,12 @@ use super::{
     write_file,
 };
 
-/// The most selected source mail one streamed import walks. The bound is
-/// checked before the first read, so an implausible selection is refused by
-/// name instead of copying for hours. It bounds the work, not the kept JSON:
-/// that is checked as the kept file grows.
+/// Checked before the first read so an implausible selection is refused by name instead of
+/// copying for hours; the kept JSON is bounded separately.
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-/// The most messages one streamed import walks, as a whole and as the
-/// reviewed inventory already knows them.
 const MAX_SOURCE_MESSAGES: u64 = 1_000_000;
-/// One address book or calendar file. These are small sidecars, unlike mail.
+/// Address books and calendars are small sidecars, unlike mail.
 const MAX_SIDECAR_BYTES: u64 = 32 * 1024 * 1024;
-/// The destination directory below the target Home that keeps each selected
-/// folder's exact original bytes.
 const RETAINED: [&str; 5] = [".local", "share", "tilo", "mail-import", "thunderbird"];
 
 fn invalid(message: &str) -> io::Error {
@@ -70,8 +58,7 @@ fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
     }
 }
 
-/// A message over the per-message bound. Its folder is named by its
-/// Thunderbird path, which the person already sees in the review.
+/// The folder is named by its Thunderbird path, which the person already sees in the review.
 fn folder_too_large(folder: &ReviewedFolder) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
@@ -83,7 +70,6 @@ fn folder_too_large(folder: &ReviewedFolder) -> io::Error {
     )
 }
 
-/// The account's kept file would grow past what the Mail app reads whole.
 fn kept_too_large() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
@@ -94,8 +80,8 @@ fn kept_too_large() -> io::Error {
     )
 }
 
-/// What one streamed import held at once. It is the evidence that a folder
-/// larger than memory is read as a stream rather than as one buffer.
+/// What one import held at once: evidence that a folder larger than memory is streamed rather
+/// than buffered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StreamReport {
     pub peak_message_bytes: usize,
@@ -103,18 +89,16 @@ pub(crate) struct StreamReport {
     pub messages: u64,
 }
 
-/// Import exactly the reviewed selection into the canonical Mail accounts and
-/// cache below `target_home`, reading the retained source directly.
-///
-/// The source is the same pinned profile discovery reviewed: every folder file
-/// is opened without following links, read in chunks, and checked against its
-/// size at review and against itself after the read, so a source that changed
-/// under the import is refused before anything is published.
+/// Imports exactly the reviewed selection into the canonical Mail accounts and cache below
+/// `target_home`, reading the retained source directly. Every folder file is opened without
+/// following links, read in chunks, and checked against its size at review and against itself
+/// after the read, so a source that changed under the import is refused before anything is
+/// published.
 ///
 /// # Errors
-/// Refuses a selection that differs from the reviewed source, a changed or
-/// redirected source, a message beyond the per-message bound, a kept file
-/// beyond the Mail app's bound, an unavailable target, and cancellation.
+///
+/// Refuses a selection that differs from the reviewed source, a changed or redirected source, a
+/// message or kept file beyond its bound, an unavailable target, and cancellation.
 pub fn import_reviewed(
     target_home: &Path,
     reviewed: &ReviewedThunderbird,
@@ -136,8 +120,6 @@ pub fn import_reviewed(
     Ok(receipt)
 }
 
-/// [`import_reviewed`], reporting what it held and observing each message, so a
-/// test can prove the memory bound and stop a long import part way.
 fn import_with(
     target_home: &Path,
     reviewed: &ReviewedThunderbird,
@@ -209,8 +191,7 @@ fn import_with(
     Ok((receipt, import.report))
 }
 
-/// Keep the selected address books and calendars byte for byte beside the
-/// imported mail. They are small files, so each is read bounded and whole.
+/// Each sidecar is read bounded and whole.
 fn retain_sidecars(
     target_home: &Path,
     reviewed: &ReviewedThunderbird,
@@ -286,8 +267,6 @@ fn retain_sidecars(
     Ok(())
 }
 
-/// The work a selection may make one import do, computed from the reviewed
-/// folder inventory before the source is read.
 struct Budget {
     messages: u64,
 }
@@ -342,8 +321,6 @@ impl Budget {
     }
 }
 
-/// One parsed message and the attachment bytes that belong beside the kept
-/// file.
 type ParsedMessage = (CachedMessage, Vec<(usize, Vec<u8>)>);
 
 struct Import<'a> {
@@ -356,10 +333,8 @@ struct Import<'a> {
 }
 
 impl Import<'_> {
-    /// Publish one account's configuration, then merge its selected folders
-    /// into the account's kept mail. The store is only saved by the caller, so
-    /// an account is never published without the mail that was selected with
-    /// it.
+    /// Publishes one account's configuration, then merges its selected folders into the kept mail;
+    /// the caller saves the store, so an account never appears without its mail.
     fn account(
         &mut self,
         account: &ReviewedAccount,
@@ -418,8 +393,8 @@ impl Import<'_> {
             }
             let imported = spool.messages;
             if imported == 0 {
-                // Every selected message is already kept: leave the person's
-                // file, and its flags, exactly as they are.
+                // Every selected message is already kept: leave the person's file and its flags
+                // as they are.
                 return Ok(ThunderbirdAccountReceipt {
                     source_id: account.inventory.source_id.clone(),
                     created,
@@ -459,9 +434,8 @@ impl Import<'_> {
         }
     }
 
-    /// One mbox, read from its pinned profile handle in chunks. The exact
-    /// original bytes are copied to the retained area as they are read, so the
-    /// folder is opened once.
+    /// Reads one mbox from its pinned handle in chunks and copies the original bytes to the
+    /// retained area as they are read, so the folder is opened once.
     fn stream_mbox(
         &mut self,
         folder: &ReviewedFolder,
@@ -539,9 +513,8 @@ impl Import<'_> {
             self.report.peak_buffered_bytes =
                 self.report.peak_buffered_bytes.max(splitter.max_buffered());
         }
-        // Revalidate the source before the copy is published, so an import
-        // that saw the folder change leaves nothing behind. The file length
-        // and the message count the person reviewed must both still hold.
+        // Revalidate before the copy is published: an import that saw the folder change leaves
+        // nothing behind, so the reviewed length and message count must still hold.
         if folder
             .inventory
             .messages
@@ -564,8 +537,7 @@ impl Import<'_> {
         Ok(inserted)
     }
 
-    /// One maildir. Every message is its own bounded file, so the folder is
-    /// walked in name order and each file is read once.
+    /// Each message is one bounded file, walked in name order.
     fn stream_maildir(
         &mut self,
         folder: &ReviewedFolder,
@@ -637,7 +609,6 @@ impl Import<'_> {
     }
 }
 
-/// The messages of one folder that are new to the account.
 struct FolderSink<'a> {
     files: &'a Path,
     spool: &'a mut Spool,
@@ -646,8 +617,8 @@ struct FolderSink<'a> {
 }
 
 impl FolderSink<'_> {
-    /// Keep a parsed message once. Its attachment bytes are written only when
-    /// the message is actually new, so an existing kept copy keeps its state.
+    /// Attachment bytes are written only when the message is new, so an existing kept copy keeps
+    /// its state.
     fn insert(&mut self, parsed: Option<ParsedMessage>) -> io::Result<bool> {
         let Some((message, attachments)) = parsed else {
             return Ok(false);
@@ -671,9 +642,8 @@ impl FolderSink<'_> {
     }
 }
 
-/// Streams the bytes it reads into a retained copy, so one pass over the
-/// folder both imports and preserves it. Cancellation is observed on every
-/// chunk, so stopping a long folder does not wait for a whole message.
+/// Streams what it reads into the retained copy, so one pass imports and preserves. Cancellation
+/// is observed on every chunk.
 struct Tee<'a> {
     inner: std::fs::File,
     out: &'a mut Retention,
@@ -691,8 +661,8 @@ impl Read for Tee<'_> {
     }
 }
 
-/// The exact bytes of one source file, held beside the target until the file
-/// has been read completely and its source identity checks out.
+/// Held beside the target until the file has been read completely and its source identity checks
+/// out.
 struct Retention {
     target: PathBuf,
     temporary: PathBuf,
@@ -722,8 +692,7 @@ impl Retention {
         }
     }
 
-    /// Publish the copy, refusing to replace one that holds other bytes: that
-    /// copy may be mail someone still needs.
+    /// Refuses to replace a copy that holds other bytes: it may be mail someone still needs.
     fn finish(mut self) -> io::Result<()> {
         let Some(file) = self.file.take() else {
             return Err(storage("A retained mail copy was already closed"));
@@ -753,15 +722,13 @@ impl Retention {
 impl Drop for Retention {
     fn drop(&mut self) {
         self.file = None;
-        // The name is unique to this copy, and a published copy was renamed
-        // away, so this only ever removes the copy that was not published.
+        // The name is unique to this copy, so this only removes a copy that was not published.
         let _ = std::fs::remove_file(&self.temporary);
     }
 }
 
-/// Messages already converted to the kept wire shape, held in a private
-/// temporary file so a long folder is not kept in memory. The file only holds
-/// the JSON array elements of the new messages.
+/// Holds the converted messages in a private temporary file, so a long folder stays out of
+/// memory.
 struct Spool {
     path: PathBuf,
     out: Counted<std::fs::File>,
@@ -771,8 +738,7 @@ struct Spool {
 }
 
 impl Spool {
-    /// `base` is the size of the kept file that was read, so the destination
-    /// bound is checked while the new messages are written, not after.
+    /// `base` is the kept file's size, so the destination bound is checked as messages are written.
     fn create(directory: &Path, base: u64) -> io::Result<Self> {
         let path = directory.join(format!(".tilo-{}.spool", Uuid::new_v4()));
         let out = Counted::create(&path)?;
@@ -807,15 +773,13 @@ impl Drop for Spool {
 }
 
 enum MergeError {
-    /// Another writer changed the kept file after it was read.
     Conflict,
     TooLarge,
     Failed(io::Error),
 }
 
-/// Write the person's kept mail plus the new messages to a temporary file and
-/// put it in place only if the kept file is still exactly the one that was
-/// read. A changed file is merged again rather than overwritten.
+/// Puts the merged file in place only if the kept file is still exactly the one that was read;
+/// otherwise it is merged again.
 fn publish_merge(
     path: &Path,
     snapshot: Option<&[u8]>,
@@ -907,8 +871,7 @@ fn copy_bounded(source: &Path, out: &mut Counted<std::fs::File>) -> Result<(), M
     }
 }
 
-/// A writer that remembers how many bytes reached the file, so the Mail app's
-/// per-account bound is checked before anything is published.
+/// The per-account bound is checked before anything is published.
 struct Counted<W> {
     inner: W,
     bytes: u64,
@@ -946,7 +909,6 @@ fn private_create(path: &Path) -> io::Result<std::fs::File> {
     options.open(path)
 }
 
-/// The private directory that keeps one folder's original bytes.
 fn retained_folder(
     root: &Path,
     profile: &str,
@@ -962,8 +924,7 @@ fn retained_folder(
     Ok(directory)
 }
 
-/// Keep an address book or calendar file's exact bytes beside the imported
-/// mail, refusing to replace a copy that holds other bytes.
+/// Refuses to replace a copy that holds other bytes.
 fn retain_sidecar(
     root: &Path,
     profile: &str,
@@ -988,7 +949,6 @@ fn retain_sidecar(
     }
 }
 
-/// Whether two files hold exactly the same bytes, read in chunks.
 fn same_bytes(left: &Path, right: &Path) -> io::Result<bool> {
     let mut left = std::fs::File::open(left)?;
     let mut right = std::fs::File::open(right)?;

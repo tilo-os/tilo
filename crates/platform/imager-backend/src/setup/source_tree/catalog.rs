@@ -1,17 +1,12 @@
-//! Bounded, auditable knowledge about recognizable folders and game saves.
-//!
-//! Everything here is public metadata: a fixed vocabulary of known folder
-//! names, the Steam app ids whose save locations are documented, and the
-//! documented locations themselves. Nothing in this module is derived from a
-//! person's directory names, and nothing here authorizes access to a path.
-//! A game that is not listed is reported as having an unknown save location
-//! rather than as having no saves.
+//! Bounded, auditable metadata about recognisable folders and game saves: public folder names, the
+//! Steam app ids with documented save locations and those locations. Nothing here is derived from a
+//! person's directory names, nothing authorizes access to a path, and a game that is not listed has
+//! an unknown save location rather than no saves.
 
 use serde::Serialize;
 
-/// Recognizable top-level folders. A path whose last component matches one of
-/// these names is labeled with the known name; every other path is `Other` and
-/// its own name is never published.
+/// A path whose last component matches one of these is labelled with the known name; every other
+/// path is `Other` and its own name is never published.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum KnownFolder {
@@ -33,7 +28,6 @@ pub enum KnownFolder {
 }
 
 impl KnownFolder {
-    /// Case-insensitive, locale-independent recognition of a single folder name.
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name.to_ascii_lowercase().as_str() {
             "documents" => Self::Documents,
@@ -63,8 +57,7 @@ impl KnownFolder {
     }
 }
 
-/// A cloud provider whose folder is on this computer. Whether a destination
-/// connection exists is a separate fact: it is never inferred from the folder.
+/// Whether a destination connection exists is a separate fact, never inferred from the folder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CloudProvider {
@@ -88,9 +81,8 @@ impl CloudProvider {
     }
 }
 
-/// Where a documented save location starts. Windows locations are relative to
-/// the account profile; Proton locations use the same relative path inside the
-/// prefix's `drive_c/users/steamuser`; Linux locations are relative to the home.
+/// Windows locations are relative to the account profile; Proton locations use the same relative path
+/// inside the prefix's `drive_c/users/steamuser`; Linux locations are relative to the home.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SaveRoot {
@@ -105,11 +97,9 @@ pub enum SaveRoot {
     HomeData,
 }
 
-/// One documented save location for one game.
 #[derive(Clone, Copy, Debug)]
 pub struct SaveLocation {
     pub root: SaveRoot,
-    /// Relative to the save root, with `/` separators.
     pub relative: &'static str,
 }
 
@@ -117,9 +107,7 @@ const fn windows(root: SaveRoot, relative: &'static str) -> SaveLocation {
     SaveLocation { root, relative }
 }
 
-/// A documented game. `saves` covers locations the project has verified for
-/// that game; an empty list means the game is known but its save location is
-/// not, which is reported as unknown.
+/// An empty list means the game is known but its save location is not, which is reported as unknown.
 #[derive(Clone, Copy, Debug)]
 pub struct SteamApp {
     pub app_id: u32,
@@ -186,9 +174,8 @@ const DONT_STARVE_WINDOWS: &[SaveLocation] = &[windows(SaveRoot::Documents, "Kle
 const USERDATA_REMOTE: &[SaveLocation] = &[windows(SaveRoot::SteamUserdata, "remote")];
 const USERDATA_LOCAL: &[SaveLocation] = &[windows(SaveRoot::SteamUserdata, "local")];
 
-/// The catalog. Kept deliberately small: a documented, reviewable set of games
-/// rather than a heuristic over every installed title. Unknown titles keep an
-/// explicit unknown save-location fact.
+/// A documented, reviewable set of games rather than a heuristic over every installed title; unknown
+/// titles keep an explicit unknown save-location fact.
 const APPS: &[SteamApp] = &[
     SteamApp {
         app_id: 413_150,
@@ -306,8 +293,7 @@ const APPS: &[SteamApp] = &[
     },
 ];
 
-/// The documented catalog. Callers may pass their own for tests, but the
-/// production set is this bounded, reviewable table.
+/// Callers may pass their own for tests; the production set is this bounded, reviewable table.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SteamCatalog;
 

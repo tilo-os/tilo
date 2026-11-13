@@ -1,5 +1,4 @@
 //! Original-volume-only intent variant in the existing protected Store.
-//! No snapshot, receiver identity or portable group authority is synthesized.
 use super::super::{original_caller::OriginalCallerFacts, transport::HostChannel};
 use super::*;
 use crate::setup::migration_handoff::{HomePolicy, Plan, ResolvedSource};
@@ -21,9 +20,8 @@ pub struct SourceIntent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     inventory: Option<InventoryCustody>,
 }
-/// Returned only over the existing mutually admitted private helper channel.
-/// A serialized witness alone grants no source access; the receiver reopens
-/// its protected same-source record and matches this exact digest.
+/// Returned only over the existing mutually admitted private helper channel; a serialized witness
+/// grants no source access, and the receiver reopens its protected record to match this digest.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceWitness {
@@ -91,9 +89,8 @@ impl SourceIntent {
 }
 
 impl Store {
-    /// Root service only: facts are freshly observed from its authenticated
-    /// channel, never deserialized request facts. Unsupported same-volume
-    /// topology refuses registration; existing online capture is unaffected.
+    /// Root service only: facts are freshly observed from its authenticated channel, never
+    /// deserialized request facts, and unsupported same-volume topology refuses registration.
     #[cfg(all(test, feature = "native-capture-qualification"))]
     pub(in crate::setup::home_capture) fn register_original_selection(
         &self,
@@ -168,7 +165,6 @@ impl Store {
             inventory,
         };
         intent.validate()?;
-        // Bracket the filesystem review with a second actual peer proof.
         if peer.original_caller_facts()? != intent.original {
             return Err(failure("Original peer changed during source registration"));
         }
@@ -214,9 +210,8 @@ impl Store {
     }
 }
 
-/// Existing operation lease excludes another registrar for this operation.
-/// Lost acknowledgements may reuse only the exact original variant, bytes and
-/// private root-owned named inode; incompatible records are never repaired.
+/// The existing operation lease excludes another registrar; a lost acknowledgement may reuse only
+/// the exact original variant, bytes and private inode, and incompatible records are never repaired.
 fn matching_original_record(
     directory: &StorageDirectory,
     name: &OsStr,
@@ -270,18 +265,17 @@ fn matching_original_record(
     Ok(true)
 }
 
-/// Keeps the exact original read-only mount lease. This is not a certificate
-/// and cannot grant receiver-wide UID/groups or access to another filesystem.
+/// Keeps the exact original read-only mount lease; this cannot grant receiver-wide UID, groups or
+/// access to another filesystem.
 pub struct SourceReadContext {
     intent: SourceIntent,
     geometry: Option<Arc<CompletedOriginalGeometry>>,
     record: File,
     inventory: Option<File>,
-    // Close protected descriptors before the source's legacy teardown.
     source: ResolvedSource,
 }
-/// Shared consuming teardown primitive. Descriptor arguments are closed only;
-/// they confer no source authority. The typed resolver retains owned mount rights.
+/// Descriptor arguments are closed only and confer no source authority; the typed resolver retains
+/// owned mount rights.
 pub fn retire_original_source(
     source: ResolvedSource,
     record: File,
@@ -291,8 +285,7 @@ pub fn retire_original_source(
     source.retire()
 }
 impl SourceReadContext {
-    /// Consume protected source descriptors before a root-controller combined
-    /// Home/application mount retirement batch. No new mount rights are minted.
+    /// No new mount rights are minted.
     pub fn into_retirement_source(self) -> ResolvedSource {
         let Self {
             source,
@@ -304,7 +297,6 @@ impl SourceReadContext {
         drop((record, inventory, intent, geometry));
         source
     }
-    /// Consumes this exact source custody; protected descriptors close first.
     pub fn retire(self) -> io::Result<()> {
         let Self {
             source,
@@ -316,7 +308,6 @@ impl SourceReadContext {
         drop((intent, geometry));
         retire_original_source(source, record, inventory)
     }
-    /// The installed owner supplies the only completed-geometry constructor.
     pub(in crate::setup) fn review_installed_copy(
         installed: &Arc<crate::setup::prepared_setup::AuthenticatedInstalledOriginalCopy>,
     ) -> io::Result<Self> {
@@ -384,7 +375,6 @@ impl SourceReadContext {
         namespace: &Path,
         geometry: Option<Arc<CompletedOriginalGeometry>>,
     ) -> io::Result<Self> {
-        // SAFETY: reads only this process's current effective user ID.
         if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
@@ -449,8 +439,8 @@ impl SourceReadContext {
         }
         Ok(context)
     }
-    /// Request facts never acquire ambient receiver authority. They must match
-    /// this exact source record before a future confined reader can use them.
+    /// Request facts never acquire ambient receiver authority; they must match this exact source record
+    /// before a confined reader can use them.
     pub fn verify_requested(
         &self,
         plan: &Plan,
@@ -485,8 +475,8 @@ impl SourceReadContext {
         {
             return Err(failure("Protected original source record was replaced"));
         }
-        // Record and source are read-only without a writable alias; compare
-        // exact bytes as well as inode to make changed protected contents fail.
+        // Record and source are read-only with no writable alias; compare exact bytes as well as inode
+        // so changed protected contents fail.
         let mut left = self.record.try_clone()?;
         let mut right = current;
         use std::io::{Seek, SeekFrom};
@@ -524,8 +514,7 @@ impl SourceReadContext {
             _ => Err(failure("Protected inventory custody missing")),
         }
     }
-    /// Reviewed nested Home exclusions from the protected plan. Shape is checked
-    /// against the plan; existence is checked under the held source by the claim.
+    /// Shape is checked against the plan, and existence under the held source by the claim.
     pub fn original_exclusions(
         &self,
     ) -> io::Result<Vec<crate::setup::migration_store::NativePath>> {

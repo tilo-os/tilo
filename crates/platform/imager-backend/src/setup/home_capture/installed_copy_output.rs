@@ -1,5 +1,5 @@
-//! Installed source output through the same signed original worker and verifier.
-//! The constructor takes an actual certified source owner; expectations are never authority.
+//! Installed source output through the same signed original worker and verifier; the constructor
+//! takes an actual certified source owner, and expectations are never authority.
 use super::{
     InstalledCopyScratch, OriginalCopyReadAdmission,
     original_worker::{self, OriginalWorkerOwner, OriginalWorkerRun},
@@ -45,15 +45,14 @@ pub struct InstalledCopyTransaction {
     cancellation: ServiceCancellation,
     recovered: Option<RecoveredExport>,
 }
-// Only prepare_recovered can create this from the actual protected guard. Its
-// retained source/files remain custody; facts alone never mint a Verified token.
+// Only `prepare_recovered` creates this from the actual protected guard; its retained source and
+// files stay custody, and facts alone never mint a Verified token.
 struct RecoveredExport {
     _custody: InstalledCopyRecovery,
     facts: InstalledVerifiedArtifactFacts,
     sealed_parent: Option<Arc<PinnedDirectory>>,
 }
 impl InstalledCopyTransaction {
-    /// Select from the genuine current Store journal, never an error fallback.
     pub fn prepare_or_recover(owner: Arc<ReviewedInstalledOriginalCopy>) -> io::Result<Arc<Self>> {
         owner.check()?;
         let cancelled = AtomicBool::new(false);
@@ -63,8 +62,8 @@ impl InstalledCopyTransaction {
         let existing = InstalledCopyAttempt::exists(&store)?;
         source.revalidate(&cancelled)?;
         owner.check()?;
-        // Release THIS selector's operation lock before either typed constructor
-        // takes its own same-operation lease. The constructors recheck existence.
+        // Release this selector's operation lock before either typed constructor takes its own
+        // same-operation lease; the constructors recheck existence.
         drop(store);
         if existing {
             Self::prepare_recovered(owner)
@@ -108,7 +107,6 @@ impl InstalledCopyTransaction {
         value.check()?;
         Ok(value)
     }
-    /// Existing durable ciphertext is input only; a new signed verifier is mandatory.
     pub fn prepare_recovered(owner: Arc<ReviewedInstalledOriginalCopy>) -> io::Result<Arc<Self>> {
         owner.check()?;
         let cancelled = AtomicBool::new(false);
@@ -158,16 +156,16 @@ impl InstalledCopyTransaction {
                 }),
             });
             if let Err(error) = value.check() {
-                // A durable verifier intent already exists. Never drop the real
-                // source/output ownership after an uncertain post-intent failure.
+                // A durable verifier intent already exists: never drop the real source and output
+                // ownership after an uncertain post-intent failure.
                 std::mem::forget(value);
                 return Err(error);
             }
             Ok(value)
         })();
         if result.is_err() {
-            // Partial native restoration is deliberately quarantined. No rollback,
-            // namespace guess, secret renewal or descriptor-only reconstruction.
+            // Partial native restoration stays quarantined: no rollback, namespace guess, secret
+            // renewal or descriptor-only reconstruction.
             std::mem::forget((owner, source, store, recovery, scratch));
         }
         result
@@ -214,7 +212,6 @@ impl InstalledCopyTransaction {
                     .with_inventory_scratch(inventory, allowance)?
                     .retain_inventory_scratch_custody(self.clone())?
                     .with_installed_copy_output(output)?;
-                // Strong actual run custody is stored before the final source recheck.
                 runs.push(original_worker::launch(
                     self.clone(),
                     admission,
@@ -325,8 +322,8 @@ impl InstalledCopyTransaction {
         if bytes == 0 || bytes > self.scope.reservation {
             return Err(refused("Installed export exceeds source reservation"));
         }
-        // A fresh canonical ValidateOriginal request checks the exact Home/apps
-        // selection and derived application operation against the protected claim.
+        // A fresh canonical ValidateOriginal request checks the exact Home and apps selection and the
+        // derived application operation against the protected claim.
         Ok((home, apps))
     }
     fn check_runs(
@@ -481,7 +478,6 @@ pub(in crate::setup::home_capture) struct InstalledVerifiedArtifactFacts {
     pub(super) files: Vec<InstalledVerifiedFileFacts>,
     pub(super) expectations_digest: [u8; 32],
 }
-// Constructor remains private to this module; no path, DTO, phase or expectation mints this token.
 pub struct InstalledVerifiedArtifacts {
     outcome: InstalledCopyOutcome,
     directory: Arc<PinnedDirectory>,
@@ -635,7 +631,6 @@ pub(in crate::setup::home_capture) fn measure(
 }
 
 /// Only the actual paired signed run can construct this intermediate token.
-/// Sealing intent is persisted from its measured native files before any rename.
 pub struct InstalledVerifiedExport {
     outcome: InstalledCopyOutcome,
     output: File,
@@ -962,10 +957,9 @@ impl ServiceAuthority for InstalledVerifiedArtifacts {
         if parent.uid() != 0 || parent.gid() != 0 || parent.mode() & 0o7777 != 0o700 {
             return Err(refused("Installed sealed artifact custody changed"));
         }
-        // Actual crypto verification is performed when minting the token and
-        // recording the transition. This private root directory and O_RDONLY
-        // descriptors prevent receiver writes; the gate independently pins
-        // mtime/ctime for every delivered inode on every operation.
+        // Crypto verification happens when minting the token and recording the transition; this
+        // private root directory and `O_RDONLY` descriptors prevent receiver writes, and the gate pins
+        // mtime/ctime for every delivered inode.
         if self.files.len() != self.stamps.len() {
             return Err(refused("Installed sealed stamp count differs"));
         }
@@ -1006,8 +1000,8 @@ impl ServiceAuthority for InstalledVerifiedArtifacts {
     }
 }
 
-/// Authenticated Complete plus observed death of that same owned importer.
-/// The constructor consumes the private controller observation, never a DTO.
+/// Authenticated completion plus observed death of the same owned importer; the constructor consumes
+/// the private controller observation, never a DTO.
 pub struct InstalledCopyCompletion {
     cleanup: Mutex<Option<Arc<super::store::CompletedCleanup>>>,
     received: crate::setup::retained_consumer_driver::original_copy::ActualCopyReceiveComplete,
@@ -1069,8 +1063,8 @@ impl InstalledCopyCompletion {
         }
         Ok(())
     }
-    /// Actual private authenticated completion evidence remains authority after
-    /// terminal journal publication; a serialized phase cannot construct Self.
+    /// Private authenticated completion evidence stays authority after terminal journal publication;
+    /// a serialized phase cannot construct this.
     pub(in crate::setup::home_capture) fn retirement_facts(
         &self,
         attempt: &InstalledCopyAttempt,
@@ -1118,7 +1112,6 @@ impl InstalledCopyCompletion {
             applications_sha256: applications,
         })
     }
-    /// Explicit exact-material cleanup, only after durable actual completion.
     pub fn retire_material(
         self: &Arc<Self>,
         attempt: &InstalledCopyAttempt,

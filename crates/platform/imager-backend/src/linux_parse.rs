@@ -1,6 +1,5 @@
-//! Pure parsers for the Linux adapter (`sfdisk --json`, `lsblk -J`,
-//! `/proc/self/mountinfo`, `/sys/class/power_supply`). Kept free of I/O so
-//! they are tested on every development host.
+//! Pure parsers for the Linux adapter (`sfdisk --json`, `lsblk -J`, `/proc/self/mountinfo`,
+//! `/sys/class/power_supply`), free of I/O so they are tested on every development host.
 
 use serde_json::Value;
 
@@ -18,7 +17,6 @@ fn as_bool(v: &Value) -> Option<bool> {
     })
 }
 
-/// Trailing partition number of a device node (`/dev/nvme0n1p3` → 3).
 pub fn node_number(node: &str) -> Option<u32> {
     let digits: String = node
         .chars()
@@ -31,8 +29,8 @@ pub fn node_number(node: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-/// `sfdisk --json <disk>` for a GPT disk. `sector_bytes` is used when the
-/// dump predates the `sectorsize` field.
+/// `sfdisk --json <disk>` for a GPT disk; `sector_bytes` is used when the dump predates the
+/// `sectorsize` field.
 pub fn disk_from_sfdisk(json: &str, size_bytes: u64, sector_bytes: u64) -> Result<Disk, String> {
     let root: Value = serde_json::from_str(json).map_err(|e| format!("sfdisk JSON: {e}"))?;
     let table = root
@@ -113,8 +111,8 @@ pub fn disk_from_sfdisk(json: &str, size_bytes: u64, sector_bytes: u64) -> Resul
     })
 }
 
-/// What `lsblk -J -b -o NAME,PATH,TYPE,SIZE,LOG-SEC,RM,PTUUID,PTTYPE,PARTUUID,PARTTYPE,PARTN <disk>`
-/// says about one disk.
+/// What `lsblk -J -b -o NAME,PATH,TYPE,SIZE,LOG-SEC,RM,PTUUID,PTTYPE,PARTUUID,PARTTYPE,PARTN` says
+/// about one disk.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LsblkDisk {
     pub name: String,
@@ -124,7 +122,6 @@ pub struct LsblkDisk {
     pub removable: bool,
     pub pttype: Option<String>,
     pub ptuuid: Option<String>,
-    /// (kernel name, partition number, PARTUUID, PARTTYPE)
     pub partitions: Vec<(String, u32, String, String)>,
 }
 
@@ -181,10 +178,9 @@ pub fn lsblk_disk(json: &str) -> Result<LsblkDisk, String> {
     })
 }
 
-/// Build a [`Disk`] from lsblk plus sysfs `start`/`size` (always 512-byte
-/// units, whatever the logical sector size). Usable bounds assume the
-/// standard 128-entry GPT, as every mainstream partitioner writes; the
-/// elevated helper re-reads the real header with `sfdisk`.
+/// Builds a [`Disk`] from lsblk plus sysfs `start`/`size` (always 512-byte units, whatever the
+/// logical sector size). Bounds assume the standard 128-entry GPT; the elevated helper re-reads the
+/// real header with `sfdisk`.
 pub fn disk_from_lsblk(
     l: &LsblkDisk,
     sysfs_extent: &dyn Fn(&str) -> Option<(u64, u64)>,
@@ -216,7 +212,6 @@ pub fn disk_from_lsblk(
         });
     }
     let total = l.size_bytes.checked_div(s).ok_or("zero sector size")?;
-    // Header + 16 KiB entry array at each end.
     let array = 16384_u64.checked_div(s).ok_or("zero sector size")?;
     Ok(Disk {
         id: l.path.clone(),
@@ -232,9 +227,8 @@ pub fn disk_from_lsblk(
     })
 }
 
-/// A mount's source device, from `/proc/self/mountinfo`: the `/dev/...`
-/// source when there is one, else the `major:minor` field when not
-/// anonymous (btrfs and composefs report anonymous `0:N`).
+/// A mount's source device: the `/dev/...` source when there is one, else the `major:minor` field
+/// when it is not anonymous (btrfs and composefs report `0:N`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MountSource {
     Path(String),
@@ -261,7 +255,6 @@ pub fn mount_source(mountinfo: &str, mountpoint: &str) -> Option<MountSource> {
         let (Ok(major), Ok(minor)) = (major.parse::<u32>(), minor.parse::<u32>()) else {
             continue;
         };
-        // Later lines shadow earlier mounts at the same point.
         found = if source.starts_with("/dev/") {
             Some(MountSource::Path(source.to_string()))
         } else if major != 0 {
@@ -273,8 +266,8 @@ pub fn mount_source(mountinfo: &str, mountpoint: &str) -> Option<MountSource> {
     found
 }
 
-/// Whole disks under a device, from `lsblk -J -s -o NAME,TYPE <dev>`
-/// (inverse tree). `Err` when a RAID sits in between.
+/// Whole disks under a device, from `lsblk -J -s -o NAME,TYPE <dev>`; `Err` when a RAID sits in
+/// between.
 pub fn backing_disks(json: &str) -> Result<Vec<String>, String> {
     fn walk(v: &Value, out: &mut Vec<String>) -> Result<(), String> {
         let kind = v.get("type").and_then(Value::as_str).unwrap_or_default();
@@ -313,7 +306,6 @@ pub fn backing_disks(json: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// One `/sys/class/power_supply/*` entry.
 #[derive(Clone, Debug, Default)]
 pub struct PowerSupply {
     pub kind: String,
@@ -322,8 +314,7 @@ pub struct PowerSupply {
     pub capacity: Option<u64>,
 }
 
-/// On battery below 50 %: no external supply online and a discharging
-/// battery under half charge.
+/// On battery below 50 %: no external supply online and a discharging battery under half charge.
 pub fn on_low_battery(supplies: &[PowerSupply]) -> bool {
     let external = supplies
         .iter()
@@ -336,14 +327,12 @@ pub fn on_low_battery(supplies: &[PowerSupply]) -> bool {
         })
 }
 
-/// Strip the 4-byte attribute prefix of an efivarfs file.
 pub fn efivar_payload(file: &[u8]) -> Result<Vec<u8>, String> {
     file.get(4..)
         .map(<[u8]>::to_vec)
         .ok_or_else(|| "efivarfs file shorter than its attributes".into())
 }
 
-/// `NV|BS|RT` attributes followed by the payload, written in one `write()`.
 pub fn efivar_file(payload: &[u8]) -> Vec<u8> {
     let mut out = 0x0000_0007_u32.to_le_bytes().to_vec();
     out.extend_from_slice(payload);
@@ -389,10 +378,8 @@ mod tests {
         );
     }
 
-    /// sfdisk, lsblk/sysfs, mountinfo and LUKS/LVM backing disks.
     #[test]
     fn linux_disk_inventory_parsers_normalise_units_and_backing_devices() {
-        // Phase `sfdisk_dump_becomes_a_lowercase_disk`.
         {
             let d = disk_from_sfdisk(SFDISK, 1_000_215_216 * 512, 4096).unwrap();
             assert_eq!(d.guid, "a1b2c3d4-0000-4000-8000-00000000aaaa");
@@ -409,7 +396,6 @@ mod tests {
             );
         }
 
-        // Phase `lsblk_plus_sysfs_handles_4kn_512_byte_units`.
         {
             let json = r#"{"blockdevices":[{"name":"sda","path":"/dev/sda","type":"disk","size":1099511627776,
                 "log-sec":4096,"rm":"0","ptuuid":"A1B2C3D4-0000-4000-8000-00000000AAAA","pttype":"gpt",
@@ -446,7 +432,6 @@ mod tests {
             assert!(disk_from_lsblk(&dos, &|_| None).is_err());
         }
 
-        // Phase `mountinfo_prefers_device_sources_and_skips_anonymous`.
         {
             let info = "\
     22 1 0:21 / / rw,relatime shared:1 - overlay composefs ro\n\
@@ -468,7 +453,6 @@ mod tests {
             );
         }
 
-        // Phase `backing_disks_through_luks_and_lvm`.
         {
             let lvm_two = r#"{"blockdevices":[{"name":"vg-root","type":"lvm","children":[
                 {"name":"sda2","type":"part","children":[{"name":"sda","type":"disk"}]},
@@ -482,10 +466,8 @@ mod tests {
         }
     }
 
-    /// Battery rule and efivar attributes.
     #[test]
     fn linux_power_and_efivar_facts_parse_exactly() {
-        // Phase `battery_rule_needs_discharging_below_half_and_no_ac`.
         {
             let bat = |status: &str, capacity| PowerSupply {
                 kind: "Battery".into(),
@@ -505,7 +487,6 @@ mod tests {
             assert!(!on_low_battery(&[]));
         }
 
-        // Phase `efivar_files_carry_nv_bs_rt_attributes`.
         {
             let file = efivar_file(&[1, 0]);
             assert_eq!(file, vec![7, 0, 0, 0, 1, 0]);

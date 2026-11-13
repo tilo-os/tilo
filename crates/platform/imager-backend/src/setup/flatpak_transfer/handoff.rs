@@ -1,5 +1,5 @@
-//! Metadata-only reviewed Flatpak intent. Original public trust is re-read from
-//! explicitly resolved, read-only installation grants after reboot.
+//! Metadata-only reviewed Flatpak intent; original public trust is re-read from explicitly resolved,
+//! read-only installation grants after reboot.
 use super::*;
 use crate::setup::migration::PinnedDirectory;
 use sha2::{Digest, Sha256};
@@ -42,8 +42,8 @@ struct Deployment {
 }
 
 impl HandoffInventory {
-    /// Re-attest original deployment and signing metadata before staging, then
-    /// bind every stable root to the actual installation operation.
+    /// Re-attests original deployment and signing metadata before staging, then binds every stable
+    /// root to the actual installation operation.
     pub fn bind_staging(
         &self,
         home: &Path,
@@ -79,7 +79,6 @@ impl HandoffInventory {
         operation: &str,
         installation: &crate::setup::staging::plan::Plan,
     ) -> Result<Self, String> {
-        // Root locator categories describe the same source rather than selection.
         let mut retained = self.clone();
         for source in &mut retained.installations {
             let mut plan = crate::setup::migration_handoff::Plan::parse(&source.source_plan)
@@ -123,8 +122,8 @@ impl HandoffInventory {
         }
         Ok(())
     }
-    /// `bind` returns the existing migration-handoff stable directory plan for
-    /// each installation root. No host-native path is retained in the artifact.
+    /// `bind` returns the existing migration-handoff stable directory plan for each installation root;
+    /// no host-native path is retained in the artifact.
     pub fn capture(
         runner: &impl Runner,
         home: &Path,
@@ -275,7 +274,6 @@ impl HandoffInventory {
     pub fn selected(&self) -> &[InstalledRef] {
         &self.selected
     }
-    /// Pending-only source authority: no deployment/content epoch is certified.
     pub fn validate_pending_source(
         &self,
         installation: &Installation,
@@ -307,10 +305,9 @@ impl HandoffInventory {
         }
         Ok(())
     }
-    /// Stable metadata plans that the caller must resolve independently through
-    /// the existing read-only volume service; arbitrary host paths are not grants.
-    /// Pure prospective geometry; publication still requires the staging
-    /// helper's recorded and observed completed resize proof.
+    /// Stable metadata plans the caller resolves independently through the existing read-only volume
+    /// service, pure prospective geometry: publication still needs the helper's recorded and observed
+    /// completed resize proof.
     pub fn for_completed_staging(
         &self,
         installation: &crate::setup::staging::plan::Plan,
@@ -426,8 +423,8 @@ impl HandoffInventory {
         }
         Ok(())
     }
-    /// Resolve retained installation roots through the canonical stable-volume,
-    /// read-only migration service, retaining every mounted source lease.
+    /// Resolves retained installation roots through the canonical stable-volume, read-only migration
+    /// service, retaining every mounted source lease.
     pub fn resolve_installed<R: Runner>(
         &self,
         home: &Path,
@@ -439,8 +436,6 @@ impl HandoffInventory {
             crate::setup::migration_handoff::resolve_flatpak_source,
         )
     }
-    /// Resolve each stored plan through the device's read-only mount service.
-    /// Retained leases survive cloning this runner into a transfer worker.
     pub fn resolve<R: Runner>(
         &self,
         home: &Path,
@@ -546,8 +541,8 @@ fn kernel_read_only(root: &PinnedDirectory) -> io::Result<()> {
     }
     Ok(())
 }
-/// Only a successful existing stable source-plan resolver may create this grant.
-/// The resolver owns GPT/UUID/inode/subvolume verification and retains its mount lease.
+/// Only the existing stable source-plan resolver creates this grant, owning GPT/UUID/inode/subvolume
+/// verification and the mount lease.
 pub struct ReadOnlySource {
     root: PathBuf,
     pin: Arc<PinnedDirectory>,
@@ -587,8 +582,8 @@ impl ReadOnlySource {
         })
     }
 }
-/// Queries of the reviewed mounted source are metadata-only. Target operations
-/// are native Flatpak queries; no global installation on Tilo is substituted.
+/// Queries of the reviewed mounted source are metadata-only; target operations are native Flatpak
+/// queries, and no global installation on Tilo is substituted.
 pub struct SourceScopedRunner<R: Runner> {
     source_home: PathBuf,
     inventory: Inventory,
@@ -598,8 +593,8 @@ pub struct SourceScopedRunner<R: Runner> {
     target: R,
 }
 impl<R: Runner> SourceScopedRunner<R> {
-    /// Consuming root-controller teardown only. Close every projected directory
-    /// before handing native resolver custody to the combined retirement batch.
+    /// Consuming root-controller teardown only: close every projected directory before handing native
+    /// resolver custody to the combined retirement batch.
     pub(in crate::setup::flatpak_transfer) fn into_original_sources(
         self,
     ) -> io::Result<Vec<Arc<crate::setup::migration_handoff::ResolvedSource>>> {
@@ -629,8 +624,8 @@ impl<R: Runner> SourceScopedRunner<R> {
         }
         #[cfg(any(feature = "capture-worker", test))]
         if borrowed {
-            // Refuse and retain known native custody instead of silently
-            // unmounting a subset through ordinary Drop.
+            // Refuse and retain known native custody rather than silently unmounting a subset through
+            // ordinary Drop.
             std::mem::forget(sources);
             return Err(io::Error::other(
                 "Original application teardown lacks typed native resolver custody",
@@ -708,8 +703,7 @@ impl<R: Runner> SourceScopedRunner<R> {
             .map(String::as_str)
             .ok_or("Original exact deployment missing".into())
     }
-    /// Target commands never install: system applications are deployed from
-    /// their sealed unit, not from a network remote.
+    /// Target commands never install: system applications are deployed from their sealed unit.
     fn target_run(&self, home: &Path, arguments: &[String]) -> Result<String, String> {
         if arguments.first().is_some_and(|verb| verb == "install") {
             return Err("Applications are deployed from their sealed unit".into());
