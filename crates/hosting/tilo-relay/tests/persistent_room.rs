@@ -11,7 +11,6 @@ use std::time::Duration;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent, VERSION};
 use tilo_session_client::{Cmd, Outbox};
 use tilo_test_env::SpawnUnderEnvLock as _;
-use tilo_relay_protocol::WorkspaceId;
 
 struct Workspace {
     child: Child,
@@ -631,7 +630,7 @@ fn unenrolled_owner_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::
 async fn assert_page_reads_the_chat(
     who: &str,
     visiting: &tilo_session_client::Link,
-    workspace_id: WorkspaceId,
+    workspace_id: u64,
     route: &tilo_peer_state::document_frame::DocumentRoute,
     channels: &[&str],
 ) -> automerge::AutoCommit {
@@ -706,7 +705,7 @@ fn announced(room: &Workspace) -> Started {
         panic!("no governed room announced")
     };
     Started {
-        id: tilo_relay::WorkspaceId::parse(&workspace).unwrap(),
+        id: tilo_relay::room_workspace_id(&workspace).unwrap(),
         plain: bound_address(&plain_origin),
         workspace,
     }
@@ -973,7 +972,7 @@ fn a_persistent_rooms_pages_read_the_room_and_write_what_their_role_lets_them() 
 async fn persons_read_the_room_and_are_refused(
     plain: std::net::SocketAddr,
     cluster: &str,
-    workspace_id: WorkspaceId,
+    workspace_id: u64,
     (visiting_key, visiting_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
     (writing_key, writing_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
     (sibling_key, sibling_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
@@ -1047,7 +1046,7 @@ async fn persons_read_the_room_and_are_refused(
 async fn an_editor_page_writes_and_is_committed(
     plain: std::net::SocketAddr,
     cluster: &str,
-    workspace_id: WorkspaceId,
+    workspace_id: u64,
     (editor_key, editor_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
 ) {
     let (host, host_cert, route) = chat_route(plain, cluster).await;

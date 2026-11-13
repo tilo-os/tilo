@@ -42,7 +42,7 @@ async fn publish_offline_edit(
     addr: iroh_base::EndpointAddr,
     user: &TestUser,
     a: &crate::common::TestDevice,
-    ws: tilo_relay_protocol::WorkspaceId,
+    ws: u64,
     pending_dir: &std::path::Path,
 ) -> (RelayClient, AutoCommit) {
     let a_client = RelayClient::connect(
@@ -101,7 +101,7 @@ async fn drain_then_lose_session(
     addr: iroh_base::EndpointAddr,
     user: &TestUser,
     b: &crate::common::TestDevice,
-    ws: tilo_relay_protocol::WorkspaceId,
+    ws: u64,
     pending_dir: &std::path::Path,
 ) {
     let b1 = RelayClient::connect(
@@ -137,9 +137,7 @@ async fn drain_then_lose_session(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn anti_entropy_recovers_delta_drained_then_lost() {
-    fn ws() -> tilo_relay_protocol::WorkspaceId {
-    tilo_relay_protocol::WorkspaceId::from_u128(31)
-}
+    const WS: u64 = 31;
 
     let user = TestUser::fresh("Alice");
     let a = user.enrol("laptop", DeviceCapabilities::primary());
@@ -152,7 +150,7 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
         state.path(),
         &user,
         host_dev,
-        &[ws()],
+        &[WS],
         &members,
     ))
     .await;
@@ -161,20 +159,20 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     let pending_dir = state
         .path()
         .join("workspaces")
-        .join(ws().to_string())
+        .join(WS.to_string())
         .join("pending")
         .join(&b_hex);
 
     // ---- A publishes a real edit while B is offline. The host queues it
     //      for B AND materializes it into its pinned doc. ----
     let (a_client, mut doc_a) =
-        publish_offline_edit(addr.clone(), &user, &a, ws(), &pending_dir).await;
+        publish_offline_edit(addr.clone(), &user, &a, WS, &pending_dir).await;
 
     // ---- B connects (session 1) and drains its queue — the host DELETES
     //      the queued copy — but B's wire dies before it durably applies
     //      the drained delta. Model that by dropping the session right
     //      after the queue has been flushed. ----
-    drain_then_lose_session(addr.clone(), &user, &b, ws(), &pending_dir).await;
+    drain_then_lose_session(addr.clone(), &user, &b, WS, &pending_dir).await;
 
     // The store-and-forward tier is now exhausted for this delta: the
     // queued copy is gone, and a fresh reconnect will find nothing.
@@ -197,7 +195,7 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     )
     .await
     .expect("B reconnect (2)");
-    b2.send(Envelope::Subscribe { workspace_id: ws() }).unwrap();
+    b2.send(Envelope::Subscribe { workspace_id: WS }).unwrap();
     match tilo_test_env::within("B Ready timeout", b2.recv())
         .await
         .expect("B closed")
@@ -223,7 +221,7 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
 
     // ---- Anti-entropy: B reconciles against the host's MATERIALIZED
     //      doc — the only place d1 still lives — and converges. ----
-    let applied = reconcile(&b2, ws(), &mut doc_b, tilo_test_env::hang_bound())
+    let applied = reconcile(&b2, WS, &mut doc_b, tilo_test_env::hang_bound())
         .await
         .expect("reconcile round trip");
     assert!(

@@ -19,13 +19,12 @@ use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, host_on, next_delta};
-use collab_types::WorkspaceId;
 
 /// A workspace the person's devices hold on the host before any room.
 const HOME: u64 = 0x686f_6d65;
 
 /// Subscribe `client` to `workspace_id` and wait until the host lets it in.
-async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) {
+async fn subscribe(client: &RelayClient, workspace_id: u64) {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     tilo_test_env::within("the host admits the subscription", async {
         loop {
@@ -193,7 +192,7 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
         )
         .await
         .unwrap();
-    assert_eq!(admission.bootstrap.workspace_id.to_string(), room.workspace);
+    assert_eq!(admission.bootstrap.room, room.workspace);
     let WorkspaceHostTrust::InteractiveOwner(trust) = admission.trust else {
         panic!("a device host is the room's own governor, not a certified host");
     };

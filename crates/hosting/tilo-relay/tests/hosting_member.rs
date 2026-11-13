@@ -8,7 +8,6 @@ use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, host_on, next_delta, session_to};
-use collab_types::WorkspaceId;
 
 /// How long the hosts are watched doing nothing: longer than the host's
 /// first two waits before dialing again, so a session that kept ending
@@ -16,7 +15,7 @@ use collab_types::WorkspaceId;
 const IDLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// Whether `client`'s host admits it to `workspace_id`.
-async fn admitted(client: &RelayClient, workspace_id: WorkspaceId) -> bool {
+async fn admitted(client: &RelayClient, workspace_id: u64) -> bool {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     loop {
         match client.recv().await.expect("the session stays open") {

@@ -236,7 +236,7 @@ pub fn start_relay_serving(
 /// the devices are all the relay owner's.
 pub async fn admit_members(
     relay: &Relay,
-    workspace: tilo_relay_protocol::WorkspaceId,
+    workspace: u64,
     members: &[[u8; 32]],
     state_root: &std::path::Path,
 ) {
@@ -346,7 +346,7 @@ pub async fn publisher(
     relay: &TestRelay,
     user: &TestUser,
     author: &TestDevice,
-    workspace: tilo_relay_protocol::WorkspaceId,
+    workspace: u64,
 ) -> tilo_relay::RelayCoeditSession {
     let publisher = tilo_relay::RelayCoeditSession::join(
         RelayClient::connect_v2_to_enrolled_home_peer(
@@ -380,7 +380,7 @@ pub async fn connect(
     user: &TestUser,
     device: &TestDevice,
     addr: iroh_base::EndpointAddr,
-    workspace: tilo_relay_protocol::WorkspaceId,
+    workspace: u64,
 ) -> RelayClient {
     let client = RelayClient::connect(
         client_endpoint().await,
@@ -428,7 +428,7 @@ pub async fn next(client: &RelayClient, mut want: impl FnMut(&Envelope) -> bool)
 ///
 /// From then on a delta published on `relay` reaches `peer`; a test waits for
 /// it instead of sleeping and hoping the handshake finished in time.
-pub async fn wait_until_subscribed(relay: &Relay, workspace: tilo_relay_protocol::WorkspaceId, peer: &[u8; 32]) {
+pub async fn wait_until_subscribed(relay: &Relay, workspace: u64, peer: &[u8; 32]) {
     tilo_test_env::within("the peer subscribed to the workspace", async {
         while !relay.is_subscribed(workspace, peer).await {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;

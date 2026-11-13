@@ -42,7 +42,6 @@ use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay, wait_until};
-use collab_types::WorkspaceId;
 
 /// Connect p1 and p2 to relay1, subscribe both to workspace 3, and drain
 /// their initial Ready acks.
@@ -75,8 +74,8 @@ async fn connect_both_to_relay1(
     .await
     .unwrap();
 
-    c1.send(Envelope::Subscribe { workspace_id: WorkspaceId::from_u128(3) }).unwrap();
-    c2.send(Envelope::Subscribe { workspace_id: WorkspaceId::from_u128(3) }).unwrap();
+    c1.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
+    c2.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
     for cli in [&c1, &c2] {
         let env = tilo_test_env::within("Ready timeout", cli.recv())
             .await
@@ -103,13 +102,13 @@ async fn fail_p2_over_from_relay1(
     c2_r1.close().await;
     // Polls for up to 30 s; only a hang uses the whole budget.
     for _ in 0..1500 {
-        if !relay1.relay.is_subscribed(WorkspaceId::from_u128(3), &p2_pubkey).await {
+        if !relay1.relay.is_subscribed(3, &p2_pubkey).await {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(
-        !relay1.relay.is_subscribed(WorkspaceId::from_u128(3), &p2_pubkey).await,
+        !relay1.relay.is_subscribed(3, &p2_pubkey).await,
         "relay1 never noticed p2 disconnect"
     );
 }
@@ -132,7 +131,7 @@ async fn p2_returns_and_drains(
     .await
     .unwrap();
     c2_r1_again
-        .send(Envelope::Subscribe { workspace_id: WorkspaceId::from_u128(3) })
+        .send(Envelope::Subscribe { workspace_id: 3 })
         .unwrap();
     // Pending delivery is at-least-once: a queued delta is acknowledged only
     // after wire delivery (WorkspaceStore::load_pending), so the delta p2
@@ -156,7 +155,7 @@ async fn p2_returns_and_drains(
                 assert_eq!(redelivered, 1, "an already-delivered delta repeated");
             }
             Envelope::Ready {
-                workspace_id: _,
+                workspace_id: 3,
                 pending_deltas,
                 records_when_opened: false,
             } if pending_deltas == 1 || pending_deltas == 2 => ready = true,
@@ -192,7 +191,7 @@ async fn peers_use_several_relays_and_fail_over() {
 
         // p1 publishes a delta via relay1; p2 receives via relay1.
         let d1 = Envelope::Delta {
-            workspace_id: WorkspaceId::from_u128(3),
+            workspace_id: 3,
             author_device_public_key: p1.device_pubkey(),
             authored_at_ns: 100,
             delta: b"via-relay1".to_vec(),
@@ -222,13 +221,13 @@ async fn peers_use_several_relays_and_fail_over() {
         )
         .await
         .unwrap();
-        c2_r2.send(Envelope::Subscribe { workspace_id: WorkspaceId::from_u128(3) }).unwrap();
+        c2_r2.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
         let ready = tilo_test_env::within("a message on c2_r2", c2_r2.recv())
             .await
             .unwrap();
         match ready {
             Envelope::Ready {
-                workspace_id: WorkspaceId::from_u128(3),
+                workspace_id: 3,
                 pending_deltas: 0,
                 records_when_opened: false,
             } => {}
@@ -239,7 +238,7 @@ async fn peers_use_several_relays_and_fail_over() {
         // relay2 (relays do not sync rooms with each other), relay1 will
         // enqueue for p2 on ITS disk; relay2 sees nothing.
         let d2 = Envelope::Delta {
-            workspace_id: WorkspaceId::from_u128(3),
+            workspace_id: 3,
             author_device_public_key: p1.device_pubkey(),
             authored_at_ns: 200,
             delta: b"queued-on-relay1".to_vec(),

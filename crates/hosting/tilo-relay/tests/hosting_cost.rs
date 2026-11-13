@@ -50,12 +50,9 @@ use tilo_relay::Envelope;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestRelay, TestUser, client_endpoint, publisher, spawn_relay};
-use collab_types::WorkspaceId;
 
 const ROOM: &str = "5e11f00d-7110-4625-8000-000000000625";
-fn workspace() -> tilo_relay_protocol::WorkspaceId {
-    tilo_relay_protocol::WorkspaceId::from_u128(625)
-}
+const WORKSPACE: u64 = 625;
 /// Four routes, as in a room with four open documents.
 const ROUTES: [(&str, &str); 4] = [
     ("so.tilo.word-processor", "tab:0000000000000001"),
@@ -190,7 +187,7 @@ async fn subscribe(
         .unwrap();
     send.write_all(
         &encode_state(&Envelope::Subscribe {
-            workspace_id: workspace(),
+            workspace_id: WORKSPACE,
         })
         .unwrap(),
     )
@@ -201,7 +198,7 @@ async fn subscribe(
 
 #[derive(Debug, PartialEq, Eq)]
 struct DeltaFields {
-    workspace_id: WorkspaceId,
+    workspace_id: u64,
     author: [u8; 32],
     authored_at_ns: u64,
     delta: Vec<u8>,
@@ -351,7 +348,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     let relay = Box::pin(spawn_relay(
         &user,
         user.enrol("relay", DeviceCapabilities::host()),
-        &[workspace()],
+        &[WORKSPACE],
         &members,
     ))
     .await;
@@ -396,12 +393,12 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
         .collect();
 
     let mut coded_peer = CodedSubscriber::open(&relay, &coding).await;
-    let publisher = publisher(&relay, &user, &author, workspace()).await;
+    let publisher = publisher(&relay, &user, &author, WORKSPACE).await;
 
     let store = relay
         .state_root
         .join("workspaces")
-        .join(workspace().to_string());
+        .join(WORKSPACE.to_string());
     let metrics = relay.relay.handle().metrics;
     let egress_before = metrics.snapshot();
     let session_bytes_before = session_bytes(&metrics, coding.device_pubkey());
@@ -494,7 +491,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     let room_live = |snapshot: &tilo_relay::metrics::MetricsSnapshot| {
         snapshot
             .workspaces
-            .get(&workspace())
+            .get(&WORKSPACE)
             .map_or(0, |room| room.bytes_sent_live)
     };
     assert_eq!(

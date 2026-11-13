@@ -15,9 +15,7 @@ use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{TestDevice, TestUser, connect, next, spawn_relay_on};
 
-fn ws() -> tilo_relay_protocol::WorkspaceId {
-    tilo_relay_protocol::WorkspaceId::from_u128(43)
-}
+const WS: u64 = 43;
 
 async fn no_delta(client: &RelayClient) {
     let deadline = tokio::time::Instant::now()
@@ -33,7 +31,7 @@ async fn no_delta(client: &RelayClient) {
 
 fn commit(author: &TestDevice, op: [u8; 16], delta: Vec<u8>) -> Envelope {
     Envelope::Commit {
-        workspace_id: ws(),
+        workspace_id: WS,
         op,
         author_device_public_key: author.device_pubkey(),
         authored_at_ns: 0,
@@ -63,12 +61,12 @@ async fn resent_commits_keep_their_host_order_and_are_not_fanned_out_again() {
         state.path(),
         &user,
         user.enrol("home-server", DeviceCapabilities::host()),
-        &[ws()],
+        &[WS],
         &members,
     )
     .await;
-    let a_client = connect(&user, &a, host.node_addr(), ws()).await;
-    let b_client = connect(&user, &b, host.node_addr(), ws()).await;
+    let a_client = connect(&user, &a, host.node_addr(), WS).await;
+    let b_client = connect(&user, &b, host.node_addr(), WS).await;
 
     a_client.send(commit(&a, [1; 16], vec![1, 2, 3])).unwrap();
     let seq = committed(&a_client, [1; 16]).await;
@@ -94,12 +92,12 @@ async fn resent_commits_keep_their_host_order_and_are_not_fanned_out_again() {
         state.path(),
         &user,
         user.enrol("home-server-2", DeviceCapabilities::host()),
-        &[ws()],
+        &[WS],
         &members,
     )
     .await;
-    let a_client = connect(&user, &a, host.node_addr(), ws()).await;
-    let b_client = connect(&user, &b, host.node_addr(), ws()).await;
+    let a_client = connect(&user, &a, host.node_addr(), WS).await;
+    let b_client = connect(&user, &b, host.node_addr(), WS).await;
     a_client.send(commit(&a, [1; 16], vec![1, 2, 3])).unwrap();
     assert_eq!(committed(&a_client, [1; 16]).await, seq);
     no_delta(&b_client).await;

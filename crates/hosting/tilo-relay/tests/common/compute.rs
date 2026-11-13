@@ -238,7 +238,7 @@ impl tilo_relay::HeldContent for WorkspaceVersions {
 }
 
 /// What worker `worker` offers for `app` in `workspace`, to its executor.
-pub fn worker_advertisement(worker: [u8; 32], workspace: tilo_relay_protocol::WorkspaceId, app: &str) -> ServerAdvertisement {
+pub fn worker_advertisement(worker: [u8; 32], workspace: u64, app: &str) -> ServerAdvertisement {
     ServerAdvertisement {
         device: worker,
         role: DeviceRole::AlwaysOnServer,

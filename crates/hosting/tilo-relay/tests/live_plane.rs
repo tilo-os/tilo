@@ -14,9 +14,7 @@ use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{TestUser, connect, next, spawn_relay};
 
-fn ws() -> tilo_relay_protocol::WorkspaceId {
-    tilo_relay_protocol::WorkspaceId::from_u128(41)
-}
+const WS: u64 = 41;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
@@ -32,21 +30,21 @@ async fn commits_are_acknowledged_and_live_joins_are_announced() {
     let relay = spawn_relay(
         &user,
         host,
-        &[ws()],
+        &[WS],
         &[a.device_pubkey(), b.device_pubkey(), c.device_pubkey()],
     )
     .await;
     let addr = relay.relay.node_addr();
-    let a_client = connect(&user, &a, addr.clone(), ws()).await;
-    let b_client = connect(&user, &b, addr.clone(), ws()).await;
-    let c_client = connect(&user, &c, addr, ws()).await;
+    let a_client = connect(&user, &a, addr.clone(), WS).await;
+    let b_client = connect(&user, &b, addr.clone(), WS).await;
+    let c_client = connect(&user, &c, addr, WS).await;
 
     // Commit: the author gets the host order, the others a plain Delta.
     let mut seqs = Vec::new();
     for op in [[1u8; 16], [2u8; 16]] {
         a_client
             .send(Envelope::Commit {
-                workspace_id: ws(),
+                workspace_id: WS,
                 op,
                 author_device_public_key: a.device_pubkey(),
                 authored_at_ns: 0,
@@ -76,7 +74,7 @@ async fn commits_are_acknowledged_and_live_joins_are_announced() {
     // A commit forged as another author is refused, not fanned out.
     a_client
         .send(Envelope::Commit {
-            workspace_id: ws(),
+            workspace_id: WS,
             op: [3; 16],
             author_device_public_key: b.device_pubkey(),
             authored_at_ns: 0,
@@ -91,10 +89,10 @@ async fn commits_are_acknowledged_and_live_joins_are_announced() {
     // Live: a and b join, c only subscribes. The joiner learns who is
     // already there, and they learn it joined.
     a_client
-        .send(Envelope::RetiredLiveJoin { workspace_id: ws() })
+        .send(Envelope::RetiredLiveJoin { workspace_id: WS })
         .unwrap();
     b_client
-        .send(Envelope::RetiredLiveJoin { workspace_id: ws() })
+        .send(Envelope::RetiredLiveJoin { workspace_id: WS })
         .unwrap();
     let joined = next(&a_client, |env| {
         matches!(env, Envelope::RetiredLiveMember { .. })
@@ -103,7 +101,7 @@ async fn commits_are_acknowledged_and_live_joins_are_announced() {
     assert_eq!(
         joined,
         Envelope::RetiredLiveMember {
-            workspace_id: ws(),
+            workspace_id: WS,
             device_public_key: b.device_pubkey(),
             active: true,
         }

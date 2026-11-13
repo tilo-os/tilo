@@ -19,14 +19,11 @@ use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig, TrustPolicy};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, client_endpoint};
-use collab_types::WorkspaceId;
 
 /// The collaborator's own room, governed natively on this host.
 const GOVERNED: u64 = 801;
 /// The owner's room, bound on demand by the owner's first subscribe.
-fn owners() -> tilo_relay_protocol::WorkspaceId {
-    tilo_relay_protocol::WorkspaceId::from_u128(802)
-}
+const OWNERS: u64 = 802;
 /// A room nobody bound yet.
 const UNBOUND: u64 = 803;
 
@@ -71,12 +68,12 @@ async fn home_host() -> HomeHost {
     let laptop = connect(&host.relay, laptop).await;
     assert!(
         matches!(
-            subscribe(&laptop, owners()).await,
+            subscribe(&laptop, OWNERS).await,
             Some(Envelope::Ready { .. })
         ),
         "the owner's first device binds and enters the owner's room"
     );
-    assert!(members(host.state.path(), owners()).contains(&laptop_key));
+    assert!(members(host.state.path(), OWNERS).contains(&laptop_key));
     host
 }
 
@@ -92,13 +89,13 @@ async fn connect(relay: &Relay, device: TestDevice) -> RelayClient {
     .unwrap()
 }
 
-async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) -> Option<Envelope> {
+async fn subscribe(client: &RelayClient, workspace_id: u64) -> Option<Envelope> {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     tilo_test_env::within("relay answered subscription", client.recv()).await
 }
 
 /// The devices the workspace's access record admits, as its host keeps them.
-fn members(state: &Path, workspace_id: WorkspaceId) -> Vec<[u8; 32]> {
+fn members(state: &Path, workspace_id: u64) -> Vec<[u8; 32]> {
     let directory = state.join(format!("workspaces/{workspace_id}"));
     if !directory.exists() {
         return Vec::new();
@@ -137,14 +134,14 @@ async fn cross_user_device_is_not_auto_enrolled_into_same_owner_room() {
 
     // The owner's room does not enrol him, and does not remember him.
     assert!(matches!(
-        subscribe(&bob, owners()).await,
+        subscribe(&bob, OWNERS).await,
         Some(Envelope::NotAuthorised {
-            workspace_id: _,
+            workspace_id: OWNERS,
             ..
         })
     ));
     assert!(
-        !members(host.state.path(), owners()).contains(&bob_key),
+        !members(host.state.path(), OWNERS).contains(&bob_key),
         "a cross-user device was persisted into the owner's room"
     );
 
@@ -174,9 +171,9 @@ async fn owner_device_still_auto_enrols_on_home_host() {
     let phone_key = phone.device_pubkey();
     let phone = connect(&host.relay, phone).await;
     assert!(matches!(
-        subscribe(&phone, owners()).await,
+        subscribe(&phone, OWNERS).await,
         Some(Envelope::Ready {
-            workspace_id: _,
+            workspace_id: OWNERS,
             ..
         })
     ));
@@ -186,13 +183,13 @@ async fn owner_device_still_auto_enrols_on_home_host() {
     let tablet_key = tablet.device_pubkey();
     let tablet = connect(&host.relay, tablet).await;
     assert!(matches!(
-        subscribe(&tablet, owners()).await,
+        subscribe(&tablet, OWNERS).await,
         Some(Envelope::Ready {
-            workspace_id: _,
+            workspace_id: OWNERS,
             ..
         })
     ));
-    let kept = members(host.state.path(), owners());
+    let kept = members(host.state.path(), OWNERS);
     assert!(
         kept.contains(&phone_key) && kept.contains(&tablet_key),
         "a home host keeps its own devices in the workspace's one record"

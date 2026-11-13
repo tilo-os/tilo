@@ -42,7 +42,7 @@ async fn publish_and_leave(
     addr1: iroh_base::EndpointAddr,
     user: &TestUser,
     a: &crate::common::TestDevice,
-    ws: tilo_relay_protocol::WorkspaceId,
+    ws: u64,
     pending_dir: &std::path::Path,
 ) -> AutoCommit {
     let a_client = RelayClient::connect(
@@ -107,7 +107,7 @@ async fn catch_up_after_restart(
     addr2: iroh_base::EndpointAddr,
     user: &TestUser,
     b: &crate::common::TestDevice,
-    ws: tilo_relay_protocol::WorkspaceId,
+    ws: u64,
 ) -> AutoCommit {
     let b_client = RelayClient::connect(
         client_endpoint().await,
@@ -162,9 +162,7 @@ async fn catch_up_after_restart(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn never_simultaneously_online_devices_converge_across_host_restart() {
-    fn ws() -> tilo_relay_protocol::WorkspaceId {
-    tilo_relay_protocol::WorkspaceId::from_u128(9)
-}
+    const WS: u64 = 9;
 
     let user = TestUser::fresh("Alice");
     let a = user.enrol("laptop", DeviceCapabilities::primary());
@@ -183,7 +181,7 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
         &state_root,
         &user,
         host1_dev,
-        &[ws()],
+        &[WS],
         &members,
     ))
     .await;
@@ -193,10 +191,10 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     let b_hex = hex::encode(b.device_pubkey());
     let pending_dir = state_root
         .join("workspaces")
-        .join(ws().to_string())
+        .join(WS.to_string())
         .join("pending")
         .join(&b_hex);
-    let mut doc_a = publish_and_leave(addr1, &user, &a, ws(), &pending_dir).await;
+    let mut doc_a = publish_and_leave(addr1, &user, &a, WS, &pending_dir).await;
 
     // ---- The host itself goes down and comes back up on the same
     //      state directory. ----
@@ -218,13 +216,13 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
         &state_root,
         &user,
         host2_dev,
-        &[ws()],
+        &[WS],
         &members,
     ))
     .await;
     let addr2 = host2.node_addr();
 
-    let mut doc_b = catch_up_after_restart(addr2, &user, &b, ws()).await;
+    let mut doc_b = catch_up_after_restart(addr2, &user, &b, WS).await;
 
     assert_eq!(doc_b.str_at(&ROOT, "note").as_deref(), Some("durable"));
     assert_eq!(

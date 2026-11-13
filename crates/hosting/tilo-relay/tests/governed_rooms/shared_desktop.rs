@@ -14,7 +14,6 @@ use tilo_relay::workspaces::SetMemberRoleRequest;
 use tilo_relay::{CoeditPayload, RelayClient};
 
 use super::*;
-use collab_types::WorkspaceId;
 
 /// The windows of a one-strip desktop: `(tab, group, who opened it)`, in
 /// order, each tab in its own group unless two share one.
@@ -71,7 +70,7 @@ fn person(user: &TestUser) -> String {
 
 /// The windows on the room's desktop as its governor follows them, as
 /// `(tab, group)` in order; empty while it holds none.
-async fn windows(relay: &Relay, room: &str) -> Vec<(tilo_relay_protocol::WorkspaceId, u64)> {
+async fn windows(relay: &Relay, room: &str) -> Vec<(u64, u64)> {
     let Some(bytes) = relay
         .workspaces()
         .unwrap()
@@ -184,7 +183,7 @@ async fn ada_page_probe(relay: &Relay, device: &TestDevice, room: &str) -> Neigh
 }
 
 /// `device`'s page session in the room's workspace: connected, subscribed.
-async fn page_client(relay: &Relay, device: &TestDevice, workspace_id: WorkspaceId) -> RelayClient {
+async fn page_client(relay: &Relay, device: &TestDevice, workspace_id: u64) -> RelayClient {
     let client = RelayClient::connect_to_pinned_host(
         device_endpoint(device).await,
         relay.node_addr(),
@@ -207,7 +206,7 @@ async fn page_client(relay: &Relay, device: &TestDevice, workspace_id: Workspace
 pub(super) async fn commit(
     client: &RelayClient,
     device: &TestDevice,
-    workspace_id: WorkspaceId,
+    workspace_id: u64,
     message: &NeighbourMsg,
 ) -> Result<u64, String> {
     let (channel, _) = neighbour_wire::retention(message, false).unwrap();

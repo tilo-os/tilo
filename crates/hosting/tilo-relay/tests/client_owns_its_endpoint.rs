@@ -22,7 +22,6 @@ use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
-use collab_types::WorkspaceId;
 
 /// Take the next envelope or fail loudly. A dropped endpoint shows up
 /// here as a timeout, so the message has to name the suspect.
@@ -63,11 +62,11 @@ async fn session_survives_the_caller_handing_over_its_only_endpoint() {
     .expect("connect");
 
     client
-        .send(Envelope::Subscribe { workspace_id: WorkspaceId::from_u128(7) })
+        .send(Envelope::Subscribe { workspace_id: 7 })
         .expect("the session must still accept a subscribe");
     match next_envelope(&client, "the Ready that answers Subscribe").await {
         Envelope::Ready {
-            workspace_id: WorkspaceId::from_u128(7),
+            workspace_id: 7,
             pending_deltas: 0,
             records_when_opened: false,
         } => {}

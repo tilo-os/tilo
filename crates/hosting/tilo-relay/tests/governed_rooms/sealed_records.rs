@@ -72,7 +72,7 @@ pub(super) async fn join(
         .map_err(|error| error.to_string())?;
     let bootstrap = admission.bootstrap;
     let mut peer = StatePeer::new(
-        &bootstrap.workspace_id.to_string(),
+        &bootstrap.room,
         bootstrap.host.clone(),
         bootstrap.certified_roster.clone(),
         RevocationList::new(),

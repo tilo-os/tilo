@@ -50,7 +50,7 @@ fn text_of(doc: &AutoCommit) -> String {
     }
 }
 
-fn retained_count(state_root: &std::path::Path, workspace: tilo_relay_protocol::WorkspaceId) -> usize {
+fn retained_count(state_root: &std::path::Path, workspace: u64) -> usize {
     tilo_relay::store::WorkspaceStore::open(state_root, workspace, false)
         .unwrap()
         .load_retained()
@@ -93,9 +93,7 @@ async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
 async fn coedits_converge_through_the_host_live_and_offline() {
     // Phase `live_coedit_fans_out_through_host`.
     {
-        fn ws() -> tilo_relay_protocol::WorkspaceId {
-    tilo_relay_protocol::WorkspaceId::from_u128(21)
-}
+        const WS: u64 = 21;
 
         let user = TestUser::fresh("Alice");
         let a = user.enrol("laptop", DeviceCapabilities::primary());
@@ -108,7 +106,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
             state.path(),
             &user,
             host_dev,
-            &[ws()],
+            &[WS],
             &members,
         ))
         .await;
@@ -125,7 +123,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         )
         .await
         .expect("A connect");
-        let a_session = RelayCoeditSession::join(a_client, ws(), a.device_pubkey()).unwrap();
+        let a_session = RelayCoeditSession::join(a_client, WS, a.device_pubkey()).unwrap();
 
         let b_client = RelayClient::connect(
             client_endpoint().await,
@@ -137,7 +135,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         )
         .await
         .expect("B connect");
-        let b_session = RelayCoeditSession::join(b_client, ws(), b.device_pubkey()).unwrap();
+        let b_session = RelayCoeditSession::join(b_client, WS, b.device_pubkey()).unwrap();
 
         // Drain B's Ready(pending=0) so we know its subscription is live
         // before A publishes (live fan-out only reaches online subscribers).
@@ -170,9 +168,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
     }
     // Phase `never_both_online_coedit_converges_through_host`.
     {
-        fn ws() -> tilo_relay_protocol::WorkspaceId {
-    tilo_relay_protocol::WorkspaceId::from_u128(22)
-}
+        const WS: u64 = 22;
 
         let user = TestUser::fresh("Alice");
         let a = user.enrol("laptop", DeviceCapabilities::primary());
@@ -190,20 +186,20 @@ async fn coedits_converge_through_the_host_live_and_offline() {
             &state_root,
             &user,
             host1_dev,
-            &[ws()],
+            &[WS],
             &members,
         ))
         .await;
         let addr1 = host1.node_addr();
 
         // Shared durable coverage serves B even though it has never connected.
-        let mut doc_a = publish_offline_coedit(addr1, &user, &a, ws(), &state_root).await;
+        let mut doc_a = publish_offline_coedit(addr1, &user, &a, WS, &state_root).await;
 
         // ---- The host restarts on the same state directory. ----
         drop(host1);
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(
-            retained_count(&state_root, ws()),
+            retained_count(&state_root, WS),
             1,
             "the queued co-edit must survive the host process dying"
         );
@@ -213,14 +209,14 @@ async fn coedits_converge_through_the_host_live_and_offline() {
             &state_root,
             &user,
             host2_dev,
-            &[ws()],
+            &[WS],
             &members,
         ))
         .await;
         let addr2 = host2.node_addr();
 
         // ---- B connects for the very first time, to the restarted host. ----
-        let mut doc_b = catch_up_first_connection(addr2, &user, &b, ws()).await;
+        let mut doc_b = catch_up_first_connection(addr2, &user, &b, WS).await;
 
         assert_eq!(text_of(&doc_b), "offline-note", "B renders A's co-edit");
         assert_eq!(
@@ -228,7 +224,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
             doc_b.get_heads(),
             "B converges with A across a host restart, never having been online together"
         );
-        let store = tilo_relay::store::WorkspaceStore::open(&state_root, ws(), false).unwrap();
+        let store = tilo_relay::store::WorkspaceStore::open(&state_root, WS, false).unwrap();
         assert_eq!(
             store.count_pending(&b.device_pubkey()).unwrap(),
             0,
@@ -251,7 +247,7 @@ async fn publish_offline_coedit(
     addr1: iroh_base::EndpointAddr,
     user: &TestUser,
     a: &crate::common::TestDevice,
-    ws: tilo_relay_protocol::WorkspaceId,
+    ws: u64,
     state_root: &std::path::Path,
 ) -> AutoCommit {
     let a_client = RelayClient::connect(
@@ -304,7 +300,7 @@ async fn catch_up_first_connection(
     addr2: iroh_base::EndpointAddr,
     user: &TestUser,
     b: &crate::common::TestDevice,
-    ws: tilo_relay_protocol::WorkspaceId,
+    ws: u64,
 ) -> AutoCommit {
     let b_client = RelayClient::connect(
         client_endpoint().await,
@@ -364,15 +360,13 @@ async fn catch_up_first_connection(
 /// serving its session from one that is merely idle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pinged_host_answers_and_resets_the_silence() {
-    fn ws() -> tilo_relay_protocol::WorkspaceId {
-    tilo_relay_protocol::WorkspaceId::from_u128(23)
-}
+    const WS: u64 = 23;
 
     let user = TestUser::fresh("Alice");
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let host_dev = user.enrol("home-server", DeviceCapabilities::host());
-    let host = spawn_relay_on(state.path(), &user, host_dev, &[ws()], &[a.device_pubkey()]).await;
+    let host = spawn_relay_on(state.path(), &user, host_dev, &[WS], &[a.device_pubkey()]).await;
     let client = RelayClient::connect(
         client_endpoint().await,
         host.node_addr(),
@@ -383,7 +377,7 @@ async fn a_pinged_host_answers_and_resets_the_silence() {
     )
     .await
     .expect("connect");
-    let session = RelayCoeditSession::join(client, ws(), a.device_pubkey()).unwrap();
+    let session = RelayCoeditSession::join(client, WS, a.device_pubkey()).unwrap();
     assert!(matches!(
         tokio::time::timeout(Duration::from_secs(2), session.recv())
             .await
