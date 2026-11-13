@@ -45,10 +45,11 @@ const HEIGHT: u32 = 900;
 /// ([`Host::step_the_clock`]). The pointer coming to rest, the note going to
 /// its top and the ten frames after that take twelve frames, so the scroll
 /// down begins 1.92 s after the pointer woke the drag handles: its first
-/// seven frames scroll with the handles showing, the next two fall in their
-/// fade (3 s to 3.32 s after the pointer moved) and the one after paints
-/// them gone, and the rest of the way down and all the way back up scrolls
-/// with them gone.
+/// seven frames scroll with the handles showing, the next two meet their
+/// fade (3 s to 3.32 s after the pointer moved) and do not copy, and the
+/// rest of the way down and all the way back up scrolls with them gone.
+/// Eighteen of the twenty frames down and all ten back up copy, on every
+/// run.
 const FRAME_STEP: Duration = Duration::from_millis(160);
 
 /// Run `operation` at `clock` when the host steps one, else at the machine's.
