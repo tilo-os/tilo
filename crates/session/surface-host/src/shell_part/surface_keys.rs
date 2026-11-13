@@ -95,7 +95,22 @@ fn right_alt_let_go() -> HostKey {
     key(0xffea, false)
 }
 
+/// `key` as it is let go, with what is held still held.
+fn let_go(key: HostKey) -> HostKey {
+    HostKey {
+        pressed: false,
+        ..key
+    }
+}
+
 fn cases() -> Vec<Case> {
+    let mut cases = at_rest();
+    cases.extend(with_a_surface_up());
+    cases
+}
+
+/// The desk at rest: only the keys that open the switcher are the shell's.
+fn at_rest() -> Vec<Case> {
     vec![
         Case {
             name: "Alt+Tab from rest",
@@ -111,6 +126,8 @@ fn cases() -> Vec<Case> {
                 passes(enter()),
                 passes(alt(false)),
                 passes(letter()),
+                // Tab let go while Alt is still held walks no further.
+                passes(let_go(tab(true, false))),
                 locked(tab(true, false)),
             ],
         },
@@ -123,9 +140,16 @@ fn cases() -> Vec<Case> {
                 // Shift walks the other way, and stays in the app.
                 walks(grave(true), -1, "app"),
                 walks(tilde(), -1, "app"),
+                passes(let_go(grave(false))),
                 locked(grave(false)),
             ],
         },
+    ]
+}
+
+/// A surface of the desk's up: the keys that answer it are the shell's too.
+fn with_a_surface_up() -> Vec<Case> {
+    vec![
         Case {
             name: "the switcher up",
             here: "switcher",
@@ -142,6 +166,8 @@ fn cases() -> Vec<Case> {
                 // Alt going down again, and a letter, are no answer to the switcher.
                 passes(alt(true)),
                 passes(letter()),
+                // Tab let go between two walks, Alt still held, neither commits nor walks.
+                passes(let_go(tab(true, false))),
                 locked(alt(false)),
                 locked(escape()),
             ],
@@ -161,6 +187,25 @@ fn cases() -> Vec<Case> {
                 passes(letter()),
                 // Alt+Tab asks for the switcher whatever surface is up.
                 walks(tab(true, false), 1, "workspace"),
+                // Escape let go closes nothing a second time.
+                passes(let_go(escape())),
+                locked(escape()),
+            ],
+        },
+        Case {
+            name: "the launcher up",
+            here: "launcher",
+            keys: vec![
+                // What is typed into the launcher is its field's, Enter included: of the keys
+                // typed there only Escape is the shell's.
+                passes(letter()),
+                passes(enter()),
+                passes(alt(false)),
+                asks(
+                    escape(),
+                    "close-surface",
+                    vec![("surface", "launcher".into())],
+                ),
                 locked(escape()),
             ],
         },
@@ -171,7 +216,8 @@ fn cases() -> Vec<Case> {
 /// (`claim_key`), and hands it the ones it takes (`key`): Alt+Tab and Alt+grave ask the desk to
 /// walk its switcher from anywhere, letting Alt go or Enter commit the switcher while it is up,
 /// and Escape closes whatever surface is up. Each key the shell takes asks the desk exactly
-/// once; every other key, and every key of a locked session, is passed on and asks nothing.
+/// once; every other key (a key let go that is not Alt on the switcher, what is typed into the
+/// launcher), and every key of a locked session, is passed on and asks nothing.
 #[test]
 fn a_key_is_the_shells_only_where_a_surface_answers_it() {
     let packages = compiled();
@@ -181,8 +227,8 @@ fn a_key_is_the_shells_only_where_a_surface_answers_it() {
         reading.here = case.here.to_owned();
         reading.switcher_revealed = case.here == "switcher";
         let (mut part, link) = part_of(&packages, reading, (1280, 800));
-        // What the desk was asked while its switcher came up is no key's.
-        if case.here == "switcher" {
+        // What the desk was asked while its switcher or its launcher came up is no key's.
+        if matches!(case.here, "switcher" | "launcher") {
             link.asked.borrow_mut().clear();
         }
         for (at, offered) in case.keys.iter().enumerate() {
