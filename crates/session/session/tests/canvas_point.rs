@@ -308,6 +308,7 @@ fn chat_holds(session: &Session, conversation: &str, question: &str) {
     let turn = format!("chat.workspace.turns:{question}");
     let asked = tilo_session::arrangement::Asked {
         conversation: conversation.to_owned(),
+        message: question.to_owned(),
         turn: turn.clone(),
         opened_as: format!(
             "chat.workspace.channels:{}",
@@ -449,14 +450,15 @@ fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
         .find(|id| id.starts_with("tl:so.tilo.lang.notes:root-"))
         .expect("the notes' root is published");
 
-    // The agent's step in the turn, as the broker invokes it: its `place` names no point, and
-    // stands beside the turn's conversation, as the agent door fills it in for a turn's step.
+    // The agent's step in the turn, as the broker hands it to the session: its `place` names no
+    // point, and stands beside the turn, as the agent door fills it in for a turn's step.
     session
-        .invoke_with_actor(
+        .invoke_in_turn(
             "agent:assistant",
+            (CONVERSATION, "q2"),
             "shell:arrangement",
             "place",
-            &serde_json::json!({"resource": notes, "beside": CONVERSATION}),
+            &serde_json::json!({"resource": notes}),
         )
         .unwrap_or_else(|error| panic!("the agent's place runs: {error}"));
     let (nx, ny, nw, nh) = wait_for(&mut session, "the notes placed", |session| {
@@ -1019,5 +1021,187 @@ fn placing_mails_root_without_a_view_stands_the_message_list() {
     assert!(
         !session.shell_says(MAIL_SIDEBAR),
         "the inbox's list stands with no sidebar of the mail window around it"
+    );
+}
+
+/// Chat holding each ask sent so far, oldest first, as the turn of `conversation` that
+/// `questions` names for it: [`chat_holds`] for several asks at once.
+fn chat_holds_each(session: &Session, conversation: &str, questions: &[&str]) {
+    let next = std::cell::Cell::new(0_usize);
+    let stood = session.arrangement().borrow_mut().stand_asked(
+        &|_| {
+            let question = questions.get(next.get())?;
+            next.set(next.get() + 1);
+            let turn = format!("chat.workspace.turns:{question}");
+            let asked = tilo_session::arrangement::Asked {
+                conversation: conversation.to_owned(),
+                message: (*question).to_owned(),
+                turn: turn.clone(),
+                opened_as: format!(
+                    "chat.workspace.channels:{}",
+                    conversation.trim_start_matches("chat.workspace/channels/")
+                ),
+            };
+            let mut published =
+                tilo_actions::ResourceSpec::new(turn, "chat.workspace.turns", *question).with_view(
+                    tilo_actions::ResourceViewSpec::new("turn", *question, "open"),
+                );
+            published.app_id = Some("chat".to_owned());
+            Some((asked, vec![published]))
+        },
+        tilo_session::arrangement::Busy::default(),
+    );
+    assert_eq!(stood, questions.len(), "each ask waited for its turn");
+}
+
+/// The canvas box the turn `question` stands in.
+fn turn_box(session: &Session, question: &str) -> Option<(i64, i64, i64, i64)> {
+    canvas_box(session, &format!("chat.workspace.turns:{question}"))
+}
+
+/// A tilolang app's root, as the session publishes it.
+fn root_of(session: &Session, app: &str) -> String {
+    let prefix = format!("tl:{app}:root-");
+    session
+        .resources()
+        .into_iter()
+        .map(|spec| spec.id.as_str().to_owned())
+        .find(|id| id.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("{app}'s root is published"))
+}
+
+/// Whether the box `what` fills the room under the turn standing at `turn`.
+fn in_room(what: (i64, i64, i64, i64), turn: (i64, i64, i64, i64)) -> bool {
+    what.0 == turn.0 && what.2 == turn.2 && what.1 >= turn.1 + turn.3
+}
+
+/// Two asks in quick succession in one conversation, each in a rectangle of its own: the second
+/// is asked before the first's agent placed anything. Each turn's step, as the broker hands it to
+/// the session in that turn, fills that turn's own rectangle — never the conversation's latest.
+#[test]
+fn two_asks_in_quick_succession_each_fill_their_own_rectangle() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let first = ((x + w * 0.04, y + h * 0.08), (x + w * 0.46, y + h * 0.95));
+    let second = ((x + w * 0.54, y + h * 0.08), (x + w * 0.96, y + h * 0.95));
+
+    frame_and_say(&mut session, first.0, first.1, "what do my notes say?");
+    frame_and_say(&mut session, second.0, second.1, "what is in my inbox?");
+    until(&mut session, "both asks sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array().map(|sent| sent.len() >= 2))
+            .unwrap_or(false)
+    });
+    chat_holds_each(&session, CONVERSATION, &["q5", "q6"]);
+    let one = wait_for(&mut session, "the first turn placed", |session| {
+        turn_box(session, "q5")
+    });
+    let two = wait_for(&mut session, "the second turn placed", |session| {
+        turn_box(session, "q6")
+    });
+    let notes = root_of(&session, "so.tilo.lang.notes");
+    let mails = root_of(&session, "so.tilo.lang.mail");
+
+    // The first turn's agent answers only now, after the second was asked; then the second's.
+    for (message, resource) in [("q5", &notes), ("q6", &mails)] {
+        session
+            .invoke_in_turn(
+                "agent:assistant",
+                (CONVERSATION, message),
+                "shell:arrangement",
+                "place",
+                &serde_json::json!({ "resource": resource }),
+            )
+            .unwrap_or_else(|error| panic!("the agent's place in {message} runs: {error}"));
+    }
+    let notes_at = wait_for(&mut session, "the notes placed", |session| {
+        canvas_box(session, "so.tilo.lang.notes")
+    });
+    let mails_at = wait_for(&mut session, "the inbox placed", |session| {
+        canvas_box(session, "so.tilo.lang.mail")
+    });
+    assert!(
+        in_room(notes_at, one),
+        "the first turn's notes fill its own rectangle under it: {notes_at:?} under {one:?}"
+    );
+    assert!(
+        in_room(mails_at, two),
+        "the second turn's inbox fills its own rectangle under it: {mails_at:?} under {two:?}"
+    );
+}
+
+/// A turn's room is kept from when the person asks: the agent's first step can come before the
+/// turn's view stands (Chat answered the send with its message, its record does not show it yet),
+/// and it fills the rectangle the person dragged all the same. The turn then stands over it, and
+/// the room is not given out twice.
+#[test]
+fn a_step_before_its_turn_stands_fills_the_turns_rectangle() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let from = (x + w * 0.1, y + h * 0.1);
+    let to = (x + w * 0.5, y + h * 0.95);
+    frame_and_say(&mut session, from, to, "what do my notes say?");
+    until(&mut session, "the ask sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array().map(|sent| !sent.is_empty()))
+            .unwrap_or(false)
+    });
+    // Chat answered the ask's send with the message it posted; Chat's process is not part of this
+    // session, so this stands in for that answer, as `chat_holds` stands in for its record.
+    session
+        .arrangement()
+        .borrow()
+        .know_posted(std::rc::Rc::new(|_| Some("q7".to_owned())));
+    let notes = root_of(&session, "so.tilo.lang.notes");
+    let mails = root_of(&session, "so.tilo.lang.mail");
+    session
+        .invoke_in_turn(
+            "agent:assistant",
+            (CONVERSATION, "q7"),
+            "shell:arrangement",
+            "place",
+            &serde_json::json!({ "resource": notes }),
+        )
+        .unwrap_or_else(|error| panic!("the agent's place runs: {error}"));
+    let notes_at = wait_for(&mut session, "the notes placed", |session| {
+        canvas_box(session, "so.tilo.lang.notes")
+    });
+    assert!(
+        turn_box(&session, "q7").is_none(),
+        "the turn's view does not stand yet"
+    );
+
+    chat_holds_each(&session, CONVERSATION, &["q7"]);
+    let turn = wait_for(&mut session, "the turn placed", |session| {
+        turn_box(session, "q7")
+    });
+    assert!(
+        in_room(notes_at, turn),
+        "the notes fill the room under the turn: {notes_at:?} under {turn:?}"
+    );
+    // The room is taken: the turn's next step stands beside the turn.
+    session
+        .invoke_in_turn(
+            "agent:assistant",
+            (CONVERSATION, "q7"),
+            "shell:arrangement",
+            "place",
+            &serde_json::json!({ "resource": mails }),
+        )
+        .unwrap_or_else(|error| panic!("the agent's place runs: {error}"));
+    let mails_at = wait_for(&mut session, "the inbox placed", |session| {
+        canvas_box(session, "so.tilo.lang.mail")
+    });
+    assert!(
+        mails_at.0 >= turn.0 + turn.2,
+        "with the room taken, the inbox stands beside the turn: {mails_at:?} beside {turn:?}"
     );
 }

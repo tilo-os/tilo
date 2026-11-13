@@ -24,10 +24,10 @@ use crate::activity::Activity;
 pub use tilo_session_core::arrangement::{
     Answer, AnswerRef, Arrangement, ArrangementAction, ArrangementQueryReading,
     ArrangementRefReading, Ask, AskOrigin, Asked, Busy, Catalog, Find, FindDone, FindTurn, Found,
-    Item, OPERATION, PLACE_KIND, PlaceReading, QUERY_KIND, RECORD_RESOURCE, RESOURCE, ROW_KIND,
-    Reading, RowReading, STRIP_KIND, StripReading, Surface, TURN_VIEW, Target, WorkspaceReading,
-    canvas_find_within, found_resource, place_kind_resource, placed, resources, row_kind_resource,
-    strip_kind_resource, tab_app,
+    Item, OPERATION, PLACE_KIND, PlaceReading, Posted, QUERY_KIND, RECORD_RESOURCE, RESOURCE,
+    ROW_KIND, Reading, RowReading, STRIP_KIND, StripReading, Surface, TURN_VIEW, Target,
+    WorkspaceReading, canvas_find_within, found_resource, place_kind_resource, placed, resources,
+    row_kind_resource, strip_kind_resource, tab_app, turn_key,
 };
 
 /// `person` 's arrangement of `handle` 's desk, whose changes `activity` keeps.

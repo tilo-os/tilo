@@ -47,7 +47,8 @@ impl ProgramWorld {
             }
             return format!(
                 "Apps your `{}` programs can use, open or not (`find({{alias}}.{{Type}})` finds \
-                 their records; a program answers with references you can place):\n\n{lines}",
+                 their records, `describe({{alias}})` lists an app's types with their fields, \
+                 filters and actions; a program answers with references you can place):\n\n{lines}",
                 programs::TILO
             );
         }

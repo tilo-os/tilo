@@ -478,6 +478,65 @@ fn text_typed_through_the_socket_reaches_the_canvas_caret() {
     );
 }
 
+/// A sentence typed through the socket at the canvas's caret stands there in the order it was
+/// typed: every key of one `type` reaches the caret after the one before it, a letter that recurs
+/// ("summarise") included.
+#[test]
+fn a_sentence_typed_through_the_socket_reaches_the_canvas_caret_in_order() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("test-control.sock");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        test_control: Some(socket.clone()),
+        ..Options::default()
+    });
+    let menu = preset_menu(&mut session);
+    click(&mut session, &socket, &menu);
+    assert!(
+        reached(&mut session, |session| session
+            .shell_control("Frames")
+            .is_some()),
+        "the preset menu offers Frames: {:?}",
+        session.accessible_labels()
+    );
+    click(&mut session, &socket, "Frames");
+    assert!(
+        reached(&mut session, |session| session
+            .shell_control(CANVAS)
+            .is_some()),
+        "the canvas: {:?}",
+        session.accessible_labels()
+    );
+    let (x, y, w, h) = session.shell_control(CANVAS).expect("the canvas");
+    assert_eq!(
+        ask(
+            &mut session,
+            &socket,
+            &json!({"op": "click_at", "x": x + w / 2.0, "y": y + h / 2.0})
+        ),
+        json!({"ok": {}}),
+        "the click on the canvas is taken"
+    );
+    let sentence = "summarise what changed in my notes this week";
+    let typed = ask(
+        &mut session,
+        &socket,
+        &json!({"op": "type", "text": sentence}),
+    );
+    assert_eq!(typed, json!({"ok": {}}), "the text is typed");
+    assert!(
+        reached(&mut session, |session| session.shell_says(sentence)),
+        "the caret shows the sentence as typed; of its words it shows {:?}",
+        ["summarise", "summaries", "summari", "what", "week"]
+            .into_iter()
+            .filter(|word| session.shell_says(word))
+            .collect::<Vec<_>>()
+    );
+}
+
 /// A note of the seeded notes app placed on the framed canvas is seen in the snapshot: its
 /// frame's title is drawn where the shell lays it out, not cut off by a canvas with no room.
 #[test]

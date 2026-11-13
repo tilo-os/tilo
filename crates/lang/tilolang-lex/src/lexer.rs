@@ -640,7 +640,7 @@ impl Lexer<'_> {
                     "E001",
                     start,
                     self.pos,
-                    format!("unexpected character `{ch}`"),
+                    format!("unexpected character `{ch}`{}", written_as(ch)),
                 );
                 return;
             }
@@ -951,5 +951,16 @@ impl Lexer<'_> {
             i += 1;
         }
         None
+    }
+}
+
+/// How tilolang writes what another language spells with `ch`, for the error that says so: an
+/// agent writing its first programs reaches for `!` and `&&` before it has read a line of
+/// tilolang.
+fn written_as(ch: char) -> &'static str {
+    match ch {
+        '!' => "; tilolang writes `not x` (and `!=` for not equal)",
+        '&' => "; tilolang writes `a and b`",
+        _ => "",
     }
 }

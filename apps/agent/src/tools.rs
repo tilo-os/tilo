@@ -1317,14 +1317,49 @@ fn call_refused(call: &ToolCall, problem: &str) -> String {
         "The call to `{}` was refused and nothing was run: {problem}.",
         call.name
     );
-    let required = typed_loop_definitions()
+    let schema = typed_loop_definitions()
         .into_iter()
         .find(|definition| definition.name == call.name)
-        .and_then(|definition| definition.input_schema.get("required").cloned());
-    if let Some(names) = required.as_ref().and_then(Value::as_array) {
-        let names = names.iter().filter_map(Value::as_str).collect::<Vec<_>>();
-        if !names.is_empty() {
-            let _ = write!(answer, " Its required arguments are: {}.", names.join(", "));
+        .map(|definition| definition.input_schema);
+    let names_of = |value: Option<&Value>| -> Vec<String> {
+        match value {
+            Some(Value::Array(names)) => names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            Some(Value::Object(fields)) => {
+                let mut names: Vec<String> = fields.keys().cloned().collect();
+                names.sort();
+                names
+            }
+            _ => Vec::new(),
+        }
+    };
+    let required = names_of(schema.as_ref().and_then(|s| s.get("required")));
+    if !required.is_empty() {
+        let _ = write!(
+            answer,
+            " Its required arguments are: {}.",
+            required.join(", ")
+        );
+    }
+    // What the call sent beside what the tool takes: a model that named an argument its own
+    // way reads which name the tool knows it by.
+    if schema.is_some() {
+        let sent = names_of(Some(&call.input));
+        let _ = write!(
+            answer,
+            " You sent {}.",
+            if sent.is_empty() {
+                "no arguments".to_owned()
+            } else {
+                sent.join(", ")
+            }
+        );
+        let takes = names_of(schema.as_ref().and_then(|s| s.get("properties")));
+        if !takes.is_empty() {
+            let _ = write!(answer, " It takes: {}.", takes.join(", "));
         }
     }
     answer.push_str(" Call it again with every required argument present and correctly typed.");

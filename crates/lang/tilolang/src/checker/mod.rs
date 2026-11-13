@@ -680,6 +680,11 @@ impl Checker<'_> {
             Ctx::Fn => format!(
                 "{what} reads {what_it_reads}, which a fn cannot: a fn computes from the values it is given, so the read is written in the action that makes the invocation"
             ),
+            // A program declares nothing: it reads times through the filters that take them,
+            // which the host answers against its clock as it reads.
+            Ctx::Program if effect == crate::effects::Effect::Time => format!(
+                "{what} reads {what_it_reads}, which a program cannot: it asks by time through filters, written as search writes a time: `find(Note, changed: -7d)` (changed in the last 7 days), `grep(/x/, in: notes, changed: today)`, `find(Task, due: today)`"
+            ),
             _ => {
                 let decl = self.st.decl.clone();
                 format!(

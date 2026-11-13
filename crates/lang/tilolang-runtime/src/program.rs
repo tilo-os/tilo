@@ -583,6 +583,20 @@ impl Core {
                 .map_or_else(|| p.0.clone(), |host| host.name(p)),
             Value::Error(reason) => format!("error: {reason}"),
             Value::Action(a) => format!("action {}", a.action),
+            // Rich text as the one running the program reads it, a line per paragraph.
+            Value::Rich(r) => {
+                let text = self.read_rich(r, false);
+                let more = text.chars().count().saturating_sub(READ_TEXT_CHARS);
+                if more == 0 {
+                    text
+                } else {
+                    let shown: String = text.chars().take(READ_TEXT_CHARS).collect();
+                    format!(
+                        "{shown}… {more} more characters; `read(r)` reads the resource a page at \
+                         a time"
+                    )
+                }
+            }
             other => other.kind_name().to_owned(),
         }
     }

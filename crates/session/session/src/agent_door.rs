@@ -23,7 +23,7 @@
 mod agent_key;
 mod environments;
 mod seats;
-mod service_steps;
+pub(crate) mod service_steps;
 mod task_hosts;
 
 use environments::Origin;
@@ -2104,9 +2104,7 @@ impl Host {
         // The place the ask is in: the turn's conversation, when the step is an agent's; else the
         // place in front. A place the step opens stands beside it
         // (`docs/designs/app-language/one-app-model.md` §3).
-        let beside = turn
-            .map(|turn| turn.conversation.clone())
-            .unwrap_or_default();
+        let beside = service_steps::turn_beside(turn);
         let run = request.context.and_then(|context| context.group);
         let (done, ran) = tilo_actions::remote::pending();
         self.session

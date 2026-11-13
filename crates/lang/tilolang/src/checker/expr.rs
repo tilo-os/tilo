@@ -328,7 +328,8 @@ impl Checker<'_> {
         // `today`: the day this invocation falls on for the person, read in their zone as the
         // filter's `today` reads it.
         if name == "today" {
-            if self.st.ctx == Ctx::Action || self.st.press {
+            // A program reaches the refusal that says how it asks by time instead.
+            if matches!(self.st.ctx, Ctx::Action | Ctx::Program) || self.st.press {
                 self.reads(crate::effects::Effect::Time, span, "`today`");
                 return Ex::host(Imp::Today, vec![], Ty::Date);
             }
@@ -984,11 +985,23 @@ impl Checker<'_> {
                         .iter()
                         .map(|f| (f.name.as_str(), f.doc.as_str()));
                     let hint = crate::diag::suggestion_about(&name.name, fields);
+                    // An agent asking when a resource changed looks for a field first: when it
+                    // was made or changed is its history's, which a program reads too.
+                    let history = if self.st.ctx == Ctx::Program && !crate::host::is_value(&key) {
+                        format!(
+                            "; when it was made or last changed, and by whom, is its history, not a \
+                             field: `updated(r)` and `created(r)` read it, and `find({}, changed: \
+                             -7d)` finds those changed in the last 7 days",
+                            key.name
+                        )
+                    } else {
+                        String::new()
+                    };
                     self.err(
                         "E021",
                         name.span,
                         format!(
-                            "`{}` has no field `{}`{hint}; fields are: {}",
+                            "`{}` has no field `{}`{hint}; fields are: {}{history}",
                             key.name,
                             name.name,
                             info.field_names()
@@ -1083,7 +1096,8 @@ impl Checker<'_> {
                 span,
                 format!(
                     "`{alias}.{name}` is a type, not a value; pass one of its resources by the \
-                     reference an answer or a listing showed for it (`{}1`)",
+                     reference an answer or a listing showed for it (`{}1`), find them with \
+                     `find({alias}.{name})`, or search their text with `grep(/word/, in: {alias})`",
                     name.chars().next().map_or('r', |c| c.to_ascii_lowercase())
                 ),
             );

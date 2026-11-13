@@ -5,6 +5,9 @@
 
 use serde_json::Value as Json;
 
+use tilo_desktop_model::CanvasPlace;
+
+use super::turns::CanvasRect;
 use super::{
     Arrangement, ArrangementAction, DEFAULT_HEIGHT, DEFAULT_WIDTH, Door, Item, clamp_side, locate,
 };
@@ -62,6 +65,31 @@ impl Arrangement {
             let free = held
                 .arrangement
                 .free_place_next_to(subject, width, height, moved);
+            Some((i64::from(free.x), i64::from(free.y)))
+        })
+    }
+
+    /// The free canvas point next to `rect` in the workspace in front, for a new window of the
+    /// default size: where a step of a turn stands what it shows beside where the turn will stand,
+    /// before its view does. `None` without a workspace in front.
+    pub(super) fn point_beside_rect(&self, rect: CanvasRect) -> Option<(i64, i64)> {
+        let at = |value: i64| {
+            i32::try_from(value.clamp(i64::from(i32::MIN), i64::from(i32::MAX))).unwrap_or_default()
+        };
+        let subject = CanvasPlace::new(
+            at(rect.x),
+            at(rect.y),
+            clamp_side(rect.width),
+            clamp_side(rect.height),
+        );
+        self.handle.read(|tree| {
+            let held = tree.active_workspace()?;
+            let free = held.arrangement.free_place_next_to(
+                subject,
+                clamp_side(DEFAULT_WIDTH),
+                clamp_side(DEFAULT_HEIGHT),
+                None,
+            );
             Some((i64::from(free.x), i64::from(free.y)))
         })
     }

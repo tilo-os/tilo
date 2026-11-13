@@ -230,7 +230,14 @@ impl Checker<'_> {
             _ => {}
         }
         if prims::prim(name).is_some() {
-            self.err("E061", name_span, format!("`{name}` is a UI primitive; it builds UI and can only be written as a statement of a view"));
+            // A program asks for what it reads: what a primitive would show is read or printed.
+            let instead = if self.st.ctx == Ctx::Program {
+                "; a program reads a resource's text with `read(r)`, a field by its name \
+                 (`r.body`), and shows values with `print(...)`"
+            } else {
+                ""
+            };
+            self.err("E061", name_span, format!("`{name}` is a UI primitive; it builds UI and can only be written as a statement of a view{instead}"));
             return Ex::error();
         }
         // A bare `say` is a name a package may take for its own action, so the words marker
