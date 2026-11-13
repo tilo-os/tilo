@@ -43,8 +43,9 @@ pub struct ActionAddress {
     /// id the app publishes it under: a control that stands for one row among
     /// many names its row here, so the second task's Complete is not the
     /// first's. `None` for an operation on whichever resource of the kind
-    /// comes first.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// comes first. Written even when it names none: the batches addresses travel in are postcard,
+    /// which cannot skip a field.
+    #[serde(default)]
     pub item: Option<String>,
     pub action: String,
 }
