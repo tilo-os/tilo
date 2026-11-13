@@ -175,6 +175,36 @@ fn a_click_puts_the_caret_where_it_points_under_pan_and_zoom() {
     }
 }
 
+/// Escape lets go of what was typed at the caret with the caret: the next caret starts empty, and
+/// what is said there is only what is typed there.
+#[test]
+fn escape_lets_go_of_the_words_typed_at_the_caret() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let at = crate::common::free_point(&mut session);
+    click(&mut session, at);
+    caret(&mut session);
+    crate::common::type_text(&mut session, "what is on");
+    until(&mut session, "the words at the caret", |session| {
+        session.shell_drawn_text_bounds("what is on").is_some()
+    });
+    key(&mut session, KEY_ESCAPE);
+    until(&mut session, "Escape takes the caret away", |session| {
+        on_screen(session, CANVAS_CARET).is_none()
+    });
+
+    click(&mut session, at);
+    caret(&mut session);
+    for _ in 0..4 {
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    assert!(
+        session.shell_drawn_text_bounds("what is on").is_none(),
+        "the next caret starts empty"
+    );
+}
+
 /// A rectangle dragged on free ground and "my mails" said in it: the inbox fills the rectangle.
 #[test]
 fn a_dragged_rectangle_is_filled_by_what_is_found() {

@@ -89,7 +89,7 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
                         )
                         .then(set(typed, ""))
                         .then(set(pointed, []))
-                    on cancel: set(pointed, [])
+                    on cancel: set(typed, "").then(set(pointed, []))
                 }
             }
         }
