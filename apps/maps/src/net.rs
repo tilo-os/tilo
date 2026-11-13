@@ -1,10 +1,6 @@
-//! Live data fetchers — Nominatim geocoding, OSRM routing, and the
-//! Transitous/MOTIS public-transport planner. Every request is async
-//! (`tilo_net`) and runs as a task on the app runtime; results flow back over
-//! an `mpsc` channel and are folded into the model during `sync`.
-//!
-//! None of this runs under `--shots` (no event loop) — the screenshot uses
-//! the bundled sample data instead.
+//! Live fetchers: Nominatim geocoding, OSRM routing, the Transitous/MOTIS planner and Overpass
+//! POIs. Each request is a task on the app runtime and every answer comes back over one channel,
+//! folded in during `sync`.
 
 use crate::failure;
 use std::fmt::Write as _;
@@ -20,70 +16,46 @@ use crate::model::{
 
 use crate::tiles::USER_AGENT;
 
-/// Ramer–Douglas–Peucker tolerance (metres) applied to fetched route and
-/// transit-leg geometry on the fetch worker, before it reaches the model. A few
-/// metres is imperceptible at map zoom but strips the dense collinear shape
-/// points OSRM/MOTIS emit along straight segments, so the render thread projects
-/// far fewer points per frame. See [`crate::geo::simplify_polyline`].
+/// Tolerance for Ramer–Douglas–Peucker on fetched route and leg geometry, applied on the fetch
+/// worker: a few metres is imperceptible at map zoom (see [`crate::geo::simplify_polyline`]).
 const GEOMETRY_SIMPLIFY_M: f64 = 3.0;
 
-/// A completed background request handed back to the app.
 pub enum NetMsg {
     Search {
         query: String,
         results: Result<Vec<Place>, String>,
     },
-    /// Geocoding for a query the platform search is waiting on.
     PaletteSearch {
         query: String,
         results: Result<Vec<Place>, String>,
     },
-    /// Geocoding for one of the Directions endpoints (From / To). `origin` is
-    /// `true` for the "From" field, `false` for "To".
     EndpointSearch {
         origin: bool,
         query: String,
         results: Result<Vec<Place>, String>,
     },
-    /// Reverse-geocoded label for a coordinate (used to name a device-location
-    /// origin with a human place instead of raw lat/lon).
     ReverseGeocode(Result<String, String>),
-    /// Every route the service offered for the trip, the best first: a
-    /// person who does not like the one shown has another to look at.
     Route(Result<Vec<Route>, String>),
     Transit(Result<Vec<TransitJourney>, String>),
-    /// Point-of-interest markers for the current viewport (Overpass). Carries
-    /// the query generation so a stale in-flight reply for an old viewport can
-    /// be discarded rather than drawn over the current one.
     Pois {
         generation: u64,
         pois: Result<Vec<Poi>, String>,
     },
-    /// Place candidates for the offline download-by-place flow, each carrying a
-    /// real area extent (Nominatim `boundingbox`). `query` is the text that was
-    /// searched, so a stale reply for an earlier query can be discarded.
     RegionSearch {
         query: String,
         results: Result<Vec<RegionHit>, String>,
     },
 }
 
-/// A geocoded place candidate for the offline-download flow. Unlike a [`Place`]
-/// it carries the place's real bounding box, so a download targets the actual
-/// footprint of a city / district rather than the visible screen rectangle.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegionHit {
     pub name: String,
-    /// A one-line locality subtitle for the dropdown row (from `display_name`).
     pub context: String,
     pub pos: LatLon,
-    /// South-west / north-east corners of the place's bounding box.
     pub sw: LatLon,
     pub ne: LatLon,
 }
 
-/// Depart/arrive anchoring for a transit query. `time` is an RFC-3339 wall
-/// clock; `None` means "now" (the planner's own current time).
 #[derive(Clone, Debug, Default)]
 pub struct TransitQuery {
     pub arrive_by: bool,
@@ -113,7 +85,6 @@ async fn fetch_json(url: &str) -> Result<Value, String> {
     serde_json::from_slice(&body).map_err(|e| e.to_string())
 }
 
-/// Geocode a free-text query via Nominatim.
 pub async fn geocode(query: &str) -> Result<Vec<Place>, String> {
     let q = ui::uri::encode_component(query);
     let url = format!(
@@ -125,9 +96,8 @@ pub async fn geocode(query: &str) -> Result<Vec<Place>, String> {
     Ok(out)
 }
 
-/// Geocode `query` for the download-by-place flow: like [`geocode`], but each
-/// result carries the Nominatim `boundingbox` so the caller downloads the
-/// place's real area rather than the screen rectangle.
+/// Geocode `query` for the download-by-place flow: each hit carries the Nominatim `boundingbox`, so
+/// the caller downloads the place's area, not the screen rectangle.
 pub async fn geocode_regions(query: &str) -> Result<Vec<RegionHit>, String> {
     let q = ui::uri::encode_component(query);
     let url = format!(
@@ -138,13 +108,8 @@ pub async fn geocode_regions(query: &str) -> Result<Vec<RegionHit>, String> {
     Ok(arr.iter().filter_map(region_from_json).collect())
 }
 
-/// Build a [`RegionHit`] from one Nominatim result, or `None` without a usable
-/// coordinate. Reuses the place label + coordinate parse and adds the bounding
-/// box; when the box is missing (rare) it falls back to a small square around
-/// the point so a single-building result still downloads its surroundings.
 pub fn region_from_json(item: &Value) -> Option<RegionHit> {
     let place = place_from_json(item)?;
-    // Nominatim `boundingbox` is [south, north, west, east] as strings.
     let (sw, ne) = item["boundingbox"]
         .as_array()
         .and_then(|b| {
@@ -158,7 +123,6 @@ pub fn region_from_json(item: &Value) -> Option<RegionHit> {
                 LatLon::new(place.pos.lat + d, place.pos.lon + d),
             )
         });
-    // A short locality subtitle: the display name minus the leading name.
     let context = place.address.split_once(',').map_or_else(
         || place.address.clone(),
         |(_, rest)| rest.trim().to_string(),
@@ -172,9 +136,6 @@ pub fn region_from_json(item: &Value) -> Option<RegionHit> {
     })
 }
 
-/// Build a `Place` from one Nominatim result object, or `None` if it has no
-/// usable coordinate. Split out (and pure) so the human-label derivation is
-/// unit-testable without a network round-trip.
 pub fn place_from_json(item: &Value) -> Option<Place> {
     let lat = item["lat"].as_str().and_then(|s| s.parse::<f64>().ok())?;
     let lon = item["lon"].as_str().and_then(|s| s.parse::<f64>().ok())?;
@@ -196,15 +157,9 @@ pub fn place_from_json(item: &Value) -> Option<Place> {
     ))
 }
 
-/// Derive a proper human place-name for a Nominatim result.
-///
-/// The previous logic took the first comma-separated fragment of `display_name`
-/// whenever `name` was empty — but for an address hit that fragment is the bare
-/// **house number** (`display_name` = "18, Theatinerstraße, …"), so the search
-/// field ended up labelled "18". This prefers, in order:
-///   1. the POI `name` ("Marienplatz", "Café Glück"),
-///   2. a `road [house_number]` composed from `addressdetails`,
-///   3. the first `display_name` fragment that isn't a bare number.
+/// A place name a person reads. `display_name`'s first fragment can be a bare house number ("18,
+/// Theatinerstraße, …"), so this prefers the POI name, then `road [house_number]`, then the first
+/// fragment that is not a number.
 fn place_label(item: &Value, display: &str) -> String {
     if let Some(name) = item["name"].as_str().filter(|s| !s.is_empty()) {
         return name.to_string();
@@ -221,7 +176,6 @@ fn place_label(item: &Value, display: &str) -> String {
             None => road.to_string(),
         };
     }
-    // Fall back to the first display fragment that isn't a bare house number.
     display
         .split(',')
         .map(str::trim)
@@ -229,14 +183,10 @@ fn place_label(item: &Value, display: &str) -> String {
         .map_or_else(|| failure::t("maps-category-other"), str::to_owned)
 }
 
-/// Build the Overpass QL query URL for categorised POIs inside the bbox
-/// `(south, west, north, east)`. Split out (and pure) so the query construction
-/// is unit-testable without a network round-trip.
 pub fn overpass_url(south: f64, west: f64, north: f64, east: f64) -> String {
     let bbox = format!("{south:.5},{west:.5},{north:.5},{east:.5}");
-    // `nwr` matches node|way|relation; `out center` gives ways/relations a
-    // single representative point. The category filters keep the reply focused,
-    // and `out center 250` caps it server-side so the transfer stays small.
+    // `nwr` matches node, way and relation; `out center` gives each a point, and `out center 250`
+    // caps the reply.
     let ql = format!(
         "[out:json][timeout:20];(\
 nwr[\"amenity\"~\"^(restaurant|cafe|bar|pub|fast_food|biergarten|hospital|clinic|pharmacy|bank|cinema|theatre)$\"]({bbox});\
@@ -254,15 +204,12 @@ nwr[\"public_transport\"=\"station\"]({bbox});\
     )
 }
 
-/// Fetch categorised POIs for a viewport bbox from the Overpass API.
 pub async fn overpass(south: f64, west: f64, north: f64, east: f64) -> Result<Vec<Poi>, String> {
     let url = overpass_url(south, west, north, east);
     let v = fetch_json(&url).await?;
     Ok(parse_overpass(&v))
 }
 
-/// Parse an Overpass `out:json` response into POIs. Pure + unit-testable so the
-/// tag → category/label mapping is checked without a network round-trip.
 pub fn parse_overpass(v: &Value) -> Vec<Poi> {
     let Some(elements) = v["elements"].as_array() else {
         return Vec::new();
@@ -280,13 +227,10 @@ pub fn parse_overpass(v: &Value) -> Vec<Poi> {
     out
 }
 
-/// One Overpass element → `Poi`. `None` when it has no name, no coordinate, or
-/// no recognised category (keeps the marker layer meaningful, not noise).
+/// One Overpass element as a [`Poi`]; `None` without a name, a coordinate or a recognised category.
 fn poi_from_overpass(el: &Value) -> Option<Poi> {
     let tags = &el["tags"];
-    // Require a name — an unnamed node clutters the map without adding info.
     let name = tags["name"].as_str().filter(|s| !s.is_empty())?.to_string();
-    // Coordinate: nodes carry lat/lon; ways/relations carry a `center`.
     let (lat, lon) = if let (Some(la), Some(lo)) = (el["lat"].as_f64(), el["lon"].as_f64()) {
         (la, lo)
     } else if let (Some(la), Some(lo)) = (
@@ -320,8 +264,7 @@ fn poi_from_overpass(el: &Value) -> Option<Poi> {
     })
 }
 
-/// Pick the (class, kind) tag pair that classifies an Overpass element, in a
-/// priority order so a feature with several tags gets its most salient one.
+/// The most salient (class, kind) tag pair for an Overpass element.
 fn overpass_class(tags: &Value) -> Option<(&str, &str)> {
     for class in [
         "amenity",
@@ -339,7 +282,6 @@ fn overpass_class(tags: &Value) -> Option<(&str, &str)> {
     None
 }
 
-/// Compose a street address from `addr:*` tags (road + house number, + city).
 fn compose_address(tags: &Value) -> String {
     let road = tag_string(tags, "addr:street");
     let hn = tag_string(tags, "addr:housenumber");
@@ -364,8 +306,6 @@ fn tag_string(tags: &Value, key: &str) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
-/// Routes between two coordinates with the OSRM public demo server, the
-/// service's best first and its alternatives after it.
 pub async fn routes(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Vec<Route>, String> {
     let url = format!(
         "https://router.project-osrm.org/route/v1/{}/{:.6},{:.6};{:.6},{:.6}?overview=full&geometries=geojson&steps=true&alternatives=true",
@@ -395,8 +335,6 @@ pub async fn routes(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Vec<Ro
     Ok(routes)
 }
 
-/// One route of the service's answer, or `None` when it carries nothing a
-/// person could follow.
 fn route_from_json(value: &Value, mode: TravelMode, from: LatLon, to: LatLon) -> Option<Route> {
     let distance_m = value["distance"].as_f64().unwrap_or(0.0);
     let duration_s = value["duration"].as_f64().unwrap_or(0.0);
@@ -417,7 +355,6 @@ fn route_from_json(value: &Value, mode: TravelMode, from: LatLon, to: LatLon) ->
     if raw_geometry.len() < 2 {
         return None;
     }
-    // Simplify on the worker so the render thread projects fewer points.
     let geometry = crate::geo::simplify_polyline(&raw_geometry, GEOMETRY_SIMPLIFY_M);
 
     let mut steps = Vec::new();
@@ -486,15 +423,11 @@ fn step_instruction(m: Maneuver, name: &str) -> String {
     }
 }
 
-/// Reverse-geocode a coordinate to a human place label via Nominatim. Used to
-/// name a device-location origin ("Current location" → a real street/place).
 pub async fn reverse_geocode(lat: f64, lon: f64) -> Result<String, String> {
     let url = format!(
         "https://nominatim.openstreetmap.org/reverse?lat={lat:.6}&lon={lon:.6}&format=jsonv2&zoom=16&addressdetails=1"
     );
     let v = fetch_json(&url).await?;
-    // Prefer the specific `name`, then a short leading fragment of the full
-    // display name, so the origin label stays compact.
     if let Some(name) = v
         .get("name")
         .and_then(Value::as_str)
@@ -513,9 +446,6 @@ pub async fn reverse_geocode(lat: f64, lon: f64) -> Result<String, String> {
     Err("no address for this location".to_string())
 }
 
-/// Build the Transitous MOTIS `plan` URL for a journey, honouring the
-/// depart/arrive time anchor. Split out (and pure) so the time-picker wiring is
-/// unit-testable without a network round-trip.
 pub fn transit_url(from: LatLon, to: LatLon, when: &TransitQuery) -> String {
     let mut url = format!(
         "https://api.transitous.org/api/v1/plan?fromPlace={:.6},{:.6}&toPlace={:.6},{:.6}&numItineraries=4",
@@ -530,12 +460,8 @@ pub fn transit_url(from: LatLon, to: LatLon, when: &TransitQuery) -> String {
     url
 }
 
-/// Plan a public-transport journey via the Transitous MOTIS v3 API, anchored to
-/// the caller's depart/arrive [`TransitQuery`].
-///
-/// # Errors
-///
-/// Returns `Err` if the request fails or the response can't be parsed.
+/// Plan a journey through the Transitous MOTIS v3 API, anchored to the caller's depart/arrive
+/// [`TransitQuery`]. Errors when the request fails or the answer does not parse.
 pub async fn transit(
     from: LatLon,
     to: LatLon,
@@ -546,9 +472,6 @@ pub async fn transit(
     parse_transit(&v)
 }
 
-/// Parse a MOTIS `plan` response body into itineraries. Split out (and pure) so
-/// the leg-geometry decoding and field mapping are unit-testable without a
-/// network round-trip.
 pub fn parse_transit(v: &Value) -> Result<Vec<TransitJourney>, String> {
     let its = v["itineraries"].as_array().ok_or("no itineraries")?;
     let mut out = Vec::new();
@@ -601,11 +524,9 @@ pub fn parse_transit(v: &Value) -> Result<Vec<TransitJourney>, String> {
                         .as_array()
                         .map_or(0, |a| a.len() as u32),
                     geometry: leg_geometry(leg),
-                    // Authentic GTFS line colours from the feed.
                     color: hex("routeColor"),
                     text_color: hex("routeTextColor"),
                     agency: leg["agencyName"].as_str().unwrap_or("").to_string(),
-                    // MOTIS marks a leg real-time when live data backs its times.
                     realtime: leg["realTime"].as_bool().unwrap_or(false),
                 });
             }
@@ -621,23 +542,15 @@ pub fn parse_transit(v: &Value) -> Result<Vec<TransitJourney>, String> {
     Ok(out)
 }
 
-/// Decode one leg's `legGeometry` (a Google-encoded polyline) into WGS-84
-/// coordinates. MOTIS reports the `precision` alongside the points; we honour it
-/// and fall back to the standard precision-5 encoding when it is absent.
 fn leg_geometry(leg: &Value) -> Vec<LatLon> {
     let g = &leg["legGeometry"];
     let Some(points) = g["points"].as_str().filter(|s| !s.is_empty()) else {
         return Vec::new();
     };
     let precision = g["precision"].as_u64().unwrap_or(5) as u32;
-    // Simplify the leg on the worker (same rationale as the road route).
     crate::geo::simplify_polyline(&decode_polyline(points, precision), GEOMETRY_SIMPLIFY_M)
 }
 
-/// Decode a Google-encoded polyline string into `LatLon`s at the given
-/// coordinate `precision` (decimal digits; 5 is the classic Google encoding, 6
-/// and 7 are used by higher-resolution planners). Malformed trailing input is
-/// ignored rather than panicking.
 pub fn decode_polyline(s: &str, precision: u32) -> Vec<LatLon> {
     let factor = 10f64.powi(precision as i32);
     let bytes = s.as_bytes();
@@ -645,7 +558,6 @@ pub fn decode_polyline(s: &str, precision: u32) -> Vec<LatLon> {
     let mut lat = 0i64;
     let mut lon = 0i64;
     let mut out = Vec::new();
-    // Read one signed varint (zig-zag) starting at `*i`; advances `*i`.
     let read = |i: &mut usize| -> Option<i64> {
         let mut shift = 0u32;
         let mut result = 0i64;
@@ -659,7 +571,6 @@ pub fn decode_polyline(s: &str, precision: u32) -> Vec<LatLon> {
                 break;
             }
         }
-        // Zig-zag decode.
         Some(if result & 1 != 0 {
             !(result >> 1)
         } else {
@@ -676,7 +587,6 @@ pub fn decode_polyline(s: &str, precision: u32) -> Vec<LatLon> {
     out
 }
 
-/// Extract `HH:MM` from an ISO-8601 timestamp; best-effort.
 fn hhmm(iso: &str) -> String {
     if let Some(t) = iso.find('T')
         && let Some(rest) = iso.get(t + 1..)
@@ -699,10 +609,6 @@ mod tests {
             assert_eq!(hhmm("garbage"), "garbage");
         }
 
-        // Phase `region_from_json_parses_boundingbox`.
-        // A region candidate carries the Nominatim `boundingbox`
-        // ([south, north, west, east]) as a real sw/ne extent, so a download
-        // targets the place's footprint rather than the screen rectangle.
         {
             let item = serde_json::json!({
                 "lat": "48.1371", "lon": "11.5754",
@@ -730,13 +636,9 @@ mod tests {
                 (hit.ne.lon - 11.7229).abs() < 1e-6,
                 "east from boundingbox[3]"
             );
-            // The box is a real area, not a degenerate point.
             assert!(hit.ne.lat > hit.sw.lat && hit.ne.lon > hit.sw.lon);
         }
 
-        // Phase `region_from_json_falls_back_to_a_small_box`.
-        // Without a `boundingbox`, a result still yields a small square around the
-        // point so a single-building hit downloads its surroundings.
         {
             let item = serde_json::json!({
                 "lat": "48.1374", "lon": "11.5755",
@@ -776,8 +678,6 @@ mod tests {
             });
             assert_eq!(place_from_json(&poi).unwrap().name, "Marienplatz");
 
-            // A house-number address must NOT be labelled with the bare number —
-            // it must read as the street (+ number). This is the field-label bug.
             let address = serde_json::json!({
                 "lat": "48.141", "lon": "11.577",
                 "name": "",
@@ -792,7 +692,6 @@ mod tests {
             );
             assert_ne!(p.name, "18");
 
-            // No name and no address details: skip a leading bare-number fragment.
             let bare = serde_json::json!({
                 "lat": "48.14", "lon": "11.57",
                 "name": "",
@@ -833,7 +732,6 @@ mod tests {
                 time: Some("2026-07-03T10:15:00+02:00".to_string()),
             };
             let url = transit_url(from, to, &when);
-            // The colons/plus of the timestamp must be percent-encoded into the URL.
             assert!(
                 url.contains("&time=2026-07-03T10%3A15%3A00%2B02%3A00"),
                 "{url}"
@@ -842,8 +740,6 @@ mod tests {
         }
 
         {
-            // The canonical example from Google's polyline algorithm docs:
-            // `_p~iF~ps|U_ulLnnqC_mqNvxq`@` at precision 5 decodes to three points.
             let pts = decode_polyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@", 5);
             assert_eq!(pts.len(), 3);
             assert!((pts[0].lat - 38.5).abs() < 1e-5, "{:?}", pts[0]);
@@ -856,14 +752,10 @@ mod tests {
 
         {
             assert!(decode_polyline("", 5).is_empty());
-            // A lone continuation byte with no pair is dropped, not panicked on.
             assert!(decode_polyline("_", 6).is_empty());
         }
 
         {
-            // A minimal MOTIS-shaped plan response with one itinerary whose transit
-            // leg carries an encoded `legGeometry`. Proves the real parse path
-            // populates `TransitLeg.geometry` (previously always empty).
             let body = serde_json::json!({
                 "itineraries": [{
                     "startTime": "2026-07-04T09:12:00+02:00",
@@ -900,7 +792,6 @@ mod tests {
                 "legGeometry must decode onto the leg"
             );
             assert!((leg.geometry[0].lat - 38.5).abs() < 1e-5);
-            // The authentic feed colour + real-time flag + agency must land on the leg.
             assert_eq!(
                 leg.color.as_deref(),
                 Some("eb690b"),
@@ -919,8 +810,6 @@ mod tests {
         }
 
         {
-            // A leg with no `legGeometry` (some walk legs) must parse with an empty
-            // polyline, not error.
             let body = serde_json::json!({
                 "itineraries": [{
                     "duration": 300,
@@ -937,12 +826,10 @@ mod tests {
         {
             let url = overpass_url(48.10, 11.55, 48.15, 11.60);
             assert!(url.starts_with("https://overpass-api.de/api/interpreter?data="));
-            // The bbox reaches the query (percent-encoded comma is %2C).
             assert!(
                 url.contains("48.10000%2C11.55000%2C48.15000%2C11.60000"),
                 "{url}"
             );
-            // Key categories are present in the (encoded) query.
             assert!(url.contains("restaurant"));
             assert!(
                 url.contains("out%20center%20250"),

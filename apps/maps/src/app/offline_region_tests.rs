@@ -6,9 +6,6 @@ use super::*;
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
-    // Phase `offline_clear_cache_dispatch_removes_dir`.
-    // Clearing the cache deletes the on-disk tile tree and zeroes the readout —
-    // exercised against a disposable temp dir, never the user's real cache.
     {
         let mut a = app_at(1280.0, 720.0);
         let uniq = ui::time::unix_now_ns();
@@ -33,14 +30,8 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // Phase `offline_download_records_and_delete_removes_region`.
-    // Starting a download records the chosen viewport as a **manageable
-    // region** (so it shows in the saved-areas list), and deleting it by id
-    // removes the record. This is the see/manage-downloaded-regions flow.
     {
         let mut a = app_at(1280.0, 800.0);
-        // Isolate the on-disk cache so the delete step never touches the user's
-        // real tile cache.
         let dir = region_test_cache("regtest");
         a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
         a.tiles.allow_prefetch_for_test();
@@ -77,10 +68,6 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // Phase `delete_region_keeps_tiles_shared_with_another_area`.
-    // Removing one saved area must NOT delete tiles another saved area still
-    // covers. A nested area's tiles are a subset of the containing area's, so
-    // deleting the nested one frees nothing; deleting the last owner frees all.
     {
         use crate::model::DownloadedRegion;
         let dir = region_test_cache("region");
@@ -99,7 +86,6 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
             "the nested area's tiles are a subset of the containing area's"
         );
 
-        // Seed the on-disk cache with the containing area's tiles.
         for id in &big_ids {
             let p = a.tiles.cache_path(*id);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -126,8 +112,6 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
             },
         ];
 
-        // Deleting the nested area removes its record but keeps every tile,
-        // since the containing area still needs them.
         tap_offline(&mut a, OfflineAction::DeleteRegion("small".to_string()));
         assert!(!a.model.regions.iter().any(|r| r.id == "small"));
         for id in &big_ids {

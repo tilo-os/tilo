@@ -1,7 +1,5 @@
-//! The maps window: the [`MapsApp`] the view shares with its effect
-//! handler, following the shared map, with what it answers and shows beside
-//! it: its effects, with their availability now, the live rows it publishes,
-//! and what it adds to the platform search.
+//! The maps window: the [`MapsApp`] the view shares with its effect handler, with the effects it
+//! answers and what it adds to the platform search.
 
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
@@ -26,24 +24,17 @@ use crate::resource::MapsEffect;
 use crate::workspace::Workspace;
 use ui::widget::DrawChild;
 
-/// The maps window over the shared [`MapsApp`]: the map and its chrome,
-/// drawn by the map, which the view's effect handler and what the view
-/// publishes reach too.
 pub(crate) struct MapWindow {
     app: Rc<RefCell<MapsApp>>,
-    /// The shared map as the document holds it, shown as it changes.
     live: Live<Workspace>,
-    /// The `(revision, loads)` of the shared map last shown.
     presented: Option<(u64, u64)>,
 }
 
 impl MapWindow {
-    /// What the window shows, shared with the view's effect handler.
     pub(crate) fn app(&self) -> RefMut<'_, MapsApp> {
         self.app.borrow_mut()
     }
 
-    /// Show the shared map the document holds now, when it changed since.
     fn follow_document(&mut self) {
         if let Some(workspace) = self.live.changed_since(&mut self.presented) {
             self.app().adopt_resource_state(&workspace);
@@ -51,19 +42,14 @@ impl MapWindow {
     }
 }
 
-/// The view over `app`: the map attached to the shared map's dispatcher and
-/// this device's offline areas, answering the maps effects, publishing the
-/// rows it shows and looking up what the platform search asks for.
 pub(crate) fn window(cx: &ViewCx<Workspace>, mut app: MapsApp) -> Element {
-    // A live window keeps this device's offline areas; a capture and a
-    // past version show what they were staged with.
+    // A live window keeps this device's offline areas; a capture shows what it was staged with.
     let offline_areas = cx
         .mode()
         .is_live()
         .then(|| cx.person().zip(cx.device().map(str::to_owned)))
         .flatten();
     app.attach_framework(cx.dispatcher(), offline_areas);
-    // The window opens on the shared map as it is.
     let mut presented = None;
     if let Some(workspace) = cx.live().changed_since(&mut presented) {
         app.adopt_resource_state(&workspace);
@@ -92,18 +78,9 @@ pub(crate) fn window(cx: &ViewCx<Workspace>, mut app: MapsApp) -> Element {
     };
     cx.publishing(
         Publishes::new()
-            // Ranked search hits, nearby points of interest, the saved places
-            // and recent searches to open again, and this device's offline
-            // areas: what the window shows, with what it can do there. Not
-            // document state.
             .live_rows(move || rows.borrow().published_rows())
             .live_row(move |id| row.borrow().published_row(id))
-            // The places, saved first, the points of interest around the
-            // view, the recent searches and the geocoder's places for the
-            // latest query, each opening its row.
             .search_entries(move || entries.borrow().place_search_entries())
-            // The geocoder looks up what the platform search asks for, in
-            // the background.
             .search_query(move |asked| query.borrow_mut().queue_place_search(asked)),
         Box::new(window),
     )
@@ -113,7 +90,6 @@ pub(crate) fn window(cx: &ViewCx<Workspace>, mut app: MapsApp) -> Element {
 const ROWS_PER_KIND: usize = 12;
 
 impl MapsApp {
-    /// Answer `effect`, from a control, the palette, an agent or a script.
     pub(crate) fn answer_effect(
         &mut self,
         effect: MapsEffect,
@@ -133,7 +109,6 @@ impl MapsApp {
                 self.set_traffic(!self.map_controls.traffic_enabled());
             }
             MapsEffect::OpenPlace { place } => self.open_place(&place)?,
-            // A place the geocoder found is taken in as opening it would.
             MapsEffect::Directions { place } => {
                 self.open_place(&place)?;
                 self.enter_directions();
@@ -154,7 +129,7 @@ impl MapsApp {
         Ok(Effected::done())
     }
 
-    /// Why the location can't be asked for now, as a code and a reason.
+    /// Why the location cannot be asked for now, as a code and a reason.
     fn locate_unavailable(&self) -> Option<(&'static str, String)> {
         if !self.online {
             Some((
@@ -171,7 +146,6 @@ impl MapsApp {
         }
     }
 
-    /// The effects that differ from their declaration now.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
         if let Some((code, reason)) = self.locate_unavailable() {
@@ -186,14 +160,10 @@ impl MapsApp {
         statuses
     }
 
-    /// Take in the platform search's latest query: one that means a place
-    /// is looked up with the geocoder in the background.
     pub(crate) fn queue_place_search(&mut self, query: &ui::search::SearchQuery) {
         self.place_search.ask(query, self.online);
     }
 
-    /// What the window shows that the platform search finds, beside the
-    /// shared map's own: see [`crate::place_search`].
     pub(crate) fn place_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         crate::place_search::entries(&crate::place_search::Shown {
             places: &self.model.places,
@@ -204,7 +174,6 @@ impl MapsApp {
         })
     }
 
-    /// The rows the window publishes now, a bounded page of each kind.
     pub(crate) fn published_rows(&self) -> Vec<LiveRow> {
         let mut rows = Vec::new();
         rows.extend(
@@ -244,7 +213,6 @@ impl MapsApp {
         rows
     }
 
-    /// The row `id`, wherever it falls in the window's state.
     pub(crate) fn published_row(&self, id: &str) -> Option<LiveRow> {
         if let Some(place_id) = id.strip_prefix("maps.search-result:") {
             return self
@@ -261,8 +229,6 @@ impl MapsApp {
                 .find(|poi| poi.id == poi_id)
                 .map(|poi| poi_row(&poi.id, &poi.name));
         }
-        // Any place the map knows, or the geocoder found for the platform
-        // search, opens by its row; the page lists the saved ones.
         if let Some(place_id) = id.strip_prefix("maps.place:") {
             return self
                 .model
@@ -311,14 +277,12 @@ fn poi_row(id: &str, name: &str) -> LiveRow {
         .effect(&MapsEffect::PoiDirections { poi: id.into() })
 }
 
-/// A place the map knows or the geocoder found: open it, or get directions.
 fn place_row(id: &str, name: &str) -> LiveRow {
     LiveRow::new(format!("maps.place:{id}"), "maps.place", name)
         .effect(&MapsEffect::OpenPlace { place: id.into() })
         .effect(&MapsEffect::Directions { place: id.into() })
 }
 
-/// Searching again joins the document's row of the same recent search.
 fn history_row(query: &str) -> LiveRow {
     LiveRow::new(
         format!("maps.search-history:{query}"),
@@ -382,9 +346,6 @@ impl ui::widget::controls::ActionControls for MapWindow {
     }
 }
 
-/// The map is the window's header row: the History control the host offers
-/// heads the map control column, so the window draws no History bar above
-/// the map.
 impl ui::widget::WindowHeader for MapWindow {
     fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
         let mut app = self.app();
@@ -393,8 +354,6 @@ impl ui::widget::WindowHeader for MapWindow {
     }
 }
 
-/// Every pass the tree runs on the window reaches the map in the shared
-/// state, where the view's effect handler drives it too.
 impl Widget for MapWindow {
     ui::provides!(
         dyn ui::widget::FloatingSurfaceProvider,
@@ -413,8 +372,7 @@ impl Widget for MapWindow {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The tree reaches the map through this window, never past the
-        // shared state's borrow.
+        // The tree reaches the map through this window, never past the shared state's borrow.
         let node = self.app().build_layout(taffy, theme, &mut HashMap::new());
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
@@ -511,7 +469,6 @@ impl Widget for MapWindow {
         self.app().set_motion_reduced(reduced);
     }
 
-    // Tests reach the map through the framework's view.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

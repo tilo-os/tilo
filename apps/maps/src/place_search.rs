@@ -1,17 +1,5 @@
-//! Maps in the platform search.
-//!
-//! Search belongs to the platform: Maps draws no search field. The palette
-//! (Ctrl+K, `/`, the panel's magnifier) searches the window's entries
-//! ([`entries`]): the places the map knows, saved ones first, the points of
-//! interest around the view, the recent searches, and the places the
-//! geocoder found for the latest query. The window hands that query to
-//! [`PlaceSearch`], which keeps the lookups the app sends to the geocoder in
-//! the background and the answers that come back.
-//!
-//! A hit is anchored at the row it names ([`PlaceHit`]) — the place, the
-//! point of interest or the recent search — and invokes the effect that
-//! row offers ([`PlaceHit::effect`]). Saved places lie inside the
-//! [`SAVED_SCOPE`] scope, so the palette can narrow a search to them.
+//! Maps in the platform search: the classes the palette lists, and the lookups [`PlaceSearch`]
+//! keeps with the geocoder.
 
 use ui::icons::Icon;
 use ui::search::SearchQuery;
@@ -28,27 +16,21 @@ const PLACE_ROW: &str = "maps.place:";
 const POI_ROW: &str = "maps.poi:";
 const HISTORY_ROW: &str = "maps.search-history:";
 
-/// Geocoder answers kept by query: the palette's latest query, and the
-/// places a hit of an earlier one may still open.
+/// Geocoder answers kept by query: the palette's latest query, and the places a hit of an earlier
+/// one may still open.
 const MAX_ANSWERS: usize = 16;
 /// The shortest query that means a place to the geocoder.
 const MIN_GEOCODED_QUERY: usize = 3;
 
-/// What activating a hit does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlaceHit {
-    /// Open a place the map knows (saved or on the map) by id.
     Place(String),
-    /// Open a point of interest around the view by id.
     Poi(String),
-    /// Open a place the geocoder found, by id.
     Geocoded(String),
-    /// Run a recent search again.
     Recent(String),
 }
 
 impl PlaceHit {
-    /// The published row the hit opens.
     pub fn resource_id(&self) -> String {
         match self {
             Self::Place(id) | Self::Geocoded(id) => format!("{PLACE_ROW}{id}"),
@@ -57,8 +39,6 @@ impl PlaceHit {
         }
     }
 
-    /// The effect activating the hit runs: a found place opens like one
-    /// on the map, once the app has taken it in.
     pub fn effect(&self) -> MapsEffect {
         match self {
             Self::Place(id) | Self::Geocoded(id) => MapsEffect::OpenPlace { place: id.clone() },
@@ -69,8 +49,6 @@ impl PlaceHit {
         }
     }
 
-    /// What opening the anchor `anchor` runs: the effect of the row it
-    /// names.
     pub fn opened(anchor: &str) -> Option<MapsEffect> {
         let hit = if let Some(id) = anchor.strip_prefix(PLACE_ROW) {
             Self::Place(id.to_owned())
@@ -83,26 +61,17 @@ impl PlaceHit {
     }
 }
 
-/// The window's side of the geocoder lookups behind the platform search:
-/// which query to send, which are on their way, and what came back.
 #[derive(Debug, Default)]
 pub struct PlaceSearch {
-    /// The latest query the platform search asked for, when it reaches the
-    /// geocoder: its places are the ones the window lists.
     latest: Option<String>,
-    /// The query to send next, superseding any earlier unsent one.
     unsent: Option<String>,
-    /// Queries sent and not answered yet.
     sent: Vec<String>,
-    /// Places the geocoder answered, by query, newest last.
     answers: Vec<(String, Vec<Place>)>,
 }
 
 impl PlaceSearch {
-    /// Take in the platform search's latest query. Only an unscoped query
-    /// long enough to mean a place reaches the geocoder, and only when it
-    /// can be reached and the query has not been answered or sent already;
-    /// a search narrowed to the saved places stays local.
+    /// Take the search's newest query. Only an unscoped query long enough to mean a place reaches
+    /// the geocoder, once, and only when one can be reached; a saved-places scope stays local.
     pub fn ask(&mut self, query: &SearchQuery, reachable: bool) {
         let text = query.text().trim();
         if query.scope().is_some() || text.chars().count() < MIN_GEOCODED_QUERY {
@@ -117,14 +86,12 @@ impl PlaceSearch {
         }
     }
 
-    /// The query to send to the geocoder now, once.
     pub fn take_query(&mut self) -> Option<String> {
         let query = self.unsent.take()?;
         self.sent.push(query.clone());
         Some(query)
     }
 
-    /// The geocoder's `places` for `query` (empty when the lookup failed).
     pub fn answer(&mut self, query: &str, places: Vec<Place>) {
         let query = query.trim();
         self.sent.retain(|sent| !sent.eq_ignore_ascii_case(query));
@@ -136,14 +103,11 @@ impl PlaceSearch {
         }
     }
 
-    /// The latest query and the places the geocoder found for it, once
-    /// answered.
     pub fn found(&self) -> Option<(&str, &[Place])> {
         let query = self.latest.as_deref()?;
         Some((query, self.answer_for(query)?))
     }
 
-    /// A place the geocoder answered, by id.
     pub fn geocoded(&self, id: &str) -> Option<&Place> {
         self.answers
             .iter()
@@ -152,7 +116,6 @@ impl PlaceSearch {
             .find(|place| place.id == id)
     }
 
-    /// Whether a query is waiting to be sent or answered.
     pub fn is_busy(&self) -> bool {
         self.unsent.is_some() || !self.sent.is_empty()
     }
@@ -166,9 +129,6 @@ impl PlaceSearch {
     }
 }
 
-/// What a window shows that search finds: the places the map knows, the
-/// points of interest around the view, the recent searches, the geocoder's
-/// places for the latest query, and the point distances are measured from.
 #[derive(Clone, Copy, Debug)]
 pub struct Shown<'a> {
     pub places: &'a [Place],
@@ -178,9 +138,6 @@ pub struct Shown<'a> {
     pub anchor: LatLon,
 }
 
-/// One place as a hit: its name, found by what it is too ("coffee" finds a
-/// café), with where it is or what it is and how far away as the line
-/// under it.
 struct Spot<'a> {
     name: &'a str,
     address: &'a str,
@@ -230,7 +187,6 @@ impl<'a> From<&'a Place> for Spot<'a> {
     }
 }
 
-/// The search entries for what `shown` holds. See the module docs.
 pub fn entries(shown: &Shown<'_>) -> Vec<SearchEntry> {
     let known = |id: &str| shown.places.iter().any(|place| place.id == id);
     let mut entries: Vec<SearchEntry> = shown
@@ -272,7 +228,6 @@ pub fn entries(shown: &Shown<'_>) -> Vec<SearchEntry> {
     }));
     if let Some((query, found)) = shown.found {
         entries.extend(found.iter().filter(|place| !known(&place.id)).map(|place| {
-            // The geocoder found it by the query, whatever its name says.
             Spot::from(place)
                 .entry(
                     &failure::t("maps-addresses-places"),
@@ -301,8 +256,6 @@ fn keywords(cat: Category) -> &'static [&'static str] {
     }
 }
 
-/// Whether `needle` (lower case) is a word for the category `cat`, or
-/// holds one ("coffee" and "coffee near me" find cafés).
 pub fn keyword_match(needle: &str, cat: Category) -> bool {
     keywords(cat)
         .iter()
@@ -334,7 +287,6 @@ mod tests {
         }
     }
 
-    /// The hits a search for `query` lists over `entries`: group and title.
     fn search(entries: Vec<SearchEntry>, query: &SearchQuery) -> Vec<(String, String)> {
         ui::framework::testing::search_source::<crate::workspace::Workspace>(entries)
             .search_page(query, None, 50, 50)

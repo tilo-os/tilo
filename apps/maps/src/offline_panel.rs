@@ -1,8 +1,5 @@
-//! Offline-map download and cache-management panel.
-//!
-//! This component owns the panel's transient UI state, widget event routing,
-//! hit-testing, and drawing. The map app remains responsible only for effects:
-//! starting/deleting tile downloads and recording collaborative region rows.
+//! The offline download panel: its transient state, event routing, drawing and hit-testing. The app
+//! performs the effects.
 
 use ui::time::{Duration, Instant};
 
@@ -32,28 +29,22 @@ use ui::widget::DrawChild;
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
 
-/// What a refused download tells the person: the map source does not let
-/// areas be saved ahead (OpenStreetMap's tile server forbids fetching tiles
-/// nobody is viewing), but what they have looked at stays.
 pub(crate) fn areas_refused() -> String {
     crate::failure::t("maps-offline-refused")
 }
 const MAX_EXTRA_ZOOM: u8 = 6;
 
-/// Effect requested by a pointer interaction inside the panel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum OfflineAction {
     Close,
     ZoomDelta(i8),
     Download,
-    /// Stop the download in progress; what arrived stays.
     StopDownload,
     DeleteRegion(String),
     ClearCache,
     Consume,
 }
 
-/// Fully resolved footprint requested by the Download button.
 #[derive(Clone, Debug)]
 pub(crate) struct DownloadRequest {
     pub bounds: GeoBounds,
@@ -62,26 +53,18 @@ pub(crate) struct DownloadRequest {
     pub name: Option<String>,
 }
 
-/// Inputs from the map and tile layer needed to render one panel frame.
 #[derive(Clone, Copy)]
 pub(crate) struct OfflineFrame<'a> {
-    /// The whole window the sheet and its scrim cover.
     pub window: Rect,
-    /// The map viewport a "download this view" request covers.
     pub viewport: Rect,
     pub viewport_bounds: GeoBounds,
     pub viewport_zoom: u8,
     pub regions: &'a [DownloadedRegion],
     pub progress: DownloadProgress,
-    /// Whether the tile server permits saving areas. When it does not, the
-    /// sheet offers no download: it says what stays on the device and how
-    /// to free it.
     pub downloads_allowed: bool,
-    /// The pointer, for the hover state of the sheet's buttons.
     pub pointer: Point,
 }
 
-/// Transient state for the offline-map overlay.
 pub(crate) struct OfflinePanel {
     open: bool,
     zoom_extra: u8,
@@ -92,15 +75,12 @@ pub(crate) struct OfflinePanel {
     debounce: Option<Instant>,
     pick: Option<RegionHit>,
     field_rect: Option<Rect>,
-    /// How many zoom levels a download covers, from the area's own.
     levels: NumberInput,
     levels_rect: Option<Rect>,
     targets: Vec<(Rect, OfflineAction)>,
     progress_bar: ProgressBar,
 }
 
-/// What the download form says under its controls: the running download's
-/// count, how it ended, or the estimate for the area chosen.
 fn download_readout(progress: DownloadProgress, estimate: u32) -> String {
     let count = |value: u32| ui::i18n::ArgValue::from(i64::from(value));
     if progress.is_active() {
@@ -225,7 +205,6 @@ impl OfflinePanel {
         self.debounce
     }
 
-    /// Return the settled query exactly once when live geocoding should begin.
     pub fn take_due_query(&mut self, now: Instant) -> Option<String> {
         let deadline = self.debounce?;
         if now < deadline {
@@ -236,8 +215,6 @@ impl OfflinePanel {
         (!query.is_empty()).then_some(query)
     }
 
-    /// Route an event to the sheet's toolkit controls: the zoom-level
-    /// stepper under the pointer, else the shared autocomplete field.
     pub fn route_field_event(
         &mut self,
         event: &WindowEvent,
@@ -274,7 +251,6 @@ impl OfflinePanel {
         handled
     }
 
-    /// Hit-test the panel's last drawn frame, with the topmost target winning.
     pub fn action_at(&self, point: Point) -> Option<OfflineAction> {
         self.targets
             .iter()
@@ -283,10 +259,6 @@ impl OfflinePanel {
             .map(|(_, action)| action.clone())
     }
 
-    /// Semantics for the modal overlay. While this is open the map behind it
-    /// must disappear from the accessibility tree just as it does from pointer
-    /// hit testing; otherwise a screen-reader user can accidentally operate
-    /// obscured controls.
     pub fn accessibility(&self) -> Option<AccessNode> {
         self.open.then(|| {
             let children = self
@@ -335,8 +307,6 @@ impl OfflinePanel {
                 "maps.offline.search".to_string(),
             ));
         }
-        // The first Close target is the full scrim. Expose the smaller,
-        // explicit close control instead, and deduplicate repeated commands.
         let close = self
             .targets
             .iter()
@@ -486,8 +456,6 @@ impl OfflinePanel {
     }
 
     #[cfg(test)]
-    /// Pick result `index` as the area to download, as accepting it in the
-    /// field would.
     pub fn select_result(&mut self, index: usize) -> Option<RegionHit> {
         let hit = self.results.get(index)?.clone();
         self.input.set_text(&hit.name);
@@ -508,12 +476,6 @@ impl OfflinePanel {
         self.cache_bytes
     }
 
-    /// Paint the sheet in the window's top layer. Where the map source lets
-    /// areas be saved: the area to download (a place search, or the current
-    /// view), how many zoom levels, the estimate or the running download's
-    /// progress, and Download as its one action. Where it does not: what
-    /// stays on the device anyway. Then what this device holds, with the way
-    /// to free it, and the areas already downloaded.
     #[allow(
         clippy::too_many_lines,
         reason = "the sheet is one top-to-bottom immediate-mode pass; its state, hit regions and \
@@ -541,7 +503,6 @@ impl OfflinePanel {
         let caption_h = draw::line_h(text, &caption);
         let control_h = ButtonFace::height(ControlSize::Regular, theme);
         let small_h = ButtonFace::height(ControlSize::Small, theme);
-        // The progress bar shows only once a download has started.
         let bar_h = if downloads && frame.progress.total > 0 {
             s2
         } else {
@@ -557,14 +518,12 @@ impl OfflinePanel {
         } else {
             s4 + sub_h + s1 + shown as f64 * row_h + if overflow { s1 + caption_h } else { 0.0 }
         };
-        // Without downloads the sheet says, wrapped to the body, what stays.
         let note_w = ui::num::f32_of_f64(modal_dialog::body_width(
             frame.window,
             modal_dialog::MODAL_MAX_WIDTH,
             theme,
         ));
         let note_h = f64::from(text.measure_style(&areas_refused(), Some(note_w), &body).1);
-        // The body is exactly the stack the painter advances through below.
         let form_h = if downloads {
             sub_h
                 + s2
@@ -592,9 +551,6 @@ impl OfflinePanel {
                 )
             },
         );
-        // While a download runs, the one action the sheet offers stops it:
-        // picking the wrong city must not mean waiting out hundreds of tiles
-        // and then deleting the region.
         let running = frame.progress.is_active();
         let label = if running {
             crate::failure::t("maps-offline-stop")
@@ -668,7 +624,6 @@ impl OfflinePanel {
         }
         y += s4;
 
-        // What this device holds, and the way to free it.
         let clear_label = crate::failure::t("maps-offline-clear-short");
         let clear_face = ButtonFace::new(Rect::ZERO, &clear_label)
             .role(ButtonRole::Destructive)
@@ -708,7 +663,6 @@ impl OfflinePanel {
         );
         y += line_h;
 
-        // The areas already downloaded.
         if !frame.regions.is_empty() {
             y += s4;
             draw::text(
@@ -769,9 +723,6 @@ impl OfflinePanel {
         }
     }
 
-    /// The download form: the area (a place search, or the current view),
-    /// how many zoom levels, and the estimate or the running download's
-    /// progress. Returns the y below it.
     fn draw_download_form(
         &mut self,
         scene: &mut Scene,
@@ -791,7 +742,6 @@ impl OfflinePanel {
         let (left, right) = (body_rect.x0, body_rect.x1);
         let mut y = body_rect.y0;
 
-        // The area: a place search, or the current view.
         let mut ctx = PaintCtx::new(scene, transform, text, ink);
         draw::text(
             &mut ctx,
@@ -823,7 +773,6 @@ impl OfflinePanel {
         );
         y += draw::line_h(ctx.text, &caption) + s4;
 
-        // How many zoom levels, from the area's own: the toolkit's stepper.
         let top = draw::vmid(ctx.text, y, control_h, &body);
         draw::text(
             &mut ctx,
@@ -841,7 +790,6 @@ impl OfflinePanel {
             .draw_child(scene, transform, text, ink, &PresenceCtx::empty());
         y += control_h + s2;
 
-        // The estimate, or the running download.
         let estimate = TileLayer::estimate_download(request.bounds, request.z0, request.z1);
         let readout = download_readout(frame.progress, estimate);
         let mut ctx = PaintCtx::new(scene, transform, text, ink);

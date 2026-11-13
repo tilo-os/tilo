@@ -1,10 +1,5 @@
-//! The areas each device downloaded for offline use.
-//!
-//! The tiles of an offline area live in one device's tile cache, so each
-//! device keeps its own list of areas, never part of the shared map: a
-//! record Maps keeps beside the map in the workspace ([`OfflineAreas`]),
-//! each device reading and writing only its own list. Another device has
-//! its own cache and its own list, and a deletion here frees tiles here.
+//! The areas each device downloaded. Tiles live in one device's cache, so each device keeps its own
+//! list beside the shared map, and a deletion here frees tiles here.
 
 use std::collections::BTreeMap;
 
@@ -13,7 +8,6 @@ use ui::prelude::{Model, resource, tilo_resource};
 
 use crate::model::DownloadedRegion;
 
-/// The offline areas one device downloaded, newest last.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeviceAreas {
     #[serde(default)]
@@ -29,12 +23,7 @@ pub struct OfflineAreas {
 }
 
 impl OfflineAreas {
-    /// What the record holds: the areas each device downloaded for offline use.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What it holds: the areas each device downloaded.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -82,8 +71,6 @@ impl OfflineAreas {
     }
 }
 
-/// `areas` with `region` recorded: a download of the same footprint (bounds
-/// and zoom range) refreshes that area instead of listing it twice.
 pub(crate) fn recorded(
     areas: &[DownloadedRegion],
     region: DownloadedRegion,
@@ -97,7 +84,6 @@ pub(crate) fn recorded(
     areas
 }
 
-/// Whether two areas cover the identical footprint (bounds + zoom range).
 fn same_footprint(a: &DownloadedRegion, b: &DownloadedRegion) -> bool {
     const EPS: f64 = 1e-6;
     a.z0 == b.z0

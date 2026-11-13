@@ -1,4 +1,5 @@
-//! The places panel: its dock and width, its groups and rows, the results still arriving, and the explore panel beside it.
+//! The places panel: its dock and width, its groups and rows, the results still arriving, and the
+//! Explore content beside it.
 
 use super::{
     ARRIVING_RESULTS, Affine, BlendMode, ButtonFace, ButtonRole, CardFace, ControlSize, EmptyState,
@@ -8,10 +9,6 @@ use super::{
 };
 
 impl MapsApp {
-    /// The places panel: a floating panel down the leading edge (a drawer in
-    /// a narrow window) with a header row — Back in Directions, the title,
-    /// search and the collapse toggle — over the scrolled content. Collapsed
-    /// it is just its header.
     #[allow(
         clippy::too_many_lines,
         reason = "one draw pass over the panel's header and its clipped, scrolled content"
@@ -43,7 +40,6 @@ impl MapsApp {
         self.click_targets.push((body, Hit::Consume));
         let ink = on_panel(theme);
 
-        // Header row.
         let header = Rect::new(
             body.x0 + s1,
             body.y0 + s1,
@@ -123,12 +119,8 @@ impl MapsApp {
             return;
         }
 
-        // Content region (below the header), scrolled, and clipped at the
-        // last block that fits whole, so the bottom never shows a sliver.
         let content = Rect::new(pr.x0 + s2, header.y1 + s1, pr.x1 - s2, pr.y1 - s2);
         self.content_view_h = content.height();
-        // Measure this frame's rows before choosing the clip. The previous
-        // frame's edges may belong to a different scale, mode or itinerary.
         let top = content.y0 - self.scroll;
         self.panel_origin = top;
         self.panel_edges.clear();
@@ -153,7 +145,6 @@ impl MapsApp {
             content.y1
         };
         let clip = Rect::new(content.x0, content.y0, content.x1, clip_bottom);
-        // A clipped row is neither clickable nor published to accessibility.
         let body_targets = self.click_targets.split_off(first_body_target);
         self.click_targets
             .extend(body_targets.into_iter().filter(|(rect, _)| {
@@ -164,8 +155,6 @@ impl MapsApp {
         scene.pop_layer();
     }
 
-    /// A group label inside the panel, with an optional trailing text action
-    /// on its line. Returns the y below it.
     pub(super) fn draw_group_header(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -221,8 +210,6 @@ impl MapsApp {
         band.y1 + s1
     }
 
-    /// Scroll the panel one block per wheel step, so its first visible row
-    /// is always whole.
     pub(super) fn scroll_panel(&mut self, dy: f64) {
         let max = (self.content_h - self.content_view_h).max(0.0);
         let edges = std::iter::once(0.0).chain(self.panel_edges.iter().copied());
@@ -242,12 +229,10 @@ impl MapsApp {
         self.scroll = next.clamp(0.0, max);
     }
 
-    /// Note that a block of the panel's content ends at `y`.
     pub(super) fn mark_edge(&mut self, y: f64) {
         self.panel_edges.push(y - self.panel_origin);
     }
 
-    /// One list row in the panel. Returns the y below it.
     pub(super) fn draw_row(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -275,9 +260,6 @@ impl MapsApp {
         rect.y1
     }
 
-    /// The geocoder's places on their way: rows of a result's kind, the
-    /// first saying where they come from once they take a while, under the
-    /// results (or their header, while there are none yet).
     pub(super) fn draw_arriving_results(
         &mut self,
         scene: &mut Scene,
@@ -316,7 +298,6 @@ impl MapsApp {
         y
     }
 
-    /// The timing of the places a committed search waits on.
     pub(super) fn search_clock(&self) -> Option<ui::arriving::ArrivalClock> {
         let (_, asked) = self.search_asked.as_ref()?;
         Some(ui::arriving::ArrivalClock::new(
@@ -325,9 +306,6 @@ impl MapsApp {
         ))
     }
 
-    /// The Explore view: the selected place, then results, nearby places,
-    /// saved places and recent searches — or, with nothing to show, one
-    /// sentence and the way to search. Returns the y below the content.
     #[allow(
         clippy::too_many_lines,
         reason = "a single linear draw pass over this panel's sections; splitting it would only \
@@ -350,8 +328,6 @@ impl MapsApp {
         let result_distance =
             |pos: LatLon| geo::fmt_distance(geo::haversine_m(pos, results_anchor));
 
-        // First run: nothing selected, searched, saved, recent, or fetched for
-        // the viewport — one sentence and the one action that changes that.
         let empty = self.model.selected_place().is_none()
             && self.model.results.is_empty()
             && self.model.saved_places().is_empty()
@@ -373,8 +349,6 @@ impl MapsApp {
             return content.y1;
         }
 
-        // The selected place: an object card with what it is, where it is,
-        // and what to do with it.
         if let Some(sel) = self.model.selected_place().cloned() {
             let card_rect_w = content.width() - 2.0 * s2;
             let face = CardFace::new().title(&sel.name);
@@ -403,7 +377,6 @@ impl MapsApp {
                 theme.text_dim,
                 body.width(),
             );
-            // The actions: Directions is the card's one primary action.
             let by = body.y0 + caption_h * 2.0 + s4;
             let bw = (body.width() - 2.0 * s2) / 3.0;
             let saved = sel.saved;
@@ -434,7 +407,6 @@ impl MapsApp {
             y = card.y1 + s4;
         }
 
-        // Results of a committed search.
         let results = self.model.results.clone();
         if !results.is_empty() {
             y = self.draw_group_header(
@@ -470,9 +442,6 @@ impl MapsApp {
             y += s3;
         }
 
-        // Nearby POIs fetched for the current viewport (Overpass), nearest-first
-        // and linked to the marker layer: tapping a row centres the map and
-        // opens the POI's info card, and the selected marker selects its row.
         let nearby = self.nearby_pois();
         if !nearby.is_empty() {
             y = self.draw_group_header(
@@ -503,7 +472,6 @@ impl MapsApp {
             y += s3;
         }
 
-        // A saved place already listed under the results is not listed twice.
         let saved: Vec<Place> = self
             .model
             .saved_places()
