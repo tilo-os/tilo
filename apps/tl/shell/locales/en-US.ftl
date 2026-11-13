@@ -1494,7 +1494,7 @@ d-g476xvac = Desktop style settings
     .w-show-the-dock = Show the dock
     .w-dock-edge = Dock edge
     .w-dock-size = Dock size
-    .w-dock-when-it-shows = Dock, when it shows
+    .w-when-the-dock-shows = When the dock shows
 
 d-e3tczbcu = Strips style settings
     .w-show-the-tabs-of-a-strip = Show the tabs of a strip

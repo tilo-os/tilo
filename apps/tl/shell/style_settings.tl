@@ -157,7 +157,7 @@ view desktop_style_settings(s: Shell) {
                 }
             }
         }
-        ui.ToggleGroup(caption: "Dock, when it shows", fill: true) {
+        ui.ToggleGroup(caption: "When the dock shows", fill: true) {
             for showing in cases(Showing) {
                 ui.Segment(showing.label(), chosen: s.dock_showing == showing) {
                     on press: set_dock_showing(s, showing)

@@ -1527,7 +1527,7 @@ d-g476xvac = Einstellungen des Desktopstils
     .w-show-the-dock = Dock zeigen
     .w-dock-edge = Dock-Kante
     .w-dock-size = Dock-Größe
-    .w-dock-when-it-shows = Dock, wenn er zeigt
+    .w-when-the-dock-shows = Wann das Dock zeigt
 
 d-e3tczbcu = Einstellungen des Reihenstils
     .w-show-the-tabs-of-a-strip = Tabs einer Reihe zeigen
