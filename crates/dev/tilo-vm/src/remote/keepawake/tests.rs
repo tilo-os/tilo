@@ -62,131 +62,135 @@ fn renewal_marker() -> (tempfile::TempDir, PathBuf) {
     (directory, marker)
 }
 
-#[test]
-fn quiet_builder_renews_through_real_hello_and_keeps_framed_header() {
-    let (_directory, renewing) = renewal_marker();
-    let mut remote = transport("held", &renewing);
-    let packed = Packed {
-        component: "shell".into(),
-        ..Packed::default()
-    };
-    let header = format!(
-        "{BEGIN}{}",
-        serde_json::to_string(&packed).expect("header JSON")
-    );
-    let mut builder = Command::new("python3")
-        .args([
-            "-u",
-            "-c",
-            "import os,sys,time\nwhile not os.path.exists(sys.argv[2]): time.sleep(.01)\nprint(sys.argv[1], flush=True)",
-            &header,
-        ])
-        .arg(&renewing)
-        .stdout(Stdio::piped())
-        .spawn_locked()
-        .expect("start the quiet builder");
-    let mut stream = Stream::new(BufReader::new(
-        builder.stdout.take().expect("builder stdout"),
-    ));
-    let (result, renewal) = during(
-        Duration::from_millis(20),
-        || remote.renew_sleep_lease(tilo_test_env::hang_bound()),
-        || stream.header(&mut std::io::sink()),
-    )
-    .expect("start renewal");
-    assert_eq!(result.expect("real framed header"), packed);
-    renewal.expect("the reported inhibitor is held");
-    assert!(builder.wait().expect("reap quiet builder").success());
-    assert!(
-        remote
-            .hello
-            .daemon_version
-            .parse::<u64>()
-            .expect("hello count")
-            > 1
-    );
-    assert_eq!(
-        remote.hello.awake.as_ref().expect("lease").hold_until,
-        Some(9_999_999_999)
-    );
-}
+tilo_test_env::scenario! {
+    fn the_sleep_lease_is_renewed_while_a_build_runs;
 
-#[test]
-fn completed_build_stops_renewal_without_waiting_for_interval() {
-    let (_directory, renewing) = renewal_marker();
-    let mut remote = transport("held", &renewing);
-    // An interval that never runs out: the build ends the renewal or nothing does.
-    let (done, ended) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let ended = during(
-            Duration::MAX,
+    phase quiet_builder_renews_through_real_hello_and_keeps_framed_header;
+    {
+        let (_directory, renewing) = renewal_marker();
+        let mut remote = transport("held", &renewing);
+        let packed = Packed {
+            component: "shell".into(),
+            ..Packed::default()
+        };
+        let header = format!(
+            "{BEGIN}{}",
+            serde_json::to_string(&packed).expect("header JSON")
+        );
+        let mut builder = Command::new("python3")
+            .args([
+                "-u",
+                "-c",
+                "import os,sys,time\nwhile not os.path.exists(sys.argv[2]): time.sleep(.01)\nprint(sys.argv[1], flush=True)",
+                &header,
+            ])
+            .arg(&renewing)
+            .stdout(Stdio::piped())
+            .spawn_locked()
+            .expect("start the quiet builder");
+        let mut stream = Stream::new(BufReader::new(
+            builder.stdout.take().expect("builder stdout"),
+        ));
+        let (result, renewal) = during(
+            Duration::from_millis(20),
             || remote.renew_sleep_lease(tilo_test_env::hang_bound()),
-            || 42,
+            || stream.header(&mut std::io::sink()),
         )
-        .map(|(value, renewal)| (value, renewal.is_ok()))
-        .map_err(|error| error.to_string());
-        let _ = done.send((ended, remote.hello.daemon_version.clone()));
-    });
-    let (ended, daemon_version) = tilo_test_env::recv("the renewal to stop with the build", &ended);
-    assert_eq!(ended.expect("start renewal"), (42, true), "a clean stop");
-    assert_eq!(daemon_version, "1");
-    assert!(!renewing.exists(), "no renewal ran");
-}
+        .expect("start renewal");
+        assert_eq!(result.expect("real framed header"), packed);
+        renewal.expect("the reported inhibitor is held");
+        assert!(builder.wait().expect("reap quiet builder").success());
+        assert!(
+            remote
+                .hello
+                .daemon_version
+                .parse::<u64>()
+                .expect("hello count")
+                > 1
+        );
+        assert_eq!(
+            remote.hello.awake.as_ref().expect("lease").hold_until,
+            Some(9_999_999_999)
+        );
+    }
 
-#[test]
-fn missing_inhibitor_is_reported_after_the_owned_build_completes() {
-    let (_directory, renewing) = renewal_marker();
-    let mut remote = transport("unheld", &renewing);
-    let (value, renewal) = during(
-        Duration::from_millis(10),
-        || remote.renew_sleep_lease(tilo_test_env::hang_bound()),
-        || {
-            tilo_test_env::wait_until("a renewal under way", || renewing.exists());
-            42
-        },
-    )
-    .expect("start renewal");
-    assert_eq!(value, 42);
-    assert!(
-        renewal
-            .expect_err("unheld lease must fail")
-            .to_string()
-            .contains("fixture inhibitor unavailable")
-    );
-}
-
-#[test]
-fn stalled_hello_times_out_and_reaps_only_its_owned_transport() {
-    let (_directory, renewing) = renewal_marker();
-    let mut remote = transport("stall", &renewing);
-    // The fixture never answers the renewal: only the handshake's own
-    // timeout ends the call.
-    let (done, ended) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let error = remote
-            .renew_sleep_lease(Duration::from_millis(50))
+    phase completed_build_stops_renewal_without_waiting_for_interval;
+    {
+        let (_directory, renewing) = renewal_marker();
+        let mut remote = transport("held", &renewing);
+        // An interval that never runs out: the build ends the renewal or nothing does.
+        let (done, ended) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let ended = during(
+                Duration::MAX,
+                || remote.renew_sleep_lease(tilo_test_env::hang_bound()),
+                || 42,
+            )
+            .map(|(value, renewal)| (value, renewal.is_ok()))
             .map_err(|error| error.to_string());
-        let _ = done.send((error, remote));
-    });
-    let (error, mut remote) = tilo_test_env::recv("the stalled renewal to time out", &ended);
-    let error = error.expect_err("stalled renewal must fail");
-    assert!(error.contains("did not complete its handshake"));
-    assert!(
-        remote
-            .child
-            .try_wait()
-            .expect("owned child status")
-            .is_some()
-    );
-}
+            let _ = done.send((ended, remote.hello.daemon_version.clone()));
+        });
+        let (ended, daemon_version) = tilo_test_env::recv("the renewal to stop with the build", &ended);
+        assert_eq!(ended.expect("start renewal"), (42, true), "a clean stop");
+        assert_eq!(daemon_version, "1");
+        assert!(!renewing.exists(), "no renewal ran");
+    }
 
-#[test]
-fn renewal_preserves_protocol_version_validation() {
-    let (_directory, renewing) = renewal_marker();
-    let mut remote = transport("mismatch", &renewing);
-    let error = remote
-        .renew_sleep_lease(tilo_test_env::hang_bound())
-        .expect_err("a changed daemon protocol must fail");
-    assert!(error.to_string().contains("speaks protocol"));
-    assert_eq!(remote.hello.daemon_version, "1");
+    phase missing_inhibitor_is_reported_after_the_owned_build_completes;
+    {
+        let (_directory, renewing) = renewal_marker();
+        let mut remote = transport("unheld", &renewing);
+        let (value, renewal) = during(
+            Duration::from_millis(10),
+            || remote.renew_sleep_lease(tilo_test_env::hang_bound()),
+            || {
+                tilo_test_env::wait_until("a renewal under way", || renewing.exists());
+                42
+            },
+        )
+        .expect("start renewal");
+        assert_eq!(value, 42);
+        assert!(
+            renewal
+                .expect_err("unheld lease must fail")
+                .to_string()
+                .contains("fixture inhibitor unavailable")
+        );
+    }
+
+    phase stalled_hello_times_out_and_reaps_only_its_owned_transport;
+    {
+        let (_directory, renewing) = renewal_marker();
+        let mut remote = transport("stall", &renewing);
+        // The fixture never answers the renewal: only the handshake's own
+        // timeout ends the call.
+        let (done, ended) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let error = remote
+                .renew_sleep_lease(Duration::from_millis(50))
+                .map_err(|error| error.to_string());
+            let _ = done.send((error, remote));
+        });
+        let (error, mut remote) = tilo_test_env::recv("the stalled renewal to time out", &ended);
+        let error = error.expect_err("stalled renewal must fail");
+        assert!(error.contains("did not complete its handshake"));
+        assert!(
+            remote
+                .child
+                .try_wait()
+                .expect("owned child status")
+                .is_some()
+        );
+    }
+
+    phase renewal_preserves_protocol_version_validation;
+    {
+        let (_directory, renewing) = renewal_marker();
+        let mut remote = transport("mismatch", &renewing);
+        let error = remote
+            .renew_sleep_lease(tilo_test_env::hang_bound())
+            .expect_err("a changed daemon protocol must fail");
+        assert!(error.to_string().contains("speaks protocol"));
+        assert_eq!(remote.hello.daemon_version, "1");
+    }
 }

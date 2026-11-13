@@ -1713,183 +1713,220 @@ mod tests {
             .join(" ")
     }
 
-    #[test]
-    fn x86_and_arm_get_their_native_machines_and_devices() {
-        let x86 = machine(&["--arch", "amd64", "--disk", "/d/disk.qcow2"]);
-        assert_eq!(x86.qemu, "qemu-system-x86_64");
-        let text = line(&x86, false, None);
-        assert!(
-            text.starts_with("-machine q35 -enable-kvm -cpu host -m 4096 -smp 4 "),
-            "{text}"
-        );
-        assert!(
-            text.contains("-device virtio-vga,xres=1280,yres=800 -display none"),
-            "{text}"
-        );
-        assert!(
-            text.contains("-usb -device usb-tablet -qmp unix:/run/t/qmp.sock,server=on,wait=off"),
-            "the tablet is driven through QMP: {text}"
-        );
-        assert!(text.contains(
-            "-drive file=/d/disk.qcow2,format=qcow2,if=none,id=tilo-disk -device virtio-blk-pci,drive=tilo-disk"
-        ));
+    tilo_test_env::scenario! {
+        fn the_qemu_command_line_follows_the_machine;
 
-        let arm = machine(&["--arch", "arm64", "--accel", "tcg"]);
-        assert_eq!(arm.qemu, "qemu-system-aarch64");
-        let text = line(&arm, false, None);
-        assert!(
-            text.starts_with("-machine virt,gic-version=max -accel tcg,thread=multi -cpu max"),
-            "{text}"
-        );
-        assert!(
-            text.contains("-device virtio-gpu-pci,xres=1280,yres=800"),
-            "{text}"
-        );
-        assert!(
-            text.contains("-device qemu-xhci -device usb-tablet -device usb-kbd"),
-            "{text}"
-        );
-        assert!(!text.contains("accel=kvm"));
-    }
+        phase x86_and_arm_get_their_native_machines_and_devices;
+        {
+            let x86 = machine(&["--arch", "amd64", "--disk", "/d/disk.qcow2"]);
+            assert_eq!(x86.qemu, "qemu-system-x86_64");
+            let text = line(&x86, false, None);
+            assert!(
+                text.starts_with("-machine q35 -enable-kvm -cpu host -m 4096 -smp 4 "),
+                "{text}"
+            );
+            assert!(
+                text.contains("-device virtio-vga,xres=1280,yres=800 -display none"),
+                "{text}"
+            );
+            assert!(
+                text.contains("-usb -device usb-tablet -qmp unix:/run/t/qmp.sock,server=on,wait=off"),
+                "the tablet is driven through QMP: {text}"
+            );
+            assert!(text.contains(
+                "-drive file=/d/disk.qcow2,format=qcow2,if=none,id=tilo-disk -device virtio-blk-pci,drive=tilo-disk"
+            ));
 
-    #[test]
-    fn secure_boot_firmware_gets_smm_and_a_protected_pflash() {
-        let text = line(&machine(&[]), true, None);
-        assert!(text.starts_with(
-            "-machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on -global ICH9-LPC.disable_s3=1 "
-        ), "{text}");
-        assert!(text.contains(
-            "-drive if=pflash,format=qcow2,readonly=on,file=/fw/CODE.qcow2 -drive if=pflash,format=qcow2,file=/run/t/vars.img"
-        ));
-        let s3 = line(&machine(&["--s3"]), false, None);
-        assert!(
-            s3.starts_with("-machine q35 -global ICH9-LPC.disable_s3=0 "),
-            "{s3}"
-        );
-    }
+            let arm = machine(&["--arch", "arm64", "--accel", "tcg"]);
+            assert_eq!(arm.qemu, "qemu-system-aarch64");
+            let text = line(&arm, false, None);
+            assert!(
+                text.starts_with("-machine virt,gic-version=max -accel tcg,thread=multi -cpu max"),
+                "{text}"
+            );
+            assert!(
+                text.contains("-device virtio-gpu-pci,xres=1280,yres=800"),
+                "{text}"
+            );
+            assert!(
+                text.contains("-device qemu-xhci -device usb-tablet -device usb-kbd"),
+                "{text}"
+            );
+            assert!(!text.contains("accel=kvm"));
+        }
 
-    #[test]
-    fn install_cycle_disks_keep_their_serials_on_the_device() {
-        let m = machine(&[
-            "--disk",
-            "/c/work.qcow2,id=tilo-installer-medium,serial=tilo-installer-medium,backing=/out/disk.qcow2",
-            "--disk",
-            "/c/target.qcow2,id=tilo-install-target,serial=tilo-install-target,create=40G",
-            "--disk",
-            "/v/validation.raw,id=tilo-validation,serial=tilo-validation,readonly",
-        ]);
-        let text = line(&m, false, None);
-        assert!(text.contains("-drive file=/c/work.qcow2,format=qcow2,if=none,id=tilo-installer-medium -device virtio-blk-pci,drive=tilo-installer-medium,serial=tilo-installer-medium"), "{text}");
-        assert!(text.contains(
-            "-device virtio-blk-pci,drive=tilo-install-target,serial=tilo-install-target"
-        ));
-        assert!(text.contains("-drive file=/v/validation.raw,format=raw,if=none,id=tilo-validation,readonly=on -device virtio-blk-pci,drive=tilo-validation,serial=tilo-validation"));
-        assert!(
-            !text
-                .split(" -device ")
-                .any(|part| part.starts_with("-drive") && part.contains("serial="))
-        );
-        assert!(Disk::parse("/d,serial=has space", 0).is_err());
-        assert!(Disk::parse("/d,colour=red", 0).is_err());
-    }
+        phase secure_boot_firmware_gets_smm_and_a_protected_pflash;
+        {
+            let text = line(&machine(&[]), true, None);
+            assert!(text.starts_with(
+                "-machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on -global ICH9-LPC.disable_s3=1 "
+            ), "{text}");
+            assert!(text.contains(
+                "-drive if=pflash,format=qcow2,readonly=on,file=/fw/CODE.qcow2 -drive if=pflash,format=qcow2,file=/run/t/vars.img"
+            ));
+            let s3 = line(&machine(&["--s3"]), false, None);
+            assert!(
+                s3.starts_with("-machine q35 -global ICH9-LPC.disable_s3=0 "),
+                "{s3}"
+            );
+        }
 
-    #[test]
-    fn console_network_and_credentials() {
-        let m = machine(&[
-            "--console",
-            "--ssh-port",
-            "2299",
-            "--forward",
-            "tcp:127.0.0.1:3341-:3340",
-            "--lan",
-            "23901:23902:52:54:00:23:83:0a",
-            "--lan-model",
-            "e1000",
-            "--virtio-port",
-            "org.tilo.vm-install-proof=/run/t/install-proof.txt",
-            "--audio-wav",
-            "/run/t/out.wav",
-            "--tpm",
-        ]);
-        let text = line(&m, false, Some("type=11,value=x".into()));
-        assert!(text.contains("-nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:2299-:22,hostfwd=tcp:127.0.0.1:3341-:3340"), "{text}");
-        assert!(text.contains("-netdev socket,id=tilolan,udp=127.0.0.1:23902,localaddr=127.0.0.1:23901 -device e1000,netdev=tilolan,mac=52:54:00:23:83:0a"));
-        assert!(text.contains("-device virtio-serial-pci -chardev socket,id=tiloconsole,path=/run/t/console.sock,server=on,wait=off -device virtserialport,chardev=tiloconsole,name=org.tilo.console.0"));
-        assert!(text.contains("-chardev file,id=tiloport0,path=/run/t/install-proof.txt -device virtserialport,chardev=tiloport0,name=org.tilo.vm-install-proof"));
-        assert!(text.contains("-audiodev wav,id=tiloaudio,path=/run/t/out.wav -device virtio-sound-pci,audiodev=tiloaudio"));
-        assert!(text.contains("-smbios type=11,value=x"));
-        assert!(text.contains("-monitor unix:/run/t/mon.sock,server,nowait -serial file:/run/t/serial.log -pidfile /run/t/qemu.pid -name tilo"));
-        assert!(text.ends_with("-chardev socket,id=chrtpm,path=/run/t/tpm/swtpm-ctrl.sock -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0"), "{text}");
-        assert!(Lan::parse("23901:23902:52:54:00:23:83:0A", LanModel::Virtio).is_err());
-        assert!(Lan::parse("1:23902:52:54:00:23:83:0a", LanModel::Virtio).is_err());
-        let none = line(&machine(&["--no-net"]), false, None);
-        assert!(none.contains("-nic none"));
-    }
+        phase install_cycle_disks_keep_their_serials_on_the_device;
+        {
+            let m = machine(&[
+                "--disk",
+                "/c/work.qcow2,id=tilo-installer-medium,serial=tilo-installer-medium,backing=/out/disk.qcow2",
+                "--disk",
+                "/c/target.qcow2,id=tilo-install-target,serial=tilo-install-target,create=40G",
+                "--disk",
+                "/v/validation.raw,id=tilo-validation,serial=tilo-validation,readonly",
+            ]);
+            let text = line(&m, false, None);
+            assert!(text.contains("-drive file=/c/work.qcow2,format=qcow2,if=none,id=tilo-installer-medium -device virtio-blk-pci,drive=tilo-installer-medium,serial=tilo-installer-medium"), "{text}");
+            assert!(text.contains(
+                "-device virtio-blk-pci,drive=tilo-install-target,serial=tilo-install-target"
+            ));
+            assert!(text.contains("-drive file=/v/validation.raw,format=raw,if=none,id=tilo-validation,readonly=on -device virtio-blk-pci,drive=tilo-validation,serial=tilo-validation"));
+            assert!(
+                !text
+                    .split(" -device ")
+                    .any(|part| part.starts_with("-drive") && part.contains("serial="))
+            );
+            assert!(Disk::parse("/d,serial=has space", 0).is_err());
+            assert!(Disk::parse("/d,colour=red", 0).is_err());
+        }
 
-    #[test]
-    fn touch_input_drops_the_keyboard_and_opens_qmp() {
-        let text = line(&machine(&["--input", "touch"]), false, None);
-        assert!(text.starts_with("-machine q35,i8042=off "), "{text}");
-        assert!(text.contains(
-            "-device virtio-multitouch-pci -qmp unix:/run/t/qmp.sock,server=on,wait=off"
-        ));
-        assert!(!text.contains("usb-tablet"));
-    }
+        phase console_network_and_credentials;
+        {
+            let m = machine(&[
+                "--console",
+                "--ssh-port",
+                "2299",
+                "--forward",
+                "tcp:127.0.0.1:3341-:3340",
+                "--lan",
+                "23901:23902:52:54:00:23:83:0a",
+                "--lan-model",
+                "e1000",
+                "--virtio-port",
+                "org.tilo.vm-install-proof=/run/t/install-proof.txt",
+                "--audio-wav",
+                "/run/t/out.wav",
+                "--tpm",
+            ]);
+            let text = line(&m, false, Some("type=11,value=x".into()));
+            assert!(text.contains("-nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:2299-:22,hostfwd=tcp:127.0.0.1:3341-:3340"), "{text}");
+            assert!(text.contains("-netdev socket,id=tilolan,udp=127.0.0.1:23902,localaddr=127.0.0.1:23901 -device e1000,netdev=tilolan,mac=52:54:00:23:83:0a"));
+            assert!(text.contains("-device virtio-serial-pci -chardev socket,id=tiloconsole,path=/run/t/console.sock,server=on,wait=off -device virtserialport,chardev=tiloconsole,name=org.tilo.console.0"));
+            assert!(text.contains("-chardev file,id=tiloport0,path=/run/t/install-proof.txt -device virtserialport,chardev=tiloport0,name=org.tilo.vm-install-proof"));
+            assert!(text.contains("-audiodev wav,id=tiloaudio,path=/run/t/out.wav -device virtio-sound-pci,audiodev=tiloaudio"));
+            assert!(text.contains("-smbios type=11,value=x"));
+            assert!(text.contains("-monitor unix:/run/t/mon.sock,server,nowait -serial file:/run/t/serial.log -pidfile /run/t/qemu.pid -name tilo"));
+            assert!(text.ends_with("-chardev socket,id=chrtpm,path=/run/t/tpm/swtpm-ctrl.sock -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0"), "{text}");
+            assert!(Lan::parse("23901:23902:52:54:00:23:83:0A", LanModel::Virtio).is_err());
+            assert!(Lan::parse("1:23902:52:54:00:23:83:0a", LanModel::Virtio).is_err());
+            let none = line(&machine(&["--no-net"]), false, None);
+            assert!(none.contains("-nic none"));
+        }
 
-    #[test]
-    fn a_serial_socket_keeps_the_serial_log() {
-        let text = line(&machine(&["--serial-socket"]), false, None);
-        assert!(text.contains(
-            "-chardev socket,id=tiloserial,path=/run/t/serial.sock,server=on,wait=off,logfile=/run/t/serial.log"
-        ), "{text}");
-        assert!(
-            text.contains("-serial chardev:tiloserial -pidfile"),
-            "{text}"
-        );
-    }
+        phase touch_input_drops_the_keyboard_and_opens_qmp;
+        {
+            let text = line(&machine(&["--input", "touch"]), false, None);
+            assert!(text.starts_with("-machine q35,i8042=off "), "{text}");
+            assert!(text.contains(
+                "-device virtio-multitouch-pci -qmp unix:/run/t/qmp.sock,server=on,wait=off"
+            ));
+            assert!(!text.contains("usb-tablet"));
+        }
 
-    #[test]
-    fn vnc_serves_the_local_display_on_a_socket() {
-        let text = line(&machine(&["--vnc", "/run/t/vnc.sock"]), false, None);
-        assert!(
-            text.contains("-display none -vnc unix:/run/t/vnc.sock"),
-            "the guest renders once, the VNC server serves those frames: {text}"
-        );
-        assert!(!line(&machine(&[]), false, None).contains("-vnc"));
-    }
+        phase a_serial_socket_keeps_the_serial_log;
+        {
+            let text = line(&machine(&["--serial-socket"]), false, None);
+            assert!(text.contains(
+                "-chardev socket,id=tiloserial,path=/run/t/serial.sock,server=on,wait=off,logfile=/run/t/serial.log"
+            ), "{text}");
+            assert!(
+                text.contains("-serial chardev:tiloserial -pidfile"),
+                "{text}"
+            );
+        }
 
-    #[test]
-    fn displays_and_accelerators() {
-        let gl = line(&machine(&["--display", "gl"]), false, None);
-        assert!(gl.contains("-device virtio-vga-gl,xres=1280,yres=800 -display egl-headless,rendernode=/dev/dri/renderD129"));
-        let window = line(
-            &machine(&["--display", "window", "--resolution", "1920x1080"]),
-            false,
-            None,
-        );
-        assert!(window.contains("-device virtio-vga-gl,xres=1920,yres=1080 -display gtk,gl=on"));
-        let none = line(&machine(&["--display", "none"]), false, None);
-        assert!(none.contains("-vga none -display none"));
-        let m = machine(&["--cpu-variant", "host-no-sve"]);
-        assert_eq!(
-            m.accel_args(|| true).unwrap().0.join(" "),
-            "-enable-kvm -cpu host,sve=off"
-        );
-        let (tcg, warning) = m.accel_args(|| false).unwrap();
-        assert_eq!(tcg.join(" "), "-accel tcg,thread=multi -cpu max");
-        assert!(warning.is_some());
-        let hvf = machine(&["--accel", "hvf"]).accel_args(|| false).unwrap().0;
-        assert_eq!(hvf.join(" "), "-accel hvf -cpu host");
-    }
+        phase vnc_serves_the_local_display_on_a_socket;
+        {
+            let text = line(&machine(&["--vnc", "/run/t/vnc.sock"]), false, None);
+            assert!(
+                text.contains("-display none -vnc unix:/run/t/vnc.sock"),
+                "the guest renders once, the VNC server serves those frames: {text}"
+            );
+            assert!(!line(&machine(&[]), false, None).contains("-vnc"));
+        }
 
-    #[test]
-    fn paths_with_commas_are_escaped_and_bad_settings_refused() {
-        assert!(Disk::parse("/a,,b.qcow2", 0).is_err());
-        assert_eq!(escape("/x,y"), "/x,,y");
-        let args = Probe::parse_from(["probe", "--arch", "aarch64", "--s3"]).machine;
-        assert!(Machine::try_from(&args).is_err());
-        let args = Probe::parse_from(["probe", "--resolution", "wide"]).machine;
-        assert!(Machine::try_from(&args).is_err());
+        phase displays_and_accelerators;
+        {
+            let gl = line(&machine(&["--display", "gl"]), false, None);
+            assert!(gl.contains("-device virtio-vga-gl,xres=1280,yres=800 -display egl-headless,rendernode=/dev/dri/renderD129"));
+            let window = line(
+                &machine(&["--display", "window", "--resolution", "1920x1080"]),
+                false,
+                None,
+            );
+            assert!(window.contains("-device virtio-vga-gl,xres=1920,yres=1080 -display gtk,gl=on"));
+            let none = line(&machine(&["--display", "none"]), false, None);
+            assert!(none.contains("-vga none -display none"));
+            let m = machine(&["--cpu-variant", "host-no-sve"]);
+            assert_eq!(
+                m.accel_args(|| true).unwrap().0.join(" "),
+                "-enable-kvm -cpu host,sve=off"
+            );
+            let (tcg, warning) = m.accel_args(|| false).unwrap();
+            assert_eq!(tcg.join(" "), "-accel tcg,thread=multi -cpu max");
+            assert!(warning.is_some());
+            let hvf = machine(&["--accel", "hvf"]).accel_args(|| false).unwrap().0;
+            assert_eq!(hvf.join(" "), "-accel hvf -cpu host");
+        }
+
+        phase paths_with_commas_are_escaped_and_bad_settings_refused;
+        {
+            assert!(Disk::parse("/a,,b.qcow2", 0).is_err());
+            assert_eq!(escape("/x,y"), "/x,,y");
+            let args = Probe::parse_from(["probe", "--arch", "aarch64", "--s3"]).machine;
+            assert!(Machine::try_from(&args).is_err());
+            let args = Probe::parse_from(["probe", "--resolution", "wide"]).machine;
+            assert!(Machine::try_from(&args).is_err());
+        }
+
+        phase a_later_flag_overrides_an_earlier_one;
+        {
+            use crate::cli::{Cli, Command, QemuCommand};
+            let cli = Cli::try_parse_from([
+                "tilo-vm", "qemu", "args", "--accel", "tcg", "--accel", "kvm", "--disk", "/a",
+                "--disk", "/b",
+            ])
+            .unwrap();
+            let Some(Command::Qemu(command)) = cli.command else {
+                panic!("not a qemu command");
+            };
+            let QemuCommand::Args { machine } = *command else {
+                panic!("not qemu args");
+            };
+            assert_eq!(machine.accel, Accel::Kvm);
+            assert_eq!(machine.disks, ["/a", "/b"]);
+        }
+
+        phase the_root_key_travels_as_a_systemd_credential;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let key = dir.path().join("id.pub");
+            std::fs::write(&key, "ssh-ed25519 AAAA comment, with comma\n").unwrap();
+            let m = machine(&["--root-key", key.to_str().unwrap()]);
+            let credential = m.credential().unwrap().unwrap();
+            assert_eq!(
+                credential,
+                "type=11,value=io.systemd.credential.binary:ssh.authorized_keys.root=c3NoLWVkMjU1MTkgQUFBQSBjb21tZW50LCB3aXRoIGNvbW1hCg=="
+            );
+            std::fs::write(&key, "").unwrap();
+            assert!(m.credential().is_err());
+        }
     }
 
     #[test]
@@ -1902,38 +1939,5 @@ mod tests {
         assert_eq!(run.running(), Some(std::process::id()));
         assert!(claim(&run).unwrap_err().detail.contains("already running"));
         assert_eq!(status_command(dir.path()).data["running"], true);
-    }
-
-    #[test]
-    fn a_later_flag_overrides_an_earlier_one() {
-        use crate::cli::{Cli, Command, QemuCommand};
-        let cli = Cli::try_parse_from([
-            "tilo-vm", "qemu", "args", "--accel", "tcg", "--accel", "kvm", "--disk", "/a",
-            "--disk", "/b",
-        ])
-        .unwrap();
-        let Some(Command::Qemu(command)) = cli.command else {
-            panic!("not a qemu command");
-        };
-        let QemuCommand::Args { machine } = *command else {
-            panic!("not qemu args");
-        };
-        assert_eq!(machine.accel, Accel::Kvm);
-        assert_eq!(machine.disks, ["/a", "/b"]);
-    }
-
-    #[test]
-    fn the_root_key_travels_as_a_systemd_credential() {
-        let dir = tempfile::tempdir().unwrap();
-        let key = dir.path().join("id.pub");
-        std::fs::write(&key, "ssh-ed25519 AAAA comment, with comma\n").unwrap();
-        let m = machine(&["--root-key", key.to_str().unwrap()]);
-        let credential = m.credential().unwrap().unwrap();
-        assert_eq!(
-            credential,
-            "type=11,value=io.systemd.credential.binary:ssh.authorized_keys.root=c3NoLWVkMjU1MTkgQUFBQSBjb21tZW50LCB3aXRoIGNvbW1hCg=="
-        );
-        std::fs::write(&key, "").unwrap();
-        assert!(m.credential().is_err());
     }
 }

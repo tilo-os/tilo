@@ -104,100 +104,104 @@ mod tests {
     use super::*;
     use crate::config::VmEntry;
 
-    #[test]
-    fn selection_skips_registered_and_busy_ports_for_each_forwarding_adapter() {
-        let mut registry = Registry::default();
-        registry.vms.insert(
-            "old-default".into(),
-            VmEntry {
-                hypervisor: "libvirt".into(),
-                ..VmEntry::default()
-            },
-        );
-        registry.vms.insert(
-            "stopped".into(),
-            VmEntry {
-                hypervisor: "whpx".into(),
-                ssh_port: Some(2224),
-                ..VmEntry::default()
-            },
-        );
-        for adapter in ["libvirt", "qemu", "whpx"] {
-            let mut probed = Vec::new();
-            let port = choose(&registry, adapter, None, |actual, port| {
-                assert_eq!(actual, adapter);
-                probed.push(port);
-                Ok(port != 2223)
-            })
-            .unwrap();
-            assert_eq!(port, Some(2225));
-            assert_eq!(probed, [2223, 2225]);
-            assert!(
-                choose(&registry, adapter, Some(2224), |_, _| panic!(
-                    "registered port probed"
-                ))
-                .is_err()
-            );
-            assert!(choose(&registry, adapter, Some(2223), |_, _| Ok(false)).is_err());
-            assert_eq!(
-                choose(&registry, adapter, Some(22591), |_, _| Ok(true)).unwrap(),
-                Some(22591)
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_forwarded_port_is_selected_free_or_refused;
 
-    #[test]
-    fn other_adapters_keep_options_and_probe_errors_are_not_free_ports() {
-        let registry = Registry::default();
-        for adapter in ["utm", "hyperv", "device"] {
-            for requested in [None, Some(2222)] {
-                assert_eq!(
-                    choose(&registry, adapter, requested, |_, _| panic!(
-                        "not forwarded"
+        phase selection_skips_registered_and_busy_ports_for_each_forwarding_adapter;
+        {
+            let mut registry = Registry::default();
+            registry.vms.insert(
+                "old-default".into(),
+                VmEntry {
+                    hypervisor: "libvirt".into(),
+                    ..VmEntry::default()
+                },
+            );
+            registry.vms.insert(
+                "stopped".into(),
+                VmEntry {
+                    hypervisor: "whpx".into(),
+                    ssh_port: Some(2224),
+                    ..VmEntry::default()
+                },
+            );
+            for adapter in ["libvirt", "qemu", "whpx"] {
+                let mut probed = Vec::new();
+                let port = choose(&registry, adapter, None, |actual, port| {
+                    assert_eq!(actual, adapter);
+                    probed.push(port);
+                    Ok(port != 2223)
+                })
+                .unwrap();
+                assert_eq!(port, Some(2225));
+                assert_eq!(probed, [2223, 2225]);
+                assert!(
+                    choose(&registry, adapter, Some(2224), |_, _| panic!(
+                        "registered port probed"
                     ))
-                    .unwrap(),
-                    requested
+                    .is_err()
+                );
+                assert!(choose(&registry, adapter, Some(2223), |_, _| Ok(false)).is_err());
+                assert_eq!(
+                    choose(&registry, adapter, Some(22591), |_, _| Ok(true)).unwrap(),
+                    Some(22591)
                 );
             }
         }
-        assert!(
-            choose(&registry, "qemu", Some(0), |_, _| panic!(
-                "port zero probed"
-            ))
-            .is_err()
-        );
-        let error = choose(&registry, "libvirt", None, |_, _| {
-            Err(io::Error::from(ErrorKind::PermissionDenied))
-        })
-        .unwrap_err();
-        assert!(
-            error.to_string().contains("check host TCP port 2222"),
-            "{error}"
-        );
-        assert!(ipv6_unavailable(&io::Error::from(
-            ErrorKind::AddrNotAvailable
-        )));
-        assert!(!ipv6_unavailable(&io::Error::from(
-            ErrorKind::PermissionDenied
-        )));
-        assert!(!ipv6_unavailable(&io::Error::from(ErrorKind::AddrInUse)));
-        if cfg!(target_os = "linux") {
-            assert!(ipv6_unavailable(&io::Error::from_raw_os_error(97)));
-        }
-    }
 
-    #[test]
-    fn an_actual_listener_refuses_the_exact_explicit_port() {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        for adapter in ["libvirt", "qemu", "whpx"] {
-            let error = select(&Registry::default(), adapter, Some(port)).unwrap_err();
+        phase other_adapters_keep_options_and_probe_errors_are_not_free_ports;
+        {
+            let registry = Registry::default();
+            for adapter in ["utm", "hyperv", "device"] {
+                for requested in [None, Some(2222)] {
+                    assert_eq!(
+                        choose(&registry, adapter, requested, |_, _| panic!(
+                            "not forwarded"
+                        ))
+                        .unwrap(),
+                        requested
+                    );
+                }
+            }
             assert!(
-                error
-                    .to_string()
-                    .contains(&format!("--ssh-port {port} is busy")),
+                choose(&registry, "qemu", Some(0), |_, _| panic!(
+                    "port zero probed"
+                ))
+                .is_err()
+            );
+            let error = choose(&registry, "libvirt", None, |_, _| {
+                Err(io::Error::from(ErrorKind::PermissionDenied))
+            })
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("check host TCP port 2222"),
                 "{error}"
             );
+            assert!(ipv6_unavailable(&io::Error::from(
+                ErrorKind::AddrNotAvailable
+            )));
+            assert!(!ipv6_unavailable(&io::Error::from(
+                ErrorKind::PermissionDenied
+            )));
+            assert!(!ipv6_unavailable(&io::Error::from(ErrorKind::AddrInUse)));
+            if cfg!(target_os = "linux") {
+                assert!(ipv6_unavailable(&io::Error::from_raw_os_error(97)));
+            }
+        }
+
+        phase an_actual_listener_refuses_the_exact_explicit_port;
+        {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            for adapter in ["libvirt", "qemu", "whpx"] {
+                let error = select(&Registry::default(), adapter, Some(port)).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("--ssh-port {port} is busy")),
+                    "{error}"
+                );
+            }
         }
     }
 }

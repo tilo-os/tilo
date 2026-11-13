@@ -507,82 +507,86 @@ fn asleep(vm: &Resolved, endpoint: &SshEndpoint, detail: &str) -> CliError {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_lease_says_until_when_and_why() {
-        let now = unix_now();
-        let idle = describe_lease(&AwakeLease {
-            until: Some(now + 1800),
-            hold_until: None,
-            held: true,
-            problem: None,
-        });
-        assert!(idle.contains("(in 30 min)"), "{idle}");
-        assert!(
-            idle.contains("30 minutes after the last tilo-vm request"),
-            "{idle}"
-        );
-        let held = describe_lease(&AwakeLease {
-            until: Some(now + 7200),
-            hold_until: Some(now + 7200),
-            held: true,
-            problem: None,
-        });
-        assert!(
-            held.contains("(in 2h00m)") && held.contains("--for"),
-            "{held}"
-        );
-        let broken = describe_lease(&AwakeLease {
-            until: Some(now + 1800),
-            hold_until: None,
-            held: false,
-            problem: Some("tilo-vm-awake.service is not running".into()),
-        });
-        assert!(
-            broken.starts_with("should be held awake, but is not"),
-            "{broken}"
-        );
-        assert!(describe_lease(&AwakeLease::default()).starts_with("not held awake"));
-        assert_eq!(local_name("yoga.lan"), "yoga.local");
-        assert_eq!(local_name("opi"), "opi.local");
-    }
+    tilo_test_env::scenario! {
+        fn reach_describes_the_lease_and_a_devices_net_facts;
 
-    #[test]
-    fn a_devices_net_facts_are_recorded_and_described() {
-        let mut entry = VmEntry::default();
-        assert!(wake_line(&entry).starts_with("no MAC recorded"));
-        let facts = reach::parse_net_probe(
-            "hostname=yoga\ninterface=wlan0\nmac=02:11:22:33:44:55\nbroadcast=10.0.0.255\nkind=wifi\nphy=phy0\n@@wowlan\nWoWLAN is disabled.\n",
-        );
-        apply_net(&mut entry, &facts);
-        assert_eq!(entry.hostname.as_deref(), Some("yoga"));
-        assert_eq!(entry.mac.as_deref(), Some("02:11:22:33:44:55"));
-        let line = wake_line(&entry);
-        assert!(
-            line.contains("not known to wake") && line.contains("yoga.local"),
-            "{line}"
-        );
-        apply_net(
-            &mut entry,
-            &NetFacts {
-                hostname: Some("yoga".into()),
-                ..NetFacts::default()
-            },
-        );
-        assert_eq!(entry.mac.as_deref(), Some("02:11:22:33:44:55"));
-        let asleep = asleep(
-            &Resolved {
-                name: "yoga".into(),
-                entry,
-                source: crate::config::Source::Argument,
-            },
-            &SshEndpoint::parse("me@10.0.0.223").unwrap(),
-            "No route to host",
-        );
-        assert!(asleep.to_string().contains("asleep or gone"), "{asleep}");
-        assert!(
-            asleep.hint().contains("tilo-vm vm wake yoga"),
-            "{}",
-            asleep.hint()
-        );
+        phase the_lease_says_until_when_and_why;
+        {
+            let now = unix_now();
+            let idle = describe_lease(&AwakeLease {
+                until: Some(now + 1800),
+                hold_until: None,
+                held: true,
+                problem: None,
+            });
+            assert!(idle.contains("(in 30 min)"), "{idle}");
+            assert!(
+                idle.contains("30 minutes after the last tilo-vm request"),
+                "{idle}"
+            );
+            let held = describe_lease(&AwakeLease {
+                until: Some(now + 7200),
+                hold_until: Some(now + 7200),
+                held: true,
+                problem: None,
+            });
+            assert!(
+                held.contains("(in 2h00m)") && held.contains("--for"),
+                "{held}"
+            );
+            let broken = describe_lease(&AwakeLease {
+                until: Some(now + 1800),
+                hold_until: None,
+                held: false,
+                problem: Some("tilo-vm-awake.service is not running".into()),
+            });
+            assert!(
+                broken.starts_with("should be held awake, but is not"),
+                "{broken}"
+            );
+            assert!(describe_lease(&AwakeLease::default()).starts_with("not held awake"));
+            assert_eq!(local_name("yoga.lan"), "yoga.local");
+            assert_eq!(local_name("opi"), "opi.local");
+        }
+
+        phase a_devices_net_facts_are_recorded_and_described;
+        {
+            let mut entry = VmEntry::default();
+            assert!(wake_line(&entry).starts_with("no MAC recorded"));
+            let facts = reach::parse_net_probe(
+                "hostname=yoga\ninterface=wlan0\nmac=02:11:22:33:44:55\nbroadcast=10.0.0.255\nkind=wifi\nphy=phy0\n@@wowlan\nWoWLAN is disabled.\n",
+            );
+            apply_net(&mut entry, &facts);
+            assert_eq!(entry.hostname.as_deref(), Some("yoga"));
+            assert_eq!(entry.mac.as_deref(), Some("02:11:22:33:44:55"));
+            let line = wake_line(&entry);
+            assert!(
+                line.contains("not known to wake") && line.contains("yoga.local"),
+                "{line}"
+            );
+            apply_net(
+                &mut entry,
+                &NetFacts {
+                    hostname: Some("yoga".into()),
+                    ..NetFacts::default()
+                },
+            );
+            assert_eq!(entry.mac.as_deref(), Some("02:11:22:33:44:55"));
+            let asleep = asleep(
+                &Resolved {
+                    name: "yoga".into(),
+                    entry,
+                    source: crate::config::Source::Argument,
+                },
+                &SshEndpoint::parse("me@10.0.0.223").unwrap(),
+                "No route to host",
+            );
+            assert!(asleep.to_string().contains("asleep or gone"), "{asleep}");
+            assert!(
+                asleep.hint().contains("tilo-vm vm wake yoga"),
+                "{}",
+                asleep.hint()
+            );
+        }
     }
 }

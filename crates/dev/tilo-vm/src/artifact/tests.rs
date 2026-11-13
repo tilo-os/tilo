@@ -100,115 +100,119 @@ fn change(request: &mut ArtifactSwap, mutate: impl FnOnce(&mut serde_json::Value
     request.receipt_sha256 = crate::build::sha256_hex(&bytes);
 }
 
-#[test]
-fn valid_full_cohort_is_verified_before_any_daemon_or_builder_use() {
-    for binary in [false, true] {
-        let (_dir, request) = fixture(binary);
-        let prepared = prepare(&request).unwrap();
-        assert_eq!(prepared.layers.len(), 4);
-        for layer in prepared.layers {
-            assert!(!layer.packed.reused);
-            assert_eq!(
-                layer.provenance.source_commit.as_deref(),
-                Some(request.source.as_str())
-            );
-            assert_eq!(layer.provenance.authority, "local");
-            assert!(layer.archive.as_file().metadata().unwrap().len() > 0);
+tilo_test_env::scenario! {
+    fn layer_artifact_cohorts_are_verified_before_use;
+
+    phase valid_full_cohort_is_verified_before_any_daemon_or_builder_use;
+    {
+        for binary in [false, true] {
+            let (_dir, request) = fixture(binary);
+            let prepared = prepare(&request).unwrap();
+            assert_eq!(prepared.layers.len(), 4);
+            for layer in prepared.layers {
+                assert!(!layer.packed.reused);
+                assert_eq!(
+                    layer.provenance.source_commit.as_deref(),
+                    Some(request.source.as_str())
+                );
+                assert_eq!(layer.provenance.authority, "local");
+                assert!(layer.archive.as_file().metadata().unwrap().len() > 0);
+            }
         }
     }
-}
 
-#[test]
-fn wrong_source_builder_run_architecture_or_incomplete_cohort_fails_closed() {
-    for case in [
-        "source",
-        "builder",
-        "run",
-        "arch",
-        "missing",
-        "duplicate",
-        "inventory",
-        "header",
-        "cached",
-    ] {
-        let (_dir, mut request) = fixture(false);
-        change(&mut request, |j| match case {
-            "source" => j["source_commit"] = "d".repeat(40).into(),
-            "builder" => {
-                j["builder_image"] = format!(
-                    "registry.tilo.so/tilo/tilo-builder@sha256:{}",
-                    "d".repeat(64)
-                )
-                .into();
-            }
-            "run" => j["run_id"] = 124.into(),
-            "arch" => j["architecture"] = "aarch64".into(),
-            "missing" => {
-                j["layers"].as_array_mut().unwrap().remove(0);
-            }
-            "duplicate" => j["layers"][0]["component"] = "tilo-session".into(),
-            "inventory" => j["layers"][0]["source_digest"] = "e".repeat(64).into(),
-            "header" => j["layers"][0]["toolchain"] = "different rustc".into(),
-            "cached" => j["layers"][0]["layer_hash"] = "e".repeat(64).into(),
-            _ => {}
-        });
-        assert!(prepare(&request).is_err(), "{case} was admitted");
-    }
-}
-
-#[test]
-fn tampered_missing_escaping_or_trailing_artifacts_are_not_imported() {
-    for case in [
-        "receipt",
-        "payload",
-        "inventory",
-        "missing",
-        "escape",
-        "trailing",
-        "footer",
-        "reused",
-    ] {
-        let (dir, mut request) = fixture(false);
-        let stream = dir.path().join("launcher.stream");
-        match case {
-            "receipt" => request.receipt_sha256 = "f".repeat(64),
-            "payload" => {
-                std::fs::write(&stream, "substituted bytes").unwrap();
-            }
-            "inventory" => {
-                std::fs::write(dir.path().join("launcher.inputs.json"), "wrong inventory").unwrap();
-            }
-            "missing" => {
-                std::fs::remove_file(&stream).unwrap();
-            }
-            "escape" => change(&mut request, |j| {
-                j["layers"][0]["stream"]["path"] = "../other.stream".into();
-            }),
-            "trailing" | "footer" | "reused" => {
-                let mut bytes = std::fs::read(&stream).unwrap();
-                if case == "trailing" {
-                    bytes.extend(b"substituted second layer\n");
-                } else if case == "footer" {
-                    bytes.truncate(bytes.len() - 90);
-                } else {
-                    let end = bytes.iter().position(|b| *b == b'\n').unwrap();
-                    let mut header: serde_json::Value =
-                        serde_json::from_slice(&bytes[crate::builderlayer::BEGIN.len()..end])
-                            .unwrap();
-                    header["reused"] = true.into();
-                    let mut replaced =
-                        format!("{}{}\n", crate::builderlayer::BEGIN, header).into_bytes();
-                    replaced.extend(&bytes[end + 1..]);
-                    bytes = replaced;
+    phase wrong_source_builder_run_architecture_or_incomplete_cohort_fails_closed;
+    {
+        for case in [
+            "source",
+            "builder",
+            "run",
+            "arch",
+            "missing",
+            "duplicate",
+            "inventory",
+            "header",
+            "cached",
+        ] {
+            let (_dir, mut request) = fixture(false);
+            change(&mut request, |j| match case {
+                "source" => j["source_commit"] = "d".repeat(40).into(),
+                "builder" => {
+                    j["builder_image"] = format!(
+                        "registry.tilo.so/tilo/tilo-builder@sha256:{}",
+                        "d".repeat(64)
+                    )
+                    .into();
                 }
-                std::fs::write(&stream, &bytes).unwrap();
-                change(&mut request, |j| {
-                    j["layers"][0]["stream"]["sha256"] = crate::build::sha256_hex(&bytes).into();
-                    j["layers"][0]["stream"]["bytes"] = (bytes.len() as u64).into();
-                });
-            }
-            _ => {}
+                "run" => j["run_id"] = 124.into(),
+                "arch" => j["architecture"] = "aarch64".into(),
+                "missing" => {
+                    j["layers"].as_array_mut().unwrap().remove(0);
+                }
+                "duplicate" => j["layers"][0]["component"] = "tilo-session".into(),
+                "inventory" => j["layers"][0]["source_digest"] = "e".repeat(64).into(),
+                "header" => j["layers"][0]["toolchain"] = "different rustc".into(),
+                "cached" => j["layers"][0]["layer_hash"] = "e".repeat(64).into(),
+                _ => {}
+            });
+            assert!(prepare(&request).is_err(), "{case} was admitted");
         }
-        assert!(prepare(&request).is_err(), "{case} was admitted");
+    }
+
+    phase tampered_missing_escaping_or_trailing_artifacts_are_not_imported;
+    {
+        for case in [
+            "receipt",
+            "payload",
+            "inventory",
+            "missing",
+            "escape",
+            "trailing",
+            "footer",
+            "reused",
+        ] {
+            let (dir, mut request) = fixture(false);
+            let stream = dir.path().join("launcher.stream");
+            match case {
+                "receipt" => request.receipt_sha256 = "f".repeat(64),
+                "payload" => {
+                    std::fs::write(&stream, "substituted bytes").unwrap();
+                }
+                "inventory" => {
+                    std::fs::write(dir.path().join("launcher.inputs.json"), "wrong inventory").unwrap();
+                }
+                "missing" => {
+                    std::fs::remove_file(&stream).unwrap();
+                }
+                "escape" => change(&mut request, |j| {
+                    j["layers"][0]["stream"]["path"] = "../other.stream".into();
+                }),
+                "trailing" | "footer" | "reused" => {
+                    let mut bytes = std::fs::read(&stream).unwrap();
+                    if case == "trailing" {
+                        bytes.extend(b"substituted second layer\n");
+                    } else if case == "footer" {
+                        bytes.truncate(bytes.len() - 90);
+                    } else {
+                        let end = bytes.iter().position(|b| *b == b'\n').unwrap();
+                        let mut header: serde_json::Value =
+                            serde_json::from_slice(&bytes[crate::builderlayer::BEGIN.len()..end])
+                                .unwrap();
+                        header["reused"] = true.into();
+                        let mut replaced =
+                            format!("{}{}\n", crate::builderlayer::BEGIN, header).into_bytes();
+                        replaced.extend(&bytes[end + 1..]);
+                        bytes = replaced;
+                    }
+                    std::fs::write(&stream, &bytes).unwrap();
+                    change(&mut request, |j| {
+                        j["layers"][0]["stream"]["sha256"] = crate::build::sha256_hex(&bytes).into();
+                        j["layers"][0]["stream"]["bytes"] = (bytes.len() as u64).into();
+                    });
+                }
+                _ => {}
+            }
+            assert!(prepare(&request).is_err(), "{case} was admitted");
+        }
     }
 }

@@ -666,221 +666,225 @@ mod tests {
         }
     }
 
-    #[test]
-    fn explicit_install_preferences_are_applied_and_checked_before_begin() {
-        let mut requested = choices(Unlock::Passphrase);
-        requested.hostname = "tilo-desktop".into();
-        requested.keyboard_layout = Some("German (QWERTZ)".into());
-        requested.timezone = Some("Europe/Berlin".into());
-        requested.locale = Some("de_DE.UTF-8".into());
-        let mut fake = FakeInstaller::new();
-        install(
-            &mut fake,
-            &requested,
-            Duration::from_secs(60),
-            &mut NoWait(0),
-            &mut |_| {},
-        )
-        .unwrap();
-        assert_eq!(
-            fake.preferences,
-            json!({"hostname":"tilo-desktop", "layout":"German (QWERTZ)", "timezone":"Europe/Berlin", "locale":"de_DE.UTF-8"})
-        );
-        assert!(fake.calls.contains(&"begin@installer.review".into()));
-        let mut skipped = FakeInstaller::new();
-        skipped.step = "network";
-        let error = install(
-            &mut skipped,
-            &requested,
-            Duration::from_secs(60),
-            &mut NoWait(0),
-            &mut |_| {},
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("/keyboard/layout"));
-        assert!(!skipped.calls.contains(&"begin@installer.review".into()));
-        let mut compatible = FakeInstaller::new();
-        compatible.step = "network";
-        compatible.preferences["layout"] = json!("German (QWERTZ)");
-        install(
-            &mut compatible,
-            &requested,
-            Duration::from_secs(60),
-            &mut NoWait(0),
-            &mut |_| {},
-        )
-        .unwrap();
-        assert!(compatible.calls.contains(&"begin@installer.review".into()));
-        let mut default = FakeInstaller::new();
-        install(
-            &mut default,
-            &choices(Unlock::Passphrase),
-            Duration::from_secs(60),
-            &mut NoWait(0),
-            &mut |_| {},
-        )
-        .unwrap();
-        assert_eq!(default.preferences["layout"], "English (US)");
-        assert!(!default.calls.iter().any(|call| matches!(
-            call.as_str(),
-            "set-layout@installer" | "set-timezone@installer" | "set-locale@installer"
-        )));
-    }
+    tilo_test_env::scenario! {
+        fn the_installer_is_driven_through_its_actions_or_fails_closed;
 
-    #[test]
-    fn the_installer_wizard_is_driven_through_its_actions() {
+        phase explicit_install_preferences_are_applied_and_checked_before_begin;
         {
+            let mut requested = choices(Unlock::Passphrase);
+            requested.hostname = "tilo-desktop".into();
+            requested.keyboard_layout = Some("German (QWERTZ)".into());
+            requested.timezone = Some("Europe/Berlin".into());
+            requested.locale = Some("de_DE.UTF-8".into());
             let mut fake = FakeInstaller::new();
-            let mut lines = Vec::new();
-            let installed = install(
-                &mut fake,
-                &choices(Unlock::Passphrase),
-                Duration::from_secs(60),
-                &mut NoWait(0),
-                &mut |line| lines.push(line.to_owned()),
-            )
-            .unwrap();
-            assert_eq!(
-                installed.steps,
-                [
-                    "keyboard",
-                    "network",
-                    "accounts",
-                    "disk",
-                    "account",
-                    "options",
-                    "media",
-                    "review",
-                    "install",
-                    "power-off"
-                ]
-            );
-            assert!(fake.calls.contains(&"continue-offline@installer".into()));
-            assert_eq!(installed.target, "/dev/vdb");
-            assert_eq!(installed.composefs.as_deref(), Some("cafe"));
-            assert!(fake.calls.contains(&"begin@installer.review".to_string()));
-            assert_eq!(
-                fake.calls.last().map(String::as_str),
-                Some("power-off@installer")
-            );
-            assert!(
-                !lines
-                    .iter()
-                    .any(|line| line.contains("scenario-passphrase")),
-                "progress must never print the passphrase: {lines:?}"
-            );
-        }
-
-        {
-            let mut fake = FakeInstaller::new();
-            let mut chosen = choices(Unlock::Passphrase);
-            chosen.username = "bob".into();
-            chosen.filesystem = Some("ext4".into());
-            chosen.account_secret = Secret::new("account-password-for-testing");
-            chosen.disk_secret = Some(Secret::new("disk-passphrase-for-testing"));
-            let mut lines = Vec::new();
             install(
                 &mut fake,
-                &chosen,
-                Duration::from_secs(60),
-                &mut NoWait(0),
-                &mut |line| lines.push(line.to_owned()),
-            )
-            .unwrap();
-            assert!(fake.calls.contains(&"set-filesystem@installer".to_string()));
-            assert_eq!(
-                fake.passphrase.as_deref(),
-                Some("account-password-for-testing")
-            );
-            assert_eq!(
-                fake.disk_passphrase.as_deref(),
-                Some("disk-passphrase-for-testing")
-            );
-            assert!(fake.calls.contains(&"set-disk-passphrase@installer".into()));
-            assert!(!lines.iter().any(|line| {
-                line.contains("account-password-for-testing")
-                    || line.contains("disk-passphrase-for-testing")
-            }));
-        }
-
-        {
-            let mut fake = FakeInstaller::new();
-            fake.step = "disk";
-            let installed = install(
-                &mut fake,
-                &choices(Unlock::Passphrase),
+                &requested,
                 Duration::from_secs(60),
                 &mut NoWait(0),
                 &mut |_| {},
             )
             .unwrap();
-            assert_eq!(installed.steps.first().map(String::as_str), Some("disk"));
-        }
-    }
-
-    #[test]
-    fn the_installer_drive_fails_closed_instead_of_guessing() {
-        {
-            let mut fake = FakeInstaller::new();
-            fake.install_polls = VecDeque::from(["running", "failed"]);
+            assert_eq!(
+                fake.preferences,
+                json!({"hostname":"tilo-desktop", "layout":"German (QWERTZ)", "timezone":"Europe/Berlin", "locale":"de_DE.UTF-8"})
+            );
+            assert!(fake.calls.contains(&"begin@installer.review".into()));
+            let mut skipped = FakeInstaller::new();
+            skipped.step = "network";
             let error = install(
-                &mut fake,
-                &choices(Unlock::Passphrase),
+                &mut skipped,
+                &requested,
                 Duration::from_secs(60),
                 &mut NoWait(0),
                 &mut |_| {},
             )
             .unwrap_err();
-            assert!(matches!(error, DriveError::InstallFailed { .. }), "{error}");
-
-            let mut slow = FakeInstaller::new();
-            slow.install_polls = std::iter::repeat_n("running", 100).collect();
-            let mut pace = NoWait(0);
-            let error = install(
-                &mut slow,
-                &choices(Unlock::Passphrase),
-                Duration::from_secs(20),
-                &mut pace,
-                &mut |_| {},
-            )
-            .unwrap_err();
-            assert!(matches!(error, DriveError::Timeout { .. }), "{error}");
-            assert!(pace.0 <= 5, "the loop is bounded by the time budget");
-        }
-
-        {
-            let mut fake = FakeInstaller::new();
-            let error = install(
-                &mut fake,
-                &choices(Unlock::TpmPin),
+            assert!(error.to_string().contains("/keyboard/layout"));
+            assert!(!skipped.calls.contains(&"begin@installer.review".into()));
+            let mut compatible = FakeInstaller::new();
+            compatible.step = "network";
+            compatible.preferences["layout"] = json!("German (QWERTZ)");
+            install(
+                &mut compatible,
+                &requested,
                 Duration::from_secs(60),
                 &mut NoWait(0),
                 &mut |_| {},
             )
-            .unwrap_err();
-            assert!(
-                matches!(&error, DriveError::Stuck { step, .. } if step == "account"),
-                "{error}"
-            );
-            assert!(
-                !fake.calls.contains(&"set-passphrase@installer".to_string()),
-                "no secret may be sent under a policy the scenario did not ask for"
-            );
+            .unwrap();
+            assert!(compatible.calls.contains(&"begin@installer.review".into()));
+            let mut default = FakeInstaller::new();
+            install(
+                &mut default,
+                &choices(Unlock::Passphrase),
+                Duration::from_secs(60),
+                &mut NoWait(0),
+                &mut |_| {},
+            )
+            .unwrap();
+            assert_eq!(default.preferences["layout"], "English (US)");
+            assert!(!default.calls.iter().any(|call| matches!(
+                call.as_str(),
+                "set-layout@installer" | "set-timezone@installer" | "set-locale@installer"
+            )));
         }
 
+        phase the_installer_wizard_is_driven_through_its_actions;
         {
-            let one = json!({"storage": {"disks": [
-                {"device": "/dev/vda", "installer_medium": true},
-                {"device": "/dev/vdb", "installer_medium": false, "read_only": false},
-            ]}});
-            assert_eq!(choose_target(&one).unwrap(), "/dev/vdb");
-            let two = json!({"storage": {"disks": [
-                {"device": "/dev/vdb"}, {"device": "/dev/vdc"},
-            ]}});
-            assert!(choose_target(&two).is_err());
-            let none =
-                json!({"storage": {"disks": [{"device": "/dev/vda", "installer_medium": true}]}});
-            assert!(choose_target(&none).is_err());
+            {
+                let mut fake = FakeInstaller::new();
+                let mut lines = Vec::new();
+                let installed = install(
+                    &mut fake,
+                    &choices(Unlock::Passphrase),
+                    Duration::from_secs(60),
+                    &mut NoWait(0),
+                    &mut |line| lines.push(line.to_owned()),
+                )
+                .unwrap();
+                assert_eq!(
+                    installed.steps,
+                    [
+                        "keyboard",
+                        "network",
+                        "accounts",
+                        "disk",
+                        "account",
+                        "options",
+                        "media",
+                        "review",
+                        "install",
+                        "power-off"
+                    ]
+                );
+                assert!(fake.calls.contains(&"continue-offline@installer".into()));
+                assert_eq!(installed.target, "/dev/vdb");
+                assert_eq!(installed.composefs.as_deref(), Some("cafe"));
+                assert!(fake.calls.contains(&"begin@installer.review".to_string()));
+                assert_eq!(
+                    fake.calls.last().map(String::as_str),
+                    Some("power-off@installer")
+                );
+                assert!(
+                    !lines
+                        .iter()
+                        .any(|line| line.contains("scenario-passphrase")),
+                    "progress must never print the passphrase: {lines:?}"
+                );
+            }
+
+            {
+                let mut fake = FakeInstaller::new();
+                let mut chosen = choices(Unlock::Passphrase);
+                chosen.username = "bob".into();
+                chosen.filesystem = Some("ext4".into());
+                chosen.account_secret = Secret::new("account-password-for-testing");
+                chosen.disk_secret = Some(Secret::new("disk-passphrase-for-testing"));
+                let mut lines = Vec::new();
+                install(
+                    &mut fake,
+                    &chosen,
+                    Duration::from_secs(60),
+                    &mut NoWait(0),
+                    &mut |line| lines.push(line.to_owned()),
+                )
+                .unwrap();
+                assert!(fake.calls.contains(&"set-filesystem@installer".to_string()));
+                assert_eq!(
+                    fake.passphrase.as_deref(),
+                    Some("account-password-for-testing")
+                );
+                assert_eq!(
+                    fake.disk_passphrase.as_deref(),
+                    Some("disk-passphrase-for-testing")
+                );
+                assert!(fake.calls.contains(&"set-disk-passphrase@installer".into()));
+                assert!(!lines.iter().any(|line| {
+                    line.contains("account-password-for-testing")
+                        || line.contains("disk-passphrase-for-testing")
+                }));
+            }
+
+            {
+                let mut fake = FakeInstaller::new();
+                fake.step = "disk";
+                let installed = install(
+                    &mut fake,
+                    &choices(Unlock::Passphrase),
+                    Duration::from_secs(60),
+                    &mut NoWait(0),
+                    &mut |_| {},
+                )
+                .unwrap();
+                assert_eq!(installed.steps.first().map(String::as_str), Some("disk"));
+            }
+        }
+
+        phase the_installer_drive_fails_closed_instead_of_guessing;
+        {
+            {
+                let mut fake = FakeInstaller::new();
+                fake.install_polls = VecDeque::from(["running", "failed"]);
+                let error = install(
+                    &mut fake,
+                    &choices(Unlock::Passphrase),
+                    Duration::from_secs(60),
+                    &mut NoWait(0),
+                    &mut |_| {},
+                )
+                .unwrap_err();
+                assert!(matches!(error, DriveError::InstallFailed { .. }), "{error}");
+
+                let mut slow = FakeInstaller::new();
+                slow.install_polls = std::iter::repeat_n("running", 100).collect();
+                let mut pace = NoWait(0);
+                let error = install(
+                    &mut slow,
+                    &choices(Unlock::Passphrase),
+                    Duration::from_secs(20),
+                    &mut pace,
+                    &mut |_| {},
+                )
+                .unwrap_err();
+                assert!(matches!(error, DriveError::Timeout { .. }), "{error}");
+                assert!(pace.0 <= 5, "the loop is bounded by the time budget");
+            }
+
+            {
+                let mut fake = FakeInstaller::new();
+                let error = install(
+                    &mut fake,
+                    &choices(Unlock::TpmPin),
+                    Duration::from_secs(60),
+                    &mut NoWait(0),
+                    &mut |_| {},
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(&error, DriveError::Stuck { step, .. } if step == "account"),
+                    "{error}"
+                );
+                assert!(
+                    !fake.calls.contains(&"set-passphrase@installer".to_string()),
+                    "no secret may be sent under a policy the scenario did not ask for"
+                );
+            }
+
+            {
+                let one = json!({"storage": {"disks": [
+                    {"device": "/dev/vda", "installer_medium": true},
+                    {"device": "/dev/vdb", "installer_medium": false, "read_only": false},
+                ]}});
+                assert_eq!(choose_target(&one).unwrap(), "/dev/vdb");
+                let two = json!({"storage": {"disks": [
+                    {"device": "/dev/vdb"}, {"device": "/dev/vdc"},
+                ]}});
+                assert!(choose_target(&two).is_err());
+                let none =
+                    json!({"storage": {"disks": [{"device": "/dev/vda", "installer_medium": true}]}});
+                assert!(choose_target(&none).is_err());
+            }
         }
     }
 }

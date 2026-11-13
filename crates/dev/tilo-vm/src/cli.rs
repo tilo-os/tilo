@@ -1422,112 +1422,117 @@ pub enum SlotIdentity {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn shell_swap_accepts_explicit_frame_cpu_recording() {
-        let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell", "--frame-cpu-trace"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Swap {
-                frame_cpu_trace: true,
-                ..
-            })
-        ));
-        let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Swap {
-                frame_cpu_trace: false,
-                ..
-            })
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn swap_and_slot_create_take_their_flags;
 
-    #[test]
-    fn target_flag_works_before_and_after_swap() {
-        use clap::Parser as _;
-        for args in [
-            vec!["tilo-vm", "--target", "review", "swap", "tilo-session"],
-            vec!["tilo-vm", "swap", "tilo-session", "--target", "review"],
-        ] {
-            let cli = super::Cli::try_parse_from(args).unwrap();
-            assert_eq!(cli.target.as_deref(), Some("review"));
+        phase shell_swap_accepts_explicit_frame_cpu_recording;
+        {
+            let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell", "--frame-cpu-trace"]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Swap {
+                    frame_cpu_trace: true,
+                    ..
+                })
+            ));
+            let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell"]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Swap {
+                    frame_cpu_trace: false,
+                    ..
+                })
+            ));
+        }
+
+        phase target_flag_works_before_and_after_swap;
+        {
+            use clap::Parser as _;
+            for args in [
+                vec!["tilo-vm", "--target", "review", "swap", "tilo-session"],
+                vec!["tilo-vm", "swap", "tilo-session", "--target", "review"],
+            ] {
+                let cli = super::Cli::try_parse_from(args).unwrap();
+                assert_eq!(cli.target.as_deref(), Some("review"));
+            }
+        }
+
+        phase slot_create_takes_an_opt_in_identity;
+        {
+            let identity = |args: &[&str]| {
+                let cli = Cli::try_parse_from(args).unwrap();
+                let Some(Command::Slot(SlotCommand::Create { identity, .. })) = cli.command else {
+                    panic!("slot create did not parse");
+                };
+                identity
+            };
+            assert_eq!(
+                identity(&["tilo-vm", "slot", "create", "--headful", "--identity"]),
+                Some(SlotIdentity::Throwaway)
+            );
+            assert_eq!(
+                identity(&[
+                    "tilo-vm",
+                    "slot",
+                    "create",
+                    "acceptance",
+                    "--headful",
+                    "--identity",
+                    "device"
+                ]),
+                Some(SlotIdentity::Device)
+            );
+            assert_eq!(identity(&["tilo-vm", "slot", "create", "--headful"]), None);
+        }
+
+        phase outputs_need_a_headful_slot_and_parse_left_to_right;
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-vm",
+                "slot",
+                "create",
+                "--headful",
+                "--outputs",
+                "2560x1600@2,1920x1080",
+            ])
+            .unwrap();
+            let Some(Command::Slot(SlotCommand::Create { outputs, .. })) = cli.command else {
+                panic!("slot create did not parse");
+            };
+            assert_eq!(
+                tilo_vm_protocol::display::format_outputs(&outputs),
+                "2560x1600@2,1920x1080@1"
+            );
+            assert!(
+                Cli::try_parse_from(["tilo-vm", "slot", "create", "--outputs", "800x600"]).is_err()
+            );
+            let error = Cli::try_parse_from([
+                "tilo-vm",
+                "slot",
+                "create",
+                "--headful",
+                "--outputs",
+                "800x600@9",
+            ])
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("outside 0.5 to 4"), "{error}");
         }
     }
     use clap::CommandFactory;
 
     use super::*;
 
-    #[test]
-    fn slot_create_takes_an_opt_in_identity() {
-        let identity = |args: &[&str]| {
-            let cli = Cli::try_parse_from(args).unwrap();
-            let Some(Command::Slot(SlotCommand::Create { identity, .. })) = cli.command else {
-                panic!("slot create did not parse");
-            };
-            identity
-        };
-        assert_eq!(
-            identity(&["tilo-vm", "slot", "create", "--headful", "--identity"]),
-            Some(SlotIdentity::Throwaway)
-        );
-        assert_eq!(
-            identity(&[
-                "tilo-vm",
-                "slot",
-                "create",
-                "acceptance",
-                "--headful",
-                "--identity",
-                "device"
-            ]),
-            Some(SlotIdentity::Device)
-        );
-        assert_eq!(identity(&["tilo-vm", "slot", "create", "--headful"]), None);
-    }
+    tilo_test_env::scenario! {
+        /// Every slot command takes the slot flag, every argument says what it is, ages read like durations,
+        /// every subcommand has a purpose and examples, and only state-changing or long commands write receipts.
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+        )]
+        fn every_command_documents_its_arguments_purpose_and_receipts;
 
-    #[test]
-    fn outputs_need_a_headful_slot_and_parse_left_to_right() {
-        let cli = Cli::try_parse_from([
-            "tilo-vm",
-            "slot",
-            "create",
-            "--headful",
-            "--outputs",
-            "2560x1600@2,1920x1080",
-        ])
-        .unwrap();
-        let Some(Command::Slot(SlotCommand::Create { outputs, .. })) = cli.command else {
-            panic!("slot create did not parse");
-        };
-        assert_eq!(
-            tilo_vm_protocol::display::format_outputs(&outputs),
-            "2560x1600@2,1920x1080@1"
-        );
-        assert!(
-            Cli::try_parse_from(["tilo-vm", "slot", "create", "--outputs", "800x600"]).is_err()
-        );
-        let error = Cli::try_parse_from([
-            "tilo-vm",
-            "slot",
-            "create",
-            "--headful",
-            "--outputs",
-            "800x600@9",
-        ])
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("outside 0.5 to 4"), "{error}");
-    }
-
-    /// Every slot command takes the slot flag, every argument says what it is, ages read like durations,
-    /// every subcommand has a purpose and examples, and only state-changing or long commands write receipts.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    fn every_command_documents_its_arguments_purpose_and_receipts() {
-        // Phase: every_slot_command_takes_the_slot_flag.
+        phase every_slot_command_takes_the_slot_flag;
         {
             for args in [
                 &["tilo-vm", "rollback", "--slot", "a"][..],
@@ -1579,7 +1584,7 @@ mod tests {
             }
         }
 
-        // Phase: every_argument_says_what_it_is.
+        phase every_argument_says_what_it_is;
         {
             fn walk(command: &clap::Command, path: &str) {
                 for arg in command.get_arguments() {
@@ -1599,7 +1604,7 @@ mod tests {
             walk(&Cli::command(), "tilo-vm");
         }
 
-        // Phase: ages_read_like_durations.
+        phase ages_read_like_durations;
         {
             assert_eq!(parse_age("0"), Ok(0));
             assert_eq!(parse_age("90s"), Ok(90));
@@ -1622,7 +1627,7 @@ mod tests {
             ));
         }
 
-        // Phase: every_subcommand_has_a_purpose_and_examples.
+        phase every_subcommand_has_a_purpose_and_examples;
         {
             fn walk(command: &clap::Command, path: &str) {
                 for sub in command.get_subcommands() {
@@ -1645,7 +1650,7 @@ mod tests {
             walk(&Cli::command(), "tilo-vm");
         }
 
-        // Phase: only_state_changing_or_long_commands_write_receipts.
+        phase only_state_changing_or_long_commands_write_receipts;
         {
             let parse = |args: &[&str]| {
                 let mut all = vec!["tilo-vm"];
@@ -1690,16 +1695,17 @@ mod tests {
         }
     }
 
-    /// Swap usage shows the slot as an option and swap takes an optional slot; the install scenario takes
-    /// a medium, a layout and an unlock; upgrade takes one source and base options only with local; vm ssh
-    /// takes the VM like every other VM command.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    fn command_shapes_take_exactly_their_documented_options() {
-        // Phase: swap_usage_shows_the_slot_as_an_option.
+    tilo_test_env::scenario! {
+        /// Swap usage shows the slot as an option and swap takes an optional slot; the install scenario takes
+        /// a medium, a layout and an unlock; upgrade takes one source and base options only with local; vm ssh
+        /// takes the VM like every other VM command.
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+        )]
+        fn command_shapes_take_exactly_their_documented_options;
+
+        phase swap_usage_shows_the_slot_as_an_option;
         {
             let mut command = Cli::command();
             let swap = command.find_subcommand_mut("swap").unwrap();
@@ -1715,7 +1721,7 @@ mod tests {
             assert!(help.contains("dev-overrides"), "{help}");
         }
 
-        // Phase: vm_add_takes_a_name_and_an_address.
+        phase vm_add_takes_a_name_and_an_address;
         {
             let cli =
                 Cli::try_parse_from(["tilo-vm", "vm", "add", "opi", "--ssh", "root@10.0.0.108"])
@@ -1742,7 +1748,7 @@ mod tests {
             );
         }
 
-        // Phase: swap_takes_an_optional_slot.
+        phase swap_takes_an_optional_slot;
         {
             let cli = Cli::try_parse_from(["tilo-vm", "swap", "tilo-session"]).unwrap();
             assert!(
@@ -1798,7 +1804,7 @@ mod tests {
             assert!(Cli::try_parse_from(["tilo-vm"]).unwrap().command.is_none());
         }
 
-        // Phase: the_install_scenario_takes_a_medium_a_layout_and_an_unlock.
+        phase the_install_scenario_takes_a_medium_a_layout_and_an_unlock;
         {
             let cli = Cli::try_parse_from([
                 "tilo-vm",
@@ -1873,7 +1879,7 @@ mod tests {
             }
         }
 
-        // Phase: upgrade_takes_one_source_and_base_options_only_with_local.
+        phase upgrade_takes_one_source_and_base_options_only_with_local;
         {
             let cli = Cli::try_parse_from([
                 "tilo-vm",
@@ -1933,7 +1939,7 @@ mod tests {
             ));
         }
 
-        // Phase: vm_ssh_takes_the_vm_like_every_other_vm_command.
+        phase vm_ssh_takes_the_vm_like_every_other_vm_command;
         {
             let words = |w: &[&str]| w.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
             assert_eq!(

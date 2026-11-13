@@ -89,113 +89,117 @@ for line in sys.stdin:
  print(json.dumps({"jsonrpc":"2.0","id":request['id'],"result":result}),flush=True)
 "#;
 
-    #[test]
-    fn native_import_verifies_provenance_without_build_wake_or_swap() {
-        for corrupt in ["no", "yes"] {
-            let dir = tempfile::tempdir().unwrap();
-            let log = dir.path().join("calls");
-            let hash = "a".repeat(64);
-            let line = CommandLine::new("python3", &["-c", PEER])
-                .arg(hash.clone())
-                .arg(corrupt)
-                .arg(log.display().to_string())
-                .arg(tilo_vm_protocol::PROTOCOL_VERSION.to_string());
-            let (mut remote, _) = Remote::over_peer("test", &line).unwrap();
-            let mut archive = tempfile::NamedTempFile::new().unwrap();
-            std::io::Write::write_all(&mut archive, b"actual frozen bytes").unwrap();
-            std::io::Seek::rewind(&mut archive).unwrap();
-            let mut provenance = tilo_vm_protocol::Provenance::local("launcher");
-            provenance.source_commit = Some("b".repeat(40));
-            let mut prepared = Prepared {
-                archive,
-                provenance,
-                hash: hash.clone(),
-            };
-            let result = import(&mut remote, &mut prepared);
-            if corrupt == "yes" {
-                assert!(
-                    result.is_err(),
-                    "a changed producer must not be reported as imported"
+    tilo_test_env::scenario! {
+        fn a_local_layer_is_imported_only_as_verified;
+
+        phase native_import_verifies_provenance_without_build_wake_or_swap;
+        {
+            for corrupt in ["no", "yes"] {
+                let dir = tempfile::tempdir().unwrap();
+                let log = dir.path().join("calls");
+                let hash = "a".repeat(64);
+                let line = CommandLine::new("python3", &["-c", PEER])
+                    .arg(hash.clone())
+                    .arg(corrupt)
+                    .arg(log.display().to_string())
+                    .arg(tilo_vm_protocol::PROTOCOL_VERSION.to_string());
+                let (mut remote, _) = Remote::over_peer("test", &line).unwrap();
+                let mut archive = tempfile::NamedTempFile::new().unwrap();
+                std::io::Write::write_all(&mut archive, b"actual frozen bytes").unwrap();
+                std::io::Seek::rewind(&mut archive).unwrap();
+                let mut provenance = tilo_vm_protocol::Provenance::local("launcher");
+                provenance.source_commit = Some("b".repeat(40));
+                let mut prepared = Prepared {
+                    archive,
+                    provenance,
+                    hash: hash.clone(),
+                };
+                let result = import(&mut remote, &mut prepared);
+                if corrupt == "yes" {
+                    assert!(
+                        result.is_err(),
+                        "a changed producer must not be reported as imported"
+                    );
+                } else {
+                    assert_eq!(result.unwrap(), (hash, false));
+                }
+                let calls = std::fs::read_to_string(log).unwrap();
+                assert_eq!(
+                    calls,
+                    "hello\nlayer.upload.begin\nlayer.upload.chunk\nlayer.import\nlayer.verify\n"
                 );
-            } else {
-                assert_eq!(result.unwrap(), (hash, false));
             }
-            let calls = std::fs::read_to_string(log).unwrap();
-            assert_eq!(
-                calls,
-                "hello\nlayer.upload.begin\nlayer.upload.chunk\nlayer.import\nlayer.verify\n"
-            );
         }
-    }
 
-    #[test]
-    fn local_layer_import_refuses_changed_content_and_unavailable_verification() {
-        for mode in ["content", "unsupported"] {
-            let dir = tempfile::tempdir().unwrap();
-            let log = dir.path().join("calls");
-            let hash = "a".repeat(64);
-            let line = CommandLine::new("python3", &["-c", PEER])
-                .arg(hash.clone())
-                .arg(mode)
-                .arg(log.display().to_string())
-                .arg(tilo_vm_protocol::PROTOCOL_VERSION.to_string());
-            let (mut remote, _) = Remote::over_peer("test", &line).unwrap();
-            let mut archive = tempfile::NamedTempFile::new().unwrap();
-            std::io::Write::write_all(&mut archive, b"frozen bytes").unwrap();
-            std::io::Seek::rewind(&mut archive).unwrap();
-            let mut prepared = Prepared {
-                archive,
-                provenance: tilo_vm_protocol::Provenance::local("launcher"),
-                hash,
+        phase local_layer_import_refuses_changed_content_and_unavailable_verification;
+        {
+            for mode in ["content", "unsupported"] {
+                let dir = tempfile::tempdir().unwrap();
+                let log = dir.path().join("calls");
+                let hash = "a".repeat(64);
+                let line = CommandLine::new("python3", &["-c", PEER])
+                    .arg(hash.clone())
+                    .arg(mode)
+                    .arg(log.display().to_string())
+                    .arg(tilo_vm_protocol::PROTOCOL_VERSION.to_string());
+                let (mut remote, _) = Remote::over_peer("test", &line).unwrap();
+                let mut archive = tempfile::NamedTempFile::new().unwrap();
+                std::io::Write::write_all(&mut archive, b"frozen bytes").unwrap();
+                std::io::Seek::rewind(&mut archive).unwrap();
+                let mut prepared = Prepared {
+                    archive,
+                    provenance: tilo_vm_protocol::Provenance::local("launcher"),
+                    hash,
+                };
+                let error = import(&mut remote, &mut prepared).unwrap_err();
+                let calls = std::fs::read_to_string(log).unwrap();
+                let prefix = "hello\nlayer.upload.begin\nlayer.upload.chunk\nlayer.import\n";
+                if mode == "content" {
+                    assert!(error.to_string().contains("differs"), "{error}");
+                    assert_eq!(calls, prefix);
+                } else {
+                    assert!(error.to_string().contains("unavailable"), "{error}");
+                    assert_eq!(calls, format!("{prefix}layer.verify\n"));
+                }
+            }
+        }
+
+        phase local_layer_import_cli_requires_pinned_inputs_and_explains_application;
+        {
+            use crate::cli::{Cli, Command};
+            use clap::{CommandFactory, Parser};
+
+            let args = [
+                "tilo-vm",
+                "import-layer",
+                "launcher",
+                "--archive",
+                "launcher.tar",
+                "--archive-sha256",
+                "producer-hash",
+                "--provenance",
+                "launcher.json",
+                "--manifest",
+                "os/components.toml",
+            ];
+            let parsed = Cli::try_parse_from(args).unwrap();
+            let Some(Command::ImportLayer(request)) = parsed.command else {
+                panic!("import-layer did not reach its maintained command");
             };
-            let error = import(&mut remote, &mut prepared).unwrap_err();
-            let calls = std::fs::read_to_string(log).unwrap();
-            let prefix = "hello\nlayer.upload.begin\nlayer.upload.chunk\nlayer.import\n";
-            if mode == "content" {
-                assert!(error.to_string().contains("differs"), "{error}");
-                assert_eq!(calls, prefix);
-            } else {
-                assert!(error.to_string().contains("unavailable"), "{error}");
-                assert_eq!(calls, format!("{prefix}layer.verify\n"));
-            }
+            assert_eq!(request.component, "launcher");
+            assert_eq!(request.archive_sha256, "producer-hash");
+            assert!(Cli::try_parse_from(&args[..5]).is_err());
+            let mut command = Cli::command();
+            let help = command
+                .find_subcommand_mut("import-layer")
+                .unwrap()
+                .render_long_help()
+                .to_string();
+            assert!(
+                help.contains("without building, waking or swapping"),
+                "{help}"
+            );
+            assert!(help.contains("--from layer:<hash>"), "{help}");
         }
-    }
-
-    #[test]
-    fn local_layer_import_cli_requires_pinned_inputs_and_explains_application() {
-        use crate::cli::{Cli, Command};
-        use clap::{CommandFactory, Parser};
-
-        let args = [
-            "tilo-vm",
-            "import-layer",
-            "launcher",
-            "--archive",
-            "launcher.tar",
-            "--archive-sha256",
-            "producer-hash",
-            "--provenance",
-            "launcher.json",
-            "--manifest",
-            "os/components.toml",
-        ];
-        let parsed = Cli::try_parse_from(args).unwrap();
-        let Some(Command::ImportLayer(request)) = parsed.command else {
-            panic!("import-layer did not reach its maintained command");
-        };
-        assert_eq!(request.component, "launcher");
-        assert_eq!(request.archive_sha256, "producer-hash");
-        assert!(Cli::try_parse_from(&args[..5]).is_err());
-        let mut command = Cli::command();
-        let help = command
-            .find_subcommand_mut("import-layer")
-            .unwrap()
-            .render_long_help()
-            .to_string();
-        assert!(
-            help.contains("without building, waking or swapping"),
-            "{help}"
-        );
-        assert!(help.contains("--from layer:<hash>"), "{help}");
     }
 }

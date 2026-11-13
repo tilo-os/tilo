@@ -399,120 +399,124 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn add_device_checks_root_daemon_and_toolchain_and_names_each_fix() {
-        let board = r#"{"schema_version": 1, "id": "lenovo-83ed", "architecture": "aarch64"}"#;
-        let output = format!(
-            "motd line\nuser=me\nsudo=no sudo: a password is required\ntilo-vmd=yes\nbootc=yes\narch=aarch64\n@@board\n{board}\n"
-        );
-        let probe = parse_probe(&output);
-        assert_eq!(probe.user.as_deref(), Some("me"));
-        assert_eq!(probe.root, Err("a password is required".into()));
-        assert!(probe.tilo_vmd && probe.bootc);
-        assert_eq!(probe.arch.as_deref(), Some("aarch64"));
-        assert_eq!(probe.board.as_deref(), Some("lenovo-83ed"));
-        assert_eq!(
-            parse_probe("user=root\nsudo=root\ntilo-vmd=no\nbootc=no\narch=x86_64\n@@board\n").root,
-            Ok(true)
-        );
-        assert_eq!(parse_probe("user=me\nsudo=ok\n@@board\n").board, None);
+    tilo_test_env::scenario! {
+        fn adding_a_device_checks_it_and_grants_sudo_once;
 
-        let checks = device_checks(&endpoint("me"), &probe, None);
-        assert!(!usable(&checks));
-        let root = checks.iter().find(|c| c.check == "root").unwrap();
-        assert_eq!(root.state, "fail");
-        let fix = root.fix.as_deref().unwrap();
-        assert!(
-            fix.contains("--grant-sudo") && fix.contains("/etc/sudoers.d/tilo-vm-me"),
-            "{fix}"
-        );
-        assert!(fix.contains("--ssh root@10.0.0.223"), "{fix}");
-        let daemon = checks.iter().find(|c| c.check == "tilo-vmd").unwrap();
-        assert_eq!(daemon.state, "fail");
+        phase add_device_checks_root_daemon_and_toolchain_and_names_each_fix;
+        {
+            let board = r#"{"schema_version": 1, "id": "lenovo-83ed", "architecture": "aarch64"}"#;
+            let output = format!(
+                "motd line\nuser=me\nsudo=no sudo: a password is required\ntilo-vmd=yes\nbootc=yes\narch=aarch64\n@@board\n{board}\n"
+            );
+            let probe = parse_probe(&output);
+            assert_eq!(probe.user.as_deref(), Some("me"));
+            assert_eq!(probe.root, Err("a password is required".into()));
+            assert!(probe.tilo_vmd && probe.bootc);
+            assert_eq!(probe.arch.as_deref(), Some("aarch64"));
+            assert_eq!(probe.board.as_deref(), Some("lenovo-83ed"));
+            assert_eq!(
+                parse_probe("user=root\nsudo=root\ntilo-vmd=no\nbootc=no\narch=x86_64\n@@board\n").root,
+                Ok(true)
+            );
+            assert_eq!(parse_probe("user=me\nsudo=ok\n@@board\n").board, None);
 
-        let probe = Probe {
-            root: Ok(false),
-            ..probe
-        };
-        let answered = Ok(hello());
-        let checks = device_checks(&endpoint("me"), &probe, Some(&answered));
-        assert!(usable(&checks), "{checks:?}");
-        let bootc = checks.iter().find(|c| c.check == "bootc").unwrap();
-        assert!(
-            bootc.detail.contains("lenovo-83ed board image"),
-            "{}",
-            bootc.detail
-        );
-        assert_eq!(
-            checks
-                .iter()
-                .find(|c| c.check == "toolchain")
-                .unwrap()
-                .state,
-            "ok"
-        );
+            let checks = device_checks(&endpoint("me"), &probe, None);
+            assert!(!usable(&checks));
+            let root = checks.iter().find(|c| c.check == "root").unwrap();
+            assert_eq!(root.state, "fail");
+            let fix = root.fix.as_deref().unwrap();
+            assert!(
+                fix.contains("--grant-sudo") && fix.contains("/etc/sudoers.d/tilo-vm-me"),
+                "{fix}"
+            );
+            assert!(fix.contains("--ssh root@10.0.0.223"), "{fix}");
+            let daemon = checks.iter().find(|c| c.check == "tilo-vmd").unwrap();
+            assert_eq!(daemon.state, "fail");
 
-        let mut thin = hello();
-        thin.tools.cargo = false;
-        let checks = device_checks(&endpoint("me"), &probe, Some(&Ok(thin)));
-        assert!(usable(&checks));
-        let toolchain = checks.iter().find(|c| c.check == "toolchain").unwrap();
-        assert_eq!(toolchain.state, "warn");
-        let no_daemon = Probe {
-            tilo_vmd: false,
-            ..probe.clone()
-        };
-        let checks = device_checks(&endpoint("me"), &no_daemon, None);
-        assert!(!usable(&checks));
-        let refused = Err(CliError::ProtocolMismatch {
-            vm: "yoga".into(),
-            client: 6,
-            daemon: 5,
-            bootc: Some(true),
-        });
-        let checks = device_checks(&endpoint("me"), &probe, Some(&refused));
-        assert!(usable(&checks));
-        let daemon = checks.iter().find(|c| c.check == "tilo-vmd").unwrap();
-        assert_eq!(daemon.state, "warn");
-        assert!(
-            daemon
-                .fix
-                .as_deref()
-                .unwrap()
-                .contains("tilo-vm vm upgrade yoga ")
-        );
-        let newer = Err(CliError::ProtocolMismatch {
-            vm: "yoga".into(),
-            client: 5,
-            daemon: 6,
-            bootc: Some(true),
-        });
-        assert!(!usable(&device_checks(
-            &endpoint("me"),
-            &probe,
-            Some(&newer)
-        )));
-    }
+            let probe = Probe {
+                root: Ok(false),
+                ..probe
+            };
+            let answered = Ok(hello());
+            let checks = device_checks(&endpoint("me"), &probe, Some(&answered));
+            assert!(usable(&checks), "{checks:?}");
+            let bootc = checks.iter().find(|c| c.check == "bootc").unwrap();
+            assert!(
+                bootc.detail.contains("lenovo-83ed board image"),
+                "{}",
+                bootc.detail
+            );
+            assert_eq!(
+                checks
+                    .iter()
+                    .find(|c| c.check == "toolchain")
+                    .unwrap()
+                    .state,
+                "ok"
+            );
 
-    #[test]
-    fn granting_sudo_writes_one_checked_drop_in() {
-        let line = grant_sudo_line("bob").unwrap();
-        assert!(line.starts_with("sudo -- sh -c '"), "{line}");
-        assert!(line.contains("bob ALL=(ALL) NOPASSWD: ALL"), "{line}");
-        assert!(
-            line.contains("visudo -cqf /etc/sudoers.d/tilo-vm-bob.new && mv /etc/sudoers.d/tilo-vm-bob.new /etc/sudoers.d/tilo-vm-bob"),
-            "{line}"
-        );
-        assert_eq!(line.matches('\'').count(), 2, "{line}");
-        for bad in ["", "Root", "a b", "x;rm", "a'b", &"x".repeat(33)] {
-            assert!(grant_sudo_line(bad).is_err(), "{bad}");
+            let mut thin = hello();
+            thin.tools.cargo = false;
+            let checks = device_checks(&endpoint("me"), &probe, Some(&Ok(thin)));
+            assert!(usable(&checks));
+            let toolchain = checks.iter().find(|c| c.check == "toolchain").unwrap();
+            assert_eq!(toolchain.state, "warn");
+            let no_daemon = Probe {
+                tilo_vmd: false,
+                ..probe.clone()
+            };
+            let checks = device_checks(&endpoint("me"), &no_daemon, None);
+            assert!(!usable(&checks));
+            let refused = Err(CliError::ProtocolMismatch {
+                vm: "yoga".into(),
+                client: 6,
+                daemon: 5,
+                bootc: Some(true),
+            });
+            let checks = device_checks(&endpoint("me"), &probe, Some(&refused));
+            assert!(usable(&checks));
+            let daemon = checks.iter().find(|c| c.check == "tilo-vmd").unwrap();
+            assert_eq!(daemon.state, "warn");
+            assert!(
+                daemon
+                    .fix
+                    .as_deref()
+                    .unwrap()
+                    .contains("tilo-vm vm upgrade yoga ")
+            );
+            let newer = Err(CliError::ProtocolMismatch {
+                vm: "yoga".into(),
+                client: 5,
+                daemon: 6,
+                bootc: Some(true),
+            });
+            assert!(!usable(&device_checks(
+                &endpoint("me"),
+                &probe,
+                Some(&newer)
+            )));
         }
-        let probe = probe_command(&endpoint("me"), Some("/k/yoga"));
-        let last = probe.args.last().unwrap();
-        assert!(last.starts_with("sh -c '"), "{last}");
-        assert!(
-            !probe.args.iter().any(|a| a == "sudo"),
-            "the probe runs as the login user"
-        );
+
+        phase granting_sudo_writes_one_checked_drop_in;
+        {
+            let line = grant_sudo_line("bob").unwrap();
+            assert!(line.starts_with("sudo -- sh -c '"), "{line}");
+            assert!(line.contains("bob ALL=(ALL) NOPASSWD: ALL"), "{line}");
+            assert!(
+                line.contains("visudo -cqf /etc/sudoers.d/tilo-vm-bob.new && mv /etc/sudoers.d/tilo-vm-bob.new /etc/sudoers.d/tilo-vm-bob"),
+                "{line}"
+            );
+            assert_eq!(line.matches('\'').count(), 2, "{line}");
+            for bad in ["", "Root", "a b", "x;rm", "a'b", &"x".repeat(33)] {
+                assert!(grant_sudo_line(bad).is_err(), "{bad}");
+            }
+            let probe = probe_command(&endpoint("me"), Some("/k/yoga"));
+            let last = probe.args.last().unwrap();
+            assert!(last.starts_with("sh -c '"), "{last}");
+            assert!(
+                !probe.args.iter().any(|a| a == "sudo"),
+                "the probe runs as the login user"
+            );
+        }
     }
 }

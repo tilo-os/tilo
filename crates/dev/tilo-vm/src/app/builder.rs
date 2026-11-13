@@ -503,162 +503,166 @@ for line in sys.stdin:
         Ok((packed, framed))
     }
 
-    #[test]
-    fn remote_cache_exact_content_skips_archive_and_upload() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
-        std::fs::write(dir.path().join("usr/bin/shell"), b"fixture payload").unwrap();
-        let hash = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
-        let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&hash)).unwrap();
-        assert!(packed.reused);
-        assert!(!String::from_utf8_lossy(&framed).contains(builderlayer::DATA));
-        let log = dir.path().join("calls");
-        let mut remote = cache_peer(&hash, "valid", &log).unwrap();
-        assert_eq!(
-            verified_layers(&mut remote, "shell").unwrap(),
-            vec![hash.clone()]
-        );
-        validate_header(
-            &packed,
-            "shell",
-            "source-proof",
-            "x86_64",
-            std::slice::from_ref(&hash),
-        )
-        .unwrap();
-        let mut stream = Stream::new(framed.as_slice());
-        stream.header(&mut Vec::new()).unwrap();
-        assert_eq!(
-            deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).unwrap(),
-            Delivery::Reused(hash)
-        );
-        assert_eq!(
-            std::fs::read_to_string(log).unwrap(),
-            "hello\nlayer.list\nlayer.verify\nlayer.verify\n"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_remote_layer_cache_is_used_only_for_verified_identical_content;
 
-    #[test]
-    fn remote_cache_changed_content_streams_normally() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
-        let file = dir.path().join("usr/bin/shell");
-        std::fs::write(&file, b"old payload").unwrap();
-        let old = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
-        std::fs::write(&file, b"new payload").unwrap();
-        let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&old)).unwrap();
-        assert!(!packed.reused);
-        assert_ne!(packed.layer_hash.as_deref(), Some(old.as_str()));
-        let log = dir.path().join("calls");
-        let mut remote = cache_peer(&old, "valid", &log).unwrap();
-        let mut stream = Stream::new(framed.as_slice());
-        stream.header(&mut Vec::new()).unwrap();
-        assert_eq!(
-            deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).unwrap(),
-            Delivery::Uploaded("fixture".into())
-        );
-        assert!(
-            std::fs::read_to_string(log)
-                .unwrap()
-                .contains("layer.upload.chunk")
-        );
-    }
-
-    #[test]
-    fn an_identical_layer_with_an_older_build_claim_is_sent_again() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
-        std::fs::write(dir.path().join("usr/bin/shell"), b"fixture payload").unwrap();
-        let hash = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
-        let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&hash)).unwrap();
-        let log = dir.path().join("calls");
-        let mut remote = cache_peer(&hash, "stale-declaration", &log).unwrap();
-        let mut stream = Stream::new(framed.as_slice());
-        stream.header(&mut Vec::new()).unwrap();
-        let mut claim = claim();
-        claim.interfaces.insert("runtime".into(), 18);
-        assert_eq!(
-            deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim).unwrap(),
-            Delivery::Invalidated,
-            "the daemon records another declaration for these bytes, so they travel again with this tree's claim"
-        );
-    }
-
-    #[test]
-    fn remote_cache_invalid_peer_falls_back_and_stale_offer_is_invalidated() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
-        std::fs::write(dir.path().join("usr/bin/shell"), b"fixture payload").unwrap();
-        let hash = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
-        let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&hash)).unwrap();
-        for mode in ["missing", "corrupt", "old", "wrong-component", "wrong-arch"] {
-            let log = dir.path().join(mode);
-            let mut remote = cache_peer(&hash, mode, &log).unwrap();
-            assert!(verified_layers(&mut remote, "shell").unwrap().is_empty());
+        phase remote_cache_exact_content_skips_archive_and_upload;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+            std::fs::write(dir.path().join("usr/bin/shell"), b"fixture payload").unwrap();
+            let hash = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
+            let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&hash)).unwrap();
+            assert!(packed.reused);
+            assert!(!String::from_utf8_lossy(&framed).contains(builderlayer::DATA));
+            let log = dir.path().join("calls");
+            let mut remote = cache_peer(&hash, "valid", &log).unwrap();
+            assert_eq!(
+                verified_layers(&mut remote, "shell").unwrap(),
+                vec![hash.clone()]
+            );
+            validate_header(
+                &packed,
+                "shell",
+                "source-proof",
+                "x86_64",
+                std::slice::from_ref(&hash),
+            )
+            .unwrap();
             let mut stream = Stream::new(framed.as_slice());
             stream.header(&mut Vec::new()).unwrap();
             assert_eq!(
                 deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).unwrap(),
-                Delivery::Invalidated
+                Delivery::Reused(hash)
             );
-            assert!(
-                !std::fs::read_to_string(log)
-                    .unwrap()
-                    .contains("layer.upload")
+            assert_eq!(
+                std::fs::read_to_string(log).unwrap(),
+                "hello\nlayer.list\nlayer.verify\nlayer.verify\n"
             );
         }
-    }
 
-    #[test]
-    fn remote_cache_refuses_foreign_source_architecture_and_unoffered_hash() {
-        let packed = builderlayer::Packed {
-            component: "shell".into(),
-            target: Some("x86_64-unknown-linux-gnu".into()),
-            source_digest: Some("source-proof".into()),
-            layer_hash: Some("a".repeat(64)),
-            reused: true,
-            ..builderlayer::Packed::default()
-        };
-        let offered = vec!["a".repeat(64)];
-        assert!(validate_header(&packed, "shell", "other-source", "x86_64", &offered).is_err());
-        assert!(validate_header(&packed, "shell", "source-proof", "aarch64", &offered).is_err());
-        assert!(
-            validate_header(
-                &packed,
-                "other-component",
-                "source-proof",
-                "x86_64",
-                &offered
+        phase remote_cache_changed_content_streams_normally;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+            let file = dir.path().join("usr/bin/shell");
+            std::fs::write(&file, b"old payload").unwrap();
+            let old = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
+            std::fs::write(&file, b"new payload").unwrap();
+            let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&old)).unwrap();
+            assert!(!packed.reused);
+            assert_ne!(packed.layer_hash.as_deref(), Some(old.as_str()));
+            let log = dir.path().join("calls");
+            let mut remote = cache_peer(&old, "valid", &log).unwrap();
+            let mut stream = Stream::new(framed.as_slice());
+            stream.header(&mut Vec::new()).unwrap();
+            assert_eq!(
+                deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).unwrap(),
+                Delivery::Uploaded("fixture".into())
+            );
+            assert!(
+                std::fs::read_to_string(log)
+                    .unwrap()
+                    .contains("layer.upload.chunk")
+            );
+        }
+
+        phase an_identical_layer_with_an_older_build_claim_is_sent_again;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+            std::fs::write(dir.path().join("usr/bin/shell"), b"fixture payload").unwrap();
+            let hash = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
+            let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&hash)).unwrap();
+            let log = dir.path().join("calls");
+            let mut remote = cache_peer(&hash, "stale-declaration", &log).unwrap();
+            let mut stream = Stream::new(framed.as_slice());
+            stream.header(&mut Vec::new()).unwrap();
+            let mut claim = claim();
+            claim.interfaces.insert("runtime".into(), 18);
+            assert_eq!(
+                deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim).unwrap(),
+                Delivery::Invalidated,
+                "the daemon records another declaration for these bytes, so they travel again with this tree's claim"
+            );
+        }
+
+        phase remote_cache_invalid_peer_falls_back_and_stale_offer_is_invalidated;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+            std::fs::write(dir.path().join("usr/bin/shell"), b"fixture payload").unwrap();
+            let hash = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
+            let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&hash)).unwrap();
+            for mode in ["missing", "corrupt", "old", "wrong-component", "wrong-arch"] {
+                let log = dir.path().join(mode);
+                let mut remote = cache_peer(&hash, mode, &log).unwrap();
+                assert!(verified_layers(&mut remote, "shell").unwrap().is_empty());
+                let mut stream = Stream::new(framed.as_slice());
+                stream.header(&mut Vec::new()).unwrap();
+                assert_eq!(
+                    deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).unwrap(),
+                    Delivery::Invalidated
+                );
+                assert!(
+                    !std::fs::read_to_string(log)
+                        .unwrap()
+                        .contains("layer.upload")
+                );
+            }
+        }
+
+        phase remote_cache_refuses_foreign_source_architecture_and_unoffered_hash;
+        {
+            let packed = builderlayer::Packed {
+                component: "shell".into(),
+                target: Some("x86_64-unknown-linux-gnu".into()),
+                source_digest: Some("source-proof".into()),
+                layer_hash: Some("a".repeat(64)),
+                reused: true,
+                ..builderlayer::Packed::default()
+            };
+            let offered = vec!["a".repeat(64)];
+            assert!(validate_header(&packed, "shell", "other-source", "x86_64", &offered).is_err());
+            assert!(validate_header(&packed, "shell", "source-proof", "aarch64", &offered).is_err());
+            assert!(
+                validate_header(
+                    &packed,
+                    "other-component",
+                    "source-proof",
+                    "x86_64",
+                    &offered
+                )
+                .is_err()
+            );
+            assert!(validate_header(&packed, "shell", "source-proof", "x86_64", &[]).is_err());
+        }
+
+        phase remote_cache_refuses_missing_footer_and_unexpected_archive_data;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let log = dir.path().join("calls");
+            let mut remote = cache_peer(&"a".repeat(64), "valid", &log).unwrap();
+            let packed = builderlayer::Packed {
+                reused: true,
+                layer_hash: Some("a".repeat(64)),
+                ..builderlayer::Packed::default()
+            };
+            let mut cut = Stream::new(&b""[..]);
+            assert!(deliver_layer(&mut remote, &mut cut, &packed, "shell", &claim()).is_err());
+            let mut framed = Vec::new();
+            let mut lines = builderlayer::Lines::new(&mut framed);
+            std::io::Write::write_all(&mut lines, b"unexpected archive").unwrap();
+            let (sha, bytes) = lines.finish().unwrap();
+            std::io::Write::write_all(
+                &mut framed,
+                format!("{}{sha} {bytes}\n", builderlayer::END).as_bytes(),
             )
-            .is_err()
-        );
-        assert!(validate_header(&packed, "shell", "source-proof", "x86_64", &[]).is_err());
-    }
-
-    #[test]
-    fn remote_cache_refuses_missing_footer_and_unexpected_archive_data() {
-        let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("calls");
-        let mut remote = cache_peer(&"a".repeat(64), "valid", &log).unwrap();
-        let packed = builderlayer::Packed {
-            reused: true,
-            layer_hash: Some("a".repeat(64)),
-            ..builderlayer::Packed::default()
-        };
-        let mut cut = Stream::new(&b""[..]);
-        assert!(deliver_layer(&mut remote, &mut cut, &packed, "shell", &claim()).is_err());
-        let mut framed = Vec::new();
-        let mut lines = builderlayer::Lines::new(&mut framed);
-        std::io::Write::write_all(&mut lines, b"unexpected archive").unwrap();
-        let (sha, bytes) = lines.finish().unwrap();
-        std::io::Write::write_all(
-            &mut framed,
-            format!("{}{sha} {bytes}\n", builderlayer::END).as_bytes(),
-        )
-        .unwrap();
-        let mut stream = Stream::new(framed.as_slice());
-        assert!(deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).is_err());
-        assert_eq!(std::fs::read_to_string(log).unwrap(), "hello\n");
+            .unwrap();
+            let mut stream = Stream::new(framed.as_slice());
+            assert!(deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).is_err());
+            assert_eq!(std::fs::read_to_string(log).unwrap(), "hello\n");
+        }
     }
 
     #[test]

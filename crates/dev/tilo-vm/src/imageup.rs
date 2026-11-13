@@ -926,280 +926,501 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn local_tag_is_latest_unless_named() {
-        assert_eq!(parse_local_tag(None).unwrap(), "latest");
-        assert_eq!(parse_local_tag(Some("")).unwrap(), "latest");
-        assert_eq!(parse_local_tag(Some("wt-2_a.b")).unwrap(), "wt-2_a.b");
-        assert_eq!(
-            parse_local_tag(Some(&"a".repeat(128))).unwrap(),
-            "a".repeat(128)
-        );
-        for bad in [".x", "-x", "a/b", "a:b", "a b", &"a".repeat(129)] {
-            assert!(parse_local_tag(Some(bad)).is_err(), "{bad}");
-        }
-    }
+    tilo_test_env::scenario! {
+        fn upgrade_sources_resolve_to_labelled_dev_images;
 
-    #[test]
-    fn image_upgrades_accept_only_fresh_labelled_dev_images() {
+        phase local_tag_is_latest_unless_named;
         {
+            assert_eq!(parse_local_tag(None).unwrap(), "latest");
+            assert_eq!(parse_local_tag(Some("")).unwrap(), "latest");
+            assert_eq!(parse_local_tag(Some("wt-2_a.b")).unwrap(), "wt-2_a.b");
             assert_eq!(
-                parse_from("local", None).unwrap(),
-                UpgradeFrom::Local {
-                    image: local_dev_image().unwrap(),
-                    build: true
-                }
+                parse_local_tag(Some(&"a".repeat(128))).unwrap(),
+                "a".repeat(128)
             );
-            assert_eq!(
-                parse_from("local:localhost/tilo-vm:mine", None).unwrap(),
-                UpgradeFrom::Local {
-                    image: "localhost/tilo-vm:mine".to_owned(),
-                    build: false
+            for bad in [".x", "-x", "a/b", "a:b", "a b", &"a".repeat(129)] {
+                assert!(parse_local_tag(Some(bad)).is_err(), "{bad}");
+            }
+        }
+
+        phase image_upgrades_accept_only_fresh_labelled_dev_images;
+        {
+            {
+                assert_eq!(
+                    parse_from("local", None).unwrap(),
+                    UpgradeFrom::Local {
+                        image: local_dev_image().unwrap(),
+                        build: true
+                    }
+                );
+                assert_eq!(
+                    parse_from("local:localhost/tilo-vm:mine", None).unwrap(),
+                    UpgradeFrom::Local {
+                        image: "localhost/tilo-vm:mine".to_owned(),
+                        build: false
+                    }
+                );
+                for bad in ["local:", "ci:", "ci:a b", "sha:xyz", "worktree", "locally"] {
+                    let error = parse_from(bad, None).unwrap_err();
+                    assert!(
+                        error
+                            .hint()
+                            .contains("--from local:localhost/tilo-vm:<tag>")
+                            && error.hint().contains("--from ci:main-<sha7>"),
+                        "{bad}: {error}"
+                    );
                 }
-            );
-            for bad in ["local:", "ci:", "ci:a b", "sha:xyz", "worktree", "locally"] {
-                let error = parse_from(bad, None).unwrap_err();
+            }
+
+            {
+                for good in [
+                    "localhost/tilo-vm:latest",
+                    "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4",
+                    "localhost/tilo-vm@sha256:0123",
+                ] {
+                    assert!(is_dev_name(good), "{good}");
+                }
+                for bad in [
+                    "localhost/tilo:latest",
+                    "registry.tilo.so/tilo/tilo:main",
+                    "localhost/tilo-vm",
+                    "localhost/tilo-vmx:latest",
+                    "tilo-vm:latest",
+                ] {
+                    assert!(!is_dev_name(bad), "{bad}");
+                }
+            }
+
+            {
+                let error = check_image("localhost/tilo:latest", &dev_facts()).unwrap_err();
                 assert!(
-                    error
-                        .hint()
-                        .contains("--from local:localhost/tilo-vm:<tag>")
-                        && error.hint().contains("--from ci:main-<sha7>"),
-                    "{bad}: {error}"
+                    error.to_string().contains("not named as a dev image"),
+                    "{error}"
+                );
+                assert!(error.hint().contains("--from local"), "{}", error.hint());
+                assert_eq!(error.see().as_deref(), Some("tilo-vm guide images"));
+
+                let mut facts = dev_facts();
+                facts.flavour = None;
+                let error = check_image("localhost/tilo-vm:x", &facts).unwrap_err();
+                assert!(error.to_string().contains("label is missing"), "{error}");
+
+                let mut facts = dev_facts();
+                facts.sealed = true;
+                let error = check_image("localhost/tilo-vm:x", &facts).unwrap_err();
+                assert!(error.to_string().contains("sealed"), "{error}");
+
+                check_image("localhost/tilo-vm:x", &dev_facts()).unwrap();
+            }
+
+            {
+                let base = |digest: &str, created: &str| json!({ "image_digest": digest, "base_created": created, "base_image": "localhost/tilo:latest" });
+                let running = base("sha256:aa", "2026-09-20T10:00:00Z");
+                let older = base("sha256:bb", "2026-09-01T10:00:00Z");
+                let newer = base("sha256:cc", "2026-09-21T10:00:00Z");
+                let error = check_base_age("localhost/tilo-vm:latest", Some(&running), Some(&older))
+                    .unwrap_err();
+                assert!(matches!(error, CliError::BaseOlder { .. }), "{error}");
+                assert!(
+                    error.hint().contains("--allow-older-base"),
+                    "{}",
+                    error.hint()
+                );
+                assert_eq!(
+                    check_base_age("i", Some(&running), Some(&newer)).unwrap(),
+                    None
+                );
+                assert_eq!(
+                    check_base_age("i", Some(&running), Some(&running)).unwrap(),
+                    None
+                );
+                let note = check_base_age(
+                    "i",
+                    Some(&json!({"image_digest": "sha256:aa"})),
+                    Some(&newer),
+                )
+                .unwrap()
+                .unwrap();
+                assert!(note.contains("the VM's image"), "{note}");
+            }
+        }
+
+        phase built_layout_facts_read_as_the_images_own;
+        {
+            let inspect = "[{\"Id\": \"abc\", \"RepoTags\": [\"localhost/tilo-vm:latest\"], \"Labels\": {\"sh.tilo.image.flavour\": \"dev\"}}]\n";
+            let written = layout_facts_text(
+                inspect,
+                "{\"base_created\": \"2026-09-20T10:00:00Z\"}\n@@uki\n",
+            );
+            let (name, facts) = parse_layout_facts(&written).unwrap();
+            assert_eq!(name, "localhost/tilo-vm:latest");
+            assert_eq!(facts.id, "abc");
+            assert_eq!(facts.flavour.as_deref(), Some("dev"));
+            assert!(!facts.sealed);
+            assert_eq!(
+                text(facts.base.as_ref(), "base_created"),
+                Some("2026-09-20T10:00:00Z")
+            );
+            check_image(&name, &facts).unwrap();
+            let (_, sealed) =
+                parse_layout_facts(&layout_facts_text(inspect, "{}\n@@uki\ntilo.efi\n")).unwrap();
+            assert!(sealed.sealed);
+            assert!(parse_layout_facts(inspect).is_err());
+
+            let dir = tempfile::tempdir().unwrap();
+            assert!(!is_layout(dir.path()));
+            std::fs::write(dir.path().join("oci-layout"), "{}").unwrap();
+            std::fs::write(dir.path().join("index.json"), "{}").unwrap();
+            assert!(is_layout(dir.path()));
+            assert!(!is_layout(Path::new("registry.tilo.so/tilo/tilo-vm:main")));
+
+            assert!(is_already_booted(
+                "error: Switching: Composefs Switching: Target image has the same fs-verity digest as the existing Some(Booted) deployment."
+            ));
+            assert!(!is_already_booted(
+                "error: Switching: pulling: connection refused"
+            ));
+        }
+
+        phase a_pull_request_commit_resolves_through_its_ref_tags;
+        {
+            assert_eq!(ci_commit("main-1a2b3c4"), Some("1a2b3c4"));
+            assert_eq!(ci_commit("main-1a2b3c4-x86_64"), None);
+            assert_eq!(ci_commit("v1.2.3"), None);
+            let ci =
+                r#"{"Tags":["pr-12-1a2b3c4-x86_64","pr-12-1a2b3c4-aarch64","main-1a2b3c4x-x86_64"]}"#;
+            assert_eq!(
+                ci_ref_bases("1a2b3c4", "x86_64", None, ci),
+                vec!["registry.tilo.so/tilo/tilo-ci:pr-12-1a2b3c4-x86_64".to_owned()]
+            );
+            assert!(ci_ref_bases("1a2b3c4", "aarch64", None, "not json").is_empty());
+            // A board never takes a base to build from.
+            assert!(ci_ref_bases("1a2b3c4", "aarch64", Some("lenovo-83ed"), ci).is_empty());
+            assert_eq!(
+                list_tags_command("registry.tilo.so/tilo/tilo-vm").display(),
+                "skopeo list-tags docker://registry.tilo.so/tilo/tilo-vm"
+            );
+        }
+
+        phase ci_upgrade_sources_resolve_to_published_or_locally_built_dev_images;
+        {
+            {
+                assert_eq!(
+                    parse_from("ci:main-1a2b3c4", None).unwrap(),
+                    UpgradeFrom::Ci {
+                        tag: "main-1a2b3c4".into()
+                    }
+                );
+                assert_eq!(
+                    parse_from("sha:1A2B3C4D", None).unwrap(),
+                    UpgradeFrom::Ci {
+                        tag: "main-1a2b3c4".into()
+                    }
+                );
+            }
+
+            {
+                let expected = CiCandidates {
+                    dev_images: vec!["registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64".into()],
+                    bases: vec![
+                        "registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64".into(),
+                        "registry.tilo.so/tilo/tilo:main-1a2b3c4".into(),
+                    ],
+                };
+                assert_eq!(ci_candidates("main-1a2b3c4", "x86_64"), expected);
+                assert_eq!(ci_candidates("main-1a2b3c4-x86_64", "x86_64"), expected);
+                assert_eq!(ci_candidates("main-1a2b3c4-ci", "x86_64"), expected);
+                for image in expected.dev_images {
+                    assert!(is_dev_name(&image), "{image}");
+                }
+                let board = CiCandidates {
+                    dev_images: vec!["registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-lenovo-83ed".into()],
+                    bases: Vec::new(),
+                };
+                for tag in [
+                    "main-1a2b3c4",
+                    "main-1a2b3c4-ci",
+                    "main-1a2b3c4-lenovo-83ed",
+                ] {
+                    assert_eq!(board_candidates(tag, "lenovo-83ed"), board, "{tag}");
+                }
+                assert!(is_dev_name(&board.dev_images[0]));
+            }
+
+            {
+                assert!(is_auth_failure(
+                    "error: Switching: pulling: reading manifest main-1a2b3c4-lenovo-83ed: unauthorized: authentication required"
+                ));
+                assert!(!is_auth_failure(
+                    "error: Switching: pulling: connection refused"
+                ));
+                let copy = registry_export_command(
+                    "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-lenovo-83ed",
+                    "aarch64",
+                    Path::new("/c/images/yoga"),
+                    Path::new("/c/images/yoga.digest"),
+                );
+                assert_eq!(
+                    copy.display(),
+                    "skopeo copy --quiet --dest-oci-accept-uncompressed-layers --override-arch arm64 \
+                 --digestfile /c/images/yoga.digest docker://registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-lenovo-83ed \
+                 oci:/c/images/yoga:tilo-vm"
+                );
+                assert_eq!(
+                    registry_flavour(r#"{"Labels":{"sh.tilo.image.flavour":"dev"}}"#).as_deref(),
+                    Some("dev")
+                );
+                assert_eq!(registry_flavour(r#"{"Labels":null}"#), None);
+            }
+
+            {
+                let image = ci_dev_image("registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64");
+                assert_eq!(image, "localhost/tilo-vm:ci-main-1a2b3c4-x86_64");
+                assert!(is_dev_name(&image));
+                assert_eq!(
+                    exists_command("registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64").display(),
+                    "skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64"
                 );
             }
         }
+    }
 
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+        )]
+        fn the_guest_is_probed_and_the_image_staged_once;
+
+        phase bootcs_space_refusal_reads_as_plain_language;
         {
-            for good in [
-                "localhost/tilo-vm:latest",
-                "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4",
-                "localhost/tilo-vm@sha256:0123",
-            ] {
-                assert!(is_dev_name(good), "{good}");
-            }
-            for bad in [
-                "localhost/tilo:latest",
-                "registry.tilo.so/tilo/tilo:main",
-                "localhost/tilo-vm",
-                "localhost/tilo-vmx:latest",
-                "tilo-vm:latest",
-            ] {
-                assert!(!is_dev_name(bad), "{bad}");
-            }
-        }
-
-        {
-            let error = check_image("localhost/tilo:latest", &dev_facts()).unwrap_err();
-            assert!(
-                error.to_string().contains("not named as a dev image"),
-                "{error}"
-            );
-            assert!(error.hint().contains("--from local"), "{}", error.hint());
-            assert_eq!(error.see().as_deref(), Some("tilo-vm guide images"));
-
-            let mut facts = dev_facts();
-            facts.flavour = None;
-            let error = check_image("localhost/tilo-vm:x", &facts).unwrap_err();
-            assert!(error.to_string().contains("label is missing"), "{error}");
-
-            let mut facts = dev_facts();
-            facts.sealed = true;
-            let error = check_image("localhost/tilo-vm:x", &facts).unwrap_err();
-            assert!(error.to_string().contains("sealed"), "{error}");
-
-            check_image("localhost/tilo-vm:x", &dev_facts()).unwrap();
-        }
-
-        {
-            let base = |digest: &str, created: &str| json!({ "image_digest": digest, "base_created": created, "base_image": "localhost/tilo:latest" });
-            let running = base("sha256:aa", "2026-09-20T10:00:00Z");
-            let older = base("sha256:bb", "2026-09-01T10:00:00Z");
-            let newer = base("sha256:cc", "2026-09-21T10:00:00Z");
-            let error = check_base_age("localhost/tilo-vm:latest", Some(&running), Some(&older))
-                .unwrap_err();
-            assert!(matches!(error, CliError::BaseOlder { .. }), "{error}");
-            assert!(
-                error.hint().contains("--allow-older-base"),
-                "{}",
-                error.hint()
-            );
+            let stderr = "error: Switching: Composefs Switching: Performing Upgrade Operation: Insufficient free space for registry.tilo.so/tilo/tilo-vm:pr-4227-4ab5dcc-lenovo-83ed (available: 2.3 GB required: 5.2 GB)";
+            let (free, needed) = insufficient_space(stderr).unwrap();
+            assert_eq!((free.as_str(), needed.as_str()), ("2.3 GB", "5.2 GB"));
+            let error = CliError::NoSpace {
+                place: "VM yoga".into(),
+                free,
+                what: "the new OS image".into(),
+                needed,
+            };
             assert_eq!(
-                check_base_age("i", Some(&running), Some(&newer)).unwrap(),
+                error.to_string(),
+                "not enough space on VM yoga: the new OS image needs 5.2 GB, 2.3 GB is free"
+            );
+            assert!(error.hint().contains("reused"), "{}", error.hint());
+            assert_eq!(
+                insufficient_space("error: Switching: pulling: connection refused"),
                 None
             );
-            assert_eq!(
-                check_base_age("i", Some(&running), Some(&running)).unwrap(),
-                None
-            );
-            let note = check_base_age(
-                "i",
-                Some(&json!({"image_digest": "sha256:aa"})),
-                Some(&newer),
-            )
-            .unwrap()
-            .unwrap();
-            assert!(note.contains("the VM's image"), "{note}");
-        }
-    }
-
-    #[test]
-    fn built_layout_facts_read_as_the_images_own() {
-        let inspect = "[{\"Id\": \"abc\", \"RepoTags\": [\"localhost/tilo-vm:latest\"], \"Labels\": {\"sh.tilo.image.flavour\": \"dev\"}}]\n";
-        let written = layout_facts_text(
-            inspect,
-            "{\"base_created\": \"2026-09-20T10:00:00Z\"}\n@@uki\n",
-        );
-        let (name, facts) = parse_layout_facts(&written).unwrap();
-        assert_eq!(name, "localhost/tilo-vm:latest");
-        assert_eq!(facts.id, "abc");
-        assert_eq!(facts.flavour.as_deref(), Some("dev"));
-        assert!(!facts.sealed);
-        assert_eq!(
-            text(facts.base.as_ref(), "base_created"),
-            Some("2026-09-20T10:00:00Z")
-        );
-        check_image(&name, &facts).unwrap();
-        let (_, sealed) =
-            parse_layout_facts(&layout_facts_text(inspect, "{}\n@@uki\ntilo.efi\n")).unwrap();
-        assert!(sealed.sealed);
-        assert!(parse_layout_facts(inspect).is_err());
-
-        let dir = tempfile::tempdir().unwrap();
-        assert!(!is_layout(dir.path()));
-        std::fs::write(dir.path().join("oci-layout"), "{}").unwrap();
-        std::fs::write(dir.path().join("index.json"), "{}").unwrap();
-        assert!(is_layout(dir.path()));
-        assert!(!is_layout(Path::new("registry.tilo.so/tilo/tilo-vm:main")));
-
-        assert!(is_already_booted(
-            "error: Switching: Composefs Switching: Target image has the same fs-verity digest as the existing Some(Booted) deployment."
-        ));
-        assert!(!is_already_booted(
-            "error: Switching: pulling: connection refused"
-        ));
-    }
-
-    #[test]
-    fn bootcs_space_refusal_reads_as_plain_language() {
-        let stderr = "error: Switching: Composefs Switching: Performing Upgrade Operation: Insufficient free space for registry.tilo.so/tilo/tilo-vm:pr-4227-4ab5dcc-lenovo-83ed (available: 2.3 GB required: 5.2 GB)";
-        let (free, needed) = insufficient_space(stderr).unwrap();
-        assert_eq!((free.as_str(), needed.as_str()), ("2.3 GB", "5.2 GB"));
-        let error = CliError::NoSpace {
-            place: "VM yoga".into(),
-            free,
-            what: "the new OS image".into(),
-            needed,
-        };
-        assert_eq!(
-            error.to_string(),
-            "not enough space on VM yoga: the new OS image needs 5.2 GB, 2.3 GB is free"
-        );
-        assert!(error.hint().contains("reused"), "{}", error.hint());
-        assert_eq!(
-            insufficient_space("error: Switching: pulling: connection refused"),
-            None
-        );
-    }
-
-    #[test]
-    fn a_pull_request_commit_resolves_through_its_ref_tags() {
-        assert_eq!(ci_commit("main-1a2b3c4"), Some("1a2b3c4"));
-        assert_eq!(ci_commit("main-1a2b3c4-x86_64"), None);
-        assert_eq!(ci_commit("v1.2.3"), None);
-        let ci =
-            r#"{"Tags":["pr-12-1a2b3c4-x86_64","pr-12-1a2b3c4-aarch64","main-1a2b3c4x-x86_64"]}"#;
-        assert_eq!(
-            ci_ref_bases("1a2b3c4", "x86_64", None, ci),
-            vec!["registry.tilo.so/tilo/tilo-ci:pr-12-1a2b3c4-x86_64".to_owned()]
-        );
-        assert!(ci_ref_bases("1a2b3c4", "aarch64", None, "not json").is_empty());
-        // A board never takes a base to build from.
-        assert!(ci_ref_bases("1a2b3c4", "aarch64", Some("lenovo-83ed"), ci).is_empty());
-        assert_eq!(
-            list_tags_command("registry.tilo.so/tilo/tilo-vm").display(),
-            "skopeo list-tags docker://registry.tilo.so/tilo/tilo-vm"
-        );
-    }
-
-    #[test]
-    fn ci_upgrade_sources_resolve_to_published_or_locally_built_dev_images() {
-        {
-            assert_eq!(
-                parse_from("ci:main-1a2b3c4", None).unwrap(),
-                UpgradeFrom::Ci {
-                    tag: "main-1a2b3c4".into()
-                }
-            );
-            assert_eq!(
-                parse_from("sha:1A2B3C4D", None).unwrap(),
-                UpgradeFrom::Ci {
-                    tag: "main-1a2b3c4".into()
-                }
-            );
         }
 
+        phase guest_facts_are_probed_in_one_round_trip;
         {
-            let expected = CiCandidates {
-                dev_images: vec!["registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64".into()],
-                bases: vec![
-                    "registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64".into(),
-                    "registry.tilo.so/tilo/tilo:main-1a2b3c4".into(),
-                ],
-            };
-            assert_eq!(ci_candidates("main-1a2b3c4", "x86_64"), expected);
-            assert_eq!(ci_candidates("main-1a2b3c4-x86_64", "x86_64"), expected);
-            assert_eq!(ci_candidates("main-1a2b3c4-ci", "x86_64"), expected);
-            for image in expected.dev_images {
-                assert!(is_dev_name(&image), "{image}");
+            {
+                let (id, flavour) = parse_inspect(
+                    r#"[{"Id":"4bd2","Labels":{"sh.tilo.image.flavour":"dev","x":"y"}}]"#,
+                )
+                .unwrap();
+                assert_eq!((id.as_str(), flavour.as_deref()), ("4bd2", Some("dev")));
+                let (_, none) = parse_inspect(r#"[{"Id":"4bd2","Labels":null}]"#).unwrap();
+                assert_eq!(none, None);
+
+                let mut facts = ImageFacts::default();
+                parse_probe(
+                    "{\"base_created\":\"2026-09-01T00:00:00Z\"}\n\n@@uki\n",
+                    &mut facts,
+                );
+                assert!(!facts.sealed);
+                assert_eq!(
+                    text(facts.base.as_ref(), "base_created"),
+                    Some("2026-09-01T00:00:00Z")
+                );
+                parse_probe("\n@@uki\ntilo-1.efi\n", &mut facts);
+                assert!(facts.sealed);
+                assert!(facts.base.is_none());
             }
-            let board = CiCandidates {
-                dev_images: vec!["registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-lenovo-83ed".into()],
-                bases: Vec::new(),
-            };
-            for tag in [
-                "main-1a2b3c4",
-                "main-1a2b3c4-ci",
-                "main-1a2b3c4-lenovo-83ed",
-            ] {
-                assert_eq!(board_candidates(tag, "lenovo-83ed"), board, "{tag}");
+
+            {
+                let status = parse_bootc_status(STATUS).unwrap();
+                assert_eq!(status.spec, Some((layout_imgref(), "oci".to_owned())));
+                assert_eq!(
+                    status.booted.as_ref().unwrap().digest,
+                    "sha256:1111111111111111111111"
+                );
+                assert_eq!(status.staged, None);
+                let rollback = status.rollback.unwrap();
+                assert_eq!(
+                    rollback.describe(),
+                    "localhost/tilo-vm:standin-a (sha256:222222222222)"
+                );
+                assert!(parse_bootc_status("not json").is_err());
             }
-            assert!(is_dev_name(&board.dev_images[0]));
+
+            {
+                let output = format!(
+                    "b00t\n@@base\n{{\"image_digest\":\"sha256:aa\",\"target\":\"aarch64-unknown-linux-gnu\"}}\n\n@@free\n1024\n@@board\n{{\"schema_version\":1,\"id\":\"lenovo-83ed\"}}\n@@bootc\n{STATUS}\n"
+                );
+                let facts = parse_vm_facts(&output).unwrap();
+                assert_eq!(facts.boot_id, "b00t");
+                assert_eq!(facts.board.as_deref(), Some("lenovo-83ed"));
+                assert_eq!(facts.arch().as_deref(), Some("aarch64"));
+                assert_eq!(facts.free_bytes, Some(1 << 20));
+                assert_eq!(text(facts.base.as_ref(), "image_digest"), Some("sha256:aa"));
+                assert!(facts.bootc.booted.is_some());
+                assert!(matches!(
+                    parse_vm_facts("b00t\n@@base\n\n@@free\n\n@@board\n\n@@bootc\n"),
+                    Err(FactsError::Unreadable(_))
+                ));
+                assert_eq!(
+                    parse_vm_facts("b00t\n@@base\n\n@@free\n1\n@@board\n\n@@bootc\n@@nobootc\n")
+                        .unwrap_err(),
+                    FactsError::NoBootc
+                );
+            }
+
+            {
+                assert_eq!(parse_bootc_probe("bootc=yes\n"), Some(true));
+                assert_eq!(parse_bootc_probe("motd\nbootc=no\n"), Some(false));
+                assert_eq!(parse_bootc_probe(""), None);
+                assert!(BOOTC_PROBE.contains("command -v bootc"));
+            }
         }
 
+        phase image_transfer_stages_once_and_prunes_only_unreachable_blobs;
         {
-            assert!(is_auth_failure(
-                "error: Switching: pulling: reading manifest main-1a2b3c4-lenovo-83ed: unauthorized: authentication required"
-            ));
-            assert!(!is_auth_failure(
-                "error: Switching: pulling: connection refused"
-            ));
-            let copy = registry_export_command(
-                "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-lenovo-83ed",
-                "aarch64",
-                Path::new("/c/images/yoga"),
-                Path::new("/c/images/yoga.digest"),
-            );
-            assert_eq!(
-                copy.display(),
-                "skopeo copy --quiet --dest-oci-accept-uncompressed-layers --override-arch arm64 \
-                 --digestfile /c/images/yoga.digest docker://registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-lenovo-83ed \
-                 oci:/c/images/yoga:tilo-vm"
-            );
-            assert_eq!(
-                registry_flavour(r#"{"Labels":{"sh.tilo.image.flavour":"dev"}}"#).as_deref(),
-                Some("dev")
-            );
-            assert_eq!(registry_flavour(r#"{"Labels":null}"#), None);
-        }
+            {
+                let fresh = BootcStatus {
+                    spec: Some(("localhost/tilo-vm:standin-a".into(), "registry".into())),
+                    ..BootcStatus::default()
+                };
+                assert_eq!(
+                    stage_command(&fresh, "oci", &layout_imgref()).join(" "),
+                    "bootc switch --transport oci /var/lib/tilo-vm/image:tilo-vm"
+                );
+                let following = parse_bootc_status(STATUS).unwrap();
+                assert_eq!(
+                    stage_command(&following, "oci", &layout_imgref()).join(" "),
+                    "bootc upgrade"
+                );
+                assert_eq!(
+                    stage_command(&following, "registry", "registry.tilo.so/tilo/tilo-vm:x").join(" "),
+                    "bootc switch registry.tilo.so/tilo/tilo-vm:x"
+                );
+                let locked = under_vm_lock(&["bootc".into(), "upgrade".into()]);
+                assert!(
+                    locked.contains(
+                        "flock --nonblock --conflict-exit-code 75 /var/lib/tilo-vm/locks/vm.lock sh -c"
+                    ),
+                    "{locked}"
+                );
+                assert!(locked.contains("bootc upgrade; rc=$?"), "{locked}");
+                let pinned = under_vm_lock(&update_command(Some("registry.tilo.so/tilo/tilo-vm:x")));
+                assert!(
+                    pinned.contains("/usr/libexec/tilo-update-channel pin")
+                        && pinned.contains("/usr/libexec/tilo-verified-update; rc=$?")
+                        && pinned.contains("bootc switch"),
+                    "{pinned}"
+                );
+                let channel = under_vm_lock(&update_command(None));
+                assert!(
+                    channel.contains("/usr/libexec/tilo-update-channel unpin")
+                        && channel.contains("bootc upgrade"),
+                    "{channel}"
+                );
+                // bootc gets a writable ESP for the one command, and it is read-only again after.
+                let line = bootc_line(&["status", "--json"]);
+                assert!(line.contains("mount -o remount,rw /boot"), "{line}");
+                assert!(
+                    line.contains("mount -o remount,ro /boot; exit $rc)"),
+                    "{line}"
+                );
+                assert!(vm_facts_script().contains(&format!("then {line}; else echo @@nobootc; fi")));
+            }
 
-        {
-            let image = ci_dev_image("registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64");
-            assert_eq!(image, "localhost/tilo-vm:ci-main-1a2b3c4-x86_64");
-            assert!(is_dev_name(&image));
-            assert_eq!(
-                exists_command("registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64").display(),
-                "skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64"
-            );
+            {
+                let export = export_command(
+                    "localhost/tilo-vm:latest",
+                    Path::new("/c/dev"),
+                    Path::new("/c/dev.digest"),
+                );
+                assert_eq!(
+                    export.display(),
+                    "skopeo copy --quiet --dest-oci-accept-uncompressed-layers --digestfile /c/dev.digest containers-storage:localhost/tilo-vm:latest oci:/c/dev:tilo-vm"
+                );
+                let endpoint = SshEndpoint {
+                    user: "root".into(),
+                    host: "127.0.0.1".into(),
+                    port: 2223,
+                };
+                let rsync = rsync_command(Path::new("/c/dev"), &endpoint, Some("/k/id")).unwrap();
+                let text = rsync.display();
+                assert!(text.contains("--delete"), "{text}");
+                assert!(
+                    text.contains("/var/lib/tilo-vm/locks/image.lock rsync"),
+                    "{text}"
+                );
+                assert!(
+                    text.ends_with("/c/dev/ root@127.0.0.1:/var/lib/tilo-vm/image/"),
+                    "{text}"
+                );
+                assert_eq!(
+                    rsync_sent_bytes(
+                        "Number of files: 9\nTotal transferred file size: 12,345,678 bytes\n"
+                    ),
+                    Some(12_345_678)
+                );
+            }
+
+            #[cfg(windows)]
+            {
+                let endpoint = SshEndpoint {
+                    user: "root".into(),
+                    host: "127.0.0.1".into(),
+                    port: 2223,
+                };
+                let line =
+                    rsync_command(Path::new(r"C:\tilo-build\image-layout"), &endpoint, None).unwrap();
+                assert_eq!(
+                    line.args[line.args.len() - 2],
+                    "/c/tilo-build/image-layout/"
+                );
+            }
+
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let layout = dir.path();
+                let blobs = layout.join("blobs/sha256");
+                std::fs::create_dir_all(&blobs).unwrap();
+                let write = |hex: &str, body: &str| std::fs::write(blobs.join(hex), body).unwrap();
+                write("aa", "layer");
+                write("bb", "config");
+                write("cc", "stale layer");
+                write(
+                    "dd",
+                    &json!({"config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:bb"},
+                            "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": "sha256:aa"}]})
+                    .to_string(),
+                );
+                let stale = json!({"layers": [{"mediaType": "x", "digest": "sha256:cc"}]}).to_string();
+                write("ee", &stale);
+                let manifest = |hex: &str, tag: &str| json!({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": format!("sha256:{hex}"), "annotations": {"org.opencontainers.image.ref.name": tag}});
+                std::fs::write(
+                    layout.join("index.json"),
+                    json!({"schemaVersion": 2, "manifests": [manifest("dd", LAYOUT_TAG), manifest("ee", "old")]}).to_string(),
+                )
+                .unwrap();
+                let freed = prune_layout(layout).unwrap();
+                assert_eq!(freed, ("stale layer".len() + stale.len()) as u64);
+                let left: BTreeSet<String> = std::fs::read_dir(&blobs)
+                    .unwrap()
+                    .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect();
+                assert_eq!(left, ["aa", "bb", "dd"].map(str::to_owned).into());
+                assert_eq!(
+                    layout_bytes(layout),
+                    (5 + 6) as u64 + std::fs::metadata(blobs.join("dd")).unwrap().len()
+                );
+            }
         }
     }
 
@@ -1212,300 +1433,91 @@ mod tests {
         }
     }
 
-    #[test]
-    fn guest_facts_are_probed_in_one_round_trip() {
-        {
-            let (id, flavour) = parse_inspect(
-                r#"[{"Id":"4bd2","Labels":{"sh.tilo.image.flavour":"dev","x":"y"}}]"#,
-            )
-            .unwrap();
-            assert_eq!((id.as_str(), flavour.as_deref()), ("4bd2", Some("dev")));
-            let (_, none) = parse_inspect(r#"[{"Id":"4bd2","Labels":null}]"#).unwrap();
-            assert_eq!(none, None);
-
-            let mut facts = ImageFacts::default();
-            parse_probe(
-                "{\"base_created\":\"2026-09-01T00:00:00Z\"}\n\n@@uki\n",
-                &mut facts,
-            );
-            assert!(!facts.sealed);
-            assert_eq!(
-                text(facts.base.as_ref(), "base_created"),
-                Some("2026-09-01T00:00:00Z")
-            );
-            parse_probe("\n@@uki\ntilo-1.efi\n", &mut facts);
-            assert!(facts.sealed);
-            assert!(facts.base.is_none());
-        }
-
-        {
-            let status = parse_bootc_status(STATUS).unwrap();
-            assert_eq!(status.spec, Some((layout_imgref(), "oci".to_owned())));
-            assert_eq!(
-                status.booted.as_ref().unwrap().digest,
-                "sha256:1111111111111111111111"
-            );
-            assert_eq!(status.staged, None);
-            let rollback = status.rollback.unwrap();
-            assert_eq!(
-                rollback.describe(),
-                "localhost/tilo-vm:standin-a (sha256:222222222222)"
-            );
-            assert!(parse_bootc_status("not json").is_err());
-        }
-
-        {
-            let output = format!(
-                "b00t\n@@base\n{{\"image_digest\":\"sha256:aa\",\"target\":\"aarch64-unknown-linux-gnu\"}}\n\n@@free\n1024\n@@board\n{{\"schema_version\":1,\"id\":\"lenovo-83ed\"}}\n@@bootc\n{STATUS}\n"
-            );
-            let facts = parse_vm_facts(&output).unwrap();
-            assert_eq!(facts.boot_id, "b00t");
-            assert_eq!(facts.board.as_deref(), Some("lenovo-83ed"));
-            assert_eq!(facts.arch().as_deref(), Some("aarch64"));
-            assert_eq!(facts.free_bytes, Some(1 << 20));
-            assert_eq!(text(facts.base.as_ref(), "image_digest"), Some("sha256:aa"));
-            assert!(facts.bootc.booted.is_some());
-            assert!(matches!(
-                parse_vm_facts("b00t\n@@base\n\n@@free\n\n@@board\n\n@@bootc\n"),
-                Err(FactsError::Unreadable(_))
-            ));
-            assert_eq!(
-                parse_vm_facts("b00t\n@@base\n\n@@free\n1\n@@board\n\n@@bootc\n@@nobootc\n")
-                    .unwrap_err(),
-                FactsError::NoBootc
-            );
-        }
-
-        {
-            assert_eq!(parse_bootc_probe("bootc=yes\n"), Some(true));
-            assert_eq!(parse_bootc_probe("motd\nbootc=no\n"), Some(false));
-            assert_eq!(parse_bootc_probe(""), None);
-            assert!(BOOTC_PROBE.contains("command -v bootc"));
-        }
-    }
-
     const STATUS: &str = r#"{"apiVersion":"org.containers.bootc/v1","kind":"BootcHost",
       "spec":{"image":{"image":"/var/lib/tilo-vm/image:tilo-vm","transport":"oci"},"bootOrder":"default"},
       "status":{"staged":null,
         "booted":{"image":{"image":{"image":"/var/lib/tilo-vm/image:tilo-vm","transport":"oci"},"imageDigest":"sha256:1111111111111111111111"},"pinned":false},
         "rollback":{"image":{"image":{"image":"localhost/tilo-vm:standin-a","transport":"registry"},"imageDigest":"sha256:2222222222222222222222"}}}}"#;
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    fn image_transfer_stages_once_and_prunes_only_unreachable_blobs() {
+    tilo_test_env::scenario! {
+        fn the_staged_boot_entry_is_counted;
+
+        phase a_staged_deployment_names_the_composefs_identity_its_entry_boots;
         {
-            let fresh = BootcStatus {
-                spec: Some(("localhost/tilo-vm:standin-a".into(), "registry".into())),
-                ..BootcStatus::default()
-            };
-            assert_eq!(
-                stage_command(&fresh, "oci", &layout_imgref()).join(" "),
-                "bootc switch --transport oci /var/lib/tilo-vm/image:tilo-vm"
+            let verity = "ab".repeat(64);
+            let json = format!(
+                r#"{{"status":{{"staged":{{"image":{{"image":{{"image":"registry.tilo.so/tilo/tilo-vm:x","transport":"registry"}},"imageDigest":"sha256:1"}},"composefs":{{"verity":"sha512:{verity}"}}}},"booted":{{"image":{{"image":{{"image":"a"}},"imageDigest":"sha256:0"}},"composefs":{{"verity":"short"}}}}}}}}"#
             );
-            let following = parse_bootc_status(STATUS).unwrap();
+            let status = parse_bootc_status(&json).unwrap();
             assert_eq!(
-                stage_command(&following, "oci", &layout_imgref()).join(" "),
-                "bootc upgrade"
+                status.staged.unwrap().verity.as_deref(),
+                Some(verity.as_str())
             );
             assert_eq!(
-                stage_command(&following, "registry", "registry.tilo.so/tilo/tilo-vm:x").join(" "),
-                "bootc switch registry.tilo.so/tilo/tilo-vm:x"
+                status.booted.unwrap().verity,
+                None,
+                "a malformed identity is no identity"
             );
-            let locked = under_vm_lock(&["bootc".into(), "upgrade".into()]);
-            assert!(
-                locked.contains(
-                    "flock --nonblock --conflict-exit-code 75 /var/lib/tilo-vm/locks/vm.lock sh -c"
+        }
+
+        phase the_boot_entry_pass_says_whether_the_next_boot_is_counted;
+        {
+            assert_eq!(
+                parse_entries(
+                    "tilo-deployment: boot counter: bootc_x-1.conf gets 3 tries\n@@entries 0\n"
                 ),
-                "{locked}"
-            );
-            assert!(locked.contains("bootc upgrade; rc=$?"), "{locked}");
-            let pinned = under_vm_lock(&update_command(Some("registry.tilo.so/tilo/tilo-vm:x")));
-            assert!(
-                pinned.contains("/usr/libexec/tilo-update-channel pin")
-                    && pinned.contains("/usr/libexec/tilo-verified-update; rc=$?")
-                    && pinned.contains("bootc switch"),
-                "{pinned}"
-            );
-            let channel = under_vm_lock(&update_command(None));
-            assert!(
-                channel.contains("/usr/libexec/tilo-update-channel unpin")
-                    && channel.contains("bootc upgrade"),
-                "{channel}"
-            );
-            // bootc gets a writable ESP for the one command, and it is read-only again after.
-            let line = bootc_line(&["status", "--json"]);
-            assert!(line.contains("mount -o remount,rw /boot"), "{line}");
-            assert!(
-                line.contains("mount -o remount,ro /boot; exit $rc)"),
-                "{line}"
-            );
-            assert!(vm_facts_script().contains(&format!("then {line}; else echo @@nobootc; fi")));
-        }
-
-        {
-            let export = export_command(
-                "localhost/tilo-vm:latest",
-                Path::new("/c/dev"),
-                Path::new("/c/dev.digest"),
+                EntriesOutcome::Done
             );
             assert_eq!(
-                export.display(),
-                "skopeo copy --quiet --dest-oci-accept-uncompressed-layers --digestfile /c/dev.digest containers-storage:localhost/tilo-vm:latest oci:/c/dev:tilo-vm"
-            );
-            let endpoint = SshEndpoint {
-                user: "root".into(),
-                host: "127.0.0.1".into(),
-                port: 2223,
-            };
-            let rsync = rsync_command(Path::new("/c/dev"), &endpoint, Some("/k/id")).unwrap();
-            let text = rsync.display();
-            assert!(text.contains("--delete"), "{text}");
-            assert!(
-                text.contains("/var/lib/tilo-vm/locks/image.lock rsync"),
-                "{text}"
-            );
-            assert!(
-                text.ends_with("/c/dev/ root@127.0.0.1:/var/lib/tilo-vm/image/"),
-                "{text}"
-            );
-            assert_eq!(
-                rsync_sent_bytes(
-                    "Number of files: 9\nTotal transferred file size: 12,345,678 bytes\n"
+                parse_entries(
+                    "tilo-deployment: no systemd-boot layout — nothing to maintain\n@@entries 0\n"
                 ),
-                Some(12_345_678)
+                EntriesOutcome::NoLayout
             );
-        }
-
-        #[cfg(windows)]
-        {
-            let endpoint = SshEndpoint {
-                user: "root".into(),
-                host: "127.0.0.1".into(),
-                port: 2223,
-            };
-            let line =
-                rsync_command(Path::new(r"C:\tilo-build\image-layout"), &endpoint, None).unwrap();
             assert_eq!(
-                line.args[line.args.len() - 2],
-                "/c/tilo-build/image-layout/"
+                parse_entries(
+                    "tilo-deployment: the ESP this machine started from (PARTUUID x) is not mounted and could not be mounted read-only; nothing to maintain\n@@entries 0\n"
+                ),
+                EntriesOutcome::NoLayout
             );
-        }
-
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let layout = dir.path();
-            let blobs = layout.join("blobs/sha256");
-            std::fs::create_dir_all(&blobs).unwrap();
-            let write = |hex: &str, body: &str| std::fs::write(blobs.join(hex), body).unwrap();
-            write("aa", "layer");
-            write("bb", "config");
-            write("cc", "stale layer");
-            write(
-                "dd",
-                &json!({"config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:bb"},
-                        "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": "sha256:aa"}]})
-                .to_string(),
-            );
-            let stale = json!({"layers": [{"mediaType": "x", "digest": "sha256:cc"}]}).to_string();
-            write("ee", &stale);
-            let manifest = |hex: &str, tag: &str| json!({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": format!("sha256:{hex}"), "annotations": {"org.opencontainers.image.ref.name": tag}});
-            std::fs::write(
-                layout.join("index.json"),
-                json!({"schemaVersion": 2, "manifests": [manifest("dd", LAYOUT_TAG), manifest("ee", "old")]}).to_string(),
-            )
-            .unwrap();
-            let freed = prune_layout(layout).unwrap();
-            assert_eq!(freed, ("stale layer".len() + stale.len()) as u64);
-            let left: BTreeSet<String> = std::fs::read_dir(&blobs)
-                .unwrap()
-                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-                .collect();
-            assert_eq!(left, ["aa", "bb", "dd"].map(str::to_owned).into());
+            assert_eq!(parse_entries("@@entries absent\n"), EntriesOutcome::Absent);
             assert_eq!(
-                layout_bytes(layout),
-                (5 + 6) as u64 + std::fs::metadata(blobs.join("dd")).unwrap().len()
+                parse_entries("tilo-deployment: not a managed UKI entry: x\n@@entries 1\n"),
+                EntriesOutcome::Failed("tilo-deployment: not a managed UKI entry: x".into())
             );
+            assert!(matches!(parse_entries(""), EntriesOutcome::Failed(_)));
         }
-    }
 
-    #[test]
-    fn a_staged_deployment_names_the_composefs_identity_its_entry_boots() {
-        let verity = "ab".repeat(64);
-        let json = format!(
-            r#"{{"status":{{"staged":{{"image":{{"image":{{"image":"registry.tilo.so/tilo/tilo-vm:x","transport":"registry"}},"imageDigest":"sha256:1"}},"composefs":{{"verity":"sha512:{verity}"}}}},"booted":{{"image":{{"image":{{"image":"a"}},"imageDigest":"sha256:0"}},"composefs":{{"verity":"short"}}}}}}}}"#
-        );
-        let status = parse_bootc_status(&json).unwrap();
-        assert_eq!(
-            status.staged.unwrap().verity.as_deref(),
-            Some(verity.as_str())
-        );
-        assert_eq!(
-            status.booted.unwrap().verity,
-            None,
-            "a malformed identity is no identity"
-        );
-    }
+        phase the_staged_entry_is_counted_by_the_identity_it_boots_in_a_private_mount;
+        {
+            let verity = "cd".repeat(64);
+            let script = count_staged_entry_script(&verity);
+            assert!(script.contains("LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"));
+            assert!(script.contains("unshare -m sh -c"));
+            assert!(script.contains(&format!("composefs={verity}")));
+            assert!(script.contains("+3.conf"));
+            assert!(script.contains("entries.staged"));
+            assert_eq!(parse_counted("@@counted 1\n"), Counted::Entries(1));
+            assert_eq!(parse_counted("@@counted 0"), Counted::Entries(0));
+            assert_eq!(parse_counted("@@counter none\n"), Counted::NoBootLoader);
+            assert_eq!(
+                parse_counted("@@counter failed: could not mount the ESP (PARTUUID x) read-write\n"),
+                Counted::Failed("could not mount the ESP (PARTUUID x) read-write".into())
+            );
+            assert!(matches!(
+                parse_counted("sh: unshare: not found"),
+                Counted::Failed(_)
+            ));
+        }
 
-    #[test]
-    fn the_boot_entry_pass_says_whether_the_next_boot_is_counted() {
-        assert_eq!(
-            parse_entries(
-                "tilo-deployment: boot counter: bootc_x-1.conf gets 3 tries\n@@entries 0\n"
-            ),
-            EntriesOutcome::Done
-        );
-        assert_eq!(
-            parse_entries(
-                "tilo-deployment: no systemd-boot layout — nothing to maintain\n@@entries 0\n"
-            ),
-            EntriesOutcome::NoLayout
-        );
-        assert_eq!(
-            parse_entries(
-                "tilo-deployment: the ESP this machine started from (PARTUUID x) is not mounted and could not be mounted read-only; nothing to maintain\n@@entries 0\n"
-            ),
-            EntriesOutcome::NoLayout
-        );
-        assert_eq!(parse_entries("@@entries absent\n"), EntriesOutcome::Absent);
-        assert_eq!(
-            parse_entries("tilo-deployment: not a managed UKI entry: x\n@@entries 1\n"),
-            EntriesOutcome::Failed("tilo-deployment: not a managed UKI entry: x".into())
-        );
-        assert!(matches!(parse_entries(""), EntriesOutcome::Failed(_)));
-    }
-
-    #[test]
-    fn the_staged_entry_is_counted_by_the_identity_it_boots_in_a_private_mount() {
-        let verity = "cd".repeat(64);
-        let script = count_staged_entry_script(&verity);
-        assert!(script.contains("LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"));
-        assert!(script.contains("unshare -m sh -c"));
-        assert!(script.contains(&format!("composefs={verity}")));
-        assert!(script.contains("+3.conf"));
-        assert!(script.contains("entries.staged"));
-        assert_eq!(parse_counted("@@counted 1\n"), Counted::Entries(1));
-        assert_eq!(parse_counted("@@counted 0"), Counted::Entries(0));
-        assert_eq!(parse_counted("@@counter none\n"), Counted::NoBootLoader);
-        assert_eq!(
-            parse_counted("@@counter failed: could not mount the ESP (PARTUUID x) read-write\n"),
-            Counted::Failed("could not mount the ESP (PARTUUID x) read-write".into())
-        );
-        assert!(matches!(
-            parse_counted("sh: unshare: not found"),
-            Counted::Failed(_)
-        ));
-    }
-
-    #[test]
-    fn the_counting_script_runs_in_a_shell() {
-        let script = count_staged_entry_script(&"ef".repeat(64));
-        let status = std::process::Command::new("sh")
-            .args(["-n", "-c", &script])
-            .status_locked()
-            .unwrap();
-        assert!(status.success(), "{script}");
+        phase the_counting_script_runs_in_a_shell;
+        {
+            let script = count_staged_entry_script(&"ef".repeat(64));
+            let status = std::process::Command::new("sh")
+                .args(["-n", "-c", &script])
+                .status_locked()
+                .unwrap();
+            assert!(status.success(), "{script}");
+        }
     }
 }

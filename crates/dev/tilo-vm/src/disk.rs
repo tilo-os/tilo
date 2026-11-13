@@ -548,81 +548,228 @@ pub fn fetch(
 mod tests {
     use super::*;
 
-    #[test]
-    fn direct_boot_companions_are_bound_to_the_disk_manifest_and_rehashed() {
-        struct Writes(Vec<(String, Vec<u8>)>);
-        impl Runner for Writes {
-            fn output(&mut self, _: &CommandLine) -> Result<crate::hypervisor::Output, CliError> {
-                Err(CliError::InvalidInput("not used".into()))
-            }
-            fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
-                let file = command.args.last().unwrap().rsplit('/').next().unwrap();
-                let dest =
-                    &command.args[command.args.iter().position(|a| a == "--output").unwrap() + 1];
-                let data = &self.0.iter().find(|(name, _)| name == file).unwrap().1;
-                std::fs::write(dest, data).unwrap();
-                Ok(true)
-            }
-        }
-        let tag = "main-1234567";
-        let arch = "aarch64";
-        let package = format!("{PACKAGES}/{tag}/");
-        let names = [
-            format!("tilo-vm-{tag}-{arch}-direct-Image"),
-            format!("tilo-vm-{tag}-{arch}-direct-initrd"),
-            format!("tilo-vm-{tag}-{arch}-direct-boot.json"),
-        ];
-        let payloads = [
-            b"kernel".as_slice(),
-            b"initrd".as_slice(),
-            b"boot-json".as_slice(),
-        ];
-        let files: Vec<_> = names
-            .iter()
-            .zip(payloads)
-            .map(|(name, data)| {
-                serde_json::json!({
-                    "file": name, "url": format!("{package}{name}"),
-                    "sha256": hex::encode(Sha256::digest(data)), "size": data.len(),
-                })
-            })
-            .collect();
-        let disk_name = format!("tilo-vm-{tag}-{arch}.qcow2");
-        let manifest: DiskManifest = serde_json::from_value(serde_json::json!({
-            "tag": tag, "sourceRevision": format!("1234567{}", "a".repeat(33)),
-            "disks": [{"arch": arch, "format": "qcow2", "file": disk_name,
-                       "url": format!("{package}{disk_name}"), "sha256": "a".repeat(64), "size": 4}],
-            "directBoot": [{"arch": arch, "manifest": names[2], "files": files}],
-        })).unwrap();
-        let disk = manifest.pick(arch, "qcow2").unwrap();
-        let bundle = manifest.direct_boot_for(tag, arch, disk).unwrap();
-        assert!(manifest.direct_boot_for(tag, "x86_64", disk).is_err());
+    tilo_test_env::scenario! {
+        fn published_disks_and_their_boot_companions_are_verified;
 
-        let mut wrong_url = manifest.clone();
-        wrong_url.direct_boot[0].files[0].url = "https://elsewhere.invalid/kernel".into();
-        assert!(wrong_url.direct_boot_for(tag, arch, disk).is_err());
-        let mut wrong_source = manifest.clone();
-        wrong_source.source_revision = Some("f".repeat(40));
-        assert!(wrong_source.direct_boot_for(tag, arch, disk).is_err());
-
-        let temp = tempfile::tempdir().unwrap();
-        let mut runner = Writes(
-            names
+        phase direct_boot_companions_are_bound_to_the_disk_manifest_and_rehashed;
+        {
+            struct Writes(Vec<(String, Vec<u8>)>);
+            impl Runner for Writes {
+                fn output(&mut self, _: &CommandLine) -> Result<crate::hypervisor::Output, CliError> {
+                    Err(CliError::InvalidInput("not used".into()))
+                }
+                fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
+                    let file = command.args.last().unwrap().rsplit('/').next().unwrap();
+                    let dest =
+                        &command.args[command.args.iter().position(|a| a == "--output").unwrap() + 1];
+                    let data = &self.0.iter().find(|(name, _)| name == file).unwrap().1;
+                    std::fs::write(dest, data).unwrap();
+                    Ok(true)
+                }
+            }
+            let tag = "main-1234567";
+            let arch = "aarch64";
+            let package = format!("{PACKAGES}/{tag}/");
+            let names = [
+                format!("tilo-vm-{tag}-{arch}-direct-Image"),
+                format!("tilo-vm-{tag}-{arch}-direct-initrd"),
+                format!("tilo-vm-{tag}-{arch}-direct-boot.json"),
+            ];
+            let payloads = [
+                b"kernel".as_slice(),
+                b"initrd".as_slice(),
+                b"boot-json".as_slice(),
+            ];
+            let files: Vec<_> = names
                 .iter()
                 .zip(payloads)
-                .map(|(name, data)| (name.clone(), data.to_vec()))
-                .collect(),
-        );
-        let auth = AuthHeader::new(None).unwrap();
-        let path = fetch_direct_boot(&mut runner, temp.path(), &bundle, &auth).unwrap();
-        assert_eq!(path, temp.path().join(&names[2]));
-        std::fs::write(temp.path().join(&names[0]), b"tamper").unwrap();
-        assert!(matches!(
-            fetch_direct_boot(&mut runner, temp.path(), &bundle, &auth),
-            Err(CliError::ChecksumMismatch { .. })
-        ));
-        assert!(!temp.path().join(&names[0]).exists());
-        assert!(fetch_direct_boot(&mut runner, temp.path(), &bundle, &auth).is_ok());
+                .map(|(name, data)| {
+                    serde_json::json!({
+                        "file": name, "url": format!("{package}{name}"),
+                        "sha256": hex::encode(Sha256::digest(data)), "size": data.len(),
+                    })
+                })
+                .collect();
+            let disk_name = format!("tilo-vm-{tag}-{arch}.qcow2");
+            let manifest: DiskManifest = serde_json::from_value(serde_json::json!({
+                "tag": tag, "sourceRevision": format!("1234567{}", "a".repeat(33)),
+                "disks": [{"arch": arch, "format": "qcow2", "file": disk_name,
+                           "url": format!("{package}{disk_name}"), "sha256": "a".repeat(64), "size": 4}],
+                "directBoot": [{"arch": arch, "manifest": names[2], "files": files}],
+            })).unwrap();
+            let disk = manifest.pick(arch, "qcow2").unwrap();
+            let bundle = manifest.direct_boot_for(tag, arch, disk).unwrap();
+            assert!(manifest.direct_boot_for(tag, "x86_64", disk).is_err());
+
+            let mut wrong_url = manifest.clone();
+            wrong_url.direct_boot[0].files[0].url = "https://elsewhere.invalid/kernel".into();
+            assert!(wrong_url.direct_boot_for(tag, arch, disk).is_err());
+            let mut wrong_source = manifest.clone();
+            wrong_source.source_revision = Some("f".repeat(40));
+            assert!(wrong_source.direct_boot_for(tag, arch, disk).is_err());
+
+            let temp = tempfile::tempdir().unwrap();
+            let mut runner = Writes(
+                names
+                    .iter()
+                    .zip(payloads)
+                    .map(|(name, data)| (name.clone(), data.to_vec()))
+                    .collect(),
+            );
+            let auth = AuthHeader::new(None).unwrap();
+            let path = fetch_direct_boot(&mut runner, temp.path(), &bundle, &auth).unwrap();
+            assert_eq!(path, temp.path().join(&names[2]));
+            std::fs::write(temp.path().join(&names[0]), b"tamper").unwrap();
+            assert!(matches!(
+                fetch_direct_boot(&mut runner, temp.path(), &bundle, &auth),
+                Err(CliError::ChecksumMismatch { .. })
+            ));
+            assert!(!temp.path().join(&names[0]).exists());
+            assert!(fetch_direct_boot(&mut runner, temp.path(), &bundle, &auth).is_ok());
+        }
+
+        phase published_disks_are_picked_verified_and_cached;
+        {
+            {
+                let manifest: DiskManifest = serde_json::from_str(MANIFEST).unwrap();
+                assert_eq!(manifest.tag, "main-1a2b3c4");
+                assert!(manifest.pick("x86_64", "qcow2").is_some());
+                assert!(manifest.pick("aarch64", "qcow2").is_none());
+                assert!(manifest.pick("x86_64", format_for("hyperv")).is_none());
+                assert_eq!(manifest.offered(), ["x86_64 qcow2"]);
+                assert_eq!(
+                    manifest_url("main-1a2b3c4", "x86_64"),
+                    "https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk/main-1a2b3c4/tilo-vm-disk-x86_64.json"
+                );
+                assert_eq!(
+                    files_url("main-1a2b3c4"),
+                    "https://code.tilo.so/api/v1/packages/tilo/generic/tilo-vm-disk/main-1a2b3c4/files"
+                );
+            }
+
+            {
+                let files = r#"[
+              {"name": "tilo-vm-main-1a2b3c4-ci-aarch64.qcow2"},
+              {"name": "tilo-vm-main-1a2b3c4-ci-aarch64.qcow2.sha256"},
+              {"name": "tilo-vm-disk-aarch64.json"},
+              {"name": "tilo-vm-main-1a2b3c4-ci-x86_64.qcow2"}
+            ]"#;
+                assert_eq!(
+                    offered_in_files("main-1a2b3c4-ci", files),
+                    ["aarch64 qcow2"]
+                );
+                assert!(offered_in_files("main-1a2b3c4-ci", "[]").is_empty());
+                assert!(offered_in_files("main-1a2b3c4-ci", "not json").is_empty());
+            }
+
+            {
+                assert_eq!(split_status("{\"a\":1}\n200"), (200, "{\"a\":1}"));
+                assert_eq!(split_status("\n404"), (404, ""));
+                assert_eq!(split_status("garbage"), (0, ""));
+            }
+
+            {
+                let versions = r#"[
+              {"name": "tilo-vm-disk", "version": "feature-x-aaaaaaa", "created_at": "2026-09-22T10:00:00Z"},
+              {"name": "tilo-vm-disk", "version": "main-bbbbbbb", "created_at": "2026-09-21T10:00:00Z"},
+              {"name": "tilo-vm-disk", "version": "main-ccccccc", "created_at": "2026-09-20T10:00:00Z"},
+              {"name": "other", "version": "main-ddddddd", "created_at": "2026-09-23T10:00:00Z"}
+            ]"#;
+                assert_eq!(newest_tag(versions).as_deref(), Some("main-bbbbbbb"));
+                assert_eq!(newest_tag("[]"), None);
+                assert_eq!(candidate_tags(versions), ["main-bbbbbbb", "main-ccccccc"]);
+                let branches_only = r#"[
+              {"name": "tilo-vm-disk", "version": "feature-x-aaaaaaa-ci", "created_at": "2026-09-22T10:00:00Z"}
+            ]"#;
+                assert_eq!(candidate_tags(branches_only), ["feature-x-aaaaaaa-ci"]);
+            }
+
+            {
+                struct Writes(Vec<u8>);
+                impl Runner for Writes {
+                    fn output(
+                        &mut self,
+                        _command: &CommandLine,
+                    ) -> Result<crate::hypervisor::Output, CliError> {
+                        unimplemented_output()
+                    }
+                    fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
+                        let at = command.args.iter().position(|a| a == "--output").unwrap();
+                        std::fs::write(&command.args[at + 1], &self.0).unwrap();
+                        Ok(true)
+                    }
+                }
+                fn unimplemented_output() -> Result<crate::hypervisor::Output, CliError> {
+                    Err(CliError::InvalidInput("not used".into()))
+                }
+                let dir = tempfile::tempdir().unwrap();
+                let dest = dir.path().join("d.qcow2");
+                let good = Disk {
+                    arch: "x86_64".into(),
+                    format: "qcow2".into(),
+                    file: "d.qcow2".into(),
+                    url: "https://x/d.qcow2".into(),
+                    sha256: hex::encode(Sha256::digest(b"abc")),
+                    size: 3,
+                };
+                let auth = AuthHeader::new(None).unwrap();
+                let bad = Disk {
+                    sha256: "00".into(),
+                    ..good.clone()
+                };
+                assert!(matches!(
+                    fetch(&mut Writes(b"abc".to_vec()), &bad, &dest, &auth),
+                    Err(CliError::ChecksumMismatch { .. })
+                ));
+                assert!(
+                    !dest.with_extension("part").exists(),
+                    "a bad download is deleted"
+                );
+                fetch(&mut Writes(b"abc".to_vec()), &good, &dest, &auth).unwrap();
+                assert!(cached(&dest, &good));
+                fetch(&mut Writes(b"zzz".to_vec()), &good, &dest, &auth).unwrap();
+                assert_eq!(std::fs::read(&dest).unwrap(), b"abc");
+            }
+        }
+
+        phase registry_tokens_are_found_but_never_reach_the_command_line;
+        // Tokens are found in fgj and tea configs and never reach the command line.
+        {
+            {
+                let fgj = "default_host: code.tilo.so\nhosts:\n    code.tilo.so:\n        hostname: code.tilo.so\n        token: abc123\n    other.example:\n        token: nope\n";
+                assert_eq!(fgj_token(fgj, "code.tilo.so").as_deref(), Some("abc123"));
+                assert_eq!(fgj_token(fgj, "missing.example"), None);
+                let other_first = "hosts:\n  other.example:\n    token: nope\n  code.tilo.so:\n    user: q\n    token: \"xyz\"\n";
+                assert_eq!(
+                    fgj_token(other_first, "code.tilo.so").as_deref(),
+                    Some("xyz")
+                );
+                let tea = "logins:\n  - name: other\n    url: https://git.example\n    token: nope\n  - name: tilo\n    url: https://code.tilo.so\n    token: t0k\n    default: true\n";
+                assert_eq!(tea_token(tea, "code.tilo.so").as_deref(), Some("t0k"));
+                assert_eq!(tea_token(tea, "missing.example"), None);
+            }
+
+            {
+                let token = Token {
+                    value: "s3cret".into(),
+                    source: "test".into(),
+                };
+                let auth = AuthHeader::new(Some(&token)).unwrap();
+                let get = get_command("https://x/y", &auth);
+                let download = download_command("https://x/y", Path::new("/c/d.part"), &auth);
+                for command in [&get, &download] {
+                    assert!(
+                        !command.display().contains("s3cret"),
+                        "{}",
+                        command.display()
+                    );
+                    assert!(command.args.iter().any(|a| a.starts_with('@')));
+                }
+                assert!(download.args.contains(&"--continue-at".to_owned()));
+                let anonymous = get_command("https://x/y", &AuthHeader::new(None).unwrap());
+                assert!(!anonymous.args.contains(&"--header".to_owned()));
+            }
+        }
     }
 
     const MANIFEST: &str = r#"{
@@ -637,147 +784,4 @@ mod tests {
          "sha256": "ab", "size": 3, "virtualSize": 10}
       ]
     }"#;
-
-    #[test]
-    fn published_disks_are_picked_verified_and_cached() {
-        {
-            let manifest: DiskManifest = serde_json::from_str(MANIFEST).unwrap();
-            assert_eq!(manifest.tag, "main-1a2b3c4");
-            assert!(manifest.pick("x86_64", "qcow2").is_some());
-            assert!(manifest.pick("aarch64", "qcow2").is_none());
-            assert!(manifest.pick("x86_64", format_for("hyperv")).is_none());
-            assert_eq!(manifest.offered(), ["x86_64 qcow2"]);
-            assert_eq!(
-                manifest_url("main-1a2b3c4", "x86_64"),
-                "https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk/main-1a2b3c4/tilo-vm-disk-x86_64.json"
-            );
-            assert_eq!(
-                files_url("main-1a2b3c4"),
-                "https://code.tilo.so/api/v1/packages/tilo/generic/tilo-vm-disk/main-1a2b3c4/files"
-            );
-        }
-
-        {
-            let files = r#"[
-              {"name": "tilo-vm-main-1a2b3c4-ci-aarch64.qcow2"},
-              {"name": "tilo-vm-main-1a2b3c4-ci-aarch64.qcow2.sha256"},
-              {"name": "tilo-vm-disk-aarch64.json"},
-              {"name": "tilo-vm-main-1a2b3c4-ci-x86_64.qcow2"}
-            ]"#;
-            assert_eq!(
-                offered_in_files("main-1a2b3c4-ci", files),
-                ["aarch64 qcow2"]
-            );
-            assert!(offered_in_files("main-1a2b3c4-ci", "[]").is_empty());
-            assert!(offered_in_files("main-1a2b3c4-ci", "not json").is_empty());
-        }
-
-        {
-            assert_eq!(split_status("{\"a\":1}\n200"), (200, "{\"a\":1}"));
-            assert_eq!(split_status("\n404"), (404, ""));
-            assert_eq!(split_status("garbage"), (0, ""));
-        }
-
-        {
-            let versions = r#"[
-              {"name": "tilo-vm-disk", "version": "feature-x-aaaaaaa", "created_at": "2026-09-22T10:00:00Z"},
-              {"name": "tilo-vm-disk", "version": "main-bbbbbbb", "created_at": "2026-09-21T10:00:00Z"},
-              {"name": "tilo-vm-disk", "version": "main-ccccccc", "created_at": "2026-09-20T10:00:00Z"},
-              {"name": "other", "version": "main-ddddddd", "created_at": "2026-09-23T10:00:00Z"}
-            ]"#;
-            assert_eq!(newest_tag(versions).as_deref(), Some("main-bbbbbbb"));
-            assert_eq!(newest_tag("[]"), None);
-            assert_eq!(candidate_tags(versions), ["main-bbbbbbb", "main-ccccccc"]);
-            let branches_only = r#"[
-              {"name": "tilo-vm-disk", "version": "feature-x-aaaaaaa-ci", "created_at": "2026-09-22T10:00:00Z"}
-            ]"#;
-            assert_eq!(candidate_tags(branches_only), ["feature-x-aaaaaaa-ci"]);
-        }
-
-        {
-            struct Writes(Vec<u8>);
-            impl Runner for Writes {
-                fn output(
-                    &mut self,
-                    _command: &CommandLine,
-                ) -> Result<crate::hypervisor::Output, CliError> {
-                    unimplemented_output()
-                }
-                fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
-                    let at = command.args.iter().position(|a| a == "--output").unwrap();
-                    std::fs::write(&command.args[at + 1], &self.0).unwrap();
-                    Ok(true)
-                }
-            }
-            fn unimplemented_output() -> Result<crate::hypervisor::Output, CliError> {
-                Err(CliError::InvalidInput("not used".into()))
-            }
-            let dir = tempfile::tempdir().unwrap();
-            let dest = dir.path().join("d.qcow2");
-            let good = Disk {
-                arch: "x86_64".into(),
-                format: "qcow2".into(),
-                file: "d.qcow2".into(),
-                url: "https://x/d.qcow2".into(),
-                sha256: hex::encode(Sha256::digest(b"abc")),
-                size: 3,
-            };
-            let auth = AuthHeader::new(None).unwrap();
-            let bad = Disk {
-                sha256: "00".into(),
-                ..good.clone()
-            };
-            assert!(matches!(
-                fetch(&mut Writes(b"abc".to_vec()), &bad, &dest, &auth),
-                Err(CliError::ChecksumMismatch { .. })
-            ));
-            assert!(
-                !dest.with_extension("part").exists(),
-                "a bad download is deleted"
-            );
-            fetch(&mut Writes(b"abc".to_vec()), &good, &dest, &auth).unwrap();
-            assert!(cached(&dest, &good));
-            fetch(&mut Writes(b"zzz".to_vec()), &good, &dest, &auth).unwrap();
-            assert_eq!(std::fs::read(&dest).unwrap(), b"abc");
-        }
-    }
-
-    /// Tokens are found in fgj and tea configs and never reach the command line.
-    #[test]
-    fn registry_tokens_are_found_but_never_reach_the_command_line() {
-        {
-            let fgj = "default_host: code.tilo.so\nhosts:\n    code.tilo.so:\n        hostname: code.tilo.so\n        token: abc123\n    other.example:\n        token: nope\n";
-            assert_eq!(fgj_token(fgj, "code.tilo.so").as_deref(), Some("abc123"));
-            assert_eq!(fgj_token(fgj, "missing.example"), None);
-            let other_first = "hosts:\n  other.example:\n    token: nope\n  code.tilo.so:\n    user: q\n    token: \"xyz\"\n";
-            assert_eq!(
-                fgj_token(other_first, "code.tilo.so").as_deref(),
-                Some("xyz")
-            );
-            let tea = "logins:\n  - name: other\n    url: https://git.example\n    token: nope\n  - name: tilo\n    url: https://code.tilo.so\n    token: t0k\n    default: true\n";
-            assert_eq!(tea_token(tea, "code.tilo.so").as_deref(), Some("t0k"));
-            assert_eq!(tea_token(tea, "missing.example"), None);
-        }
-
-        {
-            let token = Token {
-                value: "s3cret".into(),
-                source: "test".into(),
-            };
-            let auth = AuthHeader::new(Some(&token)).unwrap();
-            let get = get_command("https://x/y", &auth);
-            let download = download_command("https://x/y", Path::new("/c/d.part"), &auth);
-            for command in [&get, &download] {
-                assert!(
-                    !command.display().contains("s3cret"),
-                    "{}",
-                    command.display()
-                );
-                assert!(command.args.iter().any(|a| a.starts_with('@')));
-            }
-            assert!(download.args.contains(&"--continue-at".to_owned()));
-            let anonymous = get_command("https://x/y", &AuthHeader::new(None).unwrap());
-            assert!(!anonymous.args.contains(&"--header".to_owned()));
-        }
-    }
 }
