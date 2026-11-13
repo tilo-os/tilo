@@ -523,6 +523,16 @@ pub const KINDS: &[OriginKind] = &[
                 "Collection<session.arrangement_place>",
                 "Every place, showing a resource through a view; each names the strip it is in.",
             ),
+            field(
+                "queries",
+                "Collection<session.arrangement_query>",
+                "The queries the canvas stands while an app answers them.",
+            ),
+            field(
+                "refs",
+                "Collection<session.arrangement_ref>",
+                "The resources those queries found, each naming the query it is of.",
+            ),
         ],
     },
     OriginKind {
@@ -628,8 +638,12 @@ pub const KINDS: &[OriginKind] = &[
         fields: &[
             field("key", "Text", "Its id, as the record names it."),
             field("text", "Text", "What the person typed."),
-            field("app", "Text", "The app asked, by its canonical id."),
-            field("type", "Text", "The kind of resource the query names, as its app publishes it."),
+            field("in_app", "Text", "The app asked, by its canonical id."),
+            field(
+                "kind",
+                "Text",
+                "The kind of resource the query names, as its app publishes it.",
+            ),
             field(
                 "state",
                 "Text",
@@ -640,11 +654,6 @@ pub const KINDS: &[OriginKind] = &[
                 "Text",
                 "Why it failed, in the app's own words; empty while it does better.",
             ),
-            field(
-                "matches",
-                "Collection<session.arrangement_ref>",
-                "The resources it found, in the search's order.",
-            ),
         ],
     },
     OriginKind {
@@ -654,6 +663,7 @@ pub const KINDS: &[OriginKind] = &[
         derived: true,
         fields: &[
             field("key", "Text", "Its id, as `<query>/<number>`."),
+            field("query", "Text", "The query it is of, by its key."),
             field(
                 "address",
                 "Text",
@@ -661,7 +671,7 @@ pub const KINDS: &[OriginKind] = &[
             ),
             field("title", "Text", "What it is called."),
             field(
-                "type",
+                "kind",
                 "Text",
                 "Its kind, as its app publishes it (`tube.channel`).",
             ),

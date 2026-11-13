@@ -536,8 +536,8 @@ pub struct DeskStyleReading {
 /// The arrangement's readings are the session core's, which the page publishes through the same
 /// contract: what a shell reads from this door is what every host's arrangement holds.
 pub use tilo_session_core::arrangement::{
-    ArrangementPlaceReading, ArrangementReading, ArrangementRowReading, ArrangementStripReading,
-    ArrangementWorkspaceReading,
+    ArrangementPlaceReading, ArrangementQueryReading, ArrangementReading, ArrangementRefReading,
+    ArrangementRowReading, ArrangementStripReading, ArrangementWorkspaceReading,
 };
 
 /// A running application's tray item, as the bar shows it.
@@ -863,6 +863,8 @@ pub struct SessionOrigin {
     arrangement_rows: BTreeMap<String, Kept<ArrangementRowReading>>,
     arrangement_strips: BTreeMap<String, Kept<ArrangementStripReading>>,
     arrangement_places: BTreeMap<String, Kept<ArrangementPlaceReading>>,
+    arrangement_queries: BTreeMap<String, Kept<ArrangementQueryReading>>,
+    arrangement_refs: BTreeMap<String, Kept<ArrangementRefReading>>,
     tray: BTreeMap<String, Kept<TrayReading>>,
     /// The packages of other apps loaded into the shell's runtime, by app id: each the module
     /// the session handed for it.
@@ -888,6 +890,8 @@ impl SessionOrigin {
             arrangement_rows: BTreeMap::new(),
             arrangement_strips: BTreeMap::new(),
             arrangement_places: BTreeMap::new(),
+            arrangement_queries: BTreeMap::new(),
+            arrangement_refs: BTreeMap::new(),
             tray: BTreeMap::new(),
         }
     }
@@ -1429,6 +1433,36 @@ impl SessionOrigin {
                 item,
                 |p| p.key.clone(),
                 place_fields,
+            ));
+        }
+        if let (Some(field), Some(item)) = (ty.field("queries"), find("arrangement_query")) {
+            // The refs each query found live in their own collection, keyed by their `key`
+            // (as `<query>/<number>`), so a query's rows are the refs that name it.
+            let query = |q: &ArrangementQueryReading| q.key.clone();
+            writes.extend(sync_items(
+                &mut self.arrangement_queries,
+                &reading.queries,
+                root,
+                field,
+                item,
+                query,
+                readings::query_fields,
+            ));
+        }
+        if let (Some(field), Some(item)) = (ty.field("refs"), find("arrangement_ref")) {
+            let refs: Vec<ArrangementRefReading> = reading
+                .queries
+                .iter()
+                .flat_map(|query| query.matches.iter().cloned())
+                .collect();
+            writes.extend(sync_items(
+                &mut self.arrangement_refs,
+                &refs,
+                root,
+                field,
+                item,
+                |r| r.key.clone(),
+                readings::ref_fields,
             ));
         }
         // The keys of the items the writes insert, in their order: what the origin must find

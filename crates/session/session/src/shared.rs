@@ -61,6 +61,47 @@ impl Shared {
         {
             tracing::warn!(why, "an arranging action that waited could not be made");
         }
+        // A query the canvas stands asks its app for what it names; once the app's own records
+        // hold resources of that kind the app did not hold when it asked, the app has answered
+        // and the query settles (one match becomes the place; several, none or a failure stay
+        // with the query; shell.md §8).
+        let app_resources = self.services.borrow().resources();
+        let running: Vec<(
+            String,
+            arrangement::ArrangementQueryReading,
+            std::collections::BTreeSet<String>,
+        )> = arrangement
+            .queries_running()
+            .into_iter()
+            .filter_map(|query| {
+                let held = arrangement.held_when_asked(query.key.parse().ok()?)?;
+                Some((query.key.clone(), query, held))
+            })
+            .collect();
+        for (key, query, held) in running {
+            let fresh: Vec<arrangement::AnswerRef> = app_resources
+                .iter()
+                .flat_map(leaves)
+                .filter(|resource| {
+                    resource.kind == query.kind && !held.contains(resource.id.as_str())
+                })
+                .map(|resource| arrangement::AnswerRef {
+                    address: resource.id.as_str().to_owned(),
+                    title: resource.label.clone(),
+                    kind: resource.kind.clone(),
+                })
+                .collect();
+            if !fresh.is_empty() {
+                arrangement.answer_query_of(&key, Ok(fresh), underway);
+                continue;
+            }
+            // The app says its search failed: its root's reading holds `failed` and the reason the
+            // origin gave, and nothing of the query's kind came in — the query fails with it
+            // rather than searching forever (shell.md §8).
+            if let Some(reason) = search_failure(&self.services, &app_resources, &query.app) {
+                arrangement.answer_query_of(&key, Err(reason), underway);
+            }
+        }
     }
 
     /// Whom this device follows, as its own presence word says: the window of theirs shown here comes forward each
@@ -330,4 +371,54 @@ impl Shared {
             self.people.borrow().dismiss();
         }
     }
+}
+
+/// Every resource of `resource` and its children, deepest last: what an app publishes of a kind
+/// is found among these, as a search's answer is read off the app's own records.
+fn leaves(resource: &tilo_actions::ResourceSpec) -> Vec<&tilo_actions::ResourceSpec> {
+    let mut out = vec![resource];
+    for child in &resource.children {
+        out.extend(leaves(child));
+    }
+    out
+}
+
+/// Why the app `app` says its search failed, from its root reading: the app keeps the state of a
+/// search it ran and, on a failure, the reason its origin gave, and says `failed` in one field
+/// beside the other (`search_state` and `search_trouble` in the client that ships, but the fields
+/// a type names are its own). `None` while it still searches, or once it found something.
+fn search_failure(
+    services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
+    resources: &[tilo_actions::ResourceSpec],
+    app: &str,
+) -> Option<String> {
+    let belongs = |resource: &tilo_actions::ResourceSpec| {
+        resource.id.as_str().starts_with(&format!("tl:{app}:"))
+    };
+    // The app's root: its one resource of the type a query naming the app means.
+    let root = resources.iter().flat_map(leaves).find(|resource| {
+        belongs(resource) && resource.resource_type.as_ref().is_some_and(|ty| ty.root)
+    })?;
+    let reading = services.borrow().read(root.id.as_str())?;
+    // Every text the root's reading holds at its top level: the state of the fetch and the reason
+    // its origin gave sit beside the query it ran.
+    let texts: Vec<&str> = reading
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, value)| value.as_str())
+        .collect();
+    if !texts.iter().any(|text| *text == "failed") {
+        return None;
+    }
+    // The reason is a text that is not a state word the search passes through; the longest such is
+    // the origin's own words rather than the query kept beside them.
+    texts
+        .into_iter()
+        .filter(|text| {
+            !text.is_empty() && !matches!(text, &"searching" | &"done" | &"failed" | &"loading")
+        })
+        .max_by_key(|text| text.len())
+        .map(str::to_owned)
+        .or_else(|| Some("the search failed".to_owned()))
 }

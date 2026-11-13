@@ -10,7 +10,10 @@ use std::rc::Rc;
 use tilolang_tilo::origin::OriginCx;
 use tilolang_tilo::runtime::{ResourceRef, Value};
 
-use super::{ArrangementReading, Ask, SessionLink, SessionOrigin};
+use super::{
+    ArrangementQueryReading, ArrangementReading, ArrangementRefReading, Ask, SessionLink,
+    SessionOrigin,
+};
 
 impl SessionLink {
     /// The session published `reading` of the resource `id`, of the type `ty` (`<app>#<Type>`):
@@ -737,4 +740,34 @@ mod with_uses_tests {
             "the device's package is not even looked up: the runtime holds it"
         );
     }
+}
+
+/// The fields of a canvas query, as it is written into the shell's record. Its refs are the
+/// `refs` collection's, each naming its query by key.
+pub(super) fn query_fields(q: &ArrangementQueryReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", Value::Text(q.key.clone())),
+        ("text", Value::Text(q.text.clone())),
+        ("in_app", Value::Text(q.app.clone())),
+        ("kind", Value::Text(q.kind.clone())),
+        ("state", Value::Text(q.state.clone())),
+        ("reason", Value::Text(q.reason.clone())),
+    ]
+}
+
+/// The fields of a resource a query found, as it is written into the shell's record: its query by
+/// key, its address, its title and its kind.
+pub(super) fn ref_fields(r: &ArrangementRefReading) -> Vec<(&'static str, Value)> {
+    vec![
+        ("key", Value::Text(r.key.clone())),
+        ("query", Value::Text(query_of_ref_key(&r.key))),
+        ("address", Value::Text(r.address.clone())),
+        ("title", Value::Text(r.title.clone())),
+        ("kind", Value::Text(r.kind.clone())),
+    ]
+}
+
+/// The query a ref belongs to, from its key (`<query>/<number>`).
+fn query_of_ref_key(key: &str) -> String {
+    key.split('/').next().unwrap_or_default().to_owned()
 }

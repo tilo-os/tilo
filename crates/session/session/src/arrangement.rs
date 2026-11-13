@@ -22,8 +22,9 @@ use tilo_session_core::door::{Look, Published};
 use crate::activity::{Activity, now_seconds};
 
 pub use tilo_session_core::arrangement::{
-    Arrangement, ArrangementAction, Ask, Busy, Catalog, Find, Found, Item, OPERATION, PLACE_KIND,
-    PlaceReading, RECORD_RESOURCE, RESOURCE, ROW_KIND, Reading, RowReading, STRIP_KIND,
+    Answer, AnswerRef, Arrangement, ArrangementAction, ArrangementQueryReading,
+    ArrangementRefReading, Ask, AskOrigin, Busy, Catalog, Find, Found, Item, OPERATION, PLACE_KIND,
+    PlaceReading, QUERY_KIND, RECORD_RESOURCE, RESOURCE, ROW_KIND, Reading, RowReading, STRIP_KIND,
     StripReading, Surface, Target, WorkspaceReading, found, place_kind_resource, placed, resources,
     row_kind_resource, strip_kind_resource, tab_app,
 };
@@ -72,8 +73,9 @@ impl ArrangementDoor {
         busy: Rc<dyn Fn() -> Busy>,
         find: Find,
         ask: Ask,
+        ask_origin: AskOrigin,
     ) -> Self {
-        Self(Door::new(arrangement, busy, find, ask))
+        Self(Door::new(arrangement, busy, find, ask, ask_origin))
     }
 }
 
