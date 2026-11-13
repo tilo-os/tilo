@@ -39,6 +39,24 @@ fn char_key(s: &str) -> WindowEvent {
     ))
 }
 
+pub(super) struct GermanWindow {
+    before: String,
+}
+
+impl GermanWindow {
+    pub(super) fn new() -> Self {
+        let before = CATALOG.current_locale();
+        CATALOG.set_locale("de-DE");
+        Self { before }
+    }
+}
+
+impl Drop for GermanWindow {
+    fn drop(&mut self) {
+        CATALOG.set_locale(&self.before);
+    }
+}
+
 fn dispatch(app: &mut MailApp, ev: &WindowEvent, doc: &mut AutoCommit) -> bool {
     let (taffy, node) = app.test_layout.take().unwrap_or_else(|| {
         let mut taffy = TaffyTree::<()>::new();

@@ -4,46 +4,91 @@
 //! language says them there, and each carries the way it reads.
 
 use ui::i18n::ArgValue;
+use ui::widget::BannerKind;
 
 use crate::i18n::CATALOG;
-use crate::state::Notice;
+use crate::state::{Intent, Notice, SyncCause, SyncFailure};
 
-/// What a failed engine request says to the person: what did not happen,
-/// and why in their terms, never the protocol step that failed.
-pub(crate) fn engine_error_text(context: &str, message: &str, account: &str) -> Notice {
+/// What the list says about an account whose check failed, and it says it for
+/// as long as the failure lasts: what cannot be reached, what that means, and
+/// the one control that helps.
+pub(crate) struct SyncFailureText {
+    pub kind: BannerKind,
+    pub title: String,
+    pub message: Option<String>,
+    /// The control beside the words: check again, or open the account.
+    pub action: Option<SyncOffer>,
+}
+
+/// The way out of a failed check: a word, and what pressing it asks the app
+/// for.
+pub(crate) struct SyncOffer {
+    pub label: String,
+    pub intent: Intent,
+}
+
+/// The account's failure in the window's language.
+pub(crate) fn sync_failure(failure: &SyncFailure) -> SyncFailureText {
+    let account = ArgValue::Text(failure.account.clone());
+    match failure.cause {
+        // Somebody has to change the account, so the words lead there.
+        SyncCause::SignedOut => SyncFailureText {
+            kind: BannerKind::Warning,
+            title: CATALOG.t_args("mail-sync-signed-out", &[("account", account)]),
+            message: Some(CATALOG.t("mail-sync-signed-out-why")),
+            action: Some(SyncOffer {
+                label: CATALOG.t("mail-account-settings"),
+                intent: Intent::AccountSettings,
+            }),
+        },
+        // Nothing about the account is wrong, and Mail keeps trying: the
+        // words say the state and offer nothing to press.
+        SyncCause::Offline => SyncFailureText {
+            kind: BannerKind::Warning,
+            title: CATALOG.t("mail-sync-offline"),
+            message: Some(CATALOG.t("mail-sync-offline-why")),
+            action: None,
+        },
+        SyncCause::Unreachable => SyncFailureText {
+            kind: BannerKind::Error,
+            title: CATALOG.t_args("mail-sync-unreachable", &[("account", account)]),
+            message: None,
+            action: Some(SyncOffer {
+                label: CATALOG.t("mail-sync-check-again"),
+                intent: Intent::CheckMail,
+            }),
+        },
+    }
+}
+
+/// What stopped an account's check, from the words the engine failed with.
+pub(crate) fn sync_cause(message: &str) -> SyncCause {
     let lower = message.to_ascii_lowercase();
-    let signed_out = lower.contains("authentication")
-        || lower.contains("password")
-        || lower.contains("credential")
-        || lower.contains("oauth")
-        || lower.contains("sign in");
-    let offline = lower.contains("network unreachable");
-    // The account a failure is about, when the request that failed still
-    // names it: a late answer arrives after its account was forgotten.
-    let named = !account.is_empty();
-    let with_account = |key: &str| {
-        crate::i18n::t_args(
-            key,
-            &[
-                ("account", ArgValue::Text(account.to_owned())),
-                ("error", ArgValue::Text(message.to_owned())),
-            ],
-        )
-    };
+    if [
+        "authentication",
+        "password",
+        "credential",
+        "oauth",
+        "sign in",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        SyncCause::SignedOut
+    } else if lower.contains("network unreachable") {
+        SyncCause::Offline
+    } else {
+        SyncCause::Unreachable
+    }
+}
+
+/// What a failed engine request says to the person: what did not happen, and
+/// why in their terms, never the protocol step that failed. A check that fails
+/// is not here: the list says it for as long as it lasts ([`sync_failure`]).
+pub(crate) fn engine_error_text(context: &str, message: &str) -> Notice {
     let plain =
         |key: &str| crate::i18n::t_args(key, &[("error", ArgValue::Text(message.to_owned()))]);
     match context {
-        "connect" | "fetch" if signed_out => Notice::error(if named {
-            with_account("mail-notice-sign-in-failed-account")
-        } else {
-            crate::i18n::t("mail-notice-sign-in-failed")
-        }),
-        "connect" | "fetch" if offline => Notice::warning(crate::i18n::t("mail-notice-offline")),
-        "connect" | "fetch" => Notice::error(if named {
-            with_account("mail-notice-check-failed-account")
-        } else {
-            plain("mail-notice-check-failed")
-        }),
         "send" | "smtp" | crate::engine::SMTP_UNREACHED => {
             Notice::error(plain("mail-status-send-failed"))
         }

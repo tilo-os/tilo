@@ -193,6 +193,10 @@ const ACCOUNT_SETTINGS_LINK: &str = "settings://external_accounts";
 
 const ACCOUNT_ROUTE: &str = "mail.add-account";
 
+/// Checking the open account's mail again, the way a failed check's pill does
+/// when assistive technology activates it.
+const CHECK_ROUTE: &str = "mail.check";
+
 const NOTIFICATION_SCHEME: &str = "tilo-mail";
 const NOTIFICATION_TAG: &str = "mail-new";
 
@@ -722,8 +726,9 @@ impl MailApp {
                 st.selected = None;
             }
             "offline" => {
-                self.shared.borrow_mut().status =
-                    Some(Notice::warning(CATALOG.t("mail-notice-offline")));
+                let mut st = self.shared.borrow_mut();
+                let account = st.accounts.active_config().label().to_owned();
+                st.note_sync_failure(account, crate::state::SyncCause::Offline);
             }
             _ => {}
         }
@@ -868,8 +873,15 @@ impl Mailroom {
             account: request.account().to_owned(),
         };
         if engine.tx.send(request).is_err() {
-            self.shared.borrow_mut().status =
-                Some(Notice::error(CATALOG.t("mail-notice-server-unreachable")));
+            // The worker is gone: nothing this window asks will reach a
+            // server, so the list says so until a check works again.
+            let mut st = self.shared.borrow_mut();
+            let account = st
+                .accounts
+                .label_for(&pending.account)
+                .unwrap_or_else(|| pending.account.clone());
+            st.note_sync_failure(account, crate::state::SyncCause::Unreachable);
+            drop(st);
             self.dirty = true;
             return None;
         }
@@ -1244,6 +1256,9 @@ impl MailApp {
                     }
                 }
                 Intent::AccountSettings => self.open_account_settings(),
+                Intent::CheckMail => {
+                    let _ = self.state().refresh_active_folder();
+                }
             }
         }
         self.dirty = true;
@@ -2336,7 +2351,8 @@ impl MailApp {
                 .and_then(|thread| thread.message_ids.last().copied());
         }
         self.keep_on_device(st, account_id);
-        st.sync_error = None;
+        // The account works again: a failure it showed is over.
+        st.clear_sync_failure();
         report_account_sync(
             self.state().accounts_persist.root().as_deref(),
             account_id,
@@ -2477,6 +2493,7 @@ impl MailApp {
         &mut self,
         st: &mut MailState,
         request_id: EngineRequestId,
+        kind: EngineRequestKind,
         context: &str,
         message: &str,
     ) {
@@ -2495,16 +2512,17 @@ impl MailApp {
             .get(&request_id)
             .map_or_else(String::new, |pending| pending.account.clone());
         st.first_fetch = None;
-        let shown = engine_error_text(context, message, &account_id);
-        if matches!(context, "connect" | "fetch") {
-            // A failing account is said once, not on every refresh that
-            // fails the same way; it is said again when the failure changes.
-            if st.sync_error.as_deref() != Some(shown.text.as_str()) {
-                st.sync_error = Some(shown.text.clone());
-                st.status = Some(shown);
-            }
+        if matches!(kind, EngineRequestKind::Connect | EngineRequestKind::Fetch) {
+            // A check that fails is not a notice that fades: the list says it
+            // for as long as the account cannot be reached, in the window's
+            // language.
+            let account = st
+                .accounts
+                .label_for(&account_id)
+                .unwrap_or_else(|| account_id.clone());
+            st.note_sync_failure(account, crate::notice::sync_cause(message));
         } else {
-            st.status = Some(shown);
+            st.status = Some(engine_error_text(context, message));
         }
         let lower = detail.to_ascii_lowercase();
         let health = if ["auth", "login", "password", "oauth", "credential"]
@@ -2599,7 +2617,7 @@ impl MailApp {
                 context,
                 message,
             } if self.expects_engine_event(request_id, kind) => {
-                self.apply_engine_error(st, request_id, &context, &message);
+                self.apply_engine_error(st, request_id, kind, &context, &message);
             }
             EngineEvent::Completed { request_id, kind }
                 if self.expects_engine_event(request_id, kind) =>
@@ -3431,43 +3449,21 @@ impl MailApp {
                 .with_state(AccessState::new().focusable(true)),
         ];
         if state.bulk_selecting {
-            let selected = state.selected_bulk_ids().len();
-            let enabled = selected > 0;
-            let all_trash = enabled
-                && state.selected_bulk_ids().iter().all(|id| {
-                    state
-                        .mailbox
-                        .get(*id)
-                        .is_some_and(|message| message.folder == Folder::Trash)
-                });
-            children.push(
-                AccessNode::new(Role::Toolbar)
-                    .with_name(CATALOG.t_args(
-                        "mail-selected-count",
-                        &[("count", ArgValue::Text(selected.to_string()))],
-                    ))
-                    .with_children(
-                        Self::bulk_controls(all_trash)
-                            .into_iter()
-                            .map(|(name, action)| {
-                                AccessNode::new(Role::Button)
-                                    .with_name(name)
-                                    .with_action_target(format!("mail.bulk:{action}"))
-                                    .with_state(
-                                        AccessState::new()
-                                            .focusable(true)
-                                            .disabled(!enabled && action != "select-all"),
-                                    )
-                            })
-                            .collect(),
-                    ),
-            );
+            children.push(Self::bulk_bar_node(state));
         }
         children.extend(messages);
+        // An account that cannot be checked is said above the rows, and it
+        // stays said until a check works.
+        if let Some(failure) = &state.sync_error {
+            children.push(Self::sync_failure_node(&crate::notice::sync_failure(
+                failure,
+            )));
+        }
         // An empty mailbox no mail has arrived in offers the one thing a
         // person can do there: its account's settings, where the account is
-        // added, checked and fixed.
-        if total == 0 && state.mailbox.messages.is_empty() {
+        // added, checked and fixed. A mailbox whose check fails offers that
+        // failure's own control instead.
+        if total == 0 && state.mailbox.messages.is_empty() && state.sync_error.is_none() {
             children.push(Self::account_route_node());
         }
         let mut list = AccessNode::new(Role::List)
@@ -3483,6 +3479,64 @@ impl MailApp {
             ));
         }
         list
+    }
+
+    /// The selection's toolbar: what can be done to the messages chosen, and
+    /// how many are.
+    fn bulk_bar_node(state: &MailState) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let selected = state.selected_bulk_ids().len();
+        let enabled = selected > 0;
+        let all_trash = enabled
+            && state.selected_bulk_ids().iter().all(|id| {
+                state
+                    .mailbox
+                    .get(*id)
+                    .is_some_and(|message| message.folder == Folder::Trash)
+            });
+        AccessNode::new(Role::Toolbar)
+            .with_name(CATALOG.t_args(
+                "mail-selected-count",
+                &[("count", ArgValue::Text(selected.to_string()))],
+            ))
+            .with_children(
+                Self::bulk_controls(all_trash)
+                    .into_iter()
+                    .map(|(name, action)| {
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_action_target(format!("mail.bulk:{action}"))
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .disabled(!enabled && action != "select-all"),
+                            )
+                    })
+                    .collect(),
+            )
+    }
+
+    /// A failed check as the window's semantics say it: the words the list
+    /// paints, and the control that helps, as its accessible control.
+    fn sync_failure_node(text: &crate::notice::SyncFailureText) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut node = AccessNode::new(Role::Group).with_name(text.title.clone());
+        if let Some(message) = &text.message {
+            node = node.with_description(message.clone());
+        }
+        if let Some(offer) = &text.action {
+            let route = match offer.intent {
+                Intent::CheckMail => CHECK_ROUTE,
+                _ => ACCOUNT_ROUTE,
+            };
+            node = node.with_children(vec![
+                AccessNode::new(Role::Button)
+                    .with_name(offer.label.clone())
+                    .with_action_target(route)
+                    .with_state(AccessState::new().focusable(true)),
+            ]);
+        }
+        node
     }
 
     fn row_title(message: &crate::model::Message) -> String {
@@ -4153,6 +4207,10 @@ impl Widget for MailApp {
         }
         if target == ACCOUNT_ROUTE {
             self.open_account_settings();
+            return true;
+        }
+        if target == CHECK_ROUTE {
+            let _ = self.state().refresh_active_folder();
             return true;
         }
 

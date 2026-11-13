@@ -960,15 +960,17 @@ fn a_late_engine_error_stays_with_the_account_that_asked() {
         })
         .unwrap();
     app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
-    let status = app
+    let said = app
         .shared
         .borrow()
-        .status
+        .sync_error
         .clone()
-        .map(|notice| notice.text)
-        .unwrap_or_default();
-    assert!(status.contains("asking@example.test"), "{status}");
-    assert!(!status.contains("selected@example.test"), "{status}");
+        .expect("the failure is kept for the list to show");
+    assert!(said.account.contains("asking@example.test"), "{said:?}");
+    assert!(
+        !said.account.contains("selected@example.test"),
+        "the account selected since is not blamed: {said:?}"
+    );
     let root = app.accounts_persist_root().expect("sandboxed profile");
     let health = accounts::AccountSyncStatusStore::load_in(&root);
     assert_eq!(
@@ -983,6 +985,133 @@ fn a_late_engine_error_stays_with_the_account_that_asked() {
             .is_none()
     );
 }
+
+/// Whether a window's semantics say `fragment`, in its own node or below it.
+fn window_says(node: &ui::a11y::AccessNode, fragment: &str) -> bool {
+    node.name
+        .as_deref()
+        .is_some_and(|name| name.contains(fragment))
+        || node
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains(fragment))
+        || node
+            .children
+            .iter()
+            .any(|child| window_says(child, fragment))
+}
+
+/// A check that cannot run is a state the window keeps, not a notice that
+/// fades: the list says which account cannot be reached until a check works.
+#[test]
+fn an_unreachable_account_stays_said_in_the_window_until_a_check_works() {
+    let (mut app, mut doc) = app();
+    let (outgoing, outgoing_rx) = std::sync::mpsc::channel();
+    let (incoming, incoming_rx) = std::sync::mpsc::channel();
+    app.state().engine = Some(EngineHandle {
+        tx: outgoing,
+        rx: incoming_rx,
+    });
+    let account = app.shared.borrow().accounts.active_config();
+    let request = app
+        .state()
+        .post_engine(EngineRequest::fetch(account.clone(), Folder::Inbox))
+        .expect("the fetch went to the engine");
+    assert_eq!(outgoing_rx.try_recv().unwrap().account(), account.email);
+    incoming
+        .send(EngineEvent::Error {
+            request_id: request,
+            kind: EngineRequestKind::Fetch,
+            context: "fetch".into(),
+            message: "connection refused".into(),
+        })
+        .unwrap();
+    app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
+
+    // Nothing fades: no toast carries the failure.
+    app.show_status();
+    assert_eq!(
+        app.nav.toast_text(),
+        None,
+        "a check that fails is not a notice that fades"
+    );
+    let said = app
+        .shared
+        .borrow()
+        .sync_error
+        .clone()
+        .expect("the failure is kept for the list to show");
+    assert_eq!(said.account, account.label());
+    assert_eq!(said.cause, crate::state::SyncCause::Unreachable);
+
+    // The window's own tree says it, with the way out beside it.
+    app.layout_for_test(1100.0, 780.0);
+    let window = app
+        .accessibility()
+        .expect("an open Mail window has semantics");
+    assert!(
+        window_says(&window, &format!("Can’t reach {}", account.label())),
+        "the list says which account cannot be reached"
+    );
+    assert!(
+        window_says(&window, "Try again"),
+        "and offers to check again"
+    );
+
+    // The words are resolved when they are shown, so the same state reads in
+    // the window's language: German here, and English again after.
+    {
+        let _german = GermanWindow::new();
+        let window = app
+            .accessibility()
+            .expect("an open Mail window has semantics");
+        assert!(
+            window_says(
+                &window,
+                &format!("{} ist nicht erreichbar", account.label())
+            ),
+            "a German window says which account cannot be reached"
+        );
+        assert!(window_says(&window, "Erneut versuchen"));
+    }
+    let window = app
+        .accessibility()
+        .expect("an open Mail window has semantics");
+    assert!(window_says(&window, "Can’t reach"));
+
+    // A check that works clears it.
+    let again = app
+        .state()
+        .post_engine(EngineRequest::fetch(account.clone(), Folder::Inbox))
+        .expect("the second fetch went to the engine");
+    assert_eq!(outgoing_rx.try_recv().unwrap().account(), account.email);
+    incoming
+        .send(EngineEvent::Fetched {
+            request_id: again,
+            account_id: account.email,
+            folder: Folder::Inbox,
+            synced: crate::sync::Synced::default(),
+        })
+        .unwrap();
+    app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
+    assert_eq!(
+        app.shared.borrow().sync_error,
+        None,
+        "the account answers again, so the list stops saying it failed"
+    );
+    let window = app
+        .accessibility()
+        .expect("an open Mail window has semantics");
+    assert!(
+        !window_says(&window, "Can’t reach"),
+        "the words are gone from the window"
+    );
+}
+
+/// What the document still has to tell the server goes to the engine on
+/// the account it belongs to, and the engine's acknowledgement records it
+/// as applied; a refusal leaves it to tell, and an update for an account
+/// this device does not have is left to a device that has it.
 #[test]
 fn server_updates_go_to_the_engine_and_its_acknowledgement_settles_them() {
     type Outcome = Rc<RefCell<Option<Result<(), String>>>>;

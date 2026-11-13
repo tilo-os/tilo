@@ -196,26 +196,6 @@ fn a_fresh_window_offers_adding_an_account() {
     crate::i18n::CATALOG.set_locale("en-US");
 }
 
-/// A window that speaks German for the length of one test, then returns to
-/// the language the rest of the suite pins.
-struct GermanWindow {
-    before: String,
-}
-
-impl GermanWindow {
-    fn new() -> Self {
-        let before = CATALOG.current_locale();
-        CATALOG.set_locale("de-DE");
-        Self { before }
-    }
-}
-
-impl Drop for GermanWindow {
-    fn drop(&mut self) {
-        CATALOG.set_locale(&self.before);
-    }
-}
-
 /// A German Mail says its notices in German, and every notice still reads the
 /// way it was chosen: translating the words never turns a failure into a
 /// success.
@@ -223,20 +203,45 @@ impl Drop for GermanWindow {
 fn a_german_window_says_its_notices_in_german() {
     let _german = GermanWindow::new();
 
-    let failure = engine_error_text("fetch", "authentication failed", "anna@example.test");
-    assert_eq!(failure.kind, ToastKind::Error, "{}", failure.text);
-    assert!(
-        failure.text.contains("Anmeldung bei anna@example.test"),
-        "the account that failed is named in German: {}",
-        failure.text
+    // A check that fails stays said in the list, and a German window says it
+    // in German: the account it names is the one that could not be reached,
+    // and the way out is offered there too.
+    let unreachable = crate::notice::sync_failure(&crate::state::SyncFailure {
+        account: "anna@example.test".into(),
+        cause: crate::state::SyncCause::Unreachable,
+    });
+    assert_eq!(unreachable.title, "anna@example.test ist nicht erreichbar");
+    assert_eq!(
+        unreachable
+            .action
+            .as_ref()
+            .map(|offer| offer.label.as_str()),
+        Some("Erneut versuchen")
     );
 
-    let offline = engine_error_text("fetch", "network unreachable", "anna@example.test");
-    assert_eq!(offline.kind, ToastKind::Warning, "{}", offline.text);
-    assert!(
-        offline.text.starts_with("Du bist offline"),
-        "{}",
-        offline.text
+    let refused = crate::notice::sync_failure(&crate::state::SyncFailure {
+        account: "anna@example.test".into(),
+        cause: crate::state::SyncCause::SignedOut,
+    });
+    assert_eq!(
+        refused.title,
+        "Anmeldung bei anna@example.test nicht möglich"
+    );
+    assert_eq!(
+        refused.action.as_ref().map(|offer| offer.label.as_str()),
+        Some("Kontoeinstellungen öffnen"),
+        "a sign-in failure leads to the account that has to change"
+    );
+    assert_eq!(
+        refused.message.as_deref(),
+        Some("Prüfe das Passwort in den Einstellungen unter Externe Konten.")
+    );
+
+    // A send that fails is still a notice that fades, and it reads in German.
+    let send = engine_error_text("send", "connection reset");
+    assert_eq!(
+        send.text,
+        "Die Nachricht ließ sich nicht senden: connection reset"
     );
 
     let (mut app, _doc) = app();

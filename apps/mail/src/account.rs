@@ -298,6 +298,15 @@ impl AccountStore {
             .unwrap_or_default()
     }
 
+    /// The name the person knows the account `id` by: its display name, or
+    /// its address. `None` for an account this window no longer holds.
+    pub fn label_for(&self, id: &str) -> Option<String> {
+        self.accounts
+            .iter()
+            .find(|account| account.id == id || account.config.email == id)
+            .map(|account| account.config.label().to_owned())
+    }
+
     pub fn set_active(&mut self, idx: usize) {
         if idx < self.accounts.len() {
             self.active = idx;

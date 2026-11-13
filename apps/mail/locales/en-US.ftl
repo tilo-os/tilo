@@ -11,7 +11,7 @@ mail-first-run-action = Open External accounts
 ## The empty message list: what is not here, and the account its mail would
 ## come from while none has arrived. { $folder } is the folder's own name.
 mail-zero-nothing-yet = Nothing has arrived yet
-mail-zero-account-settings = Open account settings
+mail-account-settings = Open account settings
 mail-zero-folder = No messages in { $folder }
 
 ## Compose window
@@ -106,7 +106,6 @@ mail-forward-too-large = { $count ->
    *[other] { $files } are more than one message can carry, so they are not attached
 }
 
-mail-account-secret-unavailable = This account's password could not be opened on this device. Check the account in Settings, under External accounts.
 mail-import-sign-in-required = Imported account settings require authentication. Sign in before connecting.
 
 ## Reader: an HTML message's remote content, links and format
@@ -238,10 +237,15 @@ mail-folder-drafts = Drafts
 mail-folder-archive = Archive
 mail-folder-trash = Trash
 mail-folder-junk = Junk
-mail-refresh-offline = Cannot refresh { $folder } for { $account } while IMAP is offline
 
 ## The window bar's slots
 mail-bulk-done = Done
+mail-archive-message = Archive
+mail-mark-read-message = Mark read
+mail-mark-unread-message = Mark unread
+mail-junk = Mark as junk
+mail-unstar = Remove star
+mail-move-to-trash = Move to Trash
 mail-delete = Delete
 mail-delete-permanently = Delete permanently
 mail-reply = Reply
@@ -300,13 +304,16 @@ mail-copies = Mail on your devices
 mail-copies-keep-copies = Keep fetched mail
 mail-copies-forget-copies = Forget fetched mail
 
+## An account that cannot be checked: what the list says there, for as long
+## as the failure lasts. { $account } is the name the person knows it by.
+mail-sync-unreachable = Can’t reach { $account }
+mail-sync-check-again = Try again
+mail-sync-signed-out = Can’t sign in to { $account }
+mail-sync-signed-out-why = Check its password in Settings, under External accounts.
+mail-sync-offline = You’re offline
+mail-sync-offline-why = New mail arrives when you’re back online.
+
 ## What Mail says once: what it did, what it could not do, and what is next
-mail-notice-server-unreachable = Mail couldn’t reach the mail server
-mail-notice-offline = You’re offline. New mail arrives when you’re back online.
-mail-notice-sign-in-failed = Can’t sign in. Check the account’s password in Settings, under External accounts.
-mail-notice-sign-in-failed-account = Can’t sign in to { $account }. Check its password in Settings, under External accounts.
-mail-notice-check-failed = Can’t check mail: { $error }
-mail-notice-check-failed-account = Can’t check mail for { $account }: { $error }
 mail-notice-sign-in-unfinished = Sign-in didn’t finish: { $error }
 mail-notice-server-failed = Couldn’t update the mail server: { $error }
 mail-notify-arrived = { $count ->

@@ -68,6 +68,29 @@ impl std::ops::Deref for Notice {
     }
 }
 
+/// Why an account's mail cannot be checked, as its last check found it. It
+/// stays in the window until a check works again, so a server that cannot be
+/// reached is a state the list shows rather than a notice that fades.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyncFailure {
+    /// The account the failed check was for, as the person knows it.
+    pub account: String,
+    /// What stopped the check, which decides what the list offers beside the
+    /// words.
+    pub cause: SyncCause,
+}
+
+/// What stopped a check, read from the words the engine failed with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncCause {
+    /// The server wants the person to sign in again.
+    SignedOut,
+    /// This device has no network.
+    Offline,
+    /// The server did not answer.
+    Unreachable,
+}
+
 pub(crate) fn moved_to(folder: Folder) -> String {
     crate::i18n::t_args(
         "mail-status-moved",
@@ -101,42 +124,37 @@ pub enum BulkAction {
 }
 
 impl BulkAction {
-    pub fn label(self) -> &'static str {
+    /// What the bar calls it: the same verb the one-message action uses,
+    /// except where acting on many says something else ("Move to Trash").
+    pub fn label(self) -> String {
         match self {
-            Self::Archive => "Archive",
-            Self::Delete => "Move to Trash",
-            Self::Purge => "Delete permanently",
-            Self::MarkRead => "Mark read",
-            Self::MarkUnread => "Mark unread",
+            Self::Archive => CtxAction::Archive.label(false, false),
+            Self::Delete => crate::i18n::t("mail-move-to-trash"),
+            Self::Purge => crate::i18n::t("mail-delete-permanently"),
+            Self::MarkRead => CtxAction::ToggleRead.label(false, false),
+            Self::MarkUnread => CtxAction::ToggleRead.label(true, false),
         }
     }
 }
 
 impl CtxAction {
+    /// The action's name in the window's language: the context menu, the
+    /// row's hover buttons, the bar, the reader and the tooltips all say this
+    /// one, so a German window names them all in German.
     pub fn label(self, read: bool, starred: bool) -> String {
-        match self {
-            CtxAction::Reply => "Reply".into(),
-            CtxAction::ReplyAll => "Reply all".into(),
-            CtxAction::Forward => "Forward".into(),
-            CtxAction::ToggleRead => {
-                if read {
-                    "Mark unread".into()
-                } else {
-                    "Mark read".into()
-                }
-            }
-            CtxAction::ToggleStar => {
-                if starred {
-                    "Remove star".into()
-                } else {
-                    "Star".into()
-                }
-            }
-            CtxAction::Archive => "Archive".into(),
-            CtxAction::Delete => "Delete".into(),
-            CtxAction::MoveToInbox => "Move to Inbox".into(),
-            CtxAction::Junk => "Mark as junk".into(),
-        }
+        crate::i18n::t(match self {
+            CtxAction::Reply => "mail-reply",
+            CtxAction::ReplyAll => "mail-reply-all",
+            CtxAction::Forward => "mail-forward",
+            CtxAction::ToggleRead if read => "mail-mark-unread-message",
+            CtxAction::ToggleRead => "mail-mark-read-message",
+            CtxAction::ToggleStar if starred => "mail-unstar",
+            CtxAction::ToggleStar => "mail-star",
+            CtxAction::Archive => "mail-archive-message",
+            CtxAction::Delete => "mail-delete",
+            CtxAction::MoveToInbox => "mail-move-to-inbox",
+            CtxAction::Junk => "mail-junk",
+        })
     }
 
     pub fn icon(self, read: bool) -> Icon {
@@ -184,6 +202,8 @@ pub enum Intent {
     ReaderMenu(MessageId, Point, Vec<ReaderChoice>),
     ConfirmBulkPurge,
     AccountSettings,
+    /// Check the open account's mail again: the way out of a failed check.
+    CheckMail,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -244,8 +264,9 @@ pub struct MailState {
     pub outbox_account: usize,
     pub outbox: Vec<QueuedMessage>,
     pub outbox_selected: Option<String>,
-    /// Why the active account cannot check mail, as last said; `None`
-    pub sync_error: Option<String>,
+    /// Why the active account cannot check mail, as last found; `None` while
+    /// it works. The list says it until a check works again.
+    pub sync_error: Option<SyncFailure>,
     pub wants_older: std::cell::Cell<bool>,
     pub first_fetch: Option<ui::arriving::ArrivalClock>,
     pub passed_over: HashMap<(String, Folder), crate::sync::Window>,
@@ -275,6 +296,27 @@ pub struct MailState {
 impl MailState {
     pub fn shared(state: MailState) -> Shared {
         Rc::new(RefCell::new(state))
+    }
+
+    /// The account `account` could not be checked, for `cause`: the list says
+    /// so until a check works again. A check that fails the same way changes
+    /// nothing, so a window refreshing into the same failure stays quiet.
+    pub fn note_sync_failure(&mut self, account: String, cause: SyncCause) {
+        let failure = SyncFailure { account, cause };
+        if self.sync_error.as_ref() != Some(&failure) {
+            self.sync_error = Some(failure);
+            self.dirty = true;
+        }
+        // What was still arriving is not coming: the failure is what there is
+        // to say about this account now.
+        self.first_fetch = None;
+    }
+
+    /// The account works again: the failure it showed is over.
+    pub fn clear_sync_failure(&mut self) {
+        if self.sync_error.take().is_some() {
+            self.dirty = true;
+        }
     }
 
     pub fn remote_allowed(&self, message: &crate::model::Message) -> bool {

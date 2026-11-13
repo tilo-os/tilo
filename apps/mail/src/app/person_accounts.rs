@@ -141,7 +141,13 @@ impl MailApp {
                 crate::custody::Released::Refused { account, error } => {
                     tracing::error!(%account, %error, "the session's account custody did not release this account's secret");
                     if active.as_deref() == Some(account.as_str()) {
-                        st.sync_error = Some(crate::i18n::t("mail-account-secret-unavailable"));
+                        // The account cannot sign in until its secret is
+                        // released, and the person fixes that in Settings.
+                        let label = st
+                            .accounts
+                            .label_for(&account)
+                            .unwrap_or_else(|| account.clone());
+                        st.note_sync_failure(label, crate::state::SyncCause::SignedOut);
                     }
                 }
             }

@@ -21,8 +21,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, RowAction, RowLeading,
-    ScrollRegion, SwipeAction, TaffyTreeExt, Widget,
+    AvatarFace, Banner, BannerContent, EmptyState, EmptyStateContent, Interaction, ListRowFace,
+    RowAction, RowLeading, ScrollRegion, SwipeAction, TaffyTreeExt, Widget,
 };
 
 use crate::i18n::CATALOG;
@@ -41,7 +41,7 @@ pub(crate) fn zero_state(has_messages: bool, folder: Folder) -> ZeroState {
         return ZeroState {
             icon: Icon::Inbox,
             title: crate::i18n::t("mail-zero-nothing-yet"),
-            action: Some(crate::i18n::t("mail-zero-account-settings")),
+            action: Some(crate::i18n::t("mail-account-settings")),
         };
     }
     ZeroState {
@@ -57,27 +57,53 @@ pub(crate) fn zero_state(has_messages: bool, folder: Folder) -> ZeroState {
     }
 }
 
-fn row_actions(starred: bool) -> [(CtxAction, RowAction<'static>); 3] {
+/// What a row's own verbs are called, in the window's language: the hover
+/// buttons and the swipe say what the context menu and the bar say.
+#[derive(Clone, Debug)]
+struct RowLabels {
+    star: String,
+    unstar: String,
+    archive: String,
+    delete: String,
+}
+
+impl RowLabels {
+    fn of() -> Self {
+        Self {
+            star: CtxAction::ToggleStar.label(false, false),
+            unstar: CtxAction::ToggleStar.label(false, true),
+            archive: CtxAction::Archive.label(false, false),
+            delete: CtxAction::Delete.label(false, false),
+        }
+    }
+}
+
+/// The actions a row shows while the pointer is over it.
+fn row_actions(labels: &RowLabels, starred: bool) -> [(CtxAction, RowAction<'_>); 3] {
     [
         (
             CtxAction::ToggleStar,
             RowAction {
                 icon: Icon::Star,
-                label: if starred { "Remove star" } else { "Star" },
+                label: if starred {
+                    &labels.unstar
+                } else {
+                    &labels.star
+                },
             },
         ),
         (
             CtxAction::Archive,
             RowAction {
                 icon: Icon::Archive,
-                label: "Archive",
+                label: &labels.archive,
             },
         ),
         (
             CtxAction::Delete,
             RowAction {
                 icon: Icon::Trash2,
-                label: "Delete",
+                label: &labels.delete,
             },
         ),
     ]
@@ -98,11 +124,14 @@ struct QueuedSlot {
 
 const OLDER_AHEAD_ROWS: u32 = 10;
 
-const SWIPE_ARCHIVE: SwipeAction<'static> = SwipeAction {
-    icon: Icon::Archive,
-    label: "Archive",
-    destructive: false,
-};
+/// The swipe across a row: it archives the message when it completes.
+fn swipe_archive(labels: &RowLabels) -> SwipeAction<'_> {
+    SwipeAction {
+        icon: Icon::Archive,
+        label: &labels.archive,
+        destructive: false,
+    }
+}
 
 #[derive(Clone, Debug)]
 struct Slot {
@@ -215,7 +244,12 @@ pub struct MessageList {
     hovered_drawing: Option<Rect>,
     hovered_presented: Option<Rect>,
     arriving_step: Option<ui::arriving::Step>,
-    zero_action: Option<Rect>,
+    zero_action: Option<(Rect, Intent)>,
+    /// The failed check's control as last painted, in the list's banner or in
+    /// the empty list's words: the way out of a check that cannot run.
+    sync_action: Option<(Rect, Intent)>,
+    /// What a row's own verbs are called, in the window's language.
+    labels: RowLabels,
 }
 
 impl MessageList {
@@ -237,6 +271,8 @@ impl MessageList {
             hovered_presented: None,
             arriving_step: None,
             zero_action: None,
+            sync_action: None,
+            labels: RowLabels::of(),
         }
     }
 
@@ -262,12 +298,24 @@ impl MessageList {
             .find(|slot| slot.band.y0 <= point.y && point.y < slot.band.y1)
     }
 
-    fn action_at(slot: &Slot, point: Point) -> Option<CtxAction> {
+    /// The one control a failed check, or a mailbox no mail has arrived in,
+    /// offers when `point` is on it: its press asks the app for the same thing
+    /// its accessible control does.
+    fn route_at(&self, point: Point) -> Option<Intent> {
+        self.sync_action
+            .iter()
+            .chain(self.zero_action.iter())
+            .find(|(pill, _)| pill.contains(point))
+            .map(|(_, intent)| intent.clone())
+    }
+
+    /// The hover action under `point` in `slot`, as painted.
+    fn action_at(&self, slot: &Slot, point: Point) -> Option<CtxAction> {
         slot.actions
             .iter()
             .position(|rect| rect.contains(point))
             .and_then(|index| {
-                row_actions(slot.starred)
+                row_actions(&self.labels, slot.starred)
                     .get(index)
                     .map(|(action, _)| *action)
             })
@@ -301,7 +349,7 @@ impl MessageList {
             state.toggle_bulk_selection(slot.id);
             return true;
         }
-        if let Some(action) = Self::action_at(&slot, point) {
+        if let Some(action) = self.action_at(&slot, point) {
             state.apply_message_action(doc, slot.id, action);
             return true;
         }
@@ -376,8 +424,8 @@ impl MessageList {
     }
 }
 
-fn action_rects(starred: bool, rect: Rect, theme: &Theme) -> Vec<Rect> {
-    let actions = row_actions(starred);
+fn action_rects(labels: &RowLabels, starred: bool, rect: Rect, theme: &Theme) -> Vec<Rect> {
+    let actions = row_actions(labels, starred);
     let faces: Vec<RowAction<'_>> = actions.iter().map(|(_, action)| *action).collect();
     ListRowFace::new("")
         .subtitle("")
@@ -546,6 +594,87 @@ impl MessageList {
         }
     }
 
+    /// Paint the rows that stand in `list`, under whatever the header and a
+    /// failed check left there, and remember where each one and its buttons
+    /// are.
+    fn paint_rows(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        state: &MailState,
+        rows: &[(MessageId, usize)],
+        list: Rect,
+        t: Affine,
+        theme: &Theme,
+    ) {
+        self.row_h = ListRowFace::new("Ag")
+            .subtitle("Ag")
+            .secondary("Ag")
+            .height(ctx.text, theme);
+        let unscrolled = RowFrame::new(list, self.row_h, false, theme);
+        self.region
+            .set_content_size(list.width(), unscrolled.content_height(rows.len(), theme));
+        // Rows stop short of the scroll bar when the list overflows.
+        let frame = RowFrame::new(list, self.row_h, self.region.overflows_vertically(), theme);
+        self.reveal(rows, state.selected, frame);
+        let scroll = self.region.offset().y;
+
+        let selected_rows = selected_rows(state, rows);
+        ctx.scene
+            .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &list);
+        let mut slots = Vec::with_capacity(rows.len());
+        for (index, (id, len)) in rows.iter().enumerate() {
+            let band = frame.band(index, scroll);
+            let rect = frame.row(index, scroll);
+            let starred = state.mailbox.get(*id).is_some_and(|m| m.starred);
+            let shown = band.y1 >= list.y0 && band.y0 <= list.y1;
+            let slot = Slot {
+                id: *id,
+                band,
+                rect,
+                starred,
+                messages: *len,
+                // Only a row on screen can be pointed at; one scrolled away
+                // costs no layout of its buttons.
+                actions: if shown {
+                    action_rects(&self.labels, starred, rect, theme)
+                } else {
+                    Vec::new()
+                },
+            };
+            if shown {
+                self.paint_row(
+                    ctx,
+                    state,
+                    &slot,
+                    RowState {
+                        selected: selected_rows.get(index).copied().unwrap_or(false),
+                        previous_selected: index
+                            .checked_sub(1)
+                            .and_then(|above| selected_rows.get(above).copied())
+                            .unwrap_or(false),
+                        next_selected: selected_rows.get(index + 1).copied(),
+                    },
+                );
+            }
+            slots.push(slot);
+        }
+        ctx.scene.pop_layer();
+        // Near the last row, the older mail is fetched before it is reached.
+        if let Some(last) = slots.last()
+            && last.band.y0 - list.y1 < self.row_h * f64::from(OLDER_AHEAD_ROWS)
+        {
+            state.wants_older.set(true);
+        }
+        self.region.note_shown(t, theme);
+        self.region.paint_bars(ctx.scene, t, theme);
+        self.hovered_drawing = self
+            .pointer
+            .filter(|point| list.contains(*point))
+            .and_then(|point| slots.iter().find(|slot| slot.rect.contains(point)))
+            .map(|slot| slot.band.union(slot.rect).inflate(2.0, 2.0));
+        self.slots = slots;
+    }
+
     fn paint_row(&self, ctx: &mut PaintCtx<'_>, state: &MailState, slot: &Slot, row: RowState) {
         let hovered = self
             .pointer
@@ -553,7 +682,7 @@ impl MessageList {
         let Some(text) = RowText::of(slot.id, state) else {
             return;
         };
-        let actions = row_actions(slot.starred);
+        let actions = row_actions(&self.labels, slot.starred);
         let action_faces: Vec<RowAction<'_>> = actions.iter().map(|(_, action)| *action).collect();
         let image = state.avatars.image(text.email);
         let avatar = AvatarFace::new(&text.sender, text.email).image(image.as_ref());
@@ -589,7 +718,7 @@ impl MessageList {
             face = face.separator(next_selected);
         }
         if let Some(press) = self.press.filter(|p| p.id == slot.id && p.offset > 0.0) {
-            face = face.swiped(SWIPE_ARCHIVE, press.offset);
+            face = face.swiped(swipe_archive(&self.labels), press.offset);
         }
         face.paint(ctx, slot.rect);
         if text.unread {
@@ -646,7 +775,7 @@ fn paint_unread_dot(ctx: &mut PaintCtx<'_>, face: &ListRowFace<'_>, row: Rect) {
 }
 
 /// The empty list's face: why there is nothing here, and what to do next.
-fn paint_zero_state(ctx: &mut PaintCtx<'_>, r: Rect, state: &MailState) -> Option<Rect> {
+fn paint_zero_state(ctx: &mut PaintCtx<'_>, r: Rect, state: &MailState) -> Option<(Rect, Intent)> {
     let zero = zero_state(!state.mailbox.messages.is_empty(), state.folder);
     EmptyState::paint(
         ctx,
@@ -659,6 +788,57 @@ fn paint_zero_state(ctx: &mut PaintCtx<'_>, r: Rect, state: &MailState) -> Optio
         },
         Point::new(-1.0, -1.0),
     )
+    .map(|pill| (pill, Intent::AccountSettings))
+}
+
+/// The failed check, as painted above the rows: what cannot be reached, what
+/// it means, and the way out. Returns where the way out is and how tall the
+/// words are, so the rows start under them.
+fn paint_sync_banner(
+    ctx: &mut PaintCtx<'_>,
+    r: Rect,
+    text: &crate::notice::SyncFailureText,
+    pointer: Option<Point>,
+) -> (Option<(Rect, Intent)>, f64) {
+    let content = BannerContent {
+        message: text.message.as_deref().map(std::borrow::Cow::Borrowed),
+        action: text.action.as_ref().map(|offer| offer.label.as_str()),
+        ..BannerContent::new(text.kind, &text.title)
+    };
+    let height = Banner::height(&content, r.width(), ctx.text, ctx.theme);
+    let rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + height);
+    let hit = Banner::paint(
+        ctx,
+        rect,
+        &content,
+        pointer.unwrap_or(Point::new(-1.0, -1.0)),
+    );
+    let offer = text.action.as_ref().map(|offer| offer.intent.clone());
+    (hit.action.zip(offer), height)
+}
+
+/// The empty list of an account whose check failed: what cannot be reached,
+/// and the one control that helps. Returns it, so a press reaches the same
+/// place the window's own control does.
+fn paint_failure_state(
+    ctx: &mut PaintCtx<'_>,
+    r: Rect,
+    text: &crate::notice::SyncFailureText,
+) -> Option<(Rect, Intent)> {
+    EmptyState::paint(
+        ctx,
+        r,
+        &EmptyStateContent {
+            icon: Some(ui::icons::Icon::WifiOff),
+            title: &text.title,
+            message: text.message.as_deref(),
+            action_label: text.action.as_ref().map(|offer| offer.label.as_str()),
+            error: text.kind == ui::widget::BannerKind::Error,
+            ..EmptyStateContent::new("")
+        },
+        Point::new(-1.0, -1.0),
+    )
+    .zip(text.action.as_ref().map(|offer| offer.intent.clone()))
 }
 
 impl Widget for MessageList {
@@ -689,101 +869,53 @@ impl Widget for MessageList {
         let shared = self.shared.clone();
         let state = shared.borrow();
         self.theme = theme.clone();
-        self.region.set_viewport(r, theme);
         self.zero_action = None;
+        self.sync_action = None;
+        self.labels = RowLabels::of();
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
         if state.outbox_open {
             // The outbox is a place of its own: what waits to leave, and why
             // what has not left has not. It is not a folder of the mailbox,
             // so none of a folder's rows or gestures are here.
+            self.region.set_viewport(r, theme);
             self.slots.clear();
             self.paint_outbox(&mut ctx, &state);
             return;
         }
         self.queued.clear();
         let rows = state.list_rows();
+        // A check that cannot run is the list's state, not a notice that
+        // fades: its words stand above the rows, or in the place the rows
+        // would be while there are none.
+        let failure = state.sync_error.as_ref().map(crate::notice::sync_failure);
+        let mut list = r;
+        if let (Some(text), false) = (&failure, rows.is_empty()) {
+            let (action, height) = paint_sync_banner(&mut ctx, r, text, self.pointer);
+            self.sync_action = action;
+            list.y0 = (r.y0 + height).min(r.y1);
+        }
+        self.region.set_viewport(list, theme);
         if rows.is_empty()
             && let Some(clock) = &state.first_fetch
         {
             self.slots.clear();
-            self.region.set_content_size(r.width(), 0.0);
+            self.region.set_content_size(list.width(), 0.0);
             let now = ui::motion::frame_now();
-            self.arriving_step = Some(paint_arriving_rows(&mut ctx, r, clock, now));
+            self.arriving_step = Some(paint_arriving_rows(&mut ctx, list, clock, now));
             return;
         }
         self.arriving_step = None;
         if rows.is_empty() {
             self.slots.clear();
-            self.region.set_content_size(r.width(), 0.0);
-            self.zero_action = paint_zero_state(&mut ctx, r, &state);
+            self.region.set_content_size(list.width(), 0.0);
+            self.zero_action = match &failure {
+                Some(text) => paint_failure_state(&mut ctx, list, text),
+                None => paint_zero_state(&mut ctx, list, &state),
+            };
             return;
         }
 
-        self.row_h = ListRowFace::new("Ag")
-            .subtitle("Ag")
-            .secondary("Ag")
-            .height(ctx.text, theme);
-        let unscrolled = RowFrame::new(r, self.row_h, false, theme);
-        self.region
-            .set_content_size(r.width(), unscrolled.content_height(rows.len(), theme));
-        let frame = RowFrame::new(r, self.row_h, self.region.overflows_vertically(), theme);
-        self.reveal(&rows, state.selected, frame);
-        let scroll = self.region.offset().y;
-
-        let selected_rows = selected_rows(&state, &rows);
-        ctx.scene
-            .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &r);
-        let mut slots = Vec::with_capacity(rows.len());
-        for (index, (id, len)) in rows.iter().enumerate() {
-            let band = frame.band(index, scroll);
-            let rect = frame.row(index, scroll);
-            let starred = state.mailbox.get(*id).is_some_and(|m| m.starred);
-            let shown = band.y1 >= r.y0 && band.y0 <= r.y1;
-            let slot = Slot {
-                id: *id,
-                band,
-                rect,
-                starred,
-                messages: *len,
-                // Only a row on screen can be pointed at; one scrolled away
-                // costs no layout of its buttons.
-                actions: if shown {
-                    action_rects(starred, rect, theme)
-                } else {
-                    Vec::new()
-                },
-            };
-            if shown {
-                self.paint_row(
-                    &mut ctx,
-                    &state,
-                    &slot,
-                    RowState {
-                        selected: selected_rows.get(index).copied().unwrap_or(false),
-                        previous_selected: index
-                            .checked_sub(1)
-                            .and_then(|above| selected_rows.get(above).copied())
-                            .unwrap_or(false),
-                        next_selected: selected_rows.get(index + 1).copied(),
-                    },
-                );
-            }
-            slots.push(slot);
-        }
-        ctx.scene.pop_layer();
-        if let Some(last) = slots.last()
-            && last.band.y0 - r.y1 < self.row_h * f64::from(OLDER_AHEAD_ROWS)
-        {
-            state.wants_older.set(true);
-        }
-        self.region.note_shown(t, theme);
-        self.region.paint_bars(ctx.scene, t, theme);
-        self.hovered_drawing = self
-            .pointer
-            .filter(|point| r.contains(*point))
-            .and_then(|point| slots.iter().find(|slot| slot.rect.contains(point)))
-            .map(|slot| slot.band.union(slot.rect).inflate(2.0, 2.0));
-        self.slots = slots;
+        self.paint_rows(&mut ctx, &state, &rows, list, t, theme);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -833,13 +965,10 @@ impl Widget for MessageList {
             } => {
                 let held = ctx.modifiers.state();
                 let picking = held.control_key() || held.super_key() || held.shift_key();
-                let route = self
-                    .pointer
-                    .filter(|point| self.zero_action.is_some_and(|pill| pill.contains(*point)));
-                if route.is_some() {
-                    self.shared
-                        .borrow_mut()
-                        .push_intent(Intent::AccountSettings);
+                if let Some(point) = self.pointer
+                    && let Some(intent) = self.route_at(point)
+                {
+                    self.shared.borrow_mut().push_intent(intent);
                     *ctx.handled = true;
                     self.dirty = true;
                 } else if let Some(point) = self.pointer
@@ -907,14 +1036,15 @@ impl Widget for MessageList {
     fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
         let point = self.pointer?;
         let slot = self.slot_at(point)?;
-        Self::action_at(slot, point).map(|action| {
-            match action {
-                CtxAction::ToggleStar if slot.starred => "Remove star (S)",
-                CtxAction::ToggleStar => "Star (S)",
-                CtxAction::Archive => "Archive (E)",
-                _ => "Delete (Delete)",
-            }
-            .into()
+        self.action_at(slot, point).map(|action| {
+            // The action's own name and the key that does the same.
+            let (label, key) = match action {
+                CtxAction::ToggleStar if slot.starred => (&self.labels.unstar, "S"),
+                CtxAction::ToggleStar => (&self.labels.star, "S"),
+                CtxAction::Archive => (&self.labels.archive, "E"),
+                _ => (&self.labels.delete, "Delete"),
+            };
+            format!("{label} ({key})").into()
         })
     }
 
@@ -1069,6 +1199,63 @@ mod tests {
         let offers = ui::scroll_copy::accepting(|| list.collect_damage(&mut changed));
         assert!(offers.is_empty(), "another change repaints the list");
         assert_eq!(changed, vec![list.rect]);
+    }
+
+    /// A check that cannot run stands above the rows and keeps its place
+    /// until it works: the rows move down for it, and its pill asks the app to
+    /// check again.
+    #[test]
+    fn a_failed_check_stands_above_the_rows_and_offers_to_check_again() {
+        let shared = shared();
+        let mut list = MessageList::new(shared.clone());
+        list.rect = Rect::new(0.0, 0.0, 340.0, 760.0);
+        draw(&mut list);
+        let rows_before = list.row_rects();
+        assert!(list.sync_action.is_none(), "a working account says nothing");
+
+        shared
+            .borrow_mut()
+            .note_sync_failure("Anna".into(), crate::state::SyncCause::Unreachable);
+        draw(&mut list);
+        let rows_after = list.row_rects();
+        assert_eq!(rows_before.len(), rows_after.len(), "no row is lost");
+        assert!(
+            rows_after[0].1.y0 > rows_before[0].1.y0,
+            "the words stand above the rows: {:?} then {:?}",
+            rows_before[0].1,
+            rows_after[0].1
+        );
+        let (_, intent) = list.sync_action.expect("the failure offers a way out");
+        assert!(matches!(intent, Intent::CheckMail));
+    }
+
+    /// An empty mailbox whose check failed says that, not that nothing has
+    /// arrived, and its pill is the failure's own way out.
+    #[test]
+    fn an_empty_mailbox_whose_check_failed_says_so_instead_of_nothing_yet() {
+        let shared = shared();
+        let mut list = MessageList::new(shared.clone());
+        list.rect = Rect::new(0.0, 0.0, 340.0, 760.0);
+        {
+            let mut state = shared.borrow_mut();
+            let ids: Vec<MessageId> = state.mailbox.messages.keys().copied().collect();
+            for id in ids {
+                state.mailbox.purge(id);
+            }
+            state.note_sync_failure("Anna".into(), crate::state::SyncCause::SignedOut);
+        }
+        draw(&mut list);
+        let (_, intent) = list
+            .zero_action
+            .expect("a failed check offers its own way out");
+        assert!(
+            matches!(intent, Intent::AccountSettings),
+            "a sign-in failure leads to the account that has to change"
+        );
+        assert!(
+            list.sync_action.is_none(),
+            "the words are in the empty list, not twice"
+        );
     }
 
     #[test]

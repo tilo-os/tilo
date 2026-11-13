@@ -21,7 +21,7 @@ impl MailApp {
     pub(super) fn account_route_node() -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
         AccessNode::new(Role::Button)
-            .with_name(crate::i18n::t("mail-zero-account-settings"))
+            .with_name(crate::i18n::t("mail-account-settings"))
             .with_action_target(ACCOUNT_ROUTE)
             .with_state(AccessState::new().focusable(true))
     }

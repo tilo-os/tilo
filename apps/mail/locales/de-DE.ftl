@@ -8,7 +8,7 @@ mail-first-run-action = Externe Konten öffnen
 ## Die leere Nachrichtenliste: was nicht da ist, und das Konto, aus dem die
 ## Post käme, solange keine angekommen ist. { $folder } ist der Ordnername.
 mail-zero-nothing-yet = Noch keine Post eingegangen
-mail-zero-account-settings = Kontoeinstellungen öffnen
+mail-account-settings = Kontoeinstellungen öffnen
 mail-zero-folder = Keine Nachrichten in { $folder }
 
 ## Fenster zum Schreiben
@@ -103,7 +103,6 @@ mail-forward-too-large = { $count ->
    *[other] { $files } sind größer, als eine Nachricht fassen kann, und werden daher nicht angehängt
 }
 
-mail-account-secret-unavailable = Das Passwort dieses Kontos konnte auf diesem Gerät nicht geöffnet werden. Prüfe das Konto in den Einstellungen unter Externe Konten.
 mail-import-sign-in-required = Importierte Kontoeinstellungen verlangen eine Anmeldung. Melde dich an, bevor du verbindest.
 
 ## Leseansicht: Inhalte aus dem Netz, Links und Format einer HTML-Nachricht
@@ -235,10 +234,15 @@ mail-folder-drafts = Entwürfe
 mail-folder-archive = Archiv
 mail-folder-trash = Papierkorb
 mail-folder-junk = Spam
-mail-refresh-offline = { $folder } für { $account } lässt sich nicht aktualisieren, solange IMAP offline ist
 
 ## Die Plätze der Fensterleiste
 mail-bulk-done = Fertig
+mail-archive-message = Archivieren
+mail-mark-read-message = Als gelesen markieren
+mail-mark-unread-message = Als ungelesen markieren
+mail-junk = Als Spam markieren
+mail-unstar = Markierung entfernen
+mail-move-to-trash = In den Papierkorb
 mail-delete = Löschen
 mail-delete-permanently = Endgültig löschen
 mail-reply = Antworten
@@ -298,12 +302,15 @@ mail-copies-keep-copies = Abgerufene Mails behalten
 mail-copies-forget-copies = Abgerufene Mails vergessen
 
 ## Was Mail einmal sagt: was es getan hat, was nicht ging, und was jetzt hilft
-mail-notice-server-unreachable = Mail konnte den Mailserver nicht erreichen
-mail-notice-offline = Du bist offline. Neue Mail kommt an, sobald du wieder online bist.
-mail-notice-sign-in-failed = Anmeldung nicht möglich. Prüfe das Passwort des Kontos in den Einstellungen unter Externe Konten.
-mail-notice-sign-in-failed-account = Anmeldung bei { $account } nicht möglich. Prüfe das Passwort des Kontos in den Einstellungen unter Externe Konten.
-mail-notice-check-failed = Mail lässt sich nicht abrufen: { $error }
-mail-notice-check-failed-account = Mail für { $account } lässt sich nicht abrufen: { $error }
+## Ein Konto, das nicht geprüft werden kann: was die Liste dort sagt, solange
+## der Fehler anhält. { $account } ist der Name, den die Person kennt.
+mail-sync-unreachable = { $account } ist nicht erreichbar
+mail-sync-check-again = Erneut versuchen
+mail-sync-signed-out = Anmeldung bei { $account } nicht möglich
+mail-sync-signed-out-why = Prüfe das Passwort in den Einstellungen unter Externe Konten.
+mail-sync-offline = Du bist offline
+mail-sync-offline-why = Neue Mail kommt an, sobald du wieder online bist.
+
 mail-notice-sign-in-unfinished = Die Anmeldung wurde nicht abgeschlossen: { $error }
 mail-notice-server-failed = Die Änderung am Mailserver ließ sich nicht übertragen: { $error }
 mail-notify-arrived = { $count ->

@@ -330,22 +330,14 @@ impl MailEngine for StubEngine {
                     ),
                 });
             }
-            EngineRequest::Fetch {
-                account, folder, ..
-            } => {
+            EngineRequest::Fetch { account, .. } => {
                 let _ = out.send(EngineEvent::Error {
                     request_id,
                     kind,
                     context: "offline".into(),
-                    message: crate::i18n::t_args(
-                        "mail-refresh-offline",
-                        &[
-                            (
-                                "folder",
-                                ui::i18n::ArgValue::Text(crate::i18n::t(folder.message())),
-                            ),
-                            ("account", ui::i18n::ArgValue::Text(account.email)),
-                        ],
+                    message: format!(
+                        "IMAP is unavailable for {}; rebuild with the live mail backend to fetch",
+                        account.email
                     ),
                 });
             }

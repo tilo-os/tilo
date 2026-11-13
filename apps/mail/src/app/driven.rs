@@ -30,7 +30,7 @@ impl MailApp {
         room.resource_refresh_invocation = None;
         room.engine = Some(EngineHandle { tx, rx });
         drop(room);
-        self.shared.borrow_mut().sync_error = None;
+        self.shared.borrow_mut().clear_sync_failure();
         // Server updates and sends no window here could carry out before
         // are offered again.
         for projection in [&self.projection, &self.delivery].into_iter().flatten() {

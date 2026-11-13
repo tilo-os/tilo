@@ -72,23 +72,23 @@ fn message_items(bar: &BarCommands<Command>, state: &MailState) -> Vec<ToolbarAc
     let mut items = vec![
         bar.entry(
             "reply",
-            crate::i18n::t("mail-reply"),
+            CtxAction::Reply.label(message.read, message.starred),
             Command::Message(CtxAction::Reply),
         ),
         bar.entry(
             "archive",
-            crate::i18n::t("mail-folder-archive"),
+            CtxAction::Archive.label(message.read, message.starred),
             Command::Message(CtxAction::Archive),
         ),
         bar.entry(
             "reply-all",
-            crate::i18n::t("mail-reply-all"),
+            CtxAction::ReplyAll.label(message.read, message.starred),
             Command::Message(CtxAction::ReplyAll),
         )
         .in_menu(),
         bar.entry(
             "forward",
-            crate::i18n::t("mail-forward"),
+            CtxAction::Forward.label(message.read, message.starred),
             Command::Message(CtxAction::Forward),
         )
         .in_menu(),
@@ -97,7 +97,7 @@ fn message_items(bar: &BarCommands<Command>, state: &MailState) -> Vec<ToolbarAc
         items.push(
             bar.entry(
                 "inbox",
-                crate::i18n::t("mail-move-to-inbox"),
+                CtxAction::MoveToInbox.label(message.read, message.starred),
                 Command::Message(CtxAction::MoveToInbox),
             )
             .in_menu(),
@@ -110,7 +110,7 @@ fn message_items(bar: &BarCommands<Command>, state: &MailState) -> Vec<ToolbarAc
     items.push(
         bar.entry(
             "star",
-            crate::i18n::t("mail-star"),
+            CtxAction::ToggleStar.label(message.read, message.starred),
             Command::Message(CtxAction::ToggleStar),
         )
         .on(message.starred)
