@@ -21,7 +21,8 @@
 //! A keystroke that gives the field a *structure* rather than more words starts one as well: `# `
 //! typed at the start of a line makes it a heading, which is a step of its own, so undo takes
 //! the marker back rather than the words typed before it; the letters after it join its step
-//! (`TxnState::reshapes`).
+//! (`TxnState::reshapes`). So does a paste, more words at once than a keystroke types: undo
+//! takes back what was pasted and leaves what was typed before it.
 //!
 //! A trial run ([`Inner::trials`]) neither joins nor ends a burst: planning an action writes the
 //! mirror and is taken back, and what a person is typing is no part of that.

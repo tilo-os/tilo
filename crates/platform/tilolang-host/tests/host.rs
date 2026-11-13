@@ -155,6 +155,8 @@ struct Window {
     took: u64,
     /// The patches taken in.
     patched: usize,
+    /// What the instance told the person, in its words.
+    notices: Vec<String>,
 }
 
 impl Window {
@@ -170,6 +172,7 @@ impl Window {
             form: None,
             took: 0,
             patched: 0,
+            notices: Vec::new(),
         }
     }
 
@@ -219,6 +222,7 @@ impl Window {
                     }
                     ToUi::Form(form) => self.form = form,
                     ToUi::Took { fired } => self.took = fired,
+                    ToUi::Notice { words, .. } => self.notices.push(format!("{words:?}")),
                     _ => {}
                 }
             }

@@ -8,13 +8,14 @@ use super::*;
 use tilo_actions::{ActionRegistry, Verified, entry_of, verify_change};
 use tilo_content::ContentStore;
 
-/// Seventeen paragraphs past a mebibyte in all, each saying where it is.
-fn pasted_body() -> patch::rich::RichText {
+/// `paragraphs` paragraphs past a mebibyte in all, each saying where it is.
+fn pasted_body(paragraphs: usize) -> patch::rich::RichText {
+    let words = 190_000_usize.div_ceil(paragraphs);
     patch::rich::RichText {
-        blocks: (0..17)
+        blocks: (0..paragraphs)
             .map(|at| patch::rich::Block {
                 kind: "paragraph".to_owned(),
-                text: format!("Pasted paragraph {at}: {}", "words ".repeat(11_000)),
+                text: format!("Pasted paragraph {at}: {}", "words ".repeat(words)),
                 ..patch::rich::Block::default()
             })
             .collect(),
@@ -109,6 +110,52 @@ fn address(reference: &str) -> &str {
 
 #[test]
 fn a_paste_past_a_mebibyte_is_kept_in_the_records_store_and_decodes_here_and_on_a_peer() {
+    pastes_past_a_mebibyte(17);
+}
+
+#[test]
+fn one_paragraph_pasted_past_a_mebibyte_is_kept_and_undoes() {
+    pastes_past_a_mebibyte(1);
+}
+
+/// A paragraph longer than one text may hold is refused: Ada hears it, and the note keeps what
+/// she typed.
+#[test]
+fn a_paragraph_past_what_a_text_may_hold_is_refused_aloud() {
+    let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
+    let mut host = TilolangHost::new(None, wake());
+    let (mut window, _sent, _inbox) = instance_on(
+        &mut host,
+        spec(1, "ada", &route),
+        notes(),
+        &route,
+        Rc::default(),
+        Rc::default(),
+        automerge::AutoCommit::new(),
+    );
+    settle(&mut host, &mut window);
+    press_new_note(&mut window);
+    settle(&mut host, &mut window);
+    let (field, note) = body_field(&window);
+    for text in ["draft".to_owned(), "words ".repeat(1_500_000)] {
+        window.send(&[ToApp::EditRich {
+            lane: Lane::Root,
+            target: note.clone(),
+            key: field.clone(),
+            rich: typed_rich(&text),
+        }]);
+        settle(&mut host, &mut window);
+    }
+    assert_eq!(
+        body_of(&host, &note),
+        "draft",
+        "the note keeps what was typed"
+    );
+    assert_eq!(window.notices.len(), 1, "Ada hears the paste was refused");
+}
+
+/// Ada pastes `paragraphs` paragraphs past a mebibyte in all over what she typed.
+fn pastes_past_a_mebibyte(paragraphs: usize) {
     let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
     let device = ContentStore::memory();
     let mut host = TilolangHost::new(None, wake());
@@ -137,7 +184,7 @@ fn a_paste_past_a_mebibyte_is_kept_in_the_records_store_and_decodes_here_and_on_
     assert_eq!(before, "draft", "what Ada typed shows");
 
     // Ada pastes the body: one edit, too large to record inline.
-    let body = pasted_body();
+    let body = pasted_body(paragraphs);
     window.send(&[ToApp::EditRich {
         lane: Lane::Root,
         target: note.clone(),
@@ -145,9 +192,19 @@ fn a_paste_past_a_mebibyte_is_kept_in_the_records_store_and_decodes_here_and_on_
         rich: body,
     }]);
     settle(&mut host, &mut window);
+    assert!(
+        window.notices.is_empty(),
+        "the paste is kept: {:?}",
+        window.notices
+    );
     let shown = body_of(&host, &note);
     assert!(
-        shown.starts_with("Pasted paragraph 0:") && shown.contains("Pasted paragraph 16:"),
+        shown.starts_with("Pasted paragraph 0:")
+            && shown.contains(&format!(
+                "Pasted paragraph {}:",
+                paragraphs.saturating_sub(1)
+            ))
+            && shown.len() > 1 << 20,
         "the paste shows: {shown:.60}"
     );
     let mut doc = host.instances().next().unwrap().record().doc().clone();

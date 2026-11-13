@@ -689,6 +689,7 @@ widget-mention-app = App
 widget-mention-bot = Bot
 widget-mention-list = People to mention
 rich-text-reference-unreadable = Not shared with you
+rich-text-edit-not-kept = Your last edit wasn't kept
 widget-block-duplicate = Duplicate block and children
 
 widget-block-duplicate-selection = Duplicate selected or focused blocks

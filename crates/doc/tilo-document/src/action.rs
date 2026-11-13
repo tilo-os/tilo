@@ -643,7 +643,9 @@ impl RichTextAction {
 // Action payloads may arrive after the document has changed (or from an
 // untrusted automation).  Keep the limits deliberately generous for real
 // documents while making the action boundary a useful resource boundary too.
-pub const MAX_ACTION_TEXT_CHARS: usize = 1_000_000;
+/// The most characters one text an action carries may hold: a paste of a long document into
+/// one paragraph is one such text, so this is as much as an imported document may be.
+pub const MAX_ACTION_TEXT_CHARS: usize = MAX_IMPORT_BYTES;
 pub const MAX_ACTION_BLOB_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_TABLE_DIMENSION: usize = 100;
 pub const MAX_TABLE_CELLS: usize = 10_000;

@@ -439,6 +439,37 @@ fn an_empty_table_still_replays_as_it_always_has() {
     assert!(cells.iter().all(|cell| cell.4.is_empty()));
 }
 
+/// A paste of a long document into one paragraph is one text past a mebibyte, and kept whole.
+/// A text longer than an action may carry is refused, and nothing is written.
+#[test]
+fn a_paragraph_pasted_past_a_mebibyte_is_kept() {
+    let mut replica = document(1);
+    let id = replica.state().unwrap().body().id_at(1).unwrap().to_owned();
+    let paste = |ins: String| RichTextAction::ReplaceSelection {
+        region: RegionKind::Body,
+        start_block: id.clone(),
+        start: 0,
+        end_block: id.clone(),
+        end: 0,
+        ins,
+    };
+    let pasted = "words ".repeat(190_000);
+    replica
+        .apply_action(&paste(pasted.clone()))
+        .expect("the paste is kept");
+    let c = replica.state().unwrap().containers().clone();
+    assert!(
+        model::block_text(replica.doc(), &c, &id)
+            .unwrap()
+            .starts_with(&pasted)
+    );
+
+    let heads = replica.heads();
+    let past = "x".repeat(action::MAX_ACTION_TEXT_CHARS + 1);
+    assert!(replica.apply_action(&paste(past)).is_err());
+    assert_eq!(replica.heads(), heads, "nothing was written");
+}
+
 #[test]
 fn a_filled_table_outside_the_limits_is_refused_before_it_writes() {
     let mut replica = document(1);

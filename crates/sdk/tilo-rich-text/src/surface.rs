@@ -829,7 +829,15 @@ impl RichTextSurface<dyn ErasedSource> {
             let mut host = Through(&mut self.source, std::marker::PhantomData);
             match edit::commit(&mut host, edits, presented, &edited) {
                 Ok(renames) => rename(&mut self.editor, &renames),
-                Err(error) => tracing::debug!(%error, "rich-text edit not applied"),
+                Err(error) => {
+                    // The editor shows the text as it is again, so what the person typed or
+                    // pasted is gone from it: they hear that it was not kept.
+                    tracing::warn!(%error, "rich-text edit not kept");
+                    ui::window_toolbar::notify(Some(ui::window_toolbar::ToolbarNotice::new(
+                        ui::i18n::widget_text("rich-text-edit-not-kept"),
+                        ui::widget::toast::ToastKind::Error,
+                    )));
+                }
             }
             self.source.sync(edits.doc());
         }

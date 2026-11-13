@@ -685,6 +685,7 @@ widget-mention-app = App
 widget-mention-bot = Bot
 widget-mention-list = Personen zum Erwähnen
 rich-text-reference-unreadable = Nicht mit dir geteilt
+rich-text-edit-not-kept = Deine letzte Änderung wurde nicht übernommen
 widget-block-duplicate = Block mit Unterelementen duplizieren
 
 widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren
