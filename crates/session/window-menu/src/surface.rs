@@ -311,6 +311,9 @@ impl WindowMenuSurface {
         // says what it is on: typing narrows the rows here, and a sentence
         // is about that window when something can answer it.
         self.menu.set_takes_typing(true);
+        // What the box sends leaves through the session's own send action (`deliver`), so the menu
+        // ends in the shared row every other menu has.
+        self.menu.set_owner_sends(true);
         self.menu
             .set_about(self.reading.subject.as_ref().map(|subject| {
                 let named = match &subject.app {
@@ -362,7 +365,7 @@ impl WindowMenuSurface {
     /// every sender runs (`session:send-to#send`), carrying the window or tab the menu stands on.
     /// A box's search is its host's to answer, and this host knows no people or agents: a name the
     /// person types is the agent the box makes of it, as it does of a name the search never found.
-    fn deliver(&self) {
+    fn deliver() {
         for request in ui::shared_selection::take_send_to() {
             let arguments = send_arguments(request);
             std::thread::spawn(move || {
@@ -471,7 +474,7 @@ fn send_arguments(request: ui::shared_selection::SendToRequest) -> serde_json::M
 impl Widget for WindowMenuSurface {
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         let followed = self.follow();
-        self.deliver();
+        Self::deliver();
         followed
     }
 
@@ -535,7 +538,7 @@ impl Widget for WindowMenuSurface {
             // view says so, and the desk stops holding the keyboard.
             self.dismiss();
         }
-        self.deliver();
+        Self::deliver();
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -568,9 +571,6 @@ impl ResourceSurface<WindowMenu, NoEffect> for WindowMenuSurface {
 
     fn attach(&mut self, cx: SurfaceCx<WindowMenu>) {
         self.wake = Some(cx.waker());
-        // This host sends what its box holds through the session's one send action (`deliver`), so
-        // its menu carries the shared Send to… row every other menu has.
-        ui::shared_selection::set_send_host_available(true);
         self.ask();
     }
 }
@@ -600,8 +600,8 @@ mod tests {
         assert!(surface.is_open());
         assert_eq!(
             surface.labels(),
-            ["Normal", "Move to workspace"],
-            "in the order the session lists them"
+            ["Normal", "Move to workspace", "Send to…"],
+            "in the order the session lists them, then the row the menu adds itself"
         );
         assert_eq!(
             surface.ids,
@@ -677,8 +677,9 @@ mod tests {
         let items = surface.menu.items();
         assert_eq!(
             items.len(),
-            4,
-            "a rule is an item of the menu, so the rows stay where the session put them"
+            6,
+            "a rule is an item of the menu, so the rows stay where the session put them; \
+             the last two are the rule and the row the menu adds itself"
         );
         assert!(
             !items[0].is_separator(),
@@ -697,6 +698,11 @@ mod tests {
             "the submenu's own row chooses nothing"
         );
         assert_eq!(surface.ids[1], None, "and a rule chooses nothing");
+        assert_eq!(
+            surface.ids.len(),
+            4,
+            "the menu's own rows are no choice of the session's"
+        );
 
         let icon = |item: &MenuItem| match item {
             MenuItem::Action { icon, .. } => *icon,
@@ -770,8 +776,8 @@ mod tests {
         let expected = ui::platform::Shortcut::from("Super+F").label(conventions);
         assert_eq!(
             chords,
-            [Some(expected), None],
-            "the chord the session sends stands at the row's end"
+            [Some(expected), None, None, None],
+            "the chord the session sends stands at the row's end, the rule and the send row having none"
         );
     }
 
@@ -932,7 +938,6 @@ mod tests {
     /// what it sends is that window.
     #[test]
     fn the_menu_ends_in_the_shared_send_row() {
-        ui::shared_selection::set_send_host_available(true);
         let surface = WindowMenuSurface::showing(&menu_of(3));
         let labels = surface.labels();
         assert_eq!(labels.len(), 4, "the window's three rows, then sending it");
@@ -950,7 +955,6 @@ mod tests {
                 .is_some_and(MenuItem::is_separator),
             "set off from the window's own rows by its rule"
         );
-        ui::shared_selection::set_send_host_available(false);
     }
 
     /// Sending is the session's own send: the recipients, the window the menu stands on as what the

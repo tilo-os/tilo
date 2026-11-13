@@ -562,6 +562,9 @@ pub struct ContextMenu {
     /// rather than the desktop, and the menu takes typing however it was
     /// opened: the desktop's own menus.
     owner_asks: bool,
+    /// The owner hands what its box sends to the session itself, with no app
+    /// runner behind it: a shell part's menu, whose host is the session.
+    owner_sends: bool,
     /// The owner takes typing although the gesture that opened the menu
     /// happened in another process (the window menu, whose reading says a
     /// secondary press opened it).
@@ -631,6 +634,7 @@ impl ContextMenu {
             query: None,
             shown: Vec::new(),
             owner_asks: false,
+            owner_sends: false,
             owned_typing: false,
             asked: None,
             ask_at: Point::ZERO,

@@ -156,6 +156,37 @@ fn every_menu_shows_send_to_before_anything_is_typed() {
 }
 
 #[test]
+fn a_send_row_stands_for_a_host_that_sends_itself() {
+    // A shell part's menu has no app runner under it; its owner hands what the box sends to the
+    // session itself, and says so, so the shared row stands and the box opens.
+    crate::shared_selection::set_send_host_available(false);
+    let ran = Rc::new(RefCell::new(Vec::new()));
+    let mut menu = context_menu(&ran);
+    menu.set_owner_sends(true);
+    menu.open_at([120.0, 80.0]);
+    let send_at = menu.items().len() - 1;
+    let mut every: Vec<usize> = (0..=COMMANDS.len()).collect();
+    every.extend([send_at - 1, send_at]);
+    assert_eq!(
+        menu.shown_rows(),
+        every.as_slice(),
+        "the owner's rows, a rule, and the row that sends it"
+    );
+    type_into(&mut menu, "summarise this");
+    dispatch(&mut menu, &named_key(NamedKey::Enter));
+    assert!(
+        ran.borrow().is_empty(),
+        "typing a sentence is the box's, not a row's"
+    );
+    let box_ = menu.send_to();
+    assert!(
+        box_.is_open(),
+        "the box opens beside the menu, held by the owner that sends it"
+    );
+    assert_eq!(box_.text(), "summarise this");
+}
+
+#[test]
 fn a_sentence_no_row_answers_is_sent_from_the_box_beside_the_menu() {
     crate::shared_selection::set_send_host_available(true);
     let _ = crate::shared_selection::take_send_to();
