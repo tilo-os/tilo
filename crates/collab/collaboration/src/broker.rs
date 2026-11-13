@@ -14,10 +14,9 @@ use super::channel_key;
 use super::route_keys::Arrived;
 use super::{
     ActionCatalogue, ActionDirectoryRequest, Backend, CatalogueChange, CollabEvent, CollabRequest,
-    CollabTransport, CollaborationManager, Collaborator, DocumentMutation,
-    DocumentPublicationError, DocumentPublicationReceipt, PresenceKey, PresencePayload,
-    PrimaryRouteState, RouteSpec, SignedOp, TransportCommand, TransportError, TransportStatus,
-    Uuid, auto_hello_env, mpsc,
+    CollabTransport, CollaborationManager, DocumentMutation, DocumentPublicationError,
+    DocumentPublicationReceipt, Member, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec,
+    SignedOp, TransportCommand, TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
 };
 use runtime_collab::OpAdmission;
 use tilo_sort::CompactSort as _;
@@ -4770,7 +4769,7 @@ async fn spawn_context_stream(
                 let mut people: Vec<_> = context
                     .collaborators
                     .iter()
-                    .map(|person| (person.id.clone(), person.is_agent, person.is_self))
+                    .map(|person| (person.id.clone(), !person.id.is_person(), person.is_self))
                     .collect();
                 people.compact_sort();
                 let mut permissions = context.permissions.clone();

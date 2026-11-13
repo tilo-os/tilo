@@ -280,8 +280,9 @@ pub use runtime_collab::{
 };
 pub use runtime_collab::{file_clipboard, write_attribution};
 
+pub use collab_types::MemberId;
 use collab_types::presence::PresenceKey;
-pub use collab_types::presence::{Collaborator, PresencePayload};
+pub use collab_types::presence::{Member, Person, PersonId, PresencePayload};
 
 use std::sync::mpsc;
 

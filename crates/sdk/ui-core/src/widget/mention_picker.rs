@@ -11,12 +11,13 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::permissions::UserId;
-use crate::presence::{ParticipantKind, PresenceCtx, PresenceUser};
+use crate::presence::{ParticipantKind, PresenceCtx};
 use crate::search::FieldWeight;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::PresenceHue;
 use crate::widget::autocomplete::{Suggestion, SuggestionList, SuggestionPerson};
+use collab_types::{Member, MemberId};
 
 /// Someone a field can mention: a participant of the workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,26 +56,29 @@ impl MentionCandidate {
 }
 
 impl MentionCandidate {
-    fn of(presence: &PresenceCtx, user: PresenceUser) -> Self {
-        let hue = presence.hue_for(&UserId(user.id.clone()));
-        let id = UserId(user.id);
-        let kind = presence.participant_kind(&id);
+    fn of(presence: &PresenceCtx, member: Member) -> Self {
+        let id = UserId(member.id.key());
+        let kind = match member.id {
+            MemberId::Person(_) => ParticipantKind::Person,
+            MemberId::Agent(_) => ParticipantKind::Agent,
+            MemberId::Bot(_) => ParticipantKind::Bot,
+        };
         let name = if kind == ParticipantKind::Person {
-            user.name
+            member.name
         } else {
             presence
                 .names
                 .get(&id)
                 .map(|name| name.trim().to_owned())
                 .filter(|name| !name.is_empty())
-                .unwrap_or(user.name)
+                .unwrap_or(member.name)
         };
         Self {
-            is_self: presence.is_own_identity(&id.0),
+            is_self: member.is_self,
             id: id.0,
             name,
             kind,
-            hue,
+            hue: member.colour,
         }
     }
 }
@@ -464,7 +468,7 @@ mod tests {
         let ada = presence
             .roster()
             .into_iter()
-            .find(|user| user.id == "u_ada")
+            .find(|member| member.id == MemberId::person("u_ada"))
             .expect("Ada is in the roster");
         assert_eq!(MentionCandidate::of(&presence, ada).hue, announced);
     }

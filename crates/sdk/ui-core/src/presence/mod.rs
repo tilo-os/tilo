@@ -1,5 +1,6 @@
 use crate::permissions::UserId;
 use crate::time::{Duration, Instant, SystemTime};
+use collab_types::{Member, MemberId};
 use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
 
@@ -494,16 +495,6 @@ mod color_tests {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct PresenceUser {
-    pub id: String,
-    pub name: String,
-    pub color: (u8, u8, u8),
-    /// Principal kind supplied by the collaboration context, never guessed
-    /// from the display name.
-    pub is_agent: bool,
-}
-
 /// The kind of participant behind a live presence stream. This comes from
 /// the authenticated workspace context, never from a display-name convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -534,35 +525,6 @@ impl From<tilo_actions::ActorKind> for ParticipantKind {
 impl From<bool> for ParticipantKind {
     fn from(is_agent: bool) -> Self {
         if is_agent { Self::Agent } else { Self::Person }
-    }
-}
-
-impl PresenceUser {
-    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
-        let id = id.into();
-        let color = user_color(&id);
-        Self {
-            id,
-            name: name.into(),
-            color,
-            is_agent: false,
-        }
-    }
-
-    /// Uses the id itself as the display name until a roster entry supplies a nicer one.
-    pub fn from_id(id: impl Into<String>) -> Self {
-        let id = id.into();
-        let name = id.clone();
-        Self::new(id, name)
-    }
-
-    pub fn color_rgba(&self, alpha: f32) -> [f32; 4] {
-        [
-            f32::from(self.color.0) / 255.0,
-            f32::from(self.color.1) / 255.0,
-            f32::from(self.color.2) / 255.0,
-            alpha,
-        ]
     }
 }
 
@@ -719,7 +681,7 @@ pub struct PresenceCtx {
     /// never affect document state or anyone's local viewport.
     following: HashMap<(PresenceKey, UserId), UserId>,
     pub remote_cursors: Vec<RemoteCursor>,
-    /// Seeded by the shell from `Collaborator::cursor_color`; falls
+    /// Seeded by the shell from `Member::cursor_color`; falls
     /// through to [`user_color`] via [`PresenceCtx::color_for`] when unset.
     pub color_overrides: HashMap<UserId, (u8, u8, u8)>,
     /// Friendly display names per user, seeded from the collab roster
@@ -1644,7 +1606,7 @@ impl PresenceCtx {
     /// Everyone the workspace names, this session's own participant included,
     /// as they are shown, in an order every replica shares: who a people
     /// list or a mention picker offers.
-    pub fn roster(&self) -> Vec<PresenceUser> {
+    pub fn roster(&self) -> Vec<Member> {
         let mut ids: Vec<&UserId> = self.names.keys().collect();
         if let Some((own, _)) = &self.self_participant
             && !self.names.contains_key(own)
@@ -1802,12 +1764,16 @@ impl PresenceCtx {
         }
     }
 
-    pub fn user(&self, user: &UserId) -> PresenceUser {
-        PresenceUser {
-            id: user.0.clone(),
+    /// One row of the roster: who `user` is here, in the colour they wear.
+    pub fn user(&self, user: &UserId) -> Member {
+        Member {
+            id: MemberId::parse(&user.0).unwrap_or_else(|| MemberId::person(user.0.clone())),
+            role: None,
             name: self.display_name(user),
-            color: self.color_for(user),
-            is_agent: self.is_agent(user),
+            avatar: None,
+            colour: self.hue_for(user),
+            joined_at: self.joined.get(user).copied(),
+            is_self: self.is_own_identity(&user.0),
         }
     }
 
@@ -2626,14 +2592,11 @@ mod remote_cursor_tests {
         let painted = ctx.remote_cursors[0].color;
         assert!((painted[0] - f32::from(violet.0) / 255.0).abs() < 1e-3);
         assert!((painted[3] - 1.0).abs() < f32::EPSILON, "alpha is kept");
-        let packed = crate::collaboration::Collaborator {
-            id: peer.0.clone(),
-            name: "Ada".into(),
-            colour: Some(crate::tokens::PresenceHue::Violet),
-            is_agent: false,
-            is_self: false,
-            joined_at: None,
-        }
+        let packed = collab_types::Member::of_person(
+            &collab_types::Person::new(peer.0.as_str(), "Ada")
+                .wearing(crate::tokens::PresenceHue::Violet),
+            None,
+        )
         .packed_colour();
         assert_eq!(
             crate::collaboration::colour_from_packed(packed),
@@ -2897,30 +2860,15 @@ mod string_id_wrapper_tests {
         // phase: presence_user_color_is_stable_and_distinct
         {
             // Same id → same colour every time (deterministic, no shared state).
-            let a1 = PresenceUser::from_id("alice");
-            let a2 = PresenceUser::new("alice", "Alice Smith");
-            assert_eq!(a1.color, a2.color, "colour depends only on id");
-            assert_eq!(a1.color, user_color("alice"));
+            let mut ctx = PresenceCtx::empty();
+            ctx.set_display_name(UserId("alice".into()), "Alice Smith");
+            let a1 = ctx.user(&UserId("alice".into()));
+            assert_eq!(a1.colour, crate::tokens::PresenceHue::of_identity("alice"));
+            assert_eq!(identity_rgb(a1.colour), user_color("alice"));
             // Distinct ids → distinct colours (the whole point of the palette).
-            let bob = PresenceUser::from_id("bob");
-            assert_ne!(a1.color, bob.color);
-            // A friendlier name doesn't perturb the colour.
-            assert_eq!(a2.name, "Alice Smith");
-            assert_eq!(a1.name, "alice", "from_id uses the id as the fallback name");
-        }
-        // phase: presence_user_rgba_is_normalised
-        {
-            let u = PresenceUser {
-                id: "x".into(),
-                name: "x".into(),
-                color: (255, 128, 0),
-                is_agent: false,
-            };
-            let c = u.color_rgba(0.5);
-            assert!((c[0] - 1.0).abs() < 1e-6);
-            assert!((c[1] - 128.0 / 255.0).abs() < 1e-6);
-            assert!((c[2] - 0.0).abs() < 1e-6);
-            assert!((c[3] - 0.5).abs() < 1e-6);
+            let bob = ctx.user(&UserId("bob".into()));
+            assert_ne!(a1.colour, bob.colour);
+            assert_eq!(a1.name, "Alice Smith");
         }
         // phase: roster_name_resolves_with_id_fallback
         {
@@ -2933,7 +2881,7 @@ mod string_id_wrapper_tests {
             // `user()` bundles id + name + colour.
             let pu = ctx.user(&alice);
             assert_eq!(pu.name, "Alice Smith");
-            assert_eq!(pu.color, user_color("alice"));
+            assert_eq!(identity_rgb(pu.colour), user_color("alice"));
         }
         // phase: participant_kind_survives_name_resolution
         {
@@ -2942,16 +2890,16 @@ mod string_id_wrapper_tests {
             ctx.set_display_name(scribe.clone(), "Scribe");
             ctx.set_participant_kind(&scribe, true);
             assert!(ctx.is_agent(&scribe));
-            assert!(ctx.user(&scribe).is_agent);
+            assert!(!ctx.user(&scribe).id.is_person());
             assert_eq!(ctx.display_name(&scribe), "Scribe · Agent");
             ctx.set_display_name(scribe.clone(), "Editorial helper");
             assert!(
-                ctx.user(&scribe).is_agent,
+                !ctx.user(&scribe).id.is_person(),
                 "renaming cannot turn software into a person"
             );
             assert_eq!(ctx.display_name(&scribe), "Editorial helper · Agent");
             ctx.set_participant_kind(&scribe, false);
-            assert!(!ctx.user(&scribe).is_agent);
+            assert!(ctx.user(&scribe).id.is_person());
             assert_eq!(ctx.display_name(&scribe), "Editorial helper");
         }
         // phase: an_unnamed_peer_is_a_guest_and_never_its_id

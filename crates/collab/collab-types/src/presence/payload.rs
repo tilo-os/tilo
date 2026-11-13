@@ -4,8 +4,6 @@
 
 use web_time::Duration;
 
-use super::hue::{PresenceHue, identity_rgb};
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum PresencePayload {
     Pointer {
@@ -132,51 +130,5 @@ impl Availability {
             "idle" => Some(Self::Idle),
             _ => None,
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Collaborator {
-    pub id: String,
-    pub name: String,
-    /// The colour this participant wears, as they chose it or as their
-    /// stable identity derives it. `None` when the room has not heard it;
-    /// they are then painted in the colour their id derives
-    /// ([`user_color`](super::user_color)).
-    pub colour: Option<PresenceHue>,
-    /// Whether this participant is an agent rather than a person.
-    pub is_agent: bool,
-    /// Whether this row is the receiving machine's own participant.
-    /// Apps can't derive this themselves: `id` is the address *other*
-    /// machines use, and a machine never announces its own to its own apps.
-    pub is_self: bool,
-    /// When the room admitted this participant, Unix milliseconds, as its
-    /// membership records it; `None` for an agent or a member admitted
-    /// before rooms recorded it. People who share a name are numbered in
-    /// this order (`ui::presence::ParticipantLabels::by_joining`).
-    pub joined_at: Option<u64>,
-}
-
-impl Collaborator {
-    /// The admission time a roster row's packed value names: `None` for
-    /// `u64::MAX`.
-    #[must_use]
-    pub const fn joined_at_from_packed(packed: u64) -> Option<u64> {
-        if packed == u64::MAX {
-            None
-        } else {
-            Some(packed)
-        }
-    }
-
-    /// [`Self::colour`] as the roster's wire carries it: the presence
-    /// colour's sRGB packed `0x00RRGGBB`, `0` for none (no presence colour
-    /// is black).
-    #[must_use]
-    pub fn packed_colour(&self) -> u32 {
-        self.colour.map_or(0, |hue| {
-            let (r, g, b) = identity_rgb(hue);
-            (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
-        })
     }
 }

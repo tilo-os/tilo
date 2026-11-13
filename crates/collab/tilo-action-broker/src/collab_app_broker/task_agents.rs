@@ -144,18 +144,16 @@ pub(super) fn joins_as(admitted: &AdmittedJoinIdentity, kind: &str) -> Result<()
 
 /// A task agent is no member: its verified task delegation is its
 /// certification, and it is in the roster it sees as itself.
-pub(super) fn self_row(admitted: &AdmittedJoinIdentity) -> Option<ui::collaboration::Collaborator> {
-    admitted
-        .task
-        .as_ref()
-        .map(|task| ui::collaboration::Collaborator {
-            id: format!("agent:{}", task.agent_id),
-            name: task.agent_id.clone(),
-            colour: None,
-            is_agent: true,
-            is_self: true,
-            joined_at: None,
-        })
+pub(super) fn self_row(admitted: &AdmittedJoinIdentity) -> Option<ui::collaboration::Member> {
+    admitted.task.as_ref().map(|task| {
+        collab_types::Member::of_software(
+            collab_types::MemberId::agent(task.agent_id.clone()),
+            task.agent_id.clone(),
+            None,
+            None,
+        )
+        .claiming_self()
+    })
 }
 
 impl AppBrokerState {

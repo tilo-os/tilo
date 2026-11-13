@@ -1035,7 +1035,7 @@ pub struct PresenceEvent {
 /// on [`ContextStream`]: one context change, the rest left at their defaults.
 #[derive(Debug, Clone, Default)]
 pub struct ChannelContext {
-    pub collaborators: Vec<collab_types::presence::Collaborator>,
+    pub collaborators: Vec<collab_types::presence::Member>,
     pub permissions: Vec<String>,
     /// What each app installed on this device is called, in each language its
     /// package names it in: a window names another app's changes by these,

@@ -17,7 +17,7 @@
 
 use collab_types::history::RosterAgent;
 use collab_types::inbound::OpAdmission;
-use collab_types::presence::Collaborator;
+use collab_types::presence::Member;
 use collab_types::{ArtifactId, PeerPresence, SignedOp};
 use serde::{Deserialize, Serialize};
 
@@ -583,7 +583,7 @@ pub enum ContextUpdate {
     /// The roster, this endpoint's permissions, and the apps installed on
     /// this device, replacing the last.
     Snapshot {
-        collaborators: Vec<Collaborator>,
+        collaborators: Vec<Member>,
         permissions: Vec<String>,
         /// What each installed app is called, in each language its package
         /// names it in: a window names another app's changes by these, never

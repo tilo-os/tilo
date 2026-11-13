@@ -13,7 +13,7 @@
 use crate::route::{ChannelAccessState, RouteSpec};
 use collab_types::DocumentMutation;
 use collab_types::SignedOp;
-use collab_types::presence::{Collaborator, PresenceKey, PresencePayload};
+use collab_types::presence::{Member, PresenceKey, PresencePayload};
 
 /// The payloads only an SDK endpoint can hold, which it mints itself.
 pub trait EndpointCustody: Clone + std::fmt::Debug {
@@ -48,7 +48,7 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
         read: C::CommittedRead,
     },
     Context {
-        collaborators: Vec<Collaborator>,
+        collaborators: Vec<Member>,
         permissions: Vec<String>,
         /// What each app installed on this device is called, in each language
         /// its package names it in: what a history row names another app's

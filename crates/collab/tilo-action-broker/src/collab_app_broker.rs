@@ -2570,7 +2570,7 @@ struct ContextSub {
 #[derive(Clone)]
 struct NativeContext {
     admitted: AdmittedJoinIdentity,
-    roster: Vec<ui::collaboration::Collaborator>,
+    roster: Vec<ui::collaboration::Member>,
 }
 
 /// Per-channel subscriber registry, keyed by `join_channel(id)`. A
@@ -6579,11 +6579,15 @@ impl AppBrokerState {
 
     /// Stable authenticated actor id for native presence and interactions.
     /// Display handles remain presentation only.
-    fn participant_id(admitted: &AdmittedJoinIdentity) -> String {
+    fn member_id(admitted: &AdmittedJoinIdentity) -> collab_types::MemberId {
         admitted.agent_id.as_ref().map_or_else(
-            || admitted.principal_id.clone(),
-            |agent| format!("agent:{agent}"),
+            || collab_types::MemberId::person(admitted.principal_id.clone()),
+            |agent| collab_types::MemberId::agent(agent.clone()),
         )
+    }
+
+    fn participant_id(admitted: &AdmittedJoinIdentity) -> String {
+        Self::member_id(admitted).key()
     }
 
     fn revalidate_admission(
@@ -7062,7 +7066,7 @@ impl AppBrokerState {
     fn fanout_context<'a>(
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
         except: u64,
-        collaborators: &[ui::collaboration::Collaborator],
+        collaborators: &[ui::collaboration::Member],
         permissions: &[String],
         apps: &[collab_types::history::NamedApp],
     ) {
@@ -7290,7 +7294,7 @@ impl AppBrokerState {
         &self,
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
-    ) -> Result<Vec<ui::collaboration::Collaborator>, String> {
+    ) -> Result<Vec<ui::collaboration::Member>, String> {
         let now = self.policy_now_ns()? / 1_000_000_000;
         let (agents, people) = self
             .membership
@@ -7307,88 +7311,80 @@ impl AppBrokerState {
                     })
                     .collect();
                 agents.sort_by(|left, right| left.0.cmp(&right.0));
-                let mut people: Vec<String> = workspace
+                let mut people: Vec<(String, tilo_action_policy::Role)> = workspace
                     .roster()
                     .into_iter()
-                    .map(|(person, _)| person)
-                    .filter(|person| !workspace.is_blocked(person))
+                    .filter(|(person, _)| !workspace.is_blocked(person))
                     .collect();
-                people.sort();
+                people.sort_by(|left, right| left.0.cmp(&right.0));
                 // Presence may supply a label, but only owner-backed
                 // membership supplies the identity. An offline member
                 // remains a member.
                 let people = people
                     .into_iter()
-                    .map(|person| {
+                    .map(|(person, role)| {
                         let row = workspace.collaborators.iter().find(|row| row.id == person);
                         // Someone presence has not named is unnamed here, never named by their
                         // key: an app calls them as it calls anyone it has no name for.
                         let name = row.map_or_else(String::new, |row| row.name.clone());
-                        // The colour presence draws them in: the one they
-                        // chose, or the one their identity derives, so an app
-                        // paints a person as their desk and everyone else's
-                        // does. No word of them yet, and they are painted in
-                        // what their id derives, as everywhere.
+                        // The colour presence draws them in: the one they chose, else the one
+                        // their identity derives.
                         let colour = row
                             .and_then(|row| row.cursor_color.as_deref())
                             .and_then(ui::presence::parse_hex_color)
                             .and_then(|(red, green, blue)| {
                                 ui::tokens::PresenceHue::nearest_to_srgb(red, green, blue)
-                            });
-                        let joined = workspace.policy.joined_at(&person);
-                        (person, name, colour, joined)
+                            })
+                            .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(&person));
+                        let mut member = collab_types::Member::of_person(
+                            &collab_types::Person::new(person.clone(), name).wearing(colour),
+                            Some(role),
+                        );
+                        member.joined_at = workspace.policy.joined_at(&person);
+                        member
                     })
                     .collect::<Vec<_>>();
                 Ok::<_, &str>((agents, people))
             })??;
+        let self_id = Self::member_id(admitted);
+        let self_name = admitted
+            .display_handle
+            .clone()
+            .unwrap_or_else(|| admitted.principal_id.clone());
+        let mut mine: Option<collab_types::Member> = None;
         let mut collaborators =
             Vec::with_capacity(agents.len().saturating_add(people.len()).saturating_add(1));
-        if admitted.agent_id.is_none() {
-            collaborators.push(ui::collaboration::Collaborator {
-                id: Self::participant_id(admitted),
-                name: admitted
-                    .display_handle
-                    .clone()
-                    .unwrap_or_else(|| admitted.principal_id.clone()),
-                colour: None,
-                is_agent: false,
-                is_self: true,
-                joined_at: people
-                    .iter()
-                    .find(|(person, _, _, _)| *person == admitted.principal_id)
-                    .and_then(|(_, _, _, joined)| *joined),
-            });
-        }
-        for (person, name, colour, joined_at) in people {
-            if admitted.agent_id.is_none() && person == admitted.principal_id {
-                continue;
+        for row in people {
+            if row.id == self_id {
+                mine = Some(row);
+            } else {
+                collaborators.push(row);
             }
-            collaborators.push(ui::collaboration::Collaborator {
-                id: person,
-                name,
-                colour,
-                is_agent: false,
-                is_self: false,
-                joined_at,
-            });
         }
         for (agent, keeper) in agents {
             tilo_peer_state::workspace_membership::valid_agent_id(&agent)
                 .map_err(|_| "native context contains a noncanonical agent identity")?;
-            let is_self = admitted.agent_id.as_deref() == Some(agent.as_str());
-            // The colour its face wears everywhere ([`participant_color`] of an agent, clear of
-            // the person who admitted it): an app draws it as the bar does, one rule and one key
-            // for every surface.
-            let colour = ui::presence::participant_hue(&agent, true, keeper.as_deref());
-            collaborators.push(ui::collaboration::Collaborator {
-                id: format!("agent:{agent}"),
-                name: agent,
-                colour: Some(colour),
-                is_agent: true,
-                is_self,
-                joined_at: None,
-            });
+            let keeper = keeper.map(collab_types::PersonId::new);
+            let row = collab_types::Member::of_software(
+                collab_types::MemberId::agent(agent.clone()),
+                agent,
+                None,
+                keeper.as_ref(),
+            );
+            if row.id == self_id {
+                mine = Some(row);
+            } else {
+                collaborators.push(row);
+            }
         }
+        let mut me = mine.unwrap_or_else(|| {
+            collab_types::Member::of_person(
+                &collab_types::Person::new(admitted.principal_id.clone(), self_name.clone()),
+                None,
+            )
+        });
+        me.name = self_name;
+        collaborators.push(me.claiming_self());
         collaborators.extend(task_agents::self_row(admitted));
         if collaborators.iter().filter(|row| row.is_self).count() != 1 {
             return Err("native context has no exact authenticated self member".into());
@@ -7409,7 +7405,7 @@ impl AppBrokerState {
         if !self
             .certified_people_in_workspace(workspace)
             .iter()
-            .any(|row| row.id == actor && row.is_agent)
+            .any(|row| row.id.key() == actor && !row.id.is_person())
         {
             return None;
         }
@@ -7449,12 +7445,11 @@ impl AppBrokerState {
     pub(crate) fn certified_people_in_workspace(
         &self,
         workspace: &str,
-    ) -> Vec<ui::collaboration::Collaborator> {
+    ) -> Vec<ui::collaboration::Member> {
         let Ok(channels) = self.channels.lock() else {
             return Vec::new();
         };
-        let mut people =
-            std::collections::BTreeMap::<String, ui::collaboration::Collaborator>::new();
+        let mut people = std::collections::BTreeMap::<String, ui::collaboration::Member>::new();
         for (channel, subscribers) in channels.iter() {
             let route = CrdtRoute::from_channel_key(channel);
             if route.cluster_id != workspace {
@@ -7468,15 +7463,15 @@ impl AppBrokerState {
                 for participant in &native.roster {
                     let mut participant = participant.clone();
                     participant.is_self = false;
-                    if let Some(held) = people.get(&participant.id) {
+                    if let Some(held) = people.get(&participant.id.key()) {
                         if held.name != participant.name
                             || held.packed_colour() != participant.packed_colour()
-                            || held.is_agent != participant.is_agent
+                            || held.id.is_person() != participant.id.is_person()
                         {
                             return Vec::new();
                         }
                     } else {
-                        people.insert(participant.id.clone(), participant);
+                        people.insert(participant.id.key(), participant);
                     }
                 }
             }
@@ -7648,15 +7643,14 @@ impl AppBrokerState {
         current: &AdmittedJoinIdentity,
     ) -> Result<bool, String> {
         fn same_roster(
-            left: &[ui::collaboration::Collaborator],
-            right: &[ui::collaboration::Collaborator],
+            left: &[ui::collaboration::Member],
+            right: &[ui::collaboration::Member],
         ) -> bool {
             left.len() == right.len()
                 && left.iter().zip(right).all(|(left, right)| {
                     left.id == right.id
                         && left.name == right.name
                         && left.packed_colour() == right.packed_colour()
-                        && left.is_agent == right.is_agent
                         && left.is_self == right.is_self
                 })
         }
@@ -13330,38 +13324,48 @@ pub mod tests {
             "a workspace the native owner did not select keeps ordinary app context"
         );
         assert_eq!(roster.iter().filter(|row| row.is_self).count(), 1);
-        assert!(roster.iter().any(|row| row.id == person && !row.is_agent));
         assert!(
             roster
                 .iter()
-                .all(|row| row.id != "person-in-other-workspace")
+                .any(|row| row.id == collab_types::MemberId::person(person.clone()))
         );
         assert!(
             roster
                 .iter()
-                .any(|row| { row.id == other_person && !row.is_agent && !row.is_self })
+                .all(|row| row.id != collab_types::MemberId::person("person-in-other-workspace"))
+        );
+        assert!(
+            roster.iter().any(|row| {
+                row.id == collab_types::MemberId::person(other_person) && !row.is_self
+            })
         );
         // When each person joined travels with their row, so every replica
         // numbers namesakes alike; the owner holds the workspace from its start.
-        let joined = |id: &str| roster.iter().find(|row| row.id == id).unwrap().joined_at;
-        assert_eq!(joined(other_person), Some(7_000));
+        let joined =
+            |id: collab_types::MemberId| roster.iter().find(|row| row.id == id).unwrap().joined_at;
+        assert_eq!(
+            joined(collab_types::MemberId::person(other_person)),
+            Some(7_000)
+        );
         assert_eq!(
             roster.iter().find(|row| row.is_self).unwrap().joined_at,
             Some(0)
         );
-        assert_eq!(joined(&format!("agent:{tide}")), None);
+        assert_eq!(joined(collab_types::MemberId::agent(tide)), None);
         assert!(
             roster
                 .iter()
-                .any(|row| { row.id == format!("agent:{person}") && row.is_agent && !row.is_self })
+                .any(|row| row.id == collab_types::MemberId::agent(person.clone()) && !row.is_self)
         );
         assert!(
             roster
                 .iter()
-                .any(|row| row.id == format!("agent:{tide}") && row.is_agent)
+                .any(|row| row.id == collab_types::MemberId::agent(tide))
         );
         assert!(
-            roster.iter().all(|row| row.id != "agent:wrong-workspace"),
+            roster
+                .iter()
+                .all(|row| row.id != collab_types::MemberId::agent("wrong-workspace")),
             "a grant for another workspace is not native membership here"
         );
         assert!(
@@ -13375,15 +13379,12 @@ pub mod tests {
         // An agent wears the colour its face wears everywhere, clear of the
         // person who admitted it, so the card it shows in a window is drawn as
         // the bar draws it.
-        for agent in roster.iter().filter(|row| row.is_agent) {
-            let key = agent
-                .id
-                .strip_prefix("agent:")
-                .expect("an agent's id names its key");
+        for agent in roster.iter().filter(|row| !row.id.is_person()) {
             assert_eq!(
                 agent.colour,
-                Some(ui::presence::participant_hue(key, true, Some(&person))),
-                "{key}"
+                ui::presence::participant_hue(&agent.id.key(), true, Some(&person)),
+                "{}",
+                agent.id.key()
             );
         }
 
@@ -13416,14 +13417,12 @@ pub mod tests {
                 .certified_agent_identity(&workspace_id, &person)
                 .is_none()
         );
-        let forged = ui::collaboration::Collaborator {
-            id: "agent:forged".into(),
-            name: "forged".into(),
-            colour: None,
-            is_agent: true,
-            is_self: false,
-            joined_at: None,
-        };
+        let forged = collab_types::Member::of_software(
+            collab_types::MemberId::agent("forged"),
+            "forged",
+            None,
+            None,
+        );
         {
             let mut channels = state.channels.lock().unwrap();
             AppBrokerState::fanout_context(
@@ -13446,10 +13445,7 @@ pub mod tests {
             panic!("ordinary context subscribers still receive app context");
         };
         assert_eq!(collaborators.len(), 1);
-        assert_eq!(collaborators[0].id, forged.id);
-        assert_eq!(collaborators[0].name, forged.name);
-        assert!(collaborators[0].is_agent);
-        assert!(!collaborators[0].is_self);
+        assert_eq!(collaborators[0], forged);
         assert!(membership.write().workspaces[0].revoke_grant(&collision));
         assert!(membership.write().workspaces[0].dismiss(other_person));
         state.refresh_workspace_context_services().unwrap();
@@ -13459,13 +13455,17 @@ pub mod tests {
         assert!(
             collaborators
                 .iter()
-                .all(|row| row.id != format!("agent:{person}"))
+                .all(|row| row.id != collab_types::MemberId::agent(person.clone()))
         );
-        assert!(collaborators.iter().all(|row| row.id != other_person));
         assert!(
             collaborators
                 .iter()
-                .any(|row| row.id == person && row.is_self)
+                .all(|row| row.id != collab_types::MemberId::person(other_person))
+        );
+        assert!(
+            collaborators
+                .iter()
+                .any(|row| row.id == collab_types::MemberId::person(person.clone()) && row.is_self)
         );
         let ContextUpdate::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
             panic!("every mounted root must receive membership removal");
@@ -13473,7 +13473,7 @@ pub mod tests {
         assert!(
             collaborators
                 .iter()
-                .all(|row| row.id != format!("agent:{person}"))
+                .all(|row| row.id != collab_types::MemberId::agent(person.clone()))
         );
         membership.write().workspaces[0].allow_agent(reed, crate::test_support::KindSet::READ);
         state.refresh_workspace_context_services().unwrap();
@@ -13483,7 +13483,7 @@ pub mod tests {
         assert!(
             collaborators
                 .iter()
-                .any(|row| row.id == format!("agent:{reed}") && row.is_agent)
+                .any(|row| row.id == collab_types::MemberId::agent(reed))
         );
         let ContextUpdate::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
             panic!("every mounted root must receive membership addition");
@@ -13491,7 +13491,7 @@ pub mod tests {
         assert!(
             collaborators
                 .iter()
-                .any(|row| row.id == "agent:reed" && row.is_agent)
+                .any(|row| row.id == collab_types::MemberId::agent("reed"))
         );
 
         let mut queued = state.subscribe_context(&channel, 48, Some(native.clone()));

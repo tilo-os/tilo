@@ -265,7 +265,7 @@ pub struct SeedPresence {
 
 #[derive(Clone)]
 pub struct SeedContext {
-    collaborators: Vec<Collaborator>,
+    collaborators: Vec<Member>,
     permissions: Vec<String>,
 }
 
@@ -5437,22 +5437,12 @@ fn sdk_streams_translate_to_ui_events() {
         let broker = FakeBroker {
             context_backlog: vec![SeedContext {
                 collaborators: vec![
-                    Collaborator {
-                        id: "alice".to_owned(),
-                        name: "Alice".to_owned(),
-                        colour: Some(collab_types::presence::PresenceHue::Orange),
-                        is_agent: false,
-                        is_self: false,
-                        joined_at: None,
-                    },
-                    Collaborator {
-                        id: "bob".to_owned(),
-                        name: "Bob".to_owned(),
-                        colour: None,
-                        is_agent: false,
-                        is_self: false,
-                        joined_at: None,
-                    },
+                    collab_types::Member::of_person(
+                        &collab_types::Person::new("alice", "Alice")
+                            .wearing(collab_types::presence::PresenceHue::Orange),
+                        None,
+                    ),
+                    collab_types::Member::of_person(&collab_types::Person::new("bob", "Bob"), None),
                 ],
                 permissions: vec!["edit".to_owned(), "share".to_owned()],
             }],
@@ -5483,13 +5473,16 @@ fn sdk_streams_translate_to_ui_events() {
         assert_eq!(contexts.len(), 2, "source loss must withdraw its context");
         let (collabs, perms) = &contexts[0];
         assert_eq!(collabs.len(), 2);
-        assert_eq!(collabs[0].id, "alice");
+        assert_eq!(collabs[0].id, collab_types::MemberId::person("alice"));
         assert_eq!(collabs[0].name, "Alice");
         assert_eq!(
             collabs[0].colour,
-            Some(collab_types::presence::PresenceHue::Orange)
+            collab_types::presence::PresenceHue::Orange
         );
-        assert_eq!(collabs[1].colour, None);
+        assert_eq!(
+            collabs[1].colour,
+            collab_types::presence::PresenceHue::of_identity("bob")
+        );
         assert_eq!(perms, &["edit".to_owned(), "share".to_owned()]);
         assert!(contexts[1].0.is_empty());
         assert!(contexts[1].1.is_empty());

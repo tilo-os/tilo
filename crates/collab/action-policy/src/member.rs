@@ -50,6 +50,32 @@ impl MemberId {
     pub const fn is_person(&self) -> bool {
         matches!(self, Self::Person(_))
     }
+
+    /// The spelling a stored id uses: a person's root key as it is, an agent's
+    /// `agent:<id>`, a bot's `bot:<id>`.
+    #[must_use]
+    pub fn key(&self) -> String {
+        match self {
+            Self::Person(id) => id.clone(),
+            Self::Agent(id) => format!("agent:{id}"),
+            Self::Bot(id) => format!("bot:{id}"),
+        }
+    }
+
+    /// The member a stored id spells: a prefixed id, or a person's root key.
+    #[must_use]
+    pub fn parse(key: &str) -> Option<Self> {
+        fn nonempty(id: &str) -> Option<String> {
+            (!id.is_empty()).then(|| id.to_owned())
+        }
+        if let Some(id) = key.strip_prefix("agent:") {
+            return nonempty(id).map(Self::Agent);
+        }
+        if let Some(id) = key.strip_prefix("bot:") {
+            return nonempty(id).map(Self::Bot);
+        }
+        nonempty(key.strip_prefix("person:").unwrap_or(key)).map(Self::Person)
+    }
 }
 
 impl std::fmt::Display for MemberId {

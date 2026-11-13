@@ -63,6 +63,7 @@ pub mod history;
 pub mod identity;
 pub mod inbound;
 pub mod key_scope;
+pub mod member;
 pub mod mls_governance;
 pub mod op;
 pub mod peer;
@@ -122,6 +123,7 @@ pub use document_transfer::{
 pub use event::{ChannelEvent, RoleAttestation};
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
 pub use key_scope::{WORKSPACE_READERS, workspace_scope};
+pub use member::{Member, Person, PersonId, assigned_colour};
 pub use mls_governance::{
     ChannelRoute, JoinMaterial, Joining, MAX_CHANNEL_ROUTE_ID_BYTES, MAX_COMMIT_DEVICES,
     MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION, MlsAccessRequestV1, MlsGovernanceAction,
@@ -148,7 +150,7 @@ pub use redaction::{
     encode_redact_payload, hash_target_op, parse_redact_payload,
 };
 pub use role::{ArtifactKind, OpKind, Role};
-pub use tilo_action_policy::{member_record, member_record_id};
+pub use tilo_action_policy::{MemberId, member_record, member_record_id};
 pub use validator::{
     ChannelState, DEFAULT_WORKSPACE, ValidationError, document_node, named_record_of_channel,
     named_records, validate_admitted_inbound_op, validate_inbound_op, validate_replayed_inbound_op,

@@ -155,14 +155,10 @@ fn queued_presence_arrival_and_departure_repaint_without_widget_dirtiness() {
     for present in [true, false] {
         fixture.events.borrow_mut().push(CollabEvent::Context {
             collaborators: if present {
-                vec![crate::collaboration::Collaborator {
-                    id: "peer".into(),
-                    name: "Peer".into(),
-                    colour: None,
-                    is_agent: false,
-                    is_self: false,
-                    joined_at: None,
-                }]
+                vec![collab_types::Member::of_person(
+                    &collab_types::Person::new("peer", "Peer"),
+                    None,
+                )]
             } else {
                 Vec::new()
             },

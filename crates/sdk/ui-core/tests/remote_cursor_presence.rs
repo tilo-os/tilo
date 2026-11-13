@@ -4,7 +4,7 @@
 //! `RemoteCursorOverlay` actually renders from.
 
 use tilo_ui::app::App;
-use tilo_ui::collaboration::{CollabEvent, Collaborator};
+use tilo_ui::collaboration::{CollabEvent, Member, MemberId};
 use tilo_ui::permissions::UserId;
 use tilo_ui::presence::{ParticipantKind, user_color};
 use tilo_ui::state::State;
@@ -67,24 +67,22 @@ fn remote_cursor_moves_populate_and_update_presence() {
     {
         let mut app = new_headless_app();
         app.apply_collab_event_for_test(CollabEvent::Context {
-            collaborators: vec![Collaborator {
-                id: "agent@release".into(),
-                name: "Release assistant".into(),
-                colour: None,
-                is_agent: true,
-                is_self: false,
-                joined_at: None,
-            }],
+            collaborators: vec![Member::of_software(
+                MemberId::agent("release"),
+                "Release assistant",
+                None,
+                None,
+            )],
             permissions: vec![],
             apps: Vec::new(),
         });
         app.apply_collab_event_for_test(CollabEvent::RemoteCursorMoved {
-            user_id: "agent@release".into(),
+            user_id: "agent:release".into(),
             x: 24.0,
             y: 36.0,
         });
 
-        let agent = UserId("agent@release".into());
+        let agent = UserId("agent:release".into());
         assert_eq!(
             app.presence_ctx().participant_kind(&agent),
             ParticipantKind::Agent,
