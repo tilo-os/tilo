@@ -394,13 +394,22 @@ fn heading_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
     }
 }
 
-/// Whether `node`, or anything it holds, gives a person something to read or to press: the words a
-/// box paints itself, a control, or what stands inside it.
-fn shows_anything(node: &InspectionNode) -> bool {
+/// The boxes of the words and controls `node` shows, its own and its descendants', each as much of
+/// it as can be seen, and each at the depth it stands at rather than the box it stands in: a top
+/// bar is the controls on it, not the strip of window it spans. What stands inside a shown box is
+/// that box's own drawing read again, so only the innermost counts.
+fn showing_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) -> bool {
     if floats(&node.widget) {
         return false;
     }
-    if is_text(node)
+    let inner = node
+        .child_clip
+        .map_or(clip, |child_clip| clip.intersect(rect(child_clip)));
+    let mut inside = false;
+    for child in &node.children {
+        inside |= showing_boxes(child, inner, out);
+    }
+    let shows = is_text(node)
         || node.semantics.as_ref().is_some_and(|access| {
             !access.state.hidden
                 && (access
@@ -408,18 +417,32 @@ fn shows_anything(node: &InspectionNode) -> bool {
                     .as_deref()
                     .is_some_and(|name| !name.trim().is_empty())
                     || interactive(access.role))
-        })
-    {
+        });
+    if !shows {
+        return inside;
+    }
+    if inside {
         return true;
     }
-    node.children.iter().any(shows_anything)
+    let seen = rect(node.rect).intersect(clip);
+    if has_area(seen) {
+        out.push(seen);
+        return true;
+    }
+    false
 }
 
 /// The title of a surface that says what it is for and shows nothing under it, with the band that
 /// title stands in: the room below the band holds no words and no control, so a person reads the
 /// name of a thing that is not there.
 fn shows_nothing_under_its_title(node: &InspectionNode, own: Rect) -> Option<(Rect, Rect)> {
-    if !paints_surface(&node.widget) {
+    // A panel or a popover is a surface of its own over what it covers, and one that names its
+    // business in a header: the surface this check is about. A card or a page is one block of a
+    // window among others, and a title with a picture under it is no panel over nothing.
+    if !matches!(
+        node.widget.as_str(),
+        "FloatingPanel" | "Popover" | "ContextMenu"
+    ) {
         return None;
     }
     // A band folded away says nothing of what it holds until it opens.
@@ -433,24 +456,20 @@ fn shows_nothing_under_its_title(node: &InspectionNode, own: Rect) -> Option<(Re
     let mut headings = Vec::new();
     heading_boxes(node, own, &mut headings);
     let title = headings.first().copied()?;
-    // The surface's own parts, as it lays them out: the band its header stands in — what overlaps
-    // the first part — and everything the surface puts under that band.
-    let standing: Vec<&InspectionNode> = node
-        .children
+    let mut shown = Vec::new();
+    showing_boxes(node, own, &mut shown);
+    let Some(top) = shown.iter().map(|line| line.y0).reduce(f64::min) else {
+        return None;
+    };
+    // What stands beside the title is the header's own band: a subtitle, a count, the control that
+    // closes it. What stands under the band is the surface's body.
+    let band = shown
         .iter()
-        .filter(|child| !floats(&child.widget))
-        .filter(|child| has_area(rect(child.rect).intersect(own)))
-        .collect();
-    let first = standing.first().map(|child| rect(child.rect))?;
-    let band = standing
+        .filter(|line| line.y0 < top + HEADER_BAND)
+        .fold(title, |band, line| band.union(*line));
+    if shown
         .iter()
-        .map(|child| rect(child.rect))
-        .filter(|part| part.y0 < first.y1 - EPSILON)
-        .fold(first, |band, part| band.union(part));
-    if standing
-        .iter()
-        .filter(|child| rect(child.rect).y0 >= band.y1 - EPSILON)
-        .any(|child| shows_anything(child))
+        .any(|line| line.y0 >= band.y1 - EPSILON && has_area(line.intersect(own)))
     {
         return None;
     }
@@ -531,6 +550,10 @@ fn rounds_its_corners(widget: &str) -> bool {
 /// The least gap a card keeps from what stands over or under it: the toolkit's sibling gap, the
 /// rhythm cards and rows of a list stand by (`rhythm.sibling` on the stock theme).
 const CARD_GAP: f64 = 12.0;
+
+/// How far under the topmost words of a surface another line still stands in its header's band: one
+/// line, so a control drawn beside the words on the same row counts as the header's.
+const HEADER_BAND: f64 = 48.0;
 
 /// How much more room a heading keeps over it than over its content: the toolkit's tightest step
 /// (`rhythm.tight`), the least that tells a title from the block above it.
@@ -1276,8 +1299,8 @@ impl Walk<'_> {
         );
     }
 
-    /// A panel or a sheet that says what it is for and holds nothing under its title: the person
-    /// reads the name of what they opened and finds no control and no word of the thing itself.
+    /// A panel that says what it is for and holds nothing under its title: the person reads the
+    /// name of what they opened and finds no control and no word of the thing itself.
     fn header_only(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
         let Some((title, _)) = shows_nothing_under_its_title(node, own) else {
             return;

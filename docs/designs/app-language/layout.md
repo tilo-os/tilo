@@ -108,9 +108,9 @@ stands over and under it, so a list under a notice is not read as a row of it. I
 stands once: a list folds the branch of a row standing open into its item, since the document under
 that row lists it, so no step of a task is read both there and again as a row of the list.
 
-It reads a surface that says what it is for and shows nothing under it: a panel or a sheet whose
-title stands over an empty body is a `header-only` finding, since the name of a thing stands where
-the thing itself cannot be used.
+It reads a panel or a popover that says what it is for and shows nothing under it: one whose title
+stands over an empty body is a `header-only` finding, since the name of a thing stands where the
+thing itself cannot be used.
 
 It reads a window as it stands at rest too, its bar hidden over the window's top edge, and holds a
 sidebar that declares a header row — the words that name its places and the buttons that add to
