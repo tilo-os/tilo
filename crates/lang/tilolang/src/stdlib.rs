@@ -139,12 +139,21 @@ mod tests {
             IDS,
             "write the ids the library takes back to `std/app.ids`"
         );
-        // Every bundle carries the library's module: it holds no view code, since its views expand into
-        // their callers, so it stays small.
+        // Every bundle carries the library's module, and its views expand into their callers, so
+        // what it holds is metadata: its own words and the source of its templates, which a package
+        // that imports it expands them from. No code stands beside it.
+        let wasm = &super::compiled().wasm;
         assert!(
-            super::compiled().wasm.len() < 1024,
-            "the library's module is {} bytes",
-            super::compiled().wasm.len()
+            crate::meta::lines_from_wasm(wasm).is_empty(),
+            "the library's module runs no code: {:?}",
+            crate::meta::lines_from_wasm(wasm)
+        );
+        let beside = wasm
+            .len()
+            .saturating_sub(super::compiled().meta.to_json_bytes().len());
+        assert!(
+            beside < 1024,
+            "the library's module carries {beside} bytes beside its metadata"
         );
         assert!(
             super::library().compiled.meta.app == APP,

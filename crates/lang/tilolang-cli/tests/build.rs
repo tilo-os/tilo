@@ -178,7 +178,7 @@ fn declared_actions(apps: &[package::BuiltApp], today: &Manifest) {
 }
 
 /// Every app compiles with the standard library and carries it: the package its declarations belong
-/// to is loaded wherever its code runs.
+/// to is loaded wherever its code runs. Its views are the app's, so its module runs no code.
 fn every_payload_carries_the_standard_library(
     apps: &[package::BuiltApp],
     installed: &tilolang_tilo::bundle::Bundle,
@@ -199,10 +199,15 @@ fn every_payload_carries_the_standard_library(
         library.meta.views.is_empty(),
         "the library shows nothing itself"
     );
+    // Its views expand into the app's, so its module runs no code: what travels in it is metadata,
+    // the library's words and the source of its templates. Nothing else stands beside it.
+    let beside = library
+        .wasm
+        .len()
+        .saturating_sub(library.meta.to_json_bytes().len());
     assert!(
-        library.wasm.len() < 1024,
-        "the library's module is {} bytes",
-        library.wasm.len()
+        beside < 1024,
+        "the library's module carries {beside} bytes beside its metadata"
     );
 }
 
