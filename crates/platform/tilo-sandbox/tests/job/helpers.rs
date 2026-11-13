@@ -38,50 +38,54 @@ fn run(cg: &TestCgroup, dir: &std::path::Path, kind: &str, script: &str) -> Stri
     out
 }
 
-#[test]
-fn a_helper_sees_none_of_the_callers_mounts() {
-    let cg = needs_root!();
-    let dir = tempfile::tempdir().unwrap();
-    let out = run(&cg, dir.path(), "helper-probe", "cat /proc/self/mountinfo");
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("probe-seen")).unwrap(),
-        "true",
-        "the caller's probe mount was not made"
-    );
-    assert!(!out.contains(" /tmp/t-probe "), "{out}");
-    // Nothing of the caller's tree but the system directories and what was bound.
-    for line in out.lines() {
-        let at = line.split(' ').nth(4).unwrap_or("");
-        let expected = [
-            "/", "/usr", "/etc", "/bin", "/sbin", "/lib", "/proc", "/dev", "/tmp",
-        ]
-        .iter()
-        .any(|p| at == *p || (*p != "/" && at.starts_with(&format!("{p}/"))));
-        assert!(expected, "the helper sees {at}: {line}");
+tilo_test_env::scenario! {
+    fn a_helper_is_born_in_the_given_cgroup_and_netns_with_none_of_the_callers_mounts;
+
+    phase a_helper_sees_none_of_the_callers_mounts;
+    {
+        let cg = needs_root!();
+        let dir = tempfile::tempdir().unwrap();
+        let out = run(&cg, dir.path(), "helper-probe", "cat /proc/self/mountinfo");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("probe-seen")).unwrap(),
+            "true",
+            "the caller's probe mount was not made"
+        );
+        assert!(!out.contains(" /tmp/t-probe "), "{out}");
+        // Nothing of the caller's tree but the system directories and what was bound.
+        for line in out.lines() {
+            let at = line.split(' ').nth(4).unwrap_or("");
+            let expected = [
+                "/", "/usr", "/etc", "/bin", "/sbin", "/lib", "/proc", "/dev", "/tmp",
+            ]
+            .iter()
+            .any(|p| at == *p || (*p != "/" && at.starts_with(&format!("{p}/"))));
+            assert!(expected, "the helper sees {at}: {line}");
+        }
     }
-}
 
-#[test]
-fn a_helper_runs_in_the_given_cgroup() {
-    let cg = needs_root!();
-    let dir = tempfile::tempdir().unwrap();
-    let out = run(&cg, dir.path(), "helper", "cat /proc/self/cgroup");
-    let name = cg.path.file_name().unwrap().to_string_lossy().into_owned();
-    assert!(out.trim_end().ends_with(&name), "{out}");
-}
+    phase a_helper_runs_in_the_given_cgroup;
+    {
+        let cg = needs_root!();
+        let dir = tempfile::tempdir().unwrap();
+        let out = run(&cg, dir.path(), "helper", "cat /proc/self/cgroup");
+        let name = cg.path.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(out.trim_end().ends_with(&name), "{out}");
+    }
 
-#[test]
-fn a_helper_joins_the_given_netns() {
-    let cg = needs_root!();
-    let dir = tempfile::tempdir().unwrap();
-    let out = run(
-        &cg,
-        dir.path(),
-        "helper-netns",
-        "readlink /proc/self/ns/net",
-    );
-    let made = std::fs::read_to_string(dir.path().join("netns")).unwrap();
-    let own = std::fs::read_link("/proc/self/ns/net").unwrap();
-    assert_eq!(out.trim(), made.trim());
-    assert_ne!(out.trim(), own.to_string_lossy());
+    phase a_helper_joins_the_given_netns;
+    {
+        let cg = needs_root!();
+        let dir = tempfile::tempdir().unwrap();
+        let out = run(
+            &cg,
+            dir.path(),
+            "helper-netns",
+            "readlink /proc/self/ns/net",
+        );
+        let made = std::fs::read_to_string(dir.path().join("netns")).unwrap();
+        let own = std::fs::read_link("/proc/self/ns/net").unwrap();
+        assert_eq!(out.trim(), made.trim());
+        assert_ne!(out.trim(), own.to_string_lossy());
+    }
 }

@@ -629,21 +629,6 @@ pub fn passt_argv(socket: &Path, gateway_to_loopback: bool) -> Vec<OsString> {
 mod tests {
     use super::*;
 
-    /// Frames of up to 65520 bytes, passt's largest and its default, said here as the guest sets
-    /// the same MTU itself (init.sh: it takes no DHCP that would tell it).
-    #[test]
-    fn the_guest_root_overlay_copies_changes_up_in_full() {
-        let mount = INIT
-            .lines()
-            .skip_while(|l| !l.contains("mount -t overlay"))
-            .take(3)
-            .collect::<String>();
-        assert!(
-            mount.contains("redirect_dir=off") && mount.contains("metacopy=off"),
-            "{mount}"
-        );
-    }
-
     fn spec() -> VmSpec {
         VmSpec {
             guest: Guest {
@@ -690,175 +675,202 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_job_file_quotes_every_word() {
-        let f = job_file(&spec());
-        assert!(f.contains("T_CWD='/src'\n"), "{f}");
-        assert!(
-            f.contains("T_SHARE_TAG='inputs'\nT_RW_TAG='writes'\n"),
-            "{f}"
-        );
-        assert!(f.contains("\tt_layer 'i-top'\n\tt_layer 'i-base'\n"), "{f}");
-        assert!(f.contains("\tt_input '/src' 's-1'\n"), "{f}");
-        assert!(f.contains("\tt_input '/a b' 'it'\\''s'\n"), "{f}");
-        assert!(f.contains("\tt_writable 'target' '/target'\n"), "{f}");
-        assert!(
-            f.contains(
-                "program=$(t_which 'bash') || exit 127\n\texec env -i -- 'X=a b' 'PATH=/usr/bin' \"$program\" '-c' 'echo '\\''hi'\\'' $X'\n"
-            ),
-            "{f}"
-        );
-        assert!(f.contains("\tt_output '/target/out/*'\n"), "{f}");
-        assert!(f.contains("T_PATH='/usr/bin'\n"), "{f}");
-    }
+    tilo_test_env::scenario! {
+        fn the_vms_programs_are_told_their_shares_in_words_they_read_whole;
 
-    #[test]
-    fn every_share_is_a_vhost_user_fs_device_on_shared_memory() {
-        let mut spec = spec();
-        spec.network = Some("/net".into());
-        let argv = qemu_argv(&spec);
-        let words: Vec<&str> = argv.iter().filter_map(|a| a.to_str()).collect();
-        assert!(
-            words.contains(&"memory-backend-memfd,id=mem,size=1024M,share=on"),
-            "{words:?}"
-        );
-        let machine = words.iter().position(|a| *a == "-M").unwrap();
-        assert!(
-            words[machine + 1].contains("memory-backend=mem"),
-            "{words:?}"
-        );
-        assert!(
-            words.contains(&"socket,id=fs0,path=/vm/fs0.sock"),
-            "{words:?}"
-        );
-        assert!(
-            words.contains(&"vhost-user-fs-device,chardev=fs0,tag=inputs"),
-            "{words:?}"
-        );
-        assert!(
-            words.contains(&"vhost-user-fs-device,chardev=fs1,tag=writes"),
-            "{words:?}"
-        );
-        assert!(!words.iter().any(|w| w.contains("root.img")), "{words:?}");
-        // The guest's root copies every change up in full, so what a step changed is all in its
-        // upper directory: a moved directory or a chmod under `redirect_dir` or `metacopy` would
-        // live in overlay xattrs, and a layer made of the upper directory would lose it.
-        let virtio = words
-            .iter()
-            .filter(|a| a.starts_with("virtio-") || a.starts_with("vhost-user-fs-device"))
-            .count();
-        assert_eq!(virtio, virtio_devices(&spec), "{words:?}");
-        assert!(virtio <= VIRTIO_TRANSPORTS);
-        let kernel = words.iter().position(|a| *a == "-kernel").unwrap();
-        assert_eq!(
-            words.get(kernel + 1),
-            Some(&KERNEL),
-            "-kernel takes the kernel"
-        );
-    }
-
-    #[test]
-    fn a_share_name_that_would_break_the_guests_mounts_is_refused() {
-        for bad in ["", "a/b", "a:b", "a,b", ".."] {
-            let mut s = spec();
-            s.root = VmRoot::Share {
-                layers: vec![bad.into()],
-            };
-            let dir = tempfile::tempdir().unwrap();
+        phase the_job_file_quotes_every_word;
+        {
+            let f = job_file(&spec());
+            assert!(f.contains("T_CWD='/src'\n"), "{f}");
             assert!(
-                matches!(prepare(&s, dir.path()), Err(SpawnError::Invalid(_))),
-                "{bad:?} accepted"
+                f.contains("T_SHARE_TAG='inputs'\nT_RW_TAG='writes'\n"),
+                "{f}"
+            );
+            assert!(f.contains("\tt_layer 'i-top'\n\tt_layer 'i-base'\n"), "{f}");
+            assert!(f.contains("\tt_input '/src' 's-1'\n"), "{f}");
+            assert!(f.contains("\tt_input '/a b' 'it'\\''s'\n"), "{f}");
+            assert!(f.contains("\tt_writable 'target' '/target'\n"), "{f}");
+            assert!(
+                f.contains(
+                    "program=$(t_which 'bash') || exit 127\n\texec env -i -- 'X=a b' 'PATH=/usr/bin' \"$program\" '-c' 'echo '\\''hi'\\'' $X'\n"
+                ),
+                "{f}"
+            );
+            assert!(f.contains("\tt_output '/target/out/*'\n"), "{f}");
+            assert!(f.contains("T_PATH='/usr/bin'\n"), "{f}");
+        }
+
+        phase every_share_is_a_vhost_user_fs_device_on_shared_memory;
+        {
+            let mut spec = spec();
+            spec.network = Some("/net".into());
+            let argv = qemu_argv(&spec);
+            let words: Vec<&str> = argv.iter().filter_map(|a| a.to_str()).collect();
+            assert!(
+                words.contains(&"memory-backend-memfd,id=mem,size=1024M,share=on"),
+                "{words:?}"
+            );
+            let machine = words.iter().position(|a| *a == "-M").unwrap();
+            assert!(
+                words[machine + 1].contains("memory-backend=mem"),
+                "{words:?}"
+            );
+            assert!(
+                words.contains(&"socket,id=fs0,path=/vm/fs0.sock"),
+                "{words:?}"
+            );
+            assert!(
+                words.contains(&"vhost-user-fs-device,chardev=fs0,tag=inputs"),
+                "{words:?}"
+            );
+            assert!(
+                words.contains(&"vhost-user-fs-device,chardev=fs1,tag=writes"),
+                "{words:?}"
+            );
+            assert!(!words.iter().any(|w| w.contains("root.img")), "{words:?}");
+            // The guest's root copies every change up in full, so what a step changed is all in its
+            // upper directory: a moved directory or a chmod under `redirect_dir` or `metacopy` would
+            // live in overlay xattrs, and a layer made of the upper directory would lose it.
+            let virtio = words
+                .iter()
+                .filter(|a| a.starts_with("virtio-") || a.starts_with("vhost-user-fs-device"))
+                .count();
+            assert_eq!(virtio, virtio_devices(&spec), "{words:?}");
+            assert!(virtio <= VIRTIO_TRANSPORTS);
+            let kernel = words.iter().position(|a| *a == "-kernel").unwrap();
+            assert_eq!(
+                words.get(kernel + 1),
+                Some(&KERNEL),
+                "-kernel takes the kernel"
+            );
+        }
+
+        phase virtiofsd_shares_read_only_with_submounts_and_xattrs;
+        {
+            let argv = virtiofsd_argv(Path::new("/share"), Path::new("/sock/fs.sock"), true);
+            let words: Vec<&str> = argv.iter().filter_map(|a| a.to_str()).collect();
+            assert_eq!(
+                words,
+                [
+                    "virtiofsd",
+                    "--socket-path",
+                    "/sock/fs.sock",
+                    "--shared-dir",
+                    "/share",
+                    "--sandbox",
+                    "none",
+                    "--cache",
+                    "always",
+                    "--announce-submounts",
+                    "--xattr",
+                    "--readonly"
+                ]
+            );
+            assert!(
+                !virtiofsd_argv(Path::new("/s"), Path::new("/x"), false)
+                    .iter()
+                    .any(|a| a == "--readonly")
+            );
+        }
+
+        phase commas_in_paths_are_doubled_for_qemu;
+        {
+            assert_eq!(
+                escape_option(OsStr::new("/a,b/c")),
+                OsString::from("/a,,b/c")
             );
         }
     }
 
-    #[test]
-    fn virtiofsd_shares_read_only_with_submounts_and_xattrs() {
-        let argv = virtiofsd_argv(Path::new("/share"), Path::new("/sock/fs.sock"), true);
-        let words: Vec<&str> = argv.iter().filter_map(|a| a.to_str()).collect();
-        assert_eq!(
-            words,
-            [
-                "virtiofsd",
-                "--socket-path",
-                "/sock/fs.sock",
-                "--shared-dir",
-                "/share",
-                "--sandbox",
-                "none",
-                "--cache",
-                "always",
-                "--announce-submounts",
-                "--xattr",
-                "--readonly"
-            ]
-        );
-        assert!(
-            !virtiofsd_argv(Path::new("/s"), Path::new("/x"), false)
-                .iter()
-                .any(|a| a == "--readonly")
-        );
+    tilo_test_env::scenario! {
+        fn the_guest_init_copies_changes_up_and_flushes_only_the_output_disk;
+
+        phase the_guest_root_overlay_copies_changes_up_in_full;
+        // Frames of up to 65520 bytes, passt's largest and its default, said here as the guest sets
+        // the same MTU itself (init.sh: it takes no DHCP that would tell it).
+        {
+            let mount = INIT
+                .lines()
+                .skip_while(|l| !l.contains("mount -t overlay"))
+                .take(3)
+                .collect::<String>();
+            assert!(
+                mount.contains("redirect_dir=off") && mount.contains("metacopy=off"),
+                "{mount}"
+            );
+        }
+
+        phase the_init_flushes_only_the_output_disk_before_it_stops_the_machine;
+        {
+            // The serial ports ride on the one serial device; every other device is a transport.
+            let commands: Vec<&str> = INIT
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.starts_with('#'))
+                .collect();
+            assert!(
+                !commands
+                    .iter()
+                    .any(|l| l.split([' ', ';', '&', '|']).any(|w| w == "sync")),
+                "the init syncs every filesystem"
+            );
+            let finish = INIT
+                .split("finish() {")
+                .nth(1)
+                .and_then(|f| f.split("\n}").next())
+                .expect("the init has finish()");
+            let flush = finish
+                .find("conv=notrunc,fsync")
+                .expect("finish flushes the output disk");
+            assert!(
+                flush < finish.find("reboot -f").expect("finish stops the machine"),
+                "{finish}"
+            );
+        }
     }
 
-    #[test]
-    fn commas_in_paths_are_doubled_for_qemu() {
-        assert_eq!(
-            escape_option(OsStr::new("/a,b/c")),
-            OsString::from("/a,,b/c")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_step_is_prepared_only_with_sound_share_names_and_reads_its_status_back;
 
-    #[test]
-    fn the_init_flushes_only_the_output_disk_before_it_stops_the_machine() {
-        // The serial ports ride on the one serial device; every other device is a transport.
-        let commands: Vec<&str> = INIT
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.starts_with('#'))
-            .collect();
-        assert!(
-            !commands
-                .iter()
-                .any(|l| l.split([' ', ';', '&', '|']).any(|w| w == "sync")),
-            "the init syncs every filesystem"
-        );
-        let finish = INIT
-            .split("finish() {")
-            .nth(1)
-            .and_then(|f| f.split("\n}").next())
-            .expect("the init has finish()");
-        let flush = finish
-            .find("conv=notrunc,fsync")
-            .expect("finish flushes the output disk");
-        assert!(
-            flush < finish.find("reboot -f").expect("finish stops the machine"),
-            "{finish}"
-        );
-    }
+        phase a_share_name_that_would_break_the_guests_mounts_is_refused;
+        {
+            for bad in ["", "a/b", "a:b", "a,b", ".."] {
+                let mut s = spec();
+                s.root = VmRoot::Share {
+                    layers: vec![bad.into()],
+                };
+                let dir = tempfile::tempdir().unwrap();
+                assert!(
+                    matches!(prepare(&s, dir.path()), Err(SpawnError::Invalid(_))),
+                    "{bad:?} accepted"
+                );
+            }
+        }
 
-    #[test]
-    fn a_status_line_is_read_back_and_outputs_unpacked() {
-        let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("output.img");
-        let mut disk = vec![0_u8; usize::try_from(OUTPUTS_AT).unwrap() + 4096];
-        std::fs::write(&output, &disk).unwrap();
-        let p = Prepared {
-            job: JobSpec::new(Root::Host { extra: vec![] }, ["true"]),
-            output: output.clone(),
-        };
-        assert!(!p.done());
-        disk[..14].copy_from_slice(b"T-VM-STATUS 3\n");
-        std::fs::write(&output, &disk).unwrap();
-        assert!(p.done());
-        let out = dir.path().join("out");
-        std::fs::create_dir(&out).unwrap();
-        assert_eq!(p.finish(Some(&out)).unwrap().code, Some(3));
+        phase a_status_line_is_read_back_and_outputs_unpacked;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let output = dir.path().join("output.img");
+            let mut disk = vec![0_u8; usize::try_from(OUTPUTS_AT).unwrap() + 4096];
+            std::fs::write(&output, &disk).unwrap();
+            let p = Prepared {
+                job: JobSpec::new(Root::Host { extra: vec![] }, ["true"]),
+                output: output.clone(),
+            };
+            assert!(!p.done());
+            disk[..14].copy_from_slice(b"T-VM-STATUS 3\n");
+            std::fs::write(&output, &disk).unwrap();
+            assert!(p.done());
+            let out = dir.path().join("out");
+            std::fs::create_dir(&out).unwrap();
+            assert_eq!(p.finish(Some(&out)).unwrap().code, Some(3));
 
-        disk[..18].copy_from_slice(b"T-VM-STATUS error\n");
-        std::fs::write(&output, &disk).unwrap();
-        assert!(matches!(p.finish(None), Err(VmError::Guest)));
-        std::fs::write(&output, vec![0_u8; 4096]).unwrap();
-        assert!(matches!(p.finish(None), Err(VmError::NoStatus)));
-        assert!(!p.done());
+            disk[..18].copy_from_slice(b"T-VM-STATUS error\n");
+            std::fs::write(&output, &disk).unwrap();
+            assert!(matches!(p.finish(None), Err(VmError::Guest)));
+            std::fs::write(&output, vec![0_u8; 4096]).unwrap();
+            assert!(matches!(p.finish(None), Err(VmError::NoStatus)));
+            assert!(!p.done());
+        }
     }
 }

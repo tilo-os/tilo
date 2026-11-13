@@ -227,38 +227,40 @@ pub fn tree(path: &Path, userns: Option<BorrowedFd<'_>>) -> io::Result<OwnedFd> 
 mod tests {
     use super::map_lines;
 
+    /// `map_lines` for one owner and one job: `(row, (owner, the job's id, first host id, count),
+    /// the map)`. Each row was a test of its own, and a failure names its row.
     #[test]
-    fn a_root_owner_and_a_root_job_map_the_block_as_it_is() {
-        assert_eq!(map_lines(0, 0, 100_000, 65536), "0 100000 65536\n");
-    }
-
-    #[test]
-    fn system_files_keep_their_ids_for_a_nested_job() {
-        // What `system_namespace` maps: the owner is the job's id itself.
-        assert_eq!(map_lines(1000, 1000, 100_000, 65536), "0 100000 65536\n");
-    }
-
-    #[test]
-    fn a_root_owner_and_a_nested_job_swap_their_two_ids() {
-        assert_eq!(
-            map_lines(0, 1000, 100_000, 65536),
-            "0 101000 1\n1 100001 999\n1000 100000 1\n1001 101001 64535\n"
-        );
-    }
-
-    #[test]
-    fn an_owner_past_the_block_takes_the_jobs_place() {
-        assert_eq!(
-            map_lines(70_000, 0, 100_000, 65536),
-            "1 100001 65535\n70000 100000 1\n"
-        );
-    }
-
-    #[test]
-    fn an_owner_inside_the_block_swaps_with_a_root_job() {
-        assert_eq!(
-            map_lines(1000, 0, 100_000, 65536),
-            "0 101000 1\n1 100001 999\n1000 100000 1\n1001 101001 64535\n"
-        );
+    fn map_lines_translate_the_files_owner_into_the_jobs_block() {
+        let rows = [
+            (
+                "a_root_owner_and_a_root_job_map_the_block_as_it_is",
+                (0, 0, 100_000, 65536),
+                "0 100000 65536\n",
+            ),
+            // What `system_namespace` maps: the owner is the job's id itself.
+            (
+                "system_files_keep_their_ids_for_a_nested_job",
+                (1000, 1000, 100_000, 65536),
+                "0 100000 65536\n",
+            ),
+            (
+                "a_root_owner_and_a_nested_job_swap_their_two_ids",
+                (0, 1000, 100_000, 65536),
+                "0 101000 1\n1 100001 999\n1000 100000 1\n1001 101001 64535\n",
+            ),
+            (
+                "an_owner_past_the_block_takes_the_jobs_place",
+                (70_000, 0, 100_000, 65536),
+                "1 100001 65535\n70000 100000 1\n",
+            ),
+            (
+                "an_owner_inside_the_block_swaps_with_a_root_job",
+                (1000, 0, 100_000, 65536),
+                "0 101000 1\n1 100001 999\n1000 100000 1\n1001 101001 64535\n",
+            ),
+        ];
+        for (row, (owner, inside, first, count), expected) in rows {
+            assert_eq!(map_lines(owner, inside, first, count), expected, "{row}");
+        }
     }
 }

@@ -1116,30 +1116,34 @@ mod tests {
         std::str::from_utf8(b).unwrap()
     }
 
-    #[test]
-    fn a_job_without_an_entry_gets_one_with_roots_shell_and_its_group() {
-        let (passwd, group) = account_files(PASSWD, Some(GROUP), 1000, 1000).unwrap();
-        assert_eq!(
-            text(&passwd).lines().last(),
-            Some("job:x:1000:1000:job:/tmp:/bin/bash")
-        );
-        assert_eq!(text(&group.unwrap()).lines().last(), Some("job:x:1000:"));
-    }
+    tilo_test_env::scenario! {
+        fn account_files_give_a_job_an_entry_only_where_it_has_none;
 
-    #[test]
-    fn a_job_with_an_entry_keeps_the_files() {
-        assert!(account_files(PASSWD, Some(GROUP), 1, 1).is_none());
-    }
+        phase a_job_without_an_entry_gets_one_with_roots_shell_and_its_group;
+        {
+            let (passwd, group) = account_files(PASSWD, Some(GROUP), 1000, 1000).unwrap();
+            assert_eq!(
+                text(&passwd).lines().last(),
+                Some("job:x:1000:1000:job:/tmp:/bin/bash")
+            );
+            assert_eq!(text(&group.unwrap()).lines().last(), Some("job:x:1000:"));
+        }
 
-    #[test]
-    fn an_existing_group_and_name_are_kept_apart() {
-        let passwd = b"root:x:0:0::/root:\njob:x:5:5::/:/bin/sh";
-        let (passwd, group) = account_files(passwd, Some(b"users:x:1000:"), 1000, 1000).unwrap();
-        // No newline at the end of the image's file, an empty root shell.
-        assert_eq!(
-            text(&passwd),
-            "root:x:0:0::/root:\njob:x:5:5::/:/bin/sh\njob1000:x:1000:1000:job:/tmp:/bin/sh\n"
-        );
-        assert!(group.is_none(), "the group 1000 exists");
+        phase a_job_with_an_entry_keeps_the_files;
+        {
+            assert!(account_files(PASSWD, Some(GROUP), 1, 1).is_none());
+        }
+
+        phase an_existing_group_and_name_are_kept_apart;
+        {
+            let passwd = b"root:x:0:0::/root:\njob:x:5:5::/:/bin/sh";
+            let (passwd, group) = account_files(passwd, Some(b"users:x:1000:"), 1000, 1000).unwrap();
+            // No newline at the end of the image's file, an empty root shell.
+            assert_eq!(
+                text(&passwd),
+                "root:x:0:0::/root:\njob:x:5:5::/:/bin/sh\njob1000:x:1000:1000:job:/tmp:/bin/sh\n"
+            );
+            assert!(group.is_none(), "the group 1000 exists");
+        }
     }
 }

@@ -225,48 +225,52 @@ mod tests {
 
     use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn files_and_long_names_come_out_and_nothing_leaves_the_destination() {
-        let mut tar = Vec::new();
-        entry(&mut tar, "target/out/", b'5', b"", 0o755);
-        entry(&mut tar, "target/out/app", b'0', b"binary", 0o755);
-        entry(&mut tar, "src/notes.txt", b'0', b"notes", 0o644);
-        entry(&mut tar, "../escape", b'0', b"no", 0o644);
-        entry(&mut tar, "/etc/passwd", b'0', b"no", 0o644);
-        entry(&mut tar, "target/link", b'2', b"", 0o777);
-        let long = format!("target/{}/deep", "d".repeat(150));
-        entry(
-            &mut tar,
-            "././@LongLink",
-            b'L',
-            format!("{long}\0").as_bytes(),
-            0o644,
-        );
-        entry(&mut tar, "short-name", b'0', b"long", 0o644);
-        tar.extend([0; 1024]);
+    tilo_test_env::scenario! {
+        fn unpacking_keeps_outputs_inside_the_destination_and_an_empty_disk_holds_none;
 
-        let dir = tempfile::tempdir().unwrap();
-        let dest = dir.path().join("out");
-        fs::create_dir(&dest).unwrap();
-        let n = unpack(&mut tar.as_slice(), &dest).unwrap();
-        assert_eq!(n, 3);
-        assert_eq!(fs::read(dest.join("target/out/app")).unwrap(), b"binary");
-        assert_eq!(fs::read(dest.join("src/notes.txt")).unwrap(), b"notes");
-        assert_eq!(fs::read(dest.join(&long)).unwrap(), b"long");
-        assert!(!dest.join("target/link").exists());
-        assert!(!dir.path().join("escape").exists());
-        assert!(!dest.join("etc/passwd").exists());
-        let mode = fs::metadata(dest.join("target/out/app"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o111, 0o111);
-    }
+        phase files_and_long_names_come_out_and_nothing_leaves_the_destination;
+        {
+            let mut tar = Vec::new();
+            entry(&mut tar, "target/out/", b'5', b"", 0o755);
+            entry(&mut tar, "target/out/app", b'0', b"binary", 0o755);
+            entry(&mut tar, "src/notes.txt", b'0', b"notes", 0o644);
+            entry(&mut tar, "../escape", b'0', b"no", 0o644);
+            entry(&mut tar, "/etc/passwd", b'0', b"no", 0o644);
+            entry(&mut tar, "target/link", b'2', b"", 0o777);
+            let long = format!("target/{}/deep", "d".repeat(150));
+            entry(
+                &mut tar,
+                "././@LongLink",
+                b'L',
+                format!("{long}\0").as_bytes(),
+                0o644,
+            );
+            entry(&mut tar, "short-name", b'0', b"long", 0o644);
+            tar.extend([0; 1024]);
 
-    #[test]
-    fn an_empty_or_zeroed_disk_holds_no_outputs() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(unpack(&mut [0_u8; 4096].as_slice(), dir.path()).unwrap(), 0);
-        assert_eq!(unpack(&mut [].as_slice(), dir.path()).unwrap(), 0);
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join("out");
+            fs::create_dir(&dest).unwrap();
+            let n = unpack(&mut tar.as_slice(), &dest).unwrap();
+            assert_eq!(n, 3);
+            assert_eq!(fs::read(dest.join("target/out/app")).unwrap(), b"binary");
+            assert_eq!(fs::read(dest.join("src/notes.txt")).unwrap(), b"notes");
+            assert_eq!(fs::read(dest.join(&long)).unwrap(), b"long");
+            assert!(!dest.join("target/link").exists());
+            assert!(!dir.path().join("escape").exists());
+            assert!(!dest.join("etc/passwd").exists());
+            let mode = fs::metadata(dest.join("target/out/app"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o111, 0o111);
+        }
+
+        phase an_empty_or_zeroed_disk_holds_no_outputs;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            assert_eq!(unpack(&mut [0_u8; 4096].as_slice(), dir.path()).unwrap(), 0);
+            assert_eq!(unpack(&mut [].as_slice(), dir.path()).unwrap(), 0);
+        }
     }
 }
