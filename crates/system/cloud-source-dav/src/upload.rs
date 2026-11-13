@@ -1,10 +1,4 @@
 //! Upload sessions: one streamed `PUT`, or a Nextcloud chunked upload.
-//!
-//! Nextcloud's chunked upload (v2) stages numbered chunks in
-//! `remote.php/dav/uploads/<user>/<transfer>/` and assembles them with a
-//! final `MOVE` of the virtual `.file` onto the destination. The staging
-//! folder survives restarts, so a session resumes from the chunks the
-//! server already holds.
 
 use cloud_source::{
     CloudSource, Error, Item, ItemId, Result, Revision, UploadSession, UploadState,
@@ -14,10 +8,8 @@ use tilo_dav::{Body, Depth, Precondition, StatusCode, Url};
 
 use crate::{DavSource, paths};
 
-/// The precondition of the final write.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Condition {
-    /// Replace; with a revision, only if the file is still at it.
     Match(Option<Revision>),
     /// Create; never replace.
     Create,
@@ -55,7 +47,6 @@ impl Condition {
     }
 }
 
-/// A whole file in one streamed `PUT`.
 pub struct SinglePut {
     source: DavSource,
     id: ItemId,
@@ -151,7 +142,6 @@ struct ChunkedState {
     offset: u64,
 }
 
-/// A Nextcloud chunked upload.
 pub struct Chunked {
     source: DavSource,
     state: ChunkedState,
