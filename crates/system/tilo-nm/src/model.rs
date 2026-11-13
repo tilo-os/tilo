@@ -321,137 +321,141 @@ pub const fn activation_failure(reason: u32) -> &'static str {
 mod tests {
     use super::*;
 
-    #[test]
-    fn active_state_and_reason_mapping() {
-        assert_eq!(
-            [0, 1, 2, 3, 4, 5].map(ActiveState::from_raw),
-            [
-                ActiveState::Unknown,
-                ActiveState::Activating,
-                ActiveState::Activated,
-                ActiveState::Deactivating,
-                ActiveState::Deactivated,
-                ActiveState::Unknown,
-            ]
-        );
-        assert!(ended_on_purpose(2), "deactivated by someone");
-        assert!(ended_on_purpose(11), "its profile deleted");
-        for reason in [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14] {
-            assert!(!ended_on_purpose(reason), "{reason}");
+    tilo_test_env::scenario! {
+        fn networkmanagers_numbers_map_to_the_model;
+
+        phase active_state_and_reason_mapping;
+        {
+            assert_eq!(
+                [0, 1, 2, 3, 4, 5].map(ActiveState::from_raw),
+                [
+                    ActiveState::Unknown,
+                    ActiveState::Activating,
+                    ActiveState::Activated,
+                    ActiveState::Deactivating,
+                    ActiveState::Deactivated,
+                    ActiveState::Unknown,
+                ]
+            );
+            assert!(ended_on_purpose(2), "deactivated by someone");
+            assert!(ended_on_purpose(11), "its profile deleted");
+            for reason in [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14] {
+                assert!(!ended_on_purpose(reason), "{reason}");
+            }
+            assert!(is_vpn_type("vpn") && is_vpn_type("wireguard"));
+            assert!(!is_vpn_type("802-11-wireless"));
         }
-        assert!(is_vpn_type("vpn") && is_vpn_type("wireguard"));
-        assert!(!is_vpn_type("802-11-wireless"));
-    }
 
-    #[test]
-    fn device_kinds_and_activation_failures_map() {
-        assert_eq!(
-            [1, 2, 8, 14, 0].map(DeviceKind::from_raw),
-            [
-                DeviceKind::Ethernet,
-                DeviceKind::Wifi,
-                DeviceKind::Modem,
-                DeviceKind::Other,
-                DeviceKind::Other,
-            ]
-        );
-        assert!(activation_failure(9).contains("password"));
-        assert_eq!(activation_failure(99), "the connection failed");
-    }
-
-    #[test]
-    fn metered_mapping() {
-        assert_eq!(
-            [0, 1, 2, 3, 4, 5].map(metered_from_raw),
-            [None, Some(true), Some(false), Some(true), Some(false), None],
-            "NMMetered Unknown/Yes/No/GuessYes/GuessNo, then an unknown value"
-        );
-    }
-
-    #[test]
-    fn connectivity_mapping() {
-        assert_eq!(
-            [0, 1, 2, 3, 4, 9].map(NmConnectivity::from_raw),
-            [
-                NmConnectivity::Unknown,
-                NmConnectivity::None,
-                NmConnectivity::Portal,
-                NmConnectivity::Limited,
-                NmConnectivity::Full,
-                NmConnectivity::Unknown,
-            ]
-        );
-    }
-
-    #[test]
-    fn state_mapping() {
-        assert_eq!(
-            [0, 10, 20, 30, 40, 50, 60, 70, 71].map(NmState::from_raw),
-            [
-                NmState::Unknown,
-                NmState::Asleep,
-                NmState::Disconnected,
-                NmState::Disconnecting,
-                NmState::Connecting,
-                NmState::ConnectedLocal,
-                NmState::ConnectedSite,
-                NmState::ConnectedGlobal,
-                NmState::Unknown,
-            ]
-        );
-        assert!(NmState::ConnectedLocal.is_connected());
-        assert!(!NmState::Connecting.is_connected());
-    }
-
-    #[test]
-    fn connection_types_map_to_link_kinds() {
-        for (kind, want) in [
-            ("802-3-ethernet", LinkKind::Wired),
-            ("bridge", LinkKind::Wired),
-            ("802-11-wireless", LinkKind::Wifi),
-            ("gsm", LinkKind::Mobile),
-            ("bluetooth", LinkKind::Mobile),
-            ("wireguard", LinkKind::Other),
-            ("", LinkKind::Other),
-        ] {
-            assert_eq!(LinkKind::from_connection_type(kind), want, "{kind}");
+        phase device_kinds_and_activation_failures_map;
+        {
+            assert_eq!(
+                [1, 2, 8, 14, 0].map(DeviceKind::from_raw),
+                [
+                    DeviceKind::Ethernet,
+                    DeviceKind::Wifi,
+                    DeviceKind::Modem,
+                    DeviceKind::Other,
+                    DeviceKind::Other,
+                ]
+            );
+            assert!(activation_failure(9).contains("password"));
+            assert_eq!(activation_failure(99), "the connection failed");
         }
-    }
 
-    #[test]
-    fn speculation_needs_full_connectivity_and_an_unmetered_primary() {
-        let full_unmetered = NetworkState {
-            state: NmState::ConnectedGlobal,
-            connectivity: NmConnectivity::Full,
-            metered: Some(false),
-            primary: None,
-        };
-        assert!(full_unmetered.allows_speculative_traffic());
-        for (case, state) in [
-            (
-                "metered primary",
-                NetworkState {
-                    metered: Some(true),
-                    ..full_unmetered.clone()
-                },
-            ),
-            (
-                "metering unknown",
-                NetworkState {
-                    metered: None,
-                    ..full_unmetered.clone()
-                },
-            ),
-            (
-                "behind a portal",
-                NetworkState {
-                    connectivity: NmConnectivity::Portal,
-                    ..full_unmetered
-                },
-            ),
-            ("NetworkManager unreachable", NetworkState::unknown()),
-        ] {
-            assert!(!state.allows_speculative_traffic(), "{case}");
+        phase metered_mapping;
+        {
+            assert_eq!(
+                [0, 1, 2, 3, 4, 5].map(metered_from_raw),
+                [None, Some(true), Some(false), Some(true), Some(false), None],
+                "NMMetered Unknown/Yes/No/GuessYes/GuessNo, then an unknown value"
+            );
+        }
+
+        phase connectivity_mapping;
+        {
+            assert_eq!(
+                [0, 1, 2, 3, 4, 9].map(NmConnectivity::from_raw),
+                [
+                    NmConnectivity::Unknown,
+                    NmConnectivity::None,
+                    NmConnectivity::Portal,
+                    NmConnectivity::Limited,
+                    NmConnectivity::Full,
+                    NmConnectivity::Unknown,
+                ]
+            );
+        }
+
+        phase state_mapping;
+        {
+            assert_eq!(
+                [0, 10, 20, 30, 40, 50, 60, 70, 71].map(NmState::from_raw),
+                [
+                    NmState::Unknown,
+                    NmState::Asleep,
+                    NmState::Disconnected,
+                    NmState::Disconnecting,
+                    NmState::Connecting,
+                    NmState::ConnectedLocal,
+                    NmState::ConnectedSite,
+                    NmState::ConnectedGlobal,
+                    NmState::Unknown,
+                ]
+            );
+            assert!(NmState::ConnectedLocal.is_connected());
+            assert!(!NmState::Connecting.is_connected());
+        }
+
+        phase connection_types_map_to_link_kinds;
+        {
+            for (kind, want) in [
+                ("802-3-ethernet", LinkKind::Wired),
+                ("bridge", LinkKind::Wired),
+                ("802-11-wireless", LinkKind::Wifi),
+                ("gsm", LinkKind::Mobile),
+                ("bluetooth", LinkKind::Mobile),
+                ("wireguard", LinkKind::Other),
+                ("", LinkKind::Other),
+            ] {
+                assert_eq!(LinkKind::from_connection_type(kind), want, "{kind}");
+            }
+        }
+
+        phase speculation_needs_full_connectivity_and_an_unmetered_primary;
+        {
+            let full_unmetered = NetworkState {
+                state: NmState::ConnectedGlobal,
+                connectivity: NmConnectivity::Full,
+                metered: Some(false),
+                primary: None,
+            };
+            assert!(full_unmetered.allows_speculative_traffic());
+            for (case, state) in [
+                (
+                    "metered primary",
+                    NetworkState {
+                        metered: Some(true),
+                        ..full_unmetered.clone()
+                    },
+                ),
+                (
+                    "metering unknown",
+                    NetworkState {
+                        metered: None,
+                        ..full_unmetered.clone()
+                    },
+                ),
+                (
+                    "behind a portal",
+                    NetworkState {
+                        connectivity: NmConnectivity::Portal,
+                        ..full_unmetered
+                    },
+                ),
+                ("NetworkManager unreachable", NetworkState::unknown()),
+            ] {
+                assert!(!state.allows_speculative_traffic(), "{case}");
+            }
         }
     }
 }
