@@ -38,20 +38,26 @@ const ALIASES: Record<string, string> = { ts: "typescript", js: "typescript", ba
 // The order a reader meets the SDK in: an export no group holds is an error,
 // so a new one cannot reach the page without a place to sit.
 const GROUPS: [string, string[]][] = [
-  ["Client", ["Tilo", "TiloOptions", "Workspaces", "Keys", "SignIn"]],
-  ["Workspaces", ["Workspace", "WorkspaceInfo", "WorkspaceList", "Host"]],
-  ["Resources", ["Resource", "Step", "resourceProxy", "kebab", "segments", "Listing", "Row", "Hit"]],
-  ["Runs", ["Run", "RunGroup", "withinRun", "Endpoint", "Event", "ProgramAnswer"]],
-  ["Files", ["Files"]],
+  ["Client", ["Tilo", "TiloOptions", "Workspaces", "Keys", "SignIn", "urlFrom", "keyFrom"]],
+  ["Workspaces", ["Workspace", "WorkspaceInfo", "WorkspaceList"]],
+  ["Account", ["Usage", "WorkspaceUsage", "ApiInfo"]],
+  ["Resources", [
+    "Resource", "Step", "Surface", "resourceProxy", "kebab", "segments",
+    "Listing", "Row", "Action", "Param", "Hit",
+  ]],
+  ["Runs", ["Run", "RunGroup", "withinRun", "ActionAnswer", "Event", "ProgramAnswer"]],
+  ["Files", ["Files", "FileBytes", "Upload"]],
   ["Keys", ["WorkspaceKeys", "Key", "MintedKey"]],
   ["Members", ["Members", "Member", "Invitation", "Person"]],
   ["Connection", [
-    "Transport", "DEFAULT_DOOR", "SESSION_HEADER", "SURFACE",
-    "Answer", "FetchLike", "doorFrom", "keyFrom", "VERSION",
+    "Transport", "HttpTransport", "NativeTransport", "HostOptions", "TransportRequest",
+    "TransportReply", "HeadersLike", "HeaderMap", "FetchLike", "Endpoint",
+    "RequestOptions", "Reply", "DEFAULT_URL", "NATIVE_PACKAGE", "VERSION", "API_VERSION",
   ]],
+  ["Routes", ["routes", "encodePath", "splitAction"]],
   ["Errors", [
     "Refused", "RateLimited", "AskPending", "ProtocolError",
-    "KeyRefused", "KeyRevoked", "KeyExpired",
+    "KeyRefused", "KeyRevoked", "KeyExpired", "SurfaceChanged",
   ]],
 ];
 

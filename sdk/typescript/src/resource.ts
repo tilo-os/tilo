@@ -1,11 +1,15 @@
 /**
  * A resource as a typed object: its fields, its actions, and its edits.
  *
- * Attribute reads come from `tilo_read`'s `fields`; a method call is the
- * resource's action (`readFormFields()` runs `read-form-fields`); assigning a
- * name is a field edit, through the generic `field-edit` action every
- * resource publishes. `form.formValues.surname = "Doe"` is the same edit one
- * level down.
+ * A field reads from the resource's `fields`; a method call is the resource's
+ * action (`readFormFields()` runs `read-form-fields`); assigning a name is a
+ * field edit, through the generic `field-edit` action every resource
+ * publishes. `form.formValues.surname = "Doe"` is the same edit one level
+ * down.
+ *
+ * A resource made through generated types names its app's surface, and every
+ * call it makes sends `Tilo-Surface` with it: a workspace whose app publishes
+ * another surface refuses the call (`SurfaceChanged`) instead of running it.
  */
 
 import type { Event } from "./models.ts";
@@ -25,6 +29,8 @@ export type Step = string | Record<string, unknown>;
 export interface Resource {
   readonly path: string;
   readonly kind: string;
+  /** The app's surface the types were made from, `<app>@<digest>`, when they were. */
+  readonly surface: string | null;
   readonly fields: Record<string, unknown>;
   readonly children: unknown[];
   readonly raw: Record<string, unknown>;
@@ -34,9 +40,15 @@ export interface Resource {
   action(name: string, args?: Record<string, unknown>): Promise<unknown>;
   edit(steps: Step[], value: unknown, op?: string): Promise<unknown>;
   remove(...steps: Step[]): Promise<unknown>;
-  watch(waitMs?: number | null): AsyncGenerator<Event>;
+  watch(): AsyncGenerator<Event>;
   [name: string]: unknown;
 }
+
+/**
+ * The surface a resource's calls name: generated types answer it as their
+ * `static readonly surface`, and a caller may give the string itself.
+ */
+export type Surface = string | { surface?: string | null } | null;
 
 /** `read_form_fields` or `readFormFields` as an action id: `read-form-fields`. */
 export function kebab(name: string): string {
@@ -82,6 +94,7 @@ export function segments(steps: Step[]): Record<string, unknown>[] {
 const OWN = new Set([
   "path",
   "kind",
+  "surface",
   "fields",
   "children",
   "raw",
@@ -107,8 +120,7 @@ function wrapMap(
       if (typeof property !== "string") {
         return Reflect.get(target, property);
       }
-      const held = target[property];
-      return wrap(impl, [...steps, property], held);
+      return wrap(impl, [...steps, property], target[property]);
     },
     set(target, property, next) {
       if (typeof property !== "string") {
@@ -140,14 +152,16 @@ function wrap(impl: ResourceImpl, steps: Step[], value: unknown): unknown {
 class ResourceImpl {
   readonly path: string;
   readonly workspace: Workspace;
+  readonly surface: string | null;
   readonly #pending: Promise<unknown>[] = [];
   #answer: Record<string, unknown> | null = null;
   /** The proxy that fronts this implementation, which reads answer. */
   self: unknown = null;
 
-  constructor(workspace: Workspace, path: string) {
+  constructor(workspace: Workspace, path: string, surface: string | null = null) {
     this.workspace = workspace;
     this.path = path;
+    this.surface = surface;
   }
 
   get kind(): string {
@@ -193,7 +207,7 @@ class ResourceImpl {
 
   async load(): Promise<unknown> {
     await this.flush();
-    this.#answer = await this.workspace.call("tilo_read", { path: this.path });
+    this.#answer = await this.workspace.readRaw(this.path);
     return this.self ?? this;
   }
 
@@ -210,13 +224,15 @@ class ResourceImpl {
   }
 
   async action(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
-    return this.workspace.do(`${this.path}#${kebab(name)}`, args);
+    return this.workspace.call(`${this.path}#${kebab(name)}`, args, this.surface);
   }
 
   async edit(steps: Step[], value: unknown, op = "set"): Promise<unknown> {
-    return this.workspace.do(`${this.path}#field-edit`, {
-      edit: { path: segments(steps), op, value },
-    });
+    return this.workspace.call(
+      `${this.path}#field-edit`,
+      { edit: { path: segments(steps), op, value } },
+      this.surface,
+    );
   }
 
   async remove(...steps: Step[]): Promise<unknown> {
@@ -256,8 +272,8 @@ class ResourceImpl {
     }
   }
 
-  watch(waitMs: number | null = null): AsyncGenerator<Event> {
-    return this.workspace.watch(this.path, waitMs);
+  watch(): AsyncGenerator<Event> {
+    return this.workspace.watch(this.path);
   }
 
   /** What an unknown name is: an action, by its name in the app's words. */
@@ -275,12 +291,14 @@ class ResourceImpl {
   }
 }
 
-/** A resource as a typed object: fields, actions and field edits. */
-export function resourceProxy(workspace: Workspace, path: string, surface?: string): Resource {
-  // `surface`: the version of the app's surface generated types were made from. The REST
-  // transport sends it with their actions, so a workspace whose app changed refuses them.
-  void surface;
-  const impl = new ResourceImpl(workspace, path);
+/**
+ * A resource as a typed object: fields, actions and field edits. `surface` is
+ * the app's version the types were made from, which generated types pass, and
+ * which every call through them sends.
+ */
+export function resourceProxy(workspace: Workspace, path: string, surface: Surface = null): Resource {
+  const named = typeof surface === "string" ? surface : (surface?.surface ?? null);
+  const impl = new ResourceImpl(workspace, path, named === "" ? null : named);
   const proxy = new Proxy(impl, {
     get(target, property, receiver) {
       if (typeof property === "symbol") {
