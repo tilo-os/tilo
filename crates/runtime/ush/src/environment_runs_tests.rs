@@ -86,34 +86,110 @@ fn followed(
     }
 }
 
-#[test]
-fn the_host_runs_a_command_in_the_members_copy_of_the_workspace() {
-    let dir = tempfile::tempdir().unwrap();
-    let runs = member(dir.path());
-    let request = asking("mkdir src && echo fn main > src/main.rs && cd src && ls");
-    let id = request.invocation;
-    answered(runs.invoke(&host(), request.clone())).unwrap();
-    let (ran, _) = followed(&runs, &host(), id);
-    assert_eq!(ran.exit, 0, "{}", ran.output);
-    assert!(ran.output.ends_with("main.rs\n"), "{}", ran.output);
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("replicas/ws-1/src/main.rs")).unwrap(),
-        "fn main\n",
-        "the command worked on the member's copy of the workspace's files"
-    );
+tilo_test_env::scenario! {
+    /// What a member's device does when the host asks: runs for the host's own devices, and nothing it cannot do.
+    fn a_member_answers_what_the_host_may_ask_of_it;
 
-    // The same invocation again is the same run, not a second one.
-    answered(runs.invoke(&host(), request)).unwrap();
+    phase the_host_runs_a_command_in_the_members_copy_of_the_workspace;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = member(dir.path());
+        let request = asking("mkdir src && echo fn main > src/main.rs && cd src && ls");
+        let id = request.invocation;
+        answered(runs.invoke(&host(), request.clone())).unwrap();
+        let (ran, _) = followed(&runs, &host(), id);
+        assert_eq!(ran.exit, 0, "{}", ran.output);
+        assert!(ran.output.ends_with("main.rs\n"), "{}", ran.output);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("replicas/ws-1/src/main.rs")).unwrap(),
+            "fn main\n",
+            "the command worked on the member's copy of the workspace's files"
+        );
 
-    let next = asking("pwd");
-    let id = next.invocation;
-    answered(runs.invoke(&host(), next)).unwrap();
-    let (ran, _) = followed(&runs, &host(), id);
-    assert!(
-        ran.output.trim_end().ends_with("ws-1/src"),
-        "{}",
-        ran.output
-    );
+        // The same invocation again is the same run, not a second one.
+        answered(runs.invoke(&host(), request)).unwrap();
+
+        let next = asking("pwd");
+        let id = next.invocation;
+        answered(runs.invoke(&host(), next)).unwrap();
+        let (ran, _) = followed(&runs, &host(), id);
+        assert!(
+            ran.output.trim_end().ends_with("ws-1/src"),
+            "{}",
+            ran.output
+        );
+    }
+
+    phase a_cancelled_run_ends_its_command_promptly;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = member(dir.path());
+        let request = asking("echo started && sleep 120 && echo never");
+        let id = request.invocation;
+        answered(runs.invoke(&host(), request)).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(state) = runs.observe(&host(), &id)
+                && let InvocationUpdate::Item { value, .. } = state.update
+            {
+                let printed: RunOutput = serde_json::from_value(value).unwrap();
+                if printed.tail.contains("started") {
+                    break;
+                }
+            }
+            assert!(Instant::now() < deadline, "the command never printed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let asked_at = Instant::now();
+        answered(runs.cancel(&host(), &id)).unwrap();
+        let (ran, _) = followed(&runs, &host(), id);
+        assert!(
+            asked_at.elapsed() < Duration::from_secs(20),
+            "the command ended promptly: {:?}",
+            asked_at.elapsed()
+        );
+        assert!(ran.cancelled, "the run says it was cancelled: {ran:?}");
+        assert_eq!(ran.exit, 130, "{}", ran.output);
+        assert!(ran.output.starts_with("started\n"), "{}", ran.output);
+        assert!(!ran.output.contains("never"), "{}", ran.output);
+
+        let late = answered(runs.cancel(&host(), &id));
+        assert!(
+            matches!(late, Err(ActionHostError::NotCancellable { .. })),
+            "{late:?}"
+        );
+    }
+
+    phase only_the_hosts_own_devices_may_ask_and_only_for_runs;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = member(dir.path());
+        let stranger = Caller::authenticated([9; 32], [2; 32]).in_workspace("ws-1");
+        let refused = answered(runs.invoke(&stranger, asking("echo mine")));
+        assert!(
+            matches!(refused, Err(ActionHostError::NotPermitted)),
+            "a member who is not the host could bill another account: {refused:?}"
+        );
+        let mut other = asking("echo hi");
+        other.target.address.action = "open".into();
+        let refused = answered(runs.invoke(&host(), other));
+        assert!(
+            matches!(refused, Err(ActionHostError::Unavailable { .. })),
+            "{refused:?}"
+        );
+    }
+
+    phase a_member_that_runs_no_vms_opens_no_browser;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = member(dir.path());
+        let refused = answered(runs.invoke(&host(), opening("{}")));
+        assert!(
+            matches!(refused, Err(ActionHostError::Unavailable { .. })),
+            "a host with no workspace VMs has no Browser: {refused:?}"
+        );
+    }
 }
 
 #[test]
@@ -129,66 +205,6 @@ fn what_a_command_prints_is_shown_while_it_runs() {
         live.iter()
             .any(|seen| seen.tail == "first\n" && seen.total == 6),
         "the first line was shown before the command ended: {live:?}"
-    );
-}
-
-#[test]
-fn a_cancelled_run_ends_its_command_promptly() {
-    let dir = tempfile::tempdir().unwrap();
-    let runs = member(dir.path());
-    let request = asking("echo started && sleep 120 && echo never");
-    let id = request.invocation;
-    answered(runs.invoke(&host(), request)).unwrap();
-
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        if let Some(state) = runs.observe(&host(), &id)
-            && let InvocationUpdate::Item { value, .. } = state.update
-        {
-            let printed: RunOutput = serde_json::from_value(value).unwrap();
-            if printed.tail.contains("started") {
-                break;
-            }
-        }
-        assert!(Instant::now() < deadline, "the command never printed");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let asked_at = Instant::now();
-    answered(runs.cancel(&host(), &id)).unwrap();
-    let (ran, _) = followed(&runs, &host(), id);
-    assert!(
-        asked_at.elapsed() < Duration::from_secs(20),
-        "the command ended promptly: {:?}",
-        asked_at.elapsed()
-    );
-    assert!(ran.cancelled, "the run says it was cancelled: {ran:?}");
-    assert_eq!(ran.exit, 130, "{}", ran.output);
-    assert!(ran.output.starts_with("started\n"), "{}", ran.output);
-    assert!(!ran.output.contains("never"), "{}", ran.output);
-
-    let late = answered(runs.cancel(&host(), &id));
-    assert!(
-        matches!(late, Err(ActionHostError::NotCancellable { .. })),
-        "{late:?}"
-    );
-}
-
-#[test]
-fn only_the_hosts_own_devices_may_ask_and_only_for_runs() {
-    let dir = tempfile::tempdir().unwrap();
-    let runs = member(dir.path());
-    let stranger = Caller::authenticated([9; 32], [2; 32]).in_workspace("ws-1");
-    let refused = answered(runs.invoke(&stranger, asking("echo mine")));
-    assert!(
-        matches!(refused, Err(ActionHostError::NotPermitted)),
-        "a member who is not the host could bill another account: {refused:?}"
-    );
-    let mut other = asking("echo hi");
-    other.target.address.action = "open".into();
-    let refused = answered(runs.invoke(&host(), other));
-    assert!(
-        matches!(refused, Err(ActionHostError::Unavailable { .. })),
-        "{refused:?}"
     );
 }
 
@@ -338,16 +354,5 @@ fn opening_browser_asks_the_hosts_service_for_the_workspaces_vm() {
             .as_ref()
             .is_some_and(|store| store.ends_with("ws-1/.tilo/browser")),
         "its profile kept among the workspace's own files: {store:?}"
-    );
-}
-
-#[test]
-fn a_member_that_runs_no_vms_opens_no_browser() {
-    let dir = tempfile::tempdir().unwrap();
-    let runs = member(dir.path());
-    let refused = answered(runs.invoke(&host(), opening("{}")));
-    assert!(
-        matches!(refused, Err(ActionHostError::Unavailable { .. })),
-        "a host with no workspace VMs has no Browser: {refused:?}"
     );
 }

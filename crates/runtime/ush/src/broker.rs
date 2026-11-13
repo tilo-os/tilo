@@ -1705,65 +1705,207 @@ pub(crate) mod tests {
         Policy::new(s.environment.current().grants).trusted_dirs(Some(1_000))
     }
 
-    #[test]
-    fn legacy_shims_reach_the_vm_only_with_the_users_own_grants() {
-        use collab_types::caps::{CapOverride, Scope};
-        let policy = Policy::new(vec![
-            CapOverride::grant(
-                tilo_action_policy::Grantee::person("local"),
-                Scope::FsPath("/var/home/you/src".into()),
-                Access::Write,
-            )
-            .through(crate::RUNTIME_APP_ID),
-        ]);
+    tilo_test_env::scenario! {
+        /// The grants the broker reads and writes: legacy launches, trusted directories and allowed hosts.
+        fn grants_are_resolved_validated_and_kept_in_the_record;
+
+        phase legacy_shims_reach_the_vm_only_with_the_users_own_grants;
         {
-            let args = legacy_launch_args(
-                &policy,
-                "code",
-                &[".".to_string()],
-                Path::new("/var/home/you/src/app"),
-            )
-            .unwrap();
-            assert_eq!(
-                args,
-                [
-                    "launch",
+            use collab_types::caps::{CapOverride, Scope};
+            let policy = Policy::new(vec![
+                CapOverride::grant(
+                    tilo_action_policy::Grantee::person("local"),
+                    Scope::FsPath("/var/home/you/src".into()),
+                    Access::Write,
+                )
+                .through(crate::RUNTIME_APP_ID),
+            ]);
+            {
+                let args = legacy_launch_args(
+                    &policy,
                     "code",
-                    "--cwd",
-                    "/var/home/you/src/app",
-                    "--share-cwd",
-                    "--",
-                    "."
-                ]
-            );
-            let command = host_command_for(
-                Path::new("/"),
-                &policy,
-                &Request::LegacyLaunch {
-                    app: "code".into(),
-                    args: Vec::new(),
-                    cwd: "/var/home/you/src".into(),
-                },
-            )
-            .unwrap();
-            assert_eq!(
-                command.binary,
-                PathBuf::from("/usr/libexec/tilo/tilo-legacy")
-            );
-            assert!(!command.mutating);
-            assert_eq!(command.time_limit, None);
-        }
-        // phase: an untrusted directory is named but not shared
-        {
-            let args = legacy_launch_args(&policy, "code", &[], Path::new("/var/home/you/secret"))
+                    &[".".to_string()],
+                    Path::new("/var/home/you/src/app"),
+                )
                 .unwrap();
-            assert!(!args.contains(&"--share-cwd".to_string()));
-        }
-        {
-            for app in ["--image", "../x", "", "a b"] {
-                assert!(legacy_launch_args(&policy, app, &[], Path::new("/x")).is_none());
+                assert_eq!(
+                    args,
+                    [
+                        "launch",
+                        "code",
+                        "--cwd",
+                        "/var/home/you/src/app",
+                        "--share-cwd",
+                        "--",
+                        "."
+                    ]
+                );
+                let command = host_command_for(
+                    Path::new("/"),
+                    &policy,
+                    &Request::LegacyLaunch {
+                        app: "code".into(),
+                        args: Vec::new(),
+                        cwd: "/var/home/you/src".into(),
+                    },
+                )
+                .unwrap();
+                assert_eq!(
+                    command.binary,
+                    PathBuf::from("/usr/libexec/tilo/tilo-legacy")
+                );
+                assert!(!command.mutating);
+                assert_eq!(command.time_limit, None);
             }
-            assert!(legacy_launch_args(&policy, "code", &[], Path::new("src")).is_none());
+            // phase: an untrusted directory is named but not shared
+            {
+                let args = legacy_launch_args(&policy, "code", &[], Path::new("/var/home/you/secret"))
+                    .unwrap();
+                assert!(!args.contains(&"--share-cwd".to_string()));
+            }
+            {
+                for app in ["--image", "../x", "", "a b"] {
+                    assert!(legacy_launch_args(&policy, app, &[], Path::new("/x")).is_none());
+                }
+                assert!(legacy_launch_args(&policy, "code", &[], Path::new("src")).is_none());
+            }
+        }
+
+        phase trust_requests_resolve_validate_and_persist_grants;
+        {
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let target = dir.path().join("src");
+                std::fs::create_dir_all(&target).unwrap();
+                let mut s = state(dir.path());
+
+                let resp = s.handle(Request::TrustDir { path: target });
+                assert!(
+                    matches!(resp, Response::NeedsRestart { .. }),
+                    "a new bind needs a new mount namespace, so the answer has to say so: {resp:?}"
+                );
+                // In the record, so the next session picks it up.
+                assert_eq!(trusted(&s).len(), 1);
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let mut s = state(dir.path());
+                let resp = s.handle(Request::TrustDir {
+                    path: PathBuf::from("/usr"),
+                });
+                assert!(matches!(resp, Response::Denied { .. }), "{resp:?}");
+                assert!(s.environment.current().grants.is_empty());
+
+                let log = s.audit.read_all();
+                assert_eq!(log.len(), 1);
+                assert!(
+                    !log[0].allowed,
+                    "a refusal must be recorded, not only a grant"
+                );
+                assert_eq!(log[0].request, "trust-dir");
+            }
+        }
+
+        phase a_symlink_is_resolved_before_it_is_trusted;
+        {
+            // A symlink inside a directory the guest controls must not be able to
+            // name a path the user never saw in the prompt.
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let real = dir.path().join("real-secrets");
+                std::fs::create_dir_all(&real).unwrap();
+                let link = dir.path().join("innocent");
+                std::os::unix::fs::symlink(&real, &link).unwrap();
+
+                let mut s = state(dir.path());
+                s.handle(Request::TrustDir { path: link });
+
+                assert_eq!(
+                    trusted(&s),
+                    vec![real.canonicalize().unwrap()],
+                    "the grant must name the resolved directory, not the symlink"
+                );
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let mut s = state(dir.path());
+                let resp = s.handle(Request::TrustDir {
+                    path: dir.path().join("absent"),
+                });
+                assert!(matches!(resp, Response::Denied { .. }), "{resp:?}");
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let target = dir.path().join("src");
+                std::fs::create_dir_all(&target).unwrap();
+                let mut s = state(dir.path());
+                s.handle(Request::TrustDir {
+                    path: target.clone(),
+                });
+
+                let inside = target.canonicalize().unwrap().join("main.rs");
+                assert_eq!(
+                    s.handle(Request::Check {
+                        path: inside,
+                        write: true
+                    }),
+                    Response::Check { allowed: true }
+                );
+                assert_eq!(
+                    s.handle(Request::Check {
+                        path: dir.path().join("elsewhere"),
+                        write: false
+                    }),
+                    Response::Check { allowed: false }
+                );
+            }
+        }
+
+        phase allow_host_writes_a_net_grant_that_perm_list_shows_and_revoke_removes;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut s = state(dir.path());
+            let Response::NeedsRestart { detail } = s.handle(Request::AllowHost {
+                host: "*.Crates.io".into(),
+            }) else {
+                panic!("allow-host without a network must say restart");
+            };
+            assert!(
+                detail.contains("crates.io and every host under it"),
+                "{detail}"
+            );
+            let Response::Perms { entries } = s.handle(Request::ListPerms) else {
+                panic!("no permission list");
+            };
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].scope, "net .crates.io");
+            assert_eq!(entries[0].id, tilo_environment::host_grant_id(".crates.io"));
+            assert_eq!(
+                s.environment.policy().net_hosts(Some(unix_now())),
+                [".crates.io"]
+            );
+
+            let Response::Denied { reason } = s.handle(Request::AllowHost {
+                host: "1.1.1.1".into(),
+            }) else {
+                panic!("an address literal was allowed");
+            };
+            assert!(reason.contains("address"), "{reason}");
+
+            let resp = s.handle(Request::Revoke {
+                id: entries[0].id.clone(),
+            });
+            assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
+            assert!(
+                s.environment
+                    .policy()
+                    .net_hosts(Some(unix_now()))
+                    .is_empty()
+            );
+            let Response::Status { status } = s.handle(Request::Status) else {
+                panic!("no status");
+            };
+            assert_eq!(status.network, NetworkStatus::Offline);
         }
     }
 
@@ -1810,360 +1952,443 @@ pub(crate) mod tests {
         assert!(path.exists(), "{} never appeared", path.display());
     }
 
-    #[test]
-    fn host_management_commands_run_on_the_base_and_nothing_else() {
+    tilo_test_env::scenario! {
+        /// Host commands: what the broker runs on the base for a guest, and how it bounds and ends them.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn host_commands_run_on_the_base_one_at_a_time_and_bounded;
+
+        phase host_management_commands_run_on_the_base_and_nothing_else;
+        {
+            {
+                let dir = tempfile::tempdir().unwrap();
+                fake_host_program(
+                    dir.path(),
+                    "tilo",
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 7\n",
+                );
+                fake_host_program(
+                    dir.path(),
+                    "app",
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\"\nprintf 'note\\n' >&2\nexit 6\n",
+                );
+                let socket = dir.path().join("broker.sock");
+                let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+
+                assert_eq!(
+                    ask_capturing(
+                        &socket,
+                        &Request::AppUpdate {
+                            package: Some("browser".into()),
+                        }
+                    ),
+                    (
+                        Response::Command { code: 6 },
+                        "update\nbrowser\n".into(),
+                        "note\n".into()
+                    )
+                );
+                assert_eq!(
+                    ask_capturing(&socket, &Request::AllUpdates),
+                    (
+                        Response::Command { code: 7 },
+                        "update\n--yes\n".into(),
+                        String::new()
+                    )
+                );
+                assert_eq!(
+                    ask_capturing(&socket, &Request::SystemUpdate),
+                    (
+                        Response::Command { code: 7 },
+                        "system\nupdate\n--yes\n".into(),
+                        String::new()
+                    )
+                );
+                drop(broker);
+            }
+        }
+
+        phase host_commands_never_run_outside_the_streaming_socket_path;
+        {
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let ran = dir.path().join("ran");
+                fake_host_program(
+                    dir.path(),
+                    "app",
+                    &format!("#!/bin/sh\ntouch '{}'\n", ran.display()),
+                );
+                assert_eq!(
+                    state(dir.path()).handle(Request::AppUpdate { package: None }),
+                    Response::Denied {
+                        reason: HOST_COMMAND_NEEDS_SOCKET.into()
+                    }
+                );
+                assert!(!ran.exists());
+            }
+            {
+                assert!(
+                    serde_json::from_str::<Request>(
+                        r#"{"op":"host-command","program":"sh","args":["-c","touch /tmp/nope"]}"#
+                    )
+                    .is_err()
+                );
+            }
+        }
+
+        phase host_output_reaches_the_guest_before_the_command_exits;
         {
             let dir = tempfile::tempdir().unwrap();
-            fake_host_program(
-                dir.path(),
-                "tilo",
-                "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 7\n",
-            );
+            let release = dir.path().join("release");
+            // The second line waits for the test, so the first one can only have
+            // arrived while the command was still running.
             fake_host_program(
                 dir.path(),
                 "app",
-                "#!/bin/sh\nprintf '%s\\n' \"$@\"\nprintf 'note\\n' >&2\nexit 6\n",
+                &format!(
+                    "#!/bin/sh\nprintf 'started\\n'\n\
+                 while [ ! -e '{}' ]; do sleep 0.05; done\nprintf 'finished\\n'\n",
+                    release.display()
+                ),
             );
             let socket = dir.path().join("broker.sock");
             let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
 
-            assert_eq!(
-                ask_capturing(
-                    &socket,
-                    &Request::AppUpdate {
-                        package: Some("browser".into()),
-                    }
-                ),
-                (
-                    Response::Command { code: 6 },
-                    "update\nbrowser\n".into(),
-                    "note\n".into()
+            let command_socket = socket.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let command = std::thread::spawn(move || {
+                ask_streaming(
+                    &command_socket,
+                    &Request::AppUpdate { package: None },
+                    &mut ChannelWriter(tx),
+                    &mut std::io::sink(),
                 )
-            );
+                .unwrap()
+            });
+
             assert_eq!(
-                ask_capturing(&socket, &Request::AllUpdates),
-                (
-                    Response::Command { code: 7 },
-                    "update\n--yes\n".into(),
-                    String::new()
-                )
+                rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
+                b"started\n"
             );
+            assert!(!command.is_finished());
+            // A running command does not retain the state lock: it runs until
+            // released below.
+            status_while_held(&socket);
+
+            std::fs::write(&release, b"").unwrap();
             assert_eq!(
-                ask_capturing(&socket, &Request::SystemUpdate),
-                (
-                    Response::Command { code: 7 },
-                    "system\nupdate\n--yes\n".into(),
-                    String::new()
-                )
+                rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
+                b"finished\n"
             );
+            assert_eq!(command.join().unwrap(), Response::Command { code: 0 });
             drop(broker);
         }
-        // phase: host commands never run outside the streaming socket path
+
+        phase completed_host_command_releases_gate_before_a_blocked_completion_frame;
         {
             let dir = tempfile::tempdir().unwrap();
-            let ran = dir.path().join("ran");
+            fake_host_program(dir.path(), "tilo", "#!/bin/sh\nexit 7\n");
+            let state = Arc::new(Mutex::new(state(dir.path())));
+            let command = {
+                let state = state.lock().unwrap();
+                host_command_for(
+                    &state.host_root,
+                    &state.environment.policy(),
+                    &Request::SystemUpdate,
+                )
+                .unwrap()
+            };
+            let audit = state.lock().unwrap().audit.clone();
+            let shared = Arc::new(Shared::new().unwrap());
+            let (mut writer, peer) = UnixStream::pair().unwrap();
+            writer.set_nonblocking(true).unwrap();
+            // Fill every remaining byte so the actual Complete write cannot finish.
+            loop {
+                match writer.write(&[0]) {
+                    Ok(1) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    other => panic!("failed to fill completion socket: {other:?}"),
+                }
+            }
+            writer.set_nonblocking(false).unwrap();
+            let worker_shared = Arc::clone(&shared);
+            let worker = std::thread::spawn(move || {
+                serve_host_command(&command, &state, &mut writer, &worker_shared)
+            });
+            let deadline = tilo_test_env::hang_deadline();
+            let mut completed = false;
+            let mut released = false;
+            while Instant::now() < deadline {
+                completed = audit
+                    .read_all()
+                    .iter()
+                    .any(|record| record.detail.as_deref() == Some("exit 7"));
+                if completed && shared.host_updates.try_acquire().is_some() {
+                    released = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let blocked = !worker.is_finished();
+            peer.shutdown(std::net::Shutdown::Both).unwrap();
+            assert!(!worker.join().unwrap());
+            assert!(completed, "production command did not reach completion");
+            assert!(
+                blocked,
+                "fixture did not block the production completion write"
+            );
+            assert!(
+                released,
+                "completed command retained the host mutation gate while sending its response"
+            );
+        }
+
+        phase host_updates_run_one_at_a_time_and_say_so;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let events = dir.path().join("events");
+            let release = dir.path().join("release");
             fake_host_program(
                 dir.path(),
                 "app",
-                &format!("#!/bin/sh\ntouch '{}'\n", ran.display()),
-            );
-            assert_eq!(
-                state(dir.path()).handle(Request::AppUpdate { package: None }),
-                Response::Denied {
-                    reason: HOST_COMMAND_NEEDS_SOCKET.into()
-                }
-            );
-            assert!(!ran.exists());
-        }
-        {
-            assert!(
-                serde_json::from_str::<Request>(
-                    r#"{"op":"host-command","program":"sh","args":["-c","touch /tmp/nope"]}"#
-                )
-                .is_err()
-            );
-        }
-    }
-
-    #[test]
-    fn host_output_reaches_the_guest_before_the_command_exits() {
-        let dir = tempfile::tempdir().unwrap();
-        let release = dir.path().join("release");
-        // The second line waits for the test, so the first one can only have
-        // arrived while the command was still running.
-        fake_host_program(
-            dir.path(),
-            "app",
-            &format!(
-                "#!/bin/sh\nprintf 'started\\n'\n\
-                 while [ ! -e '{}' ]; do sleep 0.05; done\nprintf 'finished\\n'\n",
-                release.display()
-            ),
-        );
-        let socket = dir.path().join("broker.sock");
-        let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
-
-        let command_socket = socket.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let command = std::thread::spawn(move || {
-            ask_streaming(
-                &command_socket,
-                &Request::AppUpdate { package: None },
-                &mut ChannelWriter(tx),
-                &mut std::io::sink(),
-            )
-            .unwrap()
-        });
-
-        assert_eq!(
-            rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
-            b"started\n"
-        );
-        assert!(!command.is_finished());
-        // A running command does not retain the state lock: it runs until
-        // released below.
-        status_while_held(&socket);
-
-        std::fs::write(&release, b"").unwrap();
-        assert_eq!(
-            rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
-            b"finished\n"
-        );
-        assert_eq!(command.join().unwrap(), Response::Command { code: 0 });
-        drop(broker);
-    }
-
-    #[test]
-    fn completed_host_command_releases_gate_before_a_blocked_completion_frame() {
-        let dir = tempfile::tempdir().unwrap();
-        fake_host_program(dir.path(), "tilo", "#!/bin/sh\nexit 7\n");
-        let state = Arc::new(Mutex::new(state(dir.path())));
-        let command = {
-            let state = state.lock().unwrap();
-            host_command_for(
-                &state.host_root,
-                &state.environment.policy(),
-                &Request::SystemUpdate,
-            )
-            .unwrap()
-        };
-        let audit = state.lock().unwrap().audit.clone();
-        let shared = Arc::new(Shared::new().unwrap());
-        let (mut writer, peer) = UnixStream::pair().unwrap();
-        writer.set_nonblocking(true).unwrap();
-        // Fill every remaining byte so the actual Complete write cannot finish.
-        loop {
-            match writer.write(&[0]) {
-                Ok(1) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                other => panic!("failed to fill completion socket: {other:?}"),
-            }
-        }
-        writer.set_nonblocking(false).unwrap();
-        let worker_shared = Arc::clone(&shared);
-        let worker = std::thread::spawn(move || {
-            serve_host_command(&command, &state, &mut writer, &worker_shared)
-        });
-        let deadline = tilo_test_env::hang_deadline();
-        let mut completed = false;
-        let mut released = false;
-        while Instant::now() < deadline {
-            completed = audit
-                .read_all()
-                .iter()
-                .any(|record| record.detail.as_deref() == Some("exit 7"));
-            if completed && shared.host_updates.try_acquire().is_some() {
-                released = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        let blocked = !worker.is_finished();
-        peer.shutdown(std::net::Shutdown::Both).unwrap();
-        assert!(!worker.join().unwrap());
-        assert!(completed, "production command did not reach completion");
-        assert!(
-            blocked,
-            "fixture did not block the production completion write"
-        );
-        assert!(
-            released,
-            "completed command retained the host mutation gate while sending its response"
-        );
-    }
-
-    #[test]
-    fn host_updates_run_one_at_a_time_and_say_so() {
-        let dir = tempfile::tempdir().unwrap();
-        let events = dir.path().join("events");
-        let release = dir.path().join("release");
-        fake_host_program(
-            dir.path(),
-            "app",
-            &format!(
-                "#!/bin/sh\nprintf '%s-start\\n' \"$2\" >> '{events}'\n\
+                &format!(
+                    "#!/bin/sh\nprintf '%s-start\\n' \"$2\" >> '{events}'\n\
                  if [ \"$2\" = first ]; then while [ ! -e '{release}' ]; do sleep 0.05; done; fi\n\
                  printf '%s-end\\n' \"$2\" >> '{events}'\n",
-                events = events.display(),
-                release = release.display(),
-            ),
-        );
-        let socket = dir.path().join("broker.sock");
-        let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+                    events = events.display(),
+                    release = release.display(),
+                ),
+            );
+            let socket = dir.path().join("broker.sock");
+            let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
 
-        let first_socket = socket.clone();
-        let first = std::thread::spawn(move || {
-            ask(
-                &first_socket,
-                &Request::AppUpdate {
-                    package: Some("first".into()),
-                },
-            )
-            .unwrap()
-        });
-        wait_for_file(&events);
+            let first_socket = socket.clone();
+            let first = std::thread::spawn(move || {
+                ask(
+                    &first_socket,
+                    &Request::AppUpdate {
+                        package: Some("first".into()),
+                    },
+                )
+                .unwrap()
+            });
+            wait_for_file(&events);
 
-        let second_socket = socket.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let second = std::thread::spawn(move || {
-            ask_streaming(
-                &second_socket,
-                &Request::AppUpdate {
-                    package: Some("second".into()),
-                },
-                &mut std::io::sink(),
-                &mut ChannelWriter(tx),
-            )
-            .unwrap()
-        });
-        let notice = rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        assert!(String::from_utf8_lossy(&notice).contains("Waiting for another host update"));
-        assert_eq!(
-            std::fs::read_to_string(&events).unwrap(),
-            "first-start\n",
-            "the second update started before the first update exited"
-        );
-        status_while_held(&socket);
+            let second_socket = socket.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let second = std::thread::spawn(move || {
+                ask_streaming(
+                    &second_socket,
+                    &Request::AppUpdate {
+                        package: Some("second".into()),
+                    },
+                    &mut std::io::sink(),
+                    &mut ChannelWriter(tx),
+                )
+                .unwrap()
+            });
+            let notice = rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+            assert!(String::from_utf8_lossy(&notice).contains("Waiting for another host update"));
+            assert_eq!(
+                std::fs::read_to_string(&events).unwrap(),
+                "first-start\n",
+                "the second update started before the first update exited"
+            );
+            status_while_held(&socket);
 
-        std::fs::write(&release, b"").unwrap();
-        assert_eq!(first.join().unwrap(), Response::Command { code: 0 });
-        assert_eq!(second.join().unwrap(), Response::Command { code: 0 });
-        assert_eq!(
-            std::fs::read_to_string(&events).unwrap(),
-            "first-start\nfirst-end\nsecond-start\nsecond-end\n"
-        );
-        drop(broker);
-    }
-
-    #[test]
-    fn output_past_the_cap_is_dropped_but_the_exit_status_still_arrives() {
-        let dir = tempfile::tempdir().unwrap();
-        // One stream, so the line after the flood cannot overtake it.
-        fake_host_program(
-            dir.path(),
-            "app",
-            &format!(
-                "#!/bin/sh\nhead -c {} /dev/zero | tr '\\0' x\nprintf 'after the flood\\n'\nexit 3\n",
-                MAX_OUTPUT_BYTES.saturating_mul(2)
-            ),
-        );
-        let socket = dir.path().join("broker.sock");
-        let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
-
-        let (response, stdout, stderr) =
-            ask_capturing(&socket, &Request::AppUpdate { package: None });
-        assert_eq!(response, Response::Command { code: 3 });
-        assert_eq!(stdout.len(), MAX_OUTPUT_BYTES);
-        assert!(stdout.bytes().all(|byte| byte == b'x'));
-        assert!(
-            stderr.contains("the rest of its output is not shown"),
-            "{stderr}"
-        );
-        let audit = broker.state().lock().unwrap().audit.read_all();
-        assert!(audit.iter().any(|record| {
-            record.allowed
-                && record
-                    .detail
-                    .as_deref()
-                    .is_some_and(|detail| detail.contains("exit 3") && detail.contains("not shown"))
-        }));
-        drop(broker);
-    }
-
-    #[test]
-    fn a_host_command_past_its_time_limit_is_stopped_with_a_reason() {
-        let dir = tempfile::tempdir().unwrap();
-        let pid_file = dir.path().join("child.pid");
-        fake_host_program(
-            dir.path(),
-            "app",
-            &format!(
-                "#!/bin/sh\nsleep 30 &\nhelper=$!\nprintf '%s %s' $$ \"$helper\" > '{}'\n\
-                 printf 'working\\n'\nwait\n",
-                pid_file.display()
-            ),
-        );
-        let command = HostCommand {
-            operation: "app-update",
-            program: "app",
-            args: vec!["update".into()],
-            binary: dir.path().join("base/usr/bin/app"),
-            mutating: true,
-            time_limit: Some(Duration::from_secs(1)),
-        };
-        let state = Arc::new(Mutex::new(state(dir.path())));
-        let (mut writer, guest_side) = UnixStream::pair().unwrap();
-
-        let started = Instant::now();
-        assert!(serve_host_command(
-            &command,
-            &state,
-            &mut writer,
-            &Shared::new().unwrap(),
-        ));
-        assert!(started.elapsed() >= Duration::from_secs(1));
-        drop(writer);
-
-        let frames: Vec<WireFrame> = BufReader::new(guest_side)
-            .lines()
-            .map(|line| serde_json::from_str(&line.unwrap()).unwrap())
-            .collect();
-        assert!(frames.iter().any(|frame| matches!(
-            frame,
-            WireFrame::Output { stderr: false, data } if data == b"working\n"
-        )));
-        let Some(WireFrame::Complete {
-            response: Response::Denied { reason },
-        }) = frames.last()
-        else {
-            panic!("expected a refusal, got {frames:?}");
-        };
-        assert_eq!(
-            reason,
-            "`app update` did not finish within 1 second and was stopped"
-        );
-        let pids: Vec<i32> = std::fs::read_to_string(&pid_file)
-            .unwrap()
-            .split_whitespace()
-            .map(|pid| pid.parse().unwrap())
-            .collect();
-        assert_eq!(pids.len(), 2);
-        let deadline = Instant::now() + tilo_test_env::hang_bound();
-        while Instant::now() < deadline && !pids.iter().all(|pid| has_terminated(*pid)) {
-            std::thread::sleep(Duration::from_millis(20));
+            std::fs::write(&release, b"").unwrap();
+            assert_eq!(first.join().unwrap(), Response::Command { code: 0 });
+            assert_eq!(second.join().unwrap(), Response::Command { code: 0 });
+            assert_eq!(
+                std::fs::read_to_string(&events).unwrap(),
+                "first-start\nfirst-end\nsecond-start\nsecond-end\n"
+            );
+            drop(broker);
         }
-        assert!(
-            pids.iter().all(|pid| has_terminated(*pid)),
-            "the command process group outlived its time limit"
-        );
-        let audit = state.lock().unwrap().audit.read_all();
-        assert!(audit.iter().any(|record| {
-            !record.allowed
-                && record
-                    .detail
-                    .as_deref()
-                    .is_some_and(|detail| detail.contains("did not finish"))
-        }));
+
+        phase output_past_the_cap_is_dropped_but_the_exit_status_still_arrives;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            // One stream, so the line after the flood cannot overtake it.
+            fake_host_program(
+                dir.path(),
+                "app",
+                &format!(
+                    "#!/bin/sh\nhead -c {} /dev/zero | tr '\\0' x\nprintf 'after the flood\\n'\nexit 3\n",
+                    MAX_OUTPUT_BYTES.saturating_mul(2)
+                ),
+            );
+            let socket = dir.path().join("broker.sock");
+            let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+
+            let (response, stdout, stderr) =
+                ask_capturing(&socket, &Request::AppUpdate { package: None });
+            assert_eq!(response, Response::Command { code: 3 });
+            assert_eq!(stdout.len(), MAX_OUTPUT_BYTES);
+            assert!(stdout.bytes().all(|byte| byte == b'x'));
+            assert!(
+                stderr.contains("the rest of its output is not shown"),
+                "{stderr}"
+            );
+            let audit = broker.state().lock().unwrap().audit.read_all();
+            assert!(audit.iter().any(|record| {
+                record.allowed
+                    && record
+                        .detail
+                        .as_deref()
+                        .is_some_and(|detail| detail.contains("exit 3") && detail.contains("not shown"))
+            }));
+            drop(broker);
+        }
+
+        phase a_host_command_past_its_time_limit_is_stopped_with_a_reason;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let pid_file = dir.path().join("child.pid");
+            fake_host_program(
+                dir.path(),
+                "app",
+                &format!(
+                    "#!/bin/sh\nsleep 30 &\nhelper=$!\nprintf '%s %s' $$ \"$helper\" > '{}'\n\
+                 printf 'working\\n'\nwait\n",
+                    pid_file.display()
+                ),
+            );
+            let command = HostCommand {
+                operation: "app-update",
+                program: "app",
+                args: vec!["update".into()],
+                binary: dir.path().join("base/usr/bin/app"),
+                mutating: true,
+                time_limit: Some(Duration::from_secs(1)),
+            };
+            let state = Arc::new(Mutex::new(state(dir.path())));
+            let (mut writer, guest_side) = UnixStream::pair().unwrap();
+
+            let started = Instant::now();
+            assert!(serve_host_command(
+                &command,
+                &state,
+                &mut writer,
+                &Shared::new().unwrap(),
+            ));
+            assert!(started.elapsed() >= Duration::from_secs(1));
+            drop(writer);
+
+            let frames: Vec<WireFrame> = BufReader::new(guest_side)
+                .lines()
+                .map(|line| serde_json::from_str(&line.unwrap()).unwrap())
+                .collect();
+            assert!(frames.iter().any(|frame| matches!(
+                frame,
+                WireFrame::Output { stderr: false, data } if data == b"working\n"
+            )));
+            let Some(WireFrame::Complete {
+                response: Response::Denied { reason },
+            }) = frames.last()
+            else {
+                panic!("expected a refusal, got {frames:?}");
+            };
+            assert_eq!(
+                reason,
+                "`app update` did not finish within 1 second and was stopped"
+            );
+            let pids: Vec<i32> = std::fs::read_to_string(&pid_file)
+                .unwrap()
+                .split_whitespace()
+                .map(|pid| pid.parse().unwrap())
+                .collect();
+            assert_eq!(pids.len(), 2);
+            let deadline = Instant::now() + tilo_test_env::hang_bound();
+            while Instant::now() < deadline && !pids.iter().all(|pid| has_terminated(*pid)) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(
+                pids.iter().all(|pid| has_terminated(*pid)),
+                "the command process group outlived its time limit"
+            );
+            let audit = state.lock().unwrap().audit.read_all();
+            assert!(audit.iter().any(|record| {
+                !record.allowed
+                    && record
+                        .detail
+                        .as_deref()
+                        .is_some_and(|detail| detail.contains("did not finish"))
+            }));
+        }
+
+        phase disconnecting_the_guest_cancels_the_host_command;
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("base/usr/bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            let pid_file = dir.path().join("child.pid");
+            let app = bin.join("app");
+            std::fs::write(
+                &app,
+                format!(
+                    "#!/bin/sh\nsleep 30 &\nhelper=$!\nprintf '%s %s' $$ \"$helper\" > '{}.pending'\nmv '{}.pending' '{}'\nwait\n",
+                    pid_file.display(),
+                    pid_file.display(),
+                    pid_file.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let socket = dir.path().join("broker.sock");
+            let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+
+            let mut stream = UnixStream::connect(&socket).unwrap();
+            serde_json::to_writer(&mut stream, &Request::AppUpdate { package: None }).unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+            let deadline = Instant::now() + tilo_test_env::hang_bound();
+            while Instant::now() < deadline {
+                if pid_file.exists() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let pids: Vec<i32> = std::fs::read_to_string(&pid_file)
+                .unwrap()
+                .split_whitespace()
+                .map(|pid| pid.parse().unwrap())
+                .collect();
+            assert_eq!(pids.len(), 2);
+            drop(stream);
+
+            let mut stopped = Vec::new();
+            let stop_deadline = Instant::now() + tilo_test_env::hang_bound();
+            while Instant::now() < stop_deadline {
+                stopped = pids
+                    .iter()
+                    .copied()
+                    .filter(|pid| has_terminated(*pid))
+                    .collect();
+                if stopped.len() == pids.len() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(
+                stopped, pids,
+                "the command process group survived its guest connection"
+            );
+            let state = broker.state().clone();
+            drop(broker);
+            let audit = state.lock().unwrap().audit.read_all();
+            assert!(audit.iter().any(|record| {
+                !record.allowed
+                    && record
+                        .detail
+                        .as_deref()
+                        .is_some_and(|detail| detail.contains("disconnected"))
+            }));
+        }
     }
 
     /// Whether `pid` no longer runs. The killed helper is reparented away from
@@ -2180,179 +2405,123 @@ pub(crate) mod tests {
         })
     }
 
-    #[test]
-    fn disconnecting_the_guest_cancels_the_host_command() {
-        use std::os::unix::fs::PermissionsExt;
+    tilo_test_env::scenario! {
+        /// The broker's socket and the requests that only report.
+        fn the_broker_socket_answers_its_owner_and_reports_the_environment;
 
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("base/usr/bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let pid_file = dir.path().join("child.pid");
-        let app = bin.join("app");
-        std::fs::write(
-            &app,
-            format!(
-                "#!/bin/sh\nsleep 30 &\nhelper=$!\nprintf '%s %s' $$ \"$helper\" > '{}.pending'\nmv '{}.pending' '{}'\nwait\n",
-                pid_file.display(),
-                pid_file.display(),
-                pid_file.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let socket = dir.path().join("broker.sock");
-        let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
-
-        let mut stream = UnixStream::connect(&socket).unwrap();
-        serde_json::to_writer(&mut stream, &Request::AppUpdate { package: None }).unwrap();
-        stream.write_all(b"\n").unwrap();
-        stream.flush().unwrap();
-        let deadline = Instant::now() + tilo_test_env::hang_bound();
-        while Instant::now() < deadline {
-            if pid_file.exists() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let pids: Vec<i32> = std::fs::read_to_string(&pid_file)
-            .unwrap()
-            .split_whitespace()
-            .map(|pid| pid.parse().unwrap())
-            .collect();
-        assert_eq!(pids.len(), 2);
-        drop(stream);
-
-        let mut stopped = Vec::new();
-        let stop_deadline = Instant::now() + tilo_test_env::hang_bound();
-        while Instant::now() < stop_deadline {
-            stopped = pids
-                .iter()
-                .copied()
-                .filter(|pid| has_terminated(*pid))
-                .collect();
-            if stopped.len() == pids.len() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(
-            stopped, pids,
-            "the command process group survived its guest connection"
-        );
-        let state = broker.state().clone();
-        drop(broker);
-        let audit = state.lock().unwrap().audit.read_all();
-        assert!(audit.iter().any(|record| {
-            !record.allowed
-                && record
-                    .detail
-                    .as_deref()
-                    .is_some_and(|detail| detail.contains("disconnected"))
-        }));
-    }
-
-    #[test]
-    fn trust_requests_resolve_validate_and_persist_grants() {
+        phase restart_is_a_flag_and_status_reports_the_environment;
         {
             let dir = tempfile::tempdir().unwrap();
-            let target = dir.path().join("src");
-            std::fs::create_dir_all(&target).unwrap();
             let mut s = state(dir.path());
+            assert!(!s.restart_requested);
+            assert_eq!(s.handle(Request::Restart), Response::Ok);
+            assert!(s.restart_requested);
 
-            let resp = s.handle(Request::TrustDir { path: target });
+            let Response::Status { status } = s.handle(Request::Status) else {
+                panic!("expected a status");
+            };
+            assert_eq!(status.environment, "Default");
+            assert_eq!(status.record, DEFAULT_RECORD);
+            assert_eq!(status.runtime, format!("2026.10 ({})", image(1)));
+            assert!(status.seccomp.starts_with("enforcing"));
+        }
+
+        phase broker_under_long_data_home_round_trips_and_cleans_up;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let data = dir.path().join("a".repeat(90)).join("ush/sessions/session");
+            std::fs::create_dir_all(&data).unwrap();
+            let socket = data.join("broker.sock");
+            assert!(std::os::unix::net::SocketAddr::from_pathname(&socket).is_err());
+            let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+            assert_eq!(broker.socket(), socket);
+            assert_eq!(
+                std::fs::metadata(&socket).unwrap().permissions().mode() & 0o077,
+                0
+            );
+            let response = ask(&socket, &Request::ListPerms).unwrap();
+            assert!(matches!(response, Response::Perms { .. }));
+            assert!(broker.guest_connected());
+            // Reconnect to the same owner-only filesystem socket, not a new alias
+            // published to the peer. Renaming its parent cannot invalidate the
+            // broker's retained descriptor used to wake and clean up on shutdown.
+            let renamed = data.with_file_name("renamed-session");
+            std::fs::rename(&data, &renamed).unwrap();
+            let moved_socket = renamed.join("broker.sock");
+            let response = ask(&moved_socket, &Request::ListPerms).unwrap();
+            assert!(matches!(response, Response::Perms { .. }));
+            drop(broker);
             assert!(
-                matches!(resp, Response::NeedsRestart { .. }),
-                "a new bind needs a new mount namespace, so the answer has to say so: {resp:?}"
+                !moved_socket.exists(),
+                "session socket must be removed on shutdown"
             );
-            // In the record, so the next session picks it up.
-            assert_eq!(trusted(&s).len(), 1);
         }
+
+        phase the_broker_socket_is_owner_only_and_answers_every_request;
         {
-            let dir = tempfile::tempdir().unwrap();
-            let mut s = state(dir.path());
-            let resp = s.handle(Request::TrustDir {
-                path: PathBuf::from("/usr"),
-            });
-            assert!(matches!(resp, Response::Denied { .. }), "{resp:?}");
-            assert!(s.environment.current().grants.is_empty());
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let sock = dir.path().join("broker.sock");
+                let broker = Broker::start(sock.clone(), state(dir.path())).unwrap();
 
-            let log = s.audit.read_all();
-            assert_eq!(log.len(), 1);
-            assert!(
-                !log[0].allowed,
-                "a refusal must be recorded, not only a grant"
-            );
-            assert_eq!(log[0].request, "trust-dir");
+                let stream = UnixStream::connect(&sock).unwrap();
+                let mut w = stream.try_clone().unwrap();
+                w.write_all(b"{not json}\n").unwrap();
+                w.flush().unwrap();
+                let mut r = BufReader::new(stream);
+                let mut line = String::new();
+                r.read_line(&mut line).unwrap();
+                assert!(line.contains("denied"), "{line}");
+                drop(broker);
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let target = dir.path().join("src");
+                std::fs::create_dir_all(&target).unwrap();
+                let sock = dir.path().join("broker.sock");
+                let broker = Broker::start(sock.clone(), state(dir.path())).unwrap();
+                assert!(!broker.guest_connected());
+
+                let resp = ask(
+                    &sock,
+                    &Request::TrustDir {
+                        path: target.clone(),
+                    },
+                )
+                .unwrap();
+                assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
+                assert!(broker.guest_connected());
+
+                let resp = ask(&sock, &Request::ListPerms).unwrap();
+                let Response::Perms { entries } = resp else {
+                    panic!("expected perms");
+                };
+                assert_eq!(entries.len(), 1);
+                assert_eq!(
+                    entries[0].scope,
+                    target.canonicalize().unwrap().display().to_string()
+                );
+
+                assert!(!broker.restart_requested());
+                ask(&sock, &Request::Restart).unwrap();
+                assert!(broker.restart_requested());
+            }
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let dir = tempfile::tempdir().unwrap();
+                let sock = dir.path().join("broker.sock");
+                let broker = Broker::start(sock.clone(), state(dir.path())).unwrap();
+                let mode = std::fs::metadata(&sock).unwrap().permissions().mode();
+                assert_eq!(
+                    mode & 0o077,
+                    0,
+                    "broker socket is reachable by other users: {mode:o}"
+                );
+                drop(broker);
+                assert!(!sock.exists(), "the socket must not outlive the session");
+            }
         }
-        // phase: a_symlink_is_resolved_before_it_is_trusted
-        // A symlink inside a directory the guest controls must not be able to
-        // name a path the user never saw in the prompt.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let real = dir.path().join("real-secrets");
-            std::fs::create_dir_all(&real).unwrap();
-            let link = dir.path().join("innocent");
-            std::os::unix::fs::symlink(&real, &link).unwrap();
-
-            let mut s = state(dir.path());
-            s.handle(Request::TrustDir { path: link });
-
-            assert_eq!(
-                trusted(&s),
-                vec![real.canonicalize().unwrap()],
-                "the grant must name the resolved directory, not the symlink"
-            );
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let mut s = state(dir.path());
-            let resp = s.handle(Request::TrustDir {
-                path: dir.path().join("absent"),
-            });
-            assert!(matches!(resp, Response::Denied { .. }), "{resp:?}");
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let target = dir.path().join("src");
-            std::fs::create_dir_all(&target).unwrap();
-            let mut s = state(dir.path());
-            s.handle(Request::TrustDir {
-                path: target.clone(),
-            });
-
-            let inside = target.canonicalize().unwrap().join("main.rs");
-            assert_eq!(
-                s.handle(Request::Check {
-                    path: inside,
-                    write: true
-                }),
-                Response::Check { allowed: true }
-            );
-            assert_eq!(
-                s.handle(Request::Check {
-                    path: dir.path().join("elsewhere"),
-                    write: false
-                }),
-                Response::Check { allowed: false }
-            );
-        }
-    }
-
-    #[test]
-    fn restart_is_a_flag_and_status_reports_the_environment() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = state(dir.path());
-        assert!(!s.restart_requested);
-        assert_eq!(s.handle(Request::Restart), Response::Ok);
-        assert!(s.restart_requested);
-
-        let Response::Status { status } = s.handle(Request::Status) else {
-            panic!("expected a status");
-        };
-        assert_eq!(status.environment, "Default");
-        assert_eq!(status.record, DEFAULT_RECORD);
-        assert_eq!(status.runtime, format!("2026.10 ({})", image(1)));
-        assert!(status.seccomp.starts_with("enforcing"));
     }
 
     struct FakeBuilder {
@@ -2394,232 +2563,140 @@ pub(crate) mod tests {
         })
     }
 
-    #[test]
-    fn pkg_install_builds_a_tool_and_adds_it_to_the_record() {
-        let dir = tempfile::tempdir().unwrap();
-        let builder = fake_builder();
-        let mut s = state_with(dir.path(), builder.clone());
+    tilo_test_env::scenario! {
+        /// `pkg`: tool images built, removed and traced through the broker.
+        fn pkg_builds_removes_and_names_tool_images;
 
-        let resp = s.handle(Request::AddTool {
-            packages: vec!["pandoc".into()],
-        });
-        assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
-        let stored = s.environment.records.load(DEFAULT_RECORD).unwrap().unwrap();
-        assert_eq!(stored.tools.len(), 1);
-        assert_eq!(
-            stored.tools[0].images.get(host_arch()),
-            Some(&image(2).to_string())
-        );
-        assert_eq!(stored.tools[0].packages, vec!["pandoc".to_string()]);
+        phase pkg_install_builds_a_tool_and_adds_it_to_the_record;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let builder = fake_builder();
+            let mut s = state_with(dir.path(), builder.clone());
 
-        // Already there: nothing is built.
-        let resp = s.handle(Request::AddTool {
-            packages: vec!["pandoc".into()],
-        });
-        assert!(
-            matches!(resp, Response::NeedsRestart { ref detail } if detail.contains("already"))
-        );
-        assert_eq!(builder.calls.lock().unwrap().len(), 1);
-
-        let Response::Tools { runtime, tools } = s.handle(Request::ListTools) else {
-            panic!("expected tools");
-        };
-        assert_eq!(runtime, format!("2026.10 ({})", image(1)));
-        assert_eq!(tools[0].packages, vec!["pandoc".to_string()]);
-
-        let audit = s.audit.read_all();
-        assert!(
-            audit
-                .iter()
-                .any(|r| r.request == "pkg-install" && r.allowed)
-        );
-    }
-
-    #[test]
-    fn without_a_builder_pkg_install_says_building_is_unavailable() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = state_with(dir.path(), Arc::new(tilo_environment::NoToolBuilder));
-        let Response::Denied { reason } = s.handle(Request::AddTool {
-            packages: vec!["pandoc".into()],
-        }) else {
-            panic!("an install without a builder must be refused");
-        };
-        assert!(reason.contains("not available"), "{reason}");
-        assert!(s.environment.current().tools.is_empty());
-        assert!(
-            s.audit
-                .read_all()
-                .iter()
-                .any(|r| r.request == "pkg-install" && !r.allowed)
-        );
-    }
-
-    #[test]
-    fn pkg_remove_takes_a_whole_tool_out_or_says_what_travels_with_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = state_with(dir.path(), fake_builder());
-        s.handle(Request::AddTool {
-            packages: vec!["git".into(), "jq".into()],
-        });
-
-        let Response::Denied { reason } = s.handle(Request::RemoveTool {
-            packages: vec!["jq".into()],
-        }) else {
-            panic!("half a tool cannot be removed");
-        };
-        assert!(reason.contains("pkg remove git jq"), "{reason}");
-        assert!(matches!(
-            s.handle(Request::RemoveTool {
-                packages: vec!["htop".into()]
-            }),
-            Response::Denied { .. }
-        ));
-
-        let resp = s.handle(Request::RemoveTool {
-            packages: vec!["jq".into(), "git".into()],
-        });
-        assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
-        assert!(s.environment.current().tools.is_empty());
-    }
-
-    #[test]
-    fn provenance_names_the_image_a_path_comes_from() {
-        let dir = tempfile::tempdir().unwrap();
-        let runtime = dir.path().join("runtime");
-        std::fs::create_dir_all(runtime.join("usr/bin")).unwrap();
-        std::fs::write(runtime.join("usr/bin/sh"), b"").unwrap();
-        let mut s = state(dir.path());
-        s.images = vec![("runtime tapp:01".into(), runtime)];
-        assert_eq!(
-            s.handle(Request::Provenance {
-                path: PathBuf::from("/usr/bin/sh")
-            }),
-            Response::Provenance {
-                image: Some("runtime tapp:01".into())
-            }
-        );
-        assert_eq!(
-            s.handle(Request::Provenance {
-                path: PathBuf::from("/home/you/sh")
-            }),
-            Response::Provenance { image: None }
-        );
-    }
-
-    #[test]
-    fn a_tool_build_streams_its_progress_to_the_guest() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("broker.sock");
-        let broker = Broker::start(socket.clone(), state_with(dir.path(), fake_builder())).unwrap();
-        let mut out = Vec::new();
-        let resp = ask_streaming(
-            &socket,
-            &Request::AddTool {
+            let resp = s.handle(Request::AddTool {
                 packages: vec!["pandoc".into()],
-            },
-            &mut out,
-            &mut std::io::sink(),
-        )
-        .unwrap();
-        assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
-        assert_eq!(String::from_utf8(out).unwrap(), "building pandoc\n");
-        drop(broker);
-    }
+            });
+            assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
+            let stored = s.environment.records.load(DEFAULT_RECORD).unwrap().unwrap();
+            assert_eq!(stored.tools.len(), 1);
+            assert_eq!(
+                stored.tools[0].images.get(host_arch()),
+                Some(&image(2).to_string())
+            );
+            assert_eq!(stored.tools[0].packages, vec!["pandoc".to_string()]);
 
-    #[test]
-    fn broker_under_long_data_home_round_trips_and_cleans_up() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let data = dir.path().join("a".repeat(90)).join("ush/sessions/session");
-        std::fs::create_dir_all(&data).unwrap();
-        let socket = data.join("broker.sock");
-        assert!(std::os::unix::net::SocketAddr::from_pathname(&socket).is_err());
-        let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
-        assert_eq!(broker.socket(), socket);
-        assert_eq!(
-            std::fs::metadata(&socket).unwrap().permissions().mode() & 0o077,
-            0
-        );
-        let response = ask(&socket, &Request::ListPerms).unwrap();
-        assert!(matches!(response, Response::Perms { .. }));
-        assert!(broker.guest_connected());
-        // Reconnect to the same owner-only filesystem socket, not a new alias
-        // published to the peer. Renaming its parent cannot invalidate the
-        // broker's retained descriptor used to wake and clean up on shutdown.
-        let renamed = data.with_file_name("renamed-session");
-        std::fs::rename(&data, &renamed).unwrap();
-        let moved_socket = renamed.join("broker.sock");
-        let response = ask(&moved_socket, &Request::ListPerms).unwrap();
-        assert!(matches!(response, Response::Perms { .. }));
-        drop(broker);
-        assert!(
-            !moved_socket.exists(),
-            "session socket must be removed on shutdown"
-        );
-    }
+            // Already there: nothing is built.
+            let resp = s.handle(Request::AddTool {
+                packages: vec!["pandoc".into()],
+            });
+            assert!(
+                matches!(resp, Response::NeedsRestart { ref detail } if detail.contains("already"))
+            );
+            assert_eq!(builder.calls.lock().unwrap().len(), 1);
 
-    #[test]
-    fn the_broker_socket_is_owner_only_and_answers_every_request() {
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let sock = dir.path().join("broker.sock");
-            let broker = Broker::start(sock.clone(), state(dir.path())).unwrap();
+            let Response::Tools { runtime, tools } = s.handle(Request::ListTools) else {
+                panic!("expected tools");
+            };
+            assert_eq!(runtime, format!("2026.10 ({})", image(1)));
+            assert_eq!(tools[0].packages, vec!["pandoc".to_string()]);
 
-            let stream = UnixStream::connect(&sock).unwrap();
-            let mut w = stream.try_clone().unwrap();
-            w.write_all(b"{not json}\n").unwrap();
-            w.flush().unwrap();
-            let mut r = BufReader::new(stream);
-            let mut line = String::new();
-            r.read_line(&mut line).unwrap();
-            assert!(line.contains("denied"), "{line}");
-            drop(broker);
+            let audit = s.audit.read_all();
+            assert!(
+                audit
+                    .iter()
+                    .any(|r| r.request == "pkg-install" && r.allowed)
+            );
         }
+
+        phase without_a_builder_pkg_install_says_building_is_unavailable;
         {
             let dir = tempfile::tempdir().unwrap();
-            let target = dir.path().join("src");
-            std::fs::create_dir_all(&target).unwrap();
-            let sock = dir.path().join("broker.sock");
-            let broker = Broker::start(sock.clone(), state(dir.path())).unwrap();
-            assert!(!broker.guest_connected());
+            let mut s = state_with(dir.path(), Arc::new(tilo_environment::NoToolBuilder));
+            let Response::Denied { reason } = s.handle(Request::AddTool {
+                packages: vec!["pandoc".into()],
+            }) else {
+                panic!("an install without a builder must be refused");
+            };
+            assert!(reason.contains("not available"), "{reason}");
+            assert!(s.environment.current().tools.is_empty());
+            assert!(
+                s.audit
+                    .read_all()
+                    .iter()
+                    .any(|r| r.request == "pkg-install" && !r.allowed)
+            );
+        }
 
-            let resp = ask(
-                &sock,
-                &Request::TrustDir {
-                    path: target.clone(),
+        phase pkg_remove_takes_a_whole_tool_out_or_says_what_travels_with_it;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut s = state_with(dir.path(), fake_builder());
+            s.handle(Request::AddTool {
+                packages: vec!["git".into(), "jq".into()],
+            });
+
+            let Response::Denied { reason } = s.handle(Request::RemoveTool {
+                packages: vec!["jq".into()],
+            }) else {
+                panic!("half a tool cannot be removed");
+            };
+            assert!(reason.contains("pkg remove git jq"), "{reason}");
+            assert!(matches!(
+                s.handle(Request::RemoveTool {
+                    packages: vec!["htop".into()]
+                }),
+                Response::Denied { .. }
+            ));
+
+            let resp = s.handle(Request::RemoveTool {
+                packages: vec!["jq".into(), "git".into()],
+            });
+            assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
+            assert!(s.environment.current().tools.is_empty());
+        }
+
+        phase provenance_names_the_image_a_path_comes_from;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let runtime = dir.path().join("runtime");
+            std::fs::create_dir_all(runtime.join("usr/bin")).unwrap();
+            std::fs::write(runtime.join("usr/bin/sh"), b"").unwrap();
+            let mut s = state(dir.path());
+            s.images = vec![("runtime tapp:01".into(), runtime)];
+            assert_eq!(
+                s.handle(Request::Provenance {
+                    path: PathBuf::from("/usr/bin/sh")
+                }),
+                Response::Provenance {
+                    image: Some("runtime tapp:01".into())
+                }
+            );
+            assert_eq!(
+                s.handle(Request::Provenance {
+                    path: PathBuf::from("/home/you/sh")
+                }),
+                Response::Provenance { image: None }
+            );
+        }
+
+        phase a_tool_build_streams_its_progress_to_the_guest;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("broker.sock");
+            let broker = Broker::start(socket.clone(), state_with(dir.path(), fake_builder())).unwrap();
+            let mut out = Vec::new();
+            let resp = ask_streaming(
+                &socket,
+                &Request::AddTool {
+                    packages: vec!["pandoc".into()],
                 },
+                &mut out,
+                &mut std::io::sink(),
             )
             .unwrap();
             assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
-            assert!(broker.guest_connected());
-
-            let resp = ask(&sock, &Request::ListPerms).unwrap();
-            let Response::Perms { entries } = resp else {
-                panic!("expected perms");
-            };
-            assert_eq!(entries.len(), 1);
-            assert_eq!(
-                entries[0].scope,
-                target.canonicalize().unwrap().display().to_string()
-            );
-
-            assert!(!broker.restart_requested());
-            ask(&sock, &Request::Restart).unwrap();
-            assert!(broker.restart_requested());
-        }
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let dir = tempfile::tempdir().unwrap();
-            let sock = dir.path().join("broker.sock");
-            let broker = Broker::start(sock.clone(), state(dir.path())).unwrap();
-            let mode = std::fs::metadata(&sock).unwrap().permissions().mode();
-            assert_eq!(
-                mode & 0o077,
-                0,
-                "broker socket is reachable by other users: {mode:o}"
-            );
+            assert_eq!(String::from_utf8(out).unwrap(), "building pandoc\n");
             drop(broker);
-            assert!(!sock.exists(), "the socket must not outlive the session");
         }
     }
 
@@ -2706,52 +2783,5 @@ pub(crate) mod tests {
         assert_eq!(second.join().unwrap(), Response::Command { code: 0 });
         assert_eq!(std::fs::read_to_string(&events).unwrap(), "first\nsecond\n");
         drop(broker);
-    }
-
-    #[test]
-    fn allow_host_writes_a_net_grant_that_perm_list_shows_and_revoke_removes() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = state(dir.path());
-        let Response::NeedsRestart { detail } = s.handle(Request::AllowHost {
-            host: "*.Crates.io".into(),
-        }) else {
-            panic!("allow-host without a network must say restart");
-        };
-        assert!(
-            detail.contains("crates.io and every host under it"),
-            "{detail}"
-        );
-        let Response::Perms { entries } = s.handle(Request::ListPerms) else {
-            panic!("no permission list");
-        };
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].scope, "net .crates.io");
-        assert_eq!(entries[0].id, tilo_environment::host_grant_id(".crates.io"));
-        assert_eq!(
-            s.environment.policy().net_hosts(Some(unix_now())),
-            [".crates.io"]
-        );
-
-        let Response::Denied { reason } = s.handle(Request::AllowHost {
-            host: "1.1.1.1".into(),
-        }) else {
-            panic!("an address literal was allowed");
-        };
-        assert!(reason.contains("address"), "{reason}");
-
-        let resp = s.handle(Request::Revoke {
-            id: entries[0].id.clone(),
-        });
-        assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
-        assert!(
-            s.environment
-                .policy()
-                .net_hosts(Some(unix_now()))
-                .is_empty()
-        );
-        let Response::Status { status } = s.handle(Request::Status) else {
-            panic!("no status");
-        };
-        assert_eq!(status.network, NetworkStatus::Offline);
     }
 }

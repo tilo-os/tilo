@@ -698,28 +698,256 @@ pub fn spawn(
 mod tests {
     use super::*;
 
-    #[test]
-    fn approved_check_mounts_source_read_only_target_writeable_and_no_broker() {
-        let dir = tempfile::tempdir().unwrap();
-        let plan = plan_in(dir.path());
-        let argv = build_check_argv(
-            &plan,
-            42,
-            Path::new("/private/source"),
-            Path::new("/private/build"),
-        );
-        assert!(argv.iter().any(|s| s == "--unshare-net"));
-        assert!(
-            argv.windows(3)
-                .any(|w| w == ["--ro-bind", "/private/source", "/project"])
-        );
-        assert!(
-            argv.windows(3)
-                .any(|w| w == ["--bind", "/private/build", "/project/target"])
-        );
-        assert!(argv.windows(2).any(|w| w == ["--seccomp", "42"]));
-        assert!(!argv.iter().any(|s| s == crate::GUEST_BROKER_SOCK));
-        assert!(!argv.iter().any(|s| s == plan.broker_socket.as_os_str()));
+    tilo_test_env::scenario! {
+        /// The guest's `bwrap` command line: what is mounted and bound, and where.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn the_guest_command_line_binds_images_home_and_grants;
+
+        phase approved_check_mounts_source_read_only_target_writeable_and_no_broker;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let plan = plan_in(dir.path());
+            let argv = build_check_argv(
+                &plan,
+                42,
+                Path::new("/private/source"),
+                Path::new("/private/build"),
+            );
+            assert!(argv.iter().any(|s| s == "--unshare-net"));
+            assert!(
+                argv.windows(3)
+                    .any(|w| w == ["--ro-bind", "/private/source", "/project"])
+            );
+            assert!(
+                argv.windows(3)
+                    .any(|w| w == ["--bind", "/private/build", "/project/target"])
+            );
+            assert!(argv.windows(2).any(|w| w == ["--seccomp", "42"]));
+            assert!(!argv.iter().any(|s| s == crate::GUEST_BROKER_SOCK));
+            assert!(!argv.iter().any(|s| s == plan.broker_socket.as_os_str()));
+        }
+
+        phase the_environments_agent_door_is_bound_where_its_variable_says;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let door = dir.path().join("tilo-session/environments/0123.sock");
+            let plan = GuestPlan {
+                agent_door: Some(door.clone()),
+                ..plan_in(dir.path())
+            };
+            let argv = build_argv(&plan, None);
+            let bound = vec![
+                "--bind-try".to_owned(),
+                path(&door),
+                tilo_paths::login::GUEST_AGENT_SOCKET.to_owned(),
+            ];
+            assert!(windows(&argv, 3).contains(&bound), "{argv:?}");
+            let named = vec![
+                "--setenv".to_owned(),
+                tilo_paths::login::AGENT_SOCKET_ENV.to_owned(),
+                tilo_paths::login::GUEST_AGENT_SOCKET.to_owned(),
+            ];
+            assert!(windows(&argv, 3).contains(&named), "{argv:?}");
+
+            let without = build_argv(&plan_in(dir.path()), None);
+            assert!(
+                !strings(&without)
+                    .iter()
+                    .any(|s| s == tilo_paths::login::GUEST_AGENT_SOCKET),
+                "no door, no binding and no variable: {without:?}"
+            );
+            let check = build_check_argv(
+                &plan,
+                42,
+                Path::new("/private/source"),
+                Path::new("/private/build"),
+            );
+            assert!(
+                !check.iter().any(|s| s == door.as_os_str()),
+                "a check's guest reaches no door"
+            );
+            assert!(
+                !strings(&check)
+                    .iter()
+                    .any(|s| s == tilo_paths::login::AGENT_SOCKET_ENV),
+                "nor is told of one"
+            );
+        }
+
+        phase installed_legacy_apps_get_a_shim_on_the_guest_path;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let p = plan_in(dir.path());
+            let shims = windows(&build_argv(&p, Some(9)), 3);
+            assert!(
+                shims.iter().any(|w| w[0] == "--symlink"
+                    && w[1] == "tilo-ush"
+                    && w[2] == format!("{}/code", crate::GUEST_BIN_DIR)),
+                "an installed legacy app has no shim in the guest"
+            );
+        }
+
+        phase the_images_stack_read_only_with_no_writable_upper;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let p = plan_in(dir.path());
+            p.prepare().unwrap();
+            let argv = strings(&build_argv(&p, Some(9)));
+
+            // `/usr`: the tool over the runtime, mounted read-only. `bwrap` takes
+            // the bottom layer first, so the runtime is named before the tool.
+            let usr = argv
+                .windows(2)
+                .position(|w| w[0] == "--ro-overlay" && w[1] == "/usr")
+                .expect("/usr is not a read-only overlay");
+            let srcs: Vec<&String> = argv[..usr]
+                .windows(2)
+                .filter(|w| w[0] == "--overlay-src")
+                .map(|w| &w[1])
+                .collect();
+            assert_eq!(
+                srcs,
+                vec![
+                    &path(&p.images[1].join("usr")),
+                    &path(&p.images[0].join("usr"))
+                ]
+            );
+            assert!(
+                argv.windows(2)
+                    .any(|w| w[0] == "--ro-overlay" && w[1] == "/etc")
+            );
+            assert!(argv.contains(&path(&p.etc_overlay().join("etc"))));
+
+            // The property the design rests on: nothing is writable below an
+            // image, so a guest can add to its environment only through the record.
+            assert!(
+                !argv
+                    .iter()
+                    .any(|a| a == "--overlay" || a == "--tmp-overlay"),
+                "a writable overlay upper crept in: {argv:?}"
+            );
+            for (i, arg) in argv.iter().enumerate() {
+                if arg == "--bind" || arg == "--bind-try" || arg == "--dev-bind" {
+                    let src = Path::new(&argv[i + 1]);
+                    assert!(
+                        !p.images.iter().any(|image| src.starts_with(image)),
+                        "{arg} {} would make an image writable",
+                        src.display()
+                    );
+                }
+            }
+        }
+
+        phase a_single_tree_is_bound_read_only_since_overlayfs_needs_two;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut p = plan_in(dir.path());
+            p.images.remove(0);
+            let argv = windows(&build_argv(&p, Some(9)), 3);
+            assert!(
+                argv.iter().any(|w| w[0] == "--ro-bind"
+                    && w[1] == path(&p.images[0].join("usr"))
+                    && w[2] == "/usr"),
+                "{argv:?}"
+            );
+        }
+
+        phase home_var_and_grants_are_bound_and_the_store_stays_covered;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut p = plan_in(dir.path());
+            let argv = windows(&build_argv(&p, Some(9)), 3);
+            assert!(
+                argv.iter()
+                    .any(|w| w[0] == "--bind" && w[1] == path(&p.guest_home) && w[2] == "/home/you")
+            );
+            for sub in ENVIRONMENT_VAR_DIRS {
+                assert!(argv.iter().any(|w| w[0] == "--bind"
+                    && w[1] == path(&p.var_dir.join(sub))
+                    && w[2] == format!("/var/{sub}")));
+            }
+            let flat = strings(&build_argv(&p, Some(9)));
+            let var_tmpfs = flat
+                .windows(2)
+                .position(|w| w[0] == "--tmpfs" && w[1] == "/var")
+                .unwrap();
+            let var_lib = flat.iter().position(|a| a == "/var/lib").unwrap();
+            assert!(
+                var_lib > var_tmpfs,
+                "the state bind would be covered by the tmpfs"
+            );
+            assert!(
+                !flat
+                    .windows(2)
+                    .any(|w| w[0] == "--tmpfs" && w[1] == path(&p.masked[0])),
+                "with no grant there is nothing to cover"
+            );
+
+            p.trusted_dirs = vec![dir.path().to_path_buf()];
+            p.readable_dirs = vec![PathBuf::from("/srv/notes")];
+            let flat = strings(&build_argv(&p, Some(9)));
+            let w3 = windows(&build_argv(&p, Some(9)), 3);
+            assert!(
+                w3.iter().any(|w| w[0] == "--bind-try"
+                    && w[1] == path(dir.path())
+                    && w[2] == path(dir.path()))
+            );
+            assert!(
+                w3.iter()
+                    .any(|w| w[0] == "--ro-bind-try" && w[1] == "/srv/notes" && w[2] == "/srv/notes")
+            );
+            let grant = flat.iter().position(|a| a == "--bind-try").unwrap();
+            let mask = flat
+                .windows(2)
+                .position(|w| w[0] == "--tmpfs" && w[1] == path(&p.masked[0]))
+                .expect("the store must be covered under a grant that contains it");
+            assert!(mask > grant);
+        }
+
+        phase with_a_grant_root_a_grant_binds_its_contents_there_at_its_own_path;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut p = plan_in(dir.path());
+            let files = dir.path().join("member/files");
+            p.grant_root = Some(files.clone());
+            p.trusted_dirs = vec![PathBuf::from("/home/alice/src")];
+            p.masked = vec![files.join("home/alice/src/.store")];
+            let w3 = windows(&build_argv(&p, Some(9)), 3);
+            assert!(w3.iter().any(|w| w[0] == "--bind-try"
+                && w[1] == path(&files.join("home/alice/src"))
+                && w[2] == "/home/alice/src"));
+            let flat = strings(&build_argv(&p, Some(9)));
+            assert!(
+                flat.windows(2)
+                    .any(|w| w[0] == "--tmpfs" && w[1] == "/home/alice/src/.store")
+            );
+        }
+
+        phase the_root_carries_usrmerge_and_var_links_after_the_var_tmpfs;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let argv = strings(&build_argv(&plan_in(dir.path()), Some(9)));
+            for (target, link) in root_symlinks() {
+                let at = argv
+                    .windows(3)
+                    .position(|w| w[0] == "--symlink" && w[1] == path(&target) && w[2] == path(&link))
+                    .unwrap_or_else(|| panic!("{} -> {} missing", link.display(), target.display()));
+                if link.starts_with("/var") {
+                    let var = argv
+                        .windows(2)
+                        .position(|w| w[0] == "--tmpfs" && w[1] == "/var")
+                        .unwrap();
+                    assert!(
+                        at > var,
+                        "{} would be covered by the /var tmpfs",
+                        link.display()
+                    );
+                }
+            }
+        }
     }
 
     fn plan_in(dir: &Path) -> GuestPlan {
@@ -769,53 +997,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_environments_agent_door_is_bound_where_its_variable_says() {
-        let dir = tempfile::tempdir().unwrap();
-        let door = dir.path().join("tilo-session/environments/0123.sock");
-        let plan = GuestPlan {
-            agent_door: Some(door.clone()),
-            ..plan_in(dir.path())
-        };
-        let argv = build_argv(&plan, None);
-        let bound = vec![
-            "--bind-try".to_owned(),
-            path(&door),
-            tilo_paths::login::GUEST_AGENT_SOCKET.to_owned(),
-        ];
-        assert!(windows(&argv, 3).contains(&bound), "{argv:?}");
-        let named = vec![
-            "--setenv".to_owned(),
-            tilo_paths::login::AGENT_SOCKET_ENV.to_owned(),
-            tilo_paths::login::GUEST_AGENT_SOCKET.to_owned(),
-        ];
-        assert!(windows(&argv, 3).contains(&named), "{argv:?}");
-
-        let without = build_argv(&plan_in(dir.path()), None);
-        assert!(
-            !strings(&without)
-                .iter()
-                .any(|s| s == tilo_paths::login::GUEST_AGENT_SOCKET),
-            "no door, no binding and no variable: {without:?}"
-        );
-        let check = build_check_argv(
-            &plan,
-            42,
-            Path::new("/private/source"),
-            Path::new("/private/build"),
-        );
-        assert!(
-            !check.iter().any(|s| s == door.as_os_str()),
-            "a check's guest reaches no door"
-        );
-        assert!(
-            !strings(&check)
-                .iter()
-                .any(|s| s == tilo_paths::login::AGENT_SOCKET_ENV),
-            "nor is told of one"
-        );
-    }
-
     fn strings(argv: &[OsString]) -> Vec<String> {
         argv.iter()
             .map(|s| s.to_string_lossy().into_owned())
@@ -830,290 +1011,127 @@ mod tests {
         p.display().to_string()
     }
 
-    #[test]
-    fn the_guest_has_its_own_uts_namespace_without_renaming_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let argv = strings(&build_argv(&plan_in(dir.path()), Some(9)));
-        assert!(argv.iter().any(|arg| arg == "--unshare-uts"));
-        assert!(
-            !argv.iter().any(|arg| arg == "--hostname"),
-            "a container's seccomp profile refuses sethostname"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The guest's `bwrap` command line: who the guest is, its namespaces, its resolver and how the line ends.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn the_guest_command_line_sets_identity_namespaces_and_resolver;
 
-    #[test]
-    fn installed_legacy_apps_get_a_shim_on_the_guest_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = plan_in(dir.path());
-        let shims = windows(&build_argv(&p, Some(9)), 3);
-        assert!(
-            shims.iter().any(|w| w[0] == "--symlink"
-                && w[1] == "tilo-ush"
-                && w[2] == format!("{}/code", crate::GUEST_BIN_DIR)),
-            "an installed legacy app has no shim in the guest"
-        );
-    }
+        phase the_guest_has_its_own_uts_namespace_without_renaming_it;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let argv = strings(&build_argv(&plan_in(dir.path()), Some(9)));
+            assert!(argv.iter().any(|arg| arg == "--unshare-uts"));
+            assert!(
+                !argv.iter().any(|arg| arg == "--hostname"),
+                "a container's seccomp profile refuses sethostname"
+            );
+        }
 
-    #[test]
-    fn the_images_stack_read_only_with_no_writable_upper() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = plan_in(dir.path());
-        p.prepare().unwrap();
-        let argv = strings(&build_argv(&p, Some(9)));
+        phase the_guest_is_the_real_user_by_a_single_id_mapping;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let p = plan_in(dir.path());
+            let argv = strings(&build_argv(&p, Some(9)));
+            let uid = argv.iter().position(|a| a == "--uid").unwrap();
+            let gid = argv.iter().position(|a| a == "--gid").unwrap();
+            assert_eq!(argv[uid + 1], "1000", "the guest must not be uid 0");
+            assert_eq!(argv[gid + 1], "1000");
+            assert!(argv.contains(&"--unshare-user".to_string()));
+            assert!(
+                !argv.iter().any(|a| a == "--userns" || a == "--cap-add"),
+                "no prepared namespace and no capabilities: {argv:?}"
+            );
+            let w3 = windows(&build_argv(&p, Some(9)), 3);
+            assert!(
+                w3.iter()
+                    .any(|w| w[0] == "--setenv" && w[1] == "USER" && w[2] == "you")
+            );
+            assert!(
+                w3.iter()
+                    .any(|w| w[0] == "--setenv" && w[1] == "HOME" && w[2] == "/home/you")
+            );
 
-        // `/usr`: the tool over the runtime, mounted read-only. `bwrap` takes
-        // the bottom layer first, so the runtime is named before the tool.
-        let usr = argv
-            .windows(2)
-            .position(|w| w[0] == "--ro-overlay" && w[1] == "/usr")
-            .expect("/usr is not a read-only overlay");
-        let srcs: Vec<&String> = argv[..usr]
-            .windows(2)
-            .filter(|w| w[0] == "--overlay-src")
-            .map(|w| &w[1])
-            .collect();
-        assert_eq!(
-            srcs,
-            vec![
-                &path(&p.images[1].join("usr")),
-                &path(&p.images[0].join("usr"))
-            ]
-        );
-        assert!(
-            argv.windows(2)
-                .any(|w| w[0] == "--ro-overlay" && w[1] == "/etc")
-        );
-        assert!(argv.contains(&path(&p.etc_overlay().join("etc"))));
+            p.prepare().unwrap();
+            let passwd = std::fs::read_to_string(p.etc_overlay().join("etc/passwd")).unwrap();
+            assert!(passwd.contains("root:x:0:0:"), "{passwd}");
+            assert!(
+                passwd.contains("you:x:1000:1000::/home/you:/usr/bin/bash"),
+                "{passwd}"
+            );
+            assert!(!passwd.contains("4242"), "{passwd}");
+            let group = std::fs::read_to_string(p.etc_overlay().join("etc/group")).unwrap();
+            assert!(
+                group.contains("wheel:x:10:") && group.contains("you:x:1000:"),
+                "{group}"
+            );
+        }
 
-        // The property the design rests on: nothing is writable below an
-        // image, so a guest can add to its environment only through the record.
-        assert!(
-            !argv
+        phase the_command_line_ends_with_seccomp_and_the_guest_argv;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut p = plan_in(dir.path());
+            p.command = vec!["/usr/bin/bash".into(), "-c".into(), "echo hi".into()];
+            let argv = strings(&build_argv(&p, Some(9)));
+            let sep = argv.iter().position(|a| a == "--").unwrap();
+            let blob = argv.iter().position(|a| a == "--seccomp").unwrap();
+            assert!(blob < sep);
+            assert_eq!(argv[blob + 1], "9");
+            assert_eq!(&argv[sep + 1..], &["/usr/bin/bash", "-c", "echo hi"]);
+
+            let path_at = argv.iter().position(|a| a == "PATH").unwrap();
+            assert!(argv[path_at + 1].starts_with(&format!("{}:", crate::GUEST_BIN_DIR)));
+            let rt = argv
                 .iter()
-                .any(|a| a == "--overlay" || a == "--tmp-overlay"),
-            "a writable overlay upper crept in: {argv:?}"
-        );
-        for (i, arg) in argv.iter().enumerate() {
-            if arg == "--bind" || arg == "--bind-try" || arg == "--dev-bind" {
-                let src = Path::new(&argv[i + 1]);
-                assert!(
-                    !p.images.iter().any(|image| src.starts_with(image)),
-                    "{arg} {} would make an image writable",
-                    src.display()
-                );
-            }
+                .position(|a| a == "/usr/libexec/tilo-ush")
+                .unwrap();
+            assert_eq!(
+                argv[rt - 1],
+                "--ro-bind",
+                "the runtime binary must be read-only"
+            );
+            let unset = argv.iter().position(|a| a == "--unsetenv").unwrap();
+            assert_eq!(argv[unset + 1], crate::store::STORE_ENV);
         }
-    }
 
-    #[test]
-    fn a_single_tree_is_bound_read_only_since_overlayfs_needs_two() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut p = plan_in(dir.path());
-        p.images.remove(0);
-        let argv = windows(&build_argv(&p, Some(9)), 3);
-        assert!(
-            argv.iter().any(|w| w[0] == "--ro-bind"
-                && w[1] == path(&p.images[0].join("usr"))
-                && w[2] == "/usr"),
-            "{argv:?}"
-        );
-    }
-
-    #[test]
-    fn the_guest_is_the_real_user_by_a_single_id_mapping() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = plan_in(dir.path());
-        let argv = strings(&build_argv(&p, Some(9)));
-        let uid = argv.iter().position(|a| a == "--uid").unwrap();
-        let gid = argv.iter().position(|a| a == "--gid").unwrap();
-        assert_eq!(argv[uid + 1], "1000", "the guest must not be uid 0");
-        assert_eq!(argv[gid + 1], "1000");
-        assert!(argv.contains(&"--unshare-user".to_string()));
-        assert!(
-            !argv.iter().any(|a| a == "--userns" || a == "--cap-add"),
-            "no prepared namespace and no capabilities: {argv:?}"
-        );
-        let w3 = windows(&build_argv(&p, Some(9)), 3);
-        assert!(
-            w3.iter()
-                .any(|w| w[0] == "--setenv" && w[1] == "USER" && w[2] == "you")
-        );
-        assert!(
-            w3.iter()
-                .any(|w| w[0] == "--setenv" && w[1] == "HOME" && w[2] == "/home/you")
-        );
-
-        p.prepare().unwrap();
-        let passwd = std::fs::read_to_string(p.etc_overlay().join("etc/passwd")).unwrap();
-        assert!(passwd.contains("root:x:0:0:"), "{passwd}");
-        assert!(
-            passwd.contains("you:x:1000:1000::/home/you:/usr/bin/bash"),
-            "{passwd}"
-        );
-        assert!(!passwd.contains("4242"), "{passwd}");
-        let group = std::fs::read_to_string(p.etc_overlay().join("etc/group")).unwrap();
-        assert!(
-            group.contains("wheel:x:10:") && group.contains("you:x:1000:"),
-            "{group}"
-        );
-    }
-
-    #[test]
-    fn home_var_and_grants_are_bound_and_the_store_stays_covered() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut p = plan_in(dir.path());
-        let argv = windows(&build_argv(&p, Some(9)), 3);
-        assert!(
-            argv.iter()
-                .any(|w| w[0] == "--bind" && w[1] == path(&p.guest_home) && w[2] == "/home/you")
-        );
-        for sub in ENVIRONMENT_VAR_DIRS {
-            assert!(argv.iter().any(|w| w[0] == "--bind"
-                && w[1] == path(&p.var_dir.join(sub))
-                && w[2] == format!("/var/{sub}")));
-        }
-        let flat = strings(&build_argv(&p, Some(9)));
-        let var_tmpfs = flat
-            .windows(2)
-            .position(|w| w[0] == "--tmpfs" && w[1] == "/var")
+        phase the_resolver_is_copied_from_the_host;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let p = plan_in(dir.path());
+            std::fs::create_dir_all(p.host_root.join("etc")).unwrap();
+            std::fs::write(
+                p.host_root.join("etc/resolv.conf"),
+                "nameserver 127.0.0.53\n",
+            )
             .unwrap();
-        let var_lib = flat.iter().position(|a| a == "/var/lib").unwrap();
-        assert!(
-            var_lib > var_tmpfs,
-            "the state bind would be covered by the tmpfs"
-        );
-        assert!(
-            !flat
-                .windows(2)
-                .any(|w| w[0] == "--tmpfs" && w[1] == path(&p.masked[0])),
-            "with no grant there is nothing to cover"
-        );
-
-        p.trusted_dirs = vec![dir.path().to_path_buf()];
-        p.readable_dirs = vec![PathBuf::from("/srv/notes")];
-        let flat = strings(&build_argv(&p, Some(9)));
-        let w3 = windows(&build_argv(&p, Some(9)), 3);
-        assert!(
-            w3.iter().any(|w| w[0] == "--bind-try"
-                && w[1] == path(dir.path())
-                && w[2] == path(dir.path()))
-        );
-        assert!(
-            w3.iter()
-                .any(|w| w[0] == "--ro-bind-try" && w[1] == "/srv/notes" && w[2] == "/srv/notes")
-        );
-        let grant = flat.iter().position(|a| a == "--bind-try").unwrap();
-        let mask = flat
-            .windows(2)
-            .position(|w| w[0] == "--tmpfs" && w[1] == path(&p.masked[0]))
-            .expect("the store must be covered under a grant that contains it");
-        assert!(mask > grant);
-    }
-
-    #[test]
-    fn with_a_grant_root_a_grant_binds_its_contents_there_at_its_own_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut p = plan_in(dir.path());
-        let files = dir.path().join("member/files");
-        p.grant_root = Some(files.clone());
-        p.trusted_dirs = vec![PathBuf::from("/home/alice/src")];
-        p.masked = vec![files.join("home/alice/src/.store")];
-        let w3 = windows(&build_argv(&p, Some(9)), 3);
-        assert!(w3.iter().any(|w| w[0] == "--bind-try"
-            && w[1] == path(&files.join("home/alice/src"))
-            && w[2] == "/home/alice/src"));
-        let flat = strings(&build_argv(&p, Some(9)));
-        assert!(
-            flat.windows(2)
-                .any(|w| w[0] == "--tmpfs" && w[1] == "/home/alice/src/.store")
-        );
-    }
-
-    #[test]
-    fn the_command_line_ends_with_seccomp_and_the_guest_argv() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut p = plan_in(dir.path());
-        p.command = vec!["/usr/bin/bash".into(), "-c".into(), "echo hi".into()];
-        let argv = strings(&build_argv(&p, Some(9)));
-        let sep = argv.iter().position(|a| a == "--").unwrap();
-        let blob = argv.iter().position(|a| a == "--seccomp").unwrap();
-        assert!(blob < sep);
-        assert_eq!(argv[blob + 1], "9");
-        assert_eq!(&argv[sep + 1..], &["/usr/bin/bash", "-c", "echo hi"]);
-
-        let path_at = argv.iter().position(|a| a == "PATH").unwrap();
-        assert!(argv[path_at + 1].starts_with(&format!("{}:", crate::GUEST_BIN_DIR)));
-        let rt = argv
-            .iter()
-            .position(|a| a == "/usr/libexec/tilo-ush")
-            .unwrap();
-        assert_eq!(
-            argv[rt - 1],
-            "--ro-bind",
-            "the runtime binary must be read-only"
-        );
-        let unset = argv.iter().position(|a| a == "--unsetenv").unwrap();
-        assert_eq!(argv[unset + 1], crate::store::STORE_ENV);
-    }
-
-    #[test]
-    fn the_root_carries_usrmerge_and_var_links_after_the_var_tmpfs() {
-        let dir = tempfile::tempdir().unwrap();
-        let argv = strings(&build_argv(&plan_in(dir.path()), Some(9)));
-        for (target, link) in root_symlinks() {
-            let at = argv
-                .windows(3)
-                .position(|w| w[0] == "--symlink" && w[1] == path(&target) && w[2] == path(&link))
-                .unwrap_or_else(|| panic!("{} -> {} missing", link.display(), target.display()));
-            if link.starts_with("/var") {
-                let var = argv
-                    .windows(2)
-                    .position(|w| w[0] == "--tmpfs" && w[1] == "/var")
-                    .unwrap();
-                assert!(
-                    at > var,
-                    "{} would be covered by the /var tmpfs",
-                    link.display()
-                );
-            }
+            p.prepare().unwrap();
+            assert_eq!(
+                std::fs::read_to_string(p.etc_overlay().join("etc/resolv.conf")).unwrap(),
+                "nameserver 127.0.0.53\n"
+            );
         }
-    }
 
-    #[test]
-    fn the_resolver_is_copied_from_the_host() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = plan_in(dir.path());
-        std::fs::create_dir_all(p.host_root.join("etc")).unwrap();
-        std::fs::write(
-            p.host_root.join("etc/resolv.conf"),
-            "nameserver 127.0.0.53\n",
-        )
-        .unwrap();
-        p.prepare().unwrap();
-        assert_eq!(
-            std::fs::read_to_string(p.etc_overlay().join("etc/resolv.conf")).unwrap(),
-            "nameserver 127.0.0.53\n"
-        );
-    }
+        phase the_sessions_resolver_replaces_the_hosts;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut p = plan_in(dir.path());
+            std::fs::create_dir_all(p.host_root.join("etc")).unwrap();
+            std::fs::write(p.host_root.join("etc/resolv.conf"), "nameserver 10.0.0.1\n").unwrap();
+            p.resolver = Some(tilo_egress::RESOLV_CONF.to_owned());
+            p.prepare().unwrap();
+            let written = std::fs::read_to_string(p.etc_overlay().join("etc/resolv.conf")).unwrap();
+            assert!(written.contains("nameserver 127.0.0.1"), "{written}");
+            assert!(!written.contains("10.0.0.1"), "{written}");
+        }
 
-    #[test]
-    fn the_sessions_resolver_replaces_the_hosts() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut p = plan_in(dir.path());
-        std::fs::create_dir_all(p.host_root.join("etc")).unwrap();
-        std::fs::write(p.host_root.join("etc/resolv.conf"), "nameserver 10.0.0.1\n").unwrap();
-        p.resolver = Some(tilo_egress::RESOLV_CONF.to_owned());
-        p.prepare().unwrap();
-        let written = std::fs::read_to_string(p.etc_overlay().join("etc/resolv.conf")).unwrap();
-        assert!(written.contains("nameserver 127.0.0.1"), "{written}");
-        assert!(!written.contains("10.0.0.1"), "{written}");
-    }
-
-    #[test]
-    fn user_names_that_are_not_safe_fall_back() {
-        assert!(is_user_name("ada"));
-        for bad in ["", "..", "a/b", "-x", "a b"] {
-            assert!(!is_user_name(bad), "{bad:?}");
+        phase user_names_that_are_not_safe_fall_back;
+        {
+            assert!(is_user_name("ada"));
+            for bad in ["", "..", "a/b", "-x", "a b"] {
+                assert!(!is_user_name(bad), "{bad:?}");
+            }
         }
     }
 }

@@ -251,87 +251,92 @@ fn restrict_to_owner(path: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn ensure_lays_out_a_private_store_idempotently() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().join("ush"));
-        store.ensure().unwrap();
+    tilo_test_env::scenario! {
+        /// `Store`: where the runtime keeps its state.
+        fn the_store_lays_out_private_trees_per_workspace;
 
-        assert!(
-            store
-                .environment_home("default")
-                .ends_with("environments/default/home")
-        );
-        assert!(
-            store
-                .environment_var("default")
-                .ends_with("environments/default/var")
-        );
-        assert!(store.records_root().starts_with(store.root()));
-        assert!(store.sessions_dir().is_dir());
-        assert!(store.audit_dir().is_dir());
+        phase ensure_lays_out_a_private_store_idempotently;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::at(dir.path().join("ush"));
+            store.ensure().unwrap();
 
-        let mode = std::fs::metadata(store.root())
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(
-            mode & 0o077,
-            0,
-            "store root is group/world accessible: {mode:o}"
-        );
+            assert!(
+                store
+                    .environment_home("default")
+                    .ends_with("environments/default/home")
+            );
+            assert!(
+                store
+                    .environment_var("default")
+                    .ends_with("environments/default/var")
+            );
+            assert!(store.records_root().starts_with(store.root()));
+            assert!(store.sessions_dir().is_dir());
+            assert!(store.audit_dir().is_dir());
 
-        store.ensure().unwrap();
-    }
+            let mode = std::fs::metadata(store.root())
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o077,
+                0,
+                "store root is group/world accessible: {mode:o}"
+            );
 
-    #[test]
-    fn a_workspace_has_its_own_records_state_and_files() {
-        let data = PathBuf::from("/home/you/.local/share");
-        let base = Store {
-            root: data.join("ush"),
-            records: crate::records::terminal_data_home(&data, crate::workspace::PRIMARY),
-            grant_root: None,
-            workspace: Some(PathBuf::from("/var/workspace")),
-            files: Some(PathBuf::from("/var/workspace")),
-            workspace_id: WorkspaceId::primary(),
-            data_home: Some(data.clone()),
-        };
-        let w1 = WorkspaceId::parse(Some("w1")).unwrap();
-        let store = base.for_workspace(&w1);
-        assert_eq!(
-            store.records_root(),
-            data.join("tilo-workspaces/w1/so.tilo.terminal/.local/share")
-        );
-        assert_eq!(
-            store.workspace(),
-            Some(Path::new("/var/workspace/.workspaces/w1"))
-        );
-        assert_eq!(store.files(), Some(Path::new("/var/workspace")));
-        assert_eq!(
-            store.environment_var("default"),
-            data.join("ush/workspaces/w1/environments/default/var")
-        );
-        assert_eq!(store.sessions_dir(), base.sessions_dir());
-        assert_eq!(store.workspaces_dir(), Some(data.join("tilo-workspaces")));
-        assert!(store.confinement().is_some());
+            store.ensure().unwrap();
+        }
 
-        let primary = store.for_workspace(&WorkspaceId::primary());
-        assert_eq!(primary, base);
-        assert_eq!(
-            primary.records_root(),
-            data.join("tilo-workspaces/personal/so.tilo.terminal/.local/share")
-        );
-        assert_eq!(primary.workspace(), Some(Path::new("/var/workspace")));
-        assert_eq!(
-            primary.environment_var("default"),
-            data.join("ush/environments/default/var")
-        );
-        assert!(primary.confinement().is_none());
+        phase a_workspace_has_its_own_records_state_and_files;
+        {
+            let data = PathBuf::from("/home/you/.local/share");
+            let base = Store {
+                root: data.join("ush"),
+                records: crate::records::terminal_data_home(&data, crate::workspace::PRIMARY),
+                grant_root: None,
+                workspace: Some(PathBuf::from("/var/workspace")),
+                files: Some(PathBuf::from("/var/workspace")),
+                workspace_id: WorkspaceId::primary(),
+                data_home: Some(data.clone()),
+            };
+            let w1 = WorkspaceId::parse(Some("w1")).unwrap();
+            let store = base.for_workspace(&w1);
+            assert_eq!(
+                store.records_root(),
+                data.join("tilo-workspaces/w1/so.tilo.terminal/.local/share")
+            );
+            assert_eq!(
+                store.workspace(),
+                Some(Path::new("/var/workspace/.workspaces/w1"))
+            );
+            assert_eq!(store.files(), Some(Path::new("/var/workspace")));
+            assert_eq!(
+                store.environment_var("default"),
+                data.join("ush/workspaces/w1/environments/default/var")
+            );
+            assert_eq!(store.sessions_dir(), base.sessions_dir());
+            assert_eq!(store.workspaces_dir(), Some(data.join("tilo-workspaces")));
+            assert!(store.confinement().is_some());
 
-        let moved = Store::at("/tmp/ush").for_workspace(&w1);
-        assert_eq!(moved.records_root(), Path::new("/tmp/ush/records"));
-        assert_eq!(moved.workspace(), None, "no files, no home folder");
-        assert_eq!(moved.workspaces_dir(), None);
+            let primary = store.for_workspace(&WorkspaceId::primary());
+            assert_eq!(primary, base);
+            assert_eq!(
+                primary.records_root(),
+                data.join("tilo-workspaces/personal/so.tilo.terminal/.local/share")
+            );
+            assert_eq!(primary.workspace(), Some(Path::new("/var/workspace")));
+            assert_eq!(
+                primary.environment_var("default"),
+                data.join("ush/environments/default/var")
+            );
+            assert!(primary.confinement().is_none());
+
+            let moved = Store::at("/tmp/ush").for_workspace(&w1);
+            assert_eq!(moved.records_root(), Path::new("/tmp/ush/records"));
+            assert_eq!(moved.workspace(), None, "no files, no home folder");
+            assert_eq!(moved.workspaces_dir(), None);
+        }
     }
 }

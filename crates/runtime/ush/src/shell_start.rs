@@ -46,26 +46,31 @@ pub fn interactive_args(shell: &Path, rc: Option<&Path>) -> Vec<OsString> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn bash_reads_its_rc_and_other_shells_log_in() {
-        let rc = Path::new("/run/ush/shell.bash");
-        assert_eq!(
-            interactive_args(Path::new("/usr/bin/bash"), Some(rc)),
-            ["--rcfile", "/run/ush/shell.bash", "-i"]
-        );
-        assert_eq!(
-            interactive_args(Path::new("/usr/bin/fish"), Some(rc)),
-            ["-l"]
-        );
-        assert_eq!(interactive_args(Path::new("/usr/bin/bash"), None), ["-l"]);
-    }
+    tilo_test_env::scenario! {
+        /// How a guest's shell is started.
+        fn a_guest_shell_starts_with_the_persons_files_then_the_marks;
 
-    #[test]
-    fn the_marks_come_after_the_persons_files() {
-        let rc = bash_rc(true);
-        let profile = rc.find(". /etc/profile").unwrap();
-        let marks = rc.find("__ush_runs_key").unwrap();
-        assert!(profile < marks, "{rc}");
-        assert!(!bash_rc(false).contains("__ush_runs_key"));
+        phase bash_reads_its_rc_and_other_shells_log_in;
+        {
+            let rc = Path::new("/run/ush/shell.bash");
+            assert_eq!(
+                interactive_args(Path::new("/usr/bin/bash"), Some(rc)),
+                ["--rcfile", "/run/ush/shell.bash", "-i"]
+            );
+            assert_eq!(
+                interactive_args(Path::new("/usr/bin/fish"), Some(rc)),
+                ["-l"]
+            );
+            assert_eq!(interactive_args(Path::new("/usr/bin/bash"), None), ["-l"]);
+        }
+
+        phase the_marks_come_after_the_persons_files;
+        {
+            let rc = bash_rc(true);
+            let profile = rc.find(". /etc/profile").unwrap();
+            let marks = rc.find("__ush_runs_key").unwrap();
+            assert!(profile < marks, "{rc}");
+            assert!(!bash_rc(false).contains("__ush_runs_key"));
+        }
     }
 }

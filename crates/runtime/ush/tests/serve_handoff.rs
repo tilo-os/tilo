@@ -96,53 +96,60 @@ fn read_until(fd: i32, needle: &str, timeout: Duration) -> String {
     seen
 }
 
-#[test]
-fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs() {
+tilo_test_env::scenario! {
+    fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs;
+
+    phase the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs;
     {
-        let err = decide_serve(&ServeRequest::OpenSession {
-            target: Target::Host,
-            cols: 80,
-            rows: 24,
-            term: None,
-            command: Vec::new(),
-            requested_by: ush::host::RequestedBy::Person,
-            runs: None,
-            editor_protocol: None,
-            end_report: false,
-        })
-        .expect_err("the host target was served");
-        assert!(err.starts_with("not available"), "{err}");
+        {
+            let err = decide_serve(&ServeRequest::OpenSession {
+                target: Target::Host,
+                cols: 80,
+                rows: 24,
+                term: None,
+                command: Vec::new(),
+                requested_by: ush::host::RequestedBy::Person,
+                runs: None,
+                editor_protocol: None,
+                end_report: false,
+            })
+            .expect_err("the host target was served");
+            assert!(err.starts_with("not available"), "{err}");
+        }
     }
-    // phase: a_malformed_request_is_answered
-    // A malformed request must be refused with a reply, not by dropping the
-    // connection — a caller that gets silence cannot tell "refused" from "the
-    // supervisor is not running".
+
+    phase a_malformed_request_is_answered;
     {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let socket = dir.path().join("ush.sock");
-        let store = Store::at(dir.path().join("store"));
-        store.ensure().expect("store");
+        // A malformed request must be refused with a reply, not by dropping the
+        // connection — a caller that gets silence cannot tell "refused" from "the
+        // supervisor is not running".
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let socket = dir.path().join("ush.sock");
+            let store = Store::at(dir.path().join("store"));
+            store.ensure().expect("store");
 
-        serve_in_background(&socket, &store);
+            serve_in_background(&socket, &store);
 
-        let stream = UnixStream::connect(&socket).expect("connect");
-        (&stream).write_all(b"{ not json }\n").expect("write");
-        (&stream).flush().expect("flush");
+            let stream = UnixStream::connect(&socket).expect("connect");
+            (&stream).write_all(b"{ not json }\n").expect("write");
+            (&stream).flush().expect("flush");
 
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line).expect("read reply");
-        assert!(
-            line.contains("denied"),
-            "a malformed request must be refused in words: {line:?}"
-        );
-    }
-    {
-        let (a, _b) = UnixStream::pair().unwrap();
-        let seen = read_until(a.as_raw_fd(), "never", Duration::from_millis(200));
-        assert!(seen.is_empty());
-        let mut sink = Vec::new();
-        let _ = (&a).read_to_end(&mut sink);
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read reply");
+            assert!(
+                line.contains("denied"),
+                "a malformed request must be refused in words: {line:?}"
+            );
+        }
+        {
+            let (a, _b) = UnixStream::pair().unwrap();
+            let seen = read_until(a.as_raw_fd(), "never", Duration::from_millis(200));
+            assert!(seen.is_empty());
+            let mut sink = Vec::new();
+            let _ = (&a).read_to_end(&mut sink);
+        }
     }
 }
 

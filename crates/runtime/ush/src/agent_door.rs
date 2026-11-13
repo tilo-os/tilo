@@ -153,27 +153,32 @@ fn copy_flushing(
 mod tests {
     use super::*;
 
-    #[test]
-    fn connect_relays_the_clients_lines_to_the_door_and_its_answers_back() {
-        use std::io::{BufRead as _, Write as _};
-        let (ours, door) = std::os::unix::net::UnixStream::pair().unwrap();
-        let session = std::thread::spawn(move || {
-            let mut line = String::new();
-            std::io::BufReader::new(door.try_clone().unwrap())
-                .read_line(&mut line)
-                .unwrap();
-            (&door).write_all(b"{\"answer\":1}\n").unwrap();
-            line
-        });
-        let mut output = Vec::new();
-        relay(&ours, &b"{\"ask\":1}\n"[..], &mut output).unwrap();
-        assert_eq!(session.join().unwrap(), "{\"ask\":1}\n");
-        assert_eq!(output, b"{\"answer\":1}\n");
-    }
+    tilo_test_env::scenario! {
+        /// `connect`: a client's lines to the environment's agent door and its answers back.
+        fn connect_carries_a_client_to_the_agent_door;
 
-    #[test]
-    fn connect_only_connects() {
-        let error = connect_main(&["--daemon".to_owned()]).unwrap_err();
-        assert!(error.to_string().contains("--connect"), "{error}");
+        phase connect_relays_the_clients_lines_to_the_door_and_its_answers_back;
+        {
+            use std::io::{BufRead as _, Write as _};
+            let (ours, door) = std::os::unix::net::UnixStream::pair().unwrap();
+            let session = std::thread::spawn(move || {
+                let mut line = String::new();
+                std::io::BufReader::new(door.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                (&door).write_all(b"{\"answer\":1}\n").unwrap();
+                line
+            });
+            let mut output = Vec::new();
+            relay(&ours, &b"{\"ask\":1}\n"[..], &mut output).unwrap();
+            assert_eq!(session.join().unwrap(), "{\"ask\":1}\n");
+            assert_eq!(output, b"{\"answer\":1}\n");
+        }
+
+        phase connect_only_connects;
+        {
+            let error = connect_main(&["--daemon".to_owned()]).unwrap_err();
+            assert!(error.to_string().contains("--connect"), "{error}");
+        }
     }
 }

@@ -609,91 +609,177 @@ mod tests {
     use super::*;
     use ush_shell::io::Captured;
 
-    #[test]
-    fn writable_grants_win_over_readable_ones() {
-        let shares = shares_of(
-            vec!["/srv/ws/files".into()],
-            vec!["/srv/ws/files".into(), "/srv/shared/docs".into()],
-        );
-        assert_eq!(
-            shares,
-            [
-                ShareRequest {
-                    path: "/srv/ws/files".into(),
-                    read_only: false
-                },
-                ShareRequest {
-                    path: "/srv/shared/docs".into(),
-                    read_only: true
-                }
-            ]
-        );
-    }
+    tilo_test_env::scenario! {
+        /// A hosted workspace's program in its VM: the grants it is given, a refusal's words and the session's terminal.
+        fn a_program_reaches_the_workspaces_vm_with_its_grants_refusals_and_terminal;
 
-    #[test]
-    fn a_plans_refusal_reaches_the_program_word_for_word() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("hosted.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let request: Request = control::FRAMING.read_value(&mut stream).unwrap().unwrap();
-            let Request::Ensure { vm, shares } = request else {
-                panic!("an ensure");
-            };
-            assert_eq!(
-                (
-                    vm.workspace.as_str(),
-                    vm.environment.as_str(),
-                    vm.account.as_str(),
-                    vm.size
-                ),
-                ("ws1", "default", "acct-1", VmSize::Large)
+        phase writable_grants_win_over_readable_ones;
+        {
+            let shares = shares_of(
+                vec!["/srv/ws/files".into()],
+                vec!["/srv/ws/files".into(), "/srv/shared/docs".into()],
             );
-            assert_eq!(shares.len(), 1);
-            control::FRAMING
-                .write_value(
-                    &mut stream,
-                    &Reply::Refused(host_account::Refusal {
-                        reason: host_account::Reason::TooManyRunning {
-                            limit: 1,
-                            running: vec!["ws2".into()],
-                        },
-                        message: "Your plan runs at most 1 Linux VM at a time.".into(),
-                        next: Vec::new(),
-                    }),
+            assert_eq!(
+                shares,
+                [
+                    ShareRequest {
+                        path: "/srv/ws/files".into(),
+                        read_only: false
+                    },
+                    ShareRequest {
+                        path: "/srv/shared/docs".into(),
+                        read_only: true
+                    }
+                ]
+            );
+        }
+
+        phase a_plans_refusal_reaches_the_program_word_for_word;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("hosted.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request: Request = control::FRAMING.read_value(&mut stream).unwrap().unwrap();
+                let Request::Ensure { vm, shares } = request else {
+                    panic!("an ensure");
+                };
+                assert_eq!(
+                    (
+                        vm.workspace.as_str(),
+                        vm.environment.as_str(),
+                        vm.account.as_str(),
+                        vm.size
+                    ),
+                    ("ws1", "default", "acct-1", VmSize::Large)
+                );
+                assert_eq!(shares.len(), 1);
+                control::FRAMING
+                    .write_value(
+                        &mut stream,
+                        &Reply::Refused(host_account::Refusal {
+                            reason: host_account::Reason::TooManyRunning {
+                                limit: 1,
+                                running: vec!["ws2".into()],
+                            },
+                            message: "Your plan runs at most 1 Linux VM at a time.".into(),
+                            next: Vec::new(),
+                        }),
+                    )
+                    .unwrap();
+            });
+            let programs = HostedPrograms::new(
+                HostedTarget {
+                    socket,
+                    account: "acct-1".into(),
+                    size: VmSize::Large,
+                    plans: None,
+                },
+                "ws1".into(),
+                "default".into(),
+                Box::new(|| shares_of(vec!["/srv/ws1/files".into()], Vec::new())),
+            );
+            let (stderr, err) = Output::buffer();
+            let io = Stdio {
+                stderr,
+                ..Stdio::null()
+            };
+            let ran = programs.run(
+                &["cargo".into()],
+                &[],
+                Path::new("/srv/ws1/files"),
+                &io,
+                None,
+            );
+            server.join().unwrap();
+            assert_eq!(ran, Program::Exited(126));
+            assert_eq!(
+                String::from_utf8(err.take()).unwrap(),
+                "ush: cargo: Your plan runs at most 1 Linux VM at a time.\n"
+            );
+        }
+
+        phase a_program_on_the_sessions_terminal_gets_its_keys_and_size_in_the_vm;
+        {
+            use std::os::fd::FromRawFd as _;
+            let dir = tempfile::tempdir().unwrap();
+            let socket = fake_service(dir.path(), fake_vm(dir.path()));
+            let (mut master, mut slave) = (-1, -1);
+            let size = libc::winsize {
+                ws_row: 33,
+                ws_col: 101,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            let opened = unsafe {
+                libc::openpty(
+                    &raw mut master,
+                    &raw mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    &raw const size,
                 )
-                .unwrap();
-        });
-        let programs = HostedPrograms::new(
-            HostedTarget {
-                socket,
-                account: "acct-1".into(),
-                size: VmSize::Large,
-                plans: None,
-            },
-            "ws1".into(),
-            "default".into(),
-            Box::new(|| shares_of(vec!["/srv/ws1/files".into()], Vec::new())),
-        );
-        let (stderr, err) = Output::buffer();
-        let io = Stdio {
-            stderr,
-            ..Stdio::null()
-        };
-        let ran = programs.run(
-            &["cargo".into()],
-            &[],
-            Path::new("/srv/ws1/files"),
-            &io,
-            None,
-        );
-        server.join().unwrap();
-        assert_eq!(ran, Program::Exited(126));
-        assert_eq!(
-            String::from_utf8(err.take()).unwrap(),
-            "ush: cargo: Your plan runs at most 1 Linux VM at a time.\n"
-        );
+            };
+            assert_eq!(opened, 0);
+            // SAFETY: openpty succeeded; both descriptors are owned only here.
+            let (master, slave) =
+                unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+            let mut keys = std::fs::File::from(master);
+            let programs = HostedPrograms::new(
+                HostedTarget {
+                    socket,
+                    account: "acct-1".into(),
+                    size: VmSize::Small,
+                    plans: None,
+                },
+                "ws1".into(),
+                "default".into(),
+                Box::new(Vec::new),
+            )
+            .terminal(slave.try_clone().unwrap());
+            assert!(programs.terminal.is_some(), "a pty is a terminal");
+            let (stdout, out) = Output::buffer();
+            let io = Stdio {
+                stdin: Input::host(std::fs::File::from(slave.try_clone().unwrap())),
+                stdout: Output::host(Std::Out, OutputWriter2(stdout)),
+                stderr: Output::null(),
+            };
+            let typist = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(500));
+                keys.write_all(b"secret\r").unwrap();
+                keys
+            });
+            let ran = programs.run(
+                &[
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "stty size; printf 'name? '; read name; echo \"hi $name\"".into(),
+                ],
+                &[],
+                Path::new("/"),
+                &io,
+                None,
+            );
+            let _keys = typist.join().unwrap();
+            assert_eq!(ran, Program::Exited(0));
+            let out = String::from_utf8(out.take()).unwrap();
+            assert!(
+                out.contains("33 101"),
+                "the VM's terminal has the session's size: {out:?}"
+            );
+            assert!(out.contains("name? "), "{out:?}");
+            assert!(
+                out.contains("hi secret"),
+                "the typed line reached the program: {out:?}"
+            );
+            let mut modes: libc::termios = unsafe { std::mem::zeroed() };
+            assert_eq!(
+                unsafe { libc::tcgetattr(slave.as_raw_fd(), &raw mut modes) },
+                0
+            );
+            assert_ne!(modes.c_lflag & libc::ICANON, 0);
+        }
     }
 
     fn fake_vm(dir: &Path) -> PathBuf {
@@ -746,87 +832,6 @@ mod tests {
             }
         });
         socket
-    }
-
-    #[test]
-    fn a_program_on_the_sessions_terminal_gets_its_keys_and_size_in_the_vm() {
-        use std::os::fd::FromRawFd as _;
-        let dir = tempfile::tempdir().unwrap();
-        let socket = fake_service(dir.path(), fake_vm(dir.path()));
-        let (mut master, mut slave) = (-1, -1);
-        let size = libc::winsize {
-            ws_row: 33,
-            ws_col: 101,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        let opened = unsafe {
-            libc::openpty(
-                &raw mut master,
-                &raw mut slave,
-                std::ptr::null_mut(),
-                std::ptr::null(),
-                &raw const size,
-            )
-        };
-        assert_eq!(opened, 0);
-        // SAFETY: openpty succeeded; both descriptors are owned only here.
-        let (master, slave) =
-            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
-        let mut keys = std::fs::File::from(master);
-        let programs = HostedPrograms::new(
-            HostedTarget {
-                socket,
-                account: "acct-1".into(),
-                size: VmSize::Small,
-                plans: None,
-            },
-            "ws1".into(),
-            "default".into(),
-            Box::new(Vec::new),
-        )
-        .terminal(slave.try_clone().unwrap());
-        assert!(programs.terminal.is_some(), "a pty is a terminal");
-        let (stdout, out) = Output::buffer();
-        let io = Stdio {
-            stdin: Input::host(std::fs::File::from(slave.try_clone().unwrap())),
-            stdout: Output::host(Std::Out, OutputWriter2(stdout)),
-            stderr: Output::null(),
-        };
-        let typist = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(500));
-            keys.write_all(b"secret\r").unwrap();
-            keys
-        });
-        let ran = programs.run(
-            &[
-                "/bin/sh".into(),
-                "-c".into(),
-                "stty size; printf 'name? '; read name; echo \"hi $name\"".into(),
-            ],
-            &[],
-            Path::new("/"),
-            &io,
-            None,
-        );
-        let _keys = typist.join().unwrap();
-        assert_eq!(ran, Program::Exited(0));
-        let out = String::from_utf8(out.take()).unwrap();
-        assert!(
-            out.contains("33 101"),
-            "the VM's terminal has the session's size: {out:?}"
-        );
-        assert!(out.contains("name? "), "{out:?}");
-        assert!(
-            out.contains("hi secret"),
-            "the typed line reached the program: {out:?}"
-        );
-        let mut modes: libc::termios = unsafe { std::mem::zeroed() };
-        assert_eq!(
-            unsafe { libc::tcgetattr(slave.as_raw_fd(), &raw mut modes) },
-            0
-        );
-        assert_ne!(modes.c_lflag & libc::ICANON, 0);
     }
 
     struct OutputWriter2(Output);
@@ -886,111 +891,150 @@ mod tests {
         Some((agent?, refusal?))
     }
 
-    #[test]
-    fn a_persons_command_without_a_card_waits_for_one_then_runs() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = test_host::TestHost::start(dir.path());
-        let (programs, io, out, err) = session(&host, "acct-1");
-        let running = std::thread::spawn(move || {
-            programs.run(
-                &["cargo".into(), "build".into()],
-                &[],
+    tilo_test_env::scenario! {
+        /// A command that needs a Linux machine the account or the host cannot give yet.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
+        fn a_command_the_account_cannot_run_yet_is_held_refused_or_cancelled;
+
+        phase a_persons_command_without_a_card_waits_for_one_then_runs;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let host = test_host::TestHost::start(dir.path());
+            let (programs, io, out, err) = session(&host, "acct-1");
+            let running = std::thread::spawn(move || {
+                programs.run(
+                    &["cargo".into(), "build".into()],
+                    &[],
+                    Path::new("/"),
+                    &io,
+                    None,
+                )
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mark = loop {
+                let text = String::from_utf8_lossy(&err.peek()).into_owned();
+                if let Some(mark) = held(&text) {
+                    break mark;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "no held mark: {text:?}"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let (agent, refusal) = mark;
+            assert!(!agent);
+            assert_eq!(refusal.reason, host_account::Reason::NoPaymentMethod);
+            assert_eq!(
+                refusal
+                    .step(host_account::NextStepKind::AddPaymentMethod)
+                    .and_then(|step| step.url.as_deref()),
+                Some("https://tilo.sh/billing/card?account=acct-1")
+            );
+            assert!(!running.is_finished(), "a person's command waits");
+            host.add_card("acct-1");
+            assert_eq!(running.join().unwrap(), Program::Exited(0));
+            assert_eq!(String::from_utf8(out.take()).unwrap(), "ran cargo build\n");
+            let terminal = String::from_utf8(err.take()).unwrap();
+            assert!(
+                terminal.ends_with(&format!("\x1b]133;U;k={KEY}\x07")),
+                "{terminal:?}"
+            );
+            assert!(host.wakes_asked() >= 2);
+        }
+
+        phase cancelling_a_held_command_ends_it_having_run_nothing;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let host = test_host::TestHost::start(dir.path());
+            let (programs, io, out, err) = session(&host, "acct-1");
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let cancelled = std::sync::Arc::clone(&cancel);
+            let running = std::thread::spawn(move || {
+                let stop = move || cancelled.load(std::sync::atomic::Ordering::SeqCst);
+                programs.run(&["cargo".into()], &[], Path::new("/"), &io, Some(&stop))
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while held(&String::from_utf8_lossy(&err.peek())).is_none() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the command was never held"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(running.join().unwrap(), Program::Exited(130));
+            assert!(out.take().is_empty());
+            let terminal = String::from_utf8(err.take()).unwrap();
+            assert!(
+                terminal.contains("ush: cargo: cancelled. Nothing ran, because no card was added.\n"),
+                "{terminal:?}"
+            );
+            assert!(terminal.contains(&format!("\x1b]133;U;k={KEY}\x07")));
+        }
+
+        phase an_agents_command_is_refused_at_once_with_the_typed_refusal;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let host = test_host::TestHost::start(dir.path());
+            let (programs, io, out, err) = session(&host, "acct-1");
+            let ran = programs.run(
+                &["cargo".into()],
+                &[("USH_RENDER".into(), "agent".into())],
                 Path::new("/"),
                 &io,
                 None,
-            )
-        });
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let mark = loop {
-            let text = String::from_utf8_lossy(&err.peek()).into_owned();
-            if let Some(mark) = held(&text) {
-                break mark;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "no held mark: {text:?}"
             );
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        let (agent, refusal) = mark;
-        assert!(!agent);
-        assert_eq!(refusal.reason, host_account::Reason::NoPaymentMethod);
-        assert_eq!(
-            refusal
-                .step(host_account::NextStepKind::AddPaymentMethod)
-                .and_then(|step| step.url.as_deref()),
-            Some("https://tilo.sh/billing/card?account=acct-1")
-        );
-        assert!(!running.is_finished(), "a person's command waits");
-        host.add_card("acct-1");
-        assert_eq!(running.join().unwrap(), Program::Exited(0));
-        assert_eq!(String::from_utf8(out.take()).unwrap(), "ran cargo build\n");
-        let terminal = String::from_utf8(err.take()).unwrap();
-        assert!(
-            terminal.ends_with(&format!("\x1b]133;U;k={KEY}\x07")),
-            "{terminal:?}"
-        );
-        assert!(host.wakes_asked() >= 2);
-    }
-
-    #[test]
-    fn cancelling_a_held_command_ends_it_having_run_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = test_host::TestHost::start(dir.path());
-        let (programs, io, out, err) = session(&host, "acct-1");
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let cancelled = std::sync::Arc::clone(&cancel);
-        let running = std::thread::spawn(move || {
-            let stop = move || cancelled.load(std::sync::atomic::Ordering::SeqCst);
-            programs.run(&["cargo".into()], &[], Path::new("/"), &io, Some(&stop))
-        });
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while held(&String::from_utf8_lossy(&err.peek())).is_none() {
+            assert_eq!(ran, Program::Exited(126));
+            assert_eq!(host.wakes_asked(), 1, "an agent's command never waits");
+            assert!(out.take().is_empty());
+            let terminal = String::from_utf8(err.take()).unwrap();
+            let (agent, refusal) = held(&terminal).expect("Terminal gets the typed refusal");
+            assert!(agent);
+            assert_eq!(refusal.reason, host_account::Reason::NoPaymentMethod);
             assert!(
-                std::time::Instant::now() < deadline,
-                "the command was never held"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(running.join().unwrap(), Program::Exited(130));
-        assert!(out.take().is_empty());
-        let terminal = String::from_utf8(err.take()).unwrap();
-        assert!(
-            terminal.contains("ush: cargo: cancelled. Nothing ran, because no card was added.\n"),
-            "{terminal:?}"
-        );
-        assert!(terminal.contains(&format!("\x1b]133;U;k={KEY}\x07")));
-    }
-
-    #[test]
-    fn an_agents_command_is_refused_at_once_with_the_typed_refusal() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = test_host::TestHost::start(dir.path());
-        let (programs, io, out, err) = session(&host, "acct-1");
-        let ran = programs.run(
-            &["cargo".into()],
-            &[("USH_RENDER".into(), "agent".into())],
-            Path::new("/"),
-            &io,
-            None,
-        );
-        assert_eq!(ran, Program::Exited(126));
-        assert_eq!(host.wakes_asked(), 1, "an agent's command never waits");
-        assert!(out.take().is_empty());
-        let terminal = String::from_utf8(err.take()).unwrap();
-        let (agent, refusal) = held(&terminal).expect("Terminal gets the typed refusal");
-        assert!(agent);
-        assert_eq!(refusal.reason, host_account::Reason::NoPaymentMethod);
-        assert!(
-            terminal.ends_with(
-                "ush: cargo: This needs a Linux machine. Tilo Cloud runs Linux machines for \
+                terminal.ends_with(
+                    "ush: cargo: This needs a Linux machine. Tilo Cloud runs Linux machines for \
                  accounts with a card on file, and this account has none yet. Add a card to \
                  continue. Ask the person to add a card; Terminal shows them where. Then run \
                  the command again.\n"
-            ),
-            "{terminal:?}"
-        );
+                ),
+                "{terminal:?}"
+            );
+        }
+
+        phase a_command_waiting_for_room_ends_when_cancelled_having_run_nothing;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let host = test_host::TestHost::start(dir.path());
+            std::fs::write(host.plans(), b"{}").unwrap();
+            host.full_for(usize::MAX);
+            let (programs, io, out, err) = session(&host, "acct-1");
+            let stop = || true;
+            let ran = programs.run(&["cargo".into()], &[], Path::new("/"), &io, Some(&stop));
+            assert_eq!(ran, Program::Exited(130));
+            assert!(out.take().is_empty());
+            assert!(
+                String::from_utf8(err.take()).unwrap().ends_with(
+                    "ush: cargo: cancelled. Nothing ran, because no machine had room yet.\n"
+                )
+            );
+        }
+
+        phase a_host_that_sells_nothing_runs_the_command_with_no_prompt;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let host = test_host::TestHost::start(dir.path());
+            std::fs::write(host.plans(), b"{}").unwrap();
+            let (programs, io, out, err) = session(&host, "acct-1");
+            let ran = programs.run(&["make".into()], &[], Path::new("/"), &io, None);
+            assert_eq!(ran, Program::Exited(0));
+            assert_eq!(String::from_utf8(out.take()).unwrap(), "ran make\n");
+            assert!(err.take().is_empty(), "no prompt, no mark");
+        }
     }
 
     #[test]
@@ -1017,35 +1061,5 @@ mod tests {
              cancels.\n",
             "said once, however long it waits"
         );
-    }
-
-    #[test]
-    fn a_command_waiting_for_room_ends_when_cancelled_having_run_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = test_host::TestHost::start(dir.path());
-        std::fs::write(host.plans(), b"{}").unwrap();
-        host.full_for(usize::MAX);
-        let (programs, io, out, err) = session(&host, "acct-1");
-        let stop = || true;
-        let ran = programs.run(&["cargo".into()], &[], Path::new("/"), &io, Some(&stop));
-        assert_eq!(ran, Program::Exited(130));
-        assert!(out.take().is_empty());
-        assert!(
-            String::from_utf8(err.take()).unwrap().ends_with(
-                "ush: cargo: cancelled. Nothing ran, because no machine had room yet.\n"
-            )
-        );
-    }
-
-    #[test]
-    fn a_host_that_sells_nothing_runs_the_command_with_no_prompt() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = test_host::TestHost::start(dir.path());
-        std::fs::write(host.plans(), b"{}").unwrap();
-        let (programs, io, out, err) = session(&host, "acct-1");
-        let ran = programs.run(&["make".into()], &[], Path::new("/"), &io, None);
-        assert_eq!(ran, Program::Exited(0));
-        assert_eq!(String::from_utf8(out.take()).unwrap(), "ran make\n");
-        assert!(err.take().is_empty(), "no prompt, no mark");
     }
 }

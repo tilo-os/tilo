@@ -160,123 +160,128 @@ mod tests {
         Policy::new(vec![dir_grant(Path::new(path), write).unwrap()])
     }
 
-    #[test]
-    fn a_file_a_grant_names_before_it_exists_is_its_directorys() {
-        let policy = granted("/var/home/you/src", true);
-        assert!(policy.permits_in(
-            Path::new("/var/home/you/src/new/file.rs"),
-            Access::Write,
-            Some(1_000)
-        ));
-        assert!(!policy.permits_in(
-            Path::new("/var/home/you/other/file.rs"),
-            Access::Write,
-            Some(1_000)
-        ));
-    }
+    tilo_test_env::scenario! {
+        /// `Policy`: what a set of grants allows, binds and lets out.
+        fn a_policy_grants_exactly_what_its_grants_name;
 
-    #[test]
-    fn no_grants_refuse_everything_and_unbounded_is_the_hosts_own_shell() {
-        let guest = Policy::default();
-        assert!(!guest.permits_in(Path::new("/var/home/you/x"), Access::Write, None));
-        let host = Policy::unbounded();
-        assert!(host.permits_in(Path::new("/var/home/you/x"), Access::Write, None));
-    }
-
-    #[test]
-    fn a_grant_is_recursive_and_bounded_by_components() {
-        let policy = granted("/var/home/you/src", true);
-        assert_eq!(
-            policy.trusted_dirs(Some(1_000)),
-            vec![PathBuf::from("/var/home/you/src")]
-        );
-        assert!(policy.permits(
-            Path::new("/var/home/you/src/deep/file.rs"),
-            Access::Write,
-            Some(1_000)
-        ));
-        assert!(!policy.permits(Path::new("/var/home/you/.ssh"), Access::Read, Some(1_000)));
-        assert!(
-            !policy.permits(
-                Path::new("/var/home/you/srcextra"),
+        phase a_file_a_grant_names_before_it_exists_is_its_directorys;
+        {
+            let policy = granted("/var/home/you/src", true);
+            assert!(policy.permits_in(
+                Path::new("/var/home/you/src/new/file.rs"),
                 Access::Write,
                 Some(1_000)
-            ),
-            "a component-boundary check must not be a prefix check"
-        );
-
-        let read_only = granted("/var/home/you/notes", false);
-        assert!(read_only.trusted_dirs(Some(1_000)).is_empty());
-        assert_eq!(
-            read_only.readable_dirs(Some(1_000)),
-            vec![PathBuf::from("/var/home/you/notes")]
-        );
-    }
-
-    #[test]
-    fn restrictions_and_expiry_narrow_a_grant() {
-        // The one that makes this not a second permission system: a `Restrict`
-        // written by the compositor removes the writable bind here.
-        let mut policy = granted("/var/home/you/src", true);
-        policy.capabilities.push(
-            CapOverride::new(
-                Grantee::person("local"),
-                Scope::FsPath("/var/home/you/src".to_string()),
-                Effect::Restrict,
-                Access::Read,
-            )
-            .through(RUNTIME_APP_ID),
-        );
-        assert!(policy.trusted_dirs(Some(1_000)).is_empty());
-        assert_eq!(
-            policy.readable_dirs(Some(1_000)),
-            vec![PathBuf::from("/var/home/you/src")]
-        );
-
-        let mut expiring = granted("/var/home/you/src", true);
-        expiring.capabilities[0].expiry = Expiry::AtUnix(500);
-        assert_eq!(expiring.trusted_dirs(Some(499)).len(), 1);
-        assert!(expiring.trusted_dirs(Some(501)).is_empty());
-    }
-
-    #[test]
-    fn host_grants_become_the_egress_policy_and_expire() {
-        let mut policy = Policy::new(vec![
-            tilo_environment::host_grant("github.com").unwrap(),
-            tilo_environment::host_grant("*.crates.io").unwrap(),
-            dir_grant(Path::new("/var/home/you/src"), true).unwrap(),
-        ]);
-        assert_eq!(policy.net_hosts(Some(1_000)), [".crates.io", "github.com"]);
-        let egress = policy.egress(Some(1_000));
-        assert!(egress.allows("static.crates.io").is_some());
-        assert!(egress.allows("github.com").is_some());
-        assert!(egress.allows("example.com").is_none());
-
-        policy.capabilities[0].expiry = Expiry::AtUnix(500);
-        assert_eq!(policy.net_hosts(Some(501)), [".crates.io"]);
-
-        let mut other = tilo_environment::host_grant("example.com").unwrap();
-        other.app = Some("so.tilo.other".into());
-        assert!(Policy::new(vec![other]).net_hosts(Some(1)).is_empty());
-
-        let any = Policy::new(vec![tilo_environment::host_grant("*").unwrap()]);
-        assert_eq!(any.egress(Some(1)), tilo_egress::EgressPolicy::Any);
-        assert_eq!(
-            Policy::default().egress(Some(1)),
-            tilo_egress::EgressPolicy::none()
-        );
-    }
-
-    #[test]
-    fn a_grant_the_runtime_would_not_bind_binds_nothing() {
-        let policy = Policy::new(vec![
-            CapOverride::grant(
-                Grantee::person("local"),
-                Scope::FsPath("/usr".to_string()),
+            ));
+            assert!(!policy.permits_in(
+                Path::new("/var/home/you/other/file.rs"),
                 Access::Write,
-            )
-            .through(RUNTIME_APP_ID),
-        ]);
-        assert!(policy.trusted_dirs(Some(1_000)).is_empty());
+                Some(1_000)
+            ));
+        }
+
+        phase no_grants_refuse_everything_and_unbounded_is_the_hosts_own_shell;
+        {
+            let guest = Policy::default();
+            assert!(!guest.permits_in(Path::new("/var/home/you/x"), Access::Write, None));
+            let host = Policy::unbounded();
+            assert!(host.permits_in(Path::new("/var/home/you/x"), Access::Write, None));
+        }
+
+        phase a_grant_is_recursive_and_bounded_by_components;
+        {
+            let policy = granted("/var/home/you/src", true);
+            assert_eq!(
+                policy.trusted_dirs(Some(1_000)),
+                vec![PathBuf::from("/var/home/you/src")]
+            );
+            assert!(policy.permits(
+                Path::new("/var/home/you/src/deep/file.rs"),
+                Access::Write,
+                Some(1_000)
+            ));
+            assert!(!policy.permits(Path::new("/var/home/you/.ssh"), Access::Read, Some(1_000)));
+            assert!(
+                !policy.permits(
+                    Path::new("/var/home/you/srcextra"),
+                    Access::Write,
+                    Some(1_000)
+                ),
+                "a component-boundary check must not be a prefix check"
+            );
+
+            let read_only = granted("/var/home/you/notes", false);
+            assert!(read_only.trusted_dirs(Some(1_000)).is_empty());
+            assert_eq!(
+                read_only.readable_dirs(Some(1_000)),
+                vec![PathBuf::from("/var/home/you/notes")]
+            );
+        }
+
+        phase restrictions_and_expiry_narrow_a_grant;
+        {
+            // The one that makes this not a second permission system: a `Restrict`
+            // written by the compositor removes the writable bind here.
+            let mut policy = granted("/var/home/you/src", true);
+            policy.capabilities.push(
+                CapOverride::new(
+                    Grantee::person("local"),
+                    Scope::FsPath("/var/home/you/src".to_string()),
+                    Effect::Restrict,
+                    Access::Read,
+                )
+                .through(RUNTIME_APP_ID),
+            );
+            assert!(policy.trusted_dirs(Some(1_000)).is_empty());
+            assert_eq!(
+                policy.readable_dirs(Some(1_000)),
+                vec![PathBuf::from("/var/home/you/src")]
+            );
+
+            let mut expiring = granted("/var/home/you/src", true);
+            expiring.capabilities[0].expiry = Expiry::AtUnix(500);
+            assert_eq!(expiring.trusted_dirs(Some(499)).len(), 1);
+            assert!(expiring.trusted_dirs(Some(501)).is_empty());
+        }
+
+        phase host_grants_become_the_egress_policy_and_expire;
+        {
+            let mut policy = Policy::new(vec![
+                tilo_environment::host_grant("github.com").unwrap(),
+                tilo_environment::host_grant("*.crates.io").unwrap(),
+                dir_grant(Path::new("/var/home/you/src"), true).unwrap(),
+            ]);
+            assert_eq!(policy.net_hosts(Some(1_000)), [".crates.io", "github.com"]);
+            let egress = policy.egress(Some(1_000));
+            assert!(egress.allows("static.crates.io").is_some());
+            assert!(egress.allows("github.com").is_some());
+            assert!(egress.allows("example.com").is_none());
+
+            policy.capabilities[0].expiry = Expiry::AtUnix(500);
+            assert_eq!(policy.net_hosts(Some(501)), [".crates.io"]);
+
+            let mut other = tilo_environment::host_grant("example.com").unwrap();
+            other.app = Some("so.tilo.other".into());
+            assert!(Policy::new(vec![other]).net_hosts(Some(1)).is_empty());
+
+            let any = Policy::new(vec![tilo_environment::host_grant("*").unwrap()]);
+            assert_eq!(any.egress(Some(1)), tilo_egress::EgressPolicy::Any);
+            assert_eq!(
+                Policy::default().egress(Some(1)),
+                tilo_egress::EgressPolicy::none()
+            );
+        }
+
+        phase a_grant_the_runtime_would_not_bind_binds_nothing;
+        {
+            let policy = Policy::new(vec![
+                CapOverride::grant(
+                    Grantee::person("local"),
+                    Scope::FsPath("/usr".to_string()),
+                    Access::Write,
+                )
+                .through(RUNTIME_APP_ID),
+            ]);
+            assert!(policy.trusted_dirs(Some(1_000)).is_empty());
+        }
     }
 }

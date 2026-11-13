@@ -472,124 +472,129 @@ mod tests {
         PackageId::from_bytes([byte; 32])
     }
 
-    #[test]
-    fn the_default_environment_is_created_on_first_use_and_only_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let records = Records::at(dir.path());
+    tilo_test_env::scenario! {
+        /// `Records`: the environment records of one store.
+        fn records_are_created_resolved_and_changed_through_their_actions;
 
-        let err = records.resolve(None, &OneRuntime(None)).unwrap_err();
-        assert!(matches!(err, RecordError::NoRuntime(_)), "{err}");
+        phase the_default_environment_is_created_on_first_use_and_only_it;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let records = Records::at(dir.path());
 
-        let (key, env) = records.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
-        assert_eq!(key, DEFAULT_RECORD);
-        assert_eq!(
-            env.runtime_image(tilo_environment::host_arch()).unwrap(),
-            image(1)
-        );
-        assert_eq!(env.runtime.release, "2026.10");
-        assert_eq!(env.name, DEFAULT_NAME);
-        assert!(
+            let err = records.resolve(None, &OneRuntime(None)).unwrap_err();
+            assert!(matches!(err, RecordError::NoRuntime(_)), "{err}");
+
+            let (key, env) = records.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
+            assert_eq!(key, DEFAULT_RECORD);
+            assert_eq!(
+                env.runtime_image(tilo_environment::host_arch()).unwrap(),
+                image(1)
+            );
+            assert_eq!(env.runtime.release, "2026.10");
+            assert_eq!(env.name, DEFAULT_NAME);
+            assert!(
+                records
+                    .record_dir(DEFAULT_RECORD)
+                    .unwrap()
+                    .join("state.automerge")
+                    .is_file(),
+                "the record is a Terminal record document"
+            );
+            assert!(
+                records.record_dir(DEFAULT_RECORD).unwrap().starts_with(
+                    dir.path()
+                        .join(OWNER_APP_ID)
+                        .join(app_state::WORKSPACES_DIR)
+                        .join(PRIMARY_WORKSPACE)
+                ),
+            );
+
+            // A second resolve reads the record, not the current runtime.
+            let (_, again) = records.resolve(None, &OneRuntime(Some(image(2)))).unwrap();
+            assert_eq!(
+                again.runtime_image(tilo_environment::host_arch()).unwrap(),
+                image(1)
+            );
+
+            assert!(matches!(
+                records.resolve(Some("work"), &OneRuntime(Some(image(1)))),
+                Err(RecordError::Missing(_))
+            ));
+            assert!(matches!(
+                records.resolve(Some("../x"), &OneRuntime(Some(image(1)))),
+                Err(RecordError::BadKey(_))
+            ));
+        }
+
+        phase whether_an_environment_resolves_is_answered_without_creating_it;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let records = Records::at(dir.path());
+
+            assert!(matches!(
+                records.resolvable(None, &OneRuntime(None)),
+                Err(RecordError::NoRuntime(_))
+            ));
             records
-                .record_dir(DEFAULT_RECORD)
-                .unwrap()
-                .join("state.automerge")
-                .is_file(),
-            "the record is a Terminal record document"
-        );
-        assert!(
-            records.record_dir(DEFAULT_RECORD).unwrap().starts_with(
-                dir.path()
-                    .join(OWNER_APP_ID)
-                    .join(app_state::WORKSPACES_DIR)
-                    .join(PRIMARY_WORKSPACE)
-            ),
-        );
+                .resolvable(None, &OneRuntime(Some(image(1))))
+                .unwrap();
+            assert!(
+                records.load(DEFAULT_RECORD).unwrap().is_none(),
+                "answering made the default record"
+            );
 
-        // A second resolve reads the record, not the current runtime.
-        let (_, again) = records.resolve(None, &OneRuntime(Some(image(2)))).unwrap();
-        assert_eq!(
-            again.runtime_image(tilo_environment::host_arch()).unwrap(),
-            image(1)
-        );
+            records.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
+            records.resolvable(None, &OneRuntime(None)).unwrap();
+            assert!(matches!(
+                records.resolvable(Some("work"), &OneRuntime(Some(image(1)))),
+                Err(RecordError::Missing(_))
+            ));
+            assert!(matches!(
+                records.resolvable(Some("../x"), &OneRuntime(Some(image(1)))),
+                Err(RecordError::BadKey(_))
+            ));
+        }
 
-        assert!(matches!(
-            records.resolve(Some("work"), &OneRuntime(Some(image(1)))),
-            Err(RecordError::Missing(_))
-        ));
-        assert!(matches!(
-            records.resolve(Some("../x"), &OneRuntime(Some(image(1)))),
-            Err(RecordError::BadKey(_))
-        ));
-    }
+        phase actions_change_the_stored_record_and_refusals_change_nothing;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let records = Records::at(dir.path());
+            records.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
 
-    #[test]
-    fn whether_an_environment_resolves_is_answered_without_creating_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let records = Records::at(dir.path());
+            let env = records
+                .apply(
+                    DEFAULT_RECORD,
+                    Environment::ADD_TOOL.with((
+                        vec!["pandoc".into()],
+                        tilo_environment::host_arch().to_owned(),
+                        image(2).to_string(),
+                    )),
+                )
+                .unwrap();
+            assert_eq!(env.tools.len(), 1);
+            records
+                .apply(
+                    DEFAULT_RECORD,
+                    Environment::GRANT_DIR.with(("/var/home/you/src".into(), true)),
+                )
+                .unwrap();
 
-        assert!(matches!(
-            records.resolvable(None, &OneRuntime(None)),
-            Err(RecordError::NoRuntime(_))
-        ));
-        records
-            .resolvable(None, &OneRuntime(Some(image(1))))
-            .unwrap();
-        assert!(
-            records.load(DEFAULT_RECORD).unwrap().is_none(),
-            "answering made the default record"
-        );
+            let err = records
+                .apply(
+                    DEFAULT_RECORD,
+                    Environment::GRANT_DIR.with(("/usr".into(), true)),
+                )
+                .unwrap_err();
+            assert!(matches!(err, RecordError::Refused(_)), "{err}");
 
-        records.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
-        records.resolvable(None, &OneRuntime(None)).unwrap();
-        assert!(matches!(
-            records.resolvable(Some("work"), &OneRuntime(Some(image(1)))),
-            Err(RecordError::Missing(_))
-        ));
-        assert!(matches!(
-            records.resolvable(Some("../x"), &OneRuntime(Some(image(1)))),
-            Err(RecordError::BadKey(_))
-        ));
-    }
-
-    #[test]
-    fn actions_change_the_stored_record_and_refusals_change_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let records = Records::at(dir.path());
-        records.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
-
-        let env = records
-            .apply(
-                DEFAULT_RECORD,
-                Environment::ADD_TOOL.with((
-                    vec!["pandoc".into()],
-                    tilo_environment::host_arch().to_owned(),
-                    image(2).to_string(),
-                )),
-            )
-            .unwrap();
-        assert_eq!(env.tools.len(), 1);
-        records
-            .apply(
-                DEFAULT_RECORD,
-                Environment::GRANT_DIR.with(("/var/home/you/src".into(), true)),
-            )
-            .unwrap();
-
-        let err = records
-            .apply(
-                DEFAULT_RECORD,
-                Environment::GRANT_DIR.with(("/usr".into(), true)),
-            )
-            .unwrap_err();
-        assert!(matches!(err, RecordError::Refused(_)), "{err}");
-
-        let stored = records.load(DEFAULT_RECORD).unwrap().unwrap();
-        assert_eq!(stored.tools[0].packages, vec!["pandoc".to_string()]);
-        assert_eq!(stored.grants.len(), 1);
-        assert!(matches!(
-            records.apply("absent", Environment::RENAME.with("x")),
-            Err(RecordError::Missing(_))
-        ));
+            let stored = records.load(DEFAULT_RECORD).unwrap().unwrap();
+            assert_eq!(stored.tools[0].packages, vec!["pandoc".to_string()]);
+            assert_eq!(stored.grants.len(), 1);
+            assert!(matches!(
+                records.apply("absent", Environment::RENAME.with("x")),
+                Err(RecordError::Missing(_))
+            ));
+        }
     }
 
     const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
@@ -601,155 +606,160 @@ mod tests {
             .for_workspace(&crate::workspace::WorkspaceId::parse(Some(id)).unwrap())
     }
 
-    #[test]
-    fn a_workspace_keeps_its_own_environments() {
-        let dir = tempfile::tempdir().unwrap();
-        let files = dir.path().join("files");
-        let w1 = Records::of(&workspace_store(&dir.path().join("ush"), &files, W1));
-        let w2 = Records::of(&workspace_store(&dir.path().join("ush"), &files, W2));
-        assert_eq!(w1.workspace(), W1);
+    tilo_test_env::scenario! {
+        /// `Records` per workspace: each workspace's environments and files.
+        fn a_workspaces_environments_and_files_are_its_own;
 
-        let (key, env) = w1.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
-        assert_eq!(env.workspace, W1, "the record names its workspace");
-        assert!(
-            w1.record_dir(&key).unwrap().starts_with(
-                w1.root()
-                    .join(OWNER_APP_ID)
-                    .join(app_state::WORKSPACES_DIR)
-                    .join(W1)
-            ),
-            "under the workspace"
-        );
-        w1.create("env-only-w1", &env).unwrap();
-        assert_eq!(w1.keys().unwrap(), vec!["default", "env-only-w1"]);
-        assert!(
-            w2.keys().unwrap().is_empty(),
-            "another workspace lists none of them"
-        );
-        assert!(w2.load("env-only-w1").unwrap().is_none());
-        assert!(
-            Records::at(w1.root()).keys().unwrap().is_empty(),
-            "nor does the primary workspace's"
-        );
+        phase a_workspace_keeps_its_own_environments;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let files = dir.path().join("files");
+            let w1 = Records::of(&workspace_store(&dir.path().join("ush"), &files, W1));
+            let w2 = Records::of(&workspace_store(&dir.path().join("ush"), &files, W2));
+            assert_eq!(w1.workspace(), W1);
 
-        // A record moved into another workspace is not its to open.
-        let w1_dir = w1.record_dir("env-only-w1").unwrap();
-        let w2_dir = w2.record_dir("env-only-w1").unwrap();
-        std::fs::remove_dir_all(&w2_dir).unwrap();
-        std::fs::rename(&w1_dir, &w2_dir).unwrap();
-        assert!(matches!(
-            w2.load("env-only-w1"),
-            Err(RecordError::Refused(_))
-        ));
-        assert!(matches!(
-            w2.apply("env-only-w1", Environment::RENAME.with("mine")),
-            Err(RecordError::Refused(_))
-        ));
-    }
+            let (key, env) = w1.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
+            assert_eq!(env.workspace, W1, "the record names its workspace");
+            assert!(
+                w1.record_dir(&key).unwrap().starts_with(
+                    w1.root()
+                        .join(OWNER_APP_ID)
+                        .join(app_state::WORKSPACES_DIR)
+                        .join(W1)
+                ),
+                "under the workspace"
+            );
+            w1.create("env-only-w1", &env).unwrap();
+            assert_eq!(w1.keys().unwrap(), vec!["default", "env-only-w1"]);
+            assert!(
+                w2.keys().unwrap().is_empty(),
+                "another workspace lists none of them"
+            );
+            assert!(w2.load("env-only-w1").unwrap().is_none());
+            assert!(
+                Records::at(w1.root()).keys().unwrap().is_empty(),
+                "nor does the primary workspace's"
+            );
 
-    #[test]
-    fn an_environment_from_before_workspaces_is_the_primary_workspaces() {
-        let dir = tempfile::tempdir().unwrap();
-        let files = dir.path().join("files");
-        let store = crate::store::Store::at(dir.path().join("ush")).with_workspace(&files);
-        let legacy = Records::at(store.records_root());
-        let mut old = Environment::new("Old", "2026.10", tilo_environment::host_arch(), &image(1));
-        old.grants
-            .push(tilo_environment::dir_grant(Path::new("/var/home/you/src"), true).unwrap());
-        let mut doc_store = legacy.open(DEFAULT_RECORD).unwrap();
-        let mut doc = doc_store.new_document();
-        old.write_record(&mut doc).unwrap();
-        doc.commit();
-        doc_store.append(&mut doc).unwrap();
-        drop(doc_store);
-
-        let primary = Records::of(&store);
-        let (key, env) = primary.resolve(None, &OneRuntime(Some(image(2)))).unwrap();
-        assert_eq!((key.as_str(), env.name.as_str()), (DEFAULT_RECORD, "Old"));
-        assert_eq!(env.workspace, "", "unchanged");
-        assert_eq!(env.grants, old.grants, "everything it held");
-        assert!(
-            crate::workspace::WorkspaceId::of_record(&env)
-                .unwrap()
-                .is_primary()
-        );
-        primary
-            .apply(DEFAULT_RECORD, Environment::RENAME.with("Still mine"))
-            .unwrap();
-
-        let w1 = Records::of(&workspace_store(&dir.path().join("ush"), &files, W1));
-        assert!(w1.keys().unwrap().is_empty());
-        let (_, fresh) = w1.resolve(None, &OneRuntime(Some(image(2)))).unwrap();
-        assert_eq!(fresh.name, DEFAULT_NAME, "a workspace's default is its own");
-        assert_eq!(
-            primary.load(DEFAULT_RECORD).unwrap().unwrap().name,
-            "Still mine"
-        );
-    }
-
-    #[test]
-    fn a_workspace_environment_is_refused_another_workspaces_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let files = dir.path().join("files");
-        let tree = |id: &str| files.join(".workspaces").join(id);
-        let store = workspace_store(&dir.path().join("ush"), &files, W1);
-        let records = Records::of(&store);
-        records.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
-        let grant =
-            |path: &Path| Environment::GRANT_DIR.with((path.to_string_lossy().into_owned(), true));
-
-        let own = records
-            .apply(DEFAULT_RECORD, grant(&tree(W1).join("src")))
-            .unwrap();
-        assert_eq!(own.grants.len(), 1);
-        for refused in [
-            tree(W2),
-            tree(W2).join("src"),
-            files.clone(),
-            files.join("Documents"),
-        ] {
-            let err = records.apply(DEFAULT_RECORD, grant(&refused)).unwrap_err();
-            assert!(matches!(err, RecordError::Refused(_)), "{refused:?}: {err}");
+            // A record moved into another workspace is not its to open.
+            let w1_dir = w1.record_dir("env-only-w1").unwrap();
+            let w2_dir = w2.record_dir("env-only-w1").unwrap();
+            std::fs::remove_dir_all(&w2_dir).unwrap();
+            std::fs::rename(&w1_dir, &w2_dir).unwrap();
+            assert!(matches!(
+                w2.load("env-only-w1"),
+                Err(RecordError::Refused(_))
+            ));
+            assert!(matches!(
+                w2.apply("env-only-w1", Environment::RENAME.with("mine")),
+                Err(RecordError::Refused(_))
+            ));
         }
-        let err = records
-            .apply(
-                DEFAULT_RECORD,
-                Environment::SET_HOME.with(tree(W2).to_string_lossy().into_owned()),
-            )
-            .unwrap_err();
-        assert!(matches!(err, RecordError::Refused(_)), "{err}");
-        let err = records
-            .act(DEFAULT_RECORD, &Invoker::Person("you".into()), |replica| {
-                replica
-                    .apply_confirmed(grant(&tree(W2)))
-                    .map(drop)
-                    .map_err(|e| RecordError::Refused(e.to_string()))
-            })
-            .unwrap_err();
-        assert!(matches!(err, RecordError::Refused(_)), "{err}");
-        assert_eq!(
-            records.load(DEFAULT_RECORD).unwrap().unwrap().grants,
-            own.grants,
-            "nothing refused was kept"
-        );
-        records
-            .apply(DEFAULT_RECORD, grant(&dir.path().join("elsewhere")))
-            .unwrap();
 
-        // Written past the check (by a Tilo without it), it is not read.
-        let unchecked = Records {
-            confinement: None,
-            ..records.clone()
-        };
-        unchecked.apply(DEFAULT_RECORD, grant(&tree(W2))).unwrap();
-        let read = records.load(DEFAULT_RECORD).unwrap().unwrap();
-        assert!(
-            read.grants.iter().all(|g| {
-                !matches!(&g.scope, collab_types::caps::Scope::FsPath(p) if Path::new(p).starts_with(tree(W2)))
-            }),
-            "{:?}",
-            read.grants
-        );
-        assert_eq!(read.grants.len(), 2);
+        phase an_environment_from_before_workspaces_is_the_primary_workspaces;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let files = dir.path().join("files");
+            let store = crate::store::Store::at(dir.path().join("ush")).with_workspace(&files);
+            let legacy = Records::at(store.records_root());
+            let mut old = Environment::new("Old", "2026.10", tilo_environment::host_arch(), &image(1));
+            old.grants
+                .push(tilo_environment::dir_grant(Path::new("/var/home/you/src"), true).unwrap());
+            let mut doc_store = legacy.open(DEFAULT_RECORD).unwrap();
+            let mut doc = doc_store.new_document();
+            old.write_record(&mut doc).unwrap();
+            doc.commit();
+            doc_store.append(&mut doc).unwrap();
+            drop(doc_store);
+
+            let primary = Records::of(&store);
+            let (key, env) = primary.resolve(None, &OneRuntime(Some(image(2)))).unwrap();
+            assert_eq!((key.as_str(), env.name.as_str()), (DEFAULT_RECORD, "Old"));
+            assert_eq!(env.workspace, "", "unchanged");
+            assert_eq!(env.grants, old.grants, "everything it held");
+            assert!(
+                crate::workspace::WorkspaceId::of_record(&env)
+                    .unwrap()
+                    .is_primary()
+            );
+            primary
+                .apply(DEFAULT_RECORD, Environment::RENAME.with("Still mine"))
+                .unwrap();
+
+            let w1 = Records::of(&workspace_store(&dir.path().join("ush"), &files, W1));
+            assert!(w1.keys().unwrap().is_empty());
+            let (_, fresh) = w1.resolve(None, &OneRuntime(Some(image(2)))).unwrap();
+            assert_eq!(fresh.name, DEFAULT_NAME, "a workspace's default is its own");
+            assert_eq!(
+                primary.load(DEFAULT_RECORD).unwrap().unwrap().name,
+                "Still mine"
+            );
+        }
+
+        phase a_workspace_environment_is_refused_another_workspaces_files;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let files = dir.path().join("files");
+            let tree = |id: &str| files.join(".workspaces").join(id);
+            let store = workspace_store(&dir.path().join("ush"), &files, W1);
+            let records = Records::of(&store);
+            records.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
+            let grant =
+                |path: &Path| Environment::GRANT_DIR.with((path.to_string_lossy().into_owned(), true));
+
+            let own = records
+                .apply(DEFAULT_RECORD, grant(&tree(W1).join("src")))
+                .unwrap();
+            assert_eq!(own.grants.len(), 1);
+            for refused in [
+                tree(W2),
+                tree(W2).join("src"),
+                files.clone(),
+                files.join("Documents"),
+            ] {
+                let err = records.apply(DEFAULT_RECORD, grant(&refused)).unwrap_err();
+                assert!(matches!(err, RecordError::Refused(_)), "{refused:?}: {err}");
+            }
+            let err = records
+                .apply(
+                    DEFAULT_RECORD,
+                    Environment::SET_HOME.with(tree(W2).to_string_lossy().into_owned()),
+                )
+                .unwrap_err();
+            assert!(matches!(err, RecordError::Refused(_)), "{err}");
+            let err = records
+                .act(DEFAULT_RECORD, &Invoker::Person("you".into()), |replica| {
+                    replica
+                        .apply_confirmed(grant(&tree(W2)))
+                        .map(drop)
+                        .map_err(|e| RecordError::Refused(e.to_string()))
+                })
+                .unwrap_err();
+            assert!(matches!(err, RecordError::Refused(_)), "{err}");
+            assert_eq!(
+                records.load(DEFAULT_RECORD).unwrap().unwrap().grants,
+                own.grants,
+                "nothing refused was kept"
+            );
+            records
+                .apply(DEFAULT_RECORD, grant(&dir.path().join("elsewhere")))
+                .unwrap();
+
+            // Written past the check (by a Tilo without it), it is not read.
+            let unchecked = Records {
+                confinement: None,
+                ..records.clone()
+            };
+            unchecked.apply(DEFAULT_RECORD, grant(&tree(W2))).unwrap();
+            let read = records.load(DEFAULT_RECORD).unwrap().unwrap();
+            assert!(
+                read.grants.iter().all(|g| {
+                    !matches!(&g.scope, collab_types::caps::Scope::FsPath(p) if Path::new(p).starts_with(tree(W2)))
+                }),
+                "{:?}",
+                read.grants
+            );
+            assert_eq!(read.grants.len(), 2);
+        }
     }
 }
