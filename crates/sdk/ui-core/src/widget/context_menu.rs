@@ -2261,268 +2261,274 @@ mod nested_and_anchored_tests {
         ])
     }
 
-    #[test]
-    fn a_submenu_opens_beside_its_row_by_hover_and_by_keyboard() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
-        let fired = Arc::new(AtomicU32::new(0));
-        let mut m = file_menu(&fired);
-        m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
-        paint(&mut m);
-        let row = m.item_rect(1).expect("the submenu row is shown");
-        dispatch(&mut m, &cursor_at(row.center()));
-        assert!(m.is_submenu_open(), "hover opens the nested menu");
-        paint(&mut m);
-        let nested = m.submenu.as_ref().map(|(_, menu)| menu.get_rect()).unwrap();
-        assert!(
-            nested.x0 >= m.get_rect().x1 - 0.5,
-            "beside the menu: {nested:?}"
-        );
-        let nested_row = m
-            .submenu
-            .as_ref()
-            .and_then(|(_, menu)| menu.item_rect(1))
-            .unwrap();
-        dispatch(&mut m, &cursor_at(nested_row.center()));
-        dispatch(&mut m, &mouse_press());
-        dispatch(&mut m, &mouse_release());
-        assert_eq!(fired.load(Ordering::SeqCst), 1);
-        assert_eq!(m.take_submenu_selection(), Some((1, 1)));
-        assert!(!m.is_open());
+    tilo_test_env::scenario! {
+        /// Submenus, row details and shortcuts, and menus hung from an anchor.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn nested_and_anchored_menus_open_run_and_stand_by_their_anchor;
 
-        // The keyboard: Right opens it with focus, Left steps back out.
-        let mut m = file_menu(&fired);
-        m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
-        paint(&mut m);
-        m.focus_item(1);
-        dispatch(&mut m, &named_key(NamedKey::ArrowRight));
-        assert!(m.is_submenu_open());
-        assert_eq!(
-            m.submenu.as_ref().and_then(|(_, menu)| menu.hovered()),
-            Some(0)
-        );
-        dispatch(&mut m, &named_key(NamedKey::ArrowLeft));
-        assert!(!m.is_submenu_open());
-        assert!(m.is_open(), "Left closes only the nested menu");
-        let node = Widget::accessibility(&m).unwrap();
-        assert_eq!(node.children[1].state.expanded, Some(false));
-        assert_eq!(node.children[0].description.as_deref(), Some("Ctrl+O"));
-    }
-
-    /// A menu nested in a nested menu (a password manager's logins under
-    /// Autofill under its own item) follows the pointer and takes a pick.
-    #[test]
-    fn a_pick_two_menus_deep_runs_and_closes_the_whole_menu() {
-        let _settled = crate::motion::testing::settled();
-        let fired = Arc::new(AtomicU32::new(0));
-        let login = Arc::clone(&fired);
-        let mut m = ContextMenu::with_items(vec![
-            MenuItem::action("Reload", || {}),
-            MenuItem::submenu(
-                "Passwords",
-                vec![
-                    MenuItem::action("Generate", || {}),
-                    MenuItem::submenu(
-                        "Fill in",
-                        vec![MenuItem::action("Personal", move || {
-                            login.fetch_add(1, Ordering::SeqCst);
-                        })],
-                    ),
-                ],
-            ),
-        ]);
-        m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
-        paint(&mut m);
-        let row = m.item_rect(1).unwrap();
-        dispatch(&mut m, &cursor_at(row.center()));
-        paint(&mut m);
-        let row = m
-            .submenu
-            .as_ref()
-            .and_then(|(_, menu)| menu.item_rect(1))
-            .unwrap();
-        dispatch(&mut m, &cursor_at(row.center()));
-        paint(&mut m);
-        let deepest = m
-            .submenu
-            .as_ref()
-            .and_then(|(_, menu)| menu.submenu.as_ref())
-            .map(|(_, menu)| menu)
-            .expect("hover opens the menu nested in the nested one");
-        let target = deepest.item_rect(0).unwrap();
-        assert!(
-            !m.submenu
+        phase a_submenu_opens_beside_its_row_by_hover_and_by_keyboard;
+        {
+            // Motion reads at its end: this test checks the resting frame.
+            let _settled = crate::motion::testing::settled();
+            let fired = Arc::new(AtomicU32::new(0));
+            let mut m = file_menu(&fired);
+            m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+            paint(&mut m);
+            let row = m.item_rect(1).expect("the submenu row is shown");
+            dispatch(&mut m, &cursor_at(row.center()));
+            assert!(m.is_submenu_open(), "hover opens the nested menu");
+            paint(&mut m);
+            let nested = m.submenu.as_ref().map(|(_, menu)| menu.get_rect()).unwrap();
+            assert!(
+                nested.x0 >= m.get_rect().x1 - 0.5,
+                "beside the menu: {nested:?}"
+            );
+            let nested_row = m
+                .submenu
                 .as_ref()
-                .unwrap()
-                .1
-                .contains([target.center().x, target.center().y]),
-            "fixture: the row is outside the first nested menu"
-        );
-        dispatch(&mut m, &cursor_at(target.center()));
-        dispatch(&mut m, &mouse_press());
-        dispatch(&mut m, &mouse_release());
-        assert_eq!(fired.load(Ordering::SeqCst), 1);
-        assert_eq!(m.take_submenu_selection(), Some((1, 1)));
-        assert!(!m.is_open(), "the whole menu closes");
-    }
+                .and_then(|(_, menu)| menu.item_rect(1))
+                .unwrap();
+            dispatch(&mut m, &cursor_at(nested_row.center()));
+            dispatch(&mut m, &mouse_press());
+            dispatch(&mut m, &mouse_release());
+            assert_eq!(fired.load(Ordering::SeqCst), 1);
+            assert_eq!(m.take_submenu_selection(), Some((1, 1)));
+            assert!(!m.is_open());
 
-    /// A filter's value lists how many results share it at the row's end,
-    /// where a shortcut would stand, and says so to assistive technology.
-    #[test]
-    fn a_detail_stands_at_the_rows_end_and_is_announced() {
-        let _settled = crate::motion::testing::settled();
-        let label = "Aurora Skies, the whole discography";
-        let mut plain = ContextMenu::with_items(vec![MenuItem::action(label, || {})]);
-        let mut counted = ContextMenu::with_items(vec![
-            MenuItem::action(label, || {})
-                .with_checked(true)
-                .with_detail("12"),
-        ]);
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        for menu in [&mut plain, &mut counted] {
-            menu.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
-            menu.layout_within(&mut tr, &theme);
+            // The keyboard: Right opens it with focus, Left steps back out.
+            let mut m = file_menu(&fired);
+            m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+            paint(&mut m);
+            m.focus_item(1);
+            dispatch(&mut m, &named_key(NamedKey::ArrowRight));
+            assert!(m.is_submenu_open());
+            assert_eq!(
+                m.submenu.as_ref().and_then(|(_, menu)| menu.hovered()),
+                Some(0)
+            );
+            dispatch(&mut m, &named_key(NamedKey::ArrowLeft));
+            assert!(!m.is_submenu_open());
+            assert!(m.is_open(), "Left closes only the nested menu");
+            let node = Widget::accessibility(&m).unwrap();
+            assert_eq!(node.children[1].state.expanded, Some(false));
+            assert_eq!(node.children[0].description.as_deref(), Some("Ctrl+O"));
         }
-        assert!(counted.get_rect().width() > plain.get_rect().width());
-        let node = Widget::accessibility(&counted).expect("an open menu is announced");
-        assert_eq!(node.children[0].description.as_deref(), Some("12"));
-        assert_eq!(node.children[0].state.checked, Some(true));
-    }
 
-    #[test]
-    fn shortcuts_widen_the_menu_and_a_bare_key_has_no_modifier() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
-        let fired = Arc::new(AtomicU32::new(0));
-        let label = "Open the most recent document";
-        let mut plain = ContextMenu::with_items(vec![MenuItem::action(label, || {})]);
-        let mut shortcut = ContextMenu::with_items(vec![
-            MenuItem::action(label, || {}).with_shortcut(crate::platform::Shortcut::command("O")),
-        ]);
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        for menu in [&mut plain, &mut shortcut] {
-            menu.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
-            menu.layout_within(&mut tr, &theme);
+        // A menu nested in a nested menu (a password manager's logins under
+        // Autofill under its own item) follows the pointer and takes a pick.
+        phase a_pick_two_menus_deep_runs_and_closes_the_whole_menu;
+        {
+            let _settled = crate::motion::testing::settled();
+            let fired = Arc::new(AtomicU32::new(0));
+            let login = Arc::clone(&fired);
+            let mut m = ContextMenu::with_items(vec![
+                MenuItem::action("Reload", || {}),
+                MenuItem::submenu(
+                    "Passwords",
+                    vec![
+                        MenuItem::action("Generate", || {}),
+                        MenuItem::submenu(
+                            "Fill in",
+                            vec![MenuItem::action("Personal", move || {
+                                login.fetch_add(1, Ordering::SeqCst);
+                            })],
+                        ),
+                    ],
+                ),
+            ]);
+            m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+            paint(&mut m);
+            let row = m.item_rect(1).unwrap();
+            dispatch(&mut m, &cursor_at(row.center()));
+            paint(&mut m);
+            let row = m
+                .submenu
+                .as_ref()
+                .and_then(|(_, menu)| menu.item_rect(1))
+                .unwrap();
+            dispatch(&mut m, &cursor_at(row.center()));
+            paint(&mut m);
+            let deepest = m
+                .submenu
+                .as_ref()
+                .and_then(|(_, menu)| menu.submenu.as_ref())
+                .map(|(_, menu)| menu)
+                .expect("hover opens the menu nested in the nested one");
+            let target = deepest.item_rect(0).unwrap();
+            assert!(
+                !m.submenu
+                    .as_ref()
+                    .unwrap()
+                    .1
+                    .contains([target.center().x, target.center().y]),
+                "fixture: the row is outside the first nested menu"
+            );
+            dispatch(&mut m, &cursor_at(target.center()));
+            dispatch(&mut m, &mouse_press());
+            dispatch(&mut m, &mouse_release());
+            assert_eq!(fired.load(Ordering::SeqCst), 1);
+            assert_eq!(m.take_submenu_selection(), Some((1, 1)));
+            assert!(!m.is_open(), "the whole menu closes");
         }
-        assert!(
-            plain.get_rect().width() > f64::from(theme.tokens.metrics.menu_min_width),
-            "fixture: past the minimum"
-        );
-        assert!(shortcut.get_rect().width() > plain.get_rect().width());
-        let mut with = file_menu(&fired);
-        with.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
-        with.layout_within(&mut tr, &theme);
-        let conventions = crate::platform::PlatformConventions::default();
-        assert_eq!(
-            crate::platform::Shortcut::key("Delete").label(conventions),
-            "Delete"
-        );
-    }
 
-    #[test]
-    fn a_trailing_menu_hangs_from_its_anchors_trailing_edge_inside_the_margin() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
-        let mut m = ContextMenu::with_items(vec![
-            MenuItem::action("Rename", || {}),
-            MenuItem::action("Duplicate", || {}),
-        ]);
-        m.set_align(PanelAlign::Trailing);
-        let anchor = Rect::new(700.0, 10.0, 740.0, 42.0);
-        m.open_anchored(anchor, WINDOW);
-        paint(&mut m);
-        assert!(
-            (m.get_rect().x1 - anchor.x1).abs() < 1e-6,
-            "{:?}",
-            m.get_rect()
-        );
-        let mut edge = ContextMenu::with_items(vec![MenuItem::action("Rename", || {})]);
-        edge.open_anchored(Rect::new(790.0, 10.0, 800.0, 42.0), WINDOW);
-        paint(&mut edge);
-        let margin = crate::widget::floating_surface::viewport_margin(&Theme::dark());
-        assert!(
-            edge.get_rect().x1 <= WINDOW.x1 - margin + 1e-6,
-            "{:?}",
-            edge.get_rect()
-        );
-    }
+        // A filter's value lists how many results share it at the row's end,
+        // where a shortcut would stand, and says so to assistive technology.
+        phase a_detail_stands_at_the_rows_end_and_is_announced;
+        {
+            let _settled = crate::motion::testing::settled();
+            let label = "Aurora Skies, the whole discography";
+            let mut plain = ContextMenu::with_items(vec![MenuItem::action(label, || {})]);
+            let mut counted = ContextMenu::with_items(vec![
+                MenuItem::action(label, || {})
+                    .with_checked(true)
+                    .with_detail("12"),
+            ]);
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            for menu in [&mut plain, &mut counted] {
+                menu.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+                menu.layout_within(&mut tr, &theme);
+            }
+            assert!(counted.get_rect().width() > plain.get_rect().width());
+            let node = Widget::accessibility(&counted).expect("an open menu is announced");
+            assert_eq!(node.children[0].description.as_deref(), Some("12"));
+            assert_eq!(node.children[0].state.checked, Some(true));
+        }
 
-    #[test]
-    fn a_single_row_menu_is_concentric_with_its_row() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
-        let theme = Theme::dark();
-        let single = crate::widget::floating_surface::single_row_radius(&theme);
-        assert!(single < f64::from(theme.tokens.radii.panel));
-        assert!(
-            (single
-                - (f64::from(theme.tokens.radii.item)
-                    + crate::widget::floating_surface::menu_inset(&theme)))
-            .abs()
-                < 1e-9
-        );
-    }
+        phase shortcuts_widen_the_menu_and_a_bare_key_has_no_modifier;
+        {
+            // Motion reads at its end: this test checks the resting frame.
+            let _settled = crate::motion::testing::settled();
+            let fired = Arc::new(AtomicU32::new(0));
+            let label = "Open the most recent document";
+            let mut plain = ContextMenu::with_items(vec![MenuItem::action(label, || {})]);
+            let mut shortcut = ContextMenu::with_items(vec![
+                MenuItem::action(label, || {}).with_shortcut(crate::platform::Shortcut::command("O")),
+            ]);
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            for menu in [&mut plain, &mut shortcut] {
+                menu.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+                menu.layout_within(&mut tr, &theme);
+            }
+            assert!(
+                plain.get_rect().width() > f64::from(theme.tokens.metrics.menu_min_width),
+                "fixture: past the minimum"
+            );
+            assert!(shortcut.get_rect().width() > plain.get_rect().width());
+            let mut with = file_menu(&fired);
+            with.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+            with.layout_within(&mut tr, &theme);
+            let conventions = crate::platform::PlatformConventions::default();
+            assert_eq!(
+                crate::platform::Shortcut::key("Delete").label(conventions),
+                "Delete"
+            );
+        }
 
-    #[test]
-    fn a_menu_button_opens_its_menu_at_its_own_rect() {
-        use crate::headless::Framed;
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
-        let fired = Arc::new(AtomicU32::new(0));
-        let f = Arc::clone(&fired);
-        let button =
-            crate::widget::Button::icon_only("more", crate::icons::Icon::MoreHorizontal, "More")
-                .with_menu(vec![MenuItem::action("Print", move || {
-                    f.fetch_add(1, Ordering::SeqCst);
-                })]);
-        let mut framed = Framed::new(crate::State::new(), button, (800, 600), Theme::dark());
-        let _ = Framed::harness_mut(&mut framed).poll_frame();
-        let audit = Framed::harness(&framed).native_app_audit();
-        assert!(
-            audit.is_certified(),
-            "the menu opener has an admitted view action: {:?}",
-            audit.issues
-        );
-        let rect = framed.button().get_rect();
-        Framed::harness_mut(&mut framed).click_at(rect.center().x, rect.center().y);
-        let _ = Framed::harness_mut(&mut framed).poll_frame();
-        assert!(framed.is_open(), "a click opens the menu");
-        let menu = framed.menu_mut().get_rect();
-        assert!(menu.y0 >= rect.y1, "under the button: {menu:?} vs {rect:?}");
-        let node = Widget::accessibility(&*framed).unwrap();
-        assert_eq!(node.state.expanded, Some(true));
-        let print = framed.menu_mut().item_rect(0).expect("Print is laid out");
-        Framed::harness_mut(&mut framed).click_at(print.center().x, print.center().y);
-        let _ = Framed::harness_mut(&mut framed).poll_frame();
-        assert_eq!(fired.load(Ordering::SeqCst), 1, "the real Print item runs");
-        assert!(!framed.is_open(), "choosing Print closes the menu");
-        Framed::harness_mut(&mut framed)
-            .perform_named("more", &crate::a11y::Action::Activate)
-            .expect("assistive activation invokes the same admitted opener");
-        let _ = Framed::harness_mut(&mut framed).poll_frame();
-        assert!(framed.is_open(), "assistive activation opens the same menu");
-        assert_eq!(
-            framed.menu_mut().hovered(),
-            Some(0),
-            "assistive opening selects the first command"
-        );
-        assert!(
-            framed
-                .menu_mut()
-                .accessibility()
-                .unwrap()
-                .children
-                .iter()
-                .any(|item| item.name.as_deref() == Some("Print")),
-            "the same Print command is exported after assistive opening"
-        );
-        let audit = Framed::harness(&framed).native_app_audit();
-        assert!(
-            audit.is_certified(),
-            "open menu retains admitted coverage: {:?}",
-            audit.issues
-        );
+        phase a_trailing_menu_hangs_from_its_anchors_trailing_edge_inside_the_margin;
+        {
+            // Motion reads at its end: this test checks the resting frame.
+            let _settled = crate::motion::testing::settled();
+            let mut m = ContextMenu::with_items(vec![
+                MenuItem::action("Rename", || {}),
+                MenuItem::action("Duplicate", || {}),
+            ]);
+            m.set_align(PanelAlign::Trailing);
+            let anchor = Rect::new(700.0, 10.0, 740.0, 42.0);
+            m.open_anchored(anchor, WINDOW);
+            paint(&mut m);
+            assert!(
+                (m.get_rect().x1 - anchor.x1).abs() < 1e-6,
+                "{:?}",
+                m.get_rect()
+            );
+            let mut edge = ContextMenu::with_items(vec![MenuItem::action("Rename", || {})]);
+            edge.open_anchored(Rect::new(790.0, 10.0, 800.0, 42.0), WINDOW);
+            paint(&mut edge);
+            let margin = crate::widget::floating_surface::viewport_margin(&Theme::dark());
+            assert!(
+                edge.get_rect().x1 <= WINDOW.x1 - margin + 1e-6,
+                "{:?}",
+                edge.get_rect()
+            );
+        }
+
+        phase a_single_row_menu_is_concentric_with_its_row;
+        {
+            // Motion reads at its end: this test checks the resting frame.
+            let _settled = crate::motion::testing::settled();
+            let theme = Theme::dark();
+            let single = crate::widget::floating_surface::single_row_radius(&theme);
+            assert!(single < f64::from(theme.tokens.radii.panel));
+            assert!(
+                (single
+                    - (f64::from(theme.tokens.radii.item)
+                        + crate::widget::floating_surface::menu_inset(&theme)))
+                .abs()
+                    < 1e-9
+            );
+        }
+
+        phase a_menu_button_opens_its_menu_at_its_own_rect;
+        {
+            use crate::headless::Framed;
+            // Motion reads at its end: this test checks the resting frame.
+            let _settled = crate::motion::testing::settled();
+            let fired = Arc::new(AtomicU32::new(0));
+            let f = Arc::clone(&fired);
+            let button =
+                crate::widget::Button::icon_only("more", crate::icons::Icon::MoreHorizontal, "More")
+                    .with_menu(vec![MenuItem::action("Print", move || {
+                        f.fetch_add(1, Ordering::SeqCst);
+                    })]);
+            let mut framed = Framed::new(crate::State::new(), button, (800, 600), Theme::dark());
+            let _ = Framed::harness_mut(&mut framed).poll_frame();
+            let audit = Framed::harness(&framed).native_app_audit();
+            assert!(
+                audit.is_certified(),
+                "the menu opener has an admitted view action: {:?}",
+                audit.issues
+            );
+            let rect = framed.button().get_rect();
+            Framed::harness_mut(&mut framed).click_at(rect.center().x, rect.center().y);
+            let _ = Framed::harness_mut(&mut framed).poll_frame();
+            assert!(framed.is_open(), "a click opens the menu");
+            let menu = framed.menu_mut().get_rect();
+            assert!(menu.y0 >= rect.y1, "under the button: {menu:?} vs {rect:?}");
+            let node = Widget::accessibility(&*framed).unwrap();
+            assert_eq!(node.state.expanded, Some(true));
+            let print = framed.menu_mut().item_rect(0).expect("Print is laid out");
+            Framed::harness_mut(&mut framed).click_at(print.center().x, print.center().y);
+            let _ = Framed::harness_mut(&mut framed).poll_frame();
+            assert_eq!(fired.load(Ordering::SeqCst), 1, "the real Print item runs");
+            assert!(!framed.is_open(), "choosing Print closes the menu");
+            Framed::harness_mut(&mut framed)
+                .perform_named("more", &crate::a11y::Action::Activate)
+                .expect("assistive activation invokes the same admitted opener");
+            let _ = Framed::harness_mut(&mut framed).poll_frame();
+            assert!(framed.is_open(), "assistive activation opens the same menu");
+            assert_eq!(
+                framed.menu_mut().hovered(),
+                Some(0),
+                "assistive opening selects the first command"
+            );
+            assert!(
+                framed
+                    .menu_mut()
+                    .accessibility()
+                    .unwrap()
+                    .children
+                    .iter()
+                    .any(|item| item.name.as_deref() == Some("Print")),
+                "the same Print command is exported after assistive opening"
+            );
+            let audit = Framed::harness(&framed).native_app_audit();
+            assert!(
+                audit.is_certified(),
+                "open menu retains admitted coverage: {:?}",
+                audit.issues
+            );
+        }
     }
 }

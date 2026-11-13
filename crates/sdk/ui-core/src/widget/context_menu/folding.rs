@@ -139,110 +139,116 @@ mod tests {
             .collect()
     }
 
-    /// Rows of one run stand as the run's own row, in the run's place, and a row of no run and
-    /// a run of one stand as they were given.
-    #[test]
-    fn consecutive_rows_of_one_run_fold_into_its_row() {
-        let folded = MenuItem::fold_groups(vec![
-            MenuItem::selection("Complete"),
-            MenuItem::selection("Today").with_group("Due"),
-            MenuItem::selection("Tomorrow").with_group("Due"),
-            MenuItem::selection("Next week").with_group("Due"),
-            MenuItem::selection("Delete"),
-            MenuItem::selection("Low").with_group("Priority"),
-            MenuItem::selection("High").with_group("Priority"),
-            MenuItem::selection("Alone").with_group("Rare"),
-        ]);
-        assert_eq!(
-            labels(&folded),
-            ["Complete", "Due", "Delete", "Priority", "Alone"],
-            "each run stands as one row where it was declared"
-        );
-        let MenuItem::Action {
-            submenu: Some(due), ..
-        } = &folded[1]
-        else {
-            panic!("a run of three opens its members");
-        };
-        assert_eq!(labels(due), ["Today", "Tomorrow", "Next week"]);
-        assert_eq!(
-            folded[1].group(),
-            None,
-            "the run's own row is not a member of itself"
-        );
-        assert_eq!(
-            due[0].group(),
-            None,
-            "a member answers to its own name only"
-        );
-        let MenuItem::Action {
-            submenu: Some(priority),
-            ..
-        } = &folded[3]
-        else {
-            panic!("a run of two opens its members");
-        };
-        assert_eq!(labels(priority), ["Low", "High"]);
-        assert!(matches!(folded[4], MenuItem::Action { submenu: None, .. }));
-    }
+    tilo_test_env::scenario! {
+        /// How consecutive rows of one run fold.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn runs_of_rows_fold_into_one_row;
 
-    /// Two runs that meet at only one row apart do not merge, and a run a row breaks stands
-    /// as two rows of the same name.
-    #[test]
-    fn a_row_of_no_run_breaks_a_run() {
-        let folded = MenuItem::fold_groups(vec![
-            MenuItem::selection("Today").with_group("Due"),
-            MenuItem::selection("Tomorrow").with_group("Due"),
-            MenuItem::selection("Delete"),
-            MenuItem::selection("Next week").with_group("Due"),
-            MenuItem::selection("No date").with_group("Due"),
-        ]);
-        assert_eq!(labels(&folded), ["Due", "Delete", "Due"]);
-    }
+        // Rows of one run stand as the run's own row, in the run's place, and a row of no run and
+        // a run of one stand as they were given.
+        phase consecutive_rows_of_one_run_fold_into_its_row;
+        {
+            let folded = MenuItem::fold_groups(vec![
+                MenuItem::selection("Complete"),
+                MenuItem::selection("Today").with_group("Due"),
+                MenuItem::selection("Tomorrow").with_group("Due"),
+                MenuItem::selection("Next week").with_group("Due"),
+                MenuItem::selection("Delete"),
+                MenuItem::selection("Low").with_group("Priority"),
+                MenuItem::selection("High").with_group("Priority"),
+                MenuItem::selection("Alone").with_group("Rare"),
+            ]);
+            assert_eq!(
+                labels(&folded),
+                ["Complete", "Due", "Delete", "Priority", "Alone"],
+                "each run stands as one row where it was declared"
+            );
+            let MenuItem::Action {
+                submenu: Some(due), ..
+            } = &folded[1]
+            else {
+                panic!("a run of three opens its members");
+            };
+            assert_eq!(labels(due), ["Today", "Tomorrow", "Next week"]);
+            assert_eq!(
+                folded[1].group(),
+                None,
+                "the run's own row is not a member of itself"
+            );
+            assert_eq!(
+                due[0].group(),
+                None,
+                "a member answers to its own name only"
+            );
+            let MenuItem::Action {
+                submenu: Some(priority),
+                ..
+            } = &folded[3]
+            else {
+                panic!("a run of two opens its members");
+            };
+            assert_eq!(labels(priority), ["Low", "High"]);
+            assert!(matches!(folded[4], MenuItem::Action { submenu: None, .. }));
+        }
 
-    /// A run's members keep their places, so a choice made in a folded row names the action
-    /// the person read, not the row it now stands in.
-    #[test]
-    fn folding_keeps_each_rows_place() {
-        let (items, picks) = MenuItem::fold_numbered(vec![
-            (0, MenuItem::selection("Complete")),
-            (1, MenuItem::selection("Today").with_group("Due")),
-            (2, MenuItem::selection("Tomorrow").with_group("Due")),
-            (3, MenuItem::selection("Delete")),
-        ]);
-        assert_eq!(labels(&items), ["Complete", "Due", "Delete"]);
-        assert_eq!(
-            picks,
-            [
-                MenuPick::One(0),
-                MenuPick::Group(vec![1, 2]),
-                MenuPick::One(3)
-            ]
-        );
-    }
+        // Two runs that meet at only one row apart do not merge, and a run a row breaks stands
+        // as two rows of the same name.
+        phase a_row_of_no_run_breaks_a_run;
+        {
+            let folded = MenuItem::fold_groups(vec![
+                MenuItem::selection("Today").with_group("Due"),
+                MenuItem::selection("Tomorrow").with_group("Due"),
+                MenuItem::selection("Delete"),
+                MenuItem::selection("Next week").with_group("Due"),
+                MenuItem::selection("No date").with_group("Due"),
+            ]);
+            assert_eq!(labels(&folded), ["Due", "Delete", "Due"]);
+        }
 
-    /// A run's row says what the run is for and whether any member can run now: it is drawn
-    /// as unavailable only while every member is.
-    #[test]
-    fn a_run_is_unavailable_only_when_all_of_its_members_are() {
-        let folded = MenuItem::fold_groups(vec![
-            MenuItem::selection("No priority")
-                .with_group("Priority")
-                .with_enabled(false)
-                .with_description("It has no priority already"),
-            MenuItem::selection("High").with_group("Priority"),
-        ]);
-        let MenuItem::Action {
-            enabled,
-            icon,
-            submenu: Some(members),
-            ..
-        } = &folded[0]
-        else {
-            panic!("a run of two opens its members");
-        };
-        assert!(enabled, "one member can run, so the run opens");
-        assert_eq!(*icon, None, "the run takes the first row's glyph");
-        assert!(!members[0].is_enabled(), "the member keeps its own refusal");
+        // A run's members keep their places, so a choice made in a folded row names the action
+        // the person read, not the row it now stands in.
+        phase folding_keeps_each_rows_place;
+        {
+            let (items, picks) = MenuItem::fold_numbered(vec![
+                (0, MenuItem::selection("Complete")),
+                (1, MenuItem::selection("Today").with_group("Due")),
+                (2, MenuItem::selection("Tomorrow").with_group("Due")),
+                (3, MenuItem::selection("Delete")),
+            ]);
+            assert_eq!(labels(&items), ["Complete", "Due", "Delete"]);
+            assert_eq!(
+                picks,
+                [
+                    MenuPick::One(0),
+                    MenuPick::Group(vec![1, 2]),
+                    MenuPick::One(3)
+                ]
+            );
+        }
+
+        // A run's row says what the run is for and whether any member can run now: it is drawn
+        // as unavailable only while every member is.
+        phase a_run_is_unavailable_only_when_all_of_its_members_are;
+        {
+            let folded = MenuItem::fold_groups(vec![
+                MenuItem::selection("No priority")
+                    .with_group("Priority")
+                    .with_enabled(false)
+                    .with_description("It has no priority already"),
+                MenuItem::selection("High").with_group("Priority"),
+            ]);
+            let MenuItem::Action {
+                enabled,
+                icon,
+                submenu: Some(members),
+                ..
+            } = &folded[0]
+            else {
+                panic!("a run of two opens its members");
+            };
+            assert!(enabled, "one member can run, so the run opens");
+            assert_eq!(*icon, None, "the run takes the first row's glyph");
+            assert!(!members[0].is_enabled(), "the member keeps its own refusal");
+        }
     }
 }
