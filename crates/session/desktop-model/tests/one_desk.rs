@@ -101,147 +101,151 @@ fn opened(doc: &AutoCommit) -> SharedDesktop {
     shared_record::read(doc, None).expect("a desk")
 }
 
-/// The record older builds wrote — a workspace, strip, group and window as
-/// an entry each at the record's root — opens as the desk's one document
-/// with its windows, records and people, and the entries it wrote stop
-/// being what the record holds.
-#[test]
-fn an_old_shared_record_opens_as_the_desks_own_document() {
-    let desk = shared(desk());
-    let mut doc = AutoCommit::new();
-    assert!(shared_record::write(&mut doc, &desk).expect("written"));
-    doc.commit();
-    assert!(
-        !desktop_doc::holds(&doc),
-        "an older build writes the record, entry by entry"
-    );
+tilo_test_env::scenario! {
+    fn the_desk_is_one_document;
 
-    let as_written = opened(&doc);
-    assert_eq!(windows(&as_written.tree), windows(&desk.tree));
-    assert_eq!(as_written.records, desk.records);
-    assert_eq!(as_written.authors, desk.authors);
-
-    assert!(desktop_doc::write_shared(
-        &mut doc,
-        &as_written.tree,
-        &as_written.records,
-        &as_written.authors
-    ));
-    doc.commit();
-    assert!(desktop_doc::holds(&doc), "the desk's own document now");
-    for key in ["strips", "groups", "windows"] {
+    phase an_old_shared_record_opens_as_the_desks_own_document;
+    // The record older builds wrote — a workspace, strip, group and window as
+    // an entry each at the record's root — opens as the desk's one document
+    // with its windows, records and people, and the entries it wrote stop
+    // being what the record holds.
+    {
+        let desk = shared(desk());
+        let mut doc = AutoCommit::new();
+        assert!(shared_record::write(&mut doc, &desk).expect("written"));
+        doc.commit();
         assert!(
-            doc.get(automerge::ROOT, key).ok().flatten().is_none(),
-            "the old record's `{key}` entries are gone"
+            !desktop_doc::holds(&doc),
+            "an older build writes the record, entry by entry"
+        );
+
+        let as_written = opened(&doc);
+        assert_eq!(windows(&as_written.tree), windows(&desk.tree));
+        assert_eq!(as_written.records, desk.records);
+        assert_eq!(as_written.authors, desk.authors);
+
+        assert!(desktop_doc::write_shared(
+            &mut doc,
+            &as_written.tree,
+            &as_written.records,
+            &as_written.authors
+        ));
+        doc.commit();
+        assert!(desktop_doc::holds(&doc), "the desk's own document now");
+        for key in ["strips", "groups", "windows"] {
+            assert!(
+                doc.get(automerge::ROOT, key).ok().flatten().is_none(),
+                "the old record's `{key}` entries are gone"
+            );
+        }
+
+        let reopened = opened(&doc);
+        assert_eq!(windows(&reopened.tree), windows(&desk.tree));
+        assert_eq!(reopened.records, desk.records);
+        assert_eq!(reopened.authors, desk.authors);
+        assert_eq!(
+            reopened.tree.workspaces[0].owner().map(String::as_str),
+            Some("ada"),
+            "who owns the workspace came with it"
+        );
+        assert_eq!(windows(&read_back(&doc)), windows(&desk.tree));
+
+        // Read as of an earlier change, the desk is the desk as it was then:
+        // what the activity pane steps back through.
+        let then = doc.get_heads();
+        let mut renamed = desk.tree.clone();
+        renamed.workspaces[0].name = "Studio · renamed".into();
+        assert!(shared_record::write(&mut doc, &shared(renamed)).expect("written"));
+        doc.commit();
+        assert_eq!(
+            shared_record::read(&doc, Some(&then))
+                .expect("the desk then")
+                .tree
+                .workspaces[0]
+                .name,
+            "Studio"
+        );
+        assert_eq!(
+            opened(&doc).tree.workspaces[0].name,
+            "Studio · renamed",
+            "and now it is the desk as it is"
         );
     }
 
-    let reopened = opened(&doc);
-    assert_eq!(windows(&reopened.tree), windows(&desk.tree));
-    assert_eq!(reopened.records, desk.records);
-    assert_eq!(reopened.authors, desk.authors);
-    assert_eq!(
-        reopened.tree.workspaces[0].owner().map(String::as_str),
-        Some("ada"),
-        "who owns the workspace came with it"
-    );
-    assert_eq!(windows(&read_back(&doc)), windows(&desk.tree));
+    phase a_build_from_before_writes_into_the_desk_document;
+    // A peer that knows only the old record — a build from before the desk was
+    // one document — writes into the desk's document rather than beside it, so
+    // both keep working on the same desk.
+    {
+        let desk = shared(desk());
+        let mut doc = AutoCommit::new();
+        assert!(shared_record::write(&mut doc, &desk).expect("written"));
+        assert!(desktop_doc::write_shared(
+            &mut doc,
+            &desk.tree,
+            &desk.records,
+            &desk.authors
+        ));
+        doc.commit();
 
-    // Read as of an earlier change, the desk is the desk as it was then:
-    // what the activity pane steps back through.
-    let then = doc.get_heads();
-    let mut renamed = desk.tree.clone();
-    renamed.workspaces[0].name = "Studio · renamed".into();
-    assert!(shared_record::write(&mut doc, &shared(renamed)).expect("written"));
-    doc.commit();
-    assert_eq!(
-        shared_record::read(&doc, Some(&then))
-            .expect("the desk then")
-            .tree
-            .workspaces[0]
-            .name,
-        "Studio"
-    );
-    assert_eq!(
-        opened(&doc).tree.workspaces[0].name,
-        "Studio · renamed",
-        "and now it is the desk as it is"
-    );
-}
+        let mut older = desk.clone();
+        older.tree.workspaces[0].strips[0]
+            .window_groups
+            .push(group(11, &[110]));
+        older.records.push((110, "sheet".into()));
+        older.authors.insert(110, "linus".to_owned());
+        assert!(shared_record::write(&mut doc, &older).expect("written"));
+        doc.commit();
 
-/// A peer that knows only the old record — a build from before the desk was
-/// one document — writes into the desk's document rather than beside it, so
-/// both keep working on the same desk.
-#[test]
-fn a_build_from_before_writes_into_the_desk_document() {
-    let desk = shared(desk());
-    let mut doc = AutoCommit::new();
-    assert!(shared_record::write(&mut doc, &desk).expect("written"));
-    assert!(desktop_doc::write_shared(
-        &mut doc,
-        &desk.tree,
-        &desk.records,
-        &desk.authors
-    ));
-    doc.commit();
+        assert!(desktop_doc::holds(&doc), "still the desk's own document");
+        let held = opened(&doc);
+        assert_eq!(windows(&held.tree), windows(&older.tree));
+        assert_eq!(held.records, older.records);
+        assert_eq!(held.authors, older.authors);
+    }
 
-    let mut older = desk.clone();
-    older.tree.workspaces[0].strips[0]
-        .window_groups
-        .push(group(11, &[110]));
-    older.records.push((110, "sheet".into()));
-    older.authors.insert(110, "linus".to_owned());
-    assert!(shared_record::write(&mut doc, &older).expect("written"));
-    doc.commit();
+    phase two_peers_each_change_the_desk_and_keep_both_changes;
+    // Two peers each change the desk and merge: the desk holds both changes,
+    // by both of them, and each peer reads the same desk.
+    {
+        let desk = shared(desk());
+        let mut local = AutoCommit::new();
+        assert!(shared_record::write(&mut local, &desk).expect("written"));
+        assert!(desktop_doc::write_shared(
+            &mut local,
+            &desk.tree,
+            &desk.records,
+            &desk.authors
+        ));
+        local.commit();
+        let mut peer = local.fork();
 
-    assert!(desktop_doc::holds(&doc), "still the desk's own document");
-    let held = opened(&doc);
-    assert_eq!(windows(&held.tree), windows(&older.tree));
-    assert_eq!(held.records, older.records);
-    assert_eq!(held.authors, older.authors);
-}
+        let mut mine = desk.clone();
+        mine.tree.workspaces[0].name = "Studio · mine".into();
+        assert!(shared_record::write(&mut local, &mine).expect("written"));
+        local.commit();
 
-/// Two peers each change the desk and merge: the desk holds both changes,
-/// by both of them, and each peer reads the same desk.
-#[test]
-fn two_peers_each_change_the_desk_and_keep_both_changes() {
-    let desk = shared(desk());
-    let mut local = AutoCommit::new();
-    assert!(shared_record::write(&mut local, &desk).expect("written"));
-    assert!(desktop_doc::write_shared(
-        &mut local,
-        &desk.tree,
-        &desk.records,
-        &desk.authors
-    ));
-    local.commit();
-    let mut peer = local.fork();
+        let mut theirs = desk.clone();
+        theirs.tree.workspaces[0].strips[0]
+            .window_groups
+            .push(group(11, &[110]));
+        theirs.authors.insert(110, "grace".to_owned());
+        assert!(shared_record::write(&mut peer, &theirs).expect("written"));
+        peer.commit();
 
-    let mut mine = desk.clone();
-    mine.tree.workspaces[0].name = "Studio · mine".into();
-    assert!(shared_record::write(&mut local, &mine).expect("written"));
-    local.commit();
-
-    let mut theirs = desk.clone();
-    theirs.tree.workspaces[0].strips[0]
-        .window_groups
-        .push(group(11, &[110]));
-    theirs.authors.insert(110, "grace".to_owned());
-    assert!(shared_record::write(&mut peer, &theirs).expect("written"));
-    peer.commit();
-
-    local.merge_incoming(&mut peer).expect("merged");
-    peer.merge_incoming(&mut local).expect("merged");
-    for desk in [opened(&local), opened(&peer)] {
-        assert_eq!(
-            desk.tree.workspaces[0].name, "Studio · mine",
-            "the rename both peers made is one desk"
-        );
-        assert_eq!(windows(&desk.tree), windows(&theirs.tree));
-        assert_eq!(
-            desk.authors.get(&110).map(String::as_str),
-            Some("grace"),
-            "who opened the window came with it"
-        );
+        local.merge_incoming(&mut peer).expect("merged");
+        peer.merge_incoming(&mut local).expect("merged");
+        for desk in [opened(&local), opened(&peer)] {
+            assert_eq!(
+                desk.tree.workspaces[0].name, "Studio · mine",
+                "the rename both peers made is one desk"
+            );
+            assert_eq!(windows(&desk.tree), windows(&theirs.tree));
+            assert_eq!(
+                desk.authors.get(&110).map(String::as_str),
+                Some("grace"),
+                "who opened the window came with it"
+            );
+        }
     }
 }

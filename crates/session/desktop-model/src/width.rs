@@ -297,269 +297,273 @@ mod tests {
         pair.0.resolve(usable) + gap + pair.1.resolve(usable)
     }
 
-    #[test]
-    fn a_window_opened_over_the_desk_takes_the_width_of_the_card_it_draws_at() {
-        let (usable, gap, card) = (1216.0, 10.0, 640.0);
-        let (beside, floating) =
-            share_for_float(card, usable, gap).expect("a strip holds a window beside a card");
-        assert!(
-            (floating.resolve(usable) - card).abs() <= 1.0,
-            "the card's place is the width it draws at: {:?}",
-            floating.resolve(usable)
-        );
-        assert!(
-            beside.resolve(usable) + gap + floating.resolve(usable) <= usable,
-            "the two tile the strip: {beside:?} and {floating:?}"
-        );
-        assert!(
-            beside.resolve(usable) >= min_group_px(usable),
-            "the window beside the card keeps a window's least width: {beside:?}"
-        );
-        assert_eq!(
-            share_for_float(card, 700.0, gap),
-            None,
-            "a strip too narrow for a window beside the card leaves none"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_windows_width_on_its_strip;
 
-    #[test]
-    fn a_window_opened_beside_another_shares_the_screen_with_it() {
-        // Phase `two_windows_on_a_1280_screen_both_fit_on_it`.
+        phase a_window_opened_over_the_desk_takes_the_width_of_the_card_it_draws_at;
         {
-            // A 1280 px display whose strip keeps a 32 px gutter at each
-            // end: two-thirds of what is left is 811 px, and two of those
-            // overflow the usable width.
-            let (usable, screen, gap) = (1216.0, 1280.0, 8.0);
-            let pair = share_beside(
-                WindowWidth::Normal,
-                WindowWidth::Normal,
-                usable,
-                screen,
-                gap,
-            )
-            .expect("two two-thirds windows overflow one strip");
-            assert_eq!(pair.0, pair.1, "neither keeps more than its half");
-            assert!(pair_px(pair, usable, gap) <= usable, "{pair:?}");
-            assert!(pair.0.resolve(usable) >= SIDE_BY_SIDE_MIN_PX, "{pair:?}");
+            let (usable, gap, card) = (1216.0, 10.0, 640.0);
+            let (beside, floating) =
+                share_for_float(card, usable, gap).expect("a strip holds a window beside a card");
             assert!(
-                usable - pair_px(pair, usable, gap) < 1.0,
-                "the pair tiles the strip, both gutters stand: {pair:?}"
+                (floating.resolve(usable) - card).abs() <= 1.0,
+                "the card's place is the width it draws at: {:?}",
+                floating.resolve(usable)
             );
-        }
-        {
-            let (usable, screen, gap) = (1216.0, 1280.0, 8.0);
-            let pair = share_beside(WindowWidth::Wide, WindowWidth::Normal, usable, screen, gap)
-                .expect("a full-width window leaves no room beside it");
-            assert_eq!(pair.0, pair.1, "neither keeps more than its half");
-            assert!(pair_px(pair, usable, gap) <= usable, "{pair:?}");
             assert!(
-                pair.0.resolve(usable) >= 603.0,
-                "the pair uses the usable width: {pair:?}"
+                beside.resolve(usable) + gap + floating.resolve(usable) <= usable,
+                "the two tile the strip: {beside:?} and {floating:?}"
             );
-        }
-        {
-            let usable = 1904.0;
-            let screen = usable + 2.0 * 32.0;
-            let pair = share_beside(
-                WindowWidth::Normal,
-                WindowWidth::Normal,
-                usable,
-                screen,
-                8.0,
-            )
-            .expect("two two-thirds windows overflow a wide strip too");
-            assert_eq!(
-                pair.0,
-                WindowWidth::Normal,
-                "on a wide strip the window the person was in keeps its width"
-            );
-            assert!(pair_px(pair, usable, 8.0) <= usable, "{pair:?}");
             assert!(
-                usable - pair_px(pair, usable, 8.0) < 1.0,
-                "the newcomer takes the room beside it, both gutters stand: {pair:?}"
+                beside.resolve(usable) >= min_group_px(usable),
+                "the window beside the card keeps a window's least width: {beside:?}"
             );
-            assert!(pair.1.resolve(usable) >= SIDE_BY_SIDE_MIN_PX, "{pair:?}");
-        }
-        {
             assert_eq!(
-                share_beside(
-                    WindowWidth::Narrow,
-                    WindowWidth::Narrow,
-                    1904.0,
-                    1904.0 + 64.0,
-                    8.0
-                ),
-                None
-            );
-        }
-        {
-            assert_eq!(
-                share_beside(
-                    WindowWidth::Normal,
-                    WindowWidth::Normal,
-                    800.0,
-                    800.0 + 64.0,
-                    8.0
-                ),
+                share_for_float(card, 700.0, gap),
                 None,
-                "two windows under the side-by-side minimum would both be unusable"
+                "a strip too narrow for a window beside the card leaves none"
             );
         }
+
+        phase a_window_opened_beside_another_shares_the_screen_with_it;
         {
-            // A 1024 px display: each window's share of the strip is 476 px,
-            // four short of the minimum, and the pair still shares it rather
-            // than scrolling one window out of sight — the strip's 32 px
-            // gutters are chrome, not window.
-            let (usable, screen, gap) = (960.0, 1024.0, 8.0);
-            let pair = share_beside(
-                WindowWidth::Normal,
-                WindowWidth::Normal,
-                usable,
-                screen,
-                gap,
-            )
-            .expect("a 1024 px display shows two windows");
-            assert_eq!(pair.0, pair.1, "{pair:?}");
+            // Phase `two_windows_on_a_1280_screen_both_fit_on_it`.
+            {
+                // A 1280 px display whose strip keeps a 32 px gutter at each
+                // end: two-thirds of what is left is 811 px, and two of those
+                // overflow the usable width.
+                let (usable, screen, gap) = (1216.0, 1280.0, 8.0);
+                let pair = share_beside(
+                    WindowWidth::Normal,
+                    WindowWidth::Normal,
+                    usable,
+                    screen,
+                    gap,
+                )
+                .expect("two two-thirds windows overflow one strip");
+                assert_eq!(pair.0, pair.1, "neither keeps more than its half");
+                assert!(pair_px(pair, usable, gap) <= usable, "{pair:?}");
+                assert!(pair.0.resolve(usable) >= SIDE_BY_SIDE_MIN_PX, "{pair:?}");
+                assert!(
+                    usable - pair_px(pair, usable, gap) < 1.0,
+                    "the pair tiles the strip, both gutters stand: {pair:?}"
+                );
+            }
+            {
+                let (usable, screen, gap) = (1216.0, 1280.0, 8.0);
+                let pair = share_beside(WindowWidth::Wide, WindowWidth::Normal, usable, screen, gap)
+                    .expect("a full-width window leaves no room beside it");
+                assert_eq!(pair.0, pair.1, "neither keeps more than its half");
+                assert!(pair_px(pair, usable, gap) <= usable, "{pair:?}");
+                assert!(
+                    pair.0.resolve(usable) >= 603.0,
+                    "the pair uses the usable width: {pair:?}"
+                );
+            }
+            {
+                let usable = 1904.0;
+                let screen = usable + 2.0 * 32.0;
+                let pair = share_beside(
+                    WindowWidth::Normal,
+                    WindowWidth::Normal,
+                    usable,
+                    screen,
+                    8.0,
+                )
+                .expect("two two-thirds windows overflow a wide strip too");
+                assert_eq!(
+                    pair.0,
+                    WindowWidth::Normal,
+                    "on a wide strip the window the person was in keeps its width"
+                );
+                assert!(pair_px(pair, usable, 8.0) <= usable, "{pair:?}");
+                assert!(
+                    usable - pair_px(pair, usable, 8.0) < 1.0,
+                    "the newcomer takes the room beside it, both gutters stand: {pair:?}"
+                );
+                assert!(pair.1.resolve(usable) >= SIDE_BY_SIDE_MIN_PX, "{pair:?}");
+            }
+            {
+                assert_eq!(
+                    share_beside(
+                        WindowWidth::Narrow,
+                        WindowWidth::Narrow,
+                        1904.0,
+                        1904.0 + 64.0,
+                        8.0
+                    ),
+                    None
+                );
+            }
+            {
+                assert_eq!(
+                    share_beside(
+                        WindowWidth::Normal,
+                        WindowWidth::Normal,
+                        800.0,
+                        800.0 + 64.0,
+                        8.0
+                    ),
+                    None,
+                    "two windows under the side-by-side minimum would both be unusable"
+                );
+            }
+            {
+                // A 1024 px display: each window's share of the strip is 476 px,
+                // four short of the minimum, and the pair still shares it rather
+                // than scrolling one window out of sight — the strip's 32 px
+                // gutters are chrome, not window.
+                let (usable, screen, gap) = (960.0, 1024.0, 8.0);
+                let pair = share_beside(
+                    WindowWidth::Normal,
+                    WindowWidth::Normal,
+                    usable,
+                    screen,
+                    gap,
+                )
+                .expect("a 1024 px display shows two windows");
+                assert_eq!(pair.0, pair.1, "{pair:?}");
+                assert!(
+                    (pair.0.resolve(usable) - 476.0).abs() <= 1.0,
+                    "each takes half the strip's usable width: {pair:?}"
+                );
+                assert!(pair_px(pair, usable, gap) <= usable, "{pair:?}");
+            }
+        }
+
+        phase the_default_width_suits_very_wide_and_very_narrow_screens;
+        {
+            // On a 1920 px display two thirds is as wide as a default window gets.
+            assert!((WindowWidth::Normal.resolve(1920.0) - NORMAL_MAX_PX).abs() < 1.0);
+            // A 2560 px display does not stretch it into a mostly empty pane.
+            assert!((WindowWidth::Normal.resolve(2496.0) - NORMAL_MAX_PX).abs() < f64::EPSILON);
+            assert!((WindowWidth::Normal.resolve(5000.0) - NORMAL_MAX_PX).abs() < f64::EPSILON);
+            assert!((WindowWidth::Normal.resolve(1376.0) - 918.0).abs() < f64::EPSILON);
+            // A phone's strip is one window wide: no sliver, no neighbour peeking.
+            assert!((WindowWidth::Normal.resolve(326.0) - 326.0).abs() < f64::EPSILON);
+            assert!((WindowWidth::Normal.resolve(600.0) - SIDE_BY_SIDE_MIN_PX).abs() < f64::EPSILON);
+            // So is every other width there: a share, a tier or a resize chosen on a wider screen.
+            for width in [
+                WindowWidth::Narrow,
+                WindowWidth::Wide,
+                WindowWidth::Fraction(500),
+                WindowWidth::Fraction(250),
+            ] {
+                assert!(
+                    (width.resolve(326.0) - 326.0).abs() < f64::EPSILON,
+                    "{width:?} on a phone"
+                );
+            }
+            assert!((WindowWidth::Wide.resolve(2496.0) - 2496.0).abs() < f64::EPSILON);
+            assert!((WindowWidth::Fraction(667).resolve(2496.0) - 1665.0).abs() < f64::EPSILON);
+        }
+
+        phase a_lone_default_window_takes_the_strip_and_a_chosen_width_stays;
+        {
+            // The 1440 px browser desktop: 1376 px between the strip's gutters.
+            assert!((WindowWidth::Normal.resolve_in_strip(1376.0, true) - 1376.0).abs() < f64::EPSILON);
+            assert!((WindowWidth::Normal.resolve_in_strip(1376.0, false) - 918.0).abs() < f64::EPSILON);
+            // A 1920 px display fills; a 2560 px one stops at a 1920 px window.
+            assert!((WindowWidth::Normal.resolve_in_strip(1856.0, true) - 1856.0).abs() < f64::EPSILON);
             assert!(
-                (pair.0.resolve(usable) - 476.0).abs() <= 1.0,
-                "each takes half the strip's usable width: {pair:?}"
+                (WindowWidth::Normal.resolve_in_strip(2496.0, true) - ALONE_MAX_PX).abs()
+                    < f64::EPSILON
             );
-            assert!(pair_px(pair, usable, gap) <= usable, "{pair:?}");
-        }
-    }
-
-    #[test]
-    fn the_default_width_suits_very_wide_and_very_narrow_screens() {
-        // On a 1920 px display two thirds is as wide as a default window gets.
-        assert!((WindowWidth::Normal.resolve(1920.0) - NORMAL_MAX_PX).abs() < 1.0);
-        // A 2560 px display does not stretch it into a mostly empty pane.
-        assert!((WindowWidth::Normal.resolve(2496.0) - NORMAL_MAX_PX).abs() < f64::EPSILON);
-        assert!((WindowWidth::Normal.resolve(5000.0) - NORMAL_MAX_PX).abs() < f64::EPSILON);
-        assert!((WindowWidth::Normal.resolve(1376.0) - 918.0).abs() < f64::EPSILON);
-        // A phone's strip is one window wide: no sliver, no neighbour peeking.
-        assert!((WindowWidth::Normal.resolve(326.0) - 326.0).abs() < f64::EPSILON);
-        assert!((WindowWidth::Normal.resolve(600.0) - SIDE_BY_SIDE_MIN_PX).abs() < f64::EPSILON);
-        // So is every other width there: a share, a tier or a resize chosen on a wider screen.
-        for width in [
-            WindowWidth::Narrow,
-            WindowWidth::Wide,
-            WindowWidth::Fraction(500),
-            WindowWidth::Fraction(250),
-        ] {
+            // What the person picked is not widened.
             assert!(
-                (width.resolve(326.0) - 326.0).abs() < f64::EPSILON,
-                "{width:?} on a phone"
+                (WindowWidth::Narrow.resolve_in_strip(1376.0, true)
+                    - WindowWidth::Narrow.resolve(1376.0))
+                .abs()
+                    < f64::EPSILON
+            );
+            assert!(
+                (WindowWidth::Fraction(500).resolve_in_strip(1376.0, true) - 688.0).abs()
+                    < f64::EPSILON
             );
         }
-        assert!((WindowWidth::Wide.resolve(2496.0) - 2496.0).abs() < f64::EPSILON);
-        assert!((WindowWidth::Fraction(667).resolve(2496.0) - 1665.0).abs() < f64::EPSILON);
-    }
 
-    #[test]
-    fn a_lone_default_window_takes_the_strip_and_a_chosen_width_stays() {
-        // The 1440 px browser desktop: 1376 px between the strip's gutters.
-        assert!((WindowWidth::Normal.resolve_in_strip(1376.0, true) - 1376.0).abs() < f64::EPSILON);
-        assert!((WindowWidth::Normal.resolve_in_strip(1376.0, false) - 918.0).abs() < f64::EPSILON);
-        // A 1920 px display fills; a 2560 px one stops at a 1920 px window.
-        assert!((WindowWidth::Normal.resolve_in_strip(1856.0, true) - 1856.0).abs() < f64::EPSILON);
-        assert!(
-            (WindowWidth::Normal.resolve_in_strip(2496.0, true) - ALONE_MAX_PX).abs()
-                < f64::EPSILON
-        );
-        // What the person picked is not widened.
-        assert!(
-            (WindowWidth::Narrow.resolve_in_strip(1376.0, true)
-                - WindowWidth::Narrow.resolve(1376.0))
-            .abs()
-                < f64::EPSILON
-        );
-        assert!(
-            (WindowWidth::Fraction(500).resolve_in_strip(1376.0, true) - 688.0).abs()
-                < f64::EPSILON
-        );
-    }
+        phase widths_load_as_clamped_fractions_with_a_pixel_floor;
+        {
+            {
+                assert!(serde_json::from_str::<WindowWidth>(r#"{"Custom":600}"#).is_err());
+            }
+            {
+                let width: WindowWidth = serde_json::from_str(r#"{"Fraction":0}"#).unwrap();
+                assert_eq!(width, WindowWidth::Fraction(WIDTH_MIN_PERMILLE));
+            }
+            // Phase `there_is_no_widest_window_anyone_can_feel`: sixty-five strips
+            // (the old storage's end) and far more load as they were stored.
+            {
+                let width: WindowWidth = serde_json::from_str(r#"{"Fraction":65000}"#).unwrap();
+                assert_eq!(width, WindowWidth::Fraction(65_000));
+                let width: WindowWidth = serde_json::from_str(r#"{"Fraction":2000000}"#).unwrap();
+                assert!((width.resolve(1000.0) - 2_000_000.0).abs() < 1e-6);
+                // An hour of a drag resting at the display's edge, where the strip
+                // scrolls fastest, is far short of the storable end.
+                let hour_of_scroll = 1600.0 * 3600.0;
+                assert!(max_group_px(1000.0) > 100.0 * hour_of_scroll);
+                assert_eq!(
+                    permille_for_px(hour_of_scroll, 1000.0),
+                    5_760_000,
+                    "stored as it landed"
+                );
+            }
+            {
+                // A 10% window on a 3840 px strip is 384 px: no share floor.
+                assert!((WindowWidth::Fraction(100).resolve(3840.0) - 384.0).abs() < 1.0);
+                assert!((WindowWidth::Fraction(10).resolve(1472.0) - WIDTH_FLOOR_PX).abs() < 1e-9);
+                assert!((WindowWidth::Fraction(2500).resolve(1000.0) - 2500.0).abs() < 1e-9);
+            }
+            {
+                assert!(
+                    (WindowWidth::Fraction(150).resolve(800.0) - WIDTH_FLOOR_PX).abs() < f64::EPSILON
+                );
+                assert!((WindowWidth::Wide.resolve(1000.0) - 1000.0).abs() < f64::EPSILON);
+            }
+        }
 
-    #[test]
-    fn widths_load_as_clamped_fractions_with_a_pixel_floor() {
+        phase equalizing_a_strip_gives_every_window_the_same_share;
+        // Every window of a strip takes the same share of it, and a window
+        // already at that share is left alone.
         {
-            assert!(serde_json::from_str::<WindowWidth>(r#"{"Custom":600}"#).is_err());
-        }
-        {
-            let width: WindowWidth = serde_json::from_str(r#"{"Fraction":0}"#).unwrap();
-            assert_eq!(width, WindowWidth::Fraction(WIDTH_MIN_PERMILLE));
-        }
-        // Phase `there_is_no_widest_window_anyone_can_feel`: sixty-five strips
-        // (the old storage's end) and far more load as they were stored.
-        {
-            let width: WindowWidth = serde_json::from_str(r#"{"Fraction":65000}"#).unwrap();
-            assert_eq!(width, WindowWidth::Fraction(65_000));
-            let width: WindowWidth = serde_json::from_str(r#"{"Fraction":2000000}"#).unwrap();
-            assert!((width.resolve(1000.0) - 2_000_000.0).abs() < 1e-6);
-            // An hour of a drag resting at the display's edge, where the strip
-            // scrolls fastest, is far short of the storable end.
-            let hour_of_scroll = 1600.0 * 3600.0;
-            assert!(max_group_px(1000.0) > 100.0 * hour_of_scroll);
+            use crate::ids::StripId;
+            use crate::layout::{Strip, WindowGroup};
+
+            let group = |id: u64, width: WindowWidth| WindowGroup {
+                id,
+                active_tab: id,
+                tabs: Vec::new(),
+                width,
+                maximized: false,
+                focus_history: Vec::new(),
+            };
+            let mut strip = Strip {
+                id: StripId(1),
+                name: "Desk".into(),
+                window_groups: vec![
+                    group(1, WindowWidth::Narrow),
+                    group(2, WindowWidth::Wide),
+                    group(3, WindowWidth::Fraction(500)),
+                ],
+            };
+            assert!(equalize_widths(&mut strip));
+            let shares: Vec<WindowWidth> = strip
+                .window_groups
+                .iter()
+                .map(|group| group.width)
+                .collect();
             assert_eq!(
-                permille_for_px(hour_of_scroll, 1000.0),
-                5_760_000,
-                "stored as it landed"
+                shares,
+                vec![WindowWidth::Fraction(333); 3],
+                "three windows tile the strip"
             );
+            assert!(!equalize_widths(&mut strip), "nothing left to change");
+            let alone = &mut Strip {
+                window_groups: vec![group(4, WindowWidth::Narrow)],
+                ..strip
+            };
+            assert!(equalize_widths(alone));
+            assert_eq!(alone.window_groups[0].width, WindowWidth::Fraction(1000));
         }
-        {
-            // A 10% window on a 3840 px strip is 384 px: no share floor.
-            assert!((WindowWidth::Fraction(100).resolve(3840.0) - 384.0).abs() < 1.0);
-            assert!((WindowWidth::Fraction(10).resolve(1472.0) - WIDTH_FLOOR_PX).abs() < 1e-9);
-            assert!((WindowWidth::Fraction(2500).resolve(1000.0) - 2500.0).abs() < 1e-9);
-        }
-        {
-            assert!(
-                (WindowWidth::Fraction(150).resolve(800.0) - WIDTH_FLOOR_PX).abs() < f64::EPSILON
-            );
-            assert!((WindowWidth::Wide.resolve(1000.0) - 1000.0).abs() < f64::EPSILON);
-        }
-    }
-
-    /// Every window of a strip takes the same share of it, and a window
-    /// already at that share is left alone.
-    #[test]
-    fn equalizing_a_strip_gives_every_window_the_same_share() {
-        use crate::ids::StripId;
-        use crate::layout::{Strip, WindowGroup};
-
-        let group = |id: u64, width: WindowWidth| WindowGroup {
-            id,
-            active_tab: id,
-            tabs: Vec::new(),
-            width,
-            maximized: false,
-            focus_history: Vec::new(),
-        };
-        let mut strip = Strip {
-            id: StripId(1),
-            name: "Desk".into(),
-            window_groups: vec![
-                group(1, WindowWidth::Narrow),
-                group(2, WindowWidth::Wide),
-                group(3, WindowWidth::Fraction(500)),
-            ],
-        };
-        assert!(equalize_widths(&mut strip));
-        let shares: Vec<WindowWidth> = strip
-            .window_groups
-            .iter()
-            .map(|group| group.width)
-            .collect();
-        assert_eq!(
-            shares,
-            vec![WindowWidth::Fraction(333); 3],
-            "three windows tile the strip"
-        );
-        assert!(!equalize_widths(&mut strip), "nothing left to change");
-        let alone = &mut Strip {
-            window_groups: vec![group(4, WindowWidth::Narrow)],
-            ..strip
-        };
-        assert!(equalize_widths(alone));
-        assert_eq!(alone.window_groups[0].width, WindowWidth::Fraction(1000));
     }
 }

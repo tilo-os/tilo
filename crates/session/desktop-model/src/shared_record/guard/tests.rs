@@ -116,224 +116,312 @@ fn moderates(writer: &'static str) -> impl Fn(&Touched) -> bool {
     move |_| writer == MOD
 }
 
-#[test]
-fn a_guest_closes_their_own_window_but_not_someone_elses() {
-    let mut guard = workspace();
-    let closes_bens = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA)]));
-    let refused = guard
-        .decide(&closes_bens, &writer(ADA, None, &moderates(ADA)))
-        .unwrap_err();
-    assert!(matches!(
-        &refused,
-        DesktopRefusal::NotTheirs { act, .. }
-            if act.id == 2 && act.act == Act::Close && act.owner.as_deref() == Some(BEN)
-    ));
-    assert_eq!(
-        windows(&guard),
-        vec![1, 2],
-        "refused, the desktop is as it was"
-    );
+tilo_test_env::scenario! {
+    fn the_guard_decides_a_write_by_whose_windows_it_changes;
 
-    let closes_hers = Page::of(&guard, 1).write(&desktop(&[(2, 200, BEN)]));
-    guard
-        .decide(&closes_hers, &writer(ADA, None, &moderates(ADA)))
-        .unwrap();
-    assert_eq!(windows(&guard), vec![2]);
+    phase a_guest_closes_their_own_window_but_not_someone_elses;
+    {
+        let mut guard = workspace();
+        let closes_bens = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA)]));
+        let refused = guard
+            .decide(&closes_bens, &writer(ADA, None, &moderates(ADA)))
+            .unwrap_err();
+        assert!(matches!(
+            &refused,
+            DesktopRefusal::NotTheirs { act, .. }
+                if act.id == 2 && act.act == Act::Close && act.owner.as_deref() == Some(BEN)
+        ));
+        assert_eq!(
+            windows(&guard),
+            vec![1, 2],
+            "refused, the desktop is as it was"
+        );
+
+        let closes_hers = Page::of(&guard, 1).write(&desktop(&[(2, 200, BEN)]));
+        guard
+            .decide(&closes_hers, &writer(ADA, None, &moderates(ADA)))
+            .unwrap();
+        assert_eq!(windows(&guard), vec![2]);
+    }
+
+    phase the_owner_closes_their_window_and_a_moderator_closes_anyones;
+    {
+        let mut guard = workspace();
+        let closes_his = Page::of(&guard, 2).write(&desktop(&[(1, 100, ADA)]));
+        guard
+            .decide(&closes_his, &writer(BEN, None, &moderates(BEN)))
+            .unwrap();
+        let closes_adas = Page::of(&guard, 3).write(&desktop(&[]));
+        guard
+            .decide(&closes_adas, &writer(MOD, None, &moderates(MOD)))
+            .unwrap();
+        assert!(windows(&guard).is_empty());
+    }
+
+    phase moving_someone_elses_window_is_refused;
+    {
+        let mut guard = workspace();
+        // Ben's window put in front of Ada's: his order among others' is the
+        // same, so this reads as Ada moving hers, and is admitted.
+        let swapped = Page::of(&guard, 1).write(&desktop(&[(2, 200, BEN), (1, 100, ADA)]));
+        guard
+            .decide(&swapped, &writer(ADA, None, &moderates(ADA)))
+            .unwrap();
+        // Ben's window into Ada's group is a move.
+        let moved = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 100, BEN)]));
+        let refused = guard
+            .decide(&moved, &writer(ADA, None, &moderates(ADA)))
+            .unwrap_err();
+        assert!(
+            matches!(&refused, DesktopRefusal::NotTheirs { act, .. } if act.id == 2 && act.act == Act::Move)
+        );
+    }
+
+    phase a_page_writing_over_an_old_desktop_is_judged_by_what_it_changed;
+    {
+        let mut guard = workspace();
+        let mut ada = Page::of(&guard, 1);
+        // Ben opens window 3 while Ada's page is behind.
+        let opens = Page::of(&guard, 2).write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
+        guard
+            .decide(&opens, &writer(BEN, None, &moderates(BEN)))
+            .unwrap();
+        // Ada, not having seen it, closes her own: admitted, and Ben's new
+        // window is untouched, since her change wrote only her entries.
+        let closes = ada.write(&desktop(&[(2, 200, BEN)]));
+        guard
+            .decide(&closes, &writer(ADA, None, &moderates(ADA)))
+            .unwrap();
+        assert_eq!(windows(&guard), vec![2, 3]);
+    }
+
+    phase claiming_someone_elses_window_is_refused;
+    {
+        let mut guard = workspace();
+        let claims = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 200, ADA)]));
+        let refused = guard
+            .decide(&claims, &writer(ADA, None, &moderates(ADA)))
+            .unwrap_err();
+        assert!(
+            matches!(&refused, DesktopRefusal::NotTheirs { act, .. } if act.id == 2 && act.act == Act::Attribute)
+        );
+    }
+
+    phase opening_a_window_in_someone_elses_name_is_refused;
+    // A window opened in someone else's name would be theirs to keep: Ada may
+    // not open one as Ben's.
+    {
+        let mut guard = workspace();
+        let forged =
+            Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
+        let refused = guard
+            .decide(&forged, &writer(ADA, None, &moderates(ADA)))
+            .unwrap_err();
+        assert!(
+            matches!(&refused, DesktopRefusal::NotTheirs { act, .. } if act.id == 3 && act.act == Act::Attribute)
+        );
+        let opened =
+            Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, ADA)]));
+        guard
+            .decide(&opened, &writer(ADA, None, &moderates(ADA)))
+            .unwrap();
+        assert_eq!(windows(&guard), vec![1, 2, 3]);
+    }
+
+    phase not_even_its_maker_rebinds_a_windows_record;
+    // A record route is a window's identity: once a window shows a record,
+    // not even its maker binds it to another one, and the workspace keeps the one
+    // it showed.
+    {
+        let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
+        let mut bound = desktop(&[(1, 100, ADA), (2, 200, BEN)]);
+        bound.records = vec![(1, "tab:0000000000000001".into())];
+        shared_record::write(&mut doc, &bound).unwrap();
+        doc.commit();
+        let mut guard = DesktopGuard::new(doc);
+        let mut rebound = bound.clone();
+        rebound.records = vec![(1, "tab:0000000000000012".into())];
+        let rebinds = Page::of(&guard, 1).write(&rebound);
+        assert_eq!(
+            guard.decide(&rebinds, &writer(ADA, None, &moderates(MOD))),
+            Err(DesktopRefusal::Rebound {
+                writer: ADA.into(),
+                window: 1,
+            })
+        );
+        let held = shared_record::read(&guard.doc, None).unwrap();
+        assert_eq!(
+            held.records, bound.records,
+            "the refused write left nothing"
+        );
+        // Closing the window lets go of its record; that is no rebinding.
+        let closes = Page::of(&guard, 1).write(&desktop(&[(2, 200, BEN)]));
+        guard
+            .decide(&closes, &writer(ADA, None, &moderates(ADA)))
+            .unwrap();
+        assert_eq!(windows(&guard), vec![2]);
+    }
+
+    phase a_write_that_is_not_automerge_changes_nothing;
+    {
+        let mut guard = workspace();
+        let _ = guard.decide(
+            &DocumentMutation::Incremental(vec![1, 2, 3]),
+            &writer(ADA, None, &moderates(ADA)),
+        );
+        assert_eq!(windows(&guard), vec![1, 2]);
+    }
+
+    phase a_window_of_someone_who_left_the_workspace_is_anyones_to_close;
+    // Ben has left the workspace: his window holds nobody, and Ada, who writes
+    // there, may close it without moderating.
+    {
+        let mut guard = workspace();
+        let members: std::collections::BTreeSet<String> = [ADA.to_owned()].into();
+        let closes_bens = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA)]));
+        guard
+            .decide(&closes_bens, &writer(ADA, Some(&members), &moderates(ADA)))
+            .unwrap();
+        assert_eq!(windows(&guard), vec![1]);
+    }
 }
 
-#[test]
-fn the_owner_closes_their_window_and_a_moderator_closes_anyones() {
-    let mut guard = workspace();
-    let closes_his = Page::of(&guard, 2).write(&desktop(&[(1, 100, ADA)]));
-    guard
-        .decide(&closes_his, &writer(BEN, None, &moderates(BEN)))
-        .unwrap();
-    let closes_adas = Page::of(&guard, 3).write(&desktop(&[]));
-    guard
-        .decide(&closes_adas, &writer(MOD, None, &moderates(MOD)))
-        .unwrap();
-    assert!(windows(&guard).is_empty());
-}
+tilo_test_env::scenario! {
+    fn the_guard_decides_a_write_on_the_records_it_builds_on;
 
-#[test]
-fn moving_someone_elses_window_is_refused() {
-    let mut guard = workspace();
-    // Ben's window put in front of Ada's: his order among others' is the
-    // same, so this reads as Ada moving hers, and is admitted.
-    let swapped = Page::of(&guard, 1).write(&desktop(&[(2, 200, BEN), (1, 100, ADA)]));
-    guard
-        .decide(&swapped, &writer(ADA, None, &moderates(ADA)))
-        .unwrap();
-    // Ben's window into Ada's group is a move.
-    let moved = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 100, BEN)]));
-    let refused = guard
-        .decide(&moved, &writer(ADA, None, &moderates(ADA)))
-        .unwrap_err();
-    assert!(
-        matches!(&refused, DesktopRefusal::NotTheirs { act, .. } if act.id == 2 && act.act == Act::Move)
-    );
-}
+    phase a_write_ahead_of_what_it_builds_on_waits_and_is_decided_as_its_authors;
+    // A write that builds on a change the holder has not received waits, and
+    // is decided as its own author's once that change is here.
+    {
+        let mut held = workspace().doc().clone();
+        let mut ben = Page::of(&DesktopGuard::new(held.clone()), 2);
+        let opens = ben.write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
+        let closes_adas = ben.write(&desktop(&[(2, 200, BEN), (3, 300, BEN)]));
+        assert_eq!(
+            admit_complete(&mut held, &closes_adas, &writer(BEN, None, &moderates(BEN))),
+            Ok(Admitted::Waiting),
+            "it builds on Ben's opening, which has not arrived"
+        );
+        assert_eq!(
+            admit_complete(&mut held, &opens, &writer(BEN, None, &moderates(BEN))),
+            Ok(Admitted::Merged(true))
+        );
+        assert!(matches!(
+            admit_complete(&mut held, &closes_adas, &writer(BEN, None, &moderates(BEN))),
+            Err(DesktopRefusal::NotTheirs { act, .. }) if act.id == 1 && act.act == Act::Close
+        ));
+    }
 
-#[test]
-fn a_page_writing_over_an_old_desktop_is_judged_by_what_it_changed() {
-    let mut guard = workspace();
-    let mut ada = Page::of(&guard, 1);
-    // Ben opens window 3 while Ada's page is behind.
-    let opens = Page::of(&guard, 2).write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
-    guard
-        .decide(&opens, &writer(BEN, None, &moderates(BEN)))
-        .unwrap();
-    // Ada, not having seen it, closes her own: admitted, and Ben's new
-    // window is untouched, since her change wrote only her entries.
-    let closes = ada.write(&desktop(&[(2, 200, BEN)]));
-    guard
-        .decide(&closes, &writer(ADA, None, &moderates(ADA)))
-        .unwrap();
-    assert_eq!(windows(&guard), vec![2, 3]);
-}
+    phase a_window_the_door_itself_opened_is_not_judged_as_the_next_writers;
+    // What the door's own device writes (a window a member's agent opened through the host) is
+    // followed, never decided: a guest whose page holds it and sends everything it holds is judged
+    // by what the guest changed. Unfollowed, Ben's window would read as one the guest attributed
+    // to him.
+    {
+        const GUEST: &str = "guest";
+        let base = workspace();
+        let mut followed = DesktopGuard::new(base.doc().clone());
+        let mut unfollowed = DesktopGuard::new(base.doc().clone());
+        // The host writes Ben's agent's window 3 itself.
+        let mut host = Page::of(&base, 9);
+        let opened = host.write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
+        followed.absorb_write(&opened).unwrap();
+        // A guest's page holds it and sends the whole document, nothing of its own in it.
+        let mut guest = Page(host.0.with_actor(automerge::ActorId::from(vec![5; 16])));
+        let whole = DocumentMutation::Snapshot(guest.0.save());
+        let refused = unfollowed
+            .decide(&whole, &writer(GUEST, None, &moderates(GUEST)))
+            .unwrap_err();
+        assert!(
+            matches!(&refused, DesktopRefusal::NotTheirs { act, .. }
+                if act.id == 3 && act.act == Act::Attribute && act.owner.as_deref() == Some(BEN)),
+            "{refused}"
+        );
+        followed
+            .decide(&whole, &writer(GUEST, None, &moderates(GUEST)))
+            .unwrap();
+        assert_eq!(windows(&followed), vec![1, 2, 3]);
+    }
 
-#[test]
-fn claiming_someone_elses_window_is_refused() {
-    let mut guard = workspace();
-    let claims = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 200, ADA)]));
-    let refused = guard
-        .decide(&claims, &writer(ADA, None, &moderates(ADA)))
-        .unwrap_err();
-    assert!(
-        matches!(&refused, DesktopRefusal::NotTheirs { act, .. } if act.id == 2 && act.act == Act::Attribute)
-    );
-}
+    phase a_member_who_joins_a_shared_desk_opens_a_window_on_top_of_its_records;
+    // Two people open one shared desk: Ben joins, takes the records the desk
+    // shows for its windows, opens one of his own, and writes it back. The
+    // window Ada opened arrives with its record, and both can keep working.
+    {
+        let mut guard = primary_workspace();
+        let mut ben = Page::of(&guard, 2);
+        let mut adopted = shared_record::read(guard.doc(), None).unwrap();
+        assert_eq!(adopted.records, vec![(1, String::new())]);
+        open_window(&mut adopted, 3, BEN, "derived:default@tab:0000000000000003");
+        let opens = ben.write(&adopted);
+        guard
+            .decide(&opens, &writer(BEN, None, &moderates(BEN)))
+            .unwrap();
+        assert_eq!(windows(&guard), vec![1, 3], "Ben sees Ada's window too");
+        let seen = shared_record::read(guard.doc(), None).unwrap();
+        assert_eq!(
+            seen.records, adopted.records,
+            "the desk holds each window's record as it showed it"
+        );
 
-/// A window opened in someone else's name would be theirs to keep: Ada may
-/// not open one as Ben's.
-#[test]
-fn opening_a_window_in_someone_elses_name_is_refused() {
-    let mut guard = workspace();
-    let forged =
-        Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
-    let refused = guard
-        .decide(&forged, &writer(ADA, None, &moderates(ADA)))
-        .unwrap_err();
-    assert!(
-        matches!(&refused, DesktopRefusal::NotTheirs { act, .. } if act.id == 3 && act.act == Act::Attribute)
-    );
-    let opened =
-        Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, ADA)]));
-    guard
-        .decide(&opened, &writer(ADA, None, &moderates(ADA)))
-        .unwrap();
-    assert_eq!(windows(&guard), vec![1, 2, 3]);
-}
+        // Ada's page, joining on the desk Ben left, writes her own change.
+        let mut ada = Page::of(&guard, 1);
+        let mut adopted = shared_record::read(guard.doc(), None).unwrap();
+        adopted.tree.workspaces[0].strips[0].window_groups[0].tabs[0].title = "Lounge renamed".into();
+        let renames = ada.write(&adopted);
+        guard
+            .decide(&renames, &writer(ADA, None, &moderates(ADA)))
+            .unwrap();
+        assert_eq!(windows(&guard), vec![1, 3]);
+    }
 
-/// A record route is a window's identity: once a window shows a record,
-/// not even its maker binds it to another one, and the workspace keeps the one
-/// it showed.
-#[test]
-fn not_even_its_maker_rebinds_a_windows_record() {
-    let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
-    let mut bound = desktop(&[(1, 100, ADA), (2, 200, BEN)]);
-    bound.records = vec![(1, "tab:0000000000000001".into())];
-    shared_record::write(&mut doc, &bound).unwrap();
-    doc.commit();
-    let mut guard = DesktopGuard::new(doc);
-    let mut rebound = bound.clone();
-    rebound.records = vec![(1, "tab:0000000000000012".into())];
-    let rebinds = Page::of(&guard, 1).write(&rebound);
-    assert_eq!(
-        guard.decide(&rebinds, &writer(ADA, None, &moderates(MOD))),
-        Err(DesktopRefusal::Rebound {
-            writer: ADA.into(),
-            window: 1,
-        })
-    );
-    let held = shared_record::read(&guard.doc, None).unwrap();
-    assert_eq!(
-        held.records, bound.records,
-        "the refused write left nothing"
-    );
-    // Closing the window lets go of its record; that is no rebinding.
-    let closes = Page::of(&guard, 1).write(&desktop(&[(2, 200, BEN)]));
-    guard
-        .decide(&closes, &writer(ADA, None, &moderates(ADA)))
-        .unwrap();
-    assert_eq!(windows(&guard), vec![2]);
-}
+    phase a_member_who_joins_without_the_desks_records_is_refused;
+    // A page that leaves out a window's record binds it to another one (none):
+    // refused, as before.
+    {
+        let mut guard = primary_workspace();
+        let mut ben = Page::of(&guard, 2);
+        let mut adopted = shared_record::read(guard.doc(), None).unwrap();
+        adopted.records.clear();
+        open_window(&mut adopted, 3, BEN, "derived:default@tab:0000000000000003");
+        let forgets = ben.write(&adopted);
+        assert_eq!(
+            guard.decide(&forgets, &writer(BEN, None, &moderates(BEN))),
+            Err(DesktopRefusal::Rebound {
+                writer: BEN.into(),
+                window: 1,
+            })
+        );
+        assert_eq!(windows(&guard), vec![1], "the refused write left nothing");
+    }
 
-#[test]
-fn a_write_that_is_not_automerge_changes_nothing() {
-    let mut guard = workspace();
-    let _ = guard.decide(
-        &DocumentMutation::Incremental(vec![1, 2, 3]),
-        &writer(ADA, None, &moderates(ADA)),
-    );
-    assert_eq!(windows(&guard), vec![1, 2]);
-}
-
-/// Ben has left the workspace: his window holds nobody, and Ada, who writes
-/// there, may close it without moderating.
-#[test]
-fn a_window_of_someone_who_left_the_workspace_is_anyones_to_close() {
-    let mut guard = workspace();
-    let members: std::collections::BTreeSet<String> = [ADA.to_owned()].into();
-    let closes_bens = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA)]));
-    guard
-        .decide(&closes_bens, &writer(ADA, Some(&members), &moderates(ADA)))
-        .unwrap();
-    assert_eq!(windows(&guard), vec![1]);
-}
-
-/// A write that builds on a change the holder has not received waits, and
-/// is decided as its own author's once that change is here.
-#[test]
-fn a_write_ahead_of_what_it_builds_on_waits_and_is_decided_as_its_authors() {
-    let mut held = workspace().doc().clone();
-    let mut ben = Page::of(&DesktopGuard::new(held.clone()), 2);
-    let opens = ben.write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
-    let closes_adas = ben.write(&desktop(&[(2, 200, BEN), (3, 300, BEN)]));
-    assert_eq!(
-        admit_complete(&mut held, &closes_adas, &writer(BEN, None, &moderates(BEN))),
-        Ok(Admitted::Waiting),
-        "it builds on Ben's opening, which has not arrived"
-    );
-    assert_eq!(
-        admit_complete(&mut held, &opens, &writer(BEN, None, &moderates(BEN))),
-        Ok(Admitted::Merged(true))
-    );
-    assert!(matches!(
-        admit_complete(&mut held, &closes_adas, &writer(BEN, None, &moderates(BEN))),
-        Err(DesktopRefusal::NotTheirs { act, .. }) if act.id == 1 && act.act == Act::Close
-    ));
-}
-
-/// What the door's own device writes (a window a member's agent opened through the host) is
-/// followed, never decided: a guest whose page holds it and sends everything it holds is judged
-/// by what the guest changed. Unfollowed, Ben's window would read as one the guest attributed
-/// to him.
-#[test]
-fn a_window_the_door_itself_opened_is_not_judged_as_the_next_writers() {
-    const GUEST: &str = "guest";
-    let base = workspace();
-    let mut followed = DesktopGuard::new(base.doc().clone());
-    let mut unfollowed = DesktopGuard::new(base.doc().clone());
-    // The host writes Ben's agent's window 3 itself.
-    let mut host = Page::of(&base, 9);
-    let opened = host.write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
-    followed.absorb_write(&opened).unwrap();
-    // A guest's page holds it and sends the whole document, nothing of its own in it.
-    let mut guest = Page(host.0.with_actor(automerge::ActorId::from(vec![5; 16])));
-    let whole = DocumentMutation::Snapshot(guest.0.save());
-    let refused = unfollowed
-        .decide(&whole, &writer(GUEST, None, &moderates(GUEST)))
-        .unwrap_err();
-    assert!(
-        matches!(&refused, DesktopRefusal::NotTheirs { act, .. }
-            if act.id == 3 && act.act == Act::Attribute && act.owner.as_deref() == Some(BEN)),
-        "{refused}"
-    );
-    followed
-        .decide(&whole, &writer(GUEST, None, &moderates(GUEST)))
-        .unwrap();
-    assert_eq!(windows(&followed), vec![1, 2, 3]);
+    phase a_desk_holding_the_primarys_custody_key_reads_and_heals_to_its_route;
+    // A desk written before pages named records by their route holds the package
+    // primary's custody key for it. It reads as the primary's route, so the page
+    // that writes the desk next restates the same record instead of rebinding it.
+    {
+        let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
+        let mut desk = desktop(&[(1, 100, ADA)]);
+        desk.records = vec![(1, "@tilo:package-primary".into())];
+        shared_record::write(&mut doc, &desk).unwrap();
+        doc.commit();
+        let mut guard = DesktopGuard::new(doc);
+        let mut ada = Page::of(&guard, 1);
+        let adopted = shared_record::read(guard.doc(), None).unwrap();
+        assert_eq!(
+            adopted.records,
+            vec![(1, String::new())],
+            "the custody key reads as the primary's route"
+        );
+        let heals = ada.write(&adopted);
+        guard
+            .decide(&heals, &writer(ADA, None, &moderates(ADA)))
+            .unwrap();
+        assert_eq!(
+            shared_record::read(guard.doc(), None).unwrap().records,
+            vec![(1, String::new())]
+        );
+    }
 }
 
 /// A window `id` opened in `strip`'s first group, as a member's page adds it.
@@ -363,86 +451,6 @@ fn primary_workspace() -> DesktopGuard {
     DesktopGuard::new(doc)
 }
 
-/// Two people open one shared desk: Ben joins, takes the records the desk
-/// shows for its windows, opens one of his own, and writes it back. The
-/// window Ada opened arrives with its record, and both can keep working.
-#[test]
-fn a_member_who_joins_a_shared_desk_opens_a_window_on_top_of_its_records() {
-    let mut guard = primary_workspace();
-    let mut ben = Page::of(&guard, 2);
-    let mut adopted = shared_record::read(guard.doc(), None).unwrap();
-    assert_eq!(adopted.records, vec![(1, String::new())]);
-    open_window(&mut adopted, 3, BEN, "derived:default@tab:0000000000000003");
-    let opens = ben.write(&adopted);
-    guard
-        .decide(&opens, &writer(BEN, None, &moderates(BEN)))
-        .unwrap();
-    assert_eq!(windows(&guard), vec![1, 3], "Ben sees Ada's window too");
-    let seen = shared_record::read(guard.doc(), None).unwrap();
-    assert_eq!(
-        seen.records, adopted.records,
-        "the desk holds each window's record as it showed it"
-    );
-
-    // Ada's page, joining on the desk Ben left, writes her own change.
-    let mut ada = Page::of(&guard, 1);
-    let mut adopted = shared_record::read(guard.doc(), None).unwrap();
-    adopted.tree.workspaces[0].strips[0].window_groups[0].tabs[0].title = "Lounge renamed".into();
-    let renames = ada.write(&adopted);
-    guard
-        .decide(&renames, &writer(ADA, None, &moderates(ADA)))
-        .unwrap();
-    assert_eq!(windows(&guard), vec![1, 3]);
-}
-
-/// A page that leaves out a window's record binds it to another one (none):
-/// refused, as before.
-#[test]
-fn a_member_who_joins_without_the_desks_records_is_refused() {
-    let mut guard = primary_workspace();
-    let mut ben = Page::of(&guard, 2);
-    let mut adopted = shared_record::read(guard.doc(), None).unwrap();
-    adopted.records.clear();
-    open_window(&mut adopted, 3, BEN, "derived:default@tab:0000000000000003");
-    let forgets = ben.write(&adopted);
-    assert_eq!(
-        guard.decide(&forgets, &writer(BEN, None, &moderates(BEN))),
-        Err(DesktopRefusal::Rebound {
-            writer: BEN.into(),
-            window: 1,
-        })
-    );
-    assert_eq!(windows(&guard), vec![1], "the refused write left nothing");
-}
-
-/// A desk written before pages named records by their route holds the package
-/// primary's custody key for it. It reads as the primary's route, so the page
-/// that writes the desk next restates the same record instead of rebinding it.
-#[test]
-fn a_desk_holding_the_primarys_custody_key_reads_and_heals_to_its_route() {
-    let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
-    let mut desk = desktop(&[(1, 100, ADA)]);
-    desk.records = vec![(1, "@tilo:package-primary".into())];
-    shared_record::write(&mut doc, &desk).unwrap();
-    doc.commit();
-    let mut guard = DesktopGuard::new(doc);
-    let mut ada = Page::of(&guard, 1);
-    let adopted = shared_record::read(guard.doc(), None).unwrap();
-    assert_eq!(
-        adopted.records,
-        vec![(1, String::new())],
-        "the custody key reads as the primary's route"
-    );
-    let heals = ada.write(&adopted);
-    guard
-        .decide(&heals, &writer(ADA, None, &moderates(ADA)))
-        .unwrap();
-    assert_eq!(
-        shared_record::read(guard.doc(), None).unwrap().records,
-        vec![(1, String::new())]
-    );
-}
-
 /// `desktop` with window `id` in a group of its own made a window of Settings, which is a
 /// person's own ([`crate::personal`]).
 fn with_settings(mut desktop: SharedDesktop, id: u64, who: &str) -> SharedDesktop {
@@ -467,84 +475,88 @@ fn with_settings(mut desktop: SharedDesktop, id: u64, who: &str) -> SharedDeskto
     desktop
 }
 
-/// A person's Settings window never reaches the workspace's desktop: the record's writer leaves
-/// it out, and a write that places it anyway (as an older page did) is refused.
-#[test]
-fn a_persons_own_window_is_never_placed_on_the_shared_desktop() {
-    let mut guard = workspace();
-    let mut ada = Page::of(&guard, 1);
-    let opens = ada.write(&with_settings(
-        desktop(&[(1, 100, ADA), (2, 200, BEN)]),
-        3,
-        ADA,
-    ));
-    guard
-        .decide(&opens, &writer(ADA, None, &moderates(ADA)))
-        .unwrap();
-    assert_eq!(windows(&guard), vec![1, 2], "the writer left it out");
+tilo_test_env::scenario! {
+    fn the_guard_keeps_personal_windows_and_views_their_persons;
 
-    // A page that writes the desk's document itself, with Settings in it.
-    let mut doc = guard
-        .doc()
-        .clone()
-        .with_actor(automerge::ActorId::from(vec![1; 16]));
-    let heads = doc.get_heads();
-    let placed = with_settings(desktop(&[(1, 100, ADA), (2, 200, BEN)]), 3, ADA);
-    crate::desktop_doc::write_shared(&mut doc, &placed.tree, &placed.records, &placed.authors);
-    doc.commit();
-    let placing = DocumentMutation::Incremental(doc.save_after(&heads));
-    assert!(matches!(
-        guard.decide(&placing, &writer(ADA, None, &moderates(ADA))),
-        Err(DesktopRefusal::Personal { window: 3, .. })
-    ));
-    assert_eq!(windows(&guard), vec![1, 2]);
-}
+    phase a_persons_own_window_is_never_placed_on_the_shared_desktop;
+    // A person's Settings window never reaches the workspace's desktop: the record's writer leaves
+    // it out, and a write that places it anyway (as an older page did) is refused.
+    {
+        let mut guard = workspace();
+        let mut ada = Page::of(&guard, 1);
+        let opens = ada.write(&with_settings(
+            desktop(&[(1, 100, ADA), (2, 200, BEN)]),
+            3,
+            ADA,
+        ));
+        guard
+            .decide(&opens, &writer(ADA, None, &moderates(ADA)))
+            .unwrap();
+        assert_eq!(windows(&guard), vec![1, 2], "the writer left it out");
 
-/// A Settings window an older build placed on the workspace's desktop shows nobody, and anyone's
-/// next write takes it out of the record, without that counting as closing what someone else made.
-#[test]
-fn a_persons_window_left_on_the_shared_desktop_is_gone_for_everyone() {
-    let leaked = with_settings(desktop(&[(1, 100, ADA), (2, 200, BEN)]), 3, ADA);
-    let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
-    crate::desktop_doc::write_shared(&mut doc, &leaked.tree, &leaked.records, &leaked.authors);
-    doc.commit();
-    let kept = shared_record::read_as_kept(&doc, None).unwrap();
-    assert!(kept.tree.tab(3).is_some(), "the record holds it");
-    let mut guard = DesktopGuard::new(doc);
-    assert_eq!(windows(&guard), vec![1, 2], "nobody reads it");
-    let read = shared_record::read(guard.doc(), None).unwrap();
-    assert!(!read.authors.contains_key(&3) && read.records.iter().all(|(tab, _)| *tab != 3));
+        // A page that writes the desk's document itself, with Settings in it.
+        let mut doc = guard
+            .doc()
+            .clone()
+            .with_actor(automerge::ActorId::from(vec![1; 16]));
+        let heads = doc.get_heads();
+        let placed = with_settings(desktop(&[(1, 100, ADA), (2, 200, BEN)]), 3, ADA);
+        crate::desktop_doc::write_shared(&mut doc, &placed.tree, &placed.records, &placed.authors);
+        doc.commit();
+        let placing = DocumentMutation::Incremental(doc.save_after(&heads));
+        assert!(matches!(
+            guard.decide(&placing, &writer(ADA, None, &moderates(ADA))),
+            Err(DesktopRefusal::Personal { window: 3, .. })
+        ));
+        assert_eq!(windows(&guard), vec![1, 2]);
+    }
 
-    // Ben, who never made it, writes the desk as he reads it: Settings goes from the record.
-    let mut ben = Page::of(&guard, 2);
-    let cleans = ben.write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (4, 400, BEN)]));
-    guard
-        .decide(&cleans, &writer(BEN, None, &moderates(BEN)))
-        .unwrap();
-    let after = shared_record::read_as_kept(guard.doc(), None).unwrap();
-    assert!(after.tree.tab(3).is_none(), "taken out of the record");
-    assert_eq!(windows(&guard), vec![1, 2, 4]);
-}
+    phase a_persons_window_left_on_the_shared_desktop_is_gone_for_everyone;
+    // A Settings window an older build placed on the workspace's desktop shows nobody, and anyone's
+    // next write takes it out of the record, without that counting as closing what someone else made.
+    {
+        let leaked = with_settings(desktop(&[(1, 100, ADA), (2, 200, BEN)]), 3, ADA);
+        let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
+        crate::desktop_doc::write_shared(&mut doc, &leaked.tree, &leaked.records, &leaked.authors);
+        doc.commit();
+        let kept = shared_record::read_as_kept(&doc, None).unwrap();
+        assert!(kept.tree.tab(3).is_some(), "the record holds it");
+        let mut guard = DesktopGuard::new(doc);
+        assert_eq!(windows(&guard), vec![1, 2], "nobody reads it");
+        let read = shared_record::read(guard.doc(), None).unwrap();
+        assert!(!read.authors.contains_key(&3) && read.records.iter().all(|(tab, _)| *tab != 3));
 
-/// A person's view of the layout is theirs to write, and the workspace's layout is every member's:
-/// the record a write names decides whose it is.
-#[test]
-fn a_view_of_the_layout_belongs_to_its_person_and_the_layout_to_everyone() {
-    use crate::ownership::{DESKTOP_APP, DESKTOP_RECORD};
-    use crate::person_view::record_of;
+        // Ben, who never made it, writes the desk as he reads it: Settings goes from the record.
+        let mut ben = Page::of(&guard, 2);
+        let cleans = ben.write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (4, 400, BEN)]));
+        guard
+            .decide(&cleans, &writer(BEN, None, &moderates(BEN)))
+            .unwrap();
+        let after = shared_record::read_as_kept(guard.doc(), None).unwrap();
+        assert!(after.tree.tab(3).is_none(), "taken out of the record");
+        assert_eq!(windows(&guard), vec![1, 2, 4]);
+    }
 
-    assert!(is_desktop(DESKTOP_APP, DESKTOP_RECORD));
-    assert!(is_desktop(DESKTOP_APP, &record_of(ADA)));
-    assert!(!is_desktop("so.tilo.notes", &record_of(ADA)));
+    phase a_view_of_the_layout_belongs_to_its_person_and_the_layout_to_everyone;
+    // A person's view of the layout is theirs to write, and the workspace's layout is every member's:
+    // the record a write names decides whose it is.
+    {
+        use crate::ownership::{DESKTOP_APP, DESKTOP_RECORD};
+        use crate::person_view::record_of;
 
-    may_write(DESKTOP_APP, &record_of(ADA), ADA).expect("her own view");
-    let refused = may_write(DESKTOP_APP, &record_of(ADA), BEN).unwrap_err();
-    assert_eq!(
-        refused,
-        NotTheirView {
-            writer: BEN.into(),
-            owner: ADA.into()
-        }
-    );
-    may_write(DESKTOP_APP, DESKTOP_RECORD, BEN).expect("every member writes the layout");
+        assert!(is_desktop(DESKTOP_APP, DESKTOP_RECORD));
+        assert!(is_desktop(DESKTOP_APP, &record_of(ADA)));
+        assert!(!is_desktop("so.tilo.notes", &record_of(ADA)));
+
+        may_write(DESKTOP_APP, &record_of(ADA), ADA).expect("her own view");
+        let refused = may_write(DESKTOP_APP, &record_of(ADA), BEN).unwrap_err();
+        assert_eq!(
+            refused,
+            NotTheirView {
+                writer: BEN.into(),
+                owner: ADA.into()
+            }
+        );
+        may_write(DESKTOP_APP, DESKTOP_RECORD, BEN).expect("every member writes the layout");
+    }
 }

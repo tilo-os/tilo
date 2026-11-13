@@ -38,13 +38,14 @@ fn tree_with_n_groups(n: u64) -> (DesktopTree, StripId, Vec<GroupId>) {
     (tree, strip_id, group_ids)
 }
 
-#[test]
-#[allow(
-    clippy::items_after_statements,
-    reason = "the nudge phase keeps its original early-return body as a nested fn"
-)]
-fn active_group_follows_closing_groups_and_resolves_neighbours() {
-    // Phase `active_group_advances_when_active_group_starts_closing`.
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::items_after_statements,
+        reason = "the nudge phase keeps its original early-return body as a nested fn"
+    )]
+    fn active_group_follows_closing_groups_and_resolves_neighbours;
+
+    phase active_group_advances_when_active_group_starts_closing;
     {
         // Two groups [A, B] with A active. When A starts closing, the
         // pointer must immediately advance to B so focus / keyboard /
@@ -63,7 +64,8 @@ fn active_group_follows_closing_groups_and_resolves_neighbours() {
             "active-group pointer must advance to the next surviving sibling at fade-start, not after the 180 ms fade",
         );
     }
-    // Phase `active_group_advances_to_previous_when_last_group_starts_closing`.
+
+    phase active_group_advances_to_previous_when_last_group_starts_closing;
     {
         // B (rightmost) is closing with no survivor to its right, so
         // the reconciler falls back to A on the left.
@@ -76,7 +78,8 @@ fn active_group_follows_closing_groups_and_resolves_neighbours() {
         assert_eq!(landed, Some(a));
         assert_eq!(tree.active_group_for(strip_id), Some(a));
     }
-    // Phase `active_group_doesnt_advance_when_non_active_group_closes`.
+
+    phase active_group_doesnt_advance_when_non_active_group_closes;
     {
         // B closes while A is active — a stray reconcile pass on a
         // group not itself closing is a no-op, so the shell can call
@@ -90,7 +93,8 @@ fn active_group_follows_closing_groups_and_resolves_neighbours() {
         assert_eq!(landed, Some(a));
         assert_eq!(tree.active_group_for(strip_id), Some(a));
     }
-    // Phase `active_group_clears_when_every_group_is_closing`.
+
+    phase active_group_clears_when_every_group_is_closing;
     {
         // Every group in the strip is closing — the pointer can't land
         // anywhere, so the entry is dropped rather than clamped to a
@@ -104,19 +108,23 @@ fn active_group_follows_closing_groups_and_resolves_neighbours() {
         assert_eq!(landed, None);
         assert_eq!(tree.active_group_for(strip_id), None);
     }
-    // Phase `nudge_is_noop_when_strip_has_no_recorded_pointer`.
-    fn nudge_is_noop_when_strip_has_no_recorded_pointer() {
-        // No call to `set_active_group` first. The reconciler must
-        // return `None` and not insert a phantom entry after the
-        // first close.
-        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
-        let (a, _b) = (ids[0], ids[1]);
-        let landed = tree.nudge_active_group_off_closing(strip_id, &[a]);
-        assert_eq!(landed, None);
-        assert_eq!(tree.active_group_for(strip_id), None);
+
+    phase nudge_is_noop_when_strip_has_no_recorded_pointer;
+    {
+        fn nudge_is_noop_when_strip_has_no_recorded_pointer() {
+            // No call to `set_active_group` first. The reconciler must
+            // return `None` and not insert a phantom entry after the
+            // first close.
+            let (mut tree, strip_id, ids) = tree_with_n_groups(2);
+            let (a, _b) = (ids[0], ids[1]);
+            let landed = tree.nudge_active_group_off_closing(strip_id, &[a]);
+            assert_eq!(landed, None);
+            assert_eq!(tree.active_group_for(strip_id), None);
+        }
+        nudge_is_noop_when_strip_has_no_recorded_pointer();
     }
-    nudge_is_noop_when_strip_has_no_recorded_pointer();
-    // Phase `resolve_active_group_returns_recorded_when_not_closing`.
+
+    phase resolve_active_group_returns_recorded_when_not_closing;
     {
         // Pure read path: with the recorded pointer not in the closing
         // set, `resolve_active_group` returns it unchanged and, unlike
@@ -128,7 +136,8 @@ fn active_group_follows_closing_groups_and_resolves_neighbours() {
         assert_eq!(resolved, Some(b));
         assert_eq!(tree.active_group_for(strip_id), Some(b));
     }
-    // Phase `resolve_active_group_walks_left_then_right`.
+
+    phase resolve_active_group_walks_left_then_right;
     {
         // Three groups [A, B, C] with B active and closing. Focus goes to
         // A, the neighbour on its left: the strip keeps showing what it
@@ -140,6 +149,39 @@ fn active_group_follows_closing_groups_and_resolves_neighbours() {
         let landed = tree.nudge_active_group_off_closing(strip_id, &[b]);
 
         assert_eq!(landed, Some(a));
+    }
+
+    phase a_closing_active_group_hands_focus_to_its_left_neighbour_whatever_was_focused_before;
+    {
+        // [A, B, C, D, E]: the person was in A, then went to E. When E starts
+        // closing, focus goes to D beside it, never back to A at the strip's
+        // start, which would pan the whole strip there.
+        let (mut tree, strip_id, ids) = tree_with_n_groups(5);
+        let (first, beside, last) = (ids[0], ids[3], ids[4]);
+        tree.set_active_group(strip_id, first);
+        tree.set_active_group(strip_id, last);
+        assert_eq!(
+            tree.nudge_active_group_off_closing(strip_id, &[last]),
+            Some(beside)
+        );
+
+        // At the strip's start, the neighbour on the right.
+        let (mut tree, strip_id, ids) = tree_with_n_groups(3);
+        tree.set_active_group(strip_id, ids[2]);
+        tree.set_active_group(strip_id, ids[0]);
+        assert_eq!(
+            tree.nudge_active_group_off_closing(strip_id, &[ids[0]]),
+            Some(ids[1])
+        );
+
+        // A neighbour that is itself closing is skipped, still leftwards first.
+        let (mut tree, strip_id, ids) = tree_with_n_groups(4);
+        let (first, second, third) = (ids[0], ids[1], ids[2]);
+        tree.set_active_group(strip_id, third);
+        assert_eq!(
+            tree.resolve_active_group(strip_id, |id| id == third || id == second),
+            Some(first)
+        );
     }
 }
 
@@ -161,37 +203,4 @@ fn window_group_json_round_trips() {
         let round: DesktopTree = serde_json::from_str(&json).unwrap();
         assert!(round.workspaces[0].strips[0].window_groups[0].maximized);
     }
-}
-
-#[test]
-fn a_closing_active_group_hands_focus_to_its_left_neighbour_whatever_was_focused_before() {
-    // [A, B, C, D, E]: the person was in A, then went to E. When E starts
-    // closing, focus goes to D beside it, never back to A at the strip's
-    // start, which would pan the whole strip there.
-    let (mut tree, strip_id, ids) = tree_with_n_groups(5);
-    let (first, beside, last) = (ids[0], ids[3], ids[4]);
-    tree.set_active_group(strip_id, first);
-    tree.set_active_group(strip_id, last);
-    assert_eq!(
-        tree.nudge_active_group_off_closing(strip_id, &[last]),
-        Some(beside)
-    );
-
-    // At the strip's start, the neighbour on the right.
-    let (mut tree, strip_id, ids) = tree_with_n_groups(3);
-    tree.set_active_group(strip_id, ids[2]);
-    tree.set_active_group(strip_id, ids[0]);
-    assert_eq!(
-        tree.nudge_active_group_off_closing(strip_id, &[ids[0]]),
-        Some(ids[1])
-    );
-
-    // A neighbour that is itself closing is skipped, still leftwards first.
-    let (mut tree, strip_id, ids) = tree_with_n_groups(4);
-    let (first, second, third) = (ids[0], ids[1], ids[2]);
-    tree.set_active_group(strip_id, third);
-    assert_eq!(
-        tree.resolve_active_group(strip_id, |id| id == third || id == second),
-        Some(first)
-    );
 }

@@ -10,13 +10,18 @@ const NOW: u64 = 1_800_000_000;
 use collab_types::caps::{Access, CapDecision, ResourceRef};
 use tilo_desktop_model::*;
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-)]
-fn capability_grants_start_empty_and_round_trip() {
-    // Phase `a_new_workspace_holds_no_capabilities_and_grants_nothing`.
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
+    fn capability_grants_start_empty_and_round_trip;
+
+    phase a_new_workspace_holds_no_capabilities_and_grants_nothing;
     {
         // Both `Workspace::default()` (used by `..Default::default()`
         // sweeps) and `Workspace::new(...)` must start empty, and an
@@ -48,7 +53,8 @@ fn capability_grants_start_empty_and_round_trip() {
             );
         }
     }
-    // Phase `grants_round_trip_via_serde_json`.
+
+    phase grants_round_trip_via_serde_json;
     {
         let mut ws = Workspace::new(WorkspaceSlot::from(1), "Demo");
         ws.grant_app(
@@ -127,7 +133,8 @@ fn capability_grants_start_empty_and_round_trip() {
             "and a host outside the allowlist stays denied"
         );
     }
-    // Phase `all_capability_variants_round_trip_through_serde`.
+
+    phase all_capability_variants_round_trip_through_serde;
     {
         // Pin the wire shape of every variant so a downstream change
         // breaks loudly here rather than silently in the portal backend.
@@ -153,11 +160,94 @@ fn capability_grants_start_empty_and_round_trip() {
         let round: Vec<Capability> = serde_json::from_str(&json).expect("deserialize caps");
         assert_eq!(round, caps);
     }
+
+    phase the_next_grant_expiry_is_the_earliest_one_still_ahead;
+    // What the broker re-checks at: the earliest expiry still ahead, over every
+    // workspace, and nothing for grants that never expire or already did.
+    {
+        use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
+        const SOON: u64 = NOW + 5;
+        const LATER: u64 = NOW + 60;
+        let member = |person: &str, until: Option<u64>| {
+            let grant = Grant::new(
+                format!("member-{person}"),
+                Grantee::person(person),
+                TreePath::root(),
+                KindSet::ALL,
+                Answer::Allow,
+                Grantee::person("owner"),
+            );
+            match until {
+                Some(at) => grant.with_lifetime(Lifetime::Until(at * 1000)),
+                None => grant,
+            }
+        };
+        let mut first = Workspace::new(WorkspaceSlot::from(1), "First");
+        first.grant(member("forever", None));
+        assert_eq!(first.next_grant_expiry_after(NOW), None);
+        first.grant(member("past", Some(NOW)));
+        assert_eq!(
+            first.next_grant_expiry_after(NOW),
+            None,
+            "a grant ending at `now` is already over"
+        );
+        first.grant(member("later", Some(LATER)));
+        let mut second = Workspace::new(WorkspaceSlot::from(2), "Second");
+        second.grant(member("sooner", Some(SOON)));
+        assert_eq!(first.next_grant_expiry_after(NOW), Some(LATER));
+        assert_eq!(second.next_grant_expiry_after(NOW), Some(SOON));
+        let tree = DesktopTree {
+            workspaces: vec![first, second],
+            ..DesktopTree::default()
+        };
+        assert_eq!(tree.next_grant_expiry_after(NOW), Some(SOON));
+        assert_eq!(tree.next_grant_expiry_after(SOON), Some(LATER));
+        assert_eq!(tree.next_grant_expiry_after(LATER), None);
+    }
+
+    phase a_windows_desktop_control_ends_when_it_is_taken_back;
+    // Desktop control is read and taken back by the app that holds it, and an
+    // app's other grants are none of its business.
+    {
+        const TERMINAL: &str = "org.example.terminal";
+        let mut ws = Workspace::new(WorkspaceSlot::from(1), "Desk");
+        assert!(!ws.holds_desktop_control_at(TERMINAL, NOW));
+        assert!(!ws.stop_desktop_control(TERMINAL), "nothing to take back");
+        ws.grant_app(
+            "ada",
+            TERMINAL,
+            &Capability::DesktopControl {
+                scope: GRANT_ALWAYS,
+            },
+        );
+        ws.grant_app(
+            "ada",
+            TERMINAL,
+            &Capability::Network {
+                hosts: None,
+                scope: GRANT_ALWAYS,
+            },
+        );
+        assert!(ws.holds_desktop_control_at(TERMINAL, NOW));
+        assert!(
+            !ws.holds_desktop_control_at("org.example.other", NOW),
+            "one app's grant is not another's"
+        );
+        assert!(ws.stop_desktop_control(TERMINAL));
+        assert!(!ws.holds_desktop_control_at(TERMINAL, NOW));
+        assert_eq!(
+            ws.app_capabilities_at(TERMINAL, NOW).len(),
+            1,
+            "its network grant stays"
+        );
+        assert!(!ws.stop_desktop_control(TERMINAL), "taken back once");
+    }
 }
 
-#[test]
-fn app_kind_app_id_is_reverse_dns_or_the_verbatim_label() {
-    // Phase `app_kind_app_id_is_a_reverse_dns_id_not_the_display_label`.
+tilo_test_env::scenario! {
+    fn app_kind_app_id_is_reverse_dns_or_the_verbatim_label;
+
+    phase app_kind_app_id_is_a_reverse_dns_id_not_the_display_label;
     {
         // The grant key must be a real app-id, in the same namespace as
         // an adopted client's `set_app_id` — never the display label.
@@ -184,7 +274,8 @@ fn app_kind_app_id_is_reverse_dns_or_the_verbatim_label() {
             );
         }
     }
-    // Phase `app_kind_app_id_trusts_reverse_dns_other_labels_verbatim`.
+
+    phase app_kind_app_id_trusts_reverse_dns_other_labels_verbatim;
     {
         // An `Other` value already in reverse-DNS form is used as-is,
         // not double-prefixed.
@@ -193,86 +284,4 @@ fn app_kind_app_id_is_reverse_dns_or_the_verbatim_label() {
             "org.gimp.GIMP"
         );
     }
-}
-
-/// What the broker re-checks at: the earliest expiry still ahead, over every
-/// workspace, and nothing for grants that never expire or already did.
-#[test]
-fn the_next_grant_expiry_is_the_earliest_one_still_ahead() {
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
-    const SOON: u64 = NOW + 5;
-    const LATER: u64 = NOW + 60;
-    let member = |person: &str, until: Option<u64>| {
-        let grant = Grant::new(
-            format!("member-{person}"),
-            Grantee::person(person),
-            TreePath::root(),
-            KindSet::ALL,
-            Answer::Allow,
-            Grantee::person("owner"),
-        );
-        match until {
-            Some(at) => grant.with_lifetime(Lifetime::Until(at * 1000)),
-            None => grant,
-        }
-    };
-    let mut first = Workspace::new(WorkspaceSlot::from(1), "First");
-    first.grant(member("forever", None));
-    assert_eq!(first.next_grant_expiry_after(NOW), None);
-    first.grant(member("past", Some(NOW)));
-    assert_eq!(
-        first.next_grant_expiry_after(NOW),
-        None,
-        "a grant ending at `now` is already over"
-    );
-    first.grant(member("later", Some(LATER)));
-    let mut second = Workspace::new(WorkspaceSlot::from(2), "Second");
-    second.grant(member("sooner", Some(SOON)));
-    assert_eq!(first.next_grant_expiry_after(NOW), Some(LATER));
-    assert_eq!(second.next_grant_expiry_after(NOW), Some(SOON));
-    let tree = DesktopTree {
-        workspaces: vec![first, second],
-        ..DesktopTree::default()
-    };
-    assert_eq!(tree.next_grant_expiry_after(NOW), Some(SOON));
-    assert_eq!(tree.next_grant_expiry_after(SOON), Some(LATER));
-    assert_eq!(tree.next_grant_expiry_after(LATER), None);
-}
-
-/// Desktop control is read and taken back by the app that holds it, and an
-/// app's other grants are none of its business.
-#[test]
-fn a_windows_desktop_control_ends_when_it_is_taken_back() {
-    const TERMINAL: &str = "org.example.terminal";
-    let mut ws = Workspace::new(WorkspaceSlot::from(1), "Desk");
-    assert!(!ws.holds_desktop_control_at(TERMINAL, NOW));
-    assert!(!ws.stop_desktop_control(TERMINAL), "nothing to take back");
-    ws.grant_app(
-        "ada",
-        TERMINAL,
-        &Capability::DesktopControl {
-            scope: GRANT_ALWAYS,
-        },
-    );
-    ws.grant_app(
-        "ada",
-        TERMINAL,
-        &Capability::Network {
-            hosts: None,
-            scope: GRANT_ALWAYS,
-        },
-    );
-    assert!(ws.holds_desktop_control_at(TERMINAL, NOW));
-    assert!(
-        !ws.holds_desktop_control_at("org.example.other", NOW),
-        "one app's grant is not another's"
-    );
-    assert!(ws.stop_desktop_control(TERMINAL));
-    assert!(!ws.holds_desktop_control_at(TERMINAL, NOW));
-    assert_eq!(
-        ws.app_capabilities_at(TERMINAL, NOW).len(),
-        1,
-        "its network grant stays"
-    );
-    assert!(!ws.stop_desktop_control(TERMINAL), "taken back once");
 }

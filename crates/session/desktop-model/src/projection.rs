@@ -581,83 +581,87 @@ mod tests {
     use crate::app::AppKind;
     use tilo_automerge::ApplyIncoming;
 
-    #[test]
-    fn a_bound_instance_survives_the_owner_re_sending_its_placeholder() {
-        let placeholder = TileContent::AppPlaceholder {
-            kind: AppKind::Other("so.tilo.notes".into()),
-            label: "Notes".into(),
-        };
-        let bound = TileContent::Foreign {
-            app_id: "so.tilo.notes".into(),
-            surface_id: 7,
-        };
-        assert_eq!(
-            localise_tile(placeholder.clone(), Some(&bound), "Notes"),
-            bound
-        );
-        let other = TileContent::Foreign {
-            app_id: "so.tilo.terminal".into(),
-            surface_id: 8,
-        };
-        assert_eq!(
-            localise_tile(placeholder.clone(), Some(&other), "Notes"),
-            placeholder
-        );
-        let saved = TileContent::LocalApp {
-            app_id: "so.tilo.notes".into(),
-            label: "Notes".into(),
-            note: String::new(),
-        };
-        assert_eq!(
-            localise_tile(placeholder.clone(), Some(&saved), "Notes"),
-            saved,
-            "a window this device saved keeps waiting for its app"
-        );
-        assert_eq!(
-            localise_tile(placeholder.clone(), None, "Notes"),
-            placeholder
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_peers_tile_is_localised_for_this_device;
 
-    #[test]
-    fn a_hosted_window_arrives_as_itself_and_an_app_window_as_one_to_open_here() {
-        let hosted = TileContent::HostedWindow {
-            app_id: "org.gimp.GIMP".into(),
-            label: "Poster.xcf".into(),
-            host: "ab".repeat(32),
-            host_label: "Laptop".into(),
-        };
-        // Neither a fresh arrival nor a later round turns it into
-        // something this device would launch.
-        assert_eq!(localise_tile(hosted.clone(), None, "Poster.xcf"), hosted);
-        assert_eq!(
-            localise_tile(hosted.clone(), Some(&hosted), "Poster.xcf"),
-            hosted
-        );
-        assert_eq!(
-            crate::apps::canonical_app_id(&hosted).as_deref(),
-            Some("org.gimp.GIMP")
-        );
-
-        // Another device's window of an app, live there or still opening, is one this device
-        // opens its own instance of.
-        let opens_here = TileContent::LocalApp {
-            app_id: "so.tilo.notes".into(),
-            label: "Groceries".into(),
-            note: String::new(),
-        };
-        for theirs in [
-            TileContent::LocalApp {
+        phase a_bound_instance_survives_the_owner_re_sending_its_placeholder;
+        {
+            let placeholder = TileContent::AppPlaceholder {
+                kind: AppKind::Other("so.tilo.notes".into()),
+                label: "Notes".into(),
+            };
+            let bound = TileContent::Foreign {
+                app_id: "so.tilo.notes".into(),
+                surface_id: 7,
+            };
+            assert_eq!(
+                localise_tile(placeholder.clone(), Some(&bound), "Notes"),
+                bound
+            );
+            let other = TileContent::Foreign {
+                app_id: "so.tilo.terminal".into(),
+                surface_id: 8,
+            };
+            assert_eq!(
+                localise_tile(placeholder.clone(), Some(&other), "Notes"),
+                placeholder
+            );
+            let saved = TileContent::LocalApp {
                 app_id: "so.tilo.notes".into(),
                 label: "Notes".into(),
                 note: String::new(),
-            },
-            TileContent::Foreign {
+            };
+            assert_eq!(
+                localise_tile(placeholder.clone(), Some(&saved), "Notes"),
+                saved,
+                "a window this device saved keeps waiting for its app"
+            );
+            assert_eq!(
+                localise_tile(placeholder.clone(), None, "Notes"),
+                placeholder
+            );
+        }
+
+        phase a_hosted_window_arrives_as_itself_and_an_app_window_as_one_to_open_here;
+        {
+            let hosted = TileContent::HostedWindow {
+                app_id: "org.gimp.GIMP".into(),
+                label: "Poster.xcf".into(),
+                host: "ab".repeat(32),
+                host_label: "Laptop".into(),
+            };
+            // Neither a fresh arrival nor a later round turns it into
+            // something this device would launch.
+            assert_eq!(localise_tile(hosted.clone(), None, "Poster.xcf"), hosted);
+            assert_eq!(
+                localise_tile(hosted.clone(), Some(&hosted), "Poster.xcf"),
+                hosted
+            );
+            assert_eq!(
+                crate::apps::canonical_app_id(&hosted).as_deref(),
+                Some("org.gimp.GIMP")
+            );
+
+            // Another device's window of an app, live there or still opening, is one this device
+            // opens its own instance of.
+            let opens_here = TileContent::LocalApp {
                 app_id: "so.tilo.notes".into(),
-                surface_id: 0,
-            },
-        ] {
-            assert_eq!(localise_tile(theirs, None, "Groceries"), opens_here);
+                label: "Groceries".into(),
+                note: String::new(),
+            };
+            for theirs in [
+                TileContent::LocalApp {
+                    app_id: "so.tilo.notes".into(),
+                    label: "Notes".into(),
+                    note: String::new(),
+                },
+                TileContent::Foreign {
+                    app_id: "so.tilo.notes".into(),
+                    surface_id: 0,
+                },
+            ] {
+                assert_eq!(localise_tile(theirs, None, "Groceries"), opens_here);
+            }
         }
     }
 

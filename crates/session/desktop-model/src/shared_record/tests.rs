@@ -74,75 +74,293 @@ fn merge(into: &mut AutoCommit, from: &mut AutoCommit) {
     into.merge_incoming(from).unwrap();
 }
 
-#[test]
-fn a_desktop_reads_back_as_written_and_an_unchanged_one_writes_nothing() {
-    let mut doc = AutoCommit::new();
-    let written = desktop(&[(1, 100, "ada"), (2, 200, "ben"), (3, 200, "ben")]);
-    assert!(write(&mut doc, &written).unwrap());
-    doc.commit();
-    let back = read(&doc, None).unwrap();
-    assert_eq!(windows(&doc), vec![(1, 100), (2, 200), (3, 200)]);
-    assert_eq!(back.authors, written.authors);
-    assert_eq!(back.records, written.records);
-    assert_eq!(back.tree.workspaces[0].strips[0].name, "Lounge");
-    let heads = doc.get_heads();
-    assert!(!write(&mut doc, &back).unwrap(), "nothing differs");
-    doc.commit();
-    assert_eq!(doc.get_heads(), heads);
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
+    fn a_desktop_reads_back_from_the_record_as_written;
+
+    phase a_desktop_reads_back_as_written_and_an_unchanged_one_writes_nothing;
+    {
+        let mut doc = AutoCommit::new();
+        let written = desktop(&[(1, 100, "ada"), (2, 200, "ben"), (3, 200, "ben")]);
+        assert!(write(&mut doc, &written).unwrap());
+        doc.commit();
+        let back = read(&doc, None).unwrap();
+        assert_eq!(windows(&doc), vec![(1, 100), (2, 200), (3, 200)]);
+        assert_eq!(back.authors, written.authors);
+        assert_eq!(back.records, written.records);
+        assert_eq!(back.tree.workspaces[0].strips[0].name, "Lounge");
+        let heads = doc.get_heads();
+        assert!(!write(&mut doc, &back).unwrap(), "nothing differs");
+        doc.commit();
+        assert_eq!(doc.get_heads(), heads);
+    }
+
+    phase a_desktop_saved_with_text_fields_reads_whole;
+    {
+        let saved = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+        let mut document = AutoCommit::new();
+        write(&mut document, &saved).unwrap();
+        document.commit();
+        let as_maps = read(&document, None).unwrap();
+        as_saved_with_text_fields(&mut document);
+        let back = read(&document, None).unwrap();
+        assert_eq!(
+            serde_json::to_value(&back.tree).unwrap(),
+            serde_json::to_value(&as_maps.tree).unwrap()
+        );
+        assert_eq!(back.authors, as_maps.authors);
+        assert_eq!(as_maps.tree.workspaces[0].strips[0].window_groups.len(), 2);
+    }
+
+    phase moving_one_window_rewrites_only_its_order;
+    {
+        let mut doc = AutoCommit::new();
+        write(
+            &mut doc,
+            &desktop(&[(1, 100, "a"), (2, 200, "a"), (3, 300, "a"), (4, 400, "a")]),
+        )
+        .unwrap();
+        doc.commit();
+        let before = held(&doc);
+        write(
+            &mut doc,
+            &desktop(&[(1, 100, "a"), (3, 300, "a"), (2, 200, "a"), (4, 400, "a")]),
+        )
+        .unwrap();
+        doc.commit();
+        let after = held(&doc);
+        let moved: Vec<u64> = after
+            .groups
+            .iter()
+            .filter(|(id, entry)| {
+                before.groups[*id].entry.order.to_bits() != entry.entry.order.to_bits()
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        assert_eq!(windows(&doc), vec![(1, 100), (3, 300), (2, 200), (4, 400)]);
+    }
+
+    phase canonical_keeps_only_what_the_record_keeps;
+    {
+        let mut local = desktop(&[(1, 100, "ada")]);
+        local.tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(500);
+        local.tree.workspaces[0].strips[0].window_groups[0].maximized = true;
+        let canonical = canonical(&local);
+        let group = &canonical.tree.workspaces[0].strips[0].window_groups[0];
+        assert_eq!(group.width, WindowWidth::Normal);
+        assert!(!group.maximized);
+    }
+
+    phase desktops_written_before_the_workspace_was_received_fold_into_its_workspace;
+    {
+        // The workspace's desktop: a window, and a second strip.
+        let mut document = AutoCommit::new();
+        let mut first = fresh(1, 10, "Lounge");
+        first.tree.workspaces[0].strips[0]
+            .window_groups
+            .push(group_of(100, 1));
+        first.tree.workspaces[0]
+            .strips
+            .push(Strip::new(StripId(11), "Design"));
+        write(&mut document, &first).unwrap();
+        document.commit();
+        // Pages that published a fresh desktop of their own before the workspace's
+        // reached them, each from a document of its own: every one adds its
+        // own `workspaces` map, concurrent with the workspace's. One of them also
+        // opened a window and made a workspace of another name.
+        for page in 2..12_u8 {
+            let mut blind = AutoCommit::new().with_actor(automerge::ActorId::from(vec![page; 16]));
+            let id = u64::from(page);
+            let mut written = fresh(id, id * 10, "Lounge");
+            if page == 5 {
+                written.tree.workspaces[0].strips[0]
+                    .window_groups
+                    .push(group_of(500, 5));
+                let mut side = Workspace::new(WorkspaceSlot(55), "Side");
+                side.strips.push(Strip::new(StripId(550), "Main"));
+                written.tree.workspaces.push(side);
+            }
+            write(&mut blind, &written).unwrap();
+            blind.commit();
+            merge(&mut document, &mut blind);
+        }
+        let desktop = read(&document, None).unwrap();
+        let names: Vec<&str> = desktop
+            .tree
+            .workspaces
+            .iter()
+            .map(|w| w.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Lounge", "Side"]);
+        let lounge = &desktop.tree.workspaces[0];
+        let strips: Vec<&str> = lounge.strips.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            strips.iter().filter(|name| **name == "Main").count(),
+            1,
+            "{strips:?}"
+        );
+        assert!(strips.contains(&"Design"), "{strips:?}");
+        let mut tabs: Vec<u64> = lounge
+            .strips
+            .iter()
+            .flat_map(|s| &s.window_groups)
+            .flat_map(|g| g.tabs.iter().map(|t| t.id))
+            .collect();
+        tabs.compact_sort();
+        assert_eq!(tabs, vec![1, 5], "no window anyone opened is lost");
+
+        // Writing back what was read leaves the record holding only that.
+        write(&mut document, &desktop).unwrap();
+        document.commit();
+        let after = held(&document);
+        assert_eq!(after.workspaces.len(), 2);
+        assert_eq!(after.strips.len(), 3, "Main and Design, and Side's Main");
+        let again = read(&document, None).unwrap();
+        assert!(!write(&mut document, &again).unwrap());
+    }
+
+    phase the_run_that_opened_a_window_stays_until_the_window_closes;
+    {
+        let run = crate::ownership::OpenedBy {
+            run: "agent-run:7".into(),
+            label: "Jane Doe's agent".into(),
+            title: "Fill Jane Doe's visa application".into(),
+        };
+        let page = desktop(&[(1, 100, "ada"), (2, 200, "ada")]);
+        let mut opened = page.clone();
+        opened.opened_by.insert(2, run.clone());
+        let mut closed = page.clone();
+        closed.tree.workspaces[0].strips[0]
+            .window_groups
+            .retain(|group| group.id != 200);
+        closed.records.retain(|(tab, _)| *tab != 2);
+        closed.authors.remove(&2);
+        // As entries, then as the desk's own document, each rewritten by a page
+        // that knows nothing of who opened what.
+        let mut desk = AutoCommit::new();
+        crate::desktop_doc::seed(&mut desk, &page.tree);
+        for (shape, mut doc) in [AutoCommit::new(), desk].into_iter().enumerate() {
+            write(&mut doc, &opened).unwrap();
+            write(&mut doc, &page).unwrap();
+            assert!(
+                !write(&mut doc, &opened).unwrap(),
+                "{shape}: an unchanged desk writes nothing"
+            );
+            assert_eq!(read(&doc, None).unwrap().opened_by.get(&2), Some(&run));
+            // Its window closes: what opened it goes with it.
+            write(&mut doc, &closed).unwrap();
+            let read_back = read(&doc, None).unwrap();
+            assert!(read_back.tree.tab(2).is_none(), "{shape}");
+            assert!(
+                read_back.opened_by.is_empty(),
+                "{shape}: {:?}",
+                read_back.opened_by
+            );
+        }
+    }
 }
 
-#[test]
-fn concurrent_opens_and_moves_of_different_windows_all_land() {
-    let mut document = AutoCommit::new();
-    write(&mut document, &desktop(&[(1, 100, "ada"), (2, 200, "ben")])).unwrap();
-    document.commit();
-    let mut ada = fork(&document, 1);
-    let mut ben = fork(&document, 2);
-    // Ada moves her window after Ben's; Ben opens a third one.
-    write(&mut ada, &desktop(&[(2, 200, "ben"), (1, 100, "ada")])).unwrap();
-    ada.commit();
-    write(
-        &mut ben,
-        &desktop(&[(1, 100, "ada"), (2, 200, "ben"), (3, 300, "ben")]),
-    )
-    .unwrap();
-    ben.commit();
-    merge(&mut document, &mut ada);
-    merge(&mut document, &mut ben);
-    assert_eq!(windows(&document), vec![(2, 200), (1, 100), (3, 300)]);
-}
+tilo_test_env::scenario! {
+    fn edits_made_at_once_all_land_in_the_record;
 
-#[test]
-fn two_edits_of_one_workspace_made_at_once_both_land() {
-    let base = desktop(&[(1, 100, "ada")]);
-    let mut document = AutoCommit::new();
-    write(&mut document, &base).unwrap();
-    document.commit();
-    let mut ada = fork(&document, 1);
-    let mut ben = fork(&document, 2);
-    // Ada renames the workspace while Ben, who cannot see that, gives it a
-    // shortcut: both are fields of the same workspace.
-    let mut renamed = base.clone();
-    renamed.tree.workspaces[0].name = "Ada's lounge".into();
-    write(&mut ada, &renamed).unwrap();
-    ada.commit();
-    let mut furnished = base;
-    furnished.tree.workspaces[0]
-        .shortcuts
-        .push(tilo_automation::SavedShortcut::parse(r#"{"id":"morning"}"#).expect("a shortcut"));
-    write(&mut ben, &furnished).unwrap();
-    ben.commit();
-    merge(&mut document, &mut ada);
-    merge(&mut document, &mut ben);
-    let back = read(&document, None).unwrap();
-    let workspace = &back.tree.workspaces[0];
-    assert_eq!(workspace.name, "Ada's lounge");
-    let shortcuts: Vec<&str> = workspace
-        .shortcuts
-        .iter()
-        .map(tilo_automation::SavedShortcut::id)
-        .collect();
-    assert_eq!(shortcuts, vec!["morning"]);
+    phase concurrent_opens_and_moves_of_different_windows_all_land;
+    {
+        let mut document = AutoCommit::new();
+        write(&mut document, &desktop(&[(1, 100, "ada"), (2, 200, "ben")])).unwrap();
+        document.commit();
+        let mut ada = fork(&document, 1);
+        let mut ben = fork(&document, 2);
+        // Ada moves her window after Ben's; Ben opens a third one.
+        write(&mut ada, &desktop(&[(2, 200, "ben"), (1, 100, "ada")])).unwrap();
+        ada.commit();
+        write(
+            &mut ben,
+            &desktop(&[(1, 100, "ada"), (2, 200, "ben"), (3, 300, "ben")]),
+        )
+        .unwrap();
+        ben.commit();
+        merge(&mut document, &mut ada);
+        merge(&mut document, &mut ben);
+        assert_eq!(windows(&document), vec![(2, 200), (1, 100), (3, 300)]);
+    }
+
+    phase two_edits_of_one_workspace_made_at_once_both_land;
+    {
+        let base = desktop(&[(1, 100, "ada")]);
+        let mut document = AutoCommit::new();
+        write(&mut document, &base).unwrap();
+        document.commit();
+        let mut ada = fork(&document, 1);
+        let mut ben = fork(&document, 2);
+        // Ada renames the workspace while Ben, who cannot see that, gives it a
+        // shortcut: both are fields of the same workspace.
+        let mut renamed = base.clone();
+        renamed.tree.workspaces[0].name = "Ada's lounge".into();
+        write(&mut ada, &renamed).unwrap();
+        ada.commit();
+        let mut furnished = base;
+        furnished.tree.workspaces[0]
+            .shortcuts
+            .push(tilo_automation::SavedShortcut::parse(r#"{"id":"morning"}"#).expect("a shortcut"));
+        write(&mut ben, &furnished).unwrap();
+        ben.commit();
+        merge(&mut document, &mut ada);
+        merge(&mut document, &mut ben);
+        let back = read(&document, None).unwrap();
+        let workspace = &back.tree.workspaces[0];
+        assert_eq!(workspace.name, "Ada's lounge");
+        let shortcuts: Vec<&str> = workspace
+            .shortcuts
+            .iter()
+            .map(tilo_automation::SavedShortcut::id)
+            .collect();
+        assert_eq!(shortcuts, vec!["morning"]);
+    }
+
+    phase a_page_coming_back_with_an_old_desktop_wipes_nothing;
+    {
+        let mut document = AutoCommit::new();
+        write(&mut document, &desktop(&[(1, 100, "ada")])).unwrap();
+        document.commit();
+        let mut away = fork(&document, 1);
+        // While Ada's page is away, Ben opens two windows.
+        let mut ben = fork(&document, 2);
+        write(
+            &mut ben,
+            &desktop(&[(1, 100, "ada"), (2, 200, "ben"), (3, 300, "ben")]),
+        )
+        .unwrap();
+        ben.commit();
+        merge(&mut document, &mut ben);
+        // Ada's page comes back and writes its old desktop with her own change.
+        let mut renamed = desktop(&[(1, 100, "ada")]);
+        renamed.tree.workspaces[0].strips[0].window_groups[0].tabs[0].title = "renamed".into();
+        write(&mut away, &renamed).unwrap();
+        away.commit();
+        merge(&mut document, &mut away);
+        assert_eq!(windows(&document), vec![(1, 100), (2, 200), (3, 300)]);
+    }
+
+    phase a_window_moved_into_a_group_closed_meanwhile_stays;
+    {
+        let mut document = AutoCommit::new();
+        write(&mut document, &desktop(&[(1, 100, "ada"), (2, 200, "ben")])).unwrap();
+        document.commit();
+        let mut ada = fork(&document, 1);
+        let mut ben = fork(&document, 2);
+        // Ada closes her window, and with it group 100; Ben moves his into it.
+        write(&mut ada, &desktop(&[(2, 200, "ben")])).unwrap();
+        ada.commit();
+        write(&mut ben, &desktop(&[(1, 100, "ada"), (2, 100, "ben")])).unwrap();
+        ben.commit();
+        merge(&mut document, &mut ada);
+        merge(&mut document, &mut ben);
+        assert_eq!(windows(&document), vec![(2, 100)]);
+    }
 }
 
 /// `doc` as saved before a workspace and a window were maps: each of those
@@ -158,104 +376,6 @@ fn as_saved_with_text_fields(doc: &mut AutoCommit) {
         }
     }
     doc.commit();
-}
-
-#[test]
-fn a_desktop_saved_with_text_fields_reads_whole() {
-    let saved = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
-    let mut document = AutoCommit::new();
-    write(&mut document, &saved).unwrap();
-    document.commit();
-    let as_maps = read(&document, None).unwrap();
-    as_saved_with_text_fields(&mut document);
-    let back = read(&document, None).unwrap();
-    assert_eq!(
-        serde_json::to_value(&back.tree).unwrap(),
-        serde_json::to_value(&as_maps.tree).unwrap()
-    );
-    assert_eq!(back.authors, as_maps.authors);
-    assert_eq!(as_maps.tree.workspaces[0].strips[0].window_groups.len(), 2);
-}
-
-#[test]
-fn a_page_coming_back_with_an_old_desktop_wipes_nothing() {
-    let mut document = AutoCommit::new();
-    write(&mut document, &desktop(&[(1, 100, "ada")])).unwrap();
-    document.commit();
-    let mut away = fork(&document, 1);
-    // While Ada's page is away, Ben opens two windows.
-    let mut ben = fork(&document, 2);
-    write(
-        &mut ben,
-        &desktop(&[(1, 100, "ada"), (2, 200, "ben"), (3, 300, "ben")]),
-    )
-    .unwrap();
-    ben.commit();
-    merge(&mut document, &mut ben);
-    // Ada's page comes back and writes its old desktop with her own change.
-    let mut renamed = desktop(&[(1, 100, "ada")]);
-    renamed.tree.workspaces[0].strips[0].window_groups[0].tabs[0].title = "renamed".into();
-    write(&mut away, &renamed).unwrap();
-    away.commit();
-    merge(&mut document, &mut away);
-    assert_eq!(windows(&document), vec![(1, 100), (2, 200), (3, 300)]);
-}
-
-#[test]
-fn a_window_moved_into_a_group_closed_meanwhile_stays() {
-    let mut document = AutoCommit::new();
-    write(&mut document, &desktop(&[(1, 100, "ada"), (2, 200, "ben")])).unwrap();
-    document.commit();
-    let mut ada = fork(&document, 1);
-    let mut ben = fork(&document, 2);
-    // Ada closes her window, and with it group 100; Ben moves his into it.
-    write(&mut ada, &desktop(&[(2, 200, "ben")])).unwrap();
-    ada.commit();
-    write(&mut ben, &desktop(&[(1, 100, "ada"), (2, 100, "ben")])).unwrap();
-    ben.commit();
-    merge(&mut document, &mut ada);
-    merge(&mut document, &mut ben);
-    assert_eq!(windows(&document), vec![(2, 100)]);
-}
-
-#[test]
-fn moving_one_window_rewrites_only_its_order() {
-    let mut doc = AutoCommit::new();
-    write(
-        &mut doc,
-        &desktop(&[(1, 100, "a"), (2, 200, "a"), (3, 300, "a"), (4, 400, "a")]),
-    )
-    .unwrap();
-    doc.commit();
-    let before = held(&doc);
-    write(
-        &mut doc,
-        &desktop(&[(1, 100, "a"), (3, 300, "a"), (2, 200, "a"), (4, 400, "a")]),
-    )
-    .unwrap();
-    doc.commit();
-    let after = held(&doc);
-    let moved: Vec<u64> = after
-        .groups
-        .iter()
-        .filter(|(id, entry)| {
-            before.groups[*id].entry.order.to_bits() != entry.entry.order.to_bits()
-        })
-        .map(|(id, _)| *id)
-        .collect();
-    assert_eq!(moved.len(), 1, "{moved:?}");
-    assert_eq!(windows(&doc), vec![(1, 100), (3, 300), (2, 200), (4, 400)]);
-}
-
-#[test]
-fn canonical_keeps_only_what_the_record_keeps() {
-    let mut local = desktop(&[(1, 100, "ada")]);
-    local.tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(500);
-    local.tree.workspaces[0].strips[0].window_groups[0].maximized = true;
-    let canonical = canonical(&local);
-    let group = &canonical.tree.workspaces[0].strips[0].window_groups[0];
-    assert_eq!(group.width, WindowWidth::Normal);
-    assert!(!group.maximized);
 }
 
 /// A page's fresh desktop for a workspace it has not received yet: one workspace
@@ -284,99 +404,194 @@ fn group_of(id: u64, tab_id: u64) -> WindowGroup {
     }
 }
 
-#[test]
-fn desktops_written_before_the_workspace_was_received_fold_into_its_workspace() {
-    // The workspace's desktop: a window, and a second strip.
-    let mut document = AutoCommit::new();
-    let mut first = fresh(1, 10, "Lounge");
-    first.tree.workspaces[0].strips[0]
-        .window_groups
-        .push(group_of(100, 1));
-    first.tree.workspaces[0]
-        .strips
-        .push(Strip::new(StripId(11), "Design"));
-    write(&mut document, &first).unwrap();
-    document.commit();
-    // Pages that published a fresh desktop of their own before the workspace's
-    // reached them, each from a document of its own: every one adds its
-    // own `workspaces` map, concurrent with the workspace's. One of them also
-    // opened a window and made a workspace of another name.
-    for page in 2..12_u8 {
-        let mut blind = AutoCommit::new().with_actor(automerge::ActorId::from(vec![page; 16]));
-        let id = u64::from(page);
-        let mut written = fresh(id, id * 10, "Lounge");
-        if page == 5 {
-            written.tree.workspaces[0].strips[0]
-                .window_groups
-                .push(group_of(500, 5));
-            let mut side = Workspace::new(WorkspaceSlot(55), "Side");
-            side.strips.push(Strip::new(StripId(550), "Main"));
-            written.tree.workspaces.push(side);
-        }
-        write(&mut blind, &written).unwrap();
-        blind.commit();
-        merge(&mut document, &mut blind);
-    }
-    let desktop = read(&document, None).unwrap();
-    let names: Vec<&str> = desktop
-        .tree
-        .workspaces
-        .iter()
-        .map(|w| w.name.as_str())
-        .collect();
-    assert_eq!(names, vec!["Lounge", "Side"]);
-    let lounge = &desktop.tree.workspaces[0];
-    let strips: Vec<&str> = lounge.strips.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(
-        strips.iter().filter(|name| **name == "Main").count(),
-        1,
-        "{strips:?}"
-    );
-    assert!(strips.contains(&"Design"), "{strips:?}");
-    let mut tabs: Vec<u64> = lounge
-        .strips
-        .iter()
-        .flat_map(|s| &s.window_groups)
-        .flat_map(|g| g.tabs.iter().map(|t| t.id))
-        .collect();
-    tabs.compact_sort();
-    assert_eq!(tabs, vec![1, 5], "no window anyone opened is lost");
-
-    // Writing back what was read leaves the record holding only that.
-    write(&mut document, &desktop).unwrap();
-    document.commit();
-    let after = held(&document);
-    assert_eq!(after.workspaces.len(), 2);
-    assert_eq!(after.strips.len(), 3, "Main and Design, and Side's Main");
-    let again = read(&document, None).unwrap();
-    assert!(!write(&mut document, &again).unwrap());
-}
-
 fn on_canvas(desktop: &mut SharedDesktop, places: &[(u64, CanvasPlace)]) {
     let arrangement = &mut desktop.tree.workspaces[0].arrangement;
     arrangement.kind = ArrangementKind::Canvas;
     arrangement.places.extend(places.iter().copied());
 }
 
-#[test]
-fn a_canvas_and_its_places_read_back_as_written() {
-    let mut doc = AutoCommit::new();
-    let mut written = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
-    on_canvas(&mut written, &[(100, CanvasPlace::new(-40, 12, 640, 480))]);
-    assert!(write(&mut doc, &written).unwrap());
-    doc.commit();
-    let back = read(&doc, None).unwrap();
-    let arrangement = &back.tree.workspaces[0].arrangement;
-    assert_eq!(arrangement.kind, ArrangementKind::Canvas);
-    assert_eq!(
-        arrangement.place_of(100),
-        Some(CanvasPlace::new(-40, 12, 640, 480))
-    );
-    assert_eq!(arrangement.place_of(200), None, "never placed");
-    assert!(
-        !write(&mut doc, &written).unwrap(),
-        "unchanged writes nothing"
-    );
+tilo_test_env::scenario! {
+    fn the_record_keeps_the_canvas_and_its_floats;
+
+    phase a_canvas_and_its_places_read_back_as_written;
+    {
+        let mut doc = AutoCommit::new();
+        let mut written = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+        on_canvas(&mut written, &[(100, CanvasPlace::new(-40, 12, 640, 480))]);
+        assert!(write(&mut doc, &written).unwrap());
+        doc.commit();
+        let back = read(&doc, None).unwrap();
+        let arrangement = &back.tree.workspaces[0].arrangement;
+        assert_eq!(arrangement.kind, ArrangementKind::Canvas);
+        assert_eq!(
+            arrangement.place_of(100),
+            Some(CanvasPlace::new(-40, 12, 640, 480))
+        );
+        assert_eq!(arrangement.place_of(200), None, "never placed");
+        assert!(
+            !write(&mut doc, &written).unwrap(),
+            "unchanged writes nothing"
+        );
+    }
+
+    phase a_float_reads_back_as_written_and_two_people_each_keep_theirs;
+    {
+        let float = FloatPlace::new(FloatCorner::BottomRight, 40, 24, 640, 480);
+        let mut doc = AutoCommit::new();
+        let mut written = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+        floating(&mut written, &[(100, float)]);
+        assert!(write(&mut doc, &written).unwrap());
+        doc.commit();
+        let back = read(&doc, None).unwrap();
+        let arrangement = &back.tree.workspaces[0].arrangement;
+        assert_eq!(arrangement.kind, ArrangementKind::Strips);
+        assert_eq!(arrangement.float_of(100), Some(float));
+        assert_eq!(arrangement.float_of(200), None, "never floated");
+        assert!(
+            !write(&mut doc, &written).unwrap(),
+            "unchanged writes nothing"
+        );
+
+        let mut doc = AutoCommit::new();
+        let mut base = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+        write(&mut doc, &base).unwrap();
+        doc.commit();
+        let mut mine = fork(&doc, 1);
+        let mut theirs = fork(&doc, 2);
+        floating(&mut base, &[(100, float.at(8, 8))]);
+        write(&mut mine, &base).unwrap();
+        mine.commit();
+        let mut other = read(&doc, None).unwrap();
+        floating(
+            &mut other,
+            &[(200, FloatPlace::new(FloatCorner::TopLeft, 2, 3, 200, 100))],
+        );
+        write(&mut theirs, &other).unwrap();
+        theirs.commit();
+        merge(&mut mine, &mut theirs);
+        let merged = read(&mine, None).unwrap();
+        let arrangement = &merged.tree.workspaces[0].arrangement;
+        assert_eq!(arrangement.float_of(100), Some(float.at(8, 8)));
+        assert_eq!(
+            arrangement.float_of(200),
+            Some(FloatPlace::new(FloatCorner::TopLeft, 2, 3, 200, 100))
+        );
+    }
+
+    phase two_people_moving_different_windows_on_the_canvas_both_keep_their_move;
+    {
+        let mut doc = AutoCommit::new();
+        let mut base = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+        on_canvas(
+            &mut base,
+            &[
+                (100, CanvasPlace::new(0, 0, 400, 300)),
+                (200, CanvasPlace::new(500, 0, 400, 300)),
+            ],
+        );
+        write(&mut doc, &base).unwrap();
+        doc.commit();
+        let mut ada = fork(&doc, 1);
+        let mut ben = fork(&doc, 2);
+        let mut ada_moved = base.clone();
+        on_canvas(&mut ada_moved, &[(100, CanvasPlace::new(0, 900, 400, 300))]);
+        write(&mut ada, &ada_moved).unwrap();
+        ada.commit();
+        let mut ben_moved = base.clone();
+        on_canvas(
+            &mut ben_moved,
+            &[(200, CanvasPlace::new(500, 900, 400, 300))],
+        );
+        write(&mut ben, &ben_moved).unwrap();
+        ben.commit();
+        merge(&mut ada, &mut ben);
+        let back = read(&ada, None).unwrap();
+        let arrangement = &back.tree.workspaces[0].arrangement;
+        assert_eq!(arrangement.place_of(100).map(|p| p.y), Some(900));
+        assert_eq!(arrangement.place_of(200).map(|p| p.y), Some(900));
+    }
+
+    phase moving_someone_elses_window_on_the_canvas_is_moving_it;
+    {
+        use crate::ownership::{Act, foreign_acts};
+        let mut before = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+        on_canvas(&mut before, &[(200, CanvasPlace::new(0, 0, 400, 300))]);
+        let mut after = before.clone();
+        on_canvas(&mut after, &[(200, CanvasPlace::new(10, 0, 400, 300))]);
+        let acts = foreign_acts(&before, &after, "ada", None);
+        assert!(
+            acts.iter().any(|t| t.id == 2 && t.act == Act::Move),
+            "{acts:?}"
+        );
+        // Placing a window that stood nowhere yet moves nothing.
+        let unplaced = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+        let mut first = unplaced.clone();
+        on_canvas(&mut first, &[(200, CanvasPlace::new(0, 0, 400, 300))]);
+        assert!(foreign_acts(&unplaced, &first, "ada", None).is_empty());
+    }
+
+    phase a_window_kept_a_sliver_wide_reads_back_a_window;
+    // Every member writes the record, a person's page or an agent arranging the workspace, and one
+    // that kept a window a sliver wide (a float or a canvas place two pixels across) left it a stray
+    // line on everyone's desk. Read back, each is a window again, at least a window's least size, and
+    // the next write keeps that.
+    {
+        use crate::arrangement::{WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH};
+        let mut doc = AutoCommit::new();
+        let mut written = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+        // Written as an older build or an agent's command left them, past every constructor.
+        floating(
+            &mut written,
+            &[(
+                100,
+                FloatPlace {
+                    corner: FloatCorner::TopLeft,
+                    dx: 0,
+                    dy: 0,
+                    width: 2,
+                    height: 712,
+                },
+            )],
+        );
+        on_canvas(
+            &mut written,
+            &[(
+                200,
+                CanvasPlace {
+                    x: 32,
+                    y: 0,
+                    width: 2,
+                    height: 3,
+                },
+            )],
+        );
+        assert!(write(&mut doc, &written).unwrap());
+        doc.commit();
+
+        let back = read(&doc, None).unwrap();
+        let arrangement = &back.tree.workspaces[0].arrangement;
+        let float = arrangement.float_of(100).unwrap();
+        assert_eq!(
+            (float.width, float.height),
+            (WINDOW_MIN_WIDTH, 712),
+            "a float two pixels wide reads back a window wide"
+        );
+        let place = arrangement.place_of(200).unwrap();
+        assert_eq!(
+            (place.x, place.y, place.width, place.height),
+            (32, 0, WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT),
+            "a canvas place two pixels wide reads back a window's size, from where it stood"
+        );
+
+        // The desk that read it writes the window back whole, for every member.
+        assert!(write(&mut doc, &back).unwrap(), "the sliver is mended");
+        doc.commit();
+        let again = read(&doc, None).unwrap();
+        assert_eq!(
+            again.tree.workspaces[0].arrangement.float_of(100),
+            Some(float)
+        );
+    }
 }
 
 fn floating(desktop: &mut SharedDesktop, floats: &[(u64, FloatPlace)]) {
@@ -384,203 +599,4 @@ fn floating(desktop: &mut SharedDesktop, floats: &[(u64, FloatPlace)]) {
         .arrangement
         .floats
         .extend(floats.iter().copied());
-}
-
-#[test]
-fn a_float_reads_back_as_written_and_two_people_each_keep_theirs() {
-    let float = FloatPlace::new(FloatCorner::BottomRight, 40, 24, 640, 480);
-    let mut doc = AutoCommit::new();
-    let mut written = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
-    floating(&mut written, &[(100, float)]);
-    assert!(write(&mut doc, &written).unwrap());
-    doc.commit();
-    let back = read(&doc, None).unwrap();
-    let arrangement = &back.tree.workspaces[0].arrangement;
-    assert_eq!(arrangement.kind, ArrangementKind::Strips);
-    assert_eq!(arrangement.float_of(100), Some(float));
-    assert_eq!(arrangement.float_of(200), None, "never floated");
-    assert!(
-        !write(&mut doc, &written).unwrap(),
-        "unchanged writes nothing"
-    );
-
-    let mut doc = AutoCommit::new();
-    let mut base = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
-    write(&mut doc, &base).unwrap();
-    doc.commit();
-    let mut mine = fork(&doc, 1);
-    let mut theirs = fork(&doc, 2);
-    floating(&mut base, &[(100, float.at(8, 8))]);
-    write(&mut mine, &base).unwrap();
-    mine.commit();
-    let mut other = read(&doc, None).unwrap();
-    floating(
-        &mut other,
-        &[(200, FloatPlace::new(FloatCorner::TopLeft, 2, 3, 200, 100))],
-    );
-    write(&mut theirs, &other).unwrap();
-    theirs.commit();
-    merge(&mut mine, &mut theirs);
-    let merged = read(&mine, None).unwrap();
-    let arrangement = &merged.tree.workspaces[0].arrangement;
-    assert_eq!(arrangement.float_of(100), Some(float.at(8, 8)));
-    assert_eq!(
-        arrangement.float_of(200),
-        Some(FloatPlace::new(FloatCorner::TopLeft, 2, 3, 200, 100))
-    );
-}
-
-#[test]
-fn two_people_moving_different_windows_on_the_canvas_both_keep_their_move() {
-    let mut doc = AutoCommit::new();
-    let mut base = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
-    on_canvas(
-        &mut base,
-        &[
-            (100, CanvasPlace::new(0, 0, 400, 300)),
-            (200, CanvasPlace::new(500, 0, 400, 300)),
-        ],
-    );
-    write(&mut doc, &base).unwrap();
-    doc.commit();
-    let mut ada = fork(&doc, 1);
-    let mut ben = fork(&doc, 2);
-    let mut ada_moved = base.clone();
-    on_canvas(&mut ada_moved, &[(100, CanvasPlace::new(0, 900, 400, 300))]);
-    write(&mut ada, &ada_moved).unwrap();
-    ada.commit();
-    let mut ben_moved = base.clone();
-    on_canvas(
-        &mut ben_moved,
-        &[(200, CanvasPlace::new(500, 900, 400, 300))],
-    );
-    write(&mut ben, &ben_moved).unwrap();
-    ben.commit();
-    merge(&mut ada, &mut ben);
-    let back = read(&ada, None).unwrap();
-    let arrangement = &back.tree.workspaces[0].arrangement;
-    assert_eq!(arrangement.place_of(100).map(|p| p.y), Some(900));
-    assert_eq!(arrangement.place_of(200).map(|p| p.y), Some(900));
-}
-
-#[test]
-fn moving_someone_elses_window_on_the_canvas_is_moving_it() {
-    use crate::ownership::{Act, foreign_acts};
-    let mut before = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
-    on_canvas(&mut before, &[(200, CanvasPlace::new(0, 0, 400, 300))]);
-    let mut after = before.clone();
-    on_canvas(&mut after, &[(200, CanvasPlace::new(10, 0, 400, 300))]);
-    let acts = foreign_acts(&before, &after, "ada", None);
-    assert!(
-        acts.iter().any(|t| t.id == 2 && t.act == Act::Move),
-        "{acts:?}"
-    );
-    // Placing a window that stood nowhere yet moves nothing.
-    let unplaced = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
-    let mut first = unplaced.clone();
-    on_canvas(&mut first, &[(200, CanvasPlace::new(0, 0, 400, 300))]);
-    assert!(foreign_acts(&unplaced, &first, "ada", None).is_empty());
-}
-
-#[test]
-fn the_run_that_opened_a_window_stays_until_the_window_closes() {
-    let run = crate::ownership::OpenedBy {
-        run: "agent-run:7".into(),
-        label: "Jane Doe's agent".into(),
-        title: "Fill Jane Doe's visa application".into(),
-    };
-    let page = desktop(&[(1, 100, "ada"), (2, 200, "ada")]);
-    let mut opened = page.clone();
-    opened.opened_by.insert(2, run.clone());
-    let mut closed = page.clone();
-    closed.tree.workspaces[0].strips[0]
-        .window_groups
-        .retain(|group| group.id != 200);
-    closed.records.retain(|(tab, _)| *tab != 2);
-    closed.authors.remove(&2);
-    // As entries, then as the desk's own document, each rewritten by a page
-    // that knows nothing of who opened what.
-    let mut desk = AutoCommit::new();
-    crate::desktop_doc::seed(&mut desk, &page.tree);
-    for (shape, mut doc) in [AutoCommit::new(), desk].into_iter().enumerate() {
-        write(&mut doc, &opened).unwrap();
-        write(&mut doc, &page).unwrap();
-        assert!(
-            !write(&mut doc, &opened).unwrap(),
-            "{shape}: an unchanged desk writes nothing"
-        );
-        assert_eq!(read(&doc, None).unwrap().opened_by.get(&2), Some(&run));
-        // Its window closes: what opened it goes with it.
-        write(&mut doc, &closed).unwrap();
-        let read_back = read(&doc, None).unwrap();
-        assert!(read_back.tree.tab(2).is_none(), "{shape}");
-        assert!(
-            read_back.opened_by.is_empty(),
-            "{shape}: {:?}",
-            read_back.opened_by
-        );
-    }
-}
-
-/// Every member writes the record, a person's page or an agent arranging the workspace, and one
-/// that kept a window a sliver wide (a float or a canvas place two pixels across) left it a stray
-/// line on everyone's desk. Read back, each is a window again, at least a window's least size, and
-/// the next write keeps that.
-#[test]
-fn a_window_kept_a_sliver_wide_reads_back_a_window() {
-    use crate::arrangement::{WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH};
-    let mut doc = AutoCommit::new();
-    let mut written = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
-    // Written as an older build or an agent's command left them, past every constructor.
-    floating(
-        &mut written,
-        &[(
-            100,
-            FloatPlace {
-                corner: FloatCorner::TopLeft,
-                dx: 0,
-                dy: 0,
-                width: 2,
-                height: 712,
-            },
-        )],
-    );
-    on_canvas(
-        &mut written,
-        &[(
-            200,
-            CanvasPlace {
-                x: 32,
-                y: 0,
-                width: 2,
-                height: 3,
-            },
-        )],
-    );
-    assert!(write(&mut doc, &written).unwrap());
-    doc.commit();
-
-    let back = read(&doc, None).unwrap();
-    let arrangement = &back.tree.workspaces[0].arrangement;
-    let float = arrangement.float_of(100).unwrap();
-    assert_eq!(
-        (float.width, float.height),
-        (WINDOW_MIN_WIDTH, 712),
-        "a float two pixels wide reads back a window wide"
-    );
-    let place = arrangement.place_of(200).unwrap();
-    assert_eq!(
-        (place.x, place.y, place.width, place.height),
-        (32, 0, WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT),
-        "a canvas place two pixels wide reads back a window's size, from where it stood"
-    );
-
-    // The desk that read it writes the window back whole, for every member.
-    assert!(write(&mut doc, &back).unwrap(), "the sliver is mended");
-    doc.commit();
-    let again = read(&doc, None).unwrap();
-    assert_eq!(
-        again.tree.workspaces[0].arrangement.float_of(100),
-        Some(float)
-    );
 }

@@ -98,44 +98,48 @@ fn workspace() -> (AutoCommit, Workspace) {
     (doc, workspace)
 }
 
-#[test]
-fn a_person_arranges_their_own_windows_from_any_device_and_others_only_with_leave() {
-    let (doc, workspace) = workspace();
-    let notes = compose_id(ALICE, 3);
-    let terminal = compose_id(BOB, 3);
+tilo_test_env::scenario! {
+    fn an_edit_to_someone_elses_windows_is_named_for_what_it_is;
 
-    // Alice, from another of her devices, closes her notes: hers to close.
-    let mut closed = workspace.clone();
-    closed.strips[0].window_groups.remove(0);
-    let mut after = doc.clone();
-    write_as(&mut after, &closed, "alice", 0x0A12);
-    assert!(acts(&doc, &after, "alice").is_empty());
-    // Bob doing the same closes someone else's window.
-    assert_eq!(acts(&doc, &after, "bob"), vec![(notes, Act::Close)]);
+    phase a_person_arranges_their_own_windows_from_any_device_and_others_only_with_leave;
+    {
+        let (doc, workspace) = workspace();
+        let notes = compose_id(ALICE, 3);
+        let terminal = compose_id(BOB, 3);
 
-    // Bob moving his own terminal into Alice's group touches nothing of hers.
-    let mut moved = workspace;
-    let terminal_tab = moved.strips[0].window_groups.remove(1).tabs.remove(0);
-    moved.strips[0].window_groups[0].tabs.push(terminal_tab);
-    let mut after = doc.clone();
-    write_as(&mut after, &moved, "bob", BOB);
-    assert!(acts(&doc, &after, "bob").is_empty());
-    assert_eq!(acts(&doc, &after, "alice"), vec![(terminal, Act::Move)]);
-}
+        // Alice, from another of her devices, closes her notes: hers to close.
+        let mut closed = workspace.clone();
+        closed.strips[0].window_groups.remove(0);
+        let mut after = doc.clone();
+        write_as(&mut after, &closed, "alice", 0x0A12);
+        assert!(acts(&doc, &after, "alice").is_empty());
+        // Bob doing the same closes someone else's window.
+        assert_eq!(acts(&doc, &after, "bob"), vec![(notes, Act::Close)]);
 
-#[test]
-fn a_window_added_in_someone_elses_name_is_an_attribution() {
-    let (doc, workspace) = workspace();
-    let mut added = workspace;
-    let forged = compose_id(BOB, 9);
-    added.strips[0]
-        .window_groups
-        .push(group(compose_id(BOB, 8), vec![tab(forged, "Forged")]));
-    // Written by Bob's device, but naming Alice as its maker.
-    let mut after = doc.clone();
-    write_as(&mut after, &added, "alice", BOB);
-    assert_eq!(acts(&doc, &after, "bob"), vec![(forged, Act::Attribute)]);
-    assert!(acts(&doc, &after, "alice").is_empty());
+        // Bob moving his own terminal into Alice's group touches nothing of hers.
+        let mut moved = workspace;
+        let terminal_tab = moved.strips[0].window_groups.remove(1).tabs.remove(0);
+        moved.strips[0].window_groups[0].tabs.push(terminal_tab);
+        let mut after = doc.clone();
+        write_as(&mut after, &moved, "bob", BOB);
+        assert!(acts(&doc, &after, "bob").is_empty());
+        assert_eq!(acts(&doc, &after, "alice"), vec![(terminal, Act::Move)]);
+    }
+
+    phase a_window_added_in_someone_elses_name_is_an_attribution;
+    {
+        let (doc, workspace) = workspace();
+        let mut added = workspace;
+        let forged = compose_id(BOB, 9);
+        added.strips[0]
+            .window_groups
+            .push(group(compose_id(BOB, 8), vec![tab(forged, "Forged")]));
+        // Written by Bob's device, but naming Alice as its maker.
+        let mut after = doc.clone();
+        write_as(&mut after, &added, "alice", BOB);
+        assert_eq!(acts(&doc, &after, "bob"), vec![(forged, Act::Attribute)]);
+        assert!(acts(&doc, &after, "alice").is_empty());
+    }
 }
 
 fn shortcut(id: &str, name: &str) -> tilo_automation::SavedShortcut {

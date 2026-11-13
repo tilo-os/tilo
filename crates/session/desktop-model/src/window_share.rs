@@ -315,167 +315,247 @@ mod tests {
 
     const WORKSPACE: &str = "6f1d2c3b-4a59-4e8d-9c7b-1a2b3c4d5e6f";
 
-    #[test]
-    fn a_window_share_names_its_window_its_sharer_and_its_host_while_it_lasts() {
-        let tab = (0x0A51_u64 << 48) | 4;
-        let node = window_node(WORKSPACE, "so.tilo.notes", tab);
-        assert_eq!(
-            window_of_node(&node),
-            Some(("so.tilo.notes".to_owned(), tab))
-        );
-        let mut policy = WorkspacePolicy::new(WORKSPACE, "owner".to_owned());
-        let grants = share_grants(
-            WORKSPACE,
-            "ana",
-            &window_share_id(tab),
-            &node,
-            ShareAccess::View,
-        )
-        .expect("a window is one resource of the workspace");
-        let owners = BTreeMap::from([(0x0A51, "aa".to_owned())]);
-        assert!(window_shares(&policy, &owners, 1).is_empty());
-        policy.grants.extend(grants.clone());
-        let shares = window_shares(&policy, &owners, 1);
-        assert_eq!(
-            shares.get(&tab),
-            Some(&WindowShare {
-                tab,
-                app_id: "so.tilo.notes".into(),
-                sharer: "ana".into(),
-                host: "aa".into(),
-                until_ms: None,
-                shows: None,
-            })
-        );
-        assert!(
-            window_shares(&policy, &BTreeMap::new(), 1).is_empty(),
-            "a window no device of the workspace minted is nobody's to show"
-        );
+    tilo_test_env::scenario! {
+        fn a_window_share_lasts_while_its_window_does;
 
-        // A share that ended by its time is no share.
-        policy.grants = grants
-            .into_iter()
-            .map(|grant| grant.with_lifetime(tilo_action_policy::Lifetime::Until(10)))
-            .collect();
-        assert_eq!(window_shares(&policy, &owners, 9)[&tab].until_ms, Some(10));
-        assert!(window_shares(&policy, &owners, 10).is_empty());
-
-        // A share of a record is no window's.
-        let record = TreePath::workspace(WORKSPACE)
-            .app("so.tilo.notes")
-            .kind("notes.notebook")
-            .resource(tab_key(tab));
-        policy.grants = share_grants(
-            WORKSPACE,
-            "ana",
-            &window_share_id(tab),
-            &record,
-            ShareAccess::View,
-        )
-        .expect("a record share");
-        assert!(window_shares(&policy, &owners, 1).is_empty());
-    }
-
-    #[test]
-    fn a_tilo_apps_window_share_says_what_the_window_shows() {
-        let tab = (0x0A51_u64 << 48) | 4;
-        let app = "so.tilo.notes";
-        assert_eq!(
-            window_of_share_id(&window_share_id(tab)),
-            Some((tab, false))
-        );
-        assert_eq!(
-            window_of_share_id(&window_shows_share_id(tab)),
-            Some((tab, true))
-        );
-        assert_eq!(window_of_share_id("window.x:shows"), None);
-        assert_eq!(window_of_share_id("message.1"), None);
-        assert!(
-            window_shows_share_id(tab).starts_with(&format!("{}:", window_share_id(tab))),
-            "ending the window's share ends what it shows with it"
-        );
-
-        let owners = BTreeMap::from([(0x0A51, "aa".to_owned())]);
-        let share = |shows: &WindowShows, kind: &str| {
+        phase a_window_share_names_its_window_its_sharer_and_its_host_while_it_lasts;
+        {
+            let tab = (0x0A51_u64 << 48) | 4;
+            let node = window_node(WORKSPACE, "so.tilo.notes", tab);
+            assert_eq!(
+                window_of_node(&node),
+                Some(("so.tilo.notes".to_owned(), tab))
+            );
             let mut policy = WorkspacePolicy::new(WORKSPACE, "owner".to_owned());
-            for (id, node) in [
-                (window_share_id(tab), window_node(WORKSPACE, app, tab)),
-                (
-                    window_shows_share_id(tab),
-                    shows_node(WORKSPACE, app, tab, kind, shows),
-                ),
-            ] {
-                policy.grants.extend(
-                    share_grants(WORKSPACE, "ana", &id, &node, ShareAccess::View)
-                        .expect("one resource of the workspace"),
-                );
-            }
-            window_shares(&policy, &owners, 1)
-                .remove(&tab)
-                .expect("the window is shared")
-        };
-        for shows in [
-            // A note of the app's own notebook.
-            WindowShows {
-                record: String::new(),
-                item: Some("notes.page/pages/7".into()),
-            },
-            // A record of its own, and an item of it.
-            WindowShows {
-                record: "derived:default@tab:0a51000000000009".into(),
-                item: None,
-            },
-            WindowShows {
-                record: "derived:default@tab:0a51000000000009".into(),
-                item: Some("7".into()),
-            },
-            // The app's own record as a whole.
-            WindowShows::default(),
-        ] {
-            assert_eq!(share(&shows, "notes.notebook").shows, Some(shows));
-        }
-
-        // A window with nothing shown beside it is an outside window's.
-        let mut policy = WorkspacePolicy::new(WORKSPACE, "owner".to_owned());
-        policy.grants.extend(
-            share_grants(
+            let grants = share_grants(
                 WORKSPACE,
                 "ana",
                 &window_share_id(tab),
-                &window_node(WORKSPACE, app, tab),
+                &node,
                 ShareAccess::View,
             )
-            .expect("a window"),
-        );
-        assert_eq!(window_shares(&policy, &owners, 1)[&tab].shows, None);
+            .expect("a window is one resource of the workspace");
+            let owners = BTreeMap::from([(0x0A51, "aa".to_owned())]);
+            assert!(window_shares(&policy, &owners, 1).is_empty());
+            policy.grants.extend(grants.clone());
+            let shares = window_shares(&policy, &owners, 1);
+            assert_eq!(
+                shares.get(&tab),
+                Some(&WindowShare {
+                    tab,
+                    app_id: "so.tilo.notes".into(),
+                    sharer: "ana".into(),
+                    host: "aa".into(),
+                    until_ms: None,
+                    shows: None,
+                })
+            );
+            assert!(
+                window_shares(&policy, &BTreeMap::new(), 1).is_empty(),
+                "a window no device of the workspace minted is nobody's to show"
+            );
 
-        // What another person shares under the window's id is not what it shows.
-        policy.grants.extend(
-            share_grants(
+            // A share that ended by its time is no share.
+            policy.grants = grants
+                .into_iter()
+                .map(|grant| grant.with_lifetime(tilo_action_policy::Lifetime::Until(10)))
+                .collect();
+            assert_eq!(window_shares(&policy, &owners, 9)[&tab].until_ms, Some(10));
+            assert!(window_shares(&policy, &owners, 10).is_empty());
+
+            // A share of a record is no window's.
+            let record = TreePath::workspace(WORKSPACE)
+                .app("so.tilo.notes")
+                .kind("notes.notebook")
+                .resource(tab_key(tab));
+            policy.grants = share_grants(
                 WORKSPACE,
-                "bo",
-                &window_shows_share_id(tab),
-                &TreePath::workspace(WORKSPACE)
-                    .app(app)
-                    .kind("notes.notebook")
-                    .resource("r"),
+                "ana",
+                &window_share_id(tab),
+                &record,
                 ShareAccess::View,
             )
-            .expect("a record"),
-        );
-        assert_eq!(window_shares(&policy, &owners, 1)[&tab].shows, None);
-        // Nor is a node of another app.
-        assert_eq!(
-            shows_of_node(
-                &TreePath::workspace(WORKSPACE)
-                    .app("so.tilo.chat")
-                    .kind("k")
-                    .resource("r"),
-                app,
-                tab
-            ),
-            None
-        );
+            .expect("a record share");
+            assert!(window_shares(&policy, &owners, 1).is_empty());
+        }
+
+        phase a_tilo_apps_window_share_says_what_the_window_shows;
+        {
+            let tab = (0x0A51_u64 << 48) | 4;
+            let app = "so.tilo.notes";
+            assert_eq!(
+                window_of_share_id(&window_share_id(tab)),
+                Some((tab, false))
+            );
+            assert_eq!(
+                window_of_share_id(&window_shows_share_id(tab)),
+                Some((tab, true))
+            );
+            assert_eq!(window_of_share_id("window.x:shows"), None);
+            assert_eq!(window_of_share_id("message.1"), None);
+            assert!(
+                window_shows_share_id(tab).starts_with(&format!("{}:", window_share_id(tab))),
+                "ending the window's share ends what it shows with it"
+            );
+
+            let owners = BTreeMap::from([(0x0A51, "aa".to_owned())]);
+            let share = |shows: &WindowShows, kind: &str| {
+                let mut policy = WorkspacePolicy::new(WORKSPACE, "owner".to_owned());
+                for (id, node) in [
+                    (window_share_id(tab), window_node(WORKSPACE, app, tab)),
+                    (
+                        window_shows_share_id(tab),
+                        shows_node(WORKSPACE, app, tab, kind, shows),
+                    ),
+                ] {
+                    policy.grants.extend(
+                        share_grants(WORKSPACE, "ana", &id, &node, ShareAccess::View)
+                            .expect("one resource of the workspace"),
+                    );
+                }
+                window_shares(&policy, &owners, 1)
+                    .remove(&tab)
+                    .expect("the window is shared")
+            };
+            for shows in [
+                // A note of the app's own notebook.
+                WindowShows {
+                    record: String::new(),
+                    item: Some("notes.page/pages/7".into()),
+                },
+                // A record of its own, and an item of it.
+                WindowShows {
+                    record: "derived:default@tab:0a51000000000009".into(),
+                    item: None,
+                },
+                WindowShows {
+                    record: "derived:default@tab:0a51000000000009".into(),
+                    item: Some("7".into()),
+                },
+                // The app's own record as a whole.
+                WindowShows::default(),
+            ] {
+                assert_eq!(share(&shows, "notes.notebook").shows, Some(shows));
+            }
+
+            // A window with nothing shown beside it is an outside window's.
+            let mut policy = WorkspacePolicy::new(WORKSPACE, "owner".to_owned());
+            policy.grants.extend(
+                share_grants(
+                    WORKSPACE,
+                    "ana",
+                    &window_share_id(tab),
+                    &window_node(WORKSPACE, app, tab),
+                    ShareAccess::View,
+                )
+                .expect("a window"),
+            );
+            assert_eq!(window_shares(&policy, &owners, 1)[&tab].shows, None);
+
+            // What another person shares under the window's id is not what it shows.
+            policy.grants.extend(
+                share_grants(
+                    WORKSPACE,
+                    "bo",
+                    &window_shows_share_id(tab),
+                    &TreePath::workspace(WORKSPACE)
+                        .app(app)
+                        .kind("notes.notebook")
+                        .resource("r"),
+                    ShareAccess::View,
+                )
+                .expect("a record"),
+            );
+            assert_eq!(window_shares(&policy, &owners, 1)[&tab].shows, None);
+            // Nor is a node of another app.
+            assert_eq!(
+                shows_of_node(
+                    &TreePath::workspace(WORKSPACE)
+                        .app("so.tilo.chat")
+                        .kind("k")
+                        .resource("r"),
+                    app,
+                    tab
+                ),
+                None
+            );
+        }
+
+        phase closing_a_window_ends_the_shares_it_showed;
+        {
+            use crate::commands::{DesktopCommand, TabLocation, apply_command};
+            use crate::tree::DesktopTree;
+
+            let (mut workspace, owners) = shared_windows();
+            let shared = |workspace: &Workspace| {
+                window_shares(&workspace.policy, &owners, 1)
+                    .keys()
+                    .copied()
+                    .collect::<Vec<TabId>>()
+            };
+            assert_eq!(
+                shared(&workspace),
+                [NOTES, TERMINAL],
+                "both windows are shared with the workspace"
+            );
+            assert_eq!(
+                window_shares(&workspace.policy, &owners, 1)[&NOTES].shows,
+                Some(WindowShows {
+                    record: String::new(),
+                    item: Some("notes.page/pages/7".into()),
+                }),
+                "the first window is shared as the note it is at"
+            );
+
+            // The person closes the first window: its share ends there, and what
+            // it showed goes with it.
+            let mut mint = || Ok(0_u64);
+            let mut create = |_: &str, _: u64| Err("a close opens no record".to_owned());
+            assert_eq!(
+                apply_command(
+                    &mut workspace,
+                    &DesktopCommand::CloseTab {
+                        location: TabLocation {
+                            strip: STRIP,
+                            group: GROUP,
+                            tab: NOTES,
+                        },
+                    },
+                    &mut mint,
+                    &mut create,
+                ),
+                Ok(())
+            );
+            assert_eq!(
+                shared(&workspace),
+                [TERMINAL],
+                "the share of the closed window ended, and the workspace still shows the other"
+            );
+
+            // The window reopens where it was without the share that went: a
+            // window comes back, its share does not, and nobody shares it again
+            // but the person.
+            let mut tree = DesktopTree {
+                active: workspace.slot,
+                workspaces: vec![workspace],
+                ..DesktopTree::default()
+            };
+            let active = tree.active;
+            assert_eq!(
+                tree.reopen_closed(active).map(|put| put.tab),
+                Some(NOTES),
+                "the window is back"
+            );
+            assert_eq!(
+                shared(&tree.workspaces[0]),
+                [TERMINAL],
+                "a reopened window carries no share of the one that went"
+            );
+
+            // A window closed from its own bar ends its share the same way.
+            assert!(tree.close_tab(TERMINAL).is_some());
+            assert!(shared(&tree.workspaces[0]).is_empty());
+        }
     }
 
     /// The device the two windows below run on, and the workspace's name for it.
@@ -544,82 +624,6 @@ mod tests {
             );
         }
         (workspace, BTreeMap::from([(ANA, "aa".to_owned())]))
-    }
-
-    #[test]
-    fn closing_a_window_ends_the_shares_it_showed() {
-        use crate::commands::{DesktopCommand, TabLocation, apply_command};
-        use crate::tree::DesktopTree;
-
-        let (mut workspace, owners) = shared_windows();
-        let shared = |workspace: &Workspace| {
-            window_shares(&workspace.policy, &owners, 1)
-                .keys()
-                .copied()
-                .collect::<Vec<TabId>>()
-        };
-        assert_eq!(
-            shared(&workspace),
-            [NOTES, TERMINAL],
-            "both windows are shared with the workspace"
-        );
-        assert_eq!(
-            window_shares(&workspace.policy, &owners, 1)[&NOTES].shows,
-            Some(WindowShows {
-                record: String::new(),
-                item: Some("notes.page/pages/7".into()),
-            }),
-            "the first window is shared as the note it is at"
-        );
-
-        // The person closes the first window: its share ends there, and what
-        // it showed goes with it.
-        let mut mint = || Ok(0_u64);
-        let mut create = |_: &str, _: u64| Err("a close opens no record".to_owned());
-        assert_eq!(
-            apply_command(
-                &mut workspace,
-                &DesktopCommand::CloseTab {
-                    location: TabLocation {
-                        strip: STRIP,
-                        group: GROUP,
-                        tab: NOTES,
-                    },
-                },
-                &mut mint,
-                &mut create,
-            ),
-            Ok(())
-        );
-        assert_eq!(
-            shared(&workspace),
-            [TERMINAL],
-            "the share of the closed window ended, and the workspace still shows the other"
-        );
-
-        // The window reopens where it was without the share that went: a
-        // window comes back, its share does not, and nobody shares it again
-        // but the person.
-        let mut tree = DesktopTree {
-            active: workspace.slot,
-            workspaces: vec![workspace],
-            ..DesktopTree::default()
-        };
-        let active = tree.active;
-        assert_eq!(
-            tree.reopen_closed(active).map(|put| put.tab),
-            Some(NOTES),
-            "the window is back"
-        );
-        assert_eq!(
-            shared(&tree.workspaces[0]),
-            [TERMINAL],
-            "a reopened window carries no share of the one that went"
-        );
-
-        // A window closed from its own bar ends its share the same way.
-        assert!(tree.close_tab(TERMINAL).is_some());
-        assert!(shared(&tree.workspaces[0]).is_empty());
     }
 
     #[test]

@@ -302,174 +302,178 @@ mod tests {
         may_command(standing, &authors, &workspace, command)
     }
 
-    #[test]
-    fn only_owner_and_moderators_rename_a_public_workspace() {
-        let rename = DesktopCommand::RenameWorkspace {
-            name: "Hacked".into(),
-        };
-        assert_eq!(
-            asks(&GUEST, &rename),
-            Err(Refusal::Governed(Governed::Name))
-        );
-        assert_eq!(
-            asks(&MEMBER, &rename),
-            Err(Refusal::Governed(Governed::Name))
-        );
-        assert_eq!(asks(&MODERATOR, &rename), Ok(()));
-        assert_eq!(asks(&OWNER, &rename), Ok(()));
-        // Not known yet is not leave to rename.
-        let unknown = Standing {
-            person: "guest",
-            role: None,
-            members: None,
-        };
-        assert!(asks(&unknown, &rename).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn who_may_run_a_desktop_command;
 
-    #[test]
-    fn only_owner_and_moderators_add_or_change_the_workspaces_desks() {
-        let add = DesktopCommand::CreateStrip {
-            name: "Mine".into(),
-        };
-        let rename = DesktopCommand::RenameStrip {
-            strip: 10,
-            name: "Mine now".into(),
-        };
-        let remove = DesktopCommand::RemoveStrip { strip: 10 };
-        for command in [&add, &rename, &remove] {
+        phase only_owner_and_moderators_rename_a_public_workspace;
+        {
+            let rename = DesktopCommand::RenameWorkspace {
+                name: "Hacked".into(),
+            };
             assert_eq!(
-                asks(&GUEST, command),
-                Err(Refusal::Governed(Governed::Desks))
+                asks(&GUEST, &rename),
+                Err(Refusal::Governed(Governed::Name))
             );
             assert_eq!(
-                asks(&MEMBER, command),
-                Err(Refusal::Governed(Governed::Desks))
+                asks(&MEMBER, &rename),
+                Err(Refusal::Governed(Governed::Name))
             );
-            assert_eq!(asks(&MODERATOR, command), Ok(()));
-            assert_eq!(asks(&OWNER, command), Ok(()));
+            assert_eq!(asks(&MODERATOR, &rename), Ok(()));
+            assert_eq!(asks(&OWNER, &rename), Ok(()));
+            // Not known yet is not leave to rename.
+            let unknown = Standing {
+                person: "guest",
+                role: None,
+                members: None,
+            };
+            assert!(asks(&unknown, &rename).is_err());
         }
-    }
 
-    #[test]
-    fn a_strip_someone_made_stays_theirs_to_manage() {
-        let (workspace, mut authors) = lounge();
-        authors.insert(10, MEMBER.person.into());
-        let rename = DesktopCommand::RenameStrip {
-            strip: 10,
-            name: "Corner".into(),
-        };
-        assert_eq!(may_command(&MEMBER, &authors, &workspace, &rename), Ok(()));
-        assert!(may_command(&GUEST, &authors, &workspace, &rename).is_err());
-    }
-
-    /// A window whose opener has left the workspace holds nobody: whoever
-    /// writes there closes or moves it. While the members are not known,
-    /// or while the opener is still a member, it stays theirs.
-    #[test]
-    fn a_window_of_someone_who_left_is_anyones_to_close() {
-        let theirs = DesktopCommand::CloseTab {
-            location: at(2, 200),
-        };
-        let still_here: std::collections::BTreeSet<String> =
-            ["guest", OTHER_GUEST].map(str::to_owned).into();
-        let left: std::collections::BTreeSet<String> = ["guest"].map(str::to_owned).into();
-        let guest = |members| Standing { members, ..GUEST };
-        assert!(asks(&guest(None), &theirs).is_err(), "members not known");
-        assert!(asks(&guest(Some(&still_here)), &theirs).is_err());
-        assert_eq!(asks(&guest(Some(&left)), &theirs), Ok(()));
-        let viewer = Standing {
-            role: Some(Role::Viewer),
-            ..guest(Some(&left))
-        };
-        assert!(
-            asks(&viewer, &theirs).is_err(),
-            "someone who only looks closes nothing"
-        );
-        // The workspace's own windows are nobody's to release.
-        let (workspace, mut authors) = lounge();
-        authors.remove(&2);
-        assert!(may_command(&guest(Some(&left)), &authors, &workspace, &theirs).is_err());
-    }
-
-    #[test]
-    fn guests_close_and_move_their_own_windows_and_moderators_anyones() {
-        let mine = DesktopCommand::CloseTab {
-            location: at(1, 100),
-        };
-        let theirs = DesktopCommand::CloseTab {
-            location: at(2, 200),
-        };
-        assert_eq!(asks(&GUEST, &mine), Ok(()));
-        assert_eq!(
-            asks(&GUEST, &theirs),
-            Err(Refusal::Others {
-                id: 2,
-                owner: Some(OTHER_GUEST.into()),
-            })
-        );
-        assert!(asks(&MEMBER, &theirs).is_err());
-        assert_eq!(asks(&MODERATOR, &theirs), Ok(()));
-        let move_theirs = DesktopCommand::MoveTab {
-            location: at(2, 200),
-            placement: TabPlacement::NewGroup {
+        phase only_owner_and_moderators_add_or_change_the_workspaces_desks;
+        {
+            let add = DesktopCommand::CreateStrip {
+                name: "Mine".into(),
+            };
+            let rename = DesktopCommand::RenameStrip {
                 strip: 10,
-                after: None,
-            },
-        };
-        assert!(asks(&GUEST, &move_theirs).is_err());
-        let reorder_theirs = DesktopCommand::ReorderGroup {
-            strip: 10,
-            group: 200,
-            before: Some(100),
-        };
-        assert!(asks(&GUEST, &reorder_theirs).is_err());
-        let reorder_mine = DesktopCommand::ReorderGroup {
-            strip: 10,
-            group: 100,
-            before: None,
-        };
-        assert_eq!(asks(&GUEST, &reorder_mine), Ok(()));
-    }
-
-    #[test]
-    fn only_owner_and_moderators_add_workspaces() {
-        for standing in [GUEST, MEMBER] {
-            assert_eq!(
-                may_create_workspace(&standing),
-                Err(Refusal::Governed(Governed::Workspaces))
-            );
+                name: "Mine now".into(),
+            };
+            let remove = DesktopCommand::RemoveStrip { strip: 10 };
+            for command in [&add, &rename, &remove] {
+                assert_eq!(
+                    asks(&GUEST, command),
+                    Err(Refusal::Governed(Governed::Desks))
+                );
+                assert_eq!(
+                    asks(&MEMBER, command),
+                    Err(Refusal::Governed(Governed::Desks))
+                );
+                assert_eq!(asks(&MODERATOR, command), Ok(()));
+                assert_eq!(asks(&OWNER, command), Ok(()));
+            }
         }
-        assert_eq!(may_create_workspace(&MODERATOR), Ok(()));
-        assert_eq!(may_create_workspace(&OWNER), Ok(()));
-    }
 
-    #[test]
-    fn writers_open_windows_and_watchers_do_not() {
-        let open = DesktopCommand::OpenApp {
-            app: "so.tilo.notes".into(),
-            beside: None,
-        };
-        assert_eq!(asks(&GUEST, &open), Ok(()));
-        assert_eq!(asks(&MEMBER, &open), Ok(()));
-        let viewer = Standing {
-            person: "viewer",
-            role: Some(Role::Viewer),
-            members: None,
-        };
-        assert_eq!(asks(&viewer, &open), Err(Refusal::ReadOnly));
-    }
+        phase a_strip_someone_made_stays_theirs_to_manage;
+        {
+            let (workspace, mut authors) = lounge();
+            authors.insert(10, MEMBER.person.into());
+            let rename = DesktopCommand::RenameStrip {
+                strip: 10,
+                name: "Corner".into(),
+            };
+            assert_eq!(may_command(&MEMBER, &authors, &workspace, &rename), Ok(()));
+            assert!(may_command(&GUEST, &authors, &workspace, &rename).is_err());
+        }
 
-    #[test]
-    fn every_refusal_says_why_in_words() {
-        for refusal in [
-            Refusal::Governed(Governed::Name),
-            Refusal::Governed(Governed::Desks),
-            Refusal::Governed(Governed::Workspaces),
-            Refusal::Others { id: 2, owner: None },
-            Refusal::ReadOnly,
-        ] {
-            let text = refusal.to_string();
-            assert!(!text.contains('2') && text.ends_with(char::is_alphabetic));
+        phase a_window_of_someone_who_left_is_anyones_to_close;
+        // A window whose opener has left the workspace holds nobody: whoever
+        // writes there closes or moves it. While the members are not known,
+        // or while the opener is still a member, it stays theirs.
+        {
+            let theirs = DesktopCommand::CloseTab {
+                location: at(2, 200),
+            };
+            let still_here: std::collections::BTreeSet<String> =
+                ["guest", OTHER_GUEST].map(str::to_owned).into();
+            let left: std::collections::BTreeSet<String> = ["guest"].map(str::to_owned).into();
+            let guest = |members| Standing { members, ..GUEST };
+            assert!(asks(&guest(None), &theirs).is_err(), "members not known");
+            assert!(asks(&guest(Some(&still_here)), &theirs).is_err());
+            assert_eq!(asks(&guest(Some(&left)), &theirs), Ok(()));
+            let viewer = Standing {
+                role: Some(Role::Viewer),
+                ..guest(Some(&left))
+            };
+            assert!(
+                asks(&viewer, &theirs).is_err(),
+                "someone who only looks closes nothing"
+            );
+            // The workspace's own windows are nobody's to release.
+            let (workspace, mut authors) = lounge();
+            authors.remove(&2);
+            assert!(may_command(&guest(Some(&left)), &authors, &workspace, &theirs).is_err());
+        }
+
+        phase guests_close_and_move_their_own_windows_and_moderators_anyones;
+        {
+            let mine = DesktopCommand::CloseTab {
+                location: at(1, 100),
+            };
+            let theirs = DesktopCommand::CloseTab {
+                location: at(2, 200),
+            };
+            assert_eq!(asks(&GUEST, &mine), Ok(()));
+            assert_eq!(
+                asks(&GUEST, &theirs),
+                Err(Refusal::Others {
+                    id: 2,
+                    owner: Some(OTHER_GUEST.into()),
+                })
+            );
+            assert!(asks(&MEMBER, &theirs).is_err());
+            assert_eq!(asks(&MODERATOR, &theirs), Ok(()));
+            let move_theirs = DesktopCommand::MoveTab {
+                location: at(2, 200),
+                placement: TabPlacement::NewGroup {
+                    strip: 10,
+                    after: None,
+                },
+            };
+            assert!(asks(&GUEST, &move_theirs).is_err());
+            let reorder_theirs = DesktopCommand::ReorderGroup {
+                strip: 10,
+                group: 200,
+                before: Some(100),
+            };
+            assert!(asks(&GUEST, &reorder_theirs).is_err());
+            let reorder_mine = DesktopCommand::ReorderGroup {
+                strip: 10,
+                group: 100,
+                before: None,
+            };
+            assert_eq!(asks(&GUEST, &reorder_mine), Ok(()));
+        }
+
+        phase only_owner_and_moderators_add_workspaces;
+        {
+            for standing in [GUEST, MEMBER] {
+                assert_eq!(
+                    may_create_workspace(&standing),
+                    Err(Refusal::Governed(Governed::Workspaces))
+                );
+            }
+            assert_eq!(may_create_workspace(&MODERATOR), Ok(()));
+            assert_eq!(may_create_workspace(&OWNER), Ok(()));
+        }
+
+        phase writers_open_windows_and_watchers_do_not;
+        {
+            let open = DesktopCommand::OpenApp {
+                app: "so.tilo.notes".into(),
+                beside: None,
+            };
+            assert_eq!(asks(&GUEST, &open), Ok(()));
+            assert_eq!(asks(&MEMBER, &open), Ok(()));
+            let viewer = Standing {
+                person: "viewer",
+                role: Some(Role::Viewer),
+                members: None,
+            };
+            assert_eq!(asks(&viewer, &open), Err(Refusal::ReadOnly));
+        }
+
+        phase every_refusal_says_why_in_words;
+        {
+            for refusal in [
+                Refusal::Governed(Governed::Name),
+                Refusal::Governed(Governed::Desks),
+                Refusal::Governed(Governed::Workspaces),
+                Refusal::Others { id: 2, owner: None },
+                Refusal::ReadOnly,
+            ] {
+                let text = refusal.to_string();
+                assert!(!text.contains('2') && text.ends_with(char::is_alphabetic));
+            }
         }
     }
 }

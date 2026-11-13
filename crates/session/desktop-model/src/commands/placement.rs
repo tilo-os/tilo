@@ -303,146 +303,150 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_launch_follows_the_selection_or_the_visible_seam() {
-        use OpenIntent::Launch;
-        let (w, ids) = workspace(&[1, 1, 1]);
-        assert_eq!(place(&w, Launch, Some(ids[1]), None), right_of(ids[1]));
+    tilo_test_env::scenario! {
+        fn where_an_opened_window_is_placed;
 
-        let (tabbed, tabbed_ids) = workspace(&[1, 3, 1]);
-        assert_eq!(
-            place(&tabbed, Launch, Some(tabbed_ids[1]), None),
-            TabPlacement::InGroup {
-                strip: STRIP.0,
-                group: tabbed_ids[1],
-                after: None
-            },
-        );
+        phase a_launch_follows_the_selection_or_the_visible_seam;
+        {
+            use OpenIntent::Launch;
+            let (w, ids) = workspace(&[1, 1, 1]);
+            assert_eq!(place(&w, Launch, Some(ids[1]), None), right_of(ids[1]));
 
-        // Canvas 150..280: the seam at 200 is on screen, 100 is off it.
-        let view = viewport(&ids, (150.0, 280.0));
-        assert_eq!(place(&w, Launch, None, Some(&view)), right_of(ids[1]));
-        // Inside group 1: no border on screen, so the next one rightwards.
-        let view = viewport(&ids, (120.0, 190.0));
-        assert_eq!(place(&w, Launch, None, Some(&view)), right_of(ids[1]));
-        // A border exactly on the screen edge is not a space you can see.
-        let view = viewport(&ids, (0.0, 100.0));
-        assert_eq!(view.visible_seam(), None);
-        assert_eq!(place(&w, Launch, None, Some(&view)), right_of(ids[0]));
-
-        let (lone, lone_ids) = workspace(&[1]);
-        let view = viewport(&lone_ids, (0.5, 99.5));
-        assert_eq!(
-            place(&lone, Launch, None, Some(&view)),
-            right_of(lone_ids[0])
-        );
-
-        let (pair, pair_ids) = workspace(&[1, 1]);
-        let view = viewport(&pair_ids, (400.0, 800.0));
-        assert_eq!(
-            place(&pair, Launch, None, Some(&view)),
-            right_of(pair_ids[1]),
-            "panning past the last window still lands at the end",
-        );
-
-        let mut other = viewport(&ids, (150.0, 280.0));
-        other.strip = StripId(99);
-        assert_eq!(
-            place(&w, Launch, None, Some(&other)),
-            TabPlacement::NewGroup {
-                strip: STRIP.0,
-                after: None
-            },
-            "a snapshot of a different strip must not decide this one",
-        );
-    }
-
-    #[test]
-    fn search_opens_beside_the_selection_never_as_a_tab() {
-        use OpenIntent::Search;
-        // A | B | C | D in view, A (tabbed) selected: right of A, where the
-        // person is working, not after D at the far edge, and not a tab.
-        let (w, ids) = workspace(&[3, 1, 1, 1]);
-        let view = viewport(&ids, (0.0, 350.0));
-        assert_eq!(
-            place(&w, Search, Some(ids[0]), Some(&view)),
-            right_of(ids[0])
-        );
-        assert_eq!(place(&w, Search, Some(ids[1]), None), right_of(ids[1]));
-
-        // Nothing selected: the seam in view, like a launch.
-        let (three, three_ids) = workspace(&[1, 1, 1]);
-        let view = viewport(&three_ids, (150.0, 280.0));
-        assert_eq!(
-            place(&three, Search, None, Some(&view)),
-            right_of(three_ids[1])
-        );
-        let view = viewport(&three_ids, (20.0, 90.0));
-        assert_eq!(
-            place(&three, Search, None, Some(&view)),
-            right_of(three_ids[0])
-        );
-    }
-
-    #[test]
-    fn an_actors_view_opens_beside_its_group_on_its_own_strip() {
-        let (mut w, ids) = workspace(&[1, 3, 1]);
-        let mut other = Strip::new(StripId(8), "Agent");
-        other.window_groups.push(WindowGroup {
-            id: 900,
-            active_tab: 901,
-            tabs: vec![Tab {
-                id: 901,
-                title: "a".into(),
-                tile: TileContent::Stub {
-                    kind: AppKind::Terminal,
-                    label: "a".into(),
+            let (tabbed, tabbed_ids) = workspace(&[1, 3, 1]);
+            assert_eq!(
+                place(&tabbed, Launch, Some(tabbed_ids[1]), None),
+                TabPlacement::InGroup {
+                    strip: STRIP.0,
+                    group: tabbed_ids[1],
+                    after: None
                 },
-                app_title: None,
-                view: String::new(),
-                pinned: false,
-            }],
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        });
-        w.strips.push(other);
+            );
 
-        let tabbed = OpenContext::beside(&w, ids[1]).expect("group 1 is on a strip");
-        assert_eq!(
-            open_app_placement(&w, &tabbed, |_| true).unwrap(),
-            right_of(ids[1]),
-            "beside a tabbed group, never a tab inside it",
-        );
-        let elsewhere = OpenContext::beside(&w, 900).expect("group 900 is on a strip");
-        assert_eq!(
-            open_app_placement(&w, &elsewhere, |_| true).unwrap(),
-            TabPlacement::NewGroup {
-                strip: 8,
-                after: Some(900)
-            },
-            "the actor's strip, not the person's",
-        );
-        assert!(OpenContext::beside(&w, 4242).is_none());
-    }
+            // Canvas 150..280: the seam at 200 is on screen, 100 is off it.
+            let view = viewport(&ids, (150.0, 280.0));
+            assert_eq!(place(&w, Launch, None, Some(&view)), right_of(ids[1]));
+            // Inside group 1: no border on screen, so the next one rightwards.
+            let view = viewport(&ids, (120.0, 190.0));
+            assert_eq!(place(&w, Launch, None, Some(&view)), right_of(ids[1]));
+            // A border exactly on the screen edge is not a space you can see.
+            let view = viewport(&ids, (0.0, 100.0));
+            assert_eq!(view.visible_seam(), None);
+            assert_eq!(place(&w, Launch, None, Some(&view)), right_of(ids[0]));
 
-    #[test]
-    fn a_headless_open_lands_at_the_end_of_the_last_owned_strip() {
-        let (mut w, _) = workspace(&[1]);
-        w.strips.push(Strip::new(StripId(8), "Other"));
-        let headless = OpenContext::default();
-        assert_eq!(
-            open_app_placement(&w, &headless, |id| id != 8).unwrap(),
-            TabPlacement::NewGroup {
-                strip: STRIP.0,
-                after: None
-            },
-        );
-        assert!(open_app_placement(&w, &headless, |_| false).is_err());
-        w.strips.clear();
-        assert_eq!(
-            open_app_placement(&w, &headless, |_| false).unwrap(),
-            TabPlacement::EmptyWorkspace
-        );
+            let (lone, lone_ids) = workspace(&[1]);
+            let view = viewport(&lone_ids, (0.5, 99.5));
+            assert_eq!(
+                place(&lone, Launch, None, Some(&view)),
+                right_of(lone_ids[0])
+            );
+
+            let (pair, pair_ids) = workspace(&[1, 1]);
+            let view = viewport(&pair_ids, (400.0, 800.0));
+            assert_eq!(
+                place(&pair, Launch, None, Some(&view)),
+                right_of(pair_ids[1]),
+                "panning past the last window still lands at the end",
+            );
+
+            let mut other = viewport(&ids, (150.0, 280.0));
+            other.strip = StripId(99);
+            assert_eq!(
+                place(&w, Launch, None, Some(&other)),
+                TabPlacement::NewGroup {
+                    strip: STRIP.0,
+                    after: None
+                },
+                "a snapshot of a different strip must not decide this one",
+            );
+        }
+
+        phase search_opens_beside_the_selection_never_as_a_tab;
+        {
+            use OpenIntent::Search;
+            // A | B | C | D in view, A (tabbed) selected: right of A, where the
+            // person is working, not after D at the far edge, and not a tab.
+            let (w, ids) = workspace(&[3, 1, 1, 1]);
+            let view = viewport(&ids, (0.0, 350.0));
+            assert_eq!(
+                place(&w, Search, Some(ids[0]), Some(&view)),
+                right_of(ids[0])
+            );
+            assert_eq!(place(&w, Search, Some(ids[1]), None), right_of(ids[1]));
+
+            // Nothing selected: the seam in view, like a launch.
+            let (three, three_ids) = workspace(&[1, 1, 1]);
+            let view = viewport(&three_ids, (150.0, 280.0));
+            assert_eq!(
+                place(&three, Search, None, Some(&view)),
+                right_of(three_ids[1])
+            );
+            let view = viewport(&three_ids, (20.0, 90.0));
+            assert_eq!(
+                place(&three, Search, None, Some(&view)),
+                right_of(three_ids[0])
+            );
+        }
+
+        phase an_actors_view_opens_beside_its_group_on_its_own_strip;
+        {
+            let (mut w, ids) = workspace(&[1, 3, 1]);
+            let mut other = Strip::new(StripId(8), "Agent");
+            other.window_groups.push(WindowGroup {
+                id: 900,
+                active_tab: 901,
+                tabs: vec![Tab {
+                    id: 901,
+                    title: "a".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Terminal,
+                        label: "a".into(),
+                    },
+                    app_title: None,
+                    view: String::new(),
+                    pinned: false,
+                }],
+                width: WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            });
+            w.strips.push(other);
+
+            let tabbed = OpenContext::beside(&w, ids[1]).expect("group 1 is on a strip");
+            assert_eq!(
+                open_app_placement(&w, &tabbed, |_| true).unwrap(),
+                right_of(ids[1]),
+                "beside a tabbed group, never a tab inside it",
+            );
+            let elsewhere = OpenContext::beside(&w, 900).expect("group 900 is on a strip");
+            assert_eq!(
+                open_app_placement(&w, &elsewhere, |_| true).unwrap(),
+                TabPlacement::NewGroup {
+                    strip: 8,
+                    after: Some(900)
+                },
+                "the actor's strip, not the person's",
+            );
+            assert!(OpenContext::beside(&w, 4242).is_none());
+        }
+
+        phase a_headless_open_lands_at_the_end_of_the_last_owned_strip;
+        {
+            let (mut w, _) = workspace(&[1]);
+            w.strips.push(Strip::new(StripId(8), "Other"));
+            let headless = OpenContext::default();
+            assert_eq!(
+                open_app_placement(&w, &headless, |id| id != 8).unwrap(),
+                TabPlacement::NewGroup {
+                    strip: STRIP.0,
+                    after: None
+                },
+            );
+            assert!(open_app_placement(&w, &headless, |_| false).is_err());
+            w.strips.clear();
+            assert_eq!(
+                open_app_placement(&w, &headless, |_| false).unwrap(),
+                TabPlacement::EmptyWorkspace
+            );
+        }
     }
 }

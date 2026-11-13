@@ -730,102 +730,116 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_empty_canvas_places_a_window_exactly_where_pointed() {
-        let place = Arrangement::default().free_place_near((120, -40), 640, 480, None);
-        assert_eq!(place, CanvasPlace::new(120, -40, 640, 480));
-    }
+    tilo_test_env::scenario! {
+        fn a_free_place_is_found_near_beside_and_next_to_windows;
 
-    #[test]
-    fn a_window_in_the_way_is_never_moved_and_never_covered() {
-        let board = CanvasPlace::new(0, 0, 800, 600);
-        let arrangement = canvas(&[(1, board)]);
-        let place = arrangement.free_place_near((100, 100), 640, 480, None);
-        assert!(
-            !place.crowds(&board, CANVAS_GAP),
-            "{place:?} crowds {board:?}"
-        );
-        assert_eq!(arrangement.place_of(1), Some(board), "nothing moved");
-    }
-
-    #[test]
-    fn the_free_place_chosen_is_the_nearest_one() {
-        // A wide window above the anchor: going below it is nearer than
-        // going past its far side.
-        let wide = CanvasPlace::new(-1000, 0, 2000, 300);
-        let arrangement = canvas(&[(1, wide)]);
-        let place = arrangement.free_place_near((0, 100), 400, 300, None);
-        assert_eq!((place.x, place.y), (0, 324));
-    }
-
-    #[test]
-    fn placing_is_deterministic_and_fills_around_a_crowd() {
-        let mut arrangement = canvas(&[]);
-        let mut placed = Vec::new();
-        for id in 1..=6 {
-            let place = arrangement.free_place_near((0, 0), 400, 300, None);
-            for other in &placed {
-                assert!(
-                    !place.crowds(other, CANVAS_GAP),
-                    "{place:?} crowds {other:?}"
-                );
-            }
-            assert_eq!(place, arrangement.free_place_near((0, 0), 400, 300, None));
-            arrangement.places.insert(id, place);
-            placed.push(place);
+        phase an_empty_canvas_places_a_window_exactly_where_pointed;
+        {
+            let place = Arrangement::default().free_place_near((120, -40), 640, 480, None);
+            assert_eq!(place, CanvasPlace::new(120, -40, 640, 480));
         }
-    }
 
-    #[test]
-    fn beside_a_window_means_its_trailing_side_when_free() {
-        let card = CanvasPlace::new(0, 0, 400, 300);
-        let arrangement = canvas(&[(1, card)]);
-        let place = arrangement.free_place_beside(card, 300, 200, None);
-        assert_eq!((place.x, place.y), (424, 0));
-    }
+        phase a_window_in_the_way_is_never_moved_and_never_covered;
+        {
+            let board = CanvasPlace::new(0, 0, 800, 600);
+            let arrangement = canvas(&[(1, board)]);
+            let place = arrangement.free_place_near((100, 100), 640, 480, None);
+            assert!(
+                !place.crowds(&board, CANVAS_GAP),
+                "{place:?} crowds {board:?}"
+            );
+            assert_eq!(arrangement.place_of(1), Some(board), "nothing moved");
+        }
 
-    #[test]
-    fn next_to_a_window_walks_right_then_down_and_never_above_it() {
-        // The conversation at the origin: the first place opened beside it stands at its right on
-        // its own line, the second below it, the third below its right — and none above it or to
-        // its left, where a person would not look for what they asked for.
-        let conversation = CanvasPlace::new(0, 0, 720, 520);
-        let mut arrangement = canvas(&[(1, conversation)]);
-        let opened: Vec<CanvasPlace> = (2..=7)
-            .map(|id| {
-                let place = arrangement.free_place_next_to(conversation, 720, 520, None);
-                assert!(!place.crowds(&conversation, CANVAS_GAP), "{place:?}");
-                assert!(
-                    place.y >= conversation.y,
-                    "never above the anchor: {place:?}"
-                );
-                assert!(
-                    place.x >= conversation.x,
-                    "never to the anchor's leading side: {place:?}"
-                );
-                for other in &opened_places(&arrangement) {
+        phase the_free_place_chosen_is_the_nearest_one;
+        {
+            // A wide window above the anchor: going below it is nearer than
+            // going past its far side.
+            let wide = CanvasPlace::new(-1000, 0, 2000, 300);
+            let arrangement = canvas(&[(1, wide)]);
+            let place = arrangement.free_place_near((0, 100), 400, 300, None);
+            assert_eq!((place.x, place.y), (0, 324));
+        }
+
+        phase placing_is_deterministic_and_fills_around_a_crowd;
+        {
+            let mut arrangement = canvas(&[]);
+            let mut placed = Vec::new();
+            for id in 1..=6 {
+                let place = arrangement.free_place_near((0, 0), 400, 300, None);
+                for other in &placed {
                     assert!(
                         !place.crowds(other, CANVAS_GAP),
                         "{place:?} crowds {other:?}"
                     );
                 }
+                assert_eq!(place, arrangement.free_place_near((0, 0), 400, 300, None));
                 arrangement.places.insert(id, place);
-                place
-            })
-            .collect();
-        assert_eq!(
-            (opened[0].x, opened[0].y),
-            (744, 0),
-            "the first stands beside the conversation, at its line"
-        );
-        assert_eq!((opened[1].x, opened[1].y), (0, 544), "the second below it");
-        assert_eq!(
-            (opened[2].x, opened[2].y),
-            (744, 544),
-            "the third under its right"
-        );
-        let places: Vec<CanvasPlace> = opened_places(&arrangement);
-        assert_eq!(places.len(), 7, "every place stands clear of the rest");
+                placed.push(place);
+            }
+        }
+
+        phase beside_a_window_means_its_trailing_side_when_free;
+        {
+            let card = CanvasPlace::new(0, 0, 400, 300);
+            let arrangement = canvas(&[(1, card)]);
+            let place = arrangement.free_place_beside(card, 300, 200, None);
+            assert_eq!((place.x, place.y), (424, 0));
+        }
+
+        phase next_to_a_window_walks_right_then_down_and_never_above_it;
+        {
+            // The conversation at the origin: the first place opened beside it stands at its right on
+            // its own line, the second below it, the third below its right — and none above it or to
+            // its left, where a person would not look for what they asked for.
+            let conversation = CanvasPlace::new(0, 0, 720, 520);
+            let mut arrangement = canvas(&[(1, conversation)]);
+            let opened: Vec<CanvasPlace> = (2..=7)
+                .map(|id| {
+                    let place = arrangement.free_place_next_to(conversation, 720, 520, None);
+                    assert!(!place.crowds(&conversation, CANVAS_GAP), "{place:?}");
+                    assert!(
+                        place.y >= conversation.y,
+                        "never above the anchor: {place:?}"
+                    );
+                    assert!(
+                        place.x >= conversation.x,
+                        "never to the anchor's leading side: {place:?}"
+                    );
+                    for other in &opened_places(&arrangement) {
+                        assert!(
+                            !place.crowds(other, CANVAS_GAP),
+                            "{place:?} crowds {other:?}"
+                        );
+                    }
+                    arrangement.places.insert(id, place);
+                    place
+                })
+                .collect();
+            assert_eq!(
+                (opened[0].x, opened[0].y),
+                (744, 0),
+                "the first stands beside the conversation, at its line"
+            );
+            assert_eq!((opened[1].x, opened[1].y), (0, 544), "the second below it");
+            assert_eq!(
+                (opened[2].x, opened[2].y),
+                (744, 544),
+                "the third under its right"
+            );
+            let places: Vec<CanvasPlace> = opened_places(&arrangement);
+            assert_eq!(places.len(), 7, "every place stands clear of the rest");
+        }
+
+        phase a_window_being_placed_again_ignores_its_own_old_place;
+        {
+            let card = CanvasPlace::new(0, 0, 400, 300);
+            let arrangement = canvas(&[(1, card)]);
+            assert_eq!(
+                arrangement.free_place_near((10, 10), 400, 300, Some(1)).x,
+                10
+            );
+        }
     }
 
     /// The places standing in `arrangement`, for saying one crowds none.
@@ -833,187 +847,185 @@ mod tests {
         arrangement.places.values().copied().collect()
     }
 
-    #[test]
-    fn a_window_being_placed_again_ignores_its_own_old_place() {
-        let card = CanvasPlace::new(0, 0, 400, 300);
-        let arrangement = canvas(&[(1, card)]);
-        assert_eq!(
-            arrangement.free_place_near((10, 10), 400, 300, Some(1)).x,
-            10
-        );
+    tilo_test_env::scenario! {
+        fn the_canvas_keeps_and_finds_its_places;
+
+        phase nearby_and_selected_windows_are_found;
+        {
+            let arrangement = canvas(&[
+                (1, CanvasPlace::new(0, 0, 100, 100)),
+                (2, CanvasPlace::new(500, 0, 100, 100)),
+                (3, CanvasPlace::new(2000, 2000, 100, 100)),
+            ]);
+            assert_eq!(arrangement.near((150, 50), 600), vec![1, 2]);
+            assert_eq!(
+                arrangement.within(CanvasPlace::new(50, 50, 500, 10)),
+                vec![1, 2]
+            );
+            assert_eq!(
+                arrangement.bounds_of(&[1, 2]),
+                Some(CanvasPlace::new(0, 0, 600, 100))
+            );
+        }
+
+        phase closing_a_window_frees_its_place;
+        {
+            let mut arrangement = canvas(&[(1, CanvasPlace::new(0, 0, 10, 10))]);
+            assert!(arrangement.retain_groups(|id| id != 1));
+            assert!(arrangement.places.is_empty());
+        }
+
+        phase a_place_let_go_elsewhere_on_the_canvas_keeps_its_size_and_moves_nothing_else;
+        {
+            // A drag that ended on the canvas: the place stands where it was let go, at the size it
+            // had, and every other place stays exactly where it was.
+            let mut arrangement = canvas(&[
+                (1, CanvasPlace::new(0, 0, 400, 300)),
+                (2, CanvasPlace::new(500, 0, 400, 300)),
+            ]);
+            assert!(arrangement.set_position(2, 900, 640));
+            assert_eq!(
+                arrangement.place_of(2),
+                Some(CanvasPlace::new(900, 640, 400, 300)),
+                "the place stands where it was let go, at its own size"
+            );
+            assert_eq!(
+                arrangement.place_of(1),
+                Some(CanvasPlace::new(0, 0, 400, 300)),
+                "nothing else moved"
+            );
+            assert!(
+                !arrangement.set_position(2, 900, 640),
+                "a place already there is not a change"
+            );
+        }
+
+        phase a_stored_workspace_keeps_its_canvas;
+        {
+            let mut workspace = crate::Workspace::create("Desk");
+            workspace.arrangement = canvas(&[(920_001, CanvasPlace::new(40, -8, 400, 300))]);
+            let json = serde_json::to_string(&workspace).expect("serialises");
+            let back: crate::Workspace = serde_json::from_str(&json).expect("reads back");
+            assert_eq!(back.arrangement, workspace.arrangement);
+        }
+
+        phase an_unknown_kind_reads_as_strips;
+        {
+            assert_eq!(ArrangementKind::parse("canvas"), ArrangementKind::Canvas);
+            assert_eq!(ArrangementKind::parse("spiral"), ArrangementKind::Strips);
+        }
     }
 
-    #[test]
-    fn nearby_and_selected_windows_are_found() {
-        let arrangement = canvas(&[
-            (1, CanvasPlace::new(0, 0, 100, 100)),
-            (2, CanvasPlace::new(500, 0, 100, 100)),
-            (3, CanvasPlace::new(2000, 2000, 100, 100)),
-        ]);
-        assert_eq!(arrangement.near((150, 50), 600), vec![1, 2]);
-        assert_eq!(
-            arrangement.within(CanvasPlace::new(50, 50, 500, 10)),
-            vec![1, 2]
-        );
-        assert_eq!(
-            arrangement.bounds_of(&[1, 2]),
-            Some(CanvasPlace::new(0, 0, 600, 100))
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_float_keeps_its_corner_and_its_size;
 
-    /// A window's place, on the canvas or floating, is never smaller than a window: an agent's
-    /// command or a record that asked for a sliver gets a window, and a sliver some older build
-    /// left still lays out a window wide.
-    #[test]
-    fn a_window_is_never_kept_or_laid_out_a_sliver() {
-        let area = CanvasPlace::new(0, 32, 1280, 768);
-        let sliver = FloatPlace {
-            corner: FloatCorner::TopLeft,
-            dx: 24,
-            dy: 0,
-            width: 2,
-            height: 2,
-        };
-        assert_eq!(
-            sliver.resolved(area),
-            CanvasPlace::new(24, 32, WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT),
-            "laid out from the corner it keeps, a window wide"
-        );
-        let made = FloatPlace::new(FloatCorner::TopLeft, 24, 0, 2, 2);
-        assert_eq!(
-            (made.width, made.height),
-            (WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
-        );
-        let read: FloatPlace =
-            serde_json::from_str(r#"{"corner":"top_left","dx":24,"dy":0,"width":2,"height":2}"#)
-                .unwrap();
-        assert_eq!(read, made, "a stored sliver reads back a window");
-        let mut arrangement = Arrangement::default();
-        arrangement.set_float(7, Some(sliver));
-        assert_eq!(arrangement.float_of(7), Some(made));
-        // On a work area smaller than a window, the window fills the area.
-        assert_eq!(
-            made.resolved(CanvasPlace::new(0, 0, 100, 80)),
-            CanvasPlace::new(0, 0, 100, 80)
-        );
+        phase a_window_is_never_kept_or_laid_out_a_sliver;
+        // A window's place, on the canvas or floating, is never smaller than a window: an agent's
+        // command or a record that asked for a sliver gets a window, and a sliver some older build
+        // left still lays out a window wide.
+        {
+            let area = CanvasPlace::new(0, 32, 1280, 768);
+            let sliver = FloatPlace {
+                corner: FloatCorner::TopLeft,
+                dx: 24,
+                dy: 0,
+                width: 2,
+                height: 2,
+            };
+            assert_eq!(
+                sliver.resolved(area),
+                CanvasPlace::new(24, 32, WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT),
+                "laid out from the corner it keeps, a window wide"
+            );
+            let made = FloatPlace::new(FloatCorner::TopLeft, 24, 0, 2, 2);
+            assert_eq!(
+                (made.width, made.height),
+                (WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
+            );
+            let read: FloatPlace =
+                serde_json::from_str(r#"{"corner":"top_left","dx":24,"dy":0,"width":2,"height":2}"#)
+                    .unwrap();
+            assert_eq!(read, made, "a stored sliver reads back a window");
+            let mut arrangement = Arrangement::default();
+            arrangement.set_float(7, Some(sliver));
+            assert_eq!(arrangement.float_of(7), Some(made));
+            // On a work area smaller than a window, the window fills the area.
+            assert_eq!(
+                made.resolved(CanvasPlace::new(0, 0, 100, 80)),
+                CanvasPlace::new(0, 0, 100, 80)
+            );
 
-        let stored = r#"{"kind":"Canvas","places":{"7":{"x":-40,"y":12,"width":2,"height":0}}}"#;
-        let arrangement: Arrangement = serde_json::from_str(stored).unwrap();
-        assert_eq!(
-            arrangement.place_of(7),
-            Some(CanvasPlace::new(
-                -40,
-                12,
-                WINDOW_MIN_WIDTH,
-                WINDOW_MIN_HEIGHT
-            ))
-        );
-        assert!(
-            (f64::from(WINDOW_MIN_WIDTH) - crate::width::WIDTH_FLOOR_PX).abs() < f64::EPSILON,
-            "a float or a canvas window is as narrow as a strip's window can get, no narrower"
-        );
-    }
+            let stored = r#"{"kind":"Canvas","places":{"7":{"x":-40,"y":12,"width":2,"height":0}}}"#;
+            let arrangement: Arrangement = serde_json::from_str(stored).unwrap();
+            assert_eq!(
+                arrangement.place_of(7),
+                Some(CanvasPlace::new(
+                    -40,
+                    12,
+                    WINDOW_MIN_WIDTH,
+                    WINDOW_MIN_HEIGHT
+                ))
+            );
+            assert!(
+                (f64::from(WINDOW_MIN_WIDTH) - crate::width::WIDTH_FLOOR_PX).abs() < f64::EPSILON,
+                "a float or a canvas window is as narrow as a strip's window can get, no narrower"
+            );
+        }
 
-    #[test]
-    fn closing_a_window_frees_its_place() {
-        let mut arrangement = canvas(&[(1, CanvasPlace::new(0, 0, 10, 10))]);
-        assert!(arrangement.retain_groups(|id| id != 1));
-        assert!(arrangement.places.is_empty());
-    }
+        phase a_workspace_stored_before_floats_reads_with_none;
+        {
+            let json = r#"{"kind":"Strips","places":{}}"#;
+            let arrangement: Arrangement = serde_json::from_str(json).expect("reads back");
+            assert!(arrangement.floats.is_empty());
+        }
 
-    #[test]
-    fn a_place_let_go_elsewhere_on_the_canvas_keeps_its_size_and_moves_nothing_else() {
-        // A drag that ended on the canvas: the place stands where it was let go, at the size it
-        // had, and every other place stays exactly where it was.
-        let mut arrangement = canvas(&[
-            (1, CanvasPlace::new(0, 0, 400, 300)),
-            (2, CanvasPlace::new(500, 0, 400, 300)),
-        ]);
-        assert!(arrangement.set_position(2, 900, 640));
-        assert_eq!(
-            arrangement.place_of(2),
-            Some(CanvasPlace::new(900, 640, 400, 300)),
-            "the place stands where it was let go, at its own size"
-        );
-        assert_eq!(
-            arrangement.place_of(1),
-            Some(CanvasPlace::new(0, 0, 400, 300)),
-            "nothing else moved"
-        );
-        assert!(
-            !arrangement.set_position(2, 900, 640),
-            "a place already there is not a change"
-        );
-    }
+        phase a_float_is_kept_from_its_corner_and_resolves_on_any_screen;
+        {
+            let float = FloatPlace::new(FloatCorner::BottomRight, 40, 24, 640, 480);
+            let small = CanvasPlace::new(1280, 0, 1280, 720);
+            assert_eq!(float.resolved(small), CanvasPlace::new(1880, 216, 640, 480));
+            let large = CanvasPlace::new(0, 0, 2560, 1440);
+            assert_eq!(float.resolved(large), CanvasPlace::new(1880, 936, 640, 480));
+            // A window larger than the work area fills it rather than hanging off.
+            let huge = FloatPlace::new(FloatCorner::TopLeft, 10, 10, 4000, 3000);
+            assert_eq!(huge.resolved(small), CanvasPlace::new(1280, 0, 1280, 720));
+            let back: FloatPlace =
+                serde_json::from_str(&serde_json::to_string(&float).unwrap()).unwrap();
+            assert_eq!(back, float);
+        }
 
-    #[test]
-    fn a_stored_workspace_keeps_its_canvas() {
-        let mut workspace = crate::Workspace::create("Desk");
-        workspace.arrangement = canvas(&[(920_001, CanvasPlace::new(40, -8, 400, 300))]);
-        let json = serde_json::to_string(&workspace).expect("serialises");
-        let back: crate::Workspace = serde_json::from_str(&json).expect("reads back");
-        assert_eq!(back.arrangement, workspace.arrangement);
-    }
+        phase dropping_a_window_anchors_it_to_the_corner_nearest_where_it_was_let_go;
+        {
+            let area = CanvasPlace::new(0, 0, 1600, 900);
+            let bottom_right = FloatPlace::of_rect(area, CanvasPlace::new(900, 380, 640, 480));
+            assert_eq!(bottom_right.corner, FloatCorner::BottomRight);
+            assert_eq!((bottom_right.dx, bottom_right.dy), (60, 40));
+            assert_eq!(
+                bottom_right.resolved(area),
+                CanvasPlace::new(900, 380, 640, 480),
+                "the window stays exactly where it was let go"
+            );
+            let top_left = FloatPlace::of_rect(area, CanvasPlace::new(30, 20, 400, 300));
+            assert_eq!(top_left.corner, FloatCorner::TopLeft);
+            assert_eq!((top_left.dx, top_left.dy), (30, 20));
+        }
 
-    #[test]
-    fn a_workspace_stored_before_floats_reads_with_none() {
-        let json = r#"{"kind":"Strips","places":{}}"#;
-        let arrangement: Arrangement = serde_json::from_str(json).expect("reads back");
-        assert!(arrangement.floats.is_empty());
-    }
-
-    #[test]
-    fn a_float_is_kept_from_its_corner_and_resolves_on_any_screen() {
-        let float = FloatPlace::new(FloatCorner::BottomRight, 40, 24, 640, 480);
-        let small = CanvasPlace::new(1280, 0, 1280, 720);
-        assert_eq!(float.resolved(small), CanvasPlace::new(1880, 216, 640, 480));
-        let large = CanvasPlace::new(0, 0, 2560, 1440);
-        assert_eq!(float.resolved(large), CanvasPlace::new(1880, 936, 640, 480));
-        // A window larger than the work area fills it rather than hanging off.
-        let huge = FloatPlace::new(FloatCorner::TopLeft, 10, 10, 4000, 3000);
-        assert_eq!(huge.resolved(small), CanvasPlace::new(1280, 0, 1280, 720));
-        let back: FloatPlace =
-            serde_json::from_str(&serde_json::to_string(&float).unwrap()).unwrap();
-        assert_eq!(back, float);
-    }
-
-    #[test]
-    fn dropping_a_window_anchors_it_to_the_corner_nearest_where_it_was_let_go() {
-        let area = CanvasPlace::new(0, 0, 1600, 900);
-        let bottom_right = FloatPlace::of_rect(area, CanvasPlace::new(900, 380, 640, 480));
-        assert_eq!(bottom_right.corner, FloatCorner::BottomRight);
-        assert_eq!((bottom_right.dx, bottom_right.dy), (60, 40));
-        assert_eq!(
-            bottom_right.resolved(area),
-            CanvasPlace::new(900, 380, 640, 480),
-            "the window stays exactly where it was let go"
-        );
-        let top_left = FloatPlace::of_rect(area, CanvasPlace::new(30, 20, 400, 300));
-        assert_eq!(top_left.corner, FloatCorner::TopLeft);
-        assert_eq!((top_left.dx, top_left.dy), (30, 20));
-    }
-
-    #[test]
-    fn floating_and_snapping_back_moves_nothing_else() {
-        let place = CanvasPlace::new(40, 40, 400, 300);
-        let mut arrangement = canvas(&[(1, place)]);
-        let float = FloatPlace::new(FloatCorner::TopRight, 10, 10, 640, 480);
-        assert!(arrangement.set_float(1, Some(float)));
-        assert!(!arrangement.set_float(1, Some(float)), "nothing changed");
-        assert_eq!(arrangement.float_of(1), Some(float));
-        assert_eq!(
-            arrangement.place_of(1),
-            Some(place),
-            "its canvas place is kept"
-        );
-        assert!(arrangement.set_float(1, None));
-        assert!(!arrangement.set_float(1, None));
-        assert_eq!(arrangement.place_of(1), Some(place), "snap back is exact");
-    }
-
-    #[test]
-    fn an_unknown_kind_reads_as_strips() {
-        assert_eq!(ArrangementKind::parse("canvas"), ArrangementKind::Canvas);
-        assert_eq!(ArrangementKind::parse("spiral"), ArrangementKind::Strips);
+        phase floating_and_snapping_back_moves_nothing_else;
+        {
+            let place = CanvasPlace::new(40, 40, 400, 300);
+            let mut arrangement = canvas(&[(1, place)]);
+            let float = FloatPlace::new(FloatCorner::TopRight, 10, 10, 640, 480);
+            assert!(arrangement.set_float(1, Some(float)));
+            assert!(!arrangement.set_float(1, Some(float)), "nothing changed");
+            assert_eq!(arrangement.float_of(1), Some(float));
+            assert_eq!(
+                arrangement.place_of(1),
+                Some(place),
+                "its canvas place is kept"
+            );
+            assert!(arrangement.set_float(1, None));
+            assert!(!arrangement.set_float(1, None));
+            assert_eq!(arrangement.place_of(1), Some(place), "snap back is exact");
+        }
     }
 }
