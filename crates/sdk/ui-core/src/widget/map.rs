@@ -147,6 +147,26 @@ pub struct MapProps {
     /// decides what to do with it; the shell's canvas places it there.
     #[component(event(value = ResourceId, at = Vec<i64>))]
     pub drop: Event,
+    /// The pointer pressed on the map's empty surface — not on a pin — and let go there, having
+    /// travelled no further than a click: carries the canvas point under the press, its x then
+    /// its y, kept apart from a drag and a middle drag. What it reports is where the press landed
+    /// at the camera the map looks with, so the point is right at any pan or zoom; the view
+    /// decides what stands there (the shell's canvas opens its caret at it).
+    #[component(event(value = Vec<i64>))]
+    pub press: Event,
+    /// A left drag across the map's empty surface, let go after travelling: carries the dragged
+    /// rectangle in canvas pixels, its x, its y, its width and its height. The rectangle is drawn
+    /// as a light outline while the drag lasts (the theme's focus colour, never a colour of its
+    /// own), and the view lays what it answers into that rectangle.
+    #[component(event(value = Vec<i64>))]
+    pub frame: Event,
+    /// The pointer's right button pressed on the map: carries the key of the pin standing under
+    /// it — empty text where the press landed on the map's own empty surface — and the canvas
+    /// point under the pointer, its x then its y. What the view does with it is its own: the
+    /// shell's canvas opens the pointed place's menu, or the canvas's own for free space
+    /// (`canvas.md` §1, §6).
+    #[component(event(value = String, at = Vec<i64>))]
+    pub context: Event,
 }
 
 /// One pin of a map, as an instance gives it: its key, its place and the view it shows.
@@ -207,6 +227,21 @@ struct Pan {
     active: bool,
 }
 
+/// A left press on the map's empty surface that has not been answered yet: where it went down and
+/// how far it has travelled, in this map's logical coordinates. A press that travelled no further
+/// than the click slop is a click on the canvas and reports its point (`press`); one that
+/// travelled further is a drag across it, and reports the rectangle it covered (`frame`). A press
+/// on a pin is the pin's, and the map keeps nothing for it (canvas.md §6, "Pointing").
+#[derive(Clone, Copy, Debug)]
+struct FreePress {
+    /// Where it went down, in this map's logical coordinates.
+    start: Point,
+    /// Where the pointer is now, for the rectangle a drag on the canvas draws.
+    now: Point,
+    /// How far it has travelled from where it went down, so a small wobble is still a click.
+    travelled: f64,
+}
+
 /// See the module docs.
 pub struct Map {
     /// The pins, in draw order: their key, place and view. Empty once the region that holds
@@ -220,6 +255,9 @@ pub struct Map {
     /// What the layout's explicit-placement region last answered.
     invalidation: ManualInvalidation,
     pan: Option<Pan>,
+    /// A left press on the empty canvas, kept until it is let go: a click on it reports its point
+    /// (`press`), a drag across it the rectangle it covered (`frame`).
+    free_press: Option<FreePress>,
     /// Where the pointer last was, in this map's logical coordinates.
     cursor: Point,
     touch: TouchGestureArena,
@@ -251,6 +289,15 @@ pub struct Map {
     /// What a resource dragged onto the map and let go does: the map reports it with where it
     /// was dropped, and the view places it.
     drop: Event,
+    /// What a press on the empty canvas does: the map reports the canvas point under it, and the
+    /// view stands what belongs there (the shell's canvas opens its caret).
+    press: Event,
+    /// What a drag across the empty canvas does: the map reports the rectangle it covered, in
+    /// canvas pixels, and the view lays what it answers into that rectangle.
+    frame: Event,
+    /// What a right press on the map does: the map reports the pin under it and the canvas point,
+    /// and the view opens what the person pointed at.
+    context: Event,
     /// The key the map is known by on the drag bus, namespaced from the view that built it: a
     /// drag that started in one of its pins never lands back on the map it came from, and two
     /// maps never answer each other's drops.
@@ -278,6 +325,7 @@ impl Map {
             camera: MapCamera::default(),
             invalidation: ManualInvalidation::default(),
             pan: None,
+            free_press: None,
             cursor: Point::ORIGIN,
             touch: TouchGestureArena::new(),
             ground: false,
@@ -288,6 +336,9 @@ impl Map {
             laid: Rc::default(),
             camera_cell: None,
             drop: Event::None,
+            press: Event::None,
+            frame: Event::None,
+            context: Event::None,
             key: String::new(),
             arrived: std::collections::HashSet::new(),
         }
@@ -385,9 +436,11 @@ impl Map {
     /// arrives beside another, so what the person was looking at stays where they were looking
     /// rather than being pushed out of the viewport by the pan to what arrived (`shell.md` §3,
     /// "a place next to where it came from"). `keep` is every place standing wholly in the
-    /// viewport: they and what arrived all end up in view — panning the least that does, and
-    /// zooming out only as far as they need, since none of them may be lost. With nothing to keep
-    /// this is [`Self::reveal`].
+    /// viewport: the camera pans the least that holds them all with what arrived, and it never
+    /// changes its zoom — opening a place never resizes the places already there, so a place
+    /// stands as big as the person was reading it. When what arrived and what they were looking
+    /// at cannot all stand in the viewport at that zoom, the camera pans to show what arrived
+    /// whole; the person pans back to the rest, which stands where it did.
     pub fn reveal_with(&mut self, area: Rect, margin: f64, keep: &[Rect]) {
         let Some(together) = keep
             .iter()
@@ -404,23 +457,17 @@ impl Map {
         if width <= 0.0 || height <= 0.0 {
             return;
         }
-        let origin = self.camera.origin;
+        // The zoom is the person's: the camera pans to what arrived and never zooms it out of
+        // the size they were reading it at.
         let zoom = self.camera.zoom;
-        // All of them already stand in sight: the person's view stays their own.
-        let fits = |zoom: f64| {
-            let span = Vec2::new(width, height) / zoom.max(f64::EPSILON);
-            span.x >= together.width() && span.y >= together.height()
-        };
-        // Zoom out only when they cannot all stand in the viewport at the person's zoom, and no
-        // further than they need: the canvas keeps the zoom it can.
-        let zoom = if fits(zoom) {
-            zoom
-        } else {
-            (width / together.width().max(1.0))
-                .min(height / together.height().max(1.0))
-                .clamp(MAP_ZOOM_MIN, MAP_ZOOM_MAX)
-        };
         let span = Vec2::new(width, height) / zoom.max(f64::EPSILON);
+        // What the person was looking at and what arrived cannot all stand in the viewport at
+        // this zoom: show what arrived whole, and leave the rest where it stands.
+        if together.width() > span.x + 0.5 || together.height() > span.y + 0.5 {
+            self.reveal(area, margin);
+            return;
+        }
+        let origin = self.camera.origin;
         // The least pan that holds them all: where they were looking stays where it was as far
         // as that allows, and what arrived joins it, all of them in view.
         let along = |origin: f64, (low_edge, high_edge): (f64, f64), extent: f64| {
@@ -437,6 +484,24 @@ impl Map {
             origin: Point::new(x, y),
             zoom,
         });
+    }
+
+    /// Whether the point `local` (in this map's own coordinates) stands on one of its pins: the
+    /// surface a press there belongs to the pin, never to the canvas under it.
+    fn over_pin(&self, local: Point) -> bool {
+        self.laid.borrow().values().any(|rect| rect.contains(local))
+    }
+
+    /// The key of the pin standing at `local` (this map's own coordinates), if one does: the
+    /// topmost pin covers the ones under it, so the last drawn wins, as a press would find it.
+    fn pin_under(&self, local: Point) -> Option<String> {
+        let laid = self.laid.borrow();
+        self.pins
+            .iter()
+            .rev()
+            .filter_map(|(key, _, _)| Some((key, *laid.get(key)?)))
+            .find(|(_, rect)| rect.contains(local))
+            .map(|(key, _)| key.clone())
     }
 
     /// The smallest canvas rect holding every pin: what [`Self::show`] fits the camera to.
@@ -558,6 +623,9 @@ impl Described for Map {
             ground,
             pins,
             drop,
+            press,
+            frame,
+            context,
         } = props;
         let mut map = Self::new();
         map.key = format!("map\u{1f}{key}");
@@ -568,6 +636,9 @@ impl Described for Map {
         map.camera = recalled(&map.key).unwrap_or_default();
         map.ground = ground;
         map.drop = drop;
+        map.press = press;
+        map.frame = frame;
+        map.context = context;
         for pin in pins {
             let place = PinPlace {
                 x: pin.x.unwrap_or(0) as f64,
@@ -597,8 +668,14 @@ impl Described for Map {
             ground,
             pins,
             drop,
+            press,
+            frame,
+            context,
         } = props;
         self.drop = drop;
+        self.press = press;
+        self.frame = frame;
+        self.context = context;
         if pins.len() != self.pins.len()
             || pins
                 .iter()
@@ -701,6 +778,30 @@ impl SlotViews for Map {
 }
 
 impl Map {
+    /// The rectangle a drag across the empty canvas covers, as a light outline in the theme's
+    /// focus colour (a theme role, never a colour of the map's own): what the person sees of the
+    /// frame they are pointing at before they let go (`canvas.md` §1, §5). Nothing is drawn when
+    /// no such drag is under way, or while it is still a click.
+    fn draw_frame_outline(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let Some(press) = self.free_press else {
+            return;
+        };
+        if press.travelled <= self.slop {
+            return;
+        }
+        let rect = Rect::from_points(press.start, press.now);
+        if rect.width() < 1.0 && rect.height() < 1.0 {
+            return;
+        }
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.5),
+            transform,
+            theme.border_focus,
+            None,
+            &rect,
+        );
+    }
+
     /// Draw the region's pins, each posed by its own [`crate::motion::Placed`]: a pin that just
     /// arrived fades and scales in, one the person moved glides from where it stood, and one the
     /// map no longer holds leaves before it is forgotten. Every pin not drawn this frame is
@@ -834,6 +935,14 @@ impl Map {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                // A drag across the empty canvas draws its rectangle as it goes, so the person
+                // sees what they will point at before they let go (`canvas.md` §1).
+                if let Some(mut press) = self.free_press {
+                    press.now = self.cursor;
+                    press.travelled = (self.cursor - press.start).hypot();
+                    self.free_press = Some(press);
+                    self.dirty = true;
+                }
                 let Some(mut pan) = self.pan else {
                     return;
                 };
@@ -876,6 +985,80 @@ impl Map {
                     self.set_camera(camera);
                     *ctx.handled = true;
                 }
+            }
+            // A right press on the map points at the place under it, or at the canvas's own
+            // free space: the map reports which and where, and the view opens what the person
+            // pointed at (`canvas.md` §1, §6). It takes the press, so a right click is the map's
+            // own pointing rather than a menu of whatever the place carries.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                let at = self.camera.to_canvas(self.rect.origin(), self.cursor);
+                let pin = self.pin_under(self.cursor - self.rect.origin().to_vec2());
+                self.context.fire(Some(crate::component::Value::List(vec![
+                    crate::component::Value::Text(pin.unwrap_or_default()),
+                    crate::component::Value::List(vec![
+                        crate::component::Value::Int(at.x.round() as i64),
+                        crate::component::Value::Int(at.y.round() as i64),
+                    ]),
+                ])));
+                *ctx.handled = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // A left press on the empty canvas is kept until it is let go: one that travelled
+                // no further than a click reports its point (`press`), and one that travelled
+                // more reports the rectangle it covered (`frame`). A press on a pin is the pin's,
+                // not the canvas's, and the map keeps nothing for it.
+                if self.over_pin(self.cursor - self.rect.origin().to_vec2()) {
+                    self.free_press = None;
+                } else {
+                    self.free_press = Some(FreePress {
+                        start: self.cursor,
+                        now: self.cursor,
+                        travelled: 0.0,
+                    });
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(press) = self.free_press.take() else {
+                    return;
+                };
+                let origin = self.rect.origin();
+                let from = self.camera.to_canvas(origin, press.start);
+                if press.travelled > self.slop {
+                    // A drag across the canvas reports the rectangle it covered, in canvas
+                    // pixels: the person pointed at a frame, and what answers is laid out to it.
+                    let to = self.camera.to_canvas(origin, press.now);
+                    let rect = Rect::new(
+                        from.x.min(to.x),
+                        from.y.min(to.y),
+                        from.x.max(to.x),
+                        from.y.max(to.y),
+                    );
+                    self.frame.fire(Some(crate::component::Value::List(vec![
+                        crate::component::Value::Int(rect.x0.round() as i64),
+                        crate::component::Value::Int(rect.y0.round() as i64),
+                        crate::component::Value::Int(rect.width().round() as i64),
+                        crate::component::Value::Int(rect.height().round() as i64),
+                    ])));
+                } else {
+                    self.press.fire(Some(crate::component::Value::List(vec![
+                        crate::component::Value::Int(from.x.round() as i64),
+                        crate::component::Value::Int(from.y.round() as i64),
+                    ])));
+                }
+                self.dirty = true;
+                *ctx.handled = true;
             }
             WindowEvent::Touch(touch) => {
                 let phase = match touch.phase {
@@ -984,9 +1167,9 @@ impl Widget for Map {
         // built around it is laid out (`shell.md` §3, "a place next to where it came from"; the
         // session's `open` brings the canvas to what it stood). Only the last pin — the place
         // just put on the canvas — and only when it stands wholly outside the viewport, so a
-        // place already in sight moves nothing. Every place that stood in the viewport stays
-        // there: a place opened beside a conversation never pushes the conversation out of the
-        // viewport, however many were opened before it (`reveal_with`).
+        // place already in sight moves nothing. The pan holds what the person was looking at
+        // wherever it can and never changes the zoom: opening a place never resizes the places
+        // already there, so a place stands as big as the person was reading it (`reveal_with`).
         let arriving = self
             .pins
             .last()
@@ -1082,6 +1265,7 @@ impl Widget for Map {
                 &viewport,
             );
         }
+        self.draw_frame_outline(scene, transform, theme);
         self.draw_pins(scene, transform, text, theme, presence);
         if clips {
             scene.pop_layer();
@@ -1249,3 +1433,7 @@ fn f32_of(v: f64) -> f32 {
 #[cfg(test)]
 #[path = "map_motion_tests.rs"]
 mod motion_tests;
+
+#[cfg(test)]
+#[path = "map_pointing_tests.rs"]
+mod pointing_tests;

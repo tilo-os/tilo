@@ -503,6 +503,9 @@ pub struct DeskReading {
     /// The running applications' tray items, in the order they registered.
     #[serde(default)]
     pub tray: Vec<TrayReading>,
+    /// The applications installed on this device, as the launcher lists and opens them.
+    #[serde(default)]
+    pub apps: Vec<AppReading>,
     /// The desk styles every installed package offers, as the session finds them (shell.md
     /// §6): each a view of the arrangement, listed by its own doc line, so the person's switch
     /// offers every style wherever it was written.
@@ -550,6 +553,20 @@ pub struct TrayReading {
     /// Whether choosing it opens its menu rather than its window.
     #[serde(default)]
     pub menu: bool,
+}
+
+/// An application installed on this device, as the launcher lists it (a `session.application`):
+/// its package id which `open-app` names, its name in the person's language, its glyph, and its
+/// category and description when it named them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppReading {
+    pub key: String,
+    pub name: String,
+    pub icon: String,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 /// A question the session puts to the person about themselves, waiting on their own avatar.
@@ -866,6 +883,7 @@ pub struct SessionOrigin {
     arrangement_queries: BTreeMap<String, Kept<ArrangementQueryReading>>,
     arrangement_refs: BTreeMap<String, Kept<ArrangementRefReading>>,
     tray: BTreeMap<String, Kept<TrayReading>>,
+    apps: BTreeMap<String, Kept<AppReading>>,
     /// The packages of other apps loaded into the shell's runtime, by app id: each the module
     /// the session handed for it.
     loaded: BTreeMap<String, std::sync::Arc<[u8]>>,
@@ -893,6 +911,7 @@ impl SessionOrigin {
             arrangement_queries: BTreeMap::new(),
             arrangement_refs: BTreeMap::new(),
             tray: BTreeMap::new(),
+            apps: BTreeMap::new(),
         }
     }
 
@@ -1044,6 +1063,26 @@ impl SessionOrigin {
                         ("key", text(&item.key)),
                         ("title", text(&item.title)),
                         ("menu", Value::Bool(item.menu)),
+                    ]
+                },
+            ));
+        }
+        // The installed applications: what the launcher lists and opens.
+        if let (Ok(ty), Some(collection)) = (kind("application"), field(desk, "apps")) {
+            writes.extend(sync_items(
+                &mut self.apps,
+                &reading.apps,
+                root,
+                &collection,
+                ty,
+                |app| app.key.clone(),
+                |app| {
+                    vec![
+                        ("key", text(&app.key)),
+                        ("name", text(&app.name)),
+                        ("icon", text(&app.icon)),
+                        ("category", text(&app.category)),
+                        ("description", text(&app.description)),
                     ]
                 },
             ));
