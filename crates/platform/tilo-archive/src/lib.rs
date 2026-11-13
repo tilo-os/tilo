@@ -1,19 +1,16 @@
-//! Archives: reading, extracting and creating them.
+//! Archives: reading, extracting and creating them, in zip, 7z and tar plain or
+//! compressed with gzip, xz, zstd or bzip2, every codec in pure Rust.
 //!
-//! Formats: zip, 7z, and tar plain or compressed with gzip, xz, zstd or
-//! bzip2. Every codec is pure Rust.
+//! Entry names are untrusted. A name that is absolute or climbs out with `..`
+//! ([`safe_relative`]) makes the archive unreadable rather than being skipped,
+//! so a crafted archive is refused whole. [`extract_into`] writes only below the
+//! folder it is given, never follows a link it made, creates no device nodes or
+//! pipes, strips setuid, setgid and sticky bits, and caps the rest at
+//! `rwxr-xr-x`.
 //!
-//! An archive's entry names are untrusted. Every name is checked before
-//! anything sees it ([`safe_relative`]): an absolute name or one that climbs
-//! out with `..` makes the archive unreadable rather than being skipped, so
-//! a crafted archive is refused as a whole. Extraction ([`extract_into`])
-//! writes only below the folder it is given, never follows a link it made,
-//! creates no device nodes or pipes, strips setuid, setgid and sticky bits
-//! and caps the rest at `rwxr-xr-x`.
-//!
-//! Reading streams: listing a compressed tar decodes it once, front to back,
-//! without writing anything. Long work reports the archive bytes it has read
-//! and stops when asked ([`Observer`]).
+//! Reading streams: a compressed tar is decoded once, front to back, without
+//! writing anything. Long work reports the archive bytes it has read and stops
+//! when asked ([`Observer`]).
 
 mod pack;
 mod stream;
@@ -31,7 +28,6 @@ pub use pack::{Packing, create};
 pub use stream::{Flow, list, read_member, walk};
 pub use unpack::{Extracted, extract_into};
 
-/// How a tar stream is compressed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Compression {
     None,
@@ -41,7 +37,6 @@ pub enum Compression {
     Bzip2,
 }
 
-/// An archive format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Format {
     Zip,
@@ -49,8 +44,7 @@ pub enum Format {
     Tar(Compression),
 }
 
-/// The archive extensions. The longest that matches wins, so a name ending
-/// in `.tar.gz` is a gzipped tar.
+/// The archive extensions; the longest match wins, so `.tar.gz` is a gzipped tar.
 const EXTENSIONS: [(&str, Format); 13] = [
     (".tar.gz", Format::Tar(Compression::Gzip)),
     (".tar.xz", Format::Tar(Compression::Xz)),
@@ -68,7 +62,6 @@ const EXTENSIONS: [(&str, Format); 13] = [
 ];
 
 impl Format {
-    /// The format a file name says, by its extension, any case.
     #[must_use]
     pub fn of_name(name: &str) -> Option<Self> {
         let lower = name.to_ascii_lowercase();
@@ -79,7 +72,6 @@ impl Format {
             .map(|(_, format)| *format)
     }
 
-    /// The format `path`'s name says.
     #[must_use]
     pub fn of_path(path: &Path) -> Option<Self> {
         path.file_name()
@@ -87,7 +79,6 @@ impl Format {
             .and_then(Self::of_name)
     }
 
-    /// The extension a new archive of this format is given.
     #[must_use]
     pub const fn extension(self) -> &'static str {
         match self {
@@ -102,8 +93,8 @@ impl Format {
     }
 }
 
-/// `name` without its archive extension: `photos` for `photos.tar.gz`.
-/// A name that is only an extension, or not an archive's, stays as it is.
+/// `name` without its archive extension (`photos` for `photos.tar.gz`); a name
+/// that is only an extension, or no archive's, stays as it is.
 #[must_use]
 pub fn stem(name: &str) -> &str {
     let lower = name.to_ascii_lowercase();
@@ -117,62 +108,47 @@ pub fn stem(name: &str) -> &str {
         .unwrap_or(name)
 }
 
-/// What an archive entry is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     File,
     Directory,
-    /// A symbolic link; its target is [`Entry::link`].
     Symlink,
-    /// A second name for a file earlier in the archive, [`Entry::link`].
     HardLink,
     /// A device node, pipe or socket. Never created.
     Special,
 }
 
-/// One entry of an archive, its name already checked ([`safe_relative`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
-    /// Relative, without `.` or `..` components.
     pub path: PathBuf,
-    /// The bytes a file holds once extracted.
     pub size: u64,
     pub kind: Kind,
     /// Unix permission bits as stored, when the archive keeps them.
     pub mode: Option<u32>,
     pub modified: Option<SystemTime>,
-    /// A link's target as stored: a symlink's text, or the archive path of
-    /// the file a hard link names.
     pub link: Option<PathBuf>,
 }
 
-/// Hears how far long work is and says when to stop.
-///
-/// Called on the thread doing the work.
 pub trait Observer {
-    /// `bytes` more of the archive (or, when creating one, of the files
-    /// packed) were read.
+    /// `bytes` more were read from the archive, or from the files being packed.
     fn advance(&self, bytes: u64) {
         let _ = bytes;
     }
 
-    /// Whether the work should stop now. Checked between reads.
     fn cancelled(&self) -> bool {
         false
     }
 
-    /// `bytes` more were written below the destination. An error stops the
-    /// extraction with it, as when the disk is about to be full.
+    /// `bytes` more were written below the destination; an error stops the
+    /// extraction with it.
     fn wrote(&self, bytes: u64) -> io::Result<()> {
         let _ = bytes;
         Ok(())
     }
 }
 
-/// Observes nothing and never stops.
 impl Observer for () {}
 
-/// Why work stopped when it was asked to.
 #[derive(Debug)]
 struct Cancelled;
 
@@ -184,19 +160,16 @@ impl std::fmt::Display for Cancelled {
 
 impl std::error::Error for Cancelled {}
 
-/// The error work stops with when its [`Observer`] asked it to.
 #[must_use]
 pub fn cancelled() -> io::Error {
     io::Error::other(Cancelled)
 }
 
-/// Whether `error` is [`cancelled`]: stopped on request, not failed.
 #[must_use]
 pub fn is_cancelled(error: &io::Error) -> bool {
     caused_by::<Cancelled>(error)
 }
 
-/// Whether `T` is behind `error`, through any codec that wrapped it.
 fn caused_by<T: std::error::Error + 'static>(error: &io::Error) -> bool {
     let mut cause: Option<&(dyn std::error::Error + 'static)> = error
         .get_ref()
@@ -215,7 +188,6 @@ fn caused_by<T: std::error::Error + 'static>(error: &io::Error) -> bool {
     false
 }
 
-/// An entry name that would land outside the archive's folder.
 #[derive(Debug)]
 struct Unsafe(String);
 
@@ -234,8 +206,6 @@ fn unsafe_name(name: &Path) -> io::Error {
     )
 }
 
-/// Whether `error` refused an entry that would land outside the archive's
-/// folder: an absolute name, `..`, or a link pointing out.
 #[must_use]
 pub fn is_unsafe(error: &io::Error) -> bool {
     caused_by::<Unsafe>(error)
@@ -293,7 +263,6 @@ pub fn link_stays_inside(link: &Path, target: &Path) -> bool {
 #[must_use]
 pub fn children(entries: &[Entry], prefix: &Path) -> Vec<Entry> {
     let mut rows: BTreeMap<PathBuf, Entry> = BTreeMap::new();
-    // Folders the archive has an entry of their own for: their time is it.
     let mut named: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
     for entry in entries {
         let Ok(relative) = entry.path.strip_prefix(prefix) else {
@@ -314,7 +283,6 @@ pub fn children(entries: &[Entry], prefix: &Path) -> Vec<Entry> {
                 ..entry.clone()
             };
             match rows.get_mut(&path) {
-                // A folder seen through its contents first.
                 Some(shown) if entry.kind == Kind::Directory => *shown = row,
                 Some(_) => {}
                 None => {
@@ -340,8 +308,6 @@ pub fn children(entries: &[Entry], prefix: &Path) -> Vec<Entry> {
     rows.into_values().collect()
 }
 
-/// Whether the archive holds a folder at `path`: named, or implied by
-/// something inside it.
 #[must_use]
 pub fn has_directory(entries: &[Entry], path: &Path) -> bool {
     path.as_os_str().is_empty()
