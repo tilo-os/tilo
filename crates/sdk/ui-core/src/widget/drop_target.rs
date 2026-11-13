@@ -6,6 +6,7 @@
 //! fires `drop` with the resource the drag carried. Nothing is taken that the target's view did
 //! not ask for: a drag let go elsewhere is left for whatever target does hold the pointer.
 
+use crate::widget::DrawChild as _;
 use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
@@ -146,7 +147,8 @@ impl Decorator for DropTarget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.column.draw(scene, transform, text, theme, presence);
+        self.column
+            .draw_child(scene, transform, text, theme, presence);
         if self.hovered.is_some() && self.rect.width() > 0.0 {
             // The same line every drop indicator draws: your colour on the edge.
             let line = f64::from(theme.tokens.metrics.drag_line_px).max(1.0);
