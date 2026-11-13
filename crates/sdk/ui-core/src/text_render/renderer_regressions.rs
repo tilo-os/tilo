@@ -1102,44 +1102,46 @@ fn rich_ids(renderer: &mut TextRenderer, text: &str, style: &TextStyle) -> Vec<u
         .collect()
 }
 
+// A test of its own: it ends with a renderer that has the setting on, which leaves the thread's
+// "distinguish everywhere" flag (`font_catalog::matched`) set for whatever shapes there next.
+#[test]
+fn the_distinct_letters_setting_reaches_every_shaping_path() {
+    let mut renderer = features_renderer();
+    let style = named_style("Tilo Sans Features Fixture");
+    let plain = shaped_ids(&mut renderer, "Il0", &style);
+    let distinct = shaped_ids(
+        &mut renderer,
+        "Il0",
+        &style.clone().with_kind(TextKind::Url),
+    );
+    assert_ne!(plain, distinct);
+    assert_eq!(rich_ids(&mut renderer, "Il0", &style), plain);
+
+    let epoch = Arc::clone(renderer.layout_epoch());
+    renderer.set_distinct_letters(true);
+    assert!(renderer.distinguishes_letters());
+    assert!(
+        !Arc::ptr_eq(&epoch, renderer.layout_epoch()),
+        "widget layouts reshape when the setting changes"
+    );
+    assert_eq!(shaped_ids(&mut renderer, "Il0", &style), distinct);
+    assert_eq!(rich_ids(&mut renderer, "Il0", &style), distinct);
+
+    renderer.set_distinct_letters(false);
+    assert!(!renderer.distinguishes_letters());
+    assert_eq!(shaped_ids(&mut renderer, "Il0", &style), plain);
+
+    // Another renderer on the thread keeps its own setting.
+    let mut other = features_renderer();
+    other.set_distinct_letters(true);
+    assert_eq!(rich_ids(&mut renderer, "Il0", &style), plain);
+    assert_eq!(rich_ids(&mut other, "Il0", &style), distinct);
+}
+
 tilo_test_env::scenario! {
-    /// The distinct-letters features, by setting, by surface and by kind.
+    /// The distinct-letters features, by surface and by kind.
     /// Each phase was a test of its own and builds its own fixture.
-    fn distinct_letters_reach_every_shaping_path_and_surface;
-
-    phase the_distinct_letters_setting_reaches_every_shaping_path;
-    {
-        let mut renderer = features_renderer();
-        let style = named_style("Tilo Sans Features Fixture");
-        let plain = shaped_ids(&mut renderer, "Il0", &style);
-        let distinct = shaped_ids(
-            &mut renderer,
-            "Il0",
-            &style.clone().with_kind(TextKind::Url),
-        );
-        assert_ne!(plain, distinct);
-        assert_eq!(rich_ids(&mut renderer, "Il0", &style), plain);
-
-        let epoch = Arc::clone(renderer.layout_epoch());
-        renderer.set_distinct_letters(true);
-        assert!(renderer.distinguishes_letters());
-        assert!(
-            !Arc::ptr_eq(&epoch, renderer.layout_epoch()),
-            "widget layouts reshape when the setting changes"
-        );
-        assert_eq!(shaped_ids(&mut renderer, "Il0", &style), distinct);
-        assert_eq!(rich_ids(&mut renderer, "Il0", &style), distinct);
-
-        renderer.set_distinct_letters(false);
-        assert!(!renderer.distinguishes_letters());
-        assert_eq!(shaped_ids(&mut renderer, "Il0", &style), plain);
-
-        // Another renderer on the thread keeps its own setting.
-        let mut other = features_renderer();
-        other.set_distinct_letters(true);
-        assert_eq!(rich_ids(&mut renderer, "Il0", &style), plain);
-        assert_eq!(rich_ids(&mut other, "Il0", &style), distinct);
-    }
+    fn look_alikes_are_set_apart_on_security_surfaces_and_in_identifiers;
 
     phase security_surfaces_distinguish_whatever_the_setting;
     {
