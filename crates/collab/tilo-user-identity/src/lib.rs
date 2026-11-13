@@ -155,9 +155,9 @@ pub use image::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use persist::{
-    DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, install_device_cert,
-    joined_device_is_enrolled, joined_device_is_ready, load_or_create_device_key,
-    provision_joined_device,
+    DeviceKeyOutcome, IdentityPaths, PersistError, RevocationsError, adopt_device_key,
+    append_revocation, install_device_cert, joined_device_is_enrolled, joined_device_is_ready,
+    load_or_create_device_key, provision_joined_device, read_revocations, revocations_path,
 };
 pub use projection::{
     DisplayNameError, GovernedAgentIdentityV2, GovernedDeviceIdentityV2, GovernedHumanIdentityV1,

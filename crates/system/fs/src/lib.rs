@@ -125,9 +125,9 @@ pub use hydration::Hydrator;
 #[cfg(feature = "filesystem")]
 pub use identity::{
     CertifiedIdentityError, CertifiedMountIdentity, MountIdentity, PeerCredentials,
-    RevocationListLoadError, WorkspaceShareIssuerError, identity_paths,
-    load_certified_mount_identity, load_certified_mount_identity_once_valid, load_mount_identity,
-    load_revocation_list, load_workspace_share_issuer, revocation_list_path,
+    WorkspaceShareIssuerError, identity_paths, load_certified_mount_identity,
+    load_certified_mount_identity_once_valid, load_mount_identity, load_revocation_list,
+    load_workspace_share_issuer, revocation_list_path,
 };
 #[cfg(feature = "filesystem")]
 pub use namespace::history::{HistoryError, RecordHistorySnapshot};

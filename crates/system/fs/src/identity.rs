@@ -11,69 +11,33 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use thiserror::Error;
 use tilo_user_identity::{
-    DeviceCert, DeviceCertError, DeviceKeyOutcome, IdentityPaths, PersistError, RevocationEntry,
-    RevocationError, RevocationList, load_or_create_device_key, verify_device_cert_at,
+    DeviceCert, DeviceCertError, DeviceKeyOutcome, IdentityPaths, PersistError, RevocationList,
+    load_or_create_device_key, verify_device_cert_at,
 };
 
 /// Overrides the identity root (`/var/lib/tilo`) — two mounts acting as two devices point this at two roots; tests use a tempdir.
 pub const IDENTITY_ROOT_ENV: &str = "TILO_IDENTITY_ROOT";
 
 /// Verified revocations cached beside the user's public identity.
+#[must_use]
 pub fn revocation_list_path(paths: &IdentityPaths) -> PathBuf {
-    paths
-        .user_pubkey
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join("revocations.bin")
+    tilo_user_identity::revocations_path(paths)
 }
 
-/// Failures loading the local aggregate of signed device revocations.
-#[derive(Debug, Error)]
-pub enum RevocationListLoadError {
-    /// The revocation cache could not be read.
-    #[error("revocation list at {path} could not be read: {source}")]
-    Io {
-        /// Attempted cache path.
-        path: PathBuf,
-        /// Underlying filesystem error.
-        #[source]
-        source: std::io::Error,
-    },
-    /// The cache was not a canonical vector of signed entries.
-    #[error("revocation list could not be decoded: {0}")]
-    Decode(#[from] postcard::Error),
-    /// A cached entry did not carry a valid user-root signature.
-    #[error("revocation list contains an invalid entry: {0}")]
-    InvalidEntry(#[from] RevocationError),
-}
-
-/// Load and verify the signed revocation aggregate used for peer admission.
+/// Load the signed revocations this device verified, for peer admission.
 ///
-/// A missing cache means no revocation has been learned yet. Any other read,
+/// A missing list means no revocation has been learned yet. Any other read,
 /// decode, or signature failure aborts collaborative networking rather than
 /// silently treating corrupt trust state as empty.
 ///
 /// # Errors
 ///
-/// Returns an error when the cache cannot be read or decoded, or when an
+/// Returns an error when the list cannot be read or decoded, or when an
 /// entry's user-root signature is invalid.
 pub fn load_revocation_list(
     paths: &IdentityPaths,
-) -> std::result::Result<RevocationList, RevocationListLoadError> {
-    let path = revocation_list_path(paths);
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(RevocationList::new());
-        }
-        Err(source) => return Err(RevocationListLoadError::Io { path, source }),
-    };
-    let entries: Vec<RevocationEntry> = postcard::from_bytes(&bytes)?;
-    let mut list = RevocationList::new();
-    for entry in entries {
-        list.insert(entry)?;
-    }
-    Ok(list)
+) -> Result<RevocationList, tilo_user_identity::RevocationsError> {
+    tilo_user_identity::read_revocations(paths)
 }
 
 /// The systemd credential a per-user unit receives the device key as.

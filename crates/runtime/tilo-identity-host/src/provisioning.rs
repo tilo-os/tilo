@@ -759,23 +759,7 @@ fn copy_home_peers(
     joined_device: [u8; 32],
 ) -> io::Result<()> {
     let identity_id = hex::encode(local_cert.user_public_key);
-    let bytes = match fs::read(source) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(error),
-    };
-    if bytes.len() > 1024 * 1024 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "home-peer registry exceeds 1 MiB",
-        ));
-    }
-    let mut entries: Vec<tilo_relay_protocol::HomePeerRegistration> = if bytes.is_empty() {
-        Vec::new()
-    } else {
-        serde_json::from_slice(&bytes)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
-    };
+    let mut entries = tilo_relay_protocol::read_home_peers(source)?;
     // Clients reject a relay whose certificate cannot act as a host. A normal
     // setup machine is dialed directly instead; only a host-capable machine is
     // recorded as a relay.
@@ -800,19 +784,12 @@ fn copy_home_peers(
         if !relay_is_dialable(&entries, &registration) {
             entries.push(registration);
         }
-        let local_encoded = serde_json::to_vec_pretty(&entries)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if let Some(parent) = source.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        tilo_files::native::atomic::write(source, &local_encoded)?;
+        tilo_relay_protocol::write_home_peers(source, &entries)?;
     }
     let own: Vec<_> = entries
         .into_iter()
         .filter(|entry| entry.user_public_key == identity_id)
         .collect();
-    let encoded = serde_json::to_vec_pretty(&own)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let parent = target_system
         .user_pubkey
         .parent()
@@ -823,10 +800,9 @@ fn copy_home_peers(
                 "target identity root is missing",
             )
         })?;
-    fs::create_dir_all(parent)?;
-    tilo_files::native::atomic::write_creating_parent(
+    tilo_relay_protocol::write_home_peers(
         &tilo_relay_protocol::home_peer_registry_path(parent),
-        &encoded,
+        &own,
     )?;
     tilo_relay_protocol::remember_personal_device(
         &tilo_relay_protocol::personal_device_peer_path(parent),

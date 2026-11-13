@@ -93,7 +93,7 @@ fn person() -> Person {
         .complete_enrollment(
             &profile.id,
             &token,
-            tilo_identity_host::enrollment::DeviceRole::PersonalDevice,
+            tilo_identity_host::enrollment::DeviceRole::Personal,
             other_device.verifying_key().to_bytes(),
             "The phone",
             now,
