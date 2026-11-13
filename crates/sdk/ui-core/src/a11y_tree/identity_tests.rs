@@ -52,155 +52,159 @@ fn fixture() -> Parent {
     }
 }
 
-#[test]
-fn semantic_identity_parent_and_first_field_keep_their_exact_layout_ids() {
-    let mut root = fixture();
-    assert_eq!(
-        std::ptr::from_ref(&root).cast::<()>(),
-        std::ptr::from_ref(&root.child).cast::<()>()
-    );
-    let mut layout = TaffyTree::new();
-    let mut nodes = HashMap::new();
-    let parent = root.build_layout(&mut layout, &Theme::dark(), &mut nodes);
-    let child = layout.children(parent).unwrap()[0];
-    let mut semantics = SemanticTree::new();
-    semantics.refresh(&root, &nodes, Some(child), &[]);
-    let parent_node = semantics.node(&SemanticId("root~k:parent".into())).unwrap();
-    let child_node = semantics
-        .node(&SemanticId("root~k:parent~k:child".into()))
-        .unwrap();
-    assert_eq!(parent_node.widget_taffy_id, Some(u64::from(parent)));
-    assert_eq!(child_node.widget_taffy_id, Some(u64::from(child)));
-    assert!(!parent_node.state.focused);
-    assert!(child_node.state.focused);
-    for _ in 0..16 {
-        let rehashed = nodes.iter().map(|(id, pointer)| (*id, *pointer)).collect();
-        assert!(
+tilo_test_env::scenario! {
+    fn semantic_identity_follows_exact_layout_ids_and_admission;
+
+    phase semantic_identity_parent_and_first_field_keep_their_exact_layout_ids;
+    {
+        let mut root = fixture();
+        assert_eq!(
+            std::ptr::from_ref(&root).cast::<()>(),
+            std::ptr::from_ref(&root.child).cast::<()>()
+        );
+        let mut layout = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let parent = root.build_layout(&mut layout, &Theme::dark(), &mut nodes);
+        let child = layout.children(parent).unwrap()[0];
+        let mut semantics = SemanticTree::new();
+        semantics.refresh(&root, &nodes, Some(child), &[]);
+        let parent_node = semantics.node(&SemanticId("root~k:parent".into())).unwrap();
+        let child_node = semantics
+            .node(&SemanticId("root~k:parent~k:child".into()))
+            .unwrap();
+        assert_eq!(parent_node.widget_taffy_id, Some(u64::from(parent)));
+        assert_eq!(child_node.widget_taffy_id, Some(u64::from(child)));
+        assert!(!parent_node.state.focused);
+        assert!(child_node.state.focused);
+        for _ in 0..16 {
+            let rehashed = nodes.iter().map(|(id, pointer)| (*id, *pointer)).collect();
+            assert!(
+                semantics
+                    .refresh(&root, &rehashed, Some(child), &[])
+                    .is_empty()
+            );
+        }
+    }
+
+    phase semantic_identity_ambiguous_duplicate_registration_has_no_layout_dispatch;
+    {
+        let mut leaf = Leaf { name: "Leaf" };
+        let mut layout = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        leaf.build_layout(&mut layout, &Theme::dark(), &mut nodes);
+        let duplicate = layout.new_leaf(taffy::Style::default()).unwrap();
+        nodes.insert(duplicate, std::ptr::from_mut::<dyn Widget>(&mut leaf));
+        let mut semantics = SemanticTree::new();
+        semantics.refresh(&leaf, &nodes, Some(duplicate), &[]);
+        let node = semantics.node(&SemanticId("root~k:child".into())).unwrap();
+        assert_eq!(
+            node.widget_taffy_id, None,
+            "an arbitrary duplicate must not become a dispatch id"
+        );
+        assert!(!node.state.focused);
+    }
+
+    phase semantic_identity_unknown_raw_pointer_is_never_dereferenced;
+    {
+        let leaf = Leaf { name: "Leaf" };
+        let mut nodes = HashMap::new();
+        let stale: *mut dyn Widget = std::ptr::NonNull::<Leaf>::dangling().as_ptr();
+        nodes.insert(TaffyNodeId::from(99_u64), stale);
+        let mut semantics = SemanticTree::new();
+        semantics.refresh(&leaf, &nodes, None, &[]);
+        assert_eq!(
             semantics
-                .refresh(&root, &rehashed, Some(child), &[])
-                .is_empty()
+                .node(&SemanticId("root~k:child".into()))
+                .unwrap()
+                .widget_taffy_id,
+            None
         );
     }
-}
 
-#[test]
-fn semantic_identity_ambiguous_duplicate_registration_has_no_layout_dispatch() {
-    let mut leaf = Leaf { name: "Leaf" };
-    let mut layout = TaffyTree::new();
-    let mut nodes = HashMap::new();
-    leaf.build_layout(&mut layout, &Theme::dark(), &mut nodes);
-    let duplicate = layout.new_leaf(taffy::Style::default()).unwrap();
-    nodes.insert(duplicate, std::ptr::from_mut::<dyn Widget>(&mut leaf));
-    let mut semantics = SemanticTree::new();
-    semantics.refresh(&leaf, &nodes, Some(duplicate), &[]);
-    let node = semantics.node(&SemanticId("root~k:child".into())).unwrap();
-    assert_eq!(
-        node.widget_taffy_id, None,
-        "an arbitrary duplicate must not become a dispatch id"
-    );
-    assert!(!node.state.focused);
-}
+    phase semantic_identity_private_refresh_requires_matching_admitted_entry;
+    {
+        let mut leaf = Leaf { name: "Leaf" };
+        let mut layout = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let node = leaf.build_layout(&mut layout, &Theme::dark(), &mut nodes);
+        let mut semantics = SemanticTree::new();
+        let absent = AdmittedNodeNames::default();
+        semantics.refresh_bound(&leaf, &nodes, &absent, Some(node), &[]);
+        assert_eq!(
+            semantics
+                .node(&SemanticId("root~k:child".into()))
+                .unwrap()
+                .widget_taffy_id,
+            None
+        );
+        let mut replaced = AdmittedNodeNames::default();
+        let stale: *mut dyn Widget = std::ptr::NonNull::<Leaf>::dangling().as_ptr();
+        replaced.insert(node, stale, leaf.name().to_owned());
+        semantics.refresh_bound(&leaf, &nodes, &replaced, Some(node), &[]);
+        assert_eq!(
+            semantics
+                .node(&SemanticId("root~k:child".into()))
+                .unwrap()
+                .widget_taffy_id,
+            None
+        );
+    }
 
-#[test]
-fn semantic_identity_unknown_raw_pointer_is_never_dereferenced() {
-    let leaf = Leaf { name: "Leaf" };
-    let mut nodes = HashMap::new();
-    let stale: *mut dyn Widget = std::ptr::NonNull::<Leaf>::dangling().as_ptr();
-    nodes.insert(TaffyNodeId::from(99_u64), stale);
-    let mut semantics = SemanticTree::new();
-    semantics.refresh(&leaf, &nodes, None, &[]);
-    assert_eq!(
-        semantics
-            .node(&SemanticId("root~k:child".into()))
-            .unwrap()
-            .widget_taffy_id,
-        None
-    );
-}
+    phase semantic_identity_actual_admission_preserves_names_and_rejects_replaced_pointer;
+    {
+        let mut root = fixture();
+        let mut layout = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let parent = root.build_layout(&mut layout, &Theme::dark(), &mut nodes);
+        let child = layout.children(parent).unwrap()[0];
+        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: the fixture owns this complete live tree and its exact layout.
+        unsafe { bindings.rebuild(&root, &layout, parent, &nodes) };
+        let exported = bindings.exported_nodes(&nodes);
+        let mut semantics = SemanticTree::new();
+        semantics.refresh_bound(&root, &exported.nodes, &exported.names, Some(child), &[]);
+        assert_eq!(
+            semantics
+                .node(&SemanticId("root~k:parent".into()))
+                .unwrap()
+                .widget_taffy_id,
+            Some(u64::from(parent))
+        );
+        assert_eq!(
+            semantics
+                .node(&SemanticId("root~k:parent~k:child".into()))
+                .unwrap()
+                .widget_taffy_id,
+            Some(u64::from(child))
+        );
+        let stale: *mut dyn Widget = std::ptr::NonNull::<Leaf>::dangling().as_ptr();
+        nodes.insert(child, stale);
+        let replaced = bindings.exported_nodes(&nodes);
+        assert!(!replaced.nodes.contains_key(&child));
+        semantics.refresh_bound(&root, &replaced.nodes, &replaced.names, None, &[]);
+        assert_eq!(
+            semantics
+                .node(&SemanticId("root~k:parent~k:child".into()))
+                .unwrap()
+                .widget_taffy_id,
+            None
+        );
+    }
 
-#[test]
-fn semantic_identity_private_refresh_requires_matching_admitted_entry() {
-    let mut leaf = Leaf { name: "Leaf" };
-    let mut layout = TaffyTree::new();
-    let mut nodes = HashMap::new();
-    let node = leaf.build_layout(&mut layout, &Theme::dark(), &mut nodes);
-    let mut semantics = SemanticTree::new();
-    let absent = AdmittedNodeNames::default();
-    semantics.refresh_bound(&leaf, &nodes, &absent, Some(node), &[]);
-    assert_eq!(
-        semantics
-            .node(&SemanticId("root~k:child".into()))
-            .unwrap()
-            .widget_taffy_id,
-        None
-    );
-    let mut replaced = AdmittedNodeNames::default();
-    let stale: *mut dyn Widget = std::ptr::NonNull::<Leaf>::dangling().as_ptr();
-    replaced.insert(node, stale, leaf.name().to_owned());
-    semantics.refresh_bound(&leaf, &nodes, &replaced, Some(node), &[]);
-    assert_eq!(
-        semantics
-            .node(&SemanticId("root~k:child".into()))
-            .unwrap()
-            .widget_taffy_id,
-        None
-    );
-}
+    phase semantic_identity_admitted_unique_names_handle_different_coercion_metadata;
+    {
+        let root = fixture();
+        assert_different_metadata_mapping(&root, true);
+    }
 
-#[test]
-fn semantic_identity_actual_admission_preserves_names_and_rejects_replaced_pointer() {
-    let mut root = fixture();
-    let mut layout = TaffyTree::new();
-    let mut nodes = HashMap::new();
-    let parent = root.build_layout(&mut layout, &Theme::dark(), &mut nodes);
-    let child = layout.children(parent).unwrap()[0];
-    let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
-    // SAFETY: the fixture owns this complete live tree and its exact layout.
-    unsafe { bindings.rebuild(&root, &layout, parent, &nodes) };
-    let exported = bindings.exported_nodes(&nodes);
-    let mut semantics = SemanticTree::new();
-    semantics.refresh_bound(&root, &exported.nodes, &exported.names, Some(child), &[]);
-    assert_eq!(
-        semantics
-            .node(&SemanticId("root~k:parent".into()))
-            .unwrap()
-            .widget_taffy_id,
-        Some(u64::from(parent))
-    );
-    assert_eq!(
-        semantics
-            .node(&SemanticId("root~k:parent~k:child".into()))
-            .unwrap()
-            .widget_taffy_id,
-        Some(u64::from(child))
-    );
-    let stale: *mut dyn Widget = std::ptr::NonNull::<Leaf>::dangling().as_ptr();
-    nodes.insert(child, stale);
-    let replaced = bindings.exported_nodes(&nodes);
-    assert!(!replaced.nodes.contains_key(&child));
-    semantics.refresh_bound(&root, &replaced.nodes, &replaced.names, None, &[]);
-    assert_eq!(
-        semantics
-            .node(&SemanticId("root~k:parent~k:child".into()))
-            .unwrap()
-            .widget_taffy_id,
-        None
-    );
-}
-
-#[test]
-fn semantic_identity_admitted_unique_names_handle_different_coercion_metadata() {
-    let root = fixture();
-    assert_different_metadata_mapping(&root, true);
-}
-
-#[test]
-fn semantic_identity_same_name_alias_without_exact_metadata_is_structural() {
-    let root = Parent {
-        child: Leaf { name: "Same" },
-        name: "Same",
-    };
-    assert_different_metadata_mapping(&root, false);
+    phase semantic_identity_same_name_alias_without_exact_metadata_is_structural;
+    {
+        let root = Parent {
+            child: Leaf { name: "Same" },
+            name: "Same",
+        };
+        assert_different_metadata_mapping(&root, false);
+    }
 }
 
 fn assert_different_metadata_mapping(root: &Parent, uniquely_named: bool) {

@@ -74,53 +74,57 @@ fn text_at(tree: &SemanticTree, key: &str) -> *const u8 {
         .unwrap()
 }
 
-#[test]
-fn a_refresh_moves_unchanged_rows_over_and_answers_as_a_full_rebuild_does() {
-    let frames = [
-        vec![row("a", "alpha"), row("b", "beta"), row("c", "gamma")],
-        vec![row("a", "alpha"), row("b", "betaa"), row("c", "gamma")],
-        vec![row("a", "alpha"), row("c", "gamma")],
-        vec![row("c", "gamma"), row("a", "alpha"), row("b", "betaa")],
-        vec![row("a", "alpha"), row("a", "alpha"), row("c", "gamma")],
-        vec![row("a", "alpha"), row("c", "gamma")],
-        vec![],
-    ];
-    let mut tree = SemanticTree::new();
-    let mut last = rows(Vec::new());
-    let nodes = layout(&mut last);
-    tree.refresh(&last, &nodes, None, &[]);
-    for next in frames {
-        let mut next = rows(next);
-        let nodes = layout(&mut next);
-        let delta = tree.refresh(&next, &nodes, None, &[]);
-        let (expected, nodes) = rebuilt(&mut last, &mut next);
-        assert_eq!(delta, expected, "{:?}", next.rows);
-        assert_eq!(frame(&tree), nodes, "{:?}", next.rows);
-        last = next;
+tilo_test_env::scenario! {
+    fn retained_rows_are_moved_over_or_rebuilt_alone;
+
+    phase a_refresh_moves_unchanged_rows_over_and_answers_as_a_full_rebuild_does;
+    {
+        let frames = [
+            vec![row("a", "alpha"), row("b", "beta"), row("c", "gamma")],
+            vec![row("a", "alpha"), row("b", "betaa"), row("c", "gamma")],
+            vec![row("a", "alpha"), row("c", "gamma")],
+            vec![row("c", "gamma"), row("a", "alpha"), row("b", "betaa")],
+            vec![row("a", "alpha"), row("a", "alpha"), row("c", "gamma")],
+            vec![row("a", "alpha"), row("c", "gamma")],
+            vec![],
+        ];
+        let mut tree = SemanticTree::new();
+        let mut last = rows(Vec::new());
+        let nodes = layout(&mut last);
+        tree.refresh(&last, &nodes, None, &[]);
+        for next in frames {
+            let mut next = rows(next);
+            let nodes = layout(&mut next);
+            let delta = tree.refresh(&next, &nodes, None, &[]);
+            let (expected, nodes) = rebuilt(&mut last, &mut next);
+            assert_eq!(delta, expected, "{:?}", next.rows);
+            assert_eq!(frame(&tree), nodes, "{:?}", next.rows);
+            last = next;
+        }
     }
-}
 
-#[test]
-fn a_key_typed_into_one_row_rebuilds_that_row_alone() {
-    let mut tree = SemanticTree::new();
-    let mut first = rows(vec![row("a", "alpha"), row("b", "beta")]);
-    let nodes = layout(&mut first);
-    tree.refresh(&first, &nodes, None, &[]);
-    let (a, b) = (text_at(&tree, "a"), text_at(&tree, "b"));
+    phase a_key_typed_into_one_row_rebuilds_that_row_alone;
+    {
+        let mut tree = SemanticTree::new();
+        let mut first = rows(vec![row("a", "alpha"), row("b", "beta")]);
+        let nodes = layout(&mut first);
+        tree.refresh(&first, &nodes, None, &[]);
+        let (a, b) = (text_at(&tree, "a"), text_at(&tree, "b"));
 
-    let mut typed = rows(vec![row("a", "alpha"), row("b", "betaa")]);
-    let nodes = layout(&mut typed);
-    let delta = tree.refresh(&typed, &nodes, None, &[]);
-    assert_eq!(
-        text_at(&tree, "a"),
-        a,
-        "the unchanged row's nodes moved over"
-    );
-    assert_ne!(text_at(&tree, "b"), b, "the typed row was built again");
-    assert_eq!(
-        delta.updated.len(),
-        1,
-        "only the typed text changed: {delta:?}"
-    );
-    assert!(delta.added.is_empty() && delta.removed.is_empty());
+        let mut typed = rows(vec![row("a", "alpha"), row("b", "betaa")]);
+        let nodes = layout(&mut typed);
+        let delta = tree.refresh(&typed, &nodes, None, &[]);
+        assert_eq!(
+            text_at(&tree, "a"),
+            a,
+            "the unchanged row's nodes moved over"
+        );
+        assert_ne!(text_at(&tree, "b"), b, "the typed row was built again");
+        assert_eq!(
+            delta.updated.len(),
+            1,
+            "only the typed text changed: {delta:?}"
+        );
+        assert!(delta.added.is_empty() && delta.removed.is_empty());
+    }
 }

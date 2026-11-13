@@ -225,52 +225,56 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_painted_surfaces_retained_button_is_operated_through_the_walk() {
-        let pressed = Rc::new(Cell::new(0));
-        let button = Button::new("play", "Play").on_view({
-            let pressed = Rc::clone(&pressed);
-            move || pressed.set(pressed.get() + 1)
-        });
-        let painter = Painter {
-            button: Embedded::new(button),
-            rect: Rect::ZERO,
-        };
-        let mut harness = crate::headless::FrameHarness::for_root(
-            crate::State::new(),
-            painter,
-            (400, 300),
-            crate::theme::Theme::dark(),
-        );
-        harness.relayout();
-        let update = harness.a11y_tree_update();
-        let (id, node) = update
-            .nodes
-            .iter()
-            .find(|(_, node)| node.label() == Some("Play"))
-            .expect("the button is exported");
-        let bounds = node.bounds().expect("where it is drawn");
-        assert!(bounds.x0 >= 40.0 && bounds.y0 >= 60.0, "{bounds:?}");
-        harness
-            .perform_a11y_action(*id, &crate::a11y::Action::Activate)
-            .expect("the walk routes to the button");
-        assert_eq!(pressed.get(), 1);
-    }
+    tilo_test_env::scenario! {
+        fn a_child_route_is_walked_and_reads_back;
 
-    #[test]
-    fn a_route_reads_back_as_written() {
-        let plain = encode(&[2, 0], None);
-        assert_eq!(plain, "tilo.child:2/0");
-        assert!(matches!(decode(&plain), Some((path, Inner::Widget)) if path == [2, 0]));
-        let semantic = encode(&[1], Some("menu:item:3"));
-        assert!(
-            matches!(decode(&semantic), Some((path, Inner::Semantic("menu:item:3"))) if path == [1])
-        );
-        let keyed = encode(&[0, 4], Some(&keys(&[7, 9])));
-        assert!(
-            matches!(decode(&keyed), Some((path, Inner::Keys(keys))) if path == [0, 4] && keys == [7, 9])
-        );
-        assert!(decode("tilo.child:").is_none());
-        assert!(decode("music.page-widget.play").is_none());
+        phase a_painted_surfaces_retained_button_is_operated_through_the_walk;
+        {
+            let pressed = Rc::new(Cell::new(0));
+            let button = Button::new("play", "Play").on_view({
+                let pressed = Rc::clone(&pressed);
+                move || pressed.set(pressed.get() + 1)
+            });
+            let painter = Painter {
+                button: Embedded::new(button),
+                rect: Rect::ZERO,
+            };
+            let mut harness = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                painter,
+                (400, 300),
+                crate::theme::Theme::dark(),
+            );
+            harness.relayout();
+            let update = harness.a11y_tree_update();
+            let (id, node) = update
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Play"))
+                .expect("the button is exported");
+            let bounds = node.bounds().expect("where it is drawn");
+            assert!(bounds.x0 >= 40.0 && bounds.y0 >= 60.0, "{bounds:?}");
+            harness
+                .perform_a11y_action(*id, &crate::a11y::Action::Activate)
+                .expect("the walk routes to the button");
+            assert_eq!(pressed.get(), 1);
+        }
+
+        phase a_route_reads_back_as_written;
+        {
+            let plain = encode(&[2, 0], None);
+            assert_eq!(plain, "tilo.child:2/0");
+            assert!(matches!(decode(&plain), Some((path, Inner::Widget)) if path == [2, 0]));
+            let semantic = encode(&[1], Some("menu:item:3"));
+            assert!(
+                matches!(decode(&semantic), Some((path, Inner::Semantic("menu:item:3"))) if path == [1])
+            );
+            let keyed = encode(&[0, 4], Some(&keys(&[7, 9])));
+            assert!(
+                matches!(decode(&keyed), Some((path, Inner::Keys(keys))) if path == [0, 4] && keys == [7, 9])
+            );
+            assert!(decode("tilo.child:").is_none());
+            assert!(decode("music.page-widget.play").is_none());
+        }
     }
 }

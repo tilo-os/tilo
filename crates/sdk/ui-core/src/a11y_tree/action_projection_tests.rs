@@ -62,86 +62,91 @@ fn projected_survey(
     }
     tilo_actions::door::survey(&tree.action_resources())
 }
-#[test]
-fn action_projection_preserves_exported_surface_and_skips_non_durable_descendants() {
-    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-    let branch = ProjectionBranch {
-        inner: Column::new().push(Box::new(ProjectionLeaf {
-            inner: crate::widget::Text::new("Prose"),
-            calls: std::rc::Rc::clone(&calls),
-        })),
-        root: AccessNode::new(Role::Group),
-    };
-    let mut root = Column::new()
-        .push(Box::new(branch))
-        .push(Box::new(Button::new("durable", "Durable")));
-    let map = layout(&mut root);
-    let full = projected_survey(&root, &map, false);
-    assert!(!full.is_empty(), "a keyed sibling remains exported");
-    assert!(
-        calls.get() > 0,
-        "full a11y still visits non-durable descendants"
-    );
-    calls.set(0);
-    assert_eq!(projected_survey(&root, &map, true), full);
-    assert_eq!(
-        calls.get(),
-        0,
-        "publication must not build the discarded branch"
-    );
-}
-#[test]
-fn action_projection_keeps_duplicate_and_ambiguous_key_rejection() {
-    for key in ["duplicate", "parent~0~k:7"] {
+tilo_test_env::scenario! {
+    fn action_projection_keeps_the_exported_surface_and_its_rejections;
+
+    phase action_projection_preserves_exported_surface_and_skips_non_durable_descendants;
+    {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let branch = ProjectionBranch {
+            inner: Column::new().push(Box::new(ProjectionLeaf {
+                inner: crate::widget::Text::new("Prose"),
+                calls: std::rc::Rc::clone(&calls),
+            })),
+            root: AccessNode::new(Role::Group),
+        };
         let mut root = Column::new()
-            .push(Box::new(Button::new(key, "First")))
-            .push(Box::new(Button::new(key, "Second")));
+            .push(Box::new(branch))
+            .push(Box::new(Button::new("durable", "Durable")));
         let map = layout(&mut root);
-        assert_eq!(
-            projected_survey(&root, &map, true),
-            projected_survey(&root, &map, false)
-        );
+        let full = projected_survey(&root, &map, false);
+        assert!(!full.is_empty(), "a keyed sibling remains exported");
         assert!(
-            projected_survey(&root, &map, true).is_empty(),
-            "duplicate durable controls remain unexported"
+            calls.get() > 0,
+            "full a11y still visits non-durable descendants"
+        );
+        calls.set(0);
+        assert_eq!(projected_survey(&root, &map, true), full);
+        assert_eq!(
+            calls.get(),
+            0,
+            "publication must not build the discarded branch"
         );
     }
-    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-    let pruned = ProjectionBranch {
-        inner: Column::new().push(Box::new(ProjectionLeaf {
-            inner: crate::widget::Text::new("Prose"),
-            calls: std::rc::Rc::clone(&calls),
-        })),
-        root: AccessNode::new(Role::Group),
-    };
-    let mut root = Column::new()
-        .push(Box::new(pruned))
-        .push(Box::new(Button::new("parent~0~k:7", "Ambiguous")));
-    let map = layout(&mut root);
-    let full = projected_survey(&root, &map, false);
-    calls.set(0);
-    assert_eq!(projected_survey(&root, &map, true), full);
-    assert!(
-        calls.get() > 0,
-        "ambiguous IDs retain the complete duplicate-detection walk"
-    );
-}
 
-#[test]
-fn action_projection_rejects_a_durable_key_colliding_with_a_pruned_position() {
-    let branch = ProjectionBranch {
-        inner: Column::new().push(Box::new(Button::new("leaf", "Positional descendant"))),
-        root: AccessNode::new(Role::Group),
-    };
-    let root = Column::new()
-        .push(Box::new(Button::new("prefix", "Prefix")))
-        .push(Box::new(branch))
-        .push(Box::new(Button::new("prefix~1~k:leaf", "Forged collision")));
-    let map = HashMap::new();
-    let full = projected_survey(&root, &map, false);
-    assert!(
-        full.iter()
-            .all(|action| action.resource_label != "Forged collision")
-    );
-    assert_eq!(projected_survey(&root, &map, true), full);
+    phase action_projection_keeps_duplicate_and_ambiguous_key_rejection;
+    {
+        for key in ["duplicate", "parent~0~k:7"] {
+            let mut root = Column::new()
+                .push(Box::new(Button::new(key, "First")))
+                .push(Box::new(Button::new(key, "Second")));
+            let map = layout(&mut root);
+            assert_eq!(
+                projected_survey(&root, &map, true),
+                projected_survey(&root, &map, false)
+            );
+            assert!(
+                projected_survey(&root, &map, true).is_empty(),
+                "duplicate durable controls remain unexported"
+            );
+        }
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let pruned = ProjectionBranch {
+            inner: Column::new().push(Box::new(ProjectionLeaf {
+                inner: crate::widget::Text::new("Prose"),
+                calls: std::rc::Rc::clone(&calls),
+            })),
+            root: AccessNode::new(Role::Group),
+        };
+        let mut root = Column::new()
+            .push(Box::new(pruned))
+            .push(Box::new(Button::new("parent~0~k:7", "Ambiguous")));
+        let map = layout(&mut root);
+        let full = projected_survey(&root, &map, false);
+        calls.set(0);
+        assert_eq!(projected_survey(&root, &map, true), full);
+        assert!(
+            calls.get() > 0,
+            "ambiguous IDs retain the complete duplicate-detection walk"
+        );
+    }
+
+    phase action_projection_rejects_a_durable_key_colliding_with_a_pruned_position;
+    {
+        let branch = ProjectionBranch {
+            inner: Column::new().push(Box::new(Button::new("leaf", "Positional descendant"))),
+            root: AccessNode::new(Role::Group),
+        };
+        let root = Column::new()
+            .push(Box::new(Button::new("prefix", "Prefix")))
+            .push(Box::new(branch))
+            .push(Box::new(Button::new("prefix~1~k:leaf", "Forged collision")));
+        let map = HashMap::new();
+        let full = projected_survey(&root, &map, false);
+        assert!(
+            full.iter()
+                .all(|action| action.resource_label != "Forged collision")
+        );
+        assert_eq!(projected_survey(&root, &map, true), full);
+    }
 }

@@ -829,119 +829,123 @@ mod tests {
     use super::*;
     use vello::peniko::Color;
 
-    #[test]
-    fn access_state_and_settings_default_clear_and_builders_set_only_their_field() {
-        let s = AccessState::default();
-        for (field, set) in [
-            ("focused", s.focused),
-            ("focusable", s.focusable),
-            ("selected", s.selected),
-            ("disabled", s.disabled),
-            ("read_only", s.read_only),
-            ("protected", s.protected),
-            ("multiline", s.multiline),
-        ] {
-            assert!(!set, "default {field} is clear");
+    tilo_test_env::scenario! {
+        fn access_values_build_as_declared_and_contrast_follows_wcag;
+
+        phase access_state_and_settings_default_clear_and_builders_set_only_their_field;
+        {
+            let s = AccessState::default();
+            for (field, set) in [
+                ("focused", s.focused),
+                ("focusable", s.focusable),
+                ("selected", s.selected),
+                ("disabled", s.disabled),
+                ("read_only", s.read_only),
+                ("protected", s.protected),
+                ("multiline", s.multiline),
+            ] {
+                assert!(!set, "default {field} is clear");
+            }
+            assert_eq!(s.checked, None);
+            assert_eq!(s.expanded, None);
+            assert_eq!(s, AccessState::new());
+
+            let s = AccessState::new()
+                .focusable(true)
+                .focused(true)
+                .checked(true)
+                .disabled(true);
+            assert!(s.focusable);
+            assert!(s.focused);
+            assert_eq!(s.checked, Some(true));
+            assert!(s.disabled);
+            assert_eq!(s.expanded, None);
+            assert!(!s.read_only);
+            assert_eq!(
+                AccessState::new().checked(false).checked,
+                Some(false),
+                "checked(false) is Some(false), not None"
+            );
+            assert_eq!(AccessState::new().expanded(false).expanded, Some(false));
+
+            let s = A11ySettings::default();
+            assert!(!s.high_contrast);
+            assert!(!s.reduce_motion);
+            assert!(!s.screen_reader);
+            let s = A11ySettings {
+                high_contrast: true,
+                reduce_motion: false,
+                screen_reader: true,
+            };
+            let json = serde_json::to_string(&s).unwrap();
+            let back: A11ySettings = serde_json::from_str(&json).unwrap();
+            assert_eq!(s, back);
         }
-        assert_eq!(s.checked, None);
-        assert_eq!(s.expanded, None);
-        assert_eq!(s, AccessState::new());
 
-        let s = AccessState::new()
-            .focusable(true)
-            .focused(true)
-            .checked(true)
-            .disabled(true);
-        assert!(s.focusable);
-        assert!(s.focused);
-        assert_eq!(s.checked, Some(true));
-        assert!(s.disabled);
-        assert_eq!(s.expanded, None);
-        assert!(!s.read_only);
-        assert_eq!(
-            AccessState::new().checked(false).checked,
-            Some(false),
-            "checked(false) is Some(false), not None"
-        );
-        assert_eq!(AccessState::new().expanded(false).expanded, Some(false));
+        phase access_node_builders_compose_text_live_position_and_level;
+        {
+            let n = AccessNode::new(Role::Button);
+            assert_eq!(n.role, Role::Button);
+            assert_eq!(n.name, None);
+            assert_eq!(n.description, None);
+            assert_eq!(n.value, None);
+            assert_eq!(n.state, AccessState::default());
 
-        let s = A11ySettings::default();
-        assert!(!s.high_contrast);
-        assert!(!s.reduce_motion);
-        assert!(!s.screen_reader);
-        let s = A11ySettings {
-            high_contrast: true,
-            reduce_motion: false,
-            screen_reader: true,
-        };
-        let json = serde_json::to_string(&s).unwrap();
-        let back: A11ySettings = serde_json::from_str(&json).unwrap();
-        assert_eq!(s, back);
-    }
+            let n = AccessNode::new(Role::Slider)
+                .with_name("Volume")
+                .with_description("Output volume")
+                .with_value("50%")
+                .with_state(AccessState::new().focusable(true).focused(true));
+            assert_eq!(n.role, Role::Slider);
+            assert_eq!(n.name.as_deref(), Some("Volume"));
+            assert_eq!(n.description.as_deref(), Some("Output volume"));
+            assert_eq!(n.value.as_deref(), Some("50%"));
+            assert!(n.state.focusable && n.state.focused);
 
-    #[test]
-    fn access_node_builders_compose_text_live_position_and_level() {
-        let n = AccessNode::new(Role::Button);
-        assert_eq!(n.role, Role::Button);
-        assert_eq!(n.name, None);
-        assert_eq!(n.description, None);
-        assert_eq!(n.value, None);
-        assert_eq!(n.state, AccessState::default());
+            let bare = AccessNode::new(Role::Group);
+            assert_eq!(bare.live, None);
+            assert_eq!(bare.set_size, None);
+            assert_eq!(bare.pos_in_set, None);
+            assert_eq!(bare.level, None);
+            let live = AccessNode::new(Role::Group).with_live(Politeness::Assertive);
+            assert_eq!(live.live, Some(Politeness::Assertive));
+            let item = AccessNode::new(Role::Tab).with_position(2, 4);
+            assert_eq!(item.pos_in_set, Some(2));
+            assert_eq!(item.set_size, Some(4));
+            let row = AccessNode::new(Role::TreeItem).with_level(3);
+            assert_eq!(row.level, Some(3));
 
-        let n = AccessNode::new(Role::Slider)
-            .with_name("Volume")
-            .with_description("Output volume")
-            .with_value("50%")
-            .with_state(AccessState::new().focusable(true).focused(true));
-        assert_eq!(n.role, Role::Slider);
-        assert_eq!(n.name.as_deref(), Some("Volume"));
-        assert_eq!(n.description.as_deref(), Some("Output volume"));
-        assert_eq!(n.value.as_deref(), Some("50%"));
-        assert!(n.state.focusable && n.state.focused);
+            let named = AccessNode::new(Role::StaticText).with_optional_name(Some("Hi".into()));
+            assert_eq!(named.name.as_deref(), Some("Hi"));
+            let anon = AccessNode::new(Role::Image).with_optional_name(None);
+            assert_eq!(anon.name, None);
+            let masked = AccessNode::new(Role::TextInput).with_optional_value(None);
+            assert_eq!(masked.value, None);
 
-        let bare = AccessNode::new(Role::Group);
-        assert_eq!(bare.live, None);
-        assert_eq!(bare.set_size, None);
-        assert_eq!(bare.pos_in_set, None);
-        assert_eq!(bare.level, None);
-        let live = AccessNode::new(Role::Group).with_live(Politeness::Assertive);
-        assert_eq!(live.live, Some(Politeness::Assertive));
-        let item = AccessNode::new(Role::Tab).with_position(2, 4);
-        assert_eq!(item.pos_in_set, Some(2));
-        assert_eq!(item.set_size, Some(4));
-        let row = AccessNode::new(Role::TreeItem).with_level(3);
-        assert_eq!(row.level, Some(3));
+            let h2 = Role::Heading { level: 2 };
+            assert_eq!(h2, Role::Heading { level: 2 });
+            assert_ne!(h2, Role::Heading { level: 3 });
+        }
 
-        let named = AccessNode::new(Role::StaticText).with_optional_name(Some("Hi".into()));
-        assert_eq!(named.name.as_deref(), Some("Hi"));
-        let anon = AccessNode::new(Role::Image).with_optional_name(None);
-        assert_eq!(anon.name, None);
-        let masked = AccessNode::new(Role::TextInput).with_optional_value(None);
-        assert_eq!(masked.value, None);
+        phase contrast_ratio_and_relative_luminance_follow_wcag;
+        {
+            let white = Color::from_rgb8(255, 255, 255);
+            let black = Color::from_rgb8(0, 0, 0);
+            // Black-on-white is the WCAG maximum, 21:1.
+            let r = contrast_ratio(white, black);
+            assert!(
+                (r - 21.0).abs() < 0.01,
+                "black/white contrast should be ~21:1, got {r}"
+            );
+            assert!((contrast_ratio(black, white) - r).abs() < 1e-9);
+            assert!((contrast_ratio(white, white) - 1.0).abs() < 1e-9);
 
-        let h2 = Role::Heading { level: 2 };
-        assert_eq!(h2, Role::Heading { level: 2 });
-        assert_ne!(h2, Role::Heading { level: 3 });
-    }
-
-    #[test]
-    fn contrast_ratio_and_relative_luminance_follow_wcag() {
-        let white = Color::from_rgb8(255, 255, 255);
-        let black = Color::from_rgb8(0, 0, 0);
-        // Black-on-white is the WCAG maximum, 21:1.
-        let r = contrast_ratio(white, black);
-        assert!(
-            (r - 21.0).abs() < 0.01,
-            "black/white contrast should be ~21:1, got {r}"
-        );
-        assert!((contrast_ratio(black, white) - r).abs() < 1e-9);
-        assert!((contrast_ratio(white, white) - 1.0).abs() < 1e-9);
-
-        assert!((relative_luminance(white) - 1.0).abs() < 1e-6);
-        assert!(relative_luminance(black).abs() < 1e-6);
-        let red = relative_luminance(Color::from_rgb8(255, 0, 0));
-        let green = relative_luminance(Color::from_rgb8(0, 255, 0));
-        let blue = relative_luminance(Color::from_rgb8(0, 0, 255));
-        assert!(green > red && red > blue);
+            assert!((relative_luminance(white) - 1.0).abs() < 1e-6);
+            assert!(relative_luminance(black).abs() < 1e-6);
+            let red = relative_luminance(Color::from_rgb8(255, 0, 0));
+            let green = relative_luminance(Color::from_rgb8(0, 255, 0));
+            let blue = relative_luminance(Color::from_rgb8(0, 0, 255));
+            assert!(green > red && red > blue);
+        }
     }
 }

@@ -1678,429 +1678,472 @@ mod tests {
         node_map
     }
 
-    #[test]
-    fn sidebar_range_controls_publish_existing_set_value_alongside_steps() {
-        use crate::widget::{Slider, SplitHandle, SplitOrientation, SplitRatio};
-        let slider = Slider::new("volume", "volume").with_accessible_name("Volume");
-        let separator = SplitHandle::new(SplitOrientation::Horizontal, SplitRatio::default());
-        let controls = [
-            slider.accessibility().unwrap(),
-            SplitHandle::accessibility(&separator),
-        ];
-        for mut access in controls {
-            let actions = verbs_for(&access);
-            for verb in ["increment", "decrement", "set-value"] {
-                assert!(actions.iter().any(|action| action.name == verb));
+    tilo_test_env::scenario! {
+        fn nodes_publish_the_actions_they_afford;
+
+        phase sidebar_range_controls_publish_existing_set_value_alongside_steps;
+        {
+            use crate::widget::{Slider, SplitHandle, SplitOrientation, SplitRatio};
+            let slider = Slider::new("volume", "volume").with_accessible_name("Volume");
+            let separator = SplitHandle::new(SplitOrientation::Horizontal, SplitRatio::default());
+            let controls = [
+                slider.accessibility().unwrap(),
+                SplitHandle::accessibility(&separator),
+            ];
+            for mut access in controls {
+                let actions = verbs_for(&access);
+                for verb in ["increment", "decrement", "set-value"] {
+                    assert!(actions.iter().any(|action| action.name == verb));
+                }
+                access.state.read_only = true;
+                assert!(
+                    verbs_for(&access)
+                        .iter()
+                        .all(|action| action.name != "set-value")
+                );
+                access.state.disabled = true;
+                assert!(verbs_for(&access).is_empty());
             }
-            access.state.read_only = true;
-            assert!(
-                verbs_for(&access)
-                    .iter()
-                    .all(|action| action.name != "set-value")
-            );
-            access.state.disabled = true;
-            assert!(verbs_for(&access).is_empty());
-        }
-        let mut slider = slider;
-        let map = layout(&mut slider);
-        let mut tree = SemanticTree::new();
-        tree.refresh(&slider, &map, None, &[]);
-        let resources = tree.action_resources();
-        let volume = resources
-            .iter()
-            .find(|resource| resource.label == "Volume")
-            .unwrap();
-        assert!(volume.actions.iter().any(|action| action.id == "set-value"));
-        assert!(
-            tilo_actions::validate_surface_contracts(
-                &resources,
-                &tilo_actions::ActionRegistry::new()
-            )
-            .is_empty()
-        );
-    }
-
-    #[test]
-    fn controls_keyed_alike_under_one_parent_stay_two_nodes() {
-        use crate::widget::Slider;
-        let first = crate::LocalState::new(0.2);
-        let second = crate::LocalState::new(0.7);
-        let mut col = Column::new()
-            .push(Box::new(Button::new("same", "First")))
-            .push(Box::new(Button::new("same", "Second")))
-            .push(Box::new(
-                Slider::from_state(&first).with_accessible_name("Brightness"),
-            ))
-            .push(Box::new(
-                Slider::from_state(&second).with_accessible_name("Volume"),
-            ));
-        let node_map = layout(&mut col);
-        let mut tree = SemanticTree::new();
-        tree.refresh(&col, &node_map, None, &[]);
-        let root = tree.node(tree.root()).unwrap();
-        let names: Vec<_> = root
-            .children
-            .iter()
-            .map(|id| tree.node(id).and_then(|node| node.name.clone()))
-            .collect();
-        assert_eq!(
-            names,
-            [
-                Some("First".to_owned()),
-                Some("Second".to_owned()),
-                Some("Brightness".to_owned()),
-                Some("Volume".to_owned()),
-            ]
-        );
-        let unique: std::collections::HashSet<_> = root.children.iter().collect();
-        assert_eq!(unique.len(), root.children.len(), "each is its own node");
-        assert!(
-            tree.action_resources()
-                .iter()
-                .all(|resource| resource.label != "First" && resource.label != "Second"),
-            "a repeated key is no action target"
-        );
-    }
-
-    #[test]
-    fn sliders_given_ids_are_keyed_by_them() {
-        use crate::widget::Slider;
-        let level = crate::LocalState::new(0.5);
-        let slider = Slider::from_state(&level).with_id("qs-volume");
-        assert_eq!(
-            slider.accessibility().unwrap().semantic_key.as_deref(),
-            Some("qs-volume")
-        );
-    }
-
-    #[test]
-    fn semantic_ids_are_durable_and_exported_only_when_stable() {
-        {
-            let mut col = Column::new()
-                .push(Box::new(Button::new("a", "Alpha")))
-                .push(Box::new(Button::new("b", "Beta")));
-            let node_map = layout(&mut col);
-
+            let mut slider = slider;
+            let map = layout(&mut slider);
             let mut tree = SemanticTree::new();
-            let first = tree.refresh(&col, &node_map, None, &[]);
-            assert!(first.removed.is_empty());
-            assert!(
-                first.added.len() >= 2,
-                "the two buttons are added, got {:?}",
-                first.added
-            );
-            let ids_first: Vec<SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
-            assert!(
-                ids_first.len() >= 3,
-                "root + two buttons, got {ids_first:?}"
-            );
-            assert!(
-                ids_first.iter().any(|id| id.as_str().contains("~k:a"))
-                    && ids_first.iter().any(|id| id.as_str().contains("~k:b")),
-                "buttons use their durable widget keys, got {ids_first:?}"
-            );
-
-            let second = tree.refresh(&col, &node_map, None, &[]);
-            assert!(
-                second.is_empty(),
-                "a stable frame yields no delta, got {second:?}"
-            );
-            let ids_second: Vec<SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
-            assert_eq!(
-                ids_first, ids_second,
-                "node identity + order survive a refresh"
-            );
-        }
-
-        {
-            let mut tree = SemanticTree::new();
-            let group = SemanticId("root~k:advanced".into());
-            let deep = SemanticId("root~k:advanced~k:save".into());
-            let shallow = SemanticId("root~k:save".into());
-            let node = |id: SemanticId, children: Vec<SemanticId>| SemanticNode {
-                id,
-                durable_identity: true,
-                role: Role::Button,
-                name: Some("Save".into()),
-                value: None,
-                description: None,
-                state: AccessState::default(),
-                bounds: Some(Rect::new(0.0, 0.0, 10.0, 10.0)),
-                actions: Vec::new(),
-                children,
-                widget_taffy_id: None,
-                semantic_target: None,
-                place: SetPlace::default(),
-                item: None,
-            };
-            tree.nodes
-                .insert(group.clone(), node(group.clone(), vec![deep.clone()]));
-            tree.nodes
-                .insert(deep.clone(), node(deep.clone(), Vec::new()));
-            tree.nodes
-                .insert(shallow.clone(), node(shallow.clone(), Vec::new()));
-            tree.nodes.get_mut(&tree.root).unwrap().children = vec![group.clone(), shallow.clone()];
-            tree.order = ReadingOrder::from_ids(vec![
-                tree.root.clone(),
-                group,
-                deep.clone(),
-                shallow.clone(),
-            ]);
-
-            let routes = tree.control_paths("save");
-            assert_eq!(routes.len(), 2);
-            assert_eq!(routes[0], vec![tree.root.clone(), shallow]);
-            assert_eq!(routes[1].last(), Some(&deep));
-        }
-
-        {
-            let mut first = Column::new()
-                .push(Box::new(Button::new("alpha", "Alpha")))
-                .push(Box::new(Button::new("beta", "Beta")));
-            let first_map = layout(&mut first);
-            let mut tree = SemanticTree::new();
-            tree.refresh(&first, &first_map, None, &[]);
-            let alpha = tree.find_by_name("Alpha").expect("alpha").id.clone();
-            let beta = tree.find_by_name("Beta").expect("beta").id.clone();
-            let alpha_before = tree.node(&alpha).expect("alpha").clone();
-            let mut rebound = alpha_before.clone();
-            rebound.widget_taffy_id = Some(
-                alpha_before
-                    .widget_taffy_id
-                    .expect("laid-out alpha")
-                    .saturating_add(1),
-            );
-            let mut rebound_frame = tree.nodes.clone();
-            rebound_frame.insert(alpha.clone(), rebound);
-            assert!(
-                tree.diff(&rebound_frame).is_empty(),
-                "a frame-local routing address is not exported semantic content"
-            );
-            assert!(alpha.as_str().contains("~k:alpha"));
-
-            let mut rebuilt = Column::new()
-                .push(Box::new(Button::new("unrelated", "Unrelated")))
-                .push(Box::new(Button::new("beta", "Beta")))
-                .push(Box::new(Button::new("alpha", "Alpha")));
-            let rebuilt_map = layout(&mut rebuilt);
-            tree.refresh(&rebuilt, &rebuilt_map, None, &[]);
-            assert_eq!(tree.find_by_name("Alpha").expect("alpha").id, alpha);
-            assert_eq!(tree.find_by_name("Beta").expect("beta").id, beta);
-            assert_ne!(
-                tree.node(&alpha).expect("alpha").widget_taffy_id,
-                alpha_before.widget_taffy_id,
-                "the rebuilt widget is routed through its new layout node"
-            );
-            assert!(tree.duplicate_ids().is_empty());
-        }
-
-        {
-            let mut button = Button::new("settings.section:network\u{1f}open", "Network");
-            let node_map = layout(&mut button);
-            let mut tree = SemanticTree::new();
-            tree.refresh(&button, &node_map, None, &[]);
-
+            tree.refresh(&slider, &map, None, &[]);
             let resources = tree.action_resources();
-            assert!(
-                resources
-                    .iter()
-                    .all(|resource| { !resource.id.as_str().contains(tilo_actions::KEY_SEP) })
-            );
+            let volume = resources
+                .iter()
+                .find(|resource| resource.label == "Volume")
+                .unwrap();
+            assert!(volume.actions.iter().any(|action| action.id == "set-value"));
             assert!(
                 tilo_actions::validate_surface_contracts(
                     &resources,
-                    &tilo_actions::ActionRegistry::new(),
+                    &tilo_actions::ActionRegistry::new()
                 )
                 .is_empty()
             );
         }
 
+        phase nodes_afford_only_the_actions_they_declare;
         {
-            let mut button = Button::new("go", "Go");
-            let node_map = layout(&mut button);
-            let mut tree = SemanticTree::new();
-            tree.refresh(&button, &node_map, None, &[]);
-            let id = tree
-                .iter()
-                .find(|node| node.name.as_deref() == Some("Go"))
-                .expect("button node")
-                .id
-                .clone();
-            tree.nodes.get_mut(&id).unwrap().durable_identity = false;
+            {
+                assert_eq!(
+                    semantic_operation_kind(Role::Button, &Action::Focus),
+                    OperationKind::View
+                );
+                assert_eq!(
+                    semantic_operation_kind(Role::Tab, &Action::Activate),
+                    OperationKind::View
+                );
+                assert_eq!(
+                    semantic_operation_kind(Role::Button, &Action::Activate),
+                    OperationKind::Effect
+                );
+            }
 
-            assert!(tree.action_resources().is_empty());
-        }
-
-        {
-            let published = |scroll: crate::widget::Scrollable| {
-                let mut scroll = scroll.with_child(Box::new(Button::new("go", "Go")));
-                let node_map = layout(&mut scroll);
+            {
+                let mut btn = Button::new("go", "Go");
+                let node_map = layout(&mut btn);
                 let mut tree = SemanticTree::new();
-                tree.refresh(&scroll, &node_map, None, &[]);
-                tree.action_resources()
+                tree.refresh(&btn, &node_map, None, &[]);
+                let node = tree
                     .iter()
-                    .map(|resource| resource.id.as_str().to_owned())
-                    .collect::<Vec<_>>()
-            };
-            assert!(
-                published(crate::widget::Scrollable::new_vertical()).is_empty(),
-                "an unkeyed scroll group follows its layout node"
-            );
-            let keyed =
-                published(crate::widget::Scrollable::new_vertical().with_semantic_key("pane"));
-            assert!(
-                keyed
+                    .find(|n| n.name.as_deref() == Some("Go"))
+                    .expect("button node");
+                assert!(
+                    node.action("activate").is_some(),
+                    "a button affords activate"
+                );
+                assert!(
+                    node.action("focus").is_some(),
+                    "a focusable button affords focus"
+                );
+                assert!(matches!(
+                    node.action("activate").unwrap().kind,
+                    SemanticActionKind::Verb(Action::Activate)
+                ));
+            }
+
+            {
+                let label = crate::a11y::AccessNode::new(Role::Label);
+                assert!(
+                    verbs_for(&label)
+                        .iter()
+                        .all(|action| action.name != "activate"),
+                    "the retained semantic tree must agree with AccessKit"
+                );
+            }
+
+            {
+                let row = crate::a11y::AccessNode::new(Role::ListItem)
+                    .with_state(AccessState::new().focusable(true).context_menu(true));
+                let action = verbs_for(&row)
+                    .into_iter()
+                    .find(|action| action.name == "show-context-menu")
+                    .expect("declared context menus are discoverable");
+                assert!(matches!(
+                    action.kind,
+                    SemanticActionKind::Verb(Action::ShowContextMenu)
+                ));
+            }
+
+            {
+                let mut button = Button::new("go", "Go");
+                let node_map = layout(&mut button);
+                let mut tree = SemanticTree::new();
+                tree.refresh(&button, &node_map, None, &[]);
+                let resources = tree.action_resources();
+                let go = resources.iter().find(|resource| resource.label == "Go");
+                assert!(
+                    go.is_none_or(|resource| {
+                        resource
+                            .actions
+                            .iter()
+                            .all(|action| action.id != "activate")
+                    }),
+                    "generic activation must not bypass a domain action's permission and confirmation"
+                );
+            }
+
+            {
+                let mut field = TextInput::new(Vec::new()).with_accessible_name("Destination");
+                let node_map = layout(&mut field);
+                let mut tree = SemanticTree::new();
+                tree.refresh(&field, &node_map, None, &[]);
+                let resources = tree.action_resources();
+                let destination = resources
                     .iter()
-                    .any(|id| id.contains("pane") && id.contains("go")),
-                "a keyed scroll group keeps its controls durable, got {keyed:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn unranked_control_paths_preserve_public_shortest_path_order() {
-        let mut root = Column::new()
-            .push(Box::new(
-                crate::widget::Scrollable::new_vertical()
-                    .with_semantic_key("advanced")
-                    .with_child(Box::new(Button::new("save", "Deep save"))),
-            ))
-            .push(Box::new(Button::new("save", "Shallow save")));
-        let nodes = layout(&mut root);
-        let mut tree = SemanticTree::new();
-        tree.refresh(&root, &nodes, None, &[]);
-        let unranked = tree.control_paths_unranked("save");
-        assert_eq!(unranked.len(), 2);
-        let deep = tree.find_by_name("Deep save").unwrap().id.clone();
-        let shallow = tree.find_by_name("Shallow save").unwrap().id.clone();
-        assert_eq!(unranked[0].last(), Some(&deep));
-        assert_eq!(unranked[1].last(), Some(&shallow));
-        let ranked = tree.control_paths("save");
-        assert_eq!(ranked.len(), 2);
-        assert_eq!(ranked[0], vec![tree.root.clone(), shallow]);
-        assert_eq!(ranked[1].len(), 3);
-        assert_eq!(ranked[1].last(), Some(&deep));
-        assert!(unranked.contains(&ranked[0]));
-        assert!(unranked.contains(&ranked[1]));
-        assert!(tree.control_paths_unranked("missing").is_empty());
-        assert!(tree.control_paths("missing").is_empty());
-        assert!(tree.control_paths_unranked("").is_empty());
-        assert!(tree.control_paths("").is_empty());
-    }
-
-    #[test]
-    fn parents_that_go_round_in_a_circle_lead_to_no_path() {
-        let mut root = Column::new().push(Box::new(
-            crate::widget::Scrollable::new_vertical()
-                .with_semantic_key("advanced")
-                .with_child(Box::new(Button::new("save", "Save"))),
-        ));
-        let nodes = layout(&mut root);
-        let mut tree = SemanticTree::new();
-        tree.refresh(&root, &nodes, None, &[]);
-        let save = tree.find_by_name("Save").unwrap().id.clone();
-        let [path] = tree.control_paths_unranked("save").try_into().unwrap();
-        let group = path[path.len() - 2].clone();
-        let parents = HashMap::from([(save.clone(), group.clone()), (group, save.clone())]);
-        assert_eq!(tree.path_from_root(&parents, &save), None);
-    }
-
-    #[test]
-    fn nodes_afford_only_the_actions_they_declare() {
-        {
-            assert_eq!(
-                semantic_operation_kind(Role::Button, &Action::Focus),
-                OperationKind::View
-            );
-            assert_eq!(
-                semantic_operation_kind(Role::Tab, &Action::Activate),
-                OperationKind::View
-            );
-            assert_eq!(
-                semantic_operation_kind(Role::Button, &Action::Activate),
-                OperationKind::Effect
-            );
-        }
-
-        {
-            let mut btn = Button::new("go", "Go");
-            let node_map = layout(&mut btn);
-            let mut tree = SemanticTree::new();
-            tree.refresh(&btn, &node_map, None, &[]);
-            let node = tree
-                .iter()
-                .find(|n| n.name.as_deref() == Some("Go"))
-                .expect("button node");
-            assert!(
-                node.action("activate").is_some(),
-                "a button affords activate"
-            );
-            assert!(
-                node.action("focus").is_some(),
-                "a focusable button affords focus"
-            );
-            assert!(matches!(
-                node.action("activate").unwrap().kind,
-                SemanticActionKind::Verb(Action::Activate)
-            ));
-        }
-
-        {
-            let label = crate::a11y::AccessNode::new(Role::Label);
-            assert!(
-                verbs_for(&label)
-                    .iter()
-                    .all(|action| action.name != "activate"),
-                "the retained semantic tree must agree with AccessKit"
-            );
-        }
-
-        {
-            let row = crate::a11y::AccessNode::new(Role::ListItem)
-                .with_state(AccessState::new().focusable(true).context_menu(true));
-            let action = verbs_for(&row)
-                .into_iter()
-                .find(|action| action.name == "show-context-menu")
-                .expect("declared context menus are discoverable");
-            assert!(matches!(
-                action.kind,
-                SemanticActionKind::Verb(Action::ShowContextMenu)
-            ));
-        }
-
-        {
-            let mut button = Button::new("go", "Go");
-            let node_map = layout(&mut button);
-            let mut tree = SemanticTree::new();
-            tree.refresh(&button, &node_map, None, &[]);
-            let resources = tree.action_resources();
-            let go = resources.iter().find(|resource| resource.label == "Go");
-            assert!(
-                go.is_none_or(|resource| {
+                    .find(|resource| resource.label == "Destination");
+                assert!(destination.is_some_and(|resource| {
                     resource
                         .actions
                         .iter()
-                        .all(|action| action.id != "activate")
-                }),
-                "generic activation must not bypass a domain action's permission and confirmation"
+                        .any(|action| action.id == "set-value")
+                }));
+            }
+        }
+
+        phase a_table_row_affords_activation_and_its_menu;
+        {
+            let mut row = crate::a11y::AccessNode::new(Role::Row)
+                .with_name("Quarterly report.pdf")
+                .with_action_target("row:a:0")
+                .with_bounds(Rect::new(0.0, 0.0, 200.0, 24.0));
+            assert!(
+                verbs_for(&row).iter().any(|verb| verb.name == "activate"),
+                "a row an activation reaches is activatable, whatever its role is spelled"
+            );
+            assert!(
+                verbs_for(&row)
+                    .iter()
+                    .all(|verb| verb.name != "show-context-menu"),
+                "a row with no menu of its own announces none"
+            );
+            row.state.context_menu = true;
+            assert!(
+                verbs_for(&row)
+                    .iter()
+                    .any(|verb| verb.name == "show-context-menu"),
+                "a row the table opens a menu for announces that menu"
+            );
+
+            let inert = crate::a11y::AccessNode::new(Role::Row).with_name("only a name");
+            assert!(
+                verbs_for(&inert).iter().all(|verb| verb.name != "activate"),
+                "a row with nothing to reach is not offered an activation"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn semantic_ids_key_controls_durably;
+
+        phase controls_keyed_alike_under_one_parent_stay_two_nodes;
+        {
+            use crate::widget::Slider;
+            let first = crate::LocalState::new(0.2);
+            let second = crate::LocalState::new(0.7);
+            let mut col = Column::new()
+                .push(Box::new(Button::new("same", "First")))
+                .push(Box::new(Button::new("same", "Second")))
+                .push(Box::new(
+                    Slider::from_state(&first).with_accessible_name("Brightness"),
+                ))
+                .push(Box::new(
+                    Slider::from_state(&second).with_accessible_name("Volume"),
+                ));
+            let node_map = layout(&mut col);
+            let mut tree = SemanticTree::new();
+            tree.refresh(&col, &node_map, None, &[]);
+            let root = tree.node(tree.root()).unwrap();
+            let names: Vec<_> = root
+                .children
+                .iter()
+                .map(|id| tree.node(id).and_then(|node| node.name.clone()))
+                .collect();
+            assert_eq!(
+                names,
+                [
+                    Some("First".to_owned()),
+                    Some("Second".to_owned()),
+                    Some("Brightness".to_owned()),
+                    Some("Volume".to_owned()),
+                ]
+            );
+            let unique: std::collections::HashSet<_> = root.children.iter().collect();
+            assert_eq!(unique.len(), root.children.len(), "each is its own node");
+            assert!(
+                tree.action_resources()
+                    .iter()
+                    .all(|resource| resource.label != "First" && resource.label != "Second"),
+                "a repeated key is no action target"
             );
         }
 
+        phase sliders_given_ids_are_keyed_by_them;
         {
-            let mut field = TextInput::new(Vec::new()).with_accessible_name("Destination");
-            let node_map = layout(&mut field);
-            let mut tree = SemanticTree::new();
-            tree.refresh(&field, &node_map, None, &[]);
-            let resources = tree.action_resources();
-            let destination = resources
-                .iter()
-                .find(|resource| resource.label == "Destination");
-            assert!(destination.is_some_and(|resource| {
-                resource
-                    .actions
+            use crate::widget::Slider;
+            let level = crate::LocalState::new(0.5);
+            let slider = Slider::from_state(&level).with_id("qs-volume");
+            assert_eq!(
+                slider.accessibility().unwrap().semantic_key.as_deref(),
+                Some("qs-volume")
+            );
+        }
+
+        phase semantic_ids_are_durable_and_exported_only_when_stable;
+        {
+            {
+                let mut col = Column::new()
+                    .push(Box::new(Button::new("a", "Alpha")))
+                    .push(Box::new(Button::new("b", "Beta")));
+                let node_map = layout(&mut col);
+
+                let mut tree = SemanticTree::new();
+                let first = tree.refresh(&col, &node_map, None, &[]);
+                assert!(first.removed.is_empty());
+                assert!(
+                    first.added.len() >= 2,
+                    "the two buttons are added, got {:?}",
+                    first.added
+                );
+                let ids_first: Vec<SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
+                assert!(
+                    ids_first.len() >= 3,
+                    "root + two buttons, got {ids_first:?}"
+                );
+                assert!(
+                    ids_first.iter().any(|id| id.as_str().contains("~k:a"))
+                        && ids_first.iter().any(|id| id.as_str().contains("~k:b")),
+                    "buttons use their durable widget keys, got {ids_first:?}"
+                );
+
+                let second = tree.refresh(&col, &node_map, None, &[]);
+                assert!(
+                    second.is_empty(),
+                    "a stable frame yields no delta, got {second:?}"
+                );
+                let ids_second: Vec<SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
+                assert_eq!(
+                    ids_first, ids_second,
+                    "node identity + order survive a refresh"
+                );
+            }
+
+            {
+                let mut tree = SemanticTree::new();
+                let group = SemanticId("root~k:advanced".into());
+                let deep = SemanticId("root~k:advanced~k:save".into());
+                let shallow = SemanticId("root~k:save".into());
+                let node = |id: SemanticId, children: Vec<SemanticId>| SemanticNode {
+                    id,
+                    durable_identity: true,
+                    role: Role::Button,
+                    name: Some("Save".into()),
+                    value: None,
+                    description: None,
+                    state: AccessState::default(),
+                    bounds: Some(Rect::new(0.0, 0.0, 10.0, 10.0)),
+                    actions: Vec::new(),
+                    children,
+                    widget_taffy_id: None,
+                    semantic_target: None,
+                    place: SetPlace::default(),
+                    item: None,
+                };
+                tree.nodes
+                    .insert(group.clone(), node(group.clone(), vec![deep.clone()]));
+                tree.nodes
+                    .insert(deep.clone(), node(deep.clone(), Vec::new()));
+                tree.nodes
+                    .insert(shallow.clone(), node(shallow.clone(), Vec::new()));
+                tree.nodes.get_mut(&tree.root).unwrap().children = vec![group.clone(), shallow.clone()];
+                tree.order = ReadingOrder::from_ids(vec![
+                    tree.root.clone(),
+                    group,
+                    deep.clone(),
+                    shallow.clone(),
+                ]);
+
+                let routes = tree.control_paths("save");
+                assert_eq!(routes.len(), 2);
+                assert_eq!(routes[0], vec![tree.root.clone(), shallow]);
+                assert_eq!(routes[1].last(), Some(&deep));
+            }
+
+            {
+                let mut first = Column::new()
+                    .push(Box::new(Button::new("alpha", "Alpha")))
+                    .push(Box::new(Button::new("beta", "Beta")));
+                let first_map = layout(&mut first);
+                let mut tree = SemanticTree::new();
+                tree.refresh(&first, &first_map, None, &[]);
+                let alpha = tree.find_by_name("Alpha").expect("alpha").id.clone();
+                let beta = tree.find_by_name("Beta").expect("beta").id.clone();
+                let alpha_before = tree.node(&alpha).expect("alpha").clone();
+                let mut rebound = alpha_before.clone();
+                rebound.widget_taffy_id = Some(
+                    alpha_before
+                        .widget_taffy_id
+                        .expect("laid-out alpha")
+                        .saturating_add(1),
+                );
+                let mut rebound_frame = tree.nodes.clone();
+                rebound_frame.insert(alpha.clone(), rebound);
+                assert!(
+                    tree.diff(&rebound_frame).is_empty(),
+                    "a frame-local routing address is not exported semantic content"
+                );
+                assert!(alpha.as_str().contains("~k:alpha"));
+
+                let mut rebuilt = Column::new()
+                    .push(Box::new(Button::new("unrelated", "Unrelated")))
+                    .push(Box::new(Button::new("beta", "Beta")))
+                    .push(Box::new(Button::new("alpha", "Alpha")));
+                let rebuilt_map = layout(&mut rebuilt);
+                tree.refresh(&rebuilt, &rebuilt_map, None, &[]);
+                assert_eq!(tree.find_by_name("Alpha").expect("alpha").id, alpha);
+                assert_eq!(tree.find_by_name("Beta").expect("beta").id, beta);
+                assert_ne!(
+                    tree.node(&alpha).expect("alpha").widget_taffy_id,
+                    alpha_before.widget_taffy_id,
+                    "the rebuilt widget is routed through its new layout node"
+                );
+                assert!(tree.duplicate_ids().is_empty());
+            }
+
+            {
+                let mut button = Button::new("settings.section:network\u{1f}open", "Network");
+                let node_map = layout(&mut button);
+                let mut tree = SemanticTree::new();
+                tree.refresh(&button, &node_map, None, &[]);
+
+                let resources = tree.action_resources();
+                assert!(
+                    resources
+                        .iter()
+                        .all(|resource| { !resource.id.as_str().contains(tilo_actions::KEY_SEP) })
+                );
+                assert!(
+                    tilo_actions::validate_surface_contracts(
+                        &resources,
+                        &tilo_actions::ActionRegistry::new(),
+                    )
+                    .is_empty()
+                );
+            }
+
+            {
+                let mut button = Button::new("go", "Go");
+                let node_map = layout(&mut button);
+                let mut tree = SemanticTree::new();
+                tree.refresh(&button, &node_map, None, &[]);
+                let id = tree
                     .iter()
-                    .any(|action| action.id == "set-value")
-            }));
+                    .find(|node| node.name.as_deref() == Some("Go"))
+                    .expect("button node")
+                    .id
+                    .clone();
+                tree.nodes.get_mut(&id).unwrap().durable_identity = false;
+
+                assert!(tree.action_resources().is_empty());
+            }
+
+            {
+                let published = |scroll: crate::widget::Scrollable| {
+                    let mut scroll = scroll.with_child(Box::new(Button::new("go", "Go")));
+                    let node_map = layout(&mut scroll);
+                    let mut tree = SemanticTree::new();
+                    tree.refresh(&scroll, &node_map, None, &[]);
+                    tree.action_resources()
+                        .iter()
+                        .map(|resource| resource.id.as_str().to_owned())
+                        .collect::<Vec<_>>()
+                };
+                assert!(
+                    published(crate::widget::Scrollable::new_vertical()).is_empty(),
+                    "an unkeyed scroll group follows its layout node"
+                );
+                let keyed =
+                    published(crate::widget::Scrollable::new_vertical().with_semantic_key("pane"));
+                assert!(
+                    keyed
+                        .iter()
+                        .any(|id| id.contains("pane") && id.contains("go")),
+                    "a keyed scroll group keeps its controls durable, got {keyed:?}"
+                );
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn control_paths_are_shortest_and_never_circular;
+
+        phase unranked_control_paths_preserve_public_shortest_path_order;
+        {
+            let mut root = Column::new()
+                .push(Box::new(
+                    crate::widget::Scrollable::new_vertical()
+                        .with_semantic_key("advanced")
+                        .with_child(Box::new(Button::new("save", "Deep save"))),
+                ))
+                .push(Box::new(Button::new("save", "Shallow save")));
+            let nodes = layout(&mut root);
+            let mut tree = SemanticTree::new();
+            tree.refresh(&root, &nodes, None, &[]);
+            let unranked = tree.control_paths_unranked("save");
+            assert_eq!(unranked.len(), 2);
+            let deep = tree.find_by_name("Deep save").unwrap().id.clone();
+            let shallow = tree.find_by_name("Shallow save").unwrap().id.clone();
+            assert_eq!(unranked[0].last(), Some(&deep));
+            assert_eq!(unranked[1].last(), Some(&shallow));
+            let ranked = tree.control_paths("save");
+            assert_eq!(ranked.len(), 2);
+            assert_eq!(ranked[0], vec![tree.root.clone(), shallow]);
+            assert_eq!(ranked[1].len(), 3);
+            assert_eq!(ranked[1].last(), Some(&deep));
+            assert!(unranked.contains(&ranked[0]));
+            assert!(unranked.contains(&ranked[1]));
+            assert!(tree.control_paths_unranked("missing").is_empty());
+            assert!(tree.control_paths("missing").is_empty());
+            assert!(tree.control_paths_unranked("").is_empty());
+            assert!(tree.control_paths("").is_empty());
+        }
+
+        phase parents_that_go_round_in_a_circle_lead_to_no_path;
+        {
+            let mut root = Column::new().push(Box::new(
+                crate::widget::Scrollable::new_vertical()
+                    .with_semantic_key("advanced")
+                    .with_child(Box::new(Button::new("save", "Save"))),
+            ));
+            let nodes = layout(&mut root);
+            let mut tree = SemanticTree::new();
+            tree.refresh(&root, &nodes, None, &[]);
+            let save = tree.find_by_name("Save").unwrap().id.clone();
+            let [path] = tree.control_paths_unranked("save").try_into().unwrap();
+            let group = path[path.len() - 2].clone();
+            let parents = HashMap::from([(save.clone(), group.clone()), (group, save.clone())]);
+            assert_eq!(tree.path_from_root(&parents, &save), None);
         }
     }
 
@@ -2214,36 +2257,5 @@ mod tests {
                 "the retained control replaces, rather than duplicates, cell semantics"
             );
         }
-    }
-
-    #[test]
-    fn a_table_row_affords_activation_and_its_menu() {
-        let mut row = crate::a11y::AccessNode::new(Role::Row)
-            .with_name("Quarterly report.pdf")
-            .with_action_target("row:a:0")
-            .with_bounds(Rect::new(0.0, 0.0, 200.0, 24.0));
-        assert!(
-            verbs_for(&row).iter().any(|verb| verb.name == "activate"),
-            "a row an activation reaches is activatable, whatever its role is spelled"
-        );
-        assert!(
-            verbs_for(&row)
-                .iter()
-                .all(|verb| verb.name != "show-context-menu"),
-            "a row with no menu of its own announces none"
-        );
-        row.state.context_menu = true;
-        assert!(
-            verbs_for(&row)
-                .iter()
-                .any(|verb| verb.name == "show-context-menu"),
-            "a row the table opens a menu for announces that menu"
-        );
-
-        let inert = crate::a11y::AccessNode::new(Role::Row).with_name("only a name");
-        assert!(
-            verbs_for(&inert).iter().all(|verb| verb.name != "activate"),
-            "a row with nothing to reach is not offered an activation"
-        );
     }
 }
