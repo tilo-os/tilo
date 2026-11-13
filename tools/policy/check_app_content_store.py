@@ -11,6 +11,7 @@ outside the hosts that lend the store may not call it:
 
 * the content crates, which define it;
 * the framework's native process host, which lends it to the window;
+* the tilolang host, which lends it to each tilolang record it hosts;
 * the filesystem daemon, which serves it;
 * the app runtime, which hosts apps and decides what their records receive
   against the app surfaces kept in the same store.
@@ -43,6 +44,7 @@ ALLOWED = (
     Path("crates/system/content"),
     Path("crates/system/content-device"),
     Path("crates/sdk/tilo-app/src/framework/app.rs"),
+    Path("crates/platform/tilolang-host/src/lib.rs"),
     Path("crates/system/fs/src/main.rs"),
     Path("crates/runtime/tilo-runtime/src/cli.rs"),
     Path("crates/runtime/tilo-runtime/src/standalone.rs"),
