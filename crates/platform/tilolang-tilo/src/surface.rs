@@ -17,7 +17,7 @@ use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
 use tilo_resource::Resource as _;
 use tilolang_runtime::meta::Ty;
 
-use crate::action::{CREATE_ACTION, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
+use crate::action::{CREATE_ACTION, DIRECT_EDITS};
 use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 
 use crate::meta::{MetaExt as _, action_kind};
@@ -313,34 +313,20 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
 /// The record unit, where an action writes unless it says otherwise.
 pub const RECORD_UNIT: &str = tilo_actions::surface::RECORD_UNIT;
 
+/// The surface's reading of a direct edit's value: its type, and the schema a caller reads it by.
+fn direct_edit_value(ty: ParamType) -> (FieldType, Json) {
+    match ty {
+        ParamType::Text => (FieldType::Text, json!({"type": "string"})),
+        ParamType::Boolean => (FieldType::Bool, json!({"type": "boolean"})),
+        _ => (FieldType::Any, json!({})),
+    }
+}
+
+/// The verbs a bound control's edit of a field names, and the one that creates the resource:
+/// [`DIRECT_EDITS`]', with the arguments a change of it carries. A text edit names the field
+/// alone — what a person typed is the change itself — and a caller may name the value it sets,
+/// so the value is one it may give.
 fn edit_verbs() -> Vec<VerbSurface> {
-    let verb = |id: &str, label: &str, value: Json, ty: FieldType| VerbSurface {
-        id: id.to_owned(),
-        label: label.to_owned(),
-        description: Some("A bound control changes the field it shows.".to_owned()),
-        kind: ActionKind::Undoable,
-        destructive: false,
-        incoming_message: false,
-        params: vec![
-            ParamSurface {
-                name: "field".to_owned(),
-                required: true,
-                schema: json!({"type": "string"}),
-                ty: FieldType::Text,
-                within: None,
-            },
-            ParamSurface {
-                name: "value".to_owned(),
-                required: true,
-                schema: value,
-                ty,
-                within: None,
-            },
-        ],
-        returns: None,
-        writes: vec![RECORD_UNIT.to_owned()],
-        field: None,
-    };
     // The host creates a package's root resource on its own the first time a window wants it,
     // as a committed change of its own; receivers decide that change against this verb.
     let create = VerbSurface {
@@ -355,21 +341,38 @@ fn edit_verbs() -> Vec<VerbSurface> {
         writes: vec![RECORD_UNIT.to_owned()],
         field: None,
     };
-    vec![
-        create,
-        verb(
-            EDIT_TEXT_ACTION,
-            "Edit a text field",
-            json!({"type": "string"}),
-            FieldType::Text,
-        ),
-        verb(
-            EDIT_FLAG_ACTION,
-            "Set a flag field",
-            json!({"type": "boolean"}),
-            FieldType::Bool,
-        ),
-    ]
+    let mut verbs = vec![create];
+    verbs.extend(DIRECT_EDITS.iter().map(|direct| {
+        let (ty, schema) = direct_edit_value(direct.value);
+        VerbSurface {
+            id: direct.id.to_owned(),
+            label: direct.label.to_owned(),
+            description: Some("A bound control changes the field it shows.".to_owned()),
+            kind: ActionKind::Undoable,
+            destructive: false,
+            incoming_message: false,
+            params: vec![
+                ParamSurface {
+                    name: "field".to_owned(),
+                    required: true,
+                    schema: json!({"type": "string"}),
+                    ty: FieldType::Text,
+                    within: None,
+                },
+                ParamSurface {
+                    name: "value".to_owned(),
+                    required: direct.names_value,
+                    schema,
+                    ty,
+                    within: None,
+                },
+            ],
+            returns: None,
+            writes: vec![RECORD_UNIT.to_owned()],
+            field: None,
+        }
+    }));
+    verbs
 }
 
 fn field_surfaces(

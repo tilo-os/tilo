@@ -117,19 +117,47 @@ fn a_bound_fields_edit_names_a_verb_the_surface_publishes() {
         .iter()
         .find(|surface| surface.kind == action.kind)
         .unwrap_or_else(|| panic!("no surface of kind {}", action.kind));
+    let verb = surface
+        .verbs
+        .iter()
+        .find(|verb| verb.id == action.action_id)
+        .unwrap_or_else(|| panic!("{} publishes no {}", action.kind, action.action_id));
+    assert_eq!(verb.kind, ActionKind::Undoable);
+    // The arguments the change names are the ones its verb declares: every argument the verb
+    // requires is there, and it names nothing the verb does not know. A text edit is what the
+    // person typed, so the change carries the text itself and its arguments name the field alone.
+    let args = action
+        .args
+        .as_object()
+        .unwrap_or_else(|| panic!("the change's arguments are named: {}", action.args));
     assert_eq!(
-        surface.verb(&action.action_id).map(|verb| verb.0),
-        Some(ActionKind::Undoable),
-        "{} publishes no {}",
-        action.kind,
-        action.action_id
+        args.get("field"),
+        Some(&json!(title)),
+        "the field it changed is the one it names"
     );
+    for param in verb.params.iter().filter(|param| param.required) {
+        assert!(
+            args.contains_key(&param.name),
+            "{} names the `{}` its verb requires: {}",
+            action.action_id,
+            param.name,
+            action.args
+        );
+    }
+    for name in args.keys() {
+        assert!(
+            verb.params.iter().any(|param| param.name == *name),
+            "{} names no argument its verb leaves undeclared: {}",
+            action.action_id,
+            action.args
+        );
+    }
     // What was typed is the edit the change records, never the text it leaves: the change names
     // the field, and its edit carries the words.
-    assert_eq!(
-        action.args,
-        json!({"field": title}),
-        "a keystroke's change names the field it edits"
+    assert!(
+        !args.contains_key("value"),
+        "a keystroke's change names the field it edits: {}",
+        action.args
     );
 }
 

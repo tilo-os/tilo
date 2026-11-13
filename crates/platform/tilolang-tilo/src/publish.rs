@@ -16,7 +16,7 @@ use tilo_actions::{
     ParamType, ResourceSpec, ResourceType, ResourceViewSpec, Target,
 };
 
-use crate::action::DynAction;
+use crate::action::{DIRECT_EDITS, DirectEdit, DynAction};
 use crate::background::{Pending, Poll, Waker};
 use tilolang_runtime::meta::{ActionMeta, Meta};
 use tilolang_runtime::value::ResourceRef;
@@ -2623,19 +2623,19 @@ pub fn edit_action(
 }
 
 /// The two direct edit actions of a resource, whose target is its id: a bound text input and
-/// a bound checkbox.
+/// a bound checkbox. The verbs and their arguments are [`DIRECT_EDITS`]'.
 fn edit_types(meta: &Meta, type_name: &str, planner: &Arc<dyn Planner>) -> [Arc<ActionType>; 2] {
-    let make = |action: &'static str, label: &'static str, ty: ParamType| {
+    let make = |direct: DirectEdit| {
         let (meta, type_name) = (meta.clone(), type_name.to_owned());
         let planner = Arc::clone(planner);
         let spec = ActionSpec::typed_on(
-            action,
-            label,
-            label,
+            direct.id,
+            direct.label,
+            direct.label,
             ExecutionLocus::ClientLocal,
             vec![
                 ActionParam::required("field", ParamType::Text, "The field's name"),
-                ActionParam::required("value", ty, "The new value"),
+                ActionParam::required("value", direct.value, "The new value"),
             ],
             move |target: &Target, args: &ActionArgs| {
                 let json = args.to_json();
@@ -2663,16 +2663,5 @@ fn edit_types(meta: &Meta, type_name: &str, planner: &Arc<dyn Planner>) -> [Arc<
         .for_audience(tilo_actions::Audience::Agents);
         Arc::clone(spec.action_type())
     };
-    [
-        make(
-            crate::action::EDIT_TEXT_ACTION,
-            "Edit a text field",
-            ParamType::Text,
-        ),
-        make(
-            crate::action::EDIT_FLAG_ACTION,
-            "Set a flag field",
-            ParamType::Boolean,
-        ),
-    ]
+    DIRECT_EDITS.map(make)
 }
