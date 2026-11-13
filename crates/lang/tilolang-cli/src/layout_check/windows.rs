@@ -665,9 +665,13 @@ fn the_traditional_desktop(
 fn the_traditional_desktop_stands_as_a_person_reads_it() {
     tilo_ui_host::i18n::ensure();
     let (app, packages) = packages();
-    let mut desk = the_traditional_desktop(&app, &packages, (1280, 800), ui::Theme::light());
-    its_windows_show_their_apps_content_under_one_bar_each(&desk);
-    its_people_are_called_by_their_names_never_their_ids(&mut desk);
+    {
+        // Gone before the next window is staged: one window stands at a time, as when each part
+        // was a test of its own.
+        let mut desk = the_traditional_desktop(&app, &packages, (1280, 800), ui::Theme::light());
+        its_windows_show_their_apps_content_under_one_bar_each(&desk);
+        its_people_are_called_by_their_names_never_their_ids(&mut desk);
+    }
     for (width, height, text) in [(1280, 800, 1.0), (768, 1024, 1.0), (320, 568, 1.5)] {
         let staged = the_traditional_desktop(
             &app,
@@ -737,8 +741,8 @@ fn its_windows_show_their_apps_content_under_one_bar_each(staged: &stage::Staged
 }
 
 /// A desk of places as a person meets it, from one build of the shell and one window of the desk
-/// at 1280×800: its strips stand as windows, each window's bar keeps one door, and each place
-/// shows its app. No part changes the window: each reads its widgets, and the last the places the
+/// at 1280×800: each window's bar keeps one door, each place shows its app, and its strips stand
+/// as windows. No part changes the window: each reads its widgets, and the second the places the
 /// desk's own record holds.
 #[test]
 fn a_desk_of_places_stands_as_windows_that_show_their_apps() {
@@ -754,9 +758,11 @@ fn a_desk_of_places_stands_as_windows_that_show_their_apps() {
         &[],
     )
     .expect("the scenario stages");
-    the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar(&desk, &app, &packages);
+    // The two parts that read the desk alone come first. The last stages a second window from
+    // the same build, as it did in a test of its own, and nothing reads the desk after that.
     a_window_bar_keeps_one_overflow_menu(&desk);
     a_place_the_desk_has_shows_its_app(&desk, &packages);
+    the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar(&desk, &app, &packages);
 }
 
 /// `staged` is the desk of places; the window of several places beside it is staged here.
