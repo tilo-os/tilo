@@ -1,6 +1,4 @@
 [package]
-# tests/*.rs are modules of tests/it.rs, not separate binaries
-autotests = false
 name = "discord-worker"
 version = "0.1.0"
 edition = "2024"
@@ -15,12 +13,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "discord-worker"
 path = "src/main.rs"
-
-# The integration tests: one binary, its files included as modules by
-# `tests/it.rs` (a file per binary linked the whole crate once each).
-[[test]]
-name = "it"
-path = "tests/it.rs"
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../../crates/platform/tilo-lock" }
@@ -58,8 +50,7 @@ workspace-hack = { version = "0.1" }
 fake-discord = { path = "../../../crates/dev/fake-discord" }
 tempfile.workspace = true
 collab-types = { path = "../../../crates/collab/collab-types" }
-# `relay`: the loopback packet relay the bridge's host takes as its home.
-tilo-test-env = { path = "../../../crates/dev/test-env", features = ["iroh-relay"] }
+tilo-test-env = { path = "../../../crates/dev/test-env" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-secrets = { path = "../../../crates/platform/tilo-secrets" }
 # The bridge end to end: its program on a workspace's host, with this binary.

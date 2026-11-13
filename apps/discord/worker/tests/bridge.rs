@@ -384,7 +384,6 @@ struct Bridge {
     general: String,
     ada: String,
     _relay: tilo_relay::daemon::Relay,
-    _packet_relay: tilo_test_env::relay::Relay,
     _scratch: tempfile::TempDir,
 }
 
@@ -417,11 +416,6 @@ impl Bridge {
         // surfaces of the apps it runs, as a workspace host does.
         let _ = AppCatalogue::native();
         tilo_relay::surfaces::decide_receipt(&scratch.path().join("relay").join("surfaces"));
-        // The host takes a packet relay on this machine's loopback as its
-        // home. A host told to use no relay still waits out the whole relay
-        // probe before it opens its workspaces: five seconds in which nothing
-        // of the bridge runs.
-        let packet_relay = tilo_test_env::relay::relay().await;
         let relay = tilo_relay::daemon::Relay::start_with_relay_mode(
             tilo_relay::RelayConfig {
                 state_root: scratch.path().join("relay"),
@@ -433,7 +427,7 @@ impl Bridge {
                 device_cert: cert.clone(),
                 revocations: RevocationList::new(),
             },
-            iroh::RelayMode::Custom(packet_relay.relays()),
+            iroh::RelayMode::Disabled,
         )
         .await
         .unwrap();
@@ -594,7 +588,6 @@ impl Bridge {
             general,
             ada,
             _relay: relay,
-            _packet_relay: packet_relay,
             _scratch: scratch,
         };
         (bridge, runner)
