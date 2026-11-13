@@ -638,20 +638,54 @@ fn tabs_of(bar: &dyn Widget) -> usize {
         .map_or(0, |strip| strip.bar().tabs().len())
 }
 
-#[test]
-fn its_windows_show_their_apps_content_under_one_bar_each() {
-    tilo_ui_host::i18n::ensure();
-    let (app, packages) = packages();
-    let staged = stage::Staged::over(
-        &app,
-        &packages,
+/// The shell's traditional desktop staged at `size` under `theme`, as each part below reads it.
+fn the_traditional_desktop(
+    app: &str,
+    packages: &Rc<stage::Packages>,
+    size: (u32, u32),
+    theme: ui::Theme,
+) -> stage::Staged {
+    stage::Staged::over(
+        app,
+        packages,
         "the traditional desktop",
-        (1280, 800),
-        ui::Theme::light(),
+        size,
+        theme,
         None,
         &[],
     )
-    .expect("the scenario stages");
+    .expect("the scenario stages")
+}
+
+/// The traditional desktop as a person meets it, from one build of the shell: its windows at a
+/// desk's size and what they read out, its top bar and its counts at three sizes, and the window
+/// in front on a phone. Every part reads a window staged at its own size and theme; the one
+/// window two parts share is only read by the first, and laid out again by the second, last.
+#[test]
+fn the_traditional_desktop_stands_as_a_person_reads_it() {
+    tilo_ui_host::i18n::ensure();
+    let (app, packages) = packages();
+    let mut desk = the_traditional_desktop(&app, &packages, (1280, 800), ui::Theme::light());
+    its_windows_show_their_apps_content_under_one_bar_each(&desk);
+    its_people_are_called_by_their_names_never_their_ids(&mut desk);
+    for (width, height, text) in [(1280, 800, 1.0), (768, 1024, 1.0), (320, 568, 1.5)] {
+        let staged = the_traditional_desktop(
+            &app,
+            &packages,
+            (width, height),
+            ui::Theme::light().with_text_scale(text),
+        );
+        let mut controls = Vec::new();
+        shell_controls(staged.harness().root_widget(), &mut controls);
+        let at = format!("{width}×{height} text {text}");
+        its_top_bar_is_one_row_whose_parts_never_press_into_each_other(&controls, width, &at);
+        a_count_stands_on_its_icons_corner_and_over_no_other_control(&controls, width, &at);
+    }
+    let phone = the_traditional_desktop(&app, &packages, (320, 568), ui::Theme::light());
+    on_a_phone_the_window_in_front_fills_the_room_between_the_bar_and_the_dock(&phone);
+}
+
+fn its_windows_show_their_apps_content_under_one_bar_each(staged: &stage::Staged) {
     let root = staged.harness().root_widget();
     let frames = named(root, "WindowFrame");
     assert_eq!(frames.len(), 3, "two notes and a channel stand on the desk");
@@ -702,11 +736,15 @@ fn its_windows_show_their_apps_content_under_one_bar_each() {
     }
 }
 
+/// A desk of places as a person meets it, from one build of the shell and one window of the desk
+/// at 1280×800: its strips stand as windows, each window's bar keeps one door, and each place
+/// shows its app. No part changes the window: each reads its widgets, and the last the places the
+/// desk's own record holds.
 #[test]
-fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar() {
+fn a_desk_of_places_stands_as_windows_that_show_their_apps() {
     tilo_ui_host::i18n::ensure();
     let (app, packages) = packages();
-    let staged = stage::Staged::over(
+    let desk = stage::Staged::over(
         &app,
         &packages,
         "a desk of places",
@@ -716,6 +754,17 @@ fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar() {
         &[],
     )
     .expect("the scenario stages");
+    the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar(&desk, &app, &packages);
+    a_window_bar_keeps_one_overflow_menu(&desk);
+    a_place_the_desk_has_shows_its_app(&desk, &packages);
+}
+
+/// `staged` is the desk of places; the window of several places beside it is staged here.
+fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar(
+    staged: &stage::Staged,
+    app: &str,
+    packages: &Rc<stage::Packages>,
+) {
     let frames = named(staged.harness().root_widget(), "WindowFrame");
     assert!(
         frames.len() >= 6,
@@ -727,8 +776,8 @@ fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar() {
     // A strip of several places is one window whose bar is its tabs, the place in front filling it
     // under them; a strip of one has no tab bar above its app.
     let grouped = stage::Staged::over(
-        &app,
-        &packages,
+        app,
+        packages,
         "a window of several places",
         (1280, 800),
         ui::Theme::light(),
@@ -787,24 +836,10 @@ fn a_window_alone_on_the_desk_takes_the_desk() {
     bar_and_content_in(frames[0], window);
 }
 
-#[test]
-fn a_place_the_desk_has_shows_its_app() {
-    // A place is made from the resource it shows (`session.Arrangement`'s
-    // `record`), so a place whose app the desk has draws that app's views,
-    // that app's header row and, with nothing in it yet, that app's empty
-    // state.
-    tilo_ui_host::i18n::ensure();
-    let (app, packages) = packages();
-    let staged = stage::Staged::over(
-        &app,
-        &packages,
-        "a desk of places",
-        (1280, 800),
-        ui::Theme::light(),
-        None,
-        &[],
-    )
-    .expect("the scenario stages");
+/// A place is made from the resource it shows (`session.Arrangement`'s `record`), so a place
+/// whose app the desk has draws that app's views, that app's header row and, with nothing in it
+/// yet, that app's empty state. `staged` is the desk of places.
+fn a_place_the_desk_has_shows_its_app(staged: &stage::Staged, packages: &Rc<stage::Packages>) {
     let desk = staged.places();
     assert!(!desk.is_empty(), "the staged desk holds its places");
     // The apps the desk's own build has: a place that shows one of them is drawn by it.
@@ -842,22 +877,10 @@ fn a_place_the_desk_has_shows_its_app() {
     }
 }
 
-#[test]
-fn a_window_bar_keeps_one_overflow_menu() {
-    // One bar, one "…": the window's decorations in their floating pill, the app's own controls in
-    // its header row, and one door between them for what does not fit.
-    tilo_ui_host::i18n::ensure();
-    let (app, packages) = packages();
-    let staged = stage::Staged::over(
-        &app,
-        &packages,
-        "a desk of places",
-        (1280, 800),
-        ui::Theme::light(),
-        None,
-        &[],
-    )
-    .expect("the scenario stages");
+/// One bar, one "…": the window's decorations in their floating pill, the app's own controls in
+/// its header row, and one door between them for what does not fit. `staged` is the desk of
+/// places.
+fn a_window_bar_keeps_one_overflow_menu(staged: &stage::Staged) {
     let root = staged.harness().root_widget();
     let frames = named(root, "WindowFrame");
     assert!(!frames.is_empty(), "the desk draws windows");
@@ -1027,149 +1050,118 @@ fn shell_controls(root: &dyn Widget, out: &mut Vec<(String, Rect)>) {
     }
 }
 
-#[test]
-fn its_top_bar_is_one_row_whose_parts_never_press_into_each_other() {
-    tilo_ui_host::i18n::ensure();
-    let (app, packages) = packages();
-    for (width, height, text) in [(1280, 800, 1.0), (768, 1024, 1.0), (320, 568, 1.5)] {
-        let staged = stage::Staged::over(
-            &app,
-            &packages,
-            "the traditional desktop",
-            (width, height),
-            ui::Theme::light().with_text_scale(text),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
-        let mut controls = Vec::new();
-        shell_controls(staged.harness().root_widget(), &mut controls);
-        let at = format!("{width}×{height} text {text}");
-        // The bar is the band the system menu stands in; the dock's are lower down.
-        let menu = controls
-            .iter()
-            .filter(|(n, _)| matches!(n.as_str(), "Button" | "MenuButton" | "Avatar"))
-            .map(|(_, r)| *r)
-            .min_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)))
-            .expect("the system menu");
-        let bar: Vec<&(String, Rect)> = controls
-            .iter()
-            .filter(|(_, r)| r.y0 < menu.y1 && r.y1 > menu.y0)
-            .collect();
-        let pressed: Vec<Rect> = bar
-            .iter()
-            .filter(|(n, _)| matches!(n.as_str(), "Button" | "MenuButton" | "Avatar"))
-            .map(|(_, r)| *r)
-            .collect();
-        for r in &pressed {
-            assert!(
-                r.x0 >= 0.0 && r.x1 <= f64::from(width),
-                "{r:?} stays on the output at {at}"
-            );
-            assert!(
-                (r.center().y - menu.center().y).abs() < 2.0,
-                "{r:?} stands in the one row at {at}: {bar:?}"
-            );
-            for other in &pressed {
-                assert!(
-                    r == other || r.intersect(*other).area() <= 0.0,
-                    "{r:?} presses into {other:?} at {at}"
-                );
-            }
-        }
-        assert_eq!(
-            bar.iter().filter(|(n, _)| n == "Button count").count(),
-            1,
-            "the bell's count, the bar's one, at {at}: {bar:?}"
+/// One size of the traditional desktop: `controls` are the shell's own controls at it, `width`
+/// its output's, and `at` names it in every failure.
+fn its_top_bar_is_one_row_whose_parts_never_press_into_each_other(
+    controls: &[(String, Rect)],
+    width: u32,
+    at: &str,
+) {
+    // The bar is the band the system menu stands in; the dock's are lower down.
+    let menu = controls
+        .iter()
+        .filter(|(n, _)| matches!(n.as_str(), "Button" | "MenuButton" | "Avatar"))
+        .map(|(_, r)| *r)
+        .min_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)))
+        .expect("the system menu");
+    let bar: Vec<&(String, Rect)> = controls
+        .iter()
+        .filter(|(_, r)| r.y0 < menu.y1 && r.y1 > menu.y0)
+        .collect();
+    let pressed: Vec<Rect> = bar
+        .iter()
+        .filter(|(n, _)| matches!(n.as_str(), "Button" | "MenuButton" | "Avatar"))
+        .map(|(_, r)| *r)
+        .collect();
+    for r in &pressed {
+        assert!(
+            r.x0 >= 0.0 && r.x1 <= f64::from(width),
+            "{r:?} stays on the output at {at}"
         );
+        assert!(
+            (r.center().y - menu.center().y).abs() < 2.0,
+            "{r:?} stands in the one row at {at}: {bar:?}"
+        );
+        for other in &pressed {
+            assert!(
+                r == other || r.intersect(*other).area() <= 0.0,
+                "{r:?} presses into {other:?} at {at}"
+            );
+        }
     }
+    assert_eq!(
+        bar.iter().filter(|(n, _)| n == "Button count").count(),
+        1,
+        "the bell's count, the bar's one, at {at}: {bar:?}"
+    );
 }
 
-#[test]
-fn a_count_stands_on_its_icons_corner_and_over_no_other_control() {
-    tilo_ui_host::i18n::ensure();
-    let (app, packages) = packages();
-    for (width, height, text) in [(1280, 800, 1.0), (768, 1024, 1.0), (320, 568, 1.5)] {
-        let staged = stage::Staged::over(
-            &app,
-            &packages,
-            "the traditional desktop",
-            (width, height),
-            ui::Theme::light().with_text_scale(text),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
-        let mut controls = Vec::new();
-        shell_controls(staged.harness().root_widget(), &mut controls);
-        let at = format!("{width}×{height} text {text}");
-        let pressed: Vec<Rect> = controls
-            .iter()
-            .filter(|(n, _)| matches!(n.as_str(), "Button" | "MenuButton" | "Avatar"))
-            .map(|(_, r)| *r)
-            .collect();
-        let counts: Vec<(Rect, Rect)> = controls
-            .windows(2)
-            .filter_map(|pair| match pair {
-                [(count, c), (icon, i)] if count.ends_with(" count") && icon.ends_with(" icon") => {
-                    Some((*c, *i))
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            counts.len(),
-            2,
-            "the bell's count and the dock's at {at}: {controls:?}"
-        );
-        for (count, icon) in counts {
-            let own = pressed
-                .iter()
-                .find(|r| r.contains(icon.center()))
-                .expect("the control the icon is on");
-            // Centred on the icon's top trailing corner, as an app icon's count stands, and held
-            // inside its own face where that corner would take it past the face's edge.
-            let corner = ui::kurbo::Point::new(icon.x1, icon.y0);
-            let wanted = Rect::from_center_size(corner, count.size());
-            let left = wanted
-                .x0
-                .clamp(own.x0, (own.x1 - wanted.width()).max(own.x0));
-            let top = wanted
-                .y0
-                .clamp(own.y0, (own.y1 - wanted.height()).max(own.y0));
-            let expected = Rect::new(left, top, left + wanted.width(), top + wanted.height());
-            assert!(
-                (count.center() - expected.center()).hypot() < 1.0,
-                "the count {count:?} stands on the corner of its icon {icon:?} inside its face {own:?} at {at}"
-            );
-            assert!(
-                count.x0 >= 0.0 && count.x1 <= f64::from(width) && count.y0 >= 0.0,
-                "the count {count:?} stays on the output at {at}"
-            );
-            for other in pressed.iter().filter(|r| *r != own) {
-                assert!(
-                    other.intersect(count).area() <= 0.0,
-                    "the count {count:?} stands over {other:?} at {at}"
-                );
+/// One size of the traditional desktop: its controls, its width and its name, as the top bar's
+/// part above takes them.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "how far a count's centre stands from where it belongs, between two laid out points"
+)]
+fn a_count_stands_on_its_icons_corner_and_over_no_other_control(
+    controls: &[(String, Rect)],
+    width: u32,
+    at: &str,
+) {
+    let pressed: Vec<Rect> = controls
+        .iter()
+        .filter(|(n, _)| matches!(n.as_str(), "Button" | "MenuButton" | "Avatar"))
+        .map(|(_, r)| *r)
+        .collect();
+    let counts: Vec<(Rect, Rect)> = controls
+        .windows(2)
+        .filter_map(|pair| match pair {
+            [(count, c), (icon, i)] if count.ends_with(" count") && icon.ends_with(" icon") => {
+                Some((*c, *i))
             }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        counts.len(),
+        2,
+        "the bell's count and the dock's at {at}: {controls:?}"
+    );
+    for (count, icon) in counts {
+        let own = pressed
+            .iter()
+            .find(|r| r.contains(icon.center()))
+            .expect("the control the icon is on");
+        // Centred on the icon's top trailing corner, as an app icon's count stands, and held
+        // inside its own face where that corner would take it past the face's edge.
+        let corner = ui::kurbo::Point::new(icon.x1, icon.y0);
+        let wanted = Rect::from_center_size(corner, count.size());
+        let left = wanted
+            .x0
+            .clamp(own.x0, (own.x1 - wanted.width()).max(own.x0));
+        let top = wanted
+            .y0
+            .clamp(own.y0, (own.y1 - wanted.height()).max(own.y0));
+        let expected = Rect::new(left, top, left + wanted.width(), top + wanted.height());
+        assert!(
+            (count.center() - expected.center()).hypot() < 1.0,
+            "the count {count:?} stands on the corner of its icon {icon:?} inside its face {own:?} at {at}"
+        );
+        assert!(
+            count.x0 >= 0.0 && count.x1 <= f64::from(width) && count.y0 >= 0.0,
+            "the count {count:?} stays on the output at {at}"
+        );
+        for other in pressed.iter().filter(|r| *r != own) {
+            assert!(
+                other.intersect(count).area() <= 0.0,
+                "the count {count:?} stands over {other:?} at {at}"
+            );
         }
     }
 }
 
-#[test]
-fn on_a_phone_the_window_in_front_fills_the_room_between_the_bar_and_the_dock() {
-    tilo_ui_host::i18n::ensure();
-    let (app, packages) = packages();
-    let staged = stage::Staged::over(
-        &app,
-        &packages,
-        "the traditional desktop",
-        (320, 568),
-        ui::Theme::light(),
-        None,
-        &[],
-    )
-    .expect("the scenario stages");
+fn on_a_phone_the_window_in_front_fills_the_room_between_the_bar_and_the_dock(
+    staged: &stage::Staged,
+) {
     let root = staged.harness().root_widget();
     let frames = named(root, "WindowFrame");
     let [frame] = frames[..] else {
@@ -1228,21 +1220,9 @@ fn read_out(node: &ui::headless::InspectionNode, in_window: bool, out: &mut Vec<
     }
 }
 
-/// What the traditional desktop reads out at `size`, laid out for a finger on a phone's width (its
-/// controls a finger's target), as the layout check lays a phone out.
-fn desktop_read_out(size: (u32, u32)) -> Vec<(bool, String)> {
-    tilo_ui_host::i18n::ensure();
-    let (app, packages) = packages();
-    let mut staged = stage::Staged::over(
-        &app,
-        &packages,
-        "the traditional desktop",
-        size,
-        ui::Theme::light(),
-        None,
-        &[],
-    )
-    .expect("the scenario stages");
+/// What the traditional desktop `staged` at `size` reads out, laid out for a finger on a phone's
+/// width (its controls a finger's target), as the layout check lays a phone out.
+fn desktop_read_out(staged: &mut stage::Staged, size: (u32, u32)) -> Vec<(bool, String)> {
     let input = if size.0 < 600 {
         ui::interaction::InteractionEnvironment::TOUCH
     } else {
@@ -1470,9 +1450,9 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
     );
 }
 
-#[test]
-fn its_people_are_called_by_their_names_never_their_ids() {
-    let said = desktop_read_out((1280, 800));
+/// `desk` is the traditional desktop staged at 1280×800 in the light theme, which this lays out.
+fn its_people_are_called_by_their_names_never_their_ids(desk: &mut stage::Staged) {
+    let said = desktop_read_out(desk, (1280, 800));
     let ids: Vec<&String> = said
         .iter()
         .map(|(_, name)| name)
