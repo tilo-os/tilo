@@ -771,8 +771,12 @@ fn showing_one_window() -> (ShellPart, ui::widget::Wells) {
 /// The whole screen shows the person's arrangement between the bar and the dock, under the
 /// preset switch, and a foreign window's place is a well reported to the window policy's
 /// handle, on the output under the bar.
+///
+/// The framed canvas the switch then shows pans under a middle drag, and the window's well goes
+/// with it in the frame the drag is drawn in: the window policy reads the well, so a window
+/// stands in its frame wherever the person carries the canvas.
 #[test]
-fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
+fn the_screen_shows_the_arrangement_and_a_canvas_pan_carries_each_windows_well() {
     let (mut part, wells) = showing_one_window();
     assert!(part.below_windows(), "the windows stand over the screen");
     let labels = crate::Published::accessible_labels(&mut part);
@@ -826,6 +830,31 @@ fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
     assert!(
         wells.well("p1").is_some_and(|well| well.width() >= 1.0),
         "the place is a well on the canvas"
+    );
+
+    // The canvas the two presses showed is the one the person now carries with a middle drag.
+    for _ in 0..30 {
+        part.prepare_frame();
+    }
+    let before = wells.well("p1").expect("the place is a well on the canvas");
+    // A point on the canvas' ground, clear of the place: below and right of its well.
+    let (x, y) = (before.x1 + 40.0, before.y1 + 40.0);
+    part.pointer_motion(x, y);
+    part.prepare_frame();
+    part.pointer_button(0x112, true);
+    part.prepare_frame();
+    let mut seen = Vec::new();
+    for step in 1..=5 {
+        part.pointer_motion(x - 20.0 * f64::from(step), y - 10.0 * f64::from(step));
+        part.prepare_frame();
+        seen.push(wells.well("p1"));
+    }
+    part.pointer_button(0x112, false);
+    part.prepare_frame();
+    let after = wells.well("p1").expect("the place is still a well");
+    assert!(
+        (after.x0 - (before.x0 - 100.0)).abs() < 1.0 && (after.y0 - (before.y0 - 50.0)).abs() < 1.0,
+        "the well moved with the canvas: {before:?} -> {after:?}, along the way {seen:?}"
     );
 }
 
@@ -1533,39 +1562,6 @@ fn a_shells_week_starts_on_the_persons_first_day() {
         "the person starts their week on Sunday"
     );
     ui::format::region::install(before);
-}
-
-/// The framed canvas pans under a middle drag, and the window's well goes with it in the frame
-/// the drag is drawn in: the window policy reads the well, so a window stands in its frame
-/// wherever the person carries the canvas.
-#[test]
-fn a_canvas_pan_carries_the_windows_well_with_it() {
-    let (mut part, wells) = showing_one_window();
-    click(&mut part, "Showing Strips");
-    click(&mut part, "Frames");
-    for _ in 0..30 {
-        part.prepare_frame();
-    }
-    let before = wells.well("p1").expect("the place is a well on the canvas");
-    // A point on the canvas' ground, clear of the place: below and right of its well.
-    let (x, y) = (before.x1 + 40.0, before.y1 + 40.0);
-    part.pointer_motion(x, y);
-    part.prepare_frame();
-    part.pointer_button(0x112, true);
-    part.prepare_frame();
-    let mut seen = Vec::new();
-    for step in 1..=5 {
-        part.pointer_motion(x - 20.0 * f64::from(step), y - 10.0 * f64::from(step));
-        part.prepare_frame();
-        seen.push(wells.well("p1"));
-    }
-    part.pointer_button(0x112, false);
-    part.prepare_frame();
-    let after = wells.well("p1").expect("the place is still a well");
-    assert!(
-        (after.x0 - (before.x0 - 100.0)).abs() < 1.0 && (after.y0 - (before.y0 - 50.0)).abs() < 1.0,
-        "the well moved with the canvas: {before:?} -> {after:?}, along the way {seen:?}"
-    );
 }
 
 /// A window that arrives past the canvas' edge is shown: the canvas pans to it, and on every
