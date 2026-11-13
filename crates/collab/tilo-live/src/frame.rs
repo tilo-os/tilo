@@ -405,134 +405,139 @@ mod tests {
         frame.get(HEADER_LEN..).unwrap()
     }
 
-    /// Two sessions of one device (a restart, a second tab) in one epoch
-    /// both start their sequence at 1 under the same derived key, and two
-    /// tracks of one stream (camera layers, windows) count independently. A
-    /// nonce taken from the sequence would seal both under one keystream:
-    /// the XOR of the ciphertexts would be the XOR of the plaintexts.
-    #[test]
-    fn frames_with_one_sequence_under_one_key_never_share_a_keystream() {
-        let keys = PlaneKeys::from(keys());
-        let first = sealer(&keys, "presence");
-        let second = sealer(&keys, "presence");
-        let other_track = sealer(&keys, "presence/2");
-        let a = b"state=present, window=notes".as_slice();
-        let b = b"state=away,    window=files".as_slice();
-        let plain_xor: Vec<u8> = a.iter().zip(b).map(|(x, y)| x ^ y).collect();
+    tilo_test_env::scenario! {
+        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
+        fn a_frame_is_sealed_for_one_key_sender_stream_track_and_sequence;
 
-        for other in [&second, &other_track] {
-            let sealed_a = first.seal(1, a).unwrap();
-            let sealed_b = other.seal(1, b).unwrap();
-            let cipher_xor: Vec<u8> = ciphertext(&sealed_a)
-                .iter()
-                .zip(ciphertext(&sealed_b))
-                .map(|(x, y)| x ^ y)
-                .collect();
+        phase frames_with_one_sequence_under_one_key_never_share_a_keystream;
+        // Two sessions of one device (a restart, a second tab) in one epoch
+        // both start their sequence at 1 under the same derived key, and two
+        // tracks of one stream (camera layers, windows) count independently. A
+        // nonce taken from the sequence would seal both under one keystream:
+        // the XOR of the ciphertexts would be the XOR of the plaintexts.
+        {
+            let keys = PlaneKeys::from(keys());
+            let first = sealer(&keys, "presence");
+            let second = sealer(&keys, "presence");
+            let other_track = sealer(&keys, "presence/2");
+            let a = b"state=present, window=notes".as_slice();
+            let b = b"state=away,    window=files".as_slice();
+            let plain_xor: Vec<u8> = a.iter().zip(b).map(|(x, y)| x ^ y).collect();
+
+            for other in [&second, &other_track] {
+                let sealed_a = first.seal(1, a).unwrap();
+                let sealed_b = other.seal(1, b).unwrap();
+                let cipher_xor: Vec<u8> = ciphertext(&sealed_a)
+                    .iter()
+                    .zip(ciphertext(&sealed_b))
+                    .map(|(x, y)| x ^ y)
+                    .collect();
+                assert!(
+                    !cipher_xor.windows(plain_xor.len()).any(|w| w == plain_xor),
+                    "two frames sealed as sequence 1 reused one keystream"
+                );
+            }
+
+            // The same body sealed twice at one sequence never repeats either.
+            assert_ne!(first.seal(1, a).unwrap(), first.seal(1, a).unwrap());
+        }
+
+        phase a_device_on_its_own_media_keys_seals_only_what_it_was_handed;
+        // A device handed one sender's media keys seals exactly the streams it
+        // was handed, under its own device and epoch, and opens nothing: what it
+        // seals the member that derived them opens, and nothing else does.
+        {
+            let channel = keys();
+            let epoch = channel.epoch();
+            let scope = Scope::workspace(WORKSPACE);
+            let presence = TrackName::new(&scope, "presence");
+            let handed = channel
+                .sender_media_keys(epoch, DEVICE, &[Stream::Presence.tag(), Stream::Page.tag()])
+                .unwrap();
+            let keys = PlaneKeys::from(handed);
+            assert!(Sealer::new(&keys, DEVICE, Stream::Presence, presence.clone()).is_ok());
             assert!(
-                !cipher_xor.windows(plain_xor.len()).any(|w| w == plain_xor),
-                "two frames sealed as sequence 1 reused one keystream"
+                Sealer::new(
+                    &keys,
+                    DEVICE,
+                    Stream::Page,
+                    TrackName::new(&scope, "page/1")
+                )
+                .is_ok()
             );
-        }
-
-        // The same body sealed twice at one sequence never repeats either.
-        assert_ne!(first.seal(1, a).unwrap(), first.seal(1, a).unwrap());
-    }
-
-    /// A device handed one sender's media keys seals exactly the streams it
-    /// was handed, under its own device and epoch, and opens nothing: what it
-    /// seals the member that derived them opens, and nothing else does.
-    #[test]
-    fn a_device_on_its_own_media_keys_seals_only_what_it_was_handed() {
-        let channel = keys();
-        let epoch = channel.epoch();
-        let scope = Scope::workspace(WORKSPACE);
-        let presence = TrackName::new(&scope, "presence");
-        let handed = channel
-            .sender_media_keys(epoch, DEVICE, &[Stream::Presence.tag(), Stream::Page.tag()])
-            .unwrap();
-        let keys = PlaneKeys::from(handed);
-        assert!(Sealer::new(&keys, DEVICE, Stream::Presence, presence.clone()).is_ok());
-        assert!(
-            Sealer::new(
-                &keys,
-                DEVICE,
-                Stream::Page,
-                TrackName::new(&scope, "page/1")
-            )
-            .is_ok()
-        );
-        for stream in [Stream::Microphone, Stream::Camera, Stream::Window] {
+            for stream in [Stream::Microphone, Stream::Camera, Stream::Window] {
+                assert_eq!(
+                    Sealer::new(&keys, DEVICE, stream, TrackName::new(&scope, "elsewhere")).err(),
+                    Some(Refusal::NoKey(epoch)),
+                    "a stream it was not handed is not one it can seal"
+                );
+            }
             assert_eq!(
-                Sealer::new(&keys, DEVICE, stream, TrackName::new(&scope, "elsewhere")).err(),
+                Sealer::new(&keys, [4; 32], Stream::Presence, presence.clone()).err(),
                 Some(Refusal::NoKey(epoch)),
-                "a stream it was not handed is not one it can seal"
+                "one sender's keys speak for that sender alone"
+            );
+
+            let sealed = Sealer::new(&keys, DEVICE, Stream::Presence, presence.clone())
+                .unwrap()
+                .seal(1, b"here")
+                .unwrap();
+            let member = Opener::new(PlaneKeys::from(channel), Roster::new([DEVICE]));
+            assert_eq!(
+                member
+                    .open(DEVICE, Stream::Presence, &presence, &sealed)
+                    .unwrap(),
+                b"here"
+            );
+
+            let held = Opener::new(keys, Roster::new([DEVICE]));
+            assert_eq!(
+                held.open(DEVICE, Stream::Presence, &presence, &sealed),
+                Err(Refusal::NoKey(epoch)),
+                "it holds nobody's keys, its own included"
             );
         }
-        assert_eq!(
-            Sealer::new(&keys, [4; 32], Stream::Presence, presence.clone()).err(),
-            Some(Refusal::NoKey(epoch)),
-            "one sender's keys speak for that sender alone"
-        );
 
-        let sealed = Sealer::new(&keys, DEVICE, Stream::Presence, presence.clone())
-            .unwrap()
-            .seal(1, b"here")
-            .unwrap();
-        let member = Opener::new(PlaneKeys::from(channel), Roster::new([DEVICE]));
-        assert_eq!(
-            member
-                .open(DEVICE, Stream::Presence, &presence, &sealed)
-                .unwrap(),
-            b"here"
-        );
-
-        let held = Opener::new(keys, Roster::new([DEVICE]));
-        assert_eq!(
-            held.open(DEVICE, Stream::Presence, &presence, &sealed),
-            Err(Refusal::NoKey(epoch)),
-            "it holds nobody's keys, its own included"
-        );
-    }
-
-    #[test]
-    fn a_sealed_frame_opens_only_as_its_sender_stream_track_and_sequence() {
-        let keys = PlaneKeys::from(keys());
-        let scope = Scope::workspace(WORKSPACE);
-        let name = TrackName::new(&scope, "presence");
-        let frame = sealer(&keys, "presence").seal(7, b"here").unwrap();
-        let opener = Opener::new(keys, Roster::new([DEVICE]));
-        assert_eq!(sequence(&frame), Some(7));
-        assert_eq!(
-            opener
-                .open(DEVICE, Stream::Presence, &name, &frame)
-                .unwrap(),
-            b"here"
-        );
-        assert_eq!(
-            opener.open(DEVICE, Stream::Camera, &name, &frame),
-            Err(Refusal::Unauthenticated)
-        );
-        let other = TrackName::new(&scope, "presence/2");
-        assert_eq!(
-            opener.open(DEVICE, Stream::Presence, &other, &frame),
-            Err(Refusal::Unauthenticated)
-        );
-        let mut moved = frame.clone();
-        moved[8] ^= 1;
-        assert_eq!(
-            opener.open(DEVICE, Stream::Presence, &name, &moved),
-            Err(Refusal::Unauthenticated)
-        );
-        assert_eq!(
-            opener.open([4; 32], Stream::Presence, &name, &frame),
-            Err(Refusal::OffRoster)
-        );
-        let mut changed = frame;
-        let last = changed.len() - 1;
-        changed[last] ^= 1;
-        assert_eq!(
-            opener.open(DEVICE, Stream::Presence, &name, &changed),
-            Err(Refusal::Unauthenticated)
-        );
+        phase a_sealed_frame_opens_only_as_its_sender_stream_track_and_sequence;
+        {
+            let keys = PlaneKeys::from(keys());
+            let scope = Scope::workspace(WORKSPACE);
+            let name = TrackName::new(&scope, "presence");
+            let frame = sealer(&keys, "presence").seal(7, b"here").unwrap();
+            let opener = Opener::new(keys, Roster::new([DEVICE]));
+            assert_eq!(sequence(&frame), Some(7));
+            assert_eq!(
+                opener
+                    .open(DEVICE, Stream::Presence, &name, &frame)
+                    .unwrap(),
+                b"here"
+            );
+            assert_eq!(
+                opener.open(DEVICE, Stream::Camera, &name, &frame),
+                Err(Refusal::Unauthenticated)
+            );
+            let other = TrackName::new(&scope, "presence/2");
+            assert_eq!(
+                opener.open(DEVICE, Stream::Presence, &other, &frame),
+                Err(Refusal::Unauthenticated)
+            );
+            let mut moved = frame.clone();
+            moved[8] ^= 1;
+            assert_eq!(
+                opener.open(DEVICE, Stream::Presence, &name, &moved),
+                Err(Refusal::Unauthenticated)
+            );
+            assert_eq!(
+                opener.open([4; 32], Stream::Presence, &name, &frame),
+                Err(Refusal::OffRoster)
+            );
+            let mut changed = frame;
+            let last = changed.len() - 1;
+            changed[last] ^= 1;
+            assert_eq!(
+                opener.open(DEVICE, Stream::Presence, &name, &changed),
+                Err(Refusal::Unauthenticated)
+            );
+        }
     }
 }

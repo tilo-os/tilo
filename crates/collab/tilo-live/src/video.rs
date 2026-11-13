@@ -398,74 +398,78 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_picture_round_trips_and_a_malformed_one_is_refused() {
-        let object = picture(true);
-        let bytes = object.encode().unwrap();
-        assert_eq!(VideoObject::decode(&bytes).unwrap(), object);
-        let header = validate(&bytes).unwrap();
-        assert!(header.keyframe);
-        assert_eq!(header.layer, Layer::Mid);
+    tilo_test_env::scenario! {
+        fn a_picture_is_one_checked_object_on_a_named_layer;
 
-        let mut versioned = bytes.clone();
-        versioned[0] = 2;
-        assert!(validate(&versioned).is_err());
-        let mut flagged = bytes.clone();
-        flagged[1] = 0b100;
-        assert!(validate(&flagged).is_err());
-        let hdr = VideoObject {
-            hdr: true,
-            codec: Codec::HevcMain10,
-            ..picture(true)
-        };
-        assert_eq!(
-            VideoObject::decode(&hdr.encode().unwrap()).unwrap(),
-            hdr,
-            "an HDR keyframe says so, and its codec"
-        );
-        let mut truncated = bytes.clone();
-        truncated.pop();
-        assert!(validate(&truncated).is_err(), "the length says the payload");
-        let mut zero = bytes;
-        zero[20] = 0;
-        zero[21] = 0;
-        assert!(validate(&zero).is_err());
-        assert!(
-            VideoObject {
-                payload: Vec::new(),
-                ..picture(false)
-            }
-            .encode()
-            .is_err()
-        );
-    }
+        phase a_picture_round_trips_and_a_malformed_one_is_refused;
+        {
+            let object = picture(true);
+            let bytes = object.encode().unwrap();
+            assert_eq!(VideoObject::decode(&bytes).unwrap(), object);
+            let header = validate(&bytes).unwrap();
+            assert!(header.keyframe);
+            assert_eq!(header.layer, Layer::Mid);
 
-    #[test]
-    fn a_subscriber_asks_for_the_smallest_layer_that_covers_its_tile() {
-        assert_eq!(Layer::for_tile(200.0, 112.0, Source::Camera), Layer::Low);
-        assert_eq!(Layer::for_tile(480.0, 270.0, Source::Camera), Layer::Mid);
-        assert_eq!(Layer::for_tile(1100.0, 620.0, Source::Camera), Layer::High);
-        assert_eq!(Layer::for_tile(3840.0, 2160.0, Source::Camera), Layer::High);
-        // A screen has no middle layer: past its preview it is the screen.
-        assert_eq!(Layer::for_tile(480.0, 270.0, Source::Screen), Layer::High);
-    }
-
-    #[test]
-    fn only_picture_tracks_are_named_as_video() {
-        for source in [Source::Camera, Source::Screen] {
-            for layer in Layer::of(source) {
-                assert_eq!(parse_track(&track(source, *layer)), Some((source, *layer)));
-            }
+            let mut versioned = bytes.clone();
+            versioned[0] = 2;
+            assert!(validate(&versioned).is_err());
+            let mut flagged = bytes.clone();
+            flagged[1] = 0b100;
+            assert!(validate(&flagged).is_err());
+            let hdr = VideoObject {
+                hdr: true,
+                codec: Codec::HevcMain10,
+                ..picture(true)
+            };
+            assert_eq!(
+                VideoObject::decode(&hdr.encode().unwrap()).unwrap(),
+                hdr,
+                "an HDR keyframe says so, and its codec"
+            );
+            let mut truncated = bytes.clone();
+            truncated.pop();
+            assert!(validate(&truncated).is_err(), "the length says the payload");
+            let mut zero = bytes;
+            zero[20] = 0;
+            zero[21] = 0;
+            assert!(validate(&zero).is_err());
+            assert!(
+                VideoObject {
+                    payload: Vec::new(),
+                    ..picture(false)
+                }
+                .encode()
+                .is_err()
+            );
         }
-        for name in [
-            "audio",
-            "camera",
-            "screen/mid",
-            "camera/huge",
-            "mic/low",
-            "",
-        ] {
-            assert_eq!(parse_track(name), None, "{name}");
+
+        phase a_subscriber_asks_for_the_smallest_layer_that_covers_its_tile;
+        {
+            assert_eq!(Layer::for_tile(200.0, 112.0, Source::Camera), Layer::Low);
+            assert_eq!(Layer::for_tile(480.0, 270.0, Source::Camera), Layer::Mid);
+            assert_eq!(Layer::for_tile(1100.0, 620.0, Source::Camera), Layer::High);
+            assert_eq!(Layer::for_tile(3840.0, 2160.0, Source::Camera), Layer::High);
+            // A screen has no middle layer: past its preview it is the screen.
+            assert_eq!(Layer::for_tile(480.0, 270.0, Source::Screen), Layer::High);
+        }
+
+        phase only_picture_tracks_are_named_as_video;
+        {
+            for source in [Source::Camera, Source::Screen] {
+                for layer in Layer::of(source) {
+                    assert_eq!(parse_track(&track(source, *layer)), Some((source, *layer)));
+                }
+            }
+            for name in [
+                "audio",
+                "camera",
+                "screen/mid",
+                "camera/huge",
+                "mic/low",
+                "",
+            ] {
+                assert_eq!(parse_track(name), None, "{name}");
+            }
         }
     }
 }

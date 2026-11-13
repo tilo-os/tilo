@@ -76,24 +76,28 @@ pub fn grant_length(header: [u8; 3]) -> Option<usize> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_preface_names_the_version_and_the_grant_length() {
-        let bytes = preface(b"grant").unwrap();
-        assert_eq!(bytes, [1, 0, 5, b'g', b'r', b'a', b'n', b't']);
-        assert_eq!(grant_length([bytes[0], bytes[1], bytes[2]]), Some(5));
-    }
+    tilo_test_env::scenario! {
+        fn a_preface_is_one_version_and_a_bounded_grant_length;
 
-    #[test]
-    fn an_empty_or_oversized_grant_has_no_preface() {
-        assert!(preface(&[]).is_none());
-        assert!(preface(&vec![0; MAX_GRANT_BYTES.saturating_add(1)]).is_none());
-        assert!(preface(&vec![0; MAX_GRANT_BYTES]).is_some());
-    }
+        phase a_preface_names_the_version_and_the_grant_length;
+        {
+            let bytes = preface(b"grant").unwrap();
+            assert_eq!(bytes, [1, 0, 5, b'g', b'r', b'a', b'n', b't']);
+            assert_eq!(grant_length([bytes[0], bytes[1], bytes[2]]), Some(5));
+        }
 
-    #[test]
-    fn a_header_of_another_version_or_length_is_refused() {
-        assert_eq!(grant_length([2, 0, 1]), None);
-        assert_eq!(grant_length([1, 0, 0]), None);
-        assert_eq!(grant_length([1, 0xff, 0xff]), None);
+        phase an_empty_or_oversized_grant_has_no_preface;
+        {
+            assert!(preface(&[]).is_none());
+            assert!(preface(&vec![0; MAX_GRANT_BYTES.saturating_add(1)]).is_none());
+            assert!(preface(&vec![0; MAX_GRANT_BYTES]).is_some());
+        }
+
+        phase a_header_of_another_version_or_length_is_refused;
+        {
+            assert_eq!(grant_length([2, 0, 1]), None);
+            assert_eq!(grant_length([1, 0, 0]), None);
+            assert_eq!(grant_length([1, 0xff, 0xff]), None);
+        }
     }
 }

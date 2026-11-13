@@ -207,63 +207,67 @@ impl Smoother {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_pointer_between_two_points_is_drawn_between_them() {
-        let mut smooth = Smoother::default();
-        smooth.heard(3, 0.0, 0.0, 1_000.0);
-        smooth.heard(3, 100.0, 50.0, 1_008.0);
-        // The delay is small on a clean link, so the drawn point lags the
-        // newest one by a few ms of its motion, never sitting on it.
-        let (x, y) = smooth.at(1_008.0).unwrap();
-        assert!((0.0..=100.0).contains(&x), "drawn between the points: {x}");
-        assert!((0.0..=50.0).contains(&y), "drawn between the points: {y}");
-        assert_eq!(smooth.tab(), Some(3));
-    }
+    tilo_test_env::scenario! {
+        fn a_heard_pointer_is_drawn_smoothly_and_within_bounds;
 
-    #[test]
-    fn a_pointer_that_changed_tab_snaps_to_it() {
-        let mut smooth = Smoother::default();
-        smooth.heard(3, 10.0, 10.0, 1_000.0);
-        smooth.heard(3, 90.0, 10.0, 1_016.0);
-        smooth.heard(4, 5.0, 5.0, 1_032.0);
-        assert_eq!(smooth.at(1_032.0), Some((5.0, 5.0)));
-        assert_eq!(smooth.tab(), Some(4));
-    }
-
-    #[test]
-    fn a_late_arrival_widens_the_delay() {
-        let mut smooth = Smoother::default();
-        for step in 0..10 {
-            let at = 1_000.0 + f64::from(step) * 8.0;
-            smooth.heard(1, f64::from(step), 0.0, at);
+        phase a_pointer_between_two_points_is_drawn_between_them;
+        {
+            let mut smooth = Smoother::default();
+            smooth.heard(3, 0.0, 0.0, 1_000.0);
+            smooth.heard(3, 100.0, 50.0, 1_008.0);
+            // The delay is small on a clean link, so the drawn point lags the
+            // newest one by a few ms of its motion, never sitting on it.
+            let (x, y) = smooth.at(1_008.0).unwrap();
+            assert!((0.0..=100.0).contains(&x), "drawn between the points: {x}");
+            assert!((0.0..=50.0).contains(&y), "drawn between the points: {y}");
+            assert_eq!(smooth.tab(), Some(3));
         }
-        let steady = smooth.delay();
-        // One point arrives 30 ms late: the buffer widens at once.
-        smooth.heard(1, 10.0, 0.0, 1_110.0);
-        assert!(smooth.delay() > steady, "a jittery link buffers more");
-        assert!(smooth.delay() <= DELAY_MS.1);
-    }
 
-    #[test]
-    fn a_stopped_pointer_stays_where_it_stopped() {
-        let mut smooth = Smoother::default();
-        smooth.heard(1, 0.0, 0.0, 1_000.0);
-        smooth.heard(1, 40.0, 0.0, 1_008.0);
-        let stopped = smooth.at(5_000.0).unwrap();
-        // Extrapolation is bounded to two intervals of the motion last seen,
-        // so a pointer that stopped goes no further than that past its last
-        // point.
-        assert!(stopped.0 <= 40.0 + 2.0 * 40.0, "bounded: {stopped:?}");
-        smooth.left();
-        assert_eq!(smooth.at(5_000.0), None);
-    }
+        phase a_pointer_that_changed_tab_snaps_to_it;
+        {
+            let mut smooth = Smoother::default();
+            smooth.heard(3, 10.0, 10.0, 1_000.0);
+            smooth.heard(3, 90.0, 10.0, 1_016.0);
+            smooth.heard(4, 5.0, 5.0, 1_032.0);
+            assert_eq!(smooth.at(1_032.0), Some((5.0, 5.0)));
+            assert_eq!(smooth.tab(), Some(4));
+        }
 
-    #[test]
-    fn a_point_said_twice_is_one_point() {
-        let mut smooth = Smoother::default();
-        smooth.heard(1, 3.0, 4.0, 1_000.0);
-        smooth.heard(1, 3.0, 4.0, 1_008.0);
-        smooth.heard(1, 3.0, 4.0, 1_008.5);
-        assert_eq!(smooth.samples.len(), 2);
+        phase a_late_arrival_widens_the_delay;
+        {
+            let mut smooth = Smoother::default();
+            for step in 0..10 {
+                let at = 1_000.0 + f64::from(step) * 8.0;
+                smooth.heard(1, f64::from(step), 0.0, at);
+            }
+            let steady = smooth.delay();
+            // One point arrives 30 ms late: the buffer widens at once.
+            smooth.heard(1, 10.0, 0.0, 1_110.0);
+            assert!(smooth.delay() > steady, "a jittery link buffers more");
+            assert!(smooth.delay() <= DELAY_MS.1);
+        }
+
+        phase a_stopped_pointer_stays_where_it_stopped;
+        {
+            let mut smooth = Smoother::default();
+            smooth.heard(1, 0.0, 0.0, 1_000.0);
+            smooth.heard(1, 40.0, 0.0, 1_008.0);
+            let stopped = smooth.at(5_000.0).unwrap();
+            // Extrapolation is bounded to two intervals of the motion last seen,
+            // so a pointer that stopped goes no further than that past its last
+            // point.
+            assert!(stopped.0 <= 40.0 + 2.0 * 40.0, "bounded: {stopped:?}");
+            smooth.left();
+            assert_eq!(smooth.at(5_000.0), None);
+        }
+
+        phase a_point_said_twice_is_one_point;
+        {
+            let mut smooth = Smoother::default();
+            smooth.heard(1, 3.0, 4.0, 1_000.0);
+            smooth.heard(1, 3.0, 4.0, 1_008.0);
+            smooth.heard(1, 3.0, 4.0, 1_008.5);
+            assert_eq!(smooth.samples.len(), 2);
+        }
     }
 }
