@@ -418,32 +418,6 @@ fn recording(
 }
 
 #[test]
-fn effect_receipts_are_immutable_even_for_the_governor() {
-    let mut before = governed();
-    tilo_desktop_model::projection::project_effect_receipts(
-        &mut before,
-        &person_id(owner_root()),
-        &[effect(1, &person_id(owner_root()))],
-    )
-    .unwrap();
-    before.commit();
-    let mut rewritten = effect(1, &person_id(owner_root()));
-    rewritten.status = tilo_actions::EffectReceiptStatus::Cancelled;
-    let rewrite = recording(&before, owner_root(), &[rewritten]);
-    let authority = key(0xA0);
-    assert_eq!(
-        admit(
-            Some(&before),
-            member(&authority, owner_root()),
-            &owner_root(),
-            &rewrite,
-        )
-        .unwrap_err(),
-        WorkspaceRefusal::ReceiptImmutable
-    );
-}
-
-#[test]
 fn a_member_records_only_their_own_effect_receipts() {
     let before = governed();
     let editor = key(0x02);
@@ -684,67 +658,84 @@ fn durable_receipt(generation: u64) -> crate::durability::DurableReceipt {
     crate::durability::DurableReceipt::new(coverage(2), generation).unwrap()
 }
 
+/// What a batch itself forbids is refused whoever wrote it, the governor's
+/// own device included: one row per such check, with the refusal it gives.
 #[test]
-fn coverage_never_rewinds_even_from_the_governor() {
-    let mut before = governed();
-    crate::coverage::put(&mut before, coverage(5)).unwrap();
-    before.commit();
-    let rewind = changes_after(&before, |doc| {
+fn a_forbidden_change_is_refused_even_from_the_governor() {
+    let mut covered = governed();
+    crate::coverage::put(&mut covered, coverage(5)).unwrap();
+    covered.commit();
+    let coverage_rewind = changes_after(&covered, |doc| {
         crate::coverage::put(doc, coverage(4)).unwrap();
     });
-    let authority = key(0xA0);
-    assert!(matches!(
-        admit(
-            Some(&before),
-            member(&authority, owner_root()),
-            &owner_root(),
-            &rewind,
-        ),
-        Err(WorkspaceRefusal::Coverage(_))
-    ));
-}
 
-#[test]
-fn durability_never_rewinds_even_from_the_governor() {
-    let mut before = governed();
     let route = crate::coverage::route_key("app", "record");
+    let mut durable = governed();
     crate::durability::put(
-        &mut before,
+        &mut durable,
         BTreeMap::from([(route.clone(), durable_receipt(7))]),
     )
     .unwrap();
-    before.commit();
-    let rewind = changes_after(&before, |doc| {
+    durable.commit();
+    let durability_rewind = changes_after(&durable, |doc| {
         crate::durability::put(doc, BTreeMap::from([(route, durable_receipt(6))])).unwrap();
     });
-    let authority = key(0xA0);
-    assert!(matches!(
-        admit(
-            Some(&before),
-            member(&authority, owner_root()),
-            &owner_root(),
-            &rewind,
-        ),
-        Err(WorkspaceRefusal::Durability(_))
-    ));
-}
 
-#[test]
-fn malformed_media_policy_is_refused_even_from_the_governor() {
-    let before = governed();
-    let malformed = changes_after(&before, |doc| {
+    let plain = governed();
+    let malformed_media = changes_after(&plain, |doc| {
         doc.put(ROOT, media::FIELD, "not bytes").unwrap();
     });
+
+    let mut recorded = governed();
+    tilo_desktop_model::projection::project_effect_receipts(
+        &mut recorded,
+        &person_id(owner_root()),
+        &[effect(1, &person_id(owner_root()))],
+    )
+    .unwrap();
+    recorded.commit();
+    let mut rewritten = effect(1, &person_id(owner_root()));
+    rewritten.status = tilo_actions::EffectReceiptStatus::Cancelled;
+    let receipt_rewrite = recording(&recorded, owner_root(), &[rewritten]);
+
     let authority = key(0xA0);
-    assert!(matches!(
-        admit(
-            Some(&before),
+    for (case, before, changes, expected) in [
+        ("coverage rewound", &covered, &coverage_rewind, "Coverage"),
+        (
+            "durability rewound",
+            &durable,
+            &durability_rewind,
+            "Durability",
+        ),
+        (
+            "a malformed media policy",
+            &plain,
+            &malformed_media,
+            "Media",
+        ),
+        (
+            "an effect receipt rewritten",
+            &recorded,
+            &receipt_rewrite,
+            "ReceiptImmutable",
+        ),
+    ] {
+        let refusal = admit(
+            Some(before),
             member(&authority, owner_root()),
             &owner_root(),
-            &malformed,
-        ),
-        Err(WorkspaceRefusal::Media(_))
-    ));
+            changes,
+        )
+        .unwrap_err();
+        let refused_as = match &refusal {
+            WorkspaceRefusal::Coverage(_) => "Coverage",
+            WorkspaceRefusal::Durability(_) => "Durability",
+            WorkspaceRefusal::Media(_) => "Media",
+            WorkspaceRefusal::ReceiptImmutable => "ReceiptImmutable",
+            _ => "another refusal",
+        };
+        assert_eq!(refused_as, expected, "{case}: {refusal:?}");
+    }
 }
 
 #[test]

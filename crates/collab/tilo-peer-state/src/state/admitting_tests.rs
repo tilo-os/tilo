@@ -222,65 +222,67 @@ fn put_part(doc: &mut AutoCommit, key: &str, bytes: Vec<u8>) {
         .unwrap();
 }
 
+/// A receiver refuses a member's admission whose ledger was changed in the
+/// batch that carries it: one case per change, each with the reason it is
+/// refused for.
 #[test]
-fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
-    // A receipt filed under one invitation that spells another.
-    let refused = refusal_of_tampered_admission(|doc, key, mut receipt, other| {
-        receipt.invitation = vec![invitation_ledger::Piece::Own(
-            other.join().signed_invitation().to_vec(),
-        )];
-        put_receipt(doc, key, &receipt);
-    });
-    assert!(refused.contains("names no invitation"), "{refused}");
-}
-
-#[test]
-fn a_receiver_refuses_a_receipt_whose_own_bytes_were_changed() {
-    let refused = refusal_of_tampered_admission(|doc, key, mut receipt, _| {
-        let own = receipt
-            .invitation
-            .iter_mut()
-            .rev()
-            .find_map(|piece| match piece {
-                invitation_ledger::Piece::Own(bytes) => Some(bytes),
-                invitation_ledger::Piece::Shared(_) => None,
-            })
-            .unwrap();
-        // The invitation's signature, at its end.
-        let last = own.len() - 1;
-        own[last] ^= 1;
-        put_receipt(doc, key, &receipt);
-    });
-    assert!(refused.contains("names no invitation"), "{refused}");
-}
-
-#[test]
-fn a_receiver_refuses_a_part_changed_under_its_digest() {
-    let refused = refusal_of_tampered_admission(|doc, _, receipt, _| {
-        let digest = *receipt.shared().next().expect("the issuer is named once");
-        let parts = invitation_ledger::parts(doc).unwrap();
-        let mut forged = invitation_ledger::part_in(&parts, &digest)
-            .unwrap()
-            .to_vec();
-        forged[0] ^= 1;
-        put_part(doc, &invitation_ledger::part_key(&digest), forged);
-    });
-    assert!(refused.contains("part under another key"), "{refused}");
-}
-
-#[test]
-fn a_receiver_refuses_a_part_no_receipt_names() {
-    let refused = refusal_of_tampered_admission(|doc, _, _, other| {
-        let stray = other.join().signed_invitation().to_vec();
-        put_part(
-            doc,
-            &invitation_ledger::part_key(blake3::hash(&stray).as_bytes()),
-            stray,
-        );
-    });
-    assert!(
-        refused.contains("no receipt of the batch names"),
-        "{refused}"
+fn a_receiver_refuses_a_members_admission_whose_ledger_was_changed() {
+    let refuses = |case: &str, reason: &str, refused: String| {
+        assert!(refused.contains(reason), "{case}: {refused}");
+    };
+    refuses(
+        "a receipt filed under one invitation that spells another",
+        "names no invitation",
+        refusal_of_tampered_admission(|doc, key, mut receipt, other| {
+            receipt.invitation = vec![invitation_ledger::Piece::Own(
+                other.join().signed_invitation().to_vec(),
+            )];
+            put_receipt(doc, key, &receipt);
+        }),
+    );
+    refuses(
+        "a receipt whose own bytes were changed",
+        "names no invitation",
+        refusal_of_tampered_admission(|doc, key, mut receipt, _| {
+            let own = receipt
+                .invitation
+                .iter_mut()
+                .rev()
+                .find_map(|piece| match piece {
+                    invitation_ledger::Piece::Own(bytes) => Some(bytes),
+                    invitation_ledger::Piece::Shared(_) => None,
+                })
+                .unwrap();
+            // The invitation's signature, at its end.
+            let last = own.len() - 1;
+            own[last] ^= 1;
+            put_receipt(doc, key, &receipt);
+        }),
+    );
+    refuses(
+        "a part changed under its digest",
+        "part under another key",
+        refusal_of_tampered_admission(|doc, _, receipt, _| {
+            let digest = *receipt.shared().next().expect("the issuer is named once");
+            let parts = invitation_ledger::parts(doc).unwrap();
+            let mut forged = invitation_ledger::part_in(&parts, &digest)
+                .unwrap()
+                .to_vec();
+            forged[0] ^= 1;
+            put_part(doc, &invitation_ledger::part_key(&digest), forged);
+        }),
+    );
+    refuses(
+        "a part no receipt names",
+        "no receipt of the batch names",
+        refusal_of_tampered_admission(|doc, _, _, other| {
+            let stray = other.join().signed_invitation().to_vec();
+            put_part(
+                doc,
+                &invitation_ledger::part_key(blake3::hash(&stray).as_bytes()),
+                stray,
+            );
+        }),
     );
 }
 

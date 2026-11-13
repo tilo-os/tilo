@@ -396,9 +396,12 @@ mod tests {
         );
     }
 
+    /// One admitted write, looked up again: only its own envelope on its own
+    /// route is recognized, however much later, and no lookup changes the
+    /// state or resets its freshness.
     #[test]
-    fn local_exact_retry_recognizes_recorded_envelope_without_mutation_or_freshness_reset() {
-        let (peer, envelope, _, _, now) = admitted();
+    fn local_exact_retry_recognizes_only_the_recorded_envelope_on_its_own_route() {
+        let (peer, envelope, other_key, other, now) = admitted();
         let expected =
             DocumentAdmission::from_op(peer.workspace_id(), "test.app", "tab:1", &envelope)
                 .unwrap();
@@ -407,40 +410,42 @@ mod tests {
             assert_eq!(
                 peer.lookup_exact_local_document("test.app", "tab:1", &envelope, time)
                     .unwrap(),
-                Some(expected.clone())
+                Some(expected.clone()),
+                "the recorded envelope at {time:?}"
             );
         }
-        assert_eq!(peer.durable().unwrap(), before);
-    }
-
-    #[test]
-    fn local_exact_retry_rejects_wrong_route_and_tampered_identity() {
-        let (peer, envelope, _, other, now) = admitted();
-        assert!(
-            peer.lookup_exact_local_document("other.app", "tab:1", &envelope, now)
-                .is_err()
-        );
-        assert!(
-            peer.lookup_exact_local_document("test.app", "tab:2", &envelope, now)
-                .is_err()
-        );
-        let mut tampered = envelope;
+        for (case, app, record) in [
+            ("another app", "other.app", "tab:1"),
+            ("another record", "test.app", "tab:2"),
+        ] {
+            assert!(
+                peer.lookup_exact_local_document(app, record, &envelope, now)
+                    .is_err(),
+                "{case}"
+            );
+        }
+        let mut tampered = envelope.clone();
         tampered.author = Ed25519PublicKey::from_bytes(other.device_public_key);
         assert!(
             peer.lookup_exact_local_document("test.app", "tab:1", &tampered, now)
-                .is_err()
+                .is_err(),
+            "an author changed under the recorded signature"
         );
-    }
-
-    #[test]
-    fn local_exact_retry_does_not_reuse_another_valid_signers_evidence() {
-        let (peer, mut envelope, key, other, now) = admitted();
-        envelope.author = Ed25519PublicKey::from_bytes(other.device_public_key);
-        collab_types::sign_op(&mut envelope, &key).unwrap();
+        // The same write signed by another of the workspace's devices as its
+        // own is valid, and is not the evidence this one left.
+        let mut resigned = envelope;
+        resigned.author = Ed25519PublicKey::from_bytes(other.device_public_key);
+        collab_types::sign_op(&mut resigned, &other_key).unwrap();
         assert_eq!(
-            peer.lookup_exact_local_document("test.app", "tab:1", &envelope, now)
+            peer.lookup_exact_local_document("test.app", "tab:1", &resigned, now)
                 .unwrap(),
-            None
+            None,
+            "another valid signer's envelope"
+        );
+        assert_eq!(
+            peer.durable().unwrap(),
+            before,
+            "no lookup changes the state"
         );
     }
 

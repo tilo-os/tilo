@@ -276,8 +276,11 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
     {
         let mut receiver = baseline;
         let origin = native(&receiver);
-        assert!(receiver.receive_from(origin, descendant, now).is_err());
-        assert_eq!(receiver.pending_count(), 0);
+        assert!(
+            receiver.receive_from(origin, descendant, now).is_err(),
+            "reopened={reopen}"
+        );
+        assert_eq!(receiver.pending_count(), 0, "reopened={reopen}");
         if reopen {
             receiver = StatePeer::restore(
                 &receiver.durable().unwrap(),
@@ -288,7 +291,7 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
                 now,
             )
             .unwrap();
-            assert_eq!(receiver.pending_count(), 0);
+            assert_eq!(receiver.pending_count(), 0, "after reopening");
         }
         receiver
             .receive_from(
@@ -311,7 +314,10 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
             )
             .unwrap();
         let doc = AutoCommit::load(&receiver.document("test.app", "tab:1").unwrap()).unwrap();
-        assert!(doc.get(ROOT, "predecessor").unwrap().is_some());
+        assert!(
+            doc.get(ROOT, "predecessor").unwrap().is_some(),
+            "reopened={reopen}"
+        );
         assert!(
             doc.get(ROOT, "native-descendant").unwrap().is_none(),
             "publisher-revoked native packet settled through another input; reopened={reopen}"
@@ -319,13 +325,14 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
     }
 }
 
+/// A deferred native packet is rechecked against its governor when it
+/// settles: on the receiver as it runs, and on the receiver reopened from
+/// what it kept.
 #[test]
 fn native_publication_deferred_packet_rechecks_governor() {
-    assert_deferred_governor_revalidation(false);
-}
-#[test]
-fn native_publication_deferred_packet_rechecks_governor_after_restore() {
-    assert_deferred_governor_revalidation(true);
+    for reopen in [false, true] {
+        assert_deferred_governor_revalidation(reopen);
+    }
 }
 
 #[test]
