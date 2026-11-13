@@ -629,17 +629,13 @@ impl<R: Resource> Each<R> {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.menu.cursor = ctx.logical(position);
         }
-        if self.menu.menu.is_open() {
+        // An open menu, or a box the window was asked for standing on it with no
+        // menu around it, has the pointer and the keys.
+        if self.menu.menu.is_showing() {
             self.menu.menu.handle_event(event, ctx);
             if let Some(index) = self.menu.menu.take_selection() {
                 self.choose(index);
             }
-            return *ctx.handled;
-        }
-        // A box the window was asked for stands on this list's menu with no menu
-        // around it: the pointer and the keys are the box's until it sends.
-        if self.menu.menu.send_to_alone_open() {
-            self.menu.menu.handle_event(event, ctx);
             return *ctx.handled;
         }
         let target = match event {
@@ -1026,8 +1022,7 @@ impl<R: Resource> Widget for Each<R> {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.menu.menu.is_open()
-            || self.menu.menu.send_to_alone_open()
+        self.menu.menu.is_showing()
             || self
                 .mounted()
                 .any(|(_, view)| view.widget.wants_pointer_capture())
@@ -1057,6 +1052,7 @@ impl<R: Resource> Widget for Each<R> {
         });
         // Drawn while it is open and while it leaves (`motion::Appear`); a
         // closed menu draws nothing but a box its window was asked for.
+        self.menu.menu.take_window_send_box(presence);
         self.menu
             .menu
             .draw_overlay(scene, transform, text, theme, presence);

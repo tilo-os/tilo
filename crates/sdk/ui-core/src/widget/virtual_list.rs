@@ -2187,6 +2187,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             || self.reorder.is_active()
             || self.model.needs_poll()
             || self.rename_animating()
+            || self.menu_needs_animation_frame()
             || self
                 .mounted
                 .iter()
@@ -2278,7 +2279,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn traps_focus(&self) -> bool {
-        self.context_menu_is_open()
+        self.menu_traps_focus()
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {

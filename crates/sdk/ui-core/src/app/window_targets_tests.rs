@@ -199,7 +199,33 @@ fn a_control_that_runs_an_app_action_is_listed_and_pressed_by_what_it_does() {
 fn box_window() -> (App, UnixStream) {
     let content = crate::widget::Column::new().push(Box::new(crate::widget::Spacer::fixed(300.0)));
     let area = crate::widget::ContextMenuArea::new(Box::new(content), |_| Vec::new());
-    let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(area));
+    window_of(Box::new(area))
+}
+
+/// A window whose menu that carries the box is a list's own, as a sidebar's page tree is, under a
+/// field whose own menu is drawn first and carries none.
+fn list_box_window() -> (App, UnixStream) {
+    let list = crate::widget::VirtualList::from_items(
+        vec![1_u32, 2, 3],
+        40.0,
+        |item| *item,
+        |item, _, _| Box::new(crate::widget::Text::new(&format!("row {item}"))) as crate::Element,
+    )
+    .unwrap()
+    .with_context_menu(
+        |_, _| vec![crate::widget::context_menu::MenuItem::action("Open", || {})],
+        |_, _| {},
+    );
+    let field = crate::widget::TextInput::new(Vec::new()).with_id("search");
+    let column = crate::widget::Column::new()
+        .push(Box::new(field))
+        .push(Box::new(list));
+    window_of(Box::new(column))
+}
+
+/// A window showing `root`, on a shell-ui connection whose shell end the test holds.
+fn window_of(root: Box<dyn crate::widget::Widget>) -> (App, UnixStream) {
+    let mut app = App::new_with_controlled_inputs(crate::State::new(), root);
     let (app_side, shell_side) = UnixStream::pair().unwrap();
     app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
     (app, shell_side)
@@ -343,4 +369,104 @@ fn the_sends_send_is_pressed_through_the_target_and_sends_what_the_box_holds() {
     let (to, text) = sent_message.expect("the window sent what the box held");
     assert_eq!(text, "Ship the launch notes");
     assert_eq!(to, [adalovelace], "to whom the box was addressed");
+}
+
+/// The box the shell asks a window for stands on the first menu drawn that carries one, never on
+/// a field's own menu drawn before it: a list's own menu shows it, gives it the pointer, and tells
+/// the shell its controls, with nothing the person did since.
+#[test]
+fn a_list_that_owns_its_menu_carries_the_box_the_shell_asks_for() {
+    let (mut app, mut shell) = list_box_window();
+    drawn(&mut app);
+    let _window = told(&mut app, &mut shell);
+
+    app.apply_floating_host_messages(vec![FloatingSurfaceHostMessage::ShareSelection {
+        to: Vec::new(),
+        pointing: false,
+    }]);
+    let mut scene = crate::vello::Scene::new();
+    app.surface_frame(&Window, &mut scene);
+    assert!(
+        crate::shared_selection::take_open_send_box().is_none(),
+        "the list's menu took the box"
+    );
+    assert!(
+        app.root_widget.modal_capture().is_some(),
+        "the box hears the pointer while it stands"
+    );
+    drawn(&mut app);
+    let names: Vec<String> = told(&mut app, &mut shell)
+        .into_iter()
+        .map(|target| target.name)
+        .collect();
+    for wanted in [
+        crate::i18n::I18nManager::lookup_plain("send-to-recipients-name"),
+        crate::i18n::I18nManager::lookup_plain("send-to-message-name"),
+        crate::i18n::I18nManager::lookup_plain("send-to-send"),
+    ] {
+        assert!(
+            names.contains(&wanted),
+            "the box's {wanted:?} is one of the window's controls: {names:?}"
+        );
+    }
+}
+
+/// The box appears as the window draws its menus, after the pass that read the tree: the next
+/// description reads it again, though nothing the person did and no layout says so, and Send
+/// pressed through what it names reaches the list's box.
+#[test]
+fn the_box_a_frame_stands_is_told_and_pressed_with_no_input_since() {
+    let (mut app, mut shell) = list_box_window();
+    drawn(&mut app);
+    let _window = told(&mut app, &mut shell);
+    // The frame after it, so the window rests: nothing is left to lay out or read again.
+    drawn(&mut app);
+    let ada = Recipient::found(RecipientKind::Person, "person:ada", "Ada");
+    crate::shared_selection::open_send_box(
+        None,
+        None,
+        Some("Ship the launch notes"),
+        std::slice::from_ref(&ada),
+    );
+    // The pass that answers the shell's ask reads the tree before any frame stood the box.
+    let _ = described(&mut app, &mut shell);
+    // The menus' overlay pass, with nothing laid out again: where the box is taken.
+    let mut scene = crate::vello::Scene::new();
+    app.root_widget.draw_overlay(
+        &mut scene,
+        crate::vello::kurbo::Affine::IDENTITY,
+        &mut app.text_renderer,
+        &app.theme,
+        &app.presence_ctx,
+    );
+    let targets = told(&mut app, &mut shell);
+    let send = crate::i18n::I18nManager::lookup_plain("send-to-send");
+    assert!(
+        targets.iter().any(|target| target.name == send),
+        "the box's Send is told: {:?}",
+        targets
+            .iter()
+            .map(|target| &target.name)
+            .collect::<Vec<_>>()
+    );
+
+    press(&mut shell, &send, "Button", TargetAction::Activate);
+    app.pump_floating_surface_service();
+    let mut sent_message = None;
+    for _ in 0..4 {
+        drawn(&mut app);
+        app.pump_floating_surface_service();
+        sent_message = sent(&mut shell)
+            .into_iter()
+            .find_map(|message| match message {
+                FloatingSurfaceClientMessage::SendTo { to, text, .. } => Some((to, text)),
+                _ => None,
+            });
+        if sent_message.is_some() {
+            break;
+        }
+    }
+    let (to, text) = sent_message.expect("the window sent what the box held");
+    assert_eq!(text, "Ship the launch notes");
+    assert_eq!(to, [ada], "to whom the box was addressed");
 }

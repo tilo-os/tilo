@@ -870,9 +870,10 @@ impl super::Decorator for ContextMenuArea {
         }
         self.content
             .draw_overlay(scene, transform, text_renderer, theme, presence);
-        // The menu paints in the overlay pass, over everything: a box the
-        // window was asked for with no menu around it is taken there, so the
-        // menu is drawn even while closed.
+        // The menu paints in the overlay pass, over everything, and carries a
+        // box the window was asked for with no menu around it, so it is drawn
+        // even while closed.
+        self.menu.take_window_send_box(presence);
         self.menu
             .draw_overlay(scene, transform, text_renderer, theme, presence);
         if let Some((anchor, pick)) = self.picker_wanted.take() {

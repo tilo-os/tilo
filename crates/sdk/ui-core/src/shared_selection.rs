@@ -390,6 +390,14 @@ pub fn take_open_send_box() -> Option<OpenSendBox> {
     ALONE.with(|alone| alone.borrow_mut().take())
 }
 
+/// Whether a box was asked for with no menu and no menu has taken it yet: the frame that draws the
+/// window's menus stands it on the first of them, so what the window shows changes then, with no
+/// input or layout to say so.
+#[must_use]
+pub fn send_box_asked() -> bool {
+    ALONE.with(|alone| alone.borrow().is_some())
+}
+
 /// Send what a box holds: the app runner hands it to the session, which acts on it as the
 /// person.
 pub fn send_to(request: SendToRequest) {

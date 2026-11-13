@@ -1551,8 +1551,12 @@ impl App {
     /// refresh while one is up walks again, and so does the first after it.
     /// A framework History at rest is tracked: what changes it refreshes it
     /// (`refresh_framework_history`), and that invalidates the widgets.
+    /// A send-to box asked for with no menu around it is one until a frame
+    /// stands it on a menu: it appears as the window draws, from the shell's
+    /// ask or the person's key alike, after anything that marks the tree.
     fn semantic_tree_untracked(&self) -> bool {
-        self.close_admission.dialog.is_some()
+        crate::shared_selection::send_box_asked()
+            || self.close_admission.dialog.is_some()
             || self
                 .history
                 .as_ref()

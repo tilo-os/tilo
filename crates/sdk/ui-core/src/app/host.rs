@@ -227,6 +227,12 @@ fn draw_frame_content_owning(
             &app.theme,
             &app.presence_ctx,
         );
+        // The first menu drawn takes a box the window was asked for. One no
+        // menu of the window's took has nowhere to stand: it goes, rather
+        // than opening on whatever menu a later frame draws first.
+        if crate::shared_selection::take_open_send_box().is_some() {
+            tracing::debug!("no menu of this window carries the send-to box it was asked for");
+        }
     }
     painted(scene, "an overlay of the app's widgets", &mut drawn);
     if let Some(history) = &mut app.history {

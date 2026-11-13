@@ -264,7 +264,9 @@ impl<M: ListModel> VirtualList<M> {
         let Some(menu) = self.menus.owned_mut() else {
             return false;
         };
-        if !menu.menu.is_open() {
+        // A box the window was asked for stands on this menu with no menu around it: the pointer
+        // and the keys are the box's until it sends.
+        if !menu.menu.is_showing() {
             return false;
         }
         let mut consumed = false;
@@ -302,7 +304,7 @@ impl<M: ListModel> VirtualList<M> {
         (menu.chosen)(target, index);
     }
 
-    /// Paint the open menu over the rows.
+    /// Paint the open menu over the rows, and the box the window was asked for standing on it.
     pub(super) fn paint_menu(
         &mut self,
         scene: &mut Scene,
@@ -312,23 +314,40 @@ impl<M: ListModel> VirtualList<M> {
         presence: &PresenceCtx,
     ) {
         if let Some(menu) = self.menus.owned_mut() {
+            menu.menu.take_window_send_box(presence);
             menu.menu
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
     }
 
-    /// Whether the open menu needs a frame: it arrives, leaves, a key moved its highlight, or
-    /// the box beside it changed. A closed menu paints nothing, so it asks for none.
+    /// Whether the menu needs a frame: it arrives, leaves, a key moved its highlight, or the box
+    /// beside it — or standing alone, as the window's — changed. A menu that shows nothing asks
+    /// for none.
     pub(super) fn menu_needs_redraw(&self) -> bool {
         self.menus
             .owned()
-            .is_some_and(|menu| menu.menu.is_open() && menu.menu.needs_redraw())
+            .is_some_and(|menu| menu.menu.needs_redraw())
     }
 
-    /// The open menu's semantics, its targets namespaced into the list's.
+    /// Whether the menu, or the box it carries, is moving.
+    pub(super) fn menu_needs_animation_frame(&self) -> bool {
+        self.menus
+            .owned()
+            .is_some_and(|menu| menu.menu.needs_animation_frame())
+    }
+
+    /// Whether the keyboard stays in the menu: it is open, or a box stands on it alone.
+    pub(super) fn menu_traps_focus(&self) -> bool {
+        self.menus
+            .owned()
+            .is_some_and(|menu| menu.menu.traps_focus())
+    }
+
+    /// The semantics of the open menu, or of the box standing with no menu around it, its targets
+    /// namespaced into the list's.
     pub(super) fn menu_node(&self) -> Option<AccessNode> {
         let menu = self.menus.owned()?;
-        if !menu.menu.is_open() {
+        if !menu.menu.is_showing() {
             return None;
         }
         let mut node = Widget::accessibility(&menu.menu)?;
