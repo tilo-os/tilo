@@ -135,25 +135,8 @@ impl TiloStore {
         let (changed, ends, placed) = inner.apply_new_changes(chunk, &arrived);
         inner.chunks.set_seen(chunk, heads);
         let Some(changed) = changed else {
-            let before = inner.index.clone();
             // The mirror held a change of its own, which only a copy of the record removes.
-            inner.versions.remove(&chunk);
-            inner.nested.clear();
-            inner.stats.full_syncs = inner.stats.full_syncs.saturating_add(1);
-            inner.chunks.insert(chunk, mirror_of(doc));
-            if chunk == chunk::FIRST {
-                inner.chunks.reread_placement();
-            }
-            inner.rescan();
-            // What the record did not take is not the record's: it is written onto the fresh
-            // copy, and derived again over the indexes the record's changes left, so reads keep
-            // the values and items it holds where they are.
-            inner.reapply_kept(chunk);
-            let reached = everything(&before, &inner.index);
-            inner.derive_all(&reached, None);
-            inner.rebuild_overlay();
-            inner.changed();
-            inner.notify_all();
+            inner.copy_record(chunk, doc);
             return true;
         };
         inner.stats.incremental_syncs = inner.stats.incremental_syncs.saturating_add(1);
@@ -234,6 +217,28 @@ impl TiloStore {
 }
 
 impl Inner {
+    /// Take a copy of the record `doc` as the mirror of `chunk`, and tell every reader.
+    fn copy_record(&mut self, chunk: ChunkNo, doc: &Doc) {
+        let before = self.index.clone();
+        self.versions.remove(&chunk);
+        self.nested.clear();
+        self.stats.full_syncs = self.stats.full_syncs.saturating_add(1);
+        self.chunks.insert(chunk, mirror_of(doc));
+        if chunk == chunk::FIRST {
+            self.chunks.reread_placement();
+        }
+        self.rescan();
+        // What the record did not take is not the record's: it is written onto the fresh copy,
+        // and derived again over the indexes the record's changes left, so reads keep the values
+        // and items it holds where they are.
+        self.reapply_kept(chunk);
+        let reached = everything(&before, &self.index);
+        self.derive_all(&reached, None);
+        self.rebuild_overlay();
+        self.changed();
+        self.notify_all();
+    }
+
     /// The snapshot each index that answers reads now, by its app.
     fn answering(&self) -> BTreeMap<AppId, Arc<idx::Snapshot>> {
         self.apps
