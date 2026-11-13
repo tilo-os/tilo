@@ -32,7 +32,7 @@ impl Session {
             let workspaces = self.shared.handle.read(|tree| {
                 tree.workspaces
                     .iter()
-                    .map(|workspace| workspace.id())
+                    .map(tilo_desktop_model::Workspace::id)
                     .filter(|id| !id.is_nil())
                     .map(|id| id.to_string())
                     .collect()

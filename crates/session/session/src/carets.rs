@@ -53,7 +53,7 @@ impl Carets {
             fanout.subscribe_workspaces(
                 Vec::new(),
                 Box::new(move |event, route| {
-                    // A local app's presence names the record it came from; what this session
+                    // A local app's presence names the app it came from; what this session
                     // hands the apps of someone else's names only the workspace.
                     let CollabEvent::RemotePresenceUpdate {
                         user_id,
@@ -63,7 +63,7 @@ impl Carets {
                     else {
                         return;
                     };
-                    if route.record_id.is_empty()
+                    if route.app_id.is_empty()
                         || person.lock_recover().as_deref() != Some(user_id.as_str())
                     {
                         return;
@@ -101,8 +101,11 @@ impl Carets {
     /// The person here's caret as their presence says it, when it is in `app`, the app of the
     /// window they work in.
     pub(crate) fn said_in(&self, app: &str) -> Option<ShellSelection> {
-        let own = self.own.lock_recover();
-        let typing = own.as_ref().filter(|typing| typing.app == app)?;
+        let typing = self
+            .own
+            .lock_recover()
+            .clone()
+            .filter(|typing| typing.app == app)?;
         let (anchor, head) =
             tilo_relay_protocol::live::presence_anchors(&typing.key, typing.start, typing.end)?;
         Some(ShellSelection {
@@ -125,7 +128,13 @@ impl Carets {
             self.read.borrow_mut().insert(workspace.clone(), revision);
             let mut placed: HashMap<String, (PresenceKey, PresencePayload)> = HashMap::new();
             for member in sync.members(&workspace) {
-                let Some(user) = member.user.filter(|user| Some(user) != person.as_ref()) else {
+                // Who they are: their certificate's person, else the person the workspace admitted
+                // their device as.
+                let user = member.user.clone().or_else(|| {
+                    let device = <[u8; 32]>::try_from(hex::decode(&member.publisher).ok()?).ok()?;
+                    sync.governed_person(&workspace, iroh::EndpointId::from_bytes(&device).ok()?)
+                });
+                let Some(user) = user.filter(|user| Some(user) != person.as_ref()) else {
                     continue;
                 };
                 if member.agent {

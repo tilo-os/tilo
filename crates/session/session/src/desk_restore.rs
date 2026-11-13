@@ -353,3 +353,76 @@ fn waits_for_host(name: &str, host: &str) -> String {
 fn did_not_open(name: &str) -> String {
     t_args("desk-window-did-not-open", &[("app", name.into())])
 }
+
+#[cfg(test)]
+mod tests {
+    use tilo_desktop_model::{
+        DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+        WorkspaceId, WorkspaceSlot,
+    };
+
+    use super::Restore;
+
+    /// A desk of one workspace whose one window group holds `tabs`.
+    fn desk(tabs: Vec<Tab>) -> DesktopTree {
+        let mut workspace = Workspace::in_workspace(
+            WorkspaceSlot(1),
+            WorkspaceId::parse("3024f582-9315-461d-a32f-2c67269385e1").unwrap(),
+            "Shared",
+        );
+        let mut strip = Strip::new(StripId(2), "Main");
+        strip.window_groups.push(WindowGroup {
+            id: 3,
+            active_tab: tabs.first().map_or(0, |tab| tab.id),
+            tabs,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        workspace.strips.push(strip);
+        DesktopTree {
+            active: WorkspaceSlot(1),
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        }
+    }
+
+    fn window(id: u64, tile: TileContent) -> Tab {
+        Tab {
+            id,
+            title: "Notes".into(),
+            tile,
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        }
+    }
+
+    fn notes() -> TileContent {
+        TileContent::LocalApp {
+            app_id: "so.tilo.notes".into(),
+            label: "Notes".into(),
+            note: String::new(),
+        }
+    }
+
+    /// A window another member opened arrives in the workspace's desk as one this device opens
+    /// its own instance of: the app is asked for it, and for no window that was already here.
+    #[test]
+    fn a_window_another_member_opened_is_asked_for_and_nothing_already_here() {
+        let mine = window(
+            4,
+            TileContent::Foreign {
+                app_id: "so.tilo.notes".into(),
+                surface_id: 9,
+            },
+        );
+        let waiting = window(5, notes());
+        let before = desk(vec![mine.clone(), waiting.clone()]);
+        let after = desk(vec![mine, waiting, window(6, notes())]);
+        let mut restore = Restore::default();
+        restore.arrived(&before, &after);
+        let asked: Vec<u64> = restore.waiting.iter().map(|saved| saved.tab).collect();
+        assert_eq!(asked, [6]);
+    }
+}

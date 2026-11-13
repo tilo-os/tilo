@@ -322,7 +322,6 @@ pub(crate) fn start_action_plane(
         .and_then(crate::sync::Client::personal)
         .map(|personal| personal.sync().clone());
     let channels = std::sync::Arc::clone(&sealed.broker);
-    let carets = crate::carets::Carets::new(std::sync::Arc::clone(&fanout), options.wake.handle());
     let broker = plane::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
@@ -377,7 +376,7 @@ pub(crate) fn start_action_plane(
                 tilo_rt::app().handle(),
                 endpoint,
                 channels,
-                fanout,
+                std::sync::Arc::clone(&fanout),
                 sync.sibling_dials(),
             )
         }),
@@ -385,8 +384,7 @@ pub(crate) fn start_action_plane(
     };
     // What arrives on this device's action plane is answered by the broker that now serves: another
     // of the person's devices runs nothing here the person in front of it could not.
-    let arriving = (actions, broker.app_action_broker());
-    if let (Some(actions), Some(host)) = arriving {
+    if let (Some(actions), Some(host)) = (actions, broker.app_action_broker()) {
         actions.install(host.device_host());
         attach_remote_use(&actions, options);
     }
@@ -397,7 +395,7 @@ pub(crate) fn start_action_plane(
         broker,
         calls,
         calls_service,
-        carets,
+        carets: crate::carets::Carets::new(fanout, options.wake.handle()),
         file_clipboard,
         _personal: personal,
     }))
