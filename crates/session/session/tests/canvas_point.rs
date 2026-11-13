@@ -36,6 +36,9 @@ use common::{
 /// camera and the caret's own inset, never a misplaced caret.
 const NEAR: f64 = 6.0;
 
+/// How far inside a dragged rectangle the caret stands, clear of its outline.
+const CARET_STEP: f64 = 12.0;
+
 /// The middle button, which pans the canvas.
 const BTN_MIDDLE: u32 = 0x112;
 /// The left Ctrl key, held for a wheel that zooms.
@@ -187,8 +190,8 @@ fn a_dragged_rectangle_is_filled_by_what_is_found() {
     drag(&mut session, from, to);
     let (cx, cy, _, _) = caret(&mut session);
     assert!(
-        near(cx, from.0) && near(cy, from.1),
-        "the caret stands at the rectangle's top left: {:?} for {from:?}",
+        near(cx, from.0 + CARET_STEP) && near(cy, from.1 + CARET_STEP),
+        "the caret stands a step inside the rectangle's top left: {:?} for {from:?}",
         (cx, cy)
     );
     common::say(&mut session, "my mails");

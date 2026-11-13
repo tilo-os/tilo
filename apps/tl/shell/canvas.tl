@@ -66,8 +66,8 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
         if pointed.len() > 0 {
             ui.MapPin(
                 name: "Caret",
-                x: pointed.at(0) ?? 0,
-                y: pointed.at(1) ?? 0,
+                x: (pointed.at(0) ?? 0) + caret_inset(pointed),
+                y: (pointed.at(1) ?? 0) + caret_inset(pointed),
                 width: caret_room(pointed.at(2) ?? 0),
             ) {
                 ui.TextInput(bind: typed, placeholder: "Find or ask", autofocus: true) {
@@ -93,7 +93,19 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
 /// How wide the caret's line stands, in canvas pixels: the rectangle's width when the person
 /// dragged one narrower than a line, and a line's measure otherwise.
 fn caret_room(width: Int) -> Int {
-    if width > 0 and width < 420 { width } else { 420 }
+    if width > 0 and width < 444 { width - 2 * caret_step() } else { 420 }
+}
+
+/// How far inside a dragged rectangle the caret stands, in canvas pixels: clear of the
+/// rectangle's outline, on the rhythm's sibling step.
+fn caret_step() -> Int {
+    12
+}
+
+/// Where the caret stands from the point the person pointed at: at a click's point, and a step
+/// inside a dragged rectangle ([`caret_step`]).
+fn caret_inset(pointed: List<Int>) -> Int {
+    if pointed.len() > 2 { caret_step() } else { 0 }
 }
 
 /// Gives the place `key` the size a drag of its edge or corner left it at, `size` its width and

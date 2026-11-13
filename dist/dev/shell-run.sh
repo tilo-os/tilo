@@ -28,7 +28,7 @@
 # mount, its secret store and the scratch directory go with it.
 #
 # Usage:
-#   dist/dev/shell-run.sh [--no-build] [--size WxH] [--no-apps] [--dev-rust-views]
+#   dist/dev/shell-run.sh [--no-build] [--size WxH] [--scale S] [--no-apps] [--dev-rust-views]
 #
 # Options:
 #   --no-build    use the binaries already in target/debug
@@ -36,7 +36,9 @@
 #   --size WxH    the headless output's mode in pixels, or a window's size in the host's
 #                 logical pixels (both default 1280x800). A window draws at the desktop's own
 #                 scale, fractional included, and follows it when moved to another screen
-#   --window      show the session in a window on this Wayland desktop, drawn on its GPU
+#   --scale S     the headless output's scale (default 1): `--size 2560x1600 --scale 2` is
+#                 the same 1280x800 desk as a HiDPI panel draws it
+#   --window     show the session in a window on this Wayland desktop, drawn on its GPU
 #   --model-record FILE  give the person this model provider (`tilo-model-gateway
 #                 provision-provider --record` JSON) once the session is up
 #   --dev-rust-views  seed a Rust app's sample resources and views too (Tube's channels and
@@ -72,6 +74,7 @@ tl_apps=(shell discussion notes tasks chat mail tube)
 rust_apps=(chat agent)
 build=1
 size=1280x800
+scale=
 apps=(--seed-apps)
 rust_views=0
 window=0
@@ -81,6 +84,7 @@ while (($#)); do
         --no-build) build=0; shift ;;
         --no-apps) apps=(); rust_views=0; shift ;;
         --size) size=${2:?--size needs WxH}; shift 2 ;;
+        --scale) scale=${2:?--scale needs a number}; shift 2 ;;
         --dev-rust-views) rust_views=1; shift ;;
         --window) window=1; shift ;;
         --model-record) model_record=${2:?--model-record needs FILE}; shift 2 ;;
@@ -439,6 +443,7 @@ start_gateway
 # wait until it printed its control socket, which it does last. It runs on the
 # private bus, which goes when the session does.
 backend=(--backend headless --size "$size")
+[[ -n $scale ]] && backend+=(--scale "$scale")
 host_client=()
 start_session() {
     env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
