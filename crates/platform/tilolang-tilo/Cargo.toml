@@ -8,6 +8,7 @@ license.workspace = true
 description = "Tilo platform integration for tilolang apps: dynamic records in the workspace record, replayable actions, the published surface, and the UI graph translation."
 
 [dependencies]
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 automerge.workspace = true
 # The id a run's changes name, one for every change of the action and its calls.
 uuid.workspace = true

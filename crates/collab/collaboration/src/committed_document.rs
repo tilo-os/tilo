@@ -580,8 +580,10 @@ impl CommittedDocument {
                 self.refuse();
                 None
             }
-            // ignored-failure: the route's read was replaced; its reader no longer waits on this one
-            Err(_) => None,
+            Err(_) => tilo_failure::ignored!(
+                "the route's read was replaced, and its reader no longer waits on this one",
+                None
+            ),
         }
     }
     /// A current capture of `bytes`: the changes since `base`, or the whole
@@ -1663,11 +1665,10 @@ async fn until_changed(
     };
     tokio::select! {
         () = &mut local => Woke::Local,
-        reply = channel.committed_document(&request) => match reply {
-            Ok(reply) => Woke::Read(reply),
-            // ignored-failure: a refused wait (a broker that predates it) leaves the next Open to decide, and that Open meets any refusal itself
-            Err(_) => Woke::Local,
-        },
+        reply = channel.committed_document(&request) => tilo_failure::ignored!(
+            "a refused wait leaves the next Open to decide, and it meets any refusal itself",
+            reply.map_or(Woke::Local, Woke::Read)
+        ),
     }
 }
 

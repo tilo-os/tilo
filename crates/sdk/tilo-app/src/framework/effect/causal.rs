@@ -251,13 +251,15 @@ impl CausalDrainer for Rc<RefCell<super::OutboxDrain>> {
             // Abandoned by whoever it was for: it is not carried out later
             // as nobody's.
             let value = (drain.abandoned)();
-            // ignored-failure: a job already gone has no invocation left to finish
-            let _ = drain.finish(
-                &id,
-                Ok(ActionOutput {
-                    value,
-                    resources: Vec::new(),
-                }),
+            let _ = tilo_failure::ignored!(
+                "a job already gone has no invocation left to finish",
+                drain.finish(
+                    &id,
+                    Ok(ActionOutput {
+                        value,
+                        resources: Vec::new(),
+                    }),
+                )
             );
         }
     }

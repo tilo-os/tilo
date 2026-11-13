@@ -140,8 +140,10 @@ fn registry() -> &'static Mutex<Vec<Weak<MembershipWatch>>> {
 /// The generation of the workspace stored at `room_root`
 /// (`<state_root>/workspaces/<id>`), when a running watch covers it.
 pub(crate) fn attach(room_root: &Path) -> Option<DiskGeneration> {
-    // ignored-failure: a path not named as a workspace's is not covered by a watch
-    let workspace_id = room_root.file_name()?.to_str()?.parse().ok()?;
+    let workspace_id = tilo_failure::ignored!(
+        "a path not named as a workspace's is not covered by a watch",
+        room_root.file_name()?.to_str()?.parse().ok()?
+    );
     let workspaces = room_root.parent()?;
     let watch = registry()
         .lock_recover()
@@ -348,12 +350,12 @@ async fn establish(watch: &MembershipWatch) -> Option<Watches> {
         let mut watched = Vec::new();
         for entry in std::fs::read_dir(&workspaces).map_err(|error| error.to_string())? {
             let entry = entry.map_err(|error| error.to_string())?;
-            let Some(workspace_id) = entry
-                .file_name()
-                .to_str()
-                // ignored-failure: an entry not named as a workspace's is not one
-                .and_then(|name| name.parse::<u64>().ok())
-            else {
+            let Some(workspace_id) = entry.file_name().to_str().and_then(|name| {
+                tilo_failure::ignored!(
+                    "an entry not named as a workspace's is not one",
+                    name.parse::<u64>().ok()
+                )
+            }) else {
                 continue;
             };
             match tilo_files::native::watch_entries(&entry.path()) {
@@ -403,8 +405,10 @@ async fn establish(watch: &MembershipWatch) -> Option<Watches> {
 /// one.
 fn room_directory(path: &VPath) -> Option<u64> {
     let mut components = path.components();
-    // ignored-failure: a change to an entry not named as a workspace's names none
-    let workspace_id = components.next()?.parse().ok()?;
+    let workspace_id = tilo_failure::ignored!(
+        "a change to an entry not named as a workspace's names none",
+        components.next()?.parse().ok()?
+    );
     components.next().is_none().then_some(workspace_id)
 }
 

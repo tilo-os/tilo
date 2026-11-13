@@ -331,8 +331,7 @@ pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdSt
     }
     // The first launch is not measured: it makes the profile each measured
     // launch opens, and prints numbers nobody reads.
-    // ignored-failure: the priming launch's output is not a measurement
-    let _ = launch();
+    let _ = tilo_failure::ignored!("the priming launch's output is not a measurement", launch());
     let mut cold = ColdStart {
         label: label.to_owned(),
         totals: Vec::new(),
@@ -810,8 +809,9 @@ impl SweepStep {
             Ok(rects) => rects.iter().map(|rect| rect.intersect(window).area()).sum(),
             // A frame that cannot say where it repainted counts as the whole
             // window, which never says less than it repainted.
-            // ignored-failure: the whole window is the conservative answer
-            Err(_) => window.area(),
+            Err(_) => {
+                tilo_failure::ignored!("the whole window is the conservative answer", window.area())
+            }
         }
     }
 

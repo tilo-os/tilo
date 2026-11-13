@@ -1085,24 +1085,26 @@ pub(crate) fn bind_private(path: &Path) -> io::Result<UnixListener> {
             .mode(0o700)
             .create(parent)?;
     }
-    match std::fs::symlink_metadata(path) {
-        Ok(existing) if !existing.file_type().is_socket() => {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("{} exists and is not a socket", path.display()),
-            ));
+    tilo_failure::ignored!(
+        "a path with no live listener is the path to bind",
+        match std::fs::symlink_metadata(path) {
+            Ok(existing) if !existing.file_type().is_socket() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("{} exists and is not a socket", path.display()),
+                ));
+            }
+            Ok(_) if tilo_files::native::socket::connect(path).is_ok() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    format!("{} already has a live listener", path.display()),
+                ));
+            }
+            // Nothing is there, or what is there is not a socket: bind it
+            // below, where a socket that answers proves itself live.
+            Ok(_) | Err(_) => {}
         }
-        Ok(_) if tilo_files::native::socket::connect(path).is_ok() => {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                format!("{} already has a live listener", path.display()),
-            ));
-        }
-        // Nothing is there, or what is there is not a socket: bind it below,
-        // where a socket that answers proves itself live.
-        // ignored-failure: a path with no live listener is the path to bind
-        Ok(_) | Err(_) => {}
-    }
+    );
     // Short on purpose: a Unix socket path is capped near 108 bytes, and the staged path has to fit
     // wherever the final one does.
     let staging = parent.join(format!(".t{:08x}", uuid::Uuid::new_v4().as_fields().0));
@@ -2353,8 +2355,10 @@ fn serve_connection(opened: Opened, serving: &Serving) {
     let first = match tilo_runtime::session_door::read_first_line(&mut stream) {
         Ok(first) => first,
         Err(error) => {
-            // ignored-failure: a client that left before asking needs no answer
-            tracing::debug!(%error, "agent door: the client left before its first request");
+            tilo_failure::ignored!(
+                "a client that left before asking needs no answer",
+                tracing::debug!(%error, "agent door: the client left before its first request")
+            );
             return;
         }
     };
@@ -2549,8 +2553,10 @@ fn serve_admitted(
     );
     seats.left(seat);
     if let Err(error) = ended {
-        // ignored-failure: a client that disconnected needs no answer
-        tracing::debug!(%error, "agent door: the client disconnected");
+        tilo_failure::ignored!(
+            "a client that disconnected needs no answer",
+            tracing::debug!(%error, "agent door: the client disconnected")
+        );
     }
 }
 

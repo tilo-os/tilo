@@ -41,8 +41,10 @@ impl Unsynced {
                 Ok(())
             }
             // No descriptor left to duplicate: the file is synced now.
-            // ignored-failure: the sync below stands in for the deferred one
-            Err(_) => file.sync_data(),
+            Err(_) => tilo_failure::ignored!(
+                "the sync below stands in for the deferred one",
+                file.sync_data()
+            ),
         }
     }
 

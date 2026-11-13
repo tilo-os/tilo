@@ -549,8 +549,10 @@ impl PeerGovernance<'_> {
         let (_, programs) = doc.get(ROOT, PROGRAMS).ok()??;
         match doc.get(&programs, hash).ok()?? {
             (automerge::Value::Scalar(value), _) => match value.as_ref() {
-                // ignored-failure: a program hash that is not text names no program
-                automerge::ScalarValue::Bytes(bytes) => String::from_utf8(bytes.clone()).ok(),
+                automerge::ScalarValue::Bytes(bytes) => tilo_failure::ignored!(
+                    "a program hash that is not text names no program",
+                    String::from_utf8(bytes.clone()).ok()
+                ),
                 _ => None,
             },
             _ => None,
@@ -819,10 +821,12 @@ fn read_request(
 ) -> Option<RequestedBot> {
     match doc.get(requests, entry).ok()?? {
         (automerge::Value::Scalar(value), _) => match value.as_ref() {
-            // ignored-failure: a request that does not decode names no requested bot
-            automerge::ScalarValue::Bytes(bytes) => serde_json::from_slice::<RequestedBot>(bytes)
-                .ok()
-                .filter(|row| row.request.entry == entry && row.request.validate().is_ok()),
+            automerge::ScalarValue::Bytes(bytes) => tilo_failure::ignored!(
+                "a request that does not decode names no requested bot",
+                serde_json::from_slice::<RequestedBot>(bytes)
+                    .ok()
+                    .filter(|row| row.request.entry == entry && row.request.validate().is_ok())
+            ),
             _ => None,
         },
         _ => None,

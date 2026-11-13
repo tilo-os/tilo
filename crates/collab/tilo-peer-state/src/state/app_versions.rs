@@ -181,10 +181,12 @@ fn read_version(
 ) -> Option<InstalledApp> {
     match doc.get(versions, app).ok()?? {
         (automerge::Value::Scalar(value), _) => match value.as_ref() {
-            // ignored-failure: a row that does not decode names no installed app
-            automerge::ScalarValue::Bytes(bytes) => serde_json::from_slice::<InstalledApp>(bytes)
-                .ok()
-                .filter(|row| row.release.app == app && row.release.validate().is_ok()),
+            automerge::ScalarValue::Bytes(bytes) => tilo_failure::ignored!(
+                "a row that does not decode names no installed app",
+                serde_json::from_slice::<InstalledApp>(bytes)
+                    .ok()
+                    .filter(|row| row.release.app == app && row.release.validate().is_ok())
+            ),
             _ => None,
         },
         _ => None,

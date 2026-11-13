@@ -101,8 +101,10 @@ fn names_a_resource(ty: &Ty) -> bool {
 fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
     // A loaded package's field types all parse (`unreadable_types`, checked where it is
     // loaded); a hand-built one that does not is kept whole, as a composite register.
-    // ignored-failure: checked where the package is loaded
-    let Ok(ty_of_field) = parse_ty(&field.ty, &meta.app) else {
+    let Ok(ty_of_field) = tilo_failure::ignored!(
+        "a field type checked where the package is loaded",
+        parse_ty(&field.ty, &meta.app)
+    ) else {
         return FieldSchema::new(&field.id, MergeKind::Register).composite();
     };
     let mut schema = match field_kind(field, &ty_of_field) {
@@ -210,8 +212,10 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
         {
             continue;
         }
-        // ignored-failure: a loaded package's filter types all parse (`unreadable_types`).
-        let parsed = parse_ty(&f.ty, &meta.app).ok();
+        let parsed = tilo_failure::ignored!(
+            "a loaded package's filter types all parse, as `unreadable_types` checked",
+            parse_ty(&f.ty, &meta.app).ok()
+        );
         let (kind, cases) = match f.kind {
             FilterKind::Bool | FilterKind::Predicate => (ColumnKind::Bool, Vec::new()),
             _ => match parsed.as_ref().and_then(|t| kind_of_ty(meta, t)) {
@@ -248,12 +252,13 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
             MergeKind::Counter | MergeKind::Set => true,
             _ => false,
         };
-        // ignored-failure: a loaded package's field types all parse (`unreadable_types`).
-        let Some((kind, cases)) = parse_ty(&field.ty, &meta.app)
-            .ok()
-            .filter(|_| columned)
-            .and_then(|t| kind_of_ty(meta, &t))
-        else {
+        let Some((kind, cases)) = tilo_failure::ignored!(
+            "a loaded package's field types all parse, as `unreadable_types` checked",
+            parse_ty(&field.ty, &meta.app)
+                .ok()
+                .filter(|_| columned)
+                .and_then(|t| kind_of_ty(meta, &t))
+        ) else {
             continue;
         };
         out.push(ColumnSchema {

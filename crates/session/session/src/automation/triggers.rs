@@ -429,8 +429,11 @@ impl TriggerSource for KeyboardTriggers {
                     let TriggerSpec::Keyboard { chord } = trigger else {
                         return None;
                     };
-                    // ignored-failure: a chord that does not parse matches no key
-                    (KeyChord::parse(chord).ok().as_ref() == Some(pressed)).then(|| Firing {
+                    let parsed = tilo_failure::ignored!(
+                        "a chord that does not parse matches no key",
+                        KeyChord::parse(chord).ok()
+                    );
+                    (parsed.as_ref() == Some(pressed)).then(|| Firing {
                         workspace: armed.workspace.clone(),
                         shortcut: armed.shortcut.id.clone(),
                         trigger: trigger.clone(),

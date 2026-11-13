@@ -452,8 +452,10 @@ impl Inner {
         let held = view
             .text(&crate::index::derive::item_path(&at.doc, item), idx::CHUNK)
             .ok()??;
-        // ignored-failure: a row the index wrote before chunks says no chunk, and the record says where the item is
-        held.parse::<ChunkNo>().ok()
+        tilo_failure::ignored!(
+            "a row the index wrote before chunks says no chunk, and the record says where the item is",
+            held.parse::<ChunkNo>().ok()
+        )
     }
 
     /// Whether the chunks the store holds hold the item `item` of the record `doc`, in a run of

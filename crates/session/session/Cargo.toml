@@ -143,6 +143,7 @@ sha2.workspace = true
 uuid.workspace = true
 futures-util.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # The workspaces' live plane: a sealed `moq-lite` session per workspace over
 # this session's own endpoint, and the relay role a member serves for the
 # others.

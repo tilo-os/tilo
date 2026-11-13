@@ -54,6 +54,7 @@ presentation-feedback = ["tilo-runner-native?/presentation-feedback"]
 dx12-shader-cache = ["tilo-runner-native?/dx12-shader-cache"]
 
 [dependencies]
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Scratch directories for test and capture profiles.

@@ -55,8 +55,10 @@ pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
         return;
     };
     if let Some(token) = row.strip_prefix(SOUND_KEY) {
-        // ignored-failure: a row that names no device chooses nothing
-        *shared.devices.chosen.borrow_mut() = token.parse().ok();
+        *shared.devices.chosen.borrow_mut() = tilo_failure::ignored!(
+            "a row that names no device chooses nothing",
+            token.parse().ok()
+        );
         return;
     }
     if let Some(id) = row.strip_prefix(ROUTE_KEY) {
@@ -92,8 +94,10 @@ pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
         if let Err(refusal) = shared.waking.request(shared, row) {
             // The panel has no line to show a refusal on; a wake that could
             // not be planned changes nothing the person sees.
-            // ignored-failure: the panel has no line for a refusal, and a wake that was not planned changes nothing
-            tracing::debug!(%refusal, device = row, "a device could not be woken");
+            tilo_failure::ignored!(
+                "the panel has no line for a refusal, and a wake that was not planned changes nothing",
+                tracing::debug!(%refusal, device = row, "a device could not be woken")
+            );
         }
         return;
     }
@@ -106,8 +110,10 @@ pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
     {
         match remote_audio::request(fabric.as_ref(), token, &target) {
             Ok(_) => *shared.devices.chosen.borrow_mut() = None,
-            // ignored-failure: the card shows what plays here, and the service's reading is the rows
-            Err(refusal) => tracing::debug!(%refusal, device = row, "the sound did not leave"),
+            Err(refusal) => tilo_failure::ignored!(
+                "the card shows what plays here, and the service's reading is the rows",
+                tracing::debug!(%refusal, device = row, "the sound did not leave")
+            ),
         }
         return;
     }
@@ -133,8 +139,10 @@ pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
     if let Err(error) = fabric.try_send_personal_fabric_action(&target, action) {
         // The card already shows what plays here, and the device that takes
         // it shows the offer: a send that did not leave changes neither.
-        // ignored-failure: the card already shows what plays here; a send that did not leave changes neither
-        tracing::debug!(%error, device = row, "what plays here did not reach the device");
+        tilo_failure::ignored!(
+            "the card already shows what plays here, and a send that did not leave changes neither",
+            tracing::debug!(%error, device = row, "what plays here did not reach the device")
+        );
     }
 }
 
@@ -146,8 +154,10 @@ fn stopped(fabric: &SharedLink, id: &str) {
     if let Err(refusal) = remote_audio::stop(fabric.as_ref(), session_id) {
         // The service's reading is what the rows show, so a route that could
         // not be stopped is still there on the next pass.
-        // ignored-failure: the service's reading is what the rows show, so the next pass shows the route
-        tracing::debug!(%refusal, route = id, "the route was not stopped");
+        tilo_failure::ignored!(
+            "the service's reading is what the rows show, so the next pass shows the route",
+            tracing::debug!(%refusal, route = id, "the route was not stopped")
+        );
     }
 }
 
@@ -165,8 +175,10 @@ fn answered(fabric: &SharedLink, id: &str, part: RowPart) {
     if let Err(refusal) = remote_audio::authorize(fabric.as_ref(), session_id, approved) {
         // A refusal is the service's own words: the ask stays on screen so
         // the person can answer it again.
-        // ignored-failure: the ask stays on screen so the person can answer it again
-        tracing::debug!(%refusal, ask = id, "the answer did not leave");
+        tilo_failure::ignored!(
+            "the ask stays on screen so the person can answer it again",
+            tracing::debug!(%refusal, ask = id, "the answer did not leave")
+        );
     }
 }
 

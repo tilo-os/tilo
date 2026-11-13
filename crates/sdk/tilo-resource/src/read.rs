@@ -133,12 +133,14 @@ pub fn content<R: Resource>(
         R::RECORD_TABLE.is_some_and(|table| crate::table::reads_item(table, R::KIND, item))
     };
     if R::READABLE {
-        match R::read_content(state, doc, item) {
-            Ok(content) => return Ok(content),
-            Err(error) if !item.is_some_and(reads_item) => return Err(error),
-            // ignored-failure: the record table answers what the typed read did not
-            Err(_) => {}
-        }
+        tilo_failure::ignored!(
+            "the record table answers what the typed read did not",
+            match R::read_content(state, doc, item) {
+                Ok(content) => return Ok(content),
+                Err(error) if !item.is_some_and(reads_item) => return Err(error),
+                Err(_) => {}
+            }
+        )
     }
     let table = R::RECORD_TABLE
         .ok_or_else(|| format!("a {} does not answer reads of its parts", R::LABEL))?;

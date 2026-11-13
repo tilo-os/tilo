@@ -1891,9 +1891,12 @@ pub fn configured_hosts() -> Vec<EndpointAddr> {
 /// A configured host, as its JSON address or as a bare endpoint id.
 #[cfg(target_os = "linux")]
 fn host_addr(value: &str) -> Option<EndpointAddr> {
-    serde_json::from_str(value)
-        .ok() // ignored-failure: a host value that is not JSON names no endpoint address here
-        .or_else(|| value.parse::<EndpointId>().ok().map(EndpointAddr::new))
+    tilo_failure::ignored!(
+        "a host value that is not JSON names no endpoint address here",
+        serde_json::from_str(value)
+            .ok()
+            .or_else(|| value.parse::<EndpointId>().ok().map(EndpointAddr::new))
+    )
 }
 
 /// Who this device's certificate says its person is, and what the device calls itself: the id that

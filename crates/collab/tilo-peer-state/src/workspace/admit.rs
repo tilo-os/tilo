@@ -285,11 +285,13 @@ fn checked(
         }
         // A device's verdicts on other devices' writes are its own to keep
         // and clear, as its receipts are.
-        // ignored-failure: a key that is not a device key keeps no slice of
-        // its own, so every refusal it writes is refused rather than trusted.
-        let sender = hex::decode(source.key)
-            .ok()
-            .and_then(|key| <[u8; 32]>::try_from(key.as_slice()).ok());
+        let sender = tilo_failure::ignored!(
+            "a key that is not a device key keeps no slice of its own, so every refusal it writes \
+             is refused rather than trusted",
+            hex::decode(source.key)
+                .ok()
+                .and_then(|key| <[u8; 32]>::try_from(key.as_slice()).ok())
+        );
         if !super::refusal_slices_kept(before, candidate, source.person(), sender.as_ref()) {
             return Err(WorkspaceRefusal::RefusalWriter);
         }
@@ -332,8 +334,12 @@ fn saved_shortcuts_proven(
     let mut written = workspace_shortcuts_of(candidate)
         .into_iter()
         .filter(|saved| !held.contains(saved))
-        // ignored-failure: a shortcut that does not decode proves no saver, so admits nothing
-        .filter_map(|saved| saved.decode().ok())
+        .filter_map(|saved| {
+            tilo_failure::ignored!(
+                "a shortcut that does not decode proves no saver, so admits nothing",
+                saved.decode().ok()
+            )
+        })
         .filter(|shortcut| shortcut.saved_by.is_some())
         .peekable();
     if written.peek().is_none() {

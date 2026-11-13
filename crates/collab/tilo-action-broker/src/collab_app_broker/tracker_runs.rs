@@ -76,7 +76,12 @@ pub(super) fn reports_on_own_issue(
     app == TRACKER_APP
         && tilo_actions::selection::logical_resource_id(resource) == TRACKER_RESOURCE
         && json
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok()) // ignored-failure: an argument that is no JSON map names no issue
+            .and_then(|text| {
+                tilo_failure::ignored!(
+                    "an argument that is no JSON map names no issue",
+                    serde_json::from_str::<serde_json::Value>(text).ok()
+                )
+            })
             .is_some_and(|arguments| arguments.get("issue").and_then(|v| v.as_str()) == Some(issue))
 }
 

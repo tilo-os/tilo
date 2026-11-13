@@ -1,5 +1,5 @@
 # Failures whose error is discarded, per file, in session, collaboration and
 # app-hosting code. Counts may only fall; tools/policy/check_swallowed_failures.py
-# --update records a file that shed some. Report the error, or mark a
-# genuinely ignorable failure with `// ignored-failure: <why>`.
+# --update records a file that shed some. Report the error, or keep it
+# with `tilo_failure::ignored!("<why>", <expr>)`.
 [files]

@@ -132,8 +132,12 @@ impl StatePeer {
         if workspace::governance_of(Some(&doc))
             .identities
             .get(&id)
-            // ignored-failure: an identity row that does not decode is not that certificate
-            .and_then(|bytes| GovernedIdentity::decode(bytes).ok())
+            .and_then(|bytes| {
+                tilo_failure::ignored!(
+                    "an identity row that does not decode is not that certificate",
+                    GovernedIdentity::decode(bytes).ok()
+                )
+            })
             .is_some_and(|old| old.device_cert == cert)
         {
             return Ok(false);

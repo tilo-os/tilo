@@ -57,7 +57,7 @@ platforms = [
 # workspace-unify depends on every library with the features the whole
 # workspace builds it with (tools/ci/workspace_unify.py): counted, it would be
 # every crate's union at once, and the hack would take all of them.
-workspace-members = ["tilo-winit-x11", "workspace-unify"]
+workspace-members = ["tilo-winit-x11", "workspace-unify", "tilo-failure"]
 # Every managed member builds every crate listed in the hack, so none may need
 # a system library: server containers (tilo-relay, registry-server) and cross
 # builds have no desktop development packages. Media stays optional

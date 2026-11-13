@@ -64,8 +64,10 @@ impl AppBrokerState {
                 Ok(inputs) => inputs,
                 Err(reason) => {
                     // The app's handler refuses such arguments itself.
-                    // ignored-failure: the app's own handler runs this invocation here instead
-                    tracing::debug!(%reason, "offloadable invocation runs here");
+                    tilo_failure::ignored!(
+                        "the app's own handler runs this invocation here instead",
+                        tracing::debug!(%reason, "offloadable invocation runs here")
+                    );
                     return None;
                 }
             };

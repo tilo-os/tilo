@@ -178,8 +178,10 @@ pub(crate) fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell::
         }
     }
     let rank = |key: &str| -> i64 {
-        // ignored-failure: a key that is no tab number sorts after every tab
-        let tab: u64 = key.parse().unwrap_or(u64::MAX);
+        let tab: u64 = tilo_failure::ignored!(
+            "a key that is no tab number sorts after every tab",
+            key.parse().unwrap_or(u64::MAX)
+        );
         if Some(tab) == focused_tab {
             return 0;
         }
@@ -291,12 +293,14 @@ pub(crate) fn switcher_view(
             // A window whose app holds secrets from the desk, or one this device does not run,
             // has no picture: its card shows the app's own face. A key that is no tab is such
             // a window, and so is one whose host pictures nothing.
-            // ignored-failure: a window that is no tab has no client to picture
-            let client = window
-                .key
-                .parse::<u64>()
-                .ok()
-                .and_then(|tab| surfaces.get(&tab).copied());
+            let client = tilo_failure::ignored!(
+                "a window that is no tab has no client to picture",
+                window
+                    .key
+                    .parse::<u64>()
+                    .ok()
+                    .and_then(|tab| surfaces.get(&tab).copied())
+            );
             let window_id = (window.preview == "live").then_some(client).flatten();
             tilo_desktop::window_switcher::SwitcherCard {
                 window: window_id,
@@ -320,8 +324,10 @@ pub(crate) fn switcher_view(
 pub(crate) fn commit_switcher(handle: &DesktopHandle, walk: &crate::overlays::Overlays) {
     let windows = handle.read(|tree| windows(tree, handle));
     let reached = reaching(walk, &windows).and_then(|at| windows.get(at));
-    // ignored-failure: a reached window whose key is no tab focuses nothing
-    if let Some(tab) = reached.and_then(|window| window.key.parse::<u64>().ok()) {
+    if let Some(tab) = tilo_failure::ignored!(
+        "a reached window whose key is no tab focuses nothing",
+        reached.and_then(|window| window.key.parse::<u64>().ok())
+    ) {
         handle.focus_tab(tab);
     }
     walk.forget_walk();

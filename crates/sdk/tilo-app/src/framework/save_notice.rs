@@ -31,11 +31,12 @@ fn retries() -> MutexGuard<'static, Retries> {
 
 /// A click on "Try again", from whatever thread the platform reports it.
 fn activated(uri: &str) {
-    let Some(id) = uri
-        .strip_prefix(RETRY)
-        // ignored-failure: an activation that names no retry belongs to another notification
-        .and_then(|id| id.parse::<u64>().ok())
-    else {
+    let Some(id) = uri.strip_prefix(RETRY).and_then(|id| {
+        tilo_failure::ignored!(
+            "an activation that names no retry belongs to another notification",
+            id.parse::<u64>().ok()
+        )
+    }) else {
         return;
     };
     let mut retries = retries();

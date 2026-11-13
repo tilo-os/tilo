@@ -546,10 +546,12 @@ impl ArrangementAction {
     /// The action as an operation's payload decodes, when it is one.
     #[must_use]
     pub fn decode(type_id: &str, payload: &[u8]) -> Option<Self> {
-        (type_id == OPERATION)
-            // ignored-failure: an operation of another type, or one that does not read back, is not this action
-            .then(|| serde_json::from_slice(payload).ok())
-            .flatten()
+        tilo_failure::ignored!(
+            "an operation of another type, or one that does not read back, is not this action",
+            (type_id == OPERATION)
+                .then(|| serde_json::from_slice(payload).ok())
+                .flatten()
+        )
     }
 }
 
@@ -2022,15 +2024,21 @@ fn strip_actions(key: &str) -> Vec<ActionSpec> {
 fn named(args: &ActionArgs, name: &str, item: Item) -> Option<u64> {
     args.text(name)
         .and_then(|id| item.key(id.trim()))
-        // ignored-failure: an id that is not a number names no row, which the action refuses
-        .and_then(|key| key.parse().ok())
+        .and_then(|key| {
+            tilo_failure::ignored!(
+                "an id that is not a number names no row, which the action refuses",
+                key.parse().ok()
+            )
+        })
 }
 
 /// The record key of a place, a strip or a row, as its actions take it. `0` for the keyless
 /// resource a package describes the kind with, which no door publishes.
 fn count_of(key: &str) -> u64 {
-    // ignored-failure: a keyless resource has no count, and 0 is its count
-    key.parse().unwrap_or_default()
+    tilo_failure::ignored!(
+        "a keyless resource has no count, and 0 is its count",
+        key.parse().unwrap_or_default()
+    )
 }
 
 /// What a row is called where its own actions are listed: its name, or what it is when it has none.
@@ -2132,8 +2140,10 @@ fn place_action() -> ActionSpec {
         |args| {
             let float = args.text("float").map(|corner| {
                 FloatPlace::new(
-                    // ignored-failure: a corner's name that names none stands at the default corner
-                    FloatCorner::parse(corner).unwrap_or_default(),
+                    tilo_failure::ignored!(
+                        "a corner's name that names none stands at the default corner",
+                        FloatCorner::parse(corner).unwrap_or_default()
+                    ),
                     float_coord(args.integer("dx"), FLOAT_INSET),
                     float_coord(args.integer("dy"), FLOAT_INSET),
                     float_side(args.integer("width"), FLOAT_WIDTH),
@@ -2283,10 +2293,12 @@ fn count(args: &ActionArgs, name: &str) -> u64 {
 /// An id given as text: one no workspace has (`0`) when it is not a number,
 /// which the action then refuses as naming no workspace.
 fn id_text(args: &ActionArgs, name: &str) -> u64 {
-    args.text(name)
-        // ignored-failure: text that is not a number names no workspace, which the action refuses
-        .and_then(|id| id.trim().parse().ok())
-        .unwrap_or_default()
+    tilo_failure::ignored!(
+        "text that is not a number names no workspace, which the action refuses",
+        args.text(name)
+            .and_then(|id| id.trim().parse().ok())
+            .unwrap_or_default()
+    )
 }
 
 fn text(args: &ActionArgs, name: &str) -> String {

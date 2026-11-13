@@ -93,7 +93,7 @@ impl Finish {
                 if let Taken::Action { key, .. } = taken_action
                     && key == RESTART_ACTION
                 {
-                    // ignored-failure: the reader is gone once the session that owns it has shut down
+                    // The reader is gone once the session that owns it has shut down.
                     let _ = taken.send(());
                 }
             });

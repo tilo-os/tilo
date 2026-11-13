@@ -88,9 +88,12 @@ fn main_pid() -> Option<u32> {
     let output = match asked {
         Ok(output) => output,
         Err(error) => {
-            // ignored-failure: the user manager may still be starting the unit; the wait loop
+            // The user manager may still be starting the unit; the wait loop
             // looks again, and warns when it gives up.
-            tracing::debug!(%error, "the user manager cannot say which process a unit runs");
+            tilo_failure::ignored!(
+                "the user manager may still be starting the unit, and the wait loop looks again",
+                tracing::debug!(%error, "the user manager cannot say which process a unit runs")
+            );
             return None;
         }
     };
@@ -98,8 +101,10 @@ fn main_pid() -> Option<u32> {
     match said.trim().parse::<u32>() {
         Ok(pid) => Some(pid).filter(|pid| *pid > 0),
         Err(error) => {
-            // ignored-failure: `0` is a unit that runs nothing yet; the wait loop looks again.
-            tracing::debug!(%error, %said, "the unit runs no process");
+            tilo_failure::ignored!(
+                "`0` is a unit that runs nothing yet, and the wait loop looks again",
+                tracing::debug!(%error, %said, "the unit runs no process")
+            );
             None
         }
     }

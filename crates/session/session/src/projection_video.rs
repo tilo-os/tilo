@@ -209,8 +209,10 @@ impl ProjectionVideo {
             match crate::capture::video(compositor, (profile.max_width, profile.max_height)) {
                 Ok(picture) => picture,
                 Err(error) => {
-                    // ignored-failure: each pass asks the compositor for a fresh frame
-                    tracing::debug!(%error, "no frame of the desktop for the projection");
+                    tilo_failure::ignored!(
+                        "each pass asks the compositor for a fresh frame",
+                        tracing::debug!(%error, "no frame of the desktop for the projection")
+                    );
                     return;
                 }
             };

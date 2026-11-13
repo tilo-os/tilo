@@ -262,8 +262,10 @@ fn serve(handle: &Handle, stream: UnixStream) {
         match read_request(&mut reader) {
             Line::Done => return,
             Line::TooLarge => {
-                // ignored-failure: the connection ends whether or not it read the refusal
-                let _ = say(&mut writing, &refused("the tool request is too large"));
+                let _ = tilo_failure::ignored!(
+                    "the connection ends whether or not it read the refusal",
+                    say(&mut writing, &refused("the tool request is too large"))
+                );
                 return;
             }
             Line::Refused(message) => {

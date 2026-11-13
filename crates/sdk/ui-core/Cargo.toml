@@ -153,6 +153,7 @@ mpris = ["native", "tilo-host/mpris"]
 portal = ["native", "tilo-host/portal"]
 
 [dependencies]
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # Sorts without a copy of std's sort per call site, which kept the web
 # desktop's start module large.
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }

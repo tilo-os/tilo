@@ -1648,8 +1648,12 @@ impl AppBrokerState {
         if let Some(root) = query
             .provider
             .as_deref()
-            // ignored-failure: a provider that is not a peer number names a canonical, launchable or host provider, not a live publication
-            .and_then(|provider| provider.parse::<u64>().ok())
+            .and_then(|provider| {
+                tilo_failure::ignored!(
+                    "a provider that is not a peer number names a canonical, launchable or host one",
+                    provider.parse::<u64>().ok()
+                )
+            })
             .and_then(|peer_id| self.directory_root_for(caller, peer_id))
         {
             return self.query_directory(caller, &root, query);

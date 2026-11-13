@@ -87,8 +87,10 @@ impl redb::Value for Text {
         Self: 'a,
     {
         // A key that is not text is no key this index wrote, and reads as none.
-        // ignored-failure: only text is ever written as a key of these tables
-        std::str::from_utf8(data).unwrap_or_default()
+        tilo_failure::ignored!(
+            "only text is ever written as a key of these tables",
+            std::str::from_utf8(data).unwrap_or_default()
+        )
     }
 
     fn as_bytes<'a, 'b: 'a>(value: &'a &'b str) -> &'a str

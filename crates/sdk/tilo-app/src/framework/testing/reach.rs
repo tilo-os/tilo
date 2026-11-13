@@ -187,8 +187,14 @@ fn sample_param(
     if let Some(choice) = param.choices.first() {
         // A choice the schema writes as JSON text is that number; any other
         // choice is the text itself.
-        // ignored-failure: a choice that is not a JSON number is the text itself
-        let number = numeric.then(|| serde_json::from_str(choice).ok()).flatten();
+        let number = numeric
+            .then(|| {
+                tilo_failure::ignored!(
+                    "a choice that is not a JSON number is the text itself",
+                    serde_json::from_str(choice).ok()
+                )
+            })
+            .flatten();
         return number.unwrap_or_else(|| serde_json::Value::String(choice.to_string()));
     }
     if let Some(value) = param.schema.as_deref().and_then(sample_schema) {

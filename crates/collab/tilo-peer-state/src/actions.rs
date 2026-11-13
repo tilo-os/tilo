@@ -1128,8 +1128,10 @@ impl Device {
         let heard = async {
             let bytes = postcard::to_allocvec(&PlaneFrame::Offer(Box::new(query))).ok()?;
             let answer = self.exchange(&bytes).await.ok()?;
-            // ignored-failure: an answer that does not decode is no answer; the caller answers `away`
-            postcard::from_bytes::<Answer>(&answer).ok()
+            tilo_failure::ignored!(
+                "an answer that does not decode is no answer, and the caller answers `away`",
+                postcard::from_bytes::<Answer>(&answer).ok()
+            )
         };
         let Some(mut heard) = heard.await else {
             return away();

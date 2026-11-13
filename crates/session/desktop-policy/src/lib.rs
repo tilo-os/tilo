@@ -796,9 +796,10 @@ impl DesktopPolicy {
                 self.to_carry.push((window, slot));
                 continue;
             };
-            // ignored-failure: a workspace removed since the launch leaves the window where it
-            // opened, in front, rather than nowhere
-            let _ = self.carry(tab, slot);
+            let _ = tilo_failure::ignored!(
+                "a workspace removed since the launch leaves the window where it opened, in front",
+                self.carry(tab, slot)
+            );
         }
     }
 

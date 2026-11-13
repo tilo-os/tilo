@@ -67,12 +67,14 @@ pub(super) fn read(
             // or the exact bytes it holds. A version that does not read as
             // the type says which of the three ways it does not.
             if resource.readable {
-                match typed.historical_content(frozen, item) {
-                    Ok(content) => return Ok(content),
-                    Err(gap) if !reads_as_item(resource, item) => return Err(gap.to_string()),
-                    // ignored-failure: the record table answers what the adapter did not
-                    Err(_) => {}
-                }
+                tilo_failure::ignored!(
+                    "the record table answers what the adapter did not",
+                    match typed.historical_content(frozen, item) {
+                        Ok(content) => return Ok(content),
+                        Err(gap) if !reads_as_item(resource, item) => return Err(gap.to_string()),
+                        Err(_) => {}
+                    }
+                )
             }
             let past = typed.read(frozen).map_err(|error| error.to_string())?;
             typed.read_content(&*past, frozen, item)

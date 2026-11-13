@@ -41,9 +41,13 @@ pub type HeldOps = BTreeMap<OpId, std::sync::Arc<SignedMembershipOp>>;
 pub fn ops(doc: &AutoCommit) -> HeldOps {
     raw(doc)
         .into_values()
-        // ignored-failure: an operation that does not prove its author, or
-        // cannot be keyed by its own id, governs nothing
-        .filter_map(|bytes| SignedMembershipOp::verified_stored(&bytes).ok())
+        .filter_map(|bytes| {
+            tilo_failure::ignored!(
+                "an operation that does not prove its author, or cannot be keyed by its own id, \
+                 governs nothing",
+                SignedMembershipOp::verified_stored(&bytes).ok()
+            )
+        })
         .collect()
 }
 
@@ -172,9 +176,10 @@ pub(crate) fn carry(
         let ScalarValue::Bytes(bytes) = value.as_ref() else {
             return;
         };
-        // ignored-failure: an operation that does not prove its writer is
-        // never applied, so it moves nothing
-        if let Ok((id, op)) = SignedMembershipOp::verified_stored(bytes) {
+        if let Ok((id, op)) = tilo_failure::ignored!(
+            "an operation that does not prove its writer is never applied, so it moves nothing",
+            SignedMembershipOp::verified_stored(bytes)
+        ) {
             added.insert(id, op);
         }
     }
@@ -217,9 +222,13 @@ fn read_replay(doc: &AutoCommit, workspace: &str) -> Replayed {
         .collect();
     let held: HeldOps = raw
         .into_values()
-        // ignored-failure: an operation that does not prove its author, or
-        // cannot be keyed by its own id, governs nothing
-        .filter_map(|bytes| SignedMembershipOp::verified_stored(&bytes).ok())
+        .filter_map(|bytes| {
+            tilo_failure::ignored!(
+                "an operation that does not prove its author, or cannot be keyed by its own id, \
+                 governs nothing",
+                SignedMembershipOp::verified_stored(&bytes).ok()
+            )
+        })
         .collect();
     let (policy, unadmitted) = replay_held(doc, workspace, &held);
     Replayed {
@@ -352,14 +361,17 @@ impl<'a> Ledger<'a> {
         person: [u8; 32],
         at_ns: u64,
     ) -> bool {
-        // ignored-failure: a ledger this device cannot read admits no one
-        let Ok(values) = crate::workspace::invitation_receipts_of(self.doc, &hex::encode(invite))
-        else {
+        let Ok(values) = tilo_failure::ignored!(
+            "a ledger this device cannot read admits no one",
+            crate::workspace::invitation_receipts_of(self.doc, &hex::encode(invite))
+        ) else {
             return false;
         };
         let parts = self.parts.get_or_insert_with(|| {
-            // ignored-failure: parts this device cannot read complete no receipt
-            crate::state::invitation_ledger::parts(self.doc).unwrap_or_default()
+            tilo_failure::ignored!(
+                "parts this device cannot read complete no receipt",
+                crate::state::invitation_ledger::parts(self.doc).unwrap_or_default()
+            )
         });
         let Some(signed) = values.iter().find_map(|value| {
             let ledgered = crate::state::LedgerReceipt::decode(value).ok()?;
@@ -432,9 +444,10 @@ fn op_effect(policy: &mut WorkspacePolicy, op: &SignedMembershipOp, ledger: &mut
             order(policy);
         }
         MembershipOpCommand::Project { .. } => {
-            // ignored-failure: a change this author's grants do not allow takes
-            // the whole operation with it, and it has no effect
-            if let Ok(next) = effect(ledger.doc, policy, op) {
+            if let Ok(next) = tilo_failure::ignored!(
+                "a change this author's grants do not allow takes the whole operation with it",
+                effect(ledger.doc, policy, op)
+            ) {
                 *policy = next;
                 order(policy);
             }
@@ -541,10 +554,9 @@ pub fn growth(before: Option<&AutoCommit>, candidate: &AutoCommit) -> Result<usi
         if before.contains_key(&key) {
             continue;
         }
-        // ignored-failure: an operation that does not prove its writer is refused
+        // An operation that does not prove its writer is refused, and one stored
+        // under a key that is not its own id with it.
         let (id, _) = SignedMembershipOp::verified_stored(&bytes)?;
-        // ignored-failure: an operation stored under a key that is not its own
-        // id is refused
         if id.to_key() != key {
             return Err("a membership operation is stored under another operation's id".into());
         }

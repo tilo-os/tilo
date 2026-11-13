@@ -30,13 +30,16 @@ This check finds, in the production sources of the crates listed in
   error and information: a ``debug!`` line never reaches it, so the failure
   is silent in a real session.
 
-A failure that is genuinely fine to drop says why with an allow comment above
-the statement or the error branch::
+A failure that is genuinely fine to drop says why in code, in the call that
+keeps it::
 
-    // ignored-failure: the receiver of a broadcast is gone when no desk listens
+    let _ = ignored!("the receiver of a broadcast is gone when no desk listens", queue.send(part));
 
-The reason is a sentence a reader can check. A bare marker, or a word or two,
-leaves the finding where it was.
+`tilo_failure::ignored!` is the expression it wraps, and its first argument is
+the reason: a sentence a reader can check. A bare marker, or a word or two,
+leaves the finding where it was. The reason is code the compiler keeps, so
+tidying the comments around an expression never takes its reason away; this
+check reads the call, never a comment.
 
 What remains is counted per file in ``swallowed_failures_baseline.toml``: a
 count may only fall, and a file that sheds some records it (``--update``).
@@ -53,7 +56,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from judged import STAGED_FLAG, Judged, judged  # noqa: E402
-from rust_source import blank_test_items, is_test_file, lex, matching  # noqa: E402
+from rust_source import Literal, blank_test_items, is_test_file, lex, matching  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path("tools/policy/swallowed_failures_baseline.toml")
@@ -78,11 +81,16 @@ DECODE_ONLY = (
     Path("crates/runtime/runtime-portal"),
     Path("apps/tilolang"),
 )
-ALLOW = re.compile(r"//\s*ignored-failure:\s*(.*)")
-# A marker has to say why the failure is fine to drop. A bare marker, or a
-# word or two ("fine", "n/a"), is not an account a reader can check, so it
-# leaves the finding where it was.
-ALLOW_WORDS = 6
+# The call a dropped failure names its reason in (`crates/platform/tilo-failure`),
+# from its name to the bracket that closes it.
+IGNORED = re.compile(r"\bignored\s*!\s*\(")
+# The names that call is written by, which report no failure of their own: it
+# is the expression it wraps.
+REASONS = frozenset({"ignored"})
+# The reason has to say why the failure is fine to drop. A call with a word or
+# two ("fine", "n/a") is not an account a reader can check, so it leaves the
+# finding where it was.
+REASON_WORDS = 6
 
 DECODE = re.compile(
     r"(?<![\w.])(?:[\w:]*::)?(?P<name>"
@@ -150,9 +158,15 @@ def discarded_name(text: str, fallible: set[str]) -> str | None:
 
     A method call counts only when its name is one of the writes and reads in
     ``EXTERNAL_FALLIBLE``: `.send(..)`, `.insert(..)` and their like are
-    usually the receiver's own answer, not an error.
+    usually the receiver's own answer, not an error. `ignored!` does not count:
+    it is the expression it wraps, so the failure it accounts for is still the
+    one to find.
     """
-    calls = [(match.start(), match.group(1), False) for match in CALL.finditer(text)]
+    calls = [
+        (match.start(), match.group(1), False)
+        for match in CALL.finditer(text)
+        if match.group(1) not in REASONS
+    ]
     calls += [(match.start(), match.group(1), True) for match in METHOD_CALL.finditer(text)]
     if not calls:
         return None
@@ -324,20 +338,33 @@ def judged_names(files: Judged) -> set[str]:
     return names
 
 
-def lines_of(text: str) -> list[str]:
-    return text.split("\n")
+def exemptions(code: str, literals: list[Literal]) -> list[tuple[int, int]]:
+    """The spans `ignored!("<why>", <expr>)` covers, each from the call's name to
+    the bracket that closes it.
+
+    The reason is the call's first argument: a finding the call sits in, or that
+    sits inside it, is the failure the reason accounts for. A call whose reason
+    says too little covers nothing.
+    """
+    spans: list[tuple[int, int]] = []
+    for found in IGNORED.finditer(code):
+        open_paren = found.end() - 1
+        close = matching(code, open_paren)
+        reason = next((literal for literal in literals if open_paren < literal.start < close), None)
+        if reason is None or len(reason.value.split()) < REASON_WORDS:
+            continue
+        spans.append((found.start(), close))
+    return spans
 
 
-def allowed(lines: list[str], first: int, last: int) -> bool:
-    """Whether an allow comment with a stated reason sits above the statement or error branch."""
-    window = lines[max(0, first - 2) : last + 1]
-    reasons = (match.group(1) for match in map(ALLOW.search, window) if match)
-    return any(len(reason.split()) >= ALLOW_WORDS for reason in reasons)
+def covered(spans: list[tuple[int, int]], start: int, end: int) -> bool:
+    """Whether the failure reported at ``start``..``end`` is one an `ignored!`
+    call accounts for: the call sits in it, or it sits in the call."""
+    return any(left < end and start < right for left, right in spans)
 
 
-def silent_arm(code: str, text: str, at: int, found: list[tuple[int, str]]) -> None:
+def silent_arm(code: str, at: int, found: list[tuple[int, str, int, int]]) -> None:
     """Report an error branch at ``at`` whose body hears nothing."""
-    lines = lines_of(text)
     line = code.count("\n", 0, at) + 1
     match = re.match(r"if\s+let\s+Err\s*\(", code[at:])
     if not match:
@@ -350,16 +377,20 @@ def silent_arm(code: str, text: str, at: int, found: list[tuple[int, str]]) -> N
         if re.match(r"\s*else\b", rest):
             return
         body = code[block[0] + 1 : block[1] - 1]
-        if not hears(body) and not allowed(lines, line, line + body.count("\n")):
-            found.append((line, "error branch hears nothing (`if let Err` with an empty body)"))
+        if not hears(body):
+            found.append(
+                (line, "error branch hears nothing (`if let Err` with an empty body)", at, block[1])
+            )
         return
     arm = re.match(r"Err\s*\(\s*(?:_|\.\.)\s*\)\s*(?:if\b[^=]*)?=>", code[at:])
     if not arm:
         return
     body = arm_body(code[at + arm.end() :], 0)
-    if hears(body) or allowed(lines, line, line + body.count("\n")):
+    if hears(body):
         return
-    found.append((line, "error branch hears nothing (`Err(_) =>` drops it)"))
+    found.append(
+        (line, "error branch hears nothing (`Err(_) =>` drops it)", at, at + arm.end() + len(body))
+    )
 
 
 # The logging that a session's journal carries: `debug!` and `trace!` are
@@ -367,28 +398,34 @@ def silent_arm(code: str, text: str, at: int, found: list[tuple[int, str]]) -> N
 JOURNAL = re.compile(r"\b(?:warn|error|info)!\s*\(|\beprintln!|\blog::(?:warn|error|info)!")
 
 
-def debug_only_failure(code: str, text: str, found: list[tuple[int, str]]) -> None:
+def debug_only_failure(code: str, found: list[tuple[int, str, int, int]]) -> None:
     """Report an error branch whose only account of the failure is a `debug!`.
 
     A session gives its log to the journal, which takes warn, error and info:
     a failure written at `debug` is one nobody reads. The branch says so
-    differently -- logs it where it is read, tells the person, or carries a
-    `// ignored-failure:` line for a failure that is fine to drop.
+    differently -- logs it where it is read, tells the person, or names the
+    reason with `ignored!` for a failure that is fine to drop.
     """
-    lines = lines_of(text)
 
-    def audited(body: str, line: int) -> None:
+    def audited(body: str, start: int, end: int) -> None:
         if not re.search(r"\b(?:debug|trace)!\s*\(", body):
             return
-        if JOURNAL.search(body) or allowed(lines, line, line + body.count("\n")):
+        if JOURNAL.search(body):
             return
-        found.append((line, "failure logged only at debug (a session journal does not carry it)"))
+        found.append(
+            (
+                code.count("\n", 0, start) + 1,
+                "failure logged only at debug (a session journal does not carry it)",
+                start,
+                end,
+            )
+        )
 
     # The closure of `inspect_err`/`map_err`: the failure's one account.
     for call in re.finditer(r"\.\s*(?:inspect_err|map_err)\s*\(", code):
         open_paren = code.index("(", call.start())
         close = matching(code, open_paren)
-        audited(code[call.start() : close + 1], code.count("\n", 0, call.start()) + 1)
+        audited(code[call.start() : close], call.start(), close)
     # An `Err(..) => ..` arm of a match.
     for arm in re.finditer(r"\bErr\s*\(", code):
         close = matching(code, arm.end() - 1)
@@ -396,25 +433,25 @@ def debug_only_failure(code: str, text: str, found: list[tuple[int, str]]) -> No
         if not arrow:
             continue
         start = close + 1 + arrow.end()
-        audited(arm_body(code[start:], 0), code.count("\n", 0, arm.start()) + 1)
+        body = arm_body(code[start:], 0)
+        audited(body, start, start + len(body))
     # The body of `if let Err(..) = ..` and `while let Err(..) = ..`.
     for branch in re.finditer(r"\b(?:if|while)\s+let\s+Err\s*\(", code):
         block = block_after(code, branch.end() - 1)
         if block is None:
             continue
-        audited(code[block[0] + 1 : block[1] - 1], code.count("\n", 0, branch.start()) + 1)
+        audited(code[block[0] + 1 : block[1] - 1], block[0], block[1])
 
 
 def findings_in(text: str, fallible: set[str], failure_shapes: bool = True) -> list[tuple[int, str]]:
     fallible = fallible | EXTERNAL_FALLIBLE
-    code, _ = lex(text)
+    code, literals = lex(text)
     code = blank_test_items(code)
-    lines = lines_of(text)
-    found: list[tuple[int, str]] = []
+    found: list[tuple[int, str, int, int]] = []
     if failure_shapes:
-        debug_only_failure(code, text, found)
+        debug_only_failure(code, found)
         for branch in re.finditer(r"\bif\s+let\s+Err\s*\(|\bwhile\s+let\s+Err\s*\(|\bErr\s*\(\s*(?:_|\.\.)\s*\)\s*=>", code):
-            silent_arm(code, text, branch.start(), found)
+            silent_arm(code, branch.start(), found)
     for call in DECODE.finditer(code):
         name = call.group("name") or call.group("method")
         before = code[max(0, call.start() - 4) : call.start()]
@@ -433,13 +470,7 @@ def findings_in(text: str, fallible: set[str], failure_shapes: bool = True) -> l
         if how is None:
             continue
         line = code.count("\n", 0, call.start()) + 1
-        first = start + len(code[start : call.start()]) - len(code[start : call.start()].lstrip())
-        opening = code.count("\n", 0, first) + 1
-        # The comment may sit above the statement or on any of its lines up
-        # to the call.
-        if allowed(lines, min(opening, line), line):
-            continue
-        found.append((line, f"{name}: {how}"))
+        found.append((line, f"{name}: {how}", call.start(), call_end))
     for statement in re.finditer(r"let\s+_\s*(?::[^=]*)?=\s*([^;]*);", code):
         if not failure_shapes:
             continue
@@ -448,8 +479,7 @@ def findings_in(text: str, fallible: set[str], failure_shapes: bool = True) -> l
         if name is None:
             continue
         line = code.count("\n", 0, statement.start()) + 1
-        if not allowed(lines, line, line + rhs.count("\n")):
-            found.append((line, f"{name}: result bound to `_`"))
+        found.append((line, f"{name}: result bound to `_`", statement.start(), statement.end()))
     for dropped in re.finditer(r"\.\s*ok\s*\(\s*\)\s*;", code):
         if not failure_shapes:
             continue
@@ -462,9 +492,7 @@ def findings_in(text: str, fallible: set[str], failure_shapes: bool = True) -> l
         if name is None:
             continue
         line = code.count("\n", 0, dropped.start()) + 1
-        opening = code.count("\n", 0, start) + 1
-        if not allowed(lines, opening, line):
-            found.append((line, f"{name}: error discarded (`ok()` dropped)"))
+        found.append((line, f"{name}: error discarded (`ok()` dropped)", start, dropped.end()))
     for defaulted in re.finditer(r"\.\s*unwrap_or(?:_default|_else)?\s*\(", code):
         if not failure_shapes:
             continue
@@ -473,12 +501,16 @@ def findings_in(text: str, fallible: set[str], failure_shapes: bool = True) -> l
         if name is None:
             continue
         line = code.count("\n", 0, defaulted.start()) + 1
-        opening = code.count("\n", 0, start) + 1
-        if not allowed(lines, opening, line):
-            found.append((line, f"{name}: error turns into a default"))
+        found.append((line, f"{name}: error turns into a default", start, defaulted.end()))
     # Two rules can meet on one statement (`let _ = Frame::decode(..)` is both a
     # decode discard and a discarded result); that is one failure, not two.
-    return list(dict.fromkeys(found))
+    return list(
+        dict.fromkeys(
+            (line, message)
+            for line, message, start, end in found
+            if not covered(exemptions(code, literals), start, end)
+        )
+    )
 
 
 def definitions_of(files: Judged) -> Judged:
@@ -536,8 +568,8 @@ def write_baseline(root: Path, counts: Counter[str]) -> None:
     lines = [
         "# Failures whose error is discarded, per file, in session, collaboration and",
         "# app-hosting code. Counts may only fall; tools/policy/check_swallowed_failures.py",
-        "# --update records a file that shed some. Report the error, or mark a",
-        "# genuinely ignorable failure with `// ignored-failure: <why>`.",
+        "# --update records a file that shed some. Report the error, or keep it",
+        '# with `tilo_failure::ignored!("<why>", <expr>)`.',
         "[files]",
     ]
     lines += [f'"{name}" = {count}' for name, count in sorted(counts.items())]
@@ -573,7 +605,7 @@ def main(argv: list[str]) -> int:
         print(
             "\na failure is discarded: propagate it, refuse or tell the person, or log it at warn "
             "with what failed; a genuinely ignorable one says why with "
-            "`// ignored-failure: <why>`.",
+            '`tilo_failure::ignored!("<why>", <expr>)`.',
             file=sys.stderr,
         )
         return 1

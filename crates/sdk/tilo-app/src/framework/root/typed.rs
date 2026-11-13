@@ -560,8 +560,12 @@ impl<R: Resource> TypedRoot for Typed<R> {
         };
         let previous = previous
             .filter(|encoded| encoded.type_id == R::ACTION_TYPE)
-            // ignored-failure: an action that does not read back does not coalesce with this one
-            .and_then(|encoded| tilo_actions::decode_json::<R::Action>(&encoded.payload).ok());
+            .and_then(|encoded| {
+                tilo_failure::ignored!(
+                    "an action that does not read back does not coalesce with this one",
+                    tilo_actions::decode_json::<R::Action>(&encoded.payload).ok()
+                )
+            });
         (
             previous
                 .as_ref()

@@ -417,10 +417,13 @@ type SurfaceOf = dyn Fn(&str) -> Option<[u8; 32]> + Send + Sync;
 fn held_units(doc: &crate::cached_document::CachedDocument, envelope: &SignedOp) -> AutoCommit {
     let brings_index = || {
         envelope.encryption.is_none()
-            && collab_types::DocumentMutation::decode(&envelope.payload)
-                .ok() // ignored-failure: change bytes that do not parse bring no index
-                .and_then(|mutation| collab_types::parse_changes(mutation.data()).ok())
-                .is_some_and(|changes| collab_types::units::brings_index(&changes))
+            && tilo_failure::ignored!(
+                "change bytes that do not parse bring no index",
+                collab_types::DocumentMutation::decode(&envelope.payload)
+                    .ok()
+                    .and_then(|mutation| collab_types::parse_changes(mutation.data()).ok())
+            )
+            .is_some_and(|changes| collab_types::units::brings_index(&changes))
     };
     if collab_types::units::has_units(&**doc) || brings_index() {
         AutoCommit::clone(doc)

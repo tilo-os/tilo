@@ -64,11 +64,20 @@ class SwallowedFailures(unittest.TestCase):
             1,
         )
 
-    def test_a_routine_failure_says_why_it_is_dropped(self):
+    def test_a_routine_failure_names_its_reason_in_code(self):
         self.assertEqual(
             count(
                 "fn f(r: R) {\n    if let Err(error) = r {\n"
-                "        // ignored-failure: the peer left, and the next tick asks again\n"
+                '        ignored!("the peer left, and the next tick asks again", '
+                'tracing::debug!(%error, "peer gone"));\n    }\n}'
+            ),
+            0,
+        )
+        # A call in the branch body, before what it excuses, says the same.
+        self.assertEqual(
+            count(
+                "fn f(r: R) {\n    if let Err(error) = r {\n"
+                '        ignored!("the peer left, and the next tick asks again");\n'
                 '        tracing::debug!(%error, "peer gone");\n    }\n}'
             ),
             0,
@@ -102,23 +111,43 @@ class SwallowedFailures(unittest.TestCase):
         # A channel send is the receiver's absence, not a dropped failure.
         self.assertEqual(count("fn f(t: &T) { let _ = t.send(x); }"), 0)
 
-    def test_an_allow_comment_marks_an_ignorable_failure(self):
+    def test_an_ignored_call_keeps_the_reason_with_the_failure(self):
         self.assertEqual(
-            count("fn f() -> Option<u32> {\n    // ignored-failure: an unset override keeps the default\n"
-                  "    std::env::var(\"N\").ok()?.parse().ok()\n}"),
+            count("fn f() -> Option<u32> {\n"
+                  '    Some(ignored!("an unset override keeps the default", std::env::var("N").ok()?)'
+                  ".parse().ok()?)\n}"),
             0,
         )
         self.assertEqual(
-            count("fn f(p: &P) {\n    // ignored-failure: the socket is already gone, and the frame was for nobody\n"
-                  "    let _ = write_frame(p);\n}"),
+            count("fn f(p: &P) {\n"
+                  '    let _ = ignored!("the socket is already gone, and the frame was for nobody", '
+                  "write_frame(p));\n}"),
             0,
         )
 
-    def test_a_marker_without_a_reason_is_not_a_way_out(self):
-        for marker in ("// ignored-failure:", "// ignored-failure: fine", "// ignored-failure: n/a here"):
-            with self.subTest(marker=marker):
+    def test_the_reason_lives_in_code_not_in_the_comments_around_it(self):
+        exempt = (
+            "fn f(p: &P) {\n"
+            '    let _ = ignored!("the socket is already gone, and the frame was for nobody", '
+            "write_frame(p));\n}"
+        )
+        with_comment = exempt.replace("    let _ =", "    // the frame was for nobody\n    let _ =")
+        self.assertEqual(count(exempt), 0)
+        self.assertEqual(count(with_comment), 0, "a comment neither grants nor takes an exemption")
+
+    def test_a_comment_is_not_a_way_out(self):
+        self.assertEqual(
+            count("fn f(p: &P) {\n"
+                  "    // ignored-failure: the socket is already gone, and the frame was for nobody\n"
+                  "    let _ = write_frame(p);\n}"),
+            1,
+        )
+
+    def test_a_reason_of_a_word_or_two_is_not_a_way_out(self):
+        for reason in ('""', '"fine"', '"n/a here"'):
+            with self.subTest(reason=reason):
                 self.assertEqual(
-                    count(f"fn f(p: &P) {{\n    {marker}\n    let _ = write_frame(p);\n}}"),
+                    count(f'fn f(p: &P) {{\n    let _ = ignored!({reason}, write_frame(p));\n}}'),
                     1,
                 )
 

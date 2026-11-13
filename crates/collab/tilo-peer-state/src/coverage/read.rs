@@ -27,8 +27,10 @@ impl CoverageDecode for LegacyCoverage {
     fn decode_row(&self, bytes: &[u8]) -> Result<Self::Row, Self::Error> {
         match super::decode_value(bytes) {
             Ok(value) => Ok(value),
-            // ignored-failure: the fallback's error is the row's error, returned to the caller
-            Err(_) => postcard::from_bytes(bytes),
+            Err(_) => tilo_failure::ignored!(
+                "the fallback's error is the row's error, returned to the caller",
+                postcard::from_bytes(bytes)
+            ),
         }
     }
 }

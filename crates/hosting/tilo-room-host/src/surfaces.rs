@@ -133,10 +133,12 @@ fn write(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
 
 /// The [u8; 32] address `hash` names, when it names one.
 pub(crate) fn address(hash: &str) -> Option<[u8; 32]> {
-    // ignored-failure: a hash that is not one names no surface this host keeps
-    hex::decode(hash)
-        .ok()
-        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+    tilo_failure::ignored!(
+        "a hash that is not one names no surface this host keeps",
+        hex::decode(hash)
+            .ok()
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+    )
 }
 
 /// The surface the changes this host signs for `app` name: the one it runs

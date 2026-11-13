@@ -574,9 +574,12 @@ impl HostedBrowser {
                         confirmed.apply(&mut request);
                         self.run(&request);
                     }
-                    // A denial keeps the page as it was filled.
-                    // ignored-failure: it drops the held request, as it says.
-                    Err(_) => self.run(&keep(*request)),
+                    // A denial keeps the page as it was filled, and drops the
+                    // held request, as it says.
+                    Err(_) => tilo_failure::ignored!(
+                        "a denial drops the held request, and keeps the page as it was filled",
+                        self.run(&keep(*request))
+                    ),
                 },
             }
         }

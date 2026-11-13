@@ -159,8 +159,12 @@ pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
 #[must_use]
 pub fn person_record_kinds(app_id: &str) -> Vec<String> {
     bytes_of(app_id)
-        // ignored-failure: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
-        .and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())
+        .and_then(|bytes| {
+            tilo_failure::ignored!(
+                "a held surface that does not parse was logged when it was named, and declares nothing here",
+                collab_types::surface::SurfaceFile::parse(bytes).ok()
+            )
+        })
         .map(|file| {
             file.resources
                 .into_iter()
@@ -184,8 +188,12 @@ pub fn keeps_person_record(app_id: &str, kind: &str) -> bool {
 #[must_use]
 pub fn reads_app(reader: &str, owner: &str) -> bool {
     let parse = |app: &str| {
-        // ignored-failure: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
-        bytes_of(app).and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())
+        bytes_of(app).and_then(|bytes| {
+            tilo_failure::ignored!(
+                "a held surface that does not parse was logged when it was named, and declares nothing here",
+                collab_types::surface::SurfaceFile::parse(bytes).ok()
+            )
+        })
     };
     match (parse(reader), parse(owner)) {
         (Some(reader), Some(owner)) => reader.reads_any_of(&owner),
@@ -205,9 +213,12 @@ pub fn with_footprints(
     mut claims: Vec<collab_types::ChangeClaim>,
 ) -> Vec<collab_types::ChangeClaim> {
     use collab_types::ReceiptSurface as _;
-    let Some(file) =
-        // ignored-failure: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
-        bytes_of(app_id).and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())
+    let Some(file) = bytes_of(app_id).and_then(|bytes| {
+        tilo_failure::ignored!(
+            "a held surface that does not parse was logged when it was named, and declares nothing here",
+            collab_types::surface::SurfaceFile::parse(bytes).ok()
+        )
+    })
     else {
         return claims;
     };
@@ -265,8 +276,12 @@ pub fn refusal(
         Err(error) => return Some(error.to_string()),
     };
     let file = bytes_of(record.app)
-        // ignored-failure: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
-        .and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())?;
+        .and_then(|bytes| {
+            tilo_failure::ignored!(
+                "a held surface that does not parse was logged when it was named, and declares nothing here",
+                collab_types::surface::SurfaceFile::parse(bytes).ok()
+            )
+        })?;
     let surface_for = |kind: Option<&str>| {
         file.resource(kind).map(|resource| {
             std::sync::Arc::new(collab_types::surface::KindSurface(resource.clone()))

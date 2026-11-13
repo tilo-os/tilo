@@ -530,9 +530,12 @@ impl Agents {
                 colour: None,
             }));
             if let Err(refusal) = made {
-                // ignored-failure: the tab still lists the agent from its
-                // grants until Chat's grants let the person make the record
-                tracing::debug!(%agent, %refusal, "an admitted agent has no record here yet");
+                // The tab still lists the agent from its grants until Chat's
+                // grants let the person make the record.
+                tilo_failure::ignored!(
+                    "the tab lists the agent from its grants until Chat's grants let the record be made",
+                    tracing::debug!(%agent, %refusal, "an admitted agent has no record here yet")
+                );
             }
         }
     }

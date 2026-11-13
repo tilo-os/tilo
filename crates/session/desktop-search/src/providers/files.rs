@@ -215,8 +215,10 @@ fn take(home: &Path, held: &Arc<Held>, event: &WatchEvent) {
                 names.insert(path.clone(), false);
             }
         }
-        // ignored-failure: a folder that cannot be walked has no names to offer
-        Err(_) => held.forget(path),
+        Err(_) => tilo_failure::ignored!(
+            "a folder that cannot be walked has no names to offer",
+            held.forget(path)
+        ),
     }
 }
 

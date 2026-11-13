@@ -74,7 +74,7 @@ impl Workspaces {
             None => carried,
         };
         let (queue, writes) = mpsc::unbounded_channel();
-        // ignored-failure: the receiver was made a line above and is still held
+        // The receiver was made a line above and is still held.
         let _ = queue.send(carried);
         queues.insert(number, queue);
         drop(queues);
@@ -225,14 +225,18 @@ impl RelayHistory {
             covered: std::collections::HashMap::new(),
         };
         for message in writes {
-            // ignored-failure: only sealed record writes are what the link keeps; anything else matches none of them
-            let Ok(frame) = tilo_peer_state::store::Frame::of(&message) else {
+            let Ok(frame) = tilo_failure::ignored!(
+                "only sealed record writes are what the link keeps; anything else matches none",
+                tilo_peer_state::store::Frame::of(&message)
+            ) else {
                 continue;
             };
             if let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = &message
                 && envelope.kind == collab_types::OpKind::Compaction
-                // ignored-failure: a compaction that does not parse covers nothing, and the writes it names are carried
-                && let Ok(compaction) = collab_types::SealedCompaction::parse(envelope)
+                && let Ok(compaction) = tilo_failure::ignored!(
+                    "a compaction that does not parse covers nothing, and the writes it names are carried",
+                    collab_types::SealedCompaction::parse(envelope)
+                )
             {
                 for (author, floor) in compaction.covers {
                     let lineage = tilo_peer_state::store::Lineage {
@@ -268,6 +272,8 @@ fn relay_frame_write(
     let (crate::coedit::CoeditPayload::Checkpoint { body, .. }
     | crate::coedit::CoeditPayload::RetainedDelta { body, .. }) =
         crate::coedit::CoeditPayload::decode(delta)?;
-    // ignored-failure: a retained body that does not decode holds no write the link could match
-    postcard::from_bytes(&body).ok()
+    tilo_failure::ignored!(
+        "a retained body that does not decode holds no write the link could match",
+        postcard::from_bytes(&body).ok()
+    )
 }

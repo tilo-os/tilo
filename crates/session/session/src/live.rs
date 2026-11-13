@@ -320,9 +320,11 @@ where
     for candidate in candidates.iter().copied() {
         match open(candidate).await {
             Ok(opened) => return Some((candidate, opened)),
-            // ignored-failure: an unreachable relay is skipped, and the next is tried
-            Err(error) => tracing::debug!(relay = %hex::encode(candidate), %error,
-                "this relay of the workspace was not reached"),
+            Err(error) => tilo_failure::ignored!(
+                "an unreachable relay is skipped, and the next is tried",
+                tracing::debug!(relay = %hex::encode(candidate), %error,
+                    "this relay of the workspace was not reached")
+            ),
         }
     }
     None
@@ -594,9 +596,11 @@ impl Shared {
                         .lock_recover()
                         .insert((workspace, other), Bridged { _copy: bridge });
                 }
-                // ignored-failure: an unreachable relay is skipped, and the next is tried
-                Err(error) => tracing::debug!(%workspace, relay = %hex::encode(other), %error,
-                    "the other relay of this workspace was not reached"),
+                Err(error) => tilo_failure::ignored!(
+                    "an unreachable relay is skipped, and the next is tried",
+                    tracing::debug!(%workspace, relay = %hex::encode(other), %error,
+                        "the other relay of this workspace was not reached")
+                ),
             }
         }
     }
@@ -690,7 +694,7 @@ impl Live {
             return;
         }
         for workspace in self.shared.engine.workspaces() {
-            // ignored-failure: a plane thread that ended settles nothing again
+            // A plane thread that ended settles nothing again.
             let _ = self.shared.rejoin.send(workspace);
         }
     }

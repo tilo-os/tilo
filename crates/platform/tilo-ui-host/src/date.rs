@@ -236,23 +236,29 @@ fn formatted(
 }
 
 fn day_of(text: &str) -> Option<NaiveDate> {
-    // ignored-failure: a value that is not a day is shown as the text it is
-    NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()
+    tilo_failure::ignored!(
+        "a value that is not a day is shown as the text it is",
+        NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()
+    )
 }
 
 fn duration_of(text: &str) -> Option<std::time::Duration> {
-    // ignored-failure: a value that is no number of seconds is shown as the text it is
-    text.trim()
-        .parse::<u64>()
-        .ok()
-        .map(std::time::Duration::from_secs)
+    tilo_failure::ignored!(
+        "a value that is no number of seconds is shown as the text it is",
+        text.trim()
+            .parse::<u64>()
+            .ok()
+            .map(std::time::Duration::from_secs)
+    )
 }
 
 fn moment_of(text: &str) -> Option<DateTime<Utc>> {
-    // ignored-failure: a value that is not an instant is shown as the text it is
-    DateTime::parse_from_rfc3339(text)
-        .ok()
-        .map(|at| at.with_timezone(&Utc))
+    tilo_failure::ignored!(
+        "a value that is not an instant is shown as the text it is",
+        DateTime::parse_from_rfc3339(text)
+            .ok()
+            .map(|at| at.with_timezone(&Utc))
+    )
 }
 
 /// The `date` control: a [`DateField`] following the bound value the window keeps in `value`.

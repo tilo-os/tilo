@@ -166,8 +166,10 @@ pub fn observe() -> Result<Observed, String> {
                             let name = value
                                 .filter(|value| value.len() <= 1024)
                                 .and_then(|value| {
-                                    // ignored-failure: a probe value that is not JSON names no device
-                                    serde_json::from_str::<serde_json::Value>(value).ok()
+                                    tilo_failure::ignored!(
+                                        "a probe value that is not JSON names no device",
+                                        serde_json::from_str::<serde_json::Value>(value).ok()
+                                    )
                                 })
                                 .and_then(|value| {
                                     value
@@ -199,8 +201,10 @@ pub fn observe() -> Result<Observed, String> {
                 let Some(serial) = props
                     .get("object.serial")
                     .and_then(|value| {
-                        // ignored-failure: a probe value that does not parse names no device
-                        value.parse::<u32>().ok()
+                        tilo_failure::ignored!(
+                            "a probe value that does not parse names no device",
+                            value.parse::<u32>().ok()
+                        )
                     })
                     .filter(|serial| *serial != 0)
                 else {

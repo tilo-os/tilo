@@ -163,8 +163,8 @@ impl Slots {
         match surfaces::program_path(&binding.program()) {
             Ok(path) => Some(package_at(&path, binding).unwrap_or(View::Program(path))),
             Err(error) => {
-                // ignored-failure: a slot whose view is not installed shows nothing, and the next publication binds it
-                // The slot has no view: the menu it stands for is up in the
+                // A slot whose view is not installed shows nothing, and the
+                // next publication binds it. The slot has no view: the menu it stands for is up in the
                 // session's reading and nothing draws it, so this says so
                 // where a person reading the log finds it, not at a level
                 // nobody turns on.

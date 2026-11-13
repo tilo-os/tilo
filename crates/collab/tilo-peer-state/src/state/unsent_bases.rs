@@ -54,11 +54,12 @@ impl HeldThrough {
         for (author, floor) in &document.covered {
             // A watermark that names no key covers no signer's writes: restore and admission
             // refuse such a record before it is read, and here it only holds less.
-            // ignored-failure: a watermark naming no key covers nothing a reader waits on
-            if let Some(author) = hex::decode(author)
-                .ok()
-                .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-            {
+            if let Some(author) = tilo_failure::ignored!(
+                "a watermark naming no key covers nothing a reader waits on",
+                hex::decode(author)
+                    .ok()
+                    .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+            ) {
                 raise(author, *floor);
             }
         }
@@ -68,8 +69,12 @@ impl HeldThrough {
             .filter(|op| op.kind == OpKind::Compaction)
             // A head that does not parse covers nothing here: admission checked it, and holding
             // less only keeps a write waiting.
-            // ignored-failure: an unparsed head only keeps a write waiting, never drops one
-            .and_then(|op| SealedCompaction::parse(op).ok())
+            .and_then(|op| {
+                tilo_failure::ignored!(
+                    "an unparsed head only keeps a write waiting, never drops one",
+                    SealedCompaction::parse(op).ok()
+                )
+            })
         {
             for (author, seq) in &head.covers {
                 raise(*author.as_bytes(), *seq);
@@ -115,8 +120,10 @@ pub(super) fn behind_unsent(
             // A write whose changes do not parse is none the rule decides: it stays waiting, as
             // it would without the rule.
             DocumentMutation::Incremental(bytes) => {
-                // ignored-failure: an unparsed write stays waiting, as it would without this rule
-                automerge::Automerge::parse_changes(bytes).unwrap_or_default()
+                tilo_failure::ignored!(
+                    "an unparsed write stays waiting, as it would without this rule",
+                    automerge::Automerge::parse_changes(bytes).unwrap_or_default()
+                )
             }
             DocumentMutation::Snapshot(_) => Vec::new(),
         })

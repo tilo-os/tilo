@@ -191,8 +191,10 @@ fn process_stat(pid: u32) -> Option<(u32, u64)> {
     if fields.first() == Some(&"Z") {
         return None;
     }
-    // ignored-failure: the kernel's own text; a process whose stat does not read is not bound
-    Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
+    Some(tilo_failure::ignored!(
+        "the kernel's own text: a process whose stat does not read is not bound",
+        (fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?)
+    ))
 }
 
 /// Enable sender credentials before sending the host's one-time challenge.

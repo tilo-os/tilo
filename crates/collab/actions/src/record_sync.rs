@@ -116,8 +116,12 @@ fn numbered(index: &str) -> Option<u64> {
         && index.bytes().all(|byte| byte.is_ascii_digit())
         && (index == "0" || !index.starts_with('0'));
     canonical
-        // ignored-failure: a probe of the id's shape; digits only, so only a number past u64 fails, which is no part or chunk
-        .then(|| index.parse().ok())
+        .then(|| {
+            tilo_failure::ignored!(
+                "a probe of the id's shape: only a number past u64 fails, and it names no part",
+                index.parse().ok()
+            )
+        })
         .flatten()
 }
 

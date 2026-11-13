@@ -54,8 +54,10 @@ fn held_refusal(
     let ScalarValue::Bytes(bytes) = value.as_ref() else {
         return Ok(None);
     };
-    // ignored-failure: bytes this build cannot read name no author to delete for,
-    Ok(postcard::from_bytes::<WriteRefusal>(bytes).ok())
+    Ok(tilo_failure::ignored!(
+        "bytes this build cannot read name no author to delete for",
+        postcard::from_bytes::<WriteRefusal>(bytes).ok()
+    ))
 }
 
 impl PeerWorkspace<'_> {

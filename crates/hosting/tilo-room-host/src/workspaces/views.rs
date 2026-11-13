@@ -219,14 +219,16 @@ fn replay_source(
     let mut bytes = 0usize;
     let mut found = false;
     for retained in retained {
-        // ignored-failure: a retained write that does not decode is reported where the governor takes it in (Workspaces::absorb) and when it is replayed (recall_retained)
         let Ok(neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             cluster_id,
             record_id,
             envelope,
             ..
-        }) = postcard::from_bytes(&retained.body)
+        }) = tilo_failure::ignored!(
+            "a retained write that does not decode is reported where the governor takes it in",
+            postcard::from_bytes(&retained.body)
+        )
         else {
             continue;
         };

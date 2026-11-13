@@ -310,8 +310,9 @@ fn instant_text(day: NaiveDate, time: NaiveTime) -> String {
     let local = day.and_time(time);
     let at = match chrono::Local.from_local_datetime(&local) {
         chrono::LocalResult::Single(at) | chrono::LocalResult::Ambiguous(at, _) => Some(at),
-        // ignored-failure: an hour the change of clocks skipped keeps its day
-        chrono::LocalResult::None => None,
+        chrono::LocalResult::None => {
+            tilo_failure::ignored!("an hour the change of clocks skipped keeps its day", None)
+        }
     };
     at.map_or_else(
         || day.format("%Y-%m-%d").to_string(),
@@ -329,10 +330,12 @@ pub(crate) fn time_in(text: Option<&str>) -> Option<NaiveTime> {
     if let Ok(time) = NaiveTime::parse_from_str(text.trim(), "%H:%M") {
         return Some(time);
     }
-    // ignored-failure: a value that is no time is shown as no time
-    chrono::DateTime::parse_from_rfc3339(text)
-        .ok()
-        .map(|at| at.with_timezone(&chrono::Local).time())
+    tilo_failure::ignored!(
+        "a value that is no time is shown as no time",
+        chrono::DateTime::parse_from_rfc3339(text)
+            .ok()
+            .map(|at| at.with_timezone(&chrono::Local).time())
+    )
 }
 
 /// What the field's chip says and how it stands: its name, what the day is for, whether the day

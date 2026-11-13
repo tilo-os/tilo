@@ -464,8 +464,10 @@ impl NativeFileClipboard {
                 );
             }
             if let Err(error) = Self::attribute(agent, paths) {
-                // ignored-failure: the transfer stays its person's when it cannot be attributed
-                tracing::debug!(%error, "a clipboard transfer stays its person's in file history");
+                tilo_failure::ignored!(
+                    "the transfer stays its person's when it cannot be attributed",
+                    tracing::debug!(%error, "a clipboard transfer stays its person's in file history")
+                );
             }
         }
         let files = CopiedFiles {

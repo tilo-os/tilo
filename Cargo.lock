@@ -2705,6 +2705,7 @@ dependencies = [
  "tilo-clock",
  "tilo-content",
  "tilo-doc",
+ "tilo-failure",
  "tilo-files",
  "tilo-identity-client",
  "tilo-lock",
@@ -14378,6 +14379,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-failure",
  "tilo-files",
  "tilo-formats",
  "tilo-lock",
@@ -17184,6 +17186,7 @@ dependencies = [
  "tilo-clock",
  "tilo-content",
  "tilo-desktop-model",
+ "tilo-failure",
  "tilo-files",
  "tilo-identity-client",
  "tilo-identity-host",
@@ -17235,6 +17238,7 @@ dependencies = [
  "tilo-clock",
  "tilo-content",
  "tilo-content-types",
+ "tilo-failure",
  "tilo-lock",
  "tilo-selector",
  "tilo-test-env",
@@ -17458,6 +17462,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-content-device",
+ "tilo-failure",
  "tilo-feedback",
  "tilo-files",
  "tilo-history",
@@ -17962,6 +17967,7 @@ dependencies = [
  "tilo-channels",
  "tilo-clock",
  "tilo-desktop-model",
+ "tilo-failure",
  "tilo-paths",
  "tilo-peer-state",
  "tilo-ui",
@@ -18496,6 +18502,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-files",
+ "tilo-formats",
  "tilo-paths",
  "tilo-service",
  "tilo-test-env",
@@ -18687,6 +18694,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-search",
  "tilo-desktop-surface",
+ "tilo-failure",
  "tilo-ui",
  "workspace-hack",
 ]
@@ -18705,6 +18713,7 @@ dependencies = [
  "tempfile",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-failure",
  "tilo-files",
  "tilo-lock",
  "tilo-paths",
@@ -19120,6 +19129,10 @@ name = "tilo-face"
 version = "0.1.0"
 
 [[package]]
+name = "tilo-failure"
+version = "0.1.0"
+
+[[package]]
 name = "tilo-feedback"
 version = "0.1.0"
 dependencies = [
@@ -19248,6 +19261,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "tilo-failure",
  "tilo-resource",
  "workspace-hack",
 ]
@@ -19838,6 +19852,7 @@ dependencies = [
  "tempfile",
  "tilo-advisory-lock",
  "tilo-clock",
+ "tilo-failure",
  "tilo-files",
  "tilo-lock",
  "tilo-paths",
@@ -20616,6 +20631,7 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-desktop-surface",
+ "tilo-failure",
  "tilo-files",
  "tilo-identity-host",
  "tilo-lock",
@@ -21134,6 +21150,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-content",
+ "tilo-failure",
  "tilo-lock",
  "tilo-resource-macros",
  "tilo-sort",
@@ -21220,6 +21237,7 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-endpoint-reachability",
+ "tilo-failure",
  "tilo-files",
  "tilo-lock",
  "tilo-peer-state",
@@ -21660,6 +21678,7 @@ dependencies = [
  "tilo-durable-writer",
  "tilo-endpoint-reachability",
  "tilo-fabric-core",
+ "tilo-failure",
  "tilo-feedback",
  "tilo-files",
  "tilo-frame-metrics",
@@ -21838,6 +21857,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-search",
  "tilo-desktop-surface",
+ "tilo-failure",
  "tilo-live",
  "tilo-lock",
  "tilo-ui",
@@ -22355,6 +22375,7 @@ dependencies = [
  "tilo-doc",
  "tilo-engine-loader",
  "tilo-face",
+ "tilo-failure",
  "tilo-files",
  "tilo-font-catalog",
  "tilo-formats",
@@ -22444,6 +22465,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-actions",
+ "tilo-failure",
  "tilo-formats",
  "tilo-render-protocol",
  "tilo-resource",
@@ -23256,6 +23278,7 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-doc",
  "tilo-document",
+ "tilo-failure",
  "tilo-history",
  "tilo-render-protocol",
  "tilo-resource",

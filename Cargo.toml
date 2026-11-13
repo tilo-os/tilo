@@ -325,6 +325,7 @@ members = [
     "crates/platform/tilolang-host",
     "crates/platform/tilolang-mail",
     "crates/platform/tilolang-youtube",
+    "crates/platform/tilo-failure",
     "crates/platform/tilo-lock",
     "crates/platform/tilo-settings-records",
     "crates/platform/tilo-sort",

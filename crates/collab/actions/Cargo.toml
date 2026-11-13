@@ -23,6 +23,7 @@ test-support = []
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 # What a skill's selector reads over a published resource.

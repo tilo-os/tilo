@@ -173,13 +173,15 @@ impl Workspaces {
         body: &[u8],
     ) -> Result<(), String> {
         let host = author == self.inner.host.cert.device_public_key;
-        // ignored-failure: a classifier; a write that does not decode is reported where the governor takes it in (Workspaces::absorb)
         let Ok(neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             record_id,
             envelope,
             ..
-        }) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
+        }) = tilo_failure::ignored!(
+            "a classifier: a write that does not decode is reported where the governor takes it in",
+            postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
+        )
         else {
             return Ok(());
         };

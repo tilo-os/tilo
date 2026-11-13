@@ -117,8 +117,10 @@ impl PeerGovernance<'_> {
                     let mut root = [0; 32];
                     // A person the policy names by anything but a root key
                     // has no root a device could be certified by.
-                    // ignored-failure: no root key, so no one to admit by root
-                    hex::decode_to_slice(person, &mut root).ok().map(|()| root)
+                    tilo_failure::ignored!(
+                        "no root key was named, so there is no one to admit by root",
+                        hex::decode_to_slice(person, &mut root).ok().map(|()| root)
+                    )
                 }),
         );
         member_devices.sort_unstable();
@@ -470,8 +472,8 @@ impl PeerGovernance<'_> {
         // workspace and enters it at that role.
         for person in workspace_policy.members.keys() {
             let mut root = [0; 32];
-            // ignored-failure: a person named by anything but a root key has
-            // no root a device could be certified by
+            // A person named by anything but a root key has no root a device
+            // could be certified by.
             if hex::decode_to_slice(person, &mut root).is_err() || rows.contains_key(&root) {
                 continue;
             }

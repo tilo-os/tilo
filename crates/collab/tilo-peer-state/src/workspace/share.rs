@@ -44,10 +44,12 @@ pub fn window_is_the_writers(device: &str, share: &str, node: &TreePath) -> Resu
         (None, Some((tab, true))) => tab,
         _ => return Err("a window is shared under its own share id".into()),
     };
-    let salt = hex::decode(device)
-        // ignored-failure: a device named by no hex key runs no window
-        .ok()
-        .map(|key| tilo_desktop_model::ids::device_salt_of_key(&key));
+    let salt = tilo_failure::ignored!(
+        "a device named by no hex key runs no window",
+        hex::decode(device)
+            .ok()
+            .map(|key| tilo_desktop_model::ids::device_salt_of_key(&key))
+    );
     if salt != Some(tilo_desktop_model::peer_salt_of(tab)) {
         return Err("only the device a window runs on can share it".into());
     }

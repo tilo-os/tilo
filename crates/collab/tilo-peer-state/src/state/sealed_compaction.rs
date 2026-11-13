@@ -477,9 +477,11 @@ pub(super) fn merge_sealed(
             }
             // One pass is the fast path, and a refused one is answered by the
             // write-by-write merge below.
-            // ignored-failure: the merge below reports a refusal that is real.
             Err(refused) => {
-                tracing::debug!(error = ?refused, "a sealed history does not merge in one pass");
+                tilo_failure::ignored!(
+                    "the merge below reports a refusal that is real",
+                    tracing::debug!(error = ?refused, "a sealed history does not merge in one pass")
+                );
             }
         }
     }
@@ -762,8 +764,10 @@ fn missing_of(record: &AutoCommit, mutation: &DocumentMutation) -> Vec<String> {
     let DocumentMutation::Incremental(bytes) = mutation else {
         return Vec::new();
     };
-    // ignored-failure: a write whose changes do not parse waits for nothing this names
-    let changes = automerge::Automerge::parse_changes(bytes).unwrap_or_default();
+    let changes = tilo_failure::ignored!(
+        "a write whose changes do not parse waits for nothing this names",
+        automerge::Automerge::parse_changes(bytes).unwrap_or_default()
+    );
     let own: std::collections::HashSet<automerge::ChangeHash> =
         changes.iter().map(automerge::Change::hash).collect();
     let document = record.committed_document();

@@ -7,6 +7,7 @@ publish.workspace = true
 description = "The action broker's session-facing half on every host: what a step is taken by, the steps a host serves, the receipts a caller reads, and the route an app's traffic is addressed on."
 
 [dependencies]
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-actions = { version = "0.1.0", path = "../actions" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }

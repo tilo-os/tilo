@@ -208,11 +208,13 @@ impl AppBrokerState {
                     error = %completed.message,
                     "an opening app was not let author its workspace"
                 ),
-                // ignored-failure: the caller is told the authorship answer was not heard
-                Err(_) => tracing::debug!(
-                    %workspace,
-                    %app,
-                    "an opening app's authorship ended without an answer"
+                Err(_) => tilo_failure::ignored!(
+                    "the caller is told the authorship answer was not heard",
+                    tracing::debug!(
+                        %workspace,
+                        %app,
+                        "an opening app's authorship ended without an answer"
+                    )
                 ),
             })
             .map(drop)

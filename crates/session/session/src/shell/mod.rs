@@ -1092,8 +1092,10 @@ impl ShellChrome {
             }
             "shortcut"
                 if arguments.get("action").cloned().and_then(|action| {
-                    // ignored-failure: an action that does not read back is not this one
-                    serde_json::from_value::<ui::shortcut_table::ShortcutAction>(action).ok()
+                    tilo_failure::ignored!(
+                        "an action that does not read back is not this one",
+                        serde_json::from_value::<ui::shortcut_table::ShortcutAction>(action).ok()
+                    )
                 }) == Some(ui::shortcut_table::ShortcutAction::WorkspaceOverview) =>
             {
                 let name = crate::overlays::Overlay::Overview.name();

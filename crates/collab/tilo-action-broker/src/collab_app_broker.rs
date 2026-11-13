@@ -224,7 +224,10 @@ fn cap_applies_in(
     device: Option<&[u8; 32]>,
 ) -> bool {
     let governs = authority
-        .zip(uuid::Uuid::parse_str(workspace).ok()) // ignored-failure: a non-uuid workspace is governed by no authority: the stricter bound applies
+        .zip(tilo_failure::ignored!(
+            "a workspace named by anything but a UUID is governed by no authority",
+            uuid::Uuid::parse_str(workspace).ok()
+        ))
         .is_some_and(|(authority, workspace)| authority.governs(workspace, device));
     // A foreign device is held to the bound only in a workspace it does not govern.
     foreign && !governs
@@ -6312,9 +6315,12 @@ impl AppBrokerState {
         // Task transport carries a JSON argument map directly; the contract
         // evaluator also accepts the action door's prefixed map encoding.
         let contract_argument = argument.and_then(|text| {
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text) // ignored-failure: a JSON-map probe; other text is evaluated as it is
-                .ok()
-                .map(|_| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX))
+            tilo_failure::ignored!(
+                "a JSON-map probe: text that is no such map is evaluated as it is",
+                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
+                    .ok()
+                    .map(|_| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX))
+            )
         });
         let consequential = descriptor
             .contract
@@ -9617,8 +9623,10 @@ impl Drop for SocketStage {
         if !self.published
             && let Some(identity) = self.identity
         {
-            // ignored-failure: the next bind proves a stale socket and unlinks it
-            let _ = remove_socket_if_owned(&self.socket, identity);
+            let _ = tilo_failure::ignored!(
+                "the next bind proves a stale socket and unlinks it",
+                remove_socket_if_owned(&self.socket, identity)
+            );
         } else if !self.published
             && self.bound
             && std::fs::symlink_metadata(&self.socket)
@@ -9689,8 +9697,10 @@ struct SocketCustody {
 
 impl Drop for SocketCustody {
     fn drop(&mut self) {
-        // ignored-failure: the next bind proves a stale socket and unlinks it
-        let _ = remove_socket_if_owned(&self.path, self.identity);
+        let _ = tilo_failure::ignored!(
+            "the next bind proves a stale socket and unlinks it",
+            remove_socket_if_owned(&self.path, self.identity)
+        );
     }
 }
 

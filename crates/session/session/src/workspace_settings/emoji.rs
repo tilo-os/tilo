@@ -450,8 +450,10 @@ impl Emoji {
                     tracing::warn!(%error, path = %path.display(), "a chosen emoji could not be read");
                     })
                 .ok(),
-            // ignored-failure: the person is told the file cannot be read
-            Err(_) => None,
+            Err(_) => tilo_failure::ignored!(
+                "the person is told the file cannot be read",
+                None
+            ),
         };
         let Some(bytes) = bytes else {
             self.say(Some(emoji_pane::EmojiNotice::not_chosen(t(

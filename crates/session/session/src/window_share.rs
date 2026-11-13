@@ -1314,8 +1314,10 @@ impl WindowShares {
         {
             return;
         }
-        // ignored-failure: the plane opened only what its relay validated as a picture
-        let Ok(object) = VideoObject::decode(body) else {
+        let Ok(object) = tilo_failure::ignored!(
+            "the plane opened only what its relay validated as a picture",
+            VideoObject::decode(body)
+        ) else {
             return;
         };
         let peer = neighbour_wire::peer_handle(from.as_bytes());
@@ -1910,8 +1912,10 @@ impl WindowShares {
                     }
                     // A locked or asleep screen sends nothing, and the share goes on when it wakes.
                     Err(error) => {
-                        // ignored-failure: each pass captures the windows it can
-                        tracing::debug!(%error, window = %hosted.window, "a shared window is not captured this pass");
+                        tilo_failure::ignored!(
+                            "each pass captures the windows it can",
+                            tracing::debug!(%error, window = %hosted.window, "a shared window is not captured this pass")
+                        );
                     }
                 }
             }
@@ -1920,8 +1924,10 @@ impl WindowShares {
                 if let Err(error) = send_picture(plane, tab, &hosted.share, frame) {
                     // The window's group is past what one carries, or the picture past what an
                     // object does: the next frame starts it over at a keyframe.
-                    // ignored-failure: the keyframe asked for here starts the viewers over
-                    tracing::debug!(%error, tab, "a shared window's picture did not go out");
+                    tilo_failure::ignored!(
+                        "the keyframe asked for here starts the viewers over",
+                        tracing::debug!(%error, tab, "a shared window's picture did not go out")
+                    );
                     hosted.share.request_keyframe(seq, now);
                 }
             }
@@ -2162,10 +2168,13 @@ fn hosted_window(tree: &DesktopTree, tab: TabId) -> Option<(String, String)> {
 /// The device a window is hosted by, as the key that hosts it: what the desktop model names a
 /// hosted window's device by.
 fn device_key(host: &str) -> Option<EndpointId> {
-    hex::decode(host)
-        .ok() // ignored-failure: a host that is no device key hosts no window
-        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-        .and_then(|bytes| EndpointId::from_bytes(&bytes).ok()) // ignored-failure: 32 bytes that are no endpoint name no device to host a window with
+    tilo_failure::ignored!(
+        "a host that is no device key, or names no endpoint, hosts no window",
+        hex::decode(host)
+            .ok()
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+            .and_then(|bytes| EndpointId::from_bytes(&bytes).ok())
+    )
 }
 
 /// Whether the desk shows the tab `tab` anywhere.
@@ -2343,10 +2352,12 @@ fn workspace_argument() -> ActionParam {
 
 /// The tab an action names, by its decimal id.
 fn tab_of(args: &tilo_actions::ActionArgs) -> TabId {
-    args.text("tab")
-        // ignored-failure: text that is no tab id names no tab
-        .and_then(|tab| tab.trim().parse().ok())
-        .unwrap_or(0)
+    tilo_failure::ignored!(
+        "text that is no tab id names no tab",
+        args.text("tab")
+            .and_then(|tab| tab.trim().parse().ok())
+            .unwrap_or(0)
+    )
 }
 
 /// The text argument `name` , or nothing.

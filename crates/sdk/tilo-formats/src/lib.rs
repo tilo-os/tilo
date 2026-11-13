@@ -24,8 +24,8 @@ pub use region::{DateStyle, FirstDayOfWeek, NumberStyle, RegionFormats};
 pub use shown::shown;
 
 /// `body` is text for a machine -- a file name, a protocol field, a stored
-/// value a program reads back -- and stands as it is, `reason` naming why it is
-/// not written in the person's formats.
+/// value a program reads back -- and stands as it is, `reason` (a string
+/// literal) naming why it is not written in the person's formats.
 ///
 /// `tools/policy/check_formats.py` keeps hand-built dates, clocks, sizes and
 /// name tables out of everything a person reads. Text no person reads says so
@@ -40,10 +40,9 @@ pub use shown::shown;
 /// ```
 #[macro_export]
 macro_rules! machine {
-    ($reason:expr, $body:expr) => {{
-        const _: &str = $reason;
+    ($reason:literal, $body:expr) => {
         $body
-    }};
+    };
 }
 
 /// A phrase argument: a number selects a plural form, text reads as it is.

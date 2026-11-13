@@ -65,8 +65,10 @@ impl JoinedChannel {
                 .ok_or("original clipboard caller unavailable")?;
             // A caller that is not the session's own agent has no agent to
             // attribute the write to; that is the expected case.
-            // ignored-failure: only an agent acting for this session's person is attributed
-            let agent = attributed_agent(&actor, session_person(&self.verified_identity)).ok();
+            let agent = tilo_failure::ignored!(
+                "only an agent acting for this session's person is attributed",
+                attributed_agent(&actor, session_person(&self.verified_identity)).ok()
+            );
             (actor.id().to_owned(), agent)
         } else {
             (self.verified_identity.broker_actor().id().to_owned(), None)

@@ -139,8 +139,10 @@ impl AppBrokerState {
                 })
             })
         } else {
-            // ignored-failure: a provider that is not a peer number names a canonical, launchable or host provider, not a live publication
-            provider.parse::<u64>().ok()
+            tilo_failure::ignored!(
+                "a provider that is not a peer number names a canonical, launchable or host one",
+                provider.parse::<u64>().ok()
+            )
         };
         peer.and_then(|peer| {
             self.witness_publications

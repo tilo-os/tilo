@@ -586,8 +586,10 @@ pub(super) fn append(
             .map_err(|_| "invocation journal file barrier failed");
     }
     if let Err(error) = durable {
-        // ignored-failure: the length check below decides whether the store reads as before
-        let _ = file.set_len(len);
+        let _ = tilo_failure::ignored!(
+            "the length check below decides whether the store reads as before",
+            file.set_len(len)
+        );
         // Bytes the disk kept are durable whatever the caller is told, so only
         // a store that reads exactly as before the write is taken back.
         if !file.metadata().is_ok_and(|after| after.len() == len) {

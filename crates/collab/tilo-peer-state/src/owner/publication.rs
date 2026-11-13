@@ -1708,7 +1708,7 @@ impl NativeWorkspaceOwner {
                 return Ok(false);
             }
             for entry in answered {
-                // ignored-failure: custody holds governance entries too, which belong to no record
+                // Custody holds governance entries too, which belong to no record.
                 let Ok(NeighbourMsg::AppDocument {
                     app_id,
                     record_id,
@@ -1792,11 +1792,12 @@ impl NativeWorkspaceOwner {
                 .chain(&spilled)
                 .chain(&publication.tail)
             {
-                // ignored-failure: custody holds governance entries too, which belong to no record
                 if let Ok(NeighbourMsg::AppDocument {
                     app_id, record_id, ..
-                }) = postcard::from_bytes::<NeighbourMsg>(&entry.bytes)
-                {
+                }) = tilo_failure::ignored!(
+                    "custody holds governance entries too, which belong to no record",
+                    postcard::from_bytes::<NeighbourMsg>(&entry.bytes)
+                ) {
                     let writes = writes.entry((app_id, record_id)).or_default();
                     writes.pending = writes.pending.saturating_add(1);
                 }

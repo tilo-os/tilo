@@ -175,14 +175,18 @@ fn patched(
             if kind == "peers" {
                 held.names.remove(entry);
                 if let Some(name) = value.and_then(|value| value.into_string().ok()) {
-                    // ignored-failure: the governance reading's destination cannot fail
-                    let _ = Destination::peer(&mut held, entry, &name);
+                    let _ = tilo_failure::ignored!(
+                        "the governance reading's destination cannot fail",
+                        Destination::peer(&mut held, entry, &name)
+                    );
                 }
             } else {
                 held.identities.remove(entry);
                 if let Some(bytes) = value.and_then(scalar_bytes) {
-                    // ignored-failure: the governance reading's destination cannot fail
-                    let _ = Destination::identity(&mut held, entry, &bytes);
+                    let _ = tilo_failure::ignored!(
+                        "the governance reading's destination cannot fail",
+                        Destination::identity(&mut held, entry, &bytes)
+                    );
                 }
             }
         }
@@ -283,7 +287,9 @@ pub(crate) fn legacy(document: &automerge::AutoCommit) -> PolicyData {
     // This concrete legacy adapter has neither resource failures nor fallible
     // destination operations. Malformed native lookups retain the historical
     // ignored-value behavior inside visit_governance_entries.
-    // ignored-failure: the legacy adapter's destination operations are infallible
-    let _ = project(&read::LegacyRead(document), &mut value);
+    let _ = tilo_failure::ignored!(
+        "the legacy adapter's destination operations are infallible",
+        project(&read::LegacyRead(document), &mut value)
+    );
     value
 }

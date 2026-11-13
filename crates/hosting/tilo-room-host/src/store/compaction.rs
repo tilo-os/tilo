@@ -102,8 +102,12 @@ impl WorkspaceStore {
             let Some(author) = name
                 .to_str()
                 .and_then(|name| name.strip_suffix(&suffix))
-                // ignored-failure: an entry not named `<author><suffix>` is not a lineage
-                .and_then(|author| hex::decode(author).ok())
+                .and_then(|author| {
+                    tilo_failure::ignored!(
+                        "an entry not named `<author><suffix>` is not a lineage",
+                        hex::decode(author).ok()
+                    )
+                })
                 .and_then(|author| <[u8; 32]>::try_from(author).ok())
             else {
                 continue;

@@ -364,10 +364,12 @@ impl RecordId {
 
     /// The filesystem record id of a `file-record:` identity.
     pub fn file_record(&self) -> Option<uuid::Uuid> {
-        self.0
-            .strip_prefix(FILE_RECORD_PREFIX)
-            // ignored-failure: a probe of the identity's kind; a malformed id is no filesystem record
-            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        self.0.strip_prefix(FILE_RECORD_PREFIX).and_then(|id| {
+            tilo_failure::ignored!(
+                "a probe of the identity's kind: a malformed id is no filesystem record",
+                uuid::Uuid::parse_str(id).ok()
+            )
+        })
     }
 
     /// A filesystem-safe directory name for this record's document. Must be
@@ -399,8 +401,12 @@ fn numbered(index: &str) -> Option<u64> {
         && index.bytes().all(|byte| byte.is_ascii_digit())
         && (index == "0" || !index.starts_with('0'));
     canonical
-        // ignored-failure: a probe of the id's shape; digits only, so only an index past u64 fails, which is no number
-        .then(|| index.parse().ok())
+        .then(|| {
+            tilo_failure::ignored!(
+                "a probe of the id's shape: only an index past u64 fails, and it names no number",
+                index.parse().ok()
+            )
+        })
         .flatten()
 }
 

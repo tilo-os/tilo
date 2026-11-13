@@ -1575,15 +1575,17 @@ impl crate::Shared {
         };
         // A workspace this desk holds already says itself where its host is
         // reached, should none of the person's devices have said it yet.
-        // ignored-failure: a held workspace whose state cannot be read has no hint of its own; the person's devices say one
         let hint = sync.host_hint(&workspace).or_else(|| {
             opened
                 .held
                 .then(|| {
-                    engine
-                        .owner()
-                        .with_current(opened.workspace, |view| view.transport_hint().cloned())
-                        .ok()
+                    tilo_failure::ignored!(
+                        "a held workspace whose state cannot be read has no hint, and the person's devices say one",
+                        engine
+                            .owner()
+                            .with_current(opened.workspace, |view| view.transport_hint().cloned())
+                            .ok()
+                    )
                 })
                 .flatten()
         });

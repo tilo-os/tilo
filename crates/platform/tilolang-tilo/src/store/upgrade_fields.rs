@@ -221,6 +221,9 @@ fn plain_text_edit(plain: &str) -> tilo_resource::EditOp {
         .iter()
         .map(tilo_document::ClipBlock::from_view)
         .collect();
-    // ignored-failure: a `RichTextAction` always serializes
-    super::rich_edit(blocks, None, 0).unwrap_or(tilo_resource::EditOp::Rich { rich: Json::Null })
+    tilo_failure::ignored!(
+        "a `RichTextAction` always serializes",
+        super::rich_edit(blocks, None, 0)
+            .unwrap_or(tilo_resource::EditOp::Rich { rich: Json::Null })
+    )
 }

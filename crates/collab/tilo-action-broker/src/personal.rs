@@ -188,10 +188,11 @@ async fn keep_links(endpoint: iroh::Endpoint, sync: PersonalSync, person: Person
                 // A device that could not be reached is dialled again on the
                 // next turn; the store catches it up when it is.
                 if let Err(error) = sync.connect(&endpoint, addr).await {
-                    // ignored-failure: a sibling that is off, or revoked, is
-                    // dialled again at the next turn, and the store catches it
-                    // up whole when it is reachable again
-                    tracing::debug!(%error, device = %hex::encode(device), "a personal link ended");
+                    tilo_failure::ignored!(
+                        "a sibling that is off is dialled again at the next turn, and the store \
+                         catches it up whole when it is reachable again",
+                        tracing::debug!(%error, device = %hex::encode(device), "a personal link ended")
+                    );
                 }
                 if let Ok(mut dialing) = dialing.lock() {
                     dialing.remove(&device);

@@ -419,8 +419,10 @@ impl Unlock {
                 let listener = match crate::agent_door::bind_private(&path) {
                     Ok(listener) => listener,
                     Err(error) => {
-                        // ignored-failure: a session without the enrolment socket enrolls nothing
-                        tracing::debug!(%error, "disk-unlock enrolment socket unavailable");
+                        tilo_failure::ignored!(
+                            "a session without the enrolment socket enrolls nothing",
+                            tracing::debug!(%error, "disk-unlock enrolment socket unavailable")
+                        );
                         return;
                     }
                 };
@@ -501,8 +503,7 @@ async fn wait_for_person(
     match wait {
         Ok(answer) => answer,
         // Nobody answered in time, which refuses this boot.
-        // ignored-failure: no answer within the window is a refusal
-        Err(_) => Some(None),
+        Err(_) => tilo_failure::ignored!("no answer within the window is a refusal", Some(None)),
     }
 }
 
@@ -561,8 +562,10 @@ async fn read_client(recv: &mut RecvStream) -> Option<ClientFrame> {
         .ok()?;
     // A frame that does not decode is not an unlock request: the caller closes
     // the connection as not a boot.
-    // ignored-failure: a frame this protocol does not know is not a boot
-    decode_frame(&body).ok()
+    tilo_failure::ignored!(
+        "a frame this protocol does not know is not a boot",
+        decode_frame(&body).ok()
+    )
 }
 
 async fn write_sibling(send: &mut SendStream, frame: &SiblingFrame) -> bool {

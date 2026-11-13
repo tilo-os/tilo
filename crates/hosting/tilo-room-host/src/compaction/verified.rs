@@ -156,11 +156,15 @@ impl Signatures {
             }
         }
         self.current.insert(body);
-        // ignored-failure: a frame that does not decode is kept, as Piece::Opaque, never dropped
-        let frame = |payload: &[u8]| match DocumentFrame::decode(payload) {
-            Ok(DocumentFrame::Whole(mutation)) => Piece::Whole(mutation),
-            Ok(DocumentFrame::Segment(segment)) => Piece::Segment(segment),
-            Err(_) => Piece::Opaque,
+        let frame = |payload: &[u8]| {
+            tilo_failure::ignored!(
+                "a frame that does not decode is kept as an opaque piece, never dropped",
+                match DocumentFrame::decode(payload) {
+                    Ok(DocumentFrame::Whole(mutation)) => Piece::Whole(mutation),
+                    Ok(DocumentFrame::Segment(segment)) => Piece::Segment(segment),
+                    Err(_) => Piece::Opaque,
+                }
+            )
         };
         let piece = if envelope.encryption.is_some() {
             match open.and_then(|open| open(&envelope)) {

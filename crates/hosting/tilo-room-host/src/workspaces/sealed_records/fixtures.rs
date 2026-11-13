@@ -470,8 +470,12 @@ pub async fn governor_published(
     published
         .iter()
         .rev()
-        // ignored-failure: test support (compiled only for tests); other publications are skipped
-        .filter_map(|bytes| postcard::from_bytes::<NeighbourMsg>(bytes).ok())
+        .filter_map(|bytes| {
+            tilo_failure::ignored!(
+                "test support: other publications are skipped",
+                postcard::from_bytes::<NeighbourMsg>(bytes).ok()
+            )
+        })
         .find_map(|message| match message {
             NeighbourMsg::AppDocument {
                 record_id,

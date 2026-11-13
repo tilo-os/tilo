@@ -628,15 +628,17 @@ impl SettingsRecords {
 
 /// The public id of the action whose encoded payload is `payload`.
 fn action_id(payload: &[u8]) -> String {
-    serde_json::from_slice::<serde_json::Value>(payload)
-        // ignored-failure: a payload that does not read back is named by the generic label
-        .ok()
-        .and_then(|value| {
-            let operation = value.get("op").unwrap_or(&value);
-            operation
-                .get("action")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| "action".to_owned())
+    tilo_failure::ignored!(
+        "a payload that does not read back is named by the generic label",
+        serde_json::from_slice::<serde_json::Value>(payload)
+            .ok()
+            .and_then(|value| {
+                let operation = value.get("op").unwrap_or(&value);
+                operation
+                    .get("action")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| "action".to_owned())
+    )
 }

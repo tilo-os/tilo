@@ -194,8 +194,8 @@ pub(crate) fn reap(child: Child) {
             }
         });
     if spawn.is_err() {
-        // ignored-failure: the process is signalled already; a thread that cannot start waits for
-        // it here, where the session is ending anyway, and nothing else can be done.
+        // The process is signalled already; a thread that cannot start waits
+        // for it here, where the session is ending anyway.
         let taken = slot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

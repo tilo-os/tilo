@@ -161,12 +161,16 @@ pub fn write(kind: ColumnKind, lit: &Lit) -> Option<String> {
         (ColumnKind::Bool, Lit::Bool(b)) => if *b { "1" } else { "0" }.to_owned(),
         (ColumnKind::Int, Lit::Int(i)) => int(*i),
         // A set holds its members as their text.
-        // ignored-failure: a member that is not a number is a value of another kind (`None`).
-        (ColumnKind::Int, Lit::Text(t)) => int(t.parse().ok()?),
+        (ColumnKind::Int, Lit::Text(t)) => int(tilo_failure::ignored!(
+            "a member that is not a number is a value of another kind",
+            t.parse().ok()?
+        )),
         (ColumnKind::Float, Lit::Float(f)) => float(f.0),
         (ColumnKind::Float, Lit::Int(i)) => float(int_as_float(*i)),
-        // ignored-failure: a member that is not a number is a value of another kind (`None`).
-        (ColumnKind::Float, Lit::Text(t)) => float(t.parse().ok()?),
+        (ColumnKind::Float, Lit::Text(t)) => float(tilo_failure::ignored!(
+            "a member that is not a number is a value of another kind",
+            t.parse().ok()?
+        )),
         (ColumnKind::Text, x) => {
             let t = x.as_text()?;
             format!("{}\u{2}{t}", t.to_lowercase())

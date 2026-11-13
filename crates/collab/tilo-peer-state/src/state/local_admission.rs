@@ -148,9 +148,10 @@ impl StatePeer {
         let claims = mutation
             .as_ref()
             .and_then(|mutation| {
-                // ignored-failure: a segment of a frame, or changes that name no action, claim
-                // nothing; the readers that open them decide what they wrote
-                collab_types::mutation_claims(mutation, collab_types::record_unit).ok()
+                tilo_failure::ignored!(
+                    "a segment of a frame, or changes that name no action, claim nothing",
+                    collab_types::mutation_claims(mutation, collab_types::record_unit).ok()
+                )
             })
             .map(|claims| {
                 self.surfaces.with_footprints(
