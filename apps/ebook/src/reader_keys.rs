@@ -189,6 +189,32 @@ mod tests {
         assert_eq!(keys.shortcut(&format!("command-{last}"), "0"), key(last));
     }
 
+    /// A key kept before the reader reserved it, or written by something
+    /// other than the reader (the settings roam between devices and
+    /// versions), is not the command's key: the command reads its default.
+    #[test]
+    fn a_kept_key_the_reader_would_refuse_reads_as_the_default() {
+        for (kept, read) in [
+            ("x", "x"),
+            ("t", "b"),
+            ("T", "b"),
+            ("4", "b"),
+            ("\u{2212}", "b"),
+            ("ab", "b"),
+            ("", "b"),
+            (" ", "b"),
+            ("\n", "b"),
+        ] {
+            let keys = ReaderKeys {
+                stored: None,
+                unsaved: ReaderKeySettings {
+                    shortcuts: BTreeMap::from([("bookmark".to_owned(), kept.to_owned())]),
+                },
+            };
+            assert_eq!(keys.shortcut("bookmark", "b"), read, "{kept:?}");
+        }
+    }
+
     /// The keys a person chooses are their own settings, which roam to
     /// their other devices.
     #[test]
