@@ -1,8 +1,5 @@
-//! Install a real signed ~1 MiB tapp repeatedly and report wall-clock samples,
-//! then measure accounting and a size-pressure sweep over a store of many
-//! cached packages.
-//!
-//! Run with:
+//! Installs a real signed ~1 MiB tapp repeatedly and reports wall-clock samples, then measures
+//! accounting and a size-pressure sweep over a store of many cached packages.
 //!
 //!     cargo bench -p app-host --bench install_timing
 
@@ -51,8 +48,8 @@ fn main() {
     sweep_many();
 }
 
-/// A store of `PACKAGES` cached apps, each with its own blob and sharing
-/// the rest: how long accounting takes, and a sweep that evicts `EVICTED`.
+/// A store of `PACKAGES` cached apps sharing everything but one blob: how long accounting takes,
+/// and a sweep that evicts `EVICTED`.
 fn sweep_many() {
     const PACKAGES: u64 = 300;
     const EVICTED: u64 = 20;

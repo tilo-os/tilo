@@ -1,5 +1,5 @@
-//! The app-host socket: one tokio task per accepted connection, each
-//! serving [`crate::service::AppHostServer`] over [`crate::wire`].
+//! The app-host socket: one tokio task per accepted connection, each serving
+//! [`crate::service::AppHostServer`] over [`crate::wire`].
 
 use std::path::Path;
 use std::sync::Arc;
@@ -14,9 +14,7 @@ use crate::runtime_request::RuntimeRequests;
 use crate::service::AppHostServer;
 use package_store::{Catalog, PackageStore};
 
-/// Bind the Unix socket. Ensures the parent directory exists, drops a
-/// stale socket file from a previous run, and locks the socket to
-/// user-only permissions.
+/// Bind the Unix socket, creating its directory and locking it to user-only permissions.
 pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;
@@ -26,9 +24,8 @@ pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
     Ok(UnixListener::from_std(listener)?)
 }
 
-/// Run an accept loop forever. Each accepted stream gets its own
-/// service instance backed by the shared package store
-/// and its `catalog`.
+/// Run the accept loop. Each accepted stream gets its own service instance over the shared package
+/// store and catalogue.
 pub async fn serve(
     listener: UnixListener,
     store: Arc<PackageStore>,
@@ -52,7 +49,6 @@ pub async fn serve(
     }
 }
 
-/// Handle one accepted Unix stream.
 // Driven via `tokio::task::spawn_local` in `serve`; its calls share the
 // connection's `Rc` host and never cross a thread.
 #[allow(
@@ -84,9 +80,8 @@ pub async fn handle_connection(
         .ok_or_else(|| anyhow::anyhow!("caller is not authorized for app-host"))?
         .to_owned();
     if app_id != "so.tilo.store" {
-        // The only thing any other app is served is the narrow language-pack
-        // request (Settings alone gets answers); the package-management
-        // interface is the Store's alone.
+        // Any other app is served the narrow language-pack request alone (Settings gets answers);
+        // the package-management interface is the Store's.
         let stream = stream.into_std()?;
         stream.set_nonblocking(false)?;
         return tokio::task::spawn_blocking(move || requests.serve(&app_id, stream))

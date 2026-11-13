@@ -1,6 +1,3 @@
-//! The size-pressure sweep removes least recently used unpinned packages
-//! and preserves pinned ones; removal reclaims only unshared blobs.
-
 use crate::common;
 use app_host::install::install_tapp;
 use app_host::{PackageStore, Pinning};
@@ -83,9 +80,8 @@ fn gc_sweeps_tried_packages_but_never_pinned_or_shared_content() {
     }
 }
 
-/// The collection after an install keeps the app that install wrote: the
-/// person is about to open it. Larger than the cap on its own, it would
-/// otherwise be the last thing the sweep evicts, after every other app.
+/// The collection after an install keeps the app that install wrote, though it would otherwise be
+/// the last thing the sweep evicts.
 #[test]
 fn the_collection_after_an_install_keeps_the_app_it_installed() {
     let dir = tempfile::tempdir().unwrap();

@@ -1,6 +1,3 @@
-//! Round-trip test: install a .tapp via the library surface, then find it
-//! in the package store and check the payload landed on disk.
-
 #![allow(
     clippy::unwrap_used,
     reason = "in a test these are the assertion, not a hazard"

@@ -1,9 +1,7 @@
-//! The app host's side of the wire ([`crate::wire::Host`]): reads of the
-//! device's [`PackageStore`] and its [`Catalog`], and the actions on them.
-//! The transport (Unix socket listener) lives in `transport.rs`.
-//!
-//! Blocking work (fs IO, content-store sessions, materialisation) is routed
-//! through `tokio::task::spawn_blocking` so the connection stays responsive.
+//! The app host's side of the wire ([`crate::wire::Host`]): reads of the device's
+//! [`PackageStore`] and its [`Catalog`], and the actions on them. Blocking work (fs IO,
+//! content-store sessions, materialisation) runs through `tokio::task::spawn_blocking` so the
+//! connection stays responsive.
 
 use std::{io::Write as _, rc::Rc, sync::Arc};
 
@@ -16,14 +14,11 @@ use crate::wire::{
 use package_store::{Catalog, InstalledPackage, PackageStore, Pinning};
 use tilo_app_package::id::PackageId;
 
-/// Service state shared across every accepted connection.
-/// What `tilo-install` runs after every install, update and uninstall, run
-/// after this daemon's own, and at every start of the daemon (a new image or a
-/// swapped userspace changes the system store without any install running): the store's size cap, payload trees and staging
-/// nothing names, and the runtime builds nothing installed runs on any
-/// more. A tree a launch holds or a running app has mounted stays, and so do
-/// the apps `keep` names: what the change just installed, which the person
-/// is about to open. Never fails the change it follows.
+/// What `tilo-install` runs after every install, update and uninstall, and at every start of the
+/// daemon (a new image or a swapped userspace changes the system store without any install
+/// running): the store's size cap, payload trees and staging nothing names, and runtime builds no
+/// installed app runs any more. A tree a launch holds or a running app has mounted stays, and so
+/// do the apps `keep` names. Never fails the change it follows.
 pub fn collect_after_change(
     store: &PackageStore,
     catalog: &Catalog,
@@ -60,10 +55,9 @@ pub struct AppHostServer {
 }
 
 impl AppHostServer {
-    /// Build a new server backed by `store`, listing what `catalog` (the
-    /// same user store plus the image's preinstalled packages) can run.
-    /// `max_store_bytes` is the soft cap used by the post-install sweep;
-    /// pass `0` to disable it.
+    /// A server backed by `store`, listing what `catalog` (the same user store plus the image's
+    /// preinstalled packages) can run. `max_store_bytes` is the soft cap for the post-install
+    /// sweep; `0` disables it.
     pub fn new(store: Arc<PackageStore>, catalog: Arc<Catalog>, max_store_bytes: u64) -> Self {
         Self {
             store,
@@ -128,8 +122,8 @@ fn listed(package: InstalledPackage) -> Option<Listed> {
     })
 }
 
-/// Bytes of `package`'s payload tree: the size recorded at install, or —
-/// for a row written before sizes were recorded — the tree measured on disk.
+/// The size recorded at install, or the tree measured on disk for a row written before sizes were
+/// recorded.
 fn payload_bytes(package: &InstalledPackage) -> u64 {
     if package.payload_bytes > 0 {
         package.payload_bytes
@@ -138,7 +132,6 @@ fn payload_bytes(package: &InstalledPackage) -> u64 {
     }
 }
 
-/// The visible package with signed root `id`.
 fn find(catalog: &Catalog, id: PackageId) -> Result<InstalledPackage, Error> {
     catalog
         .find_package(id)
@@ -146,8 +139,8 @@ fn find(catalog: &Catalog, id: PackageId) -> Result<InstalledPackage, Error> {
         .ok_or_else(|| Error::failed(format!("unknown package {id}")))
 }
 
-/// The user-managed package with signed root `id`; system packages cannot
-/// be pinned or removed here.
+/// The user-managed package with signed root `id`; system packages cannot be pinned or removed
+/// here.
 fn find_user(catalog: &Catalog, id: PackageId) -> Result<InstalledPackage, Error> {
     let package = find(catalog, id)?;
     if !package.user_managed() {
@@ -159,7 +152,6 @@ fn find_user(catalog: &Catalog, id: PackageId) -> Result<InstalledPackage, Error
     Ok(package)
 }
 
-/// The wire entry of a listed package.
 fn entry(row: &Listed) -> PackageEntry {
     PackageEntry {
         id: *row.id.as_bytes(),
@@ -173,7 +165,6 @@ fn entry(row: &Listed) -> PackageEntry {
     }
 }
 
-/// Run blocking store work off the connection.
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, Error> + Send + 'static,
 ) -> Result<T, Error> {
@@ -182,7 +173,6 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| Error::failed(format!("join: {e}")))?
 }
 
-/// The override the build's gate let through, else the image default.
 fn path_or_default(
     allowed_override: Option<std::ffi::OsString>,
     default: &str,
@@ -234,9 +224,9 @@ fn require_offer_identity(
     Ok(())
 }
 
-/// The version a first open installs instead of `requested`: when
-/// `requested` names a runtime this device lacks, the newest offer of the
-/// same signed entry, no newer than `requested`, whose runtime is present.
+/// The version a first open installs instead of `requested`: when `requested` names a runtime this
+/// device lacks, the newest offer of the same signed entry, no newer than `requested`, whose
+/// runtime is present.
 fn first_open_choice<'a>(
     requested: &'a app_cli::CatalogueApp,
     offers: &'a [app_cli::CatalogueApp],
@@ -499,11 +489,8 @@ fn flatpak_app_from(binary: &std::path::Path, verb: &str, app_id: &str) -> Resul
     run_host_command(command)
 }
 
-/// Uninstall the account's `app_id`, keeping its data (`~/.var/app/<id>`), as
-/// Flatpak does, then the runtimes no app of the account uses any more:
-/// nothing else removes them from the person's installation, so each removed
-/// app would leave its runtime behind for good. Flatpak decides what is
-/// unused and keeps every runtime an installed app needs. The app is removed
+/// Uninstall the account's `app_id`, keeping its data (`~/.var/app/<id>`) as Flatpak does, then the
+/// runtimes no app of the account uses any more, which nothing else removes. The app is removed
 /// whether or not that cleanup succeeds.
 fn flatpak_remove_from(binary: &std::path::Path, app_id: &str) -> Result<String, Error> {
     let status = flatpak_app_from(binary, "uninstall", app_id)?;
@@ -630,9 +617,9 @@ fn require_enabled_flathub(rows: &str) -> Result<(), Error> {
     }
 }
 
-/// The person's app repositories, as `app repo list --json` prints them.
-/// The Store reads them here because its sandbox has a home of its own: a
-/// copy there would be a second list `app repo` never edits.
+/// The person's app repositories, as `app repo list --json` prints them. The Store reads them here
+/// because its sandbox has a home of its own, where a copy would be a second list `app repo` never
+/// edits.
 fn repositories_json() -> Result<String, Error> {
     repositories_json_from(&app_bin())
 }
@@ -666,8 +653,8 @@ fn registry_catalogue(registry: &str) -> Result<String, ReadError> {
     registry_catalogue_from(&configured, registry, app_cli::client::fetch_entries)
 }
 
-/// The catalogue last accepted from `registry`, without the network, under
-/// the same configuration and size rules as a fresh one.
+/// The catalogue last accepted from `registry`, without the network, under the same configuration
+/// and size rules as a fresh one.
 fn last_verified_catalogue(registry: &str) -> Result<String, ReadError> {
     system_declaration_readable(&package_store::interfaces::system_interfaces_path())?;
     let configured = app_cli::config::load_registries();
@@ -678,14 +665,12 @@ fn last_verified_catalogue(registry: &str) -> Result<String, ReadError> {
     )
 }
 
-/// Refuse to read any repository while the system's interface declaration
-/// at `path` cannot be read ([`Refusal::SystemUpdateNeeded`]).
+/// Refuse to read any repository while the system's interface declaration at `path` cannot be read
+/// ([`Refusal::SystemUpdateNeeded`]).
 ///
-/// Which builds of an app run here is decided against that declaration.
-/// Unreadable, it is written for another version of the system than this
-/// app host (a component swapped over an older image), so the Store must
-/// say that the system needs an update, not list apps judged against
-/// nothing or show the repository as unavailable.
+/// Which builds of an app run here is decided against that declaration. Unreadable, it was written
+/// for another version of the system than this app host, so the Store must say the system needs an
+/// update, rather than list apps judged against nothing.
 fn system_declaration_readable(path: &std::path::Path) -> Result<(), ReadError> {
     match package_store::interfaces::read_interfaces(path) {
         Ok(_) => Ok(()),
@@ -1084,8 +1069,8 @@ fn expectation(expected: Expected) -> InstallExpectation {
     }
 }
 
-/// A catalogue read's outcome as the wire answers it: the rows, or the
-/// refusal with its detail; anything else fails the call.
+/// A catalogue read's outcome as the wire answers it: the rows, or the refusal with its detail;
+/// anything else fails the call.
 fn catalogue_answer(read: Result<String, ReadError>) -> Result<Answer, Error> {
     match read {
         Ok(rows) => Ok(Answer::Catalogue(Catalogue::Rows(rows))),
@@ -1112,10 +1097,8 @@ mod command_tests {
         }
     }
 
-    /// When a swap does leave the app host with a declaration it cannot read
-    /// (the laptop on 2026-10-22: a one-version-per-interface file over an
-    /// app host reading lists), reading a repository fails with the reason
-    /// the Store shows, never an empty or silently unjudged catalogue.
+    /// A declaration the app host cannot read makes a repository read fail with the reason the
+    /// Store shows, never an empty or silently unjudged catalogue.
     #[test]
     fn an_unreadable_system_declaration_refuses_the_repository_saying_the_system_needs_an_update() {
         let dir = tempfile::tempdir().unwrap();
@@ -1251,10 +1234,8 @@ exit 1
         );
     }
 
-    /// Removing an app keeps its data, as Flatpak does, and then removes the
-    /// runtimes no app of the account uses any more, which nothing else
-    /// removes from the person's installation. A failed cleanup does not
-    /// make the removal fail.
+    /// Removing an app keeps its data and then removes the runtimes no app of the account uses any
+    /// more; a failed cleanup does not make the removal fail.
     #[test]
     fn removing_an_app_keeps_its_data_and_removes_runtimes_nothing_uses() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -1492,8 +1473,8 @@ printf 'org.example.Editor\tEditor\tA signed editor\t1.0\tstable\ttools\n'
         assert!(calls.iter().all(|call| call.ends_with("-- tools")));
     }
 
-    /// The catalogue read with only the hang bound as its deadline: the
-    /// fixtures answer at once, however slowly a loaded machine runs them.
+    /// The catalogue read with only the hang bound as its deadline: the fixtures answer at once,
+    /// however slowly a loaded machine runs them.
     fn catalogue_within_hang_bound(
         binary: &std::path::Path,
         user_managed: bool,

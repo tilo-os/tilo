@@ -1,11 +1,8 @@
-//! The app-host wire: postcard messages behind `wire_frame` length prefixes
-//! on the launcher-issued `app-host` connection.
-//!
-//! A caller reads the host's resources ([`Resource`]) and invokes its
-//! actions ([`Action`]). Every call carries an id the answer echoes, so
-//! several calls are in flight on one connection at once: a slow catalogue
-//! read never holds up a pin or a list. All `id` fields carry the raw
-//! 32-byte BLAKE3 package id; presentation (`tapp:<hex>`) is the caller's.
+//! The app-host wire: postcard messages behind `wire_frame` length prefixes on the
+//! launcher-issued `app-host` connection. Every call carries an id the answer echoes, so several
+//! calls are in flight on one connection: a slow catalogue read never holds up a pin or a list.
+//! All `id` fields carry the raw 32-byte BLAKE3 package id; presentation (`tapp:<hex>`) is the
+//! caller's.
 
 use std::future::Future;
 use std::rc::Rc;
@@ -19,24 +16,20 @@ use crate::client::Refusal;
 /// over in one message.
 pub const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(64 << 20);
 
-/// A raw 32-byte package id.
 pub type WireId = [u8; 32];
 
-/// One call: the caller's id for it, and what it asks.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Call {
     pub id: u64,
     pub request: Operation,
 }
 
-/// The host's answer to the call `id`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Reply {
     pub id: u64,
     pub answer: Result<Answer, String>,
 }
 
-/// What a caller asks the host.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Operation {
     /// Read one of the host's resources; never changes anything.
@@ -162,7 +155,6 @@ pub enum Action {
     },
 }
 
-/// One package as the host lists it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PackageEntry {
     pub id: WireId,
@@ -204,9 +196,8 @@ pub enum Answer {
     Installed(WireId),
 }
 
-/// A host's side of the wire: one answer per request. Calls run
-/// concurrently on one connection, and a call still running when its
-/// connection ends is dropped.
+/// A host's side of the wire: one answer per request. Calls run concurrently on one connection;
+/// one still running when its connection ends is dropped.
 pub trait Host: 'static {
     fn handle(
         self: Rc<Self>,

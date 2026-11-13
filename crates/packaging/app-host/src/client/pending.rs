@@ -12,8 +12,8 @@ use crate::wire::{Answer, Operation, Resource, WirePinning};
 
 type ReadFuture<T, E> = Pin<Box<dyn Future<Output = Result<T, E>>>>;
 
-/// One typed read polled on the client that created it.
-/// Dropping it stops observing that response without opening another transport.
+/// One typed read polled on the client that created it; dropping it stops observing that response
+/// without opening another transport.
 #[must_use]
 pub struct PendingRead<T, E = String> {
     future: Option<ReadFuture<T, E>>,
@@ -53,8 +53,8 @@ impl BlockingClient {
         self.local.block_on(&self.runtime, future)
     }
 
-    /// Start bounded app-side catalogue work on this client's owned runtime.
-    /// It has no host capability beyond the closure's ordinary sandbox.
+    /// Start bounded app-side catalogue work on this client's owned runtime. It has no host
+    /// capability beyond the closure's ordinary sandbox.
     pub fn background_read<T: Send + 'static>(
         &self,
         read: impl FnOnce() -> Result<T, String> + Send + 'static,
@@ -77,7 +77,6 @@ impl BlockingClient {
         self.connection.call(Operation::Read(resource))
     }
 
-    /// Begin the same typed list read without waiting for its response.
     pub fn begin_list(&self) -> PendingRead<Vec<ListedPackage>> {
         let answer = self.begin_read(Resource::Packages);
         PendingRead::new(async move {
@@ -119,13 +118,11 @@ impl BlockingClient {
         })
     }
 
-    /// Begin the same typed repositories read without waiting for its response.
     pub fn begin_repositories(&self) -> PendingRead<String> {
         let answer = self.begin_read(Resource::Repositories);
         PendingRead::new(async move { text(answer.await?) })
     }
 
-    /// Begin the same typed registry catalogue read without waiting for its response.
     pub fn begin_registry_catalogue(&self, registry: &str) -> PendingRead<String, CatalogueError> {
         let answer = self.begin_read(Resource::RegistryCatalogue {
             registry: registry.to_owned(),
@@ -145,7 +142,6 @@ impl BlockingClient {
         PendingRead::new(async move { bounded_registry(catalogue(answer.await)?) })
     }
 
-    /// Begin the same typed flatpak catalogue read without waiting for its response.
     pub fn begin_flatpak_catalogue(
         &self,
         remote: &str,
@@ -158,7 +154,6 @@ impl BlockingClient {
         PendingRead::new(async move { catalogue(answer.await) })
     }
 
-    /// Begin the same typed flatpak status read without waiting for its response.
     pub fn begin_flatpak_status(&self) -> PendingRead<FlatpakStatus> {
         let answer = self.begin_read(Resource::FlatpakStatus);
         PendingRead::new(async move {
