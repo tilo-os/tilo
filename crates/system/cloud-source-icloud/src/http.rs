@@ -14,10 +14,8 @@ use zeroize::Zeroizing;
 /// reference clients present.
 pub const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3.1 Safari/605.1.15";
 
-/// The web origin every setup/drivews/docws request claims.
 pub const ICLOUD_ORIGIN: &str = "https://www.icloud.com";
 
-/// Largest JSON body read from any endpoint.
 pub const MAX_JSON_BYTES: usize = 64 * 1024 * 1024;
 
 /// A client that never follows redirects (Apple's 330 is handled by hand,
@@ -62,7 +60,6 @@ pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
         .and_then(|value| cloud_source::http::parse_retry_after(value, SystemTime::now()))
 }
 
-/// Cookies by name, in the order first set. Values are secrets.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Cookies(Vec<(String, Zeroizing<String>)>);
 
@@ -75,7 +72,6 @@ impl fmt::Debug for Cookies {
 }
 
 impl Cookies {
-    /// Parse a `Cookie` request header (`a=1; b=2`).
     pub fn from_header(header: &str) -> Self {
         let mut jar = Self::default();
         for pair in header.split(';') {
@@ -101,7 +97,6 @@ impl Cookies {
         self.get(name).is_some()
     }
 
-    /// Set or, with an empty value, remove a cookie.
     pub fn set(&mut self, name: &str, value: &str) {
         if name.is_empty() {
             return;
@@ -145,7 +140,6 @@ impl Cookies {
         }
     }
 
-    /// The `Cookie` request header.
     pub fn header(&self) -> Zeroizing<String> {
         let mut out = Zeroizing::new(String::new());
         for (name, value) in &self.0 {
@@ -182,7 +176,6 @@ impl<'de> Deserialize<'de> for Cookies {
     }
 }
 
-/// Serde for secret strings: serialized as plain strings, held zeroized.
 pub mod secret {
     use serde::{Deserialize, Deserializer, Serializer};
     use zeroize::Zeroizing;

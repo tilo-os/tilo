@@ -27,7 +27,6 @@ fn service_error(status: u16, code: &str) -> Reply {
     )
 }
 
-/// The sign-in a request belongs to, by its echoed session id.
 fn sign_in_id(request: &Request) -> Option<String> {
     request
         .header("X-Apple-ID-Session-Id")
@@ -236,7 +235,6 @@ fn code_verdict(state: &mut State, id: &str, accepted: bool) -> Reply {
     }
 }
 
-/// What `accountLogin` and `validate` answer for a trusted session.
 pub(super) fn account(state: &State, trusted: bool) -> Value {
     let base = &state.base;
     let pcs = state.options.advanced_data_protection;
