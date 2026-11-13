@@ -211,11 +211,19 @@ test('the account choice says it is the account choice, and resolves to the acco
 
 test('the invitation a link opens says who invited them, to what and as what, before they join', async () => {
   const cards = () => document.body.children.filter(form => form.dataset.card === 'invite');
-  const text = node => typeof node === 'string' ? node : node.textContent ?? null;
-  const shape = card => ({face: card.children[0].children[0].style, who: card.children[0].children.map(text), lead: text(card.children[1]),
-    place: card.children[2].children.map(text), role: card.children[3].children.map(text),
-    actions: card.children[4].children.map(button => button.textContent),
-    primary: card.children[4].children[0].className});
+  // What a node reads as: its own words, or its children's in order.
+  const text = node => typeof node === 'string' ? node
+    : node.textContent ?? node.children.map(text).join('');
+  const shape = card => {
+    const [head, ...rest] = card.children;
+    const actions = rest.at(-1);
+    const [from, workspace, people] = head.children;
+    return {face: from.children.length > 1 ? from.children[0].style : null, from: text(from),
+      workspace: text(workspace), heading: workspace.tag, people: people && text(people),
+      role: rest.length > 1 ? rest[0].children.map(text) : null,
+      actions: actions.children.map(text), primary: actions.children[0].className, join: actions.children[0],
+      notNow: actions.children[1]};
+  };
   let offered;
   let answered;
   let declined;
@@ -224,34 +232,36 @@ test('the invitation a link opens says who invited them, to what and as what, be
     const answer = deps.confirmInvitation({workspaceName: 'Lounge', role: 'commenter', members: 4,
       inviter: {name: 'Nimble Panda', userPublicKey: USER}});
     offered = shape(cards()[0]);
-    cards()[0].children[4].children[0].listeners.get('click')();
+    offered.join.listeners.get('click')();
     answered = await answer;
     const other = deps.confirmInvitation({workspaceName: 'Commons', role: 'viewer', members: 1, inviter: null});
     declined = shape(cards()[0]);
-    cards()[0].children[4].children[1].listeners.get('click')();
+    declined.notNow.listeners.get('click')();
     notNow = await other;
     return page;
   }});
   assert.equal(failure, null);
-  // Who asked them: their initial, in the colour presence gives them, and
-  // their name as the host verified it.
+  // One sentence: who asked them, by their initial in the colour presence
+  // gives them and their name as the host verified it, then the workspace
+  // as the card's heading.
   assert.deepEqual(offered.face, {background: '#ffd166', color: '#101114'},
     'the monogram is drawn in the inviter’s presence colour, dark on a light one');
-  assert.deepEqual(offered.who, ['N', 'Nimble Panda']);
-  assert.equal(offered.lead, 'invites you to');
-  // Where, and how many people are already in it.
-  assert.deepEqual(offered.place, ['Lounge', '4 people']);
-  // As what, in the words a person reads: the part, then what it lets them do.
-  assert.deepEqual(offered.role, ['Commenter', ' — you can add comments, but not edit shared work.']);
+  assert.equal(offered.from, 'NNimble Panda invited you to');
+  assert.equal(offered.workspace, 'Lounge');
+  assert.equal(offered.heading, 'h2');
+  assert.equal(offered.people, '4 people');
+  // As what: the role's name, and beneath it what it lets them do, in the
+  // desktop role chooser's words.
+  assert.deepEqual(offered.role, ['Commenter', 'Can view shared work and add comments, but cannot edit it.']);
   assert.deepEqual(offered.actions, ['Join', 'Not now']);
   assert.equal(offered.primary, 'tilo-entry-primary', 'Join is the primary action');
   assert.equal(answered, true, 'Join joins');
-  // A link that names no one, to a workspace of one: the card says so rather
-  // than leaving the field out.
-  assert.deepEqual(declined.who, ['S', 'Someone']);
-  assert.deepEqual(declined.face, {}, 'a link that names no person falls back to the card’s own face');
-  assert.deepEqual(declined.place, ['Commons', '1 person']);
-  assert.deepEqual(declined.role, ['Viewer', ' — you can view shared work, but not comment or edit it.']);
+  // A link that names no one: the card says the person is invited, with no
+  // stand-in name or face.
+  assert.equal(declined.face, null);
+  assert.equal(declined.from, 'You’re invited to');
+  assert.equal(declined.people, '1 person');
+  assert.deepEqual(declined.role, ['Viewer', 'Can view shared work, but cannot comment or edit it.']);
   assert.equal(notNow, false, 'Not now does not join');
   assert.equal(cards().length, 0, 'either answer closes the card');
 });

@@ -224,20 +224,28 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .tilo-entry-card input { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid #3a3d44; background: #14161a; color: inherit; }
     .tilo-entry-card .tilo-entry-error { margin: 0; color: #ff8a80; }
     /* An invitation, before the person joins (entry-page.mjs
-       `invitationCard`): who it is from, the workspace it is for and how many
-       people are in it, and what the role lets them do — a card, not a bare
-       line, over the page's own ground. */
-    .tilo-invite { width: min(380px, calc(100vw - 32px)); gap: 14px; padding: 26px; }
-    .tilo-invite-who { display: flex; align-items: center; gap: 10px; min-width: 0; }
-    .tilo-invite-face { display: grid; flex: none; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: #2c2e34; color: #f2f2f4; font: 600 14px/1 system-ui, sans-serif; }
-    .tilo-invite-name { overflow: hidden; font-weight: 600; color: #f2f2f4; text-overflow: ellipsis; white-space: nowrap; }
-    .tilo-invite-lead { color: #9b9ba3; }
-    .tilo-invite-place { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-    .tilo-invite-workspace { overflow: hidden; font-size: 19px; font-weight: 600; color: #f2f2f4; text-overflow: ellipsis; white-space: nowrap; }
-    .tilo-invite-people { flex: none; font-size: 13px; color: #9b9ba3; }
-    .tilo-invite-role { font-size: 13px; color: #b9b9c0; }
-    .tilo-invite-role strong { font-weight: 600; color: #e6e6e9; }
-    .tilo-invite .tilo-entry-actions { margin-top: 4px; }
+       `invitationCard`): one sentence, who invited them and then the
+       workspace as the heading, how many people are in it, and the role as
+       the desktop's role chooser shows one, its name over what it lets them
+       do. Its colours are the entry cards' tokens. */
+    :root { --entry-sheet: #1c1d21; --entry-line: #2c2e34; --entry-inset: #24252b; --entry-face: #2c2e34; --entry-text: #e6e6e9; --entry-strong: #f2f2f4; --entry-quiet: #9b9ba3; --entry-focus: #9ab4ff; }
+    .tilo-invite { width: min(380px, calc(100vw - 32px)); gap: 20px; padding: 24px; background: var(--entry-sheet); border-color: var(--entry-line); color: var(--entry-text); }
+    .tilo-invite-head { display: grid; gap: 2px; min-width: 0; }
+    .tilo-entry-card .tilo-invite-from { display: flex; align-items: center; gap: 8px; min-width: 0; margin-bottom: 6px; font-size: 14px; line-height: 20px; color: var(--entry-quiet); white-space: nowrap; }
+    .tilo-invite-face { display: grid; flex: none; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--entry-face); color: var(--entry-text); font: 600 11px/1 system-ui, sans-serif; }
+    .tilo-invite-says { overflow: hidden; min-width: 0; text-overflow: ellipsis; }
+    .tilo-invite-name { font-weight: 500; color: var(--entry-text); }
+    .tilo-invite-workspace { margin: 0; overflow: hidden; font-size: 24px; font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; color: var(--entry-strong); text-overflow: ellipsis; white-space: nowrap; }
+    .tilo-entry-card .tilo-invite-people { font-size: 14px; line-height: 20px; color: var(--entry-quiet); }
+    .tilo-invite-role { display: grid; gap: 2px; padding: 12px 14px; border-radius: 10px; background: var(--entry-inset); }
+    .tilo-entry-card .tilo-invite-role-name { font-size: 14px; font-weight: 600; line-height: 20px; color: var(--entry-text); }
+    .tilo-entry-card .tilo-invite-role-words { font-size: 13px; line-height: 18px; color: var(--entry-quiet); text-wrap: pretty; }
+    .tilo-invite .tilo-entry-actions button { min-width: 88px; height: 36px; padding: 0 16px; }
+    .tilo-invite .tilo-entry-actions button:focus-visible { outline: 2px solid var(--entry-focus); outline-offset: 2px; }
+    @media (max-width: 480px) {
+      .tilo-invite { padding: 20px; }
+      .tilo-invite .tilo-entry-actions button { flex: 1; height: 44px; }
+    }
     /* Who waits to join and the workspace's wait list (entry-page.mjs
        `waitingCard`): a row each, the person or address, then its answers. */
     .tilo-waiting { width: min(480px, calc(100vw - 32px)); gap: 16px; max-height: calc(100% - 32px); overflow: auto; }

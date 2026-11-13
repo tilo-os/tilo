@@ -119,7 +119,7 @@ impl Workspaces {
         &self,
         workspace: &str,
         administrator: &DeviceCert,
-        request: IssueInvitationRequest,
+        mut request: IssueInvitationRequest,
     ) -> Result<IssuedInvitation, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
         let issued = {
@@ -131,10 +131,37 @@ impl Workspaces {
                 WorkspaceOp::Invite(request.role),
                 now,
             )?;
+            // An invitation says who it is from. A caller that names nobody
+            // (an API key, the command line) invites under the name the
+            // workspace already shows for them, so the person it reaches
+            // sees who asked them in, not "someone".
+            if request.inviter_name.is_none() {
+                request.inviter_name = self.member_name(workspace, &governed, administrator);
+            }
             self.stage_issue(&mut governed, administrator, request, now)?
         };
         self.written(workspace, false).await?;
         Ok(issued)
+    }
+
+    /// The name `workspace` shows for the person `device` belongs to, where
+    /// they chose one an invitation can carry.
+    fn member_name(
+        &self,
+        workspace: &str,
+        governed: &GovernedWorkspace,
+        device: &DeviceCert,
+    ) -> Option<String> {
+        self.people(workspace, governed)
+            .members
+            .into_iter()
+            .find(|member| member.user_public_key == device.user_public_key && !member.removed)
+            .and_then(|member| member.display_name)
+            .map(|name| name.trim().to_owned())
+            .filter(|name| {
+                !name.is_empty()
+                    && name.chars().count() <= tilo_peer_state::join::MAX_INVITER_NAME_CHARS
+            })
     }
 
     /// Record an invitation `request` asks of `workspace`, unwritten.

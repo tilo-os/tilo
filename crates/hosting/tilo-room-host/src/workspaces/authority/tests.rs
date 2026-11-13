@@ -643,6 +643,53 @@ const fn listed_at_once(removal: u8) -> WaitListSecrets {
     }
 }
 
+/// An invitation says who it is from: one asked without a name (from an API
+/// key or the command line) carries the name the workspace shows for the
+/// person who asked, and one that names its inviter keeps that name.
+#[tokio::test]
+async fn an_invitation_asked_without_a_name_names_the_inviter_as_the_workspace_shows_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
+    let inviter = |issued: crate::workspaces::IssuedInvitation| {
+        tilo_peer_state::join::decode_and_verify_invitation(
+            &issued.signed_invitation,
+            None,
+            &tilo_user_identity::RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )
+        .unwrap()
+        .inviter()
+        .cloned()
+    };
+
+    let unnamed = workspaces
+        .issue(&workspace, &ada, invitation(20, Role::Viewer))
+        .await
+        .unwrap();
+    let from = inviter(unnamed).expect("the invitation names who it is from");
+    assert_eq!(from.name, "Person 1");
+    assert_eq!(from.user_public_key, ada.user_public_key);
+
+    let named = workspaces
+        .issue(
+            &workspace,
+            &ada,
+            IssueInvitationRequest {
+                inviter_name: Some("Ada".into()),
+                ..invitation(21, Role::Viewer)
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(inviter(named).unwrap().name, "Ada");
+    relay.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
     let dir = tempfile::tempdir().unwrap();
