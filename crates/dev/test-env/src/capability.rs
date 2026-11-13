@@ -1,80 +1,36 @@
-//! Host capabilities a test may need, and lanes that must provide them.
-//!
-//! Some tests need something only certain machines have: a Vulkan adapter,
-//! an audio endpoint, media codecs, `/dev/fuse`, fanotify permission, a
-//! filesystem with fs-verity. On a developer machine without it, the test
-//! should say so and pass. On a CI
-//! lane that is set up to provide it, a missing capability is a broken lane,
-//! and a skipped test must not look like a passing one.
-//!
-//! [`require_capability!`](crate::require_capability) does both: it skips
-//! with a message naming the capability, unless `TILO_REQUIRE_<CAP>=1` is set,
-//! in which case it fails the test instead.
+//! Host capabilities a test may need, and lanes that must provide them. Some tests need something
+//! only certain machines have (a Vulkan adapter, an audio endpoint, media codecs, `/dev/fuse`,
+//! fanotify permission, a filesystem with fs-verity): on a developer machine without it the test
+//! says so and passes, while on a CI lane set up to provide it a missing capability is a broken
+//! lane, and a skipped test must not look like a passing one.
+//! [`require_capability!`](crate::require_capability) does both: it skips with a message naming the
+//! capability, unless `TILO_REQUIRE_<CAP>=1` is set, in which case it fails the test instead.
 
 #[cfg(unix)]
 use crate::SpawnUnderEnvLock as _;
 use std::fmt;
 
-/// A host capability that some tests cannot run without.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Capability {
-    /// A usable GPU adapter (CI: Mesa llvmpipe/lavapipe software Vulkan).
     Gpu,
-    /// An audio output endpoint (CI: `tools/with-headless-audio.sh`).
     Audio,
-    /// Media codecs and `GStreamer` elements beyond the base plugins.
     Media,
-    /// A mountable FUSE device (`/dev/fuse` and `fusermount3`).
     Fuse,
-    /// The FUSE control filesystem at `/sys/fs/fuse/connections`, through
-    /// which a test can abort its own connection.
     FuseControl,
-    /// Permission to create a fanotify group.
     Fanotify,
-    /// A writable directory on a filesystem with fs-verity (btrfs, or ext4
-    /// with the `verity` feature): `TILO_FSVERITY_DIR`, else the test's
-    /// temporary directory.
     FsVerity,
-    /// A private `PipeWire` with a session manager to serve a headless screen
-    /// (`pipewire`, `wireplumber`, `pw-dump` and `GStreamer`'s `PipeWire`
-    /// plugin).
     ScreenCapture,
-    /// Giving a file in the temporary directory to another user and becoming
-    /// it ([`chown_to`], [`switch_identity`]): root with `CAP_CHOWN` and
-    /// `CAP_SETUID`/`CAP_SETGID` on a filesystem that can hold that user. Root
-    /// in a job sandbox without capabilities is uid 0 and still cannot.
     Chown,
-    /// Creating the user or mount namespaces the fixtures use: a real root
-    /// process for a mount namespace, or an unprivileged caller for a user
-    /// namespace (bubblewrap, `unshare --user`). The job sandbox refuses both.
     UserNamespace,
-    /// Entering a namespace this process made (`setns`), as a sandbox
-    /// supervisor does to prepare its guest's network namespace. The job
-    /// sandbox's seccomp filter refuses `setns` even where it lets a job make
-    /// namespaces.
     NamespaceEntry,
-    /// A native dynamic loader a helper may be run from: the installed host
-    /// loader, owned by root or, in a user service's id-mapped namespace,
-    /// mapped to the kernel's overflow uid on an immutable filesystem. A user
-    /// namespace that maps the host's root-owned files to the caller (a test
-    /// runner nesting an unprivileged process) is root-equivalent over them,
-    /// and such a helper refuses to trust the loader there.
     TrustedLoader,
-    /// An emulated TPM and the tools that drive it: `swtpm`, `tpm2-tools` and
-    /// `cryptsetup` ([`crate::swtpm`]).
     Swtpm,
-    /// The kernel's key retention service (`add_key`, `keyctl`), which
-    /// container seccomp profiles often refuse.
     KernelKeyring,
-    /// TUN devices configured as the device VPN helper does: `/dev/net/tun`,
-    /// `ip` and `nft`, in user and network namespaces of the test's own
-    /// (`unshare --user --map-root-user --net`).
     NetworkTunnel,
 }
 
 impl Capability {
-    /// Every capability, for the CI step that checks the manifest's names.
     pub const ALL: &'static [Self] = &[
         Self::Gpu,
         Self::Audio,
@@ -93,7 +49,6 @@ impl Capability {
         Self::NetworkTunnel,
     ];
 
-    /// The variable that turns a missing capability into a test failure.
     #[must_use]
     pub const fn variable(self) -> &'static str {
         match self {
@@ -115,8 +70,6 @@ impl Capability {
         }
     }
 
-    /// Whether this environment promises the capability
-    /// (`TILO_REQUIRE_<CAP>=1`).
     #[must_use]
     pub fn required(self) -> bool {
         std::env::var_os(self.variable()).is_some_and(|value| value == "1")
@@ -145,18 +98,12 @@ impl fmt::Display for Capability {
     }
 }
 
-/// Whether this process can give a file in the temporary directory to `uid`,
-/// tried on a scratch file there: being uid 0 is not enough without
-/// `CAP_CHOWN`, nor is `CAP_CHOWN` where the filesystem cannot represent `uid`
-/// (an idmapped mount maps only some users).
 #[cfg(unix)]
 pub fn chown_to(uid: u32) -> std::io::Result<()> {
     let file = tempfile::NamedTempFile::new()?;
     std::os::unix::fs::chown(file.path(), Some(uid), None)
 }
 
-/// Whether this process can give a file in the temporary directory to `uid`
-/// and then become that user, tried on a scratch file and a throwaway child.
 #[cfg(unix)]
 pub fn switch_identity(uid: u32) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt as _;
@@ -174,8 +121,6 @@ pub fn switch_identity(uid: u32) -> std::io::Result<()> {
     }
 }
 
-/// Whether this process can create a user namespace with the unprivileged
-/// mapping the fixtures use, tried on a throwaway `true`.
 #[cfg(target_os = "linux")]
 pub fn user_namespace() -> std::io::Result<()> {
     namespace(
@@ -190,8 +135,6 @@ pub fn user_namespace() -> std::io::Result<()> {
     )
 }
 
-/// Whether this process can create a private mount namespace, trying `unshare`
-/// as the caller and then `sudo -n` for an unprivileged developer host.
 #[cfg(target_os = "linux")]
 pub fn mount_namespace() -> std::io::Result<()> {
     match namespace(
@@ -226,12 +169,6 @@ pub fn mount_namespace() -> std::io::Result<()> {
     }
 }
 
-/// Whether this process can start bubblewrap as Tilo's sandboxes do, tried on
-/// a throwaway `true`: every namespace of its own, the read-only root the
-/// bundle fixtures use, and a fresh `/proc` and `/dev`. A container that lets
-/// a process make namespaces may still refuse it a new `/proc` (its own is
-/// partly masked), and every sandbox mounts one: the probe asks for it too, so
-/// it never passes where the sandboxes cannot start.
 #[cfg(target_os = "linux")]
 pub fn bubblewrap() -> std::io::Result<()> {
     namespace(
@@ -252,10 +189,6 @@ pub fn bubblewrap() -> std::io::Result<()> {
     )
 }
 
-/// Whether this process can start bubblewrap as uid 1000 in user and pid
-/// namespaces of its own with a fresh `/proc`, as a test that runs its own
-/// binary as a non-root owner does. A container may allow
-/// [`bubblewrap`] and still refuse to mount `/proc` in a new pid namespace.
 #[cfg(target_os = "linux")]
 pub fn bubblewrap_with_proc() -> std::io::Result<()> {
     namespace(
@@ -279,9 +212,6 @@ pub fn bubblewrap_with_proc() -> std::io::Result<()> {
     )
 }
 
-/// Whether this process can start bubblewrap as root of a user namespace
-/// with every capability, a tmpfs `/run` and an overlay mounted in it: the
-/// build sandbox of `env-tools`.
 #[cfg(target_os = "linux")]
 pub fn bubblewrap_overlay() -> std::io::Result<()> {
     let probe = std::env::temp_dir().join(format!(
@@ -318,15 +248,11 @@ pub fn bubblewrap_overlay() -> std::io::Result<()> {
             "true",
         ],
     );
-    // The overlay can leave its work directory unreadable.
     let _ = namespace("chmod", &["-R", "u+rwx", &probe.to_string_lossy()]);
     std::fs::remove_dir_all(&probe)?;
     probed
 }
 
-/// Whether this machine has TUN devices, and `ip` and nftables work in user
-/// and network namespaces of this process's own (`unshare --user
-/// --map-root-user --net`), as the device VPN's namespace tests need.
 #[cfg(target_os = "linux")]
 pub fn network_tunnel() -> std::io::Result<()> {
     if !std::path::Path::new("/dev/net/tun").exists() {
@@ -347,13 +273,9 @@ pub fn network_tunnel() -> std::io::Result<()> {
     )
 }
 
-/// A probe `.config/nextest-capabilities.toml` names for a group of tests.
 #[cfg(target_os = "linux")]
 pub type NamedProbe = (&'static str, fn() -> std::io::Result<()>);
 
-/// Every probe the capability manifest may name, by its name there. The
-/// `tilo-capability-probe` program runs each where the tests run, and the CI test
-/// step leaves out the tests whose probe fails.
 #[cfg(target_os = "linux")]
 pub const PROBES: &[NamedProbe] = &[
     ("user-namespace", user_namespace),
@@ -392,16 +314,6 @@ fn namespace(program: &str, args: &[&str]) -> std::io::Result<()> {
     }
 }
 
-/// Report that `capability` is unavailable: print why the calling test is
-/// skipped, or panic if this environment requires the capability.
-///
-/// [`require_capability!`](crate::require_capability) calls this and then
-/// returns from the test. Call it directly where the test cannot simply
-/// return, e.g. one returning `Result`.
-///
-/// # Panics
-///
-/// When `TILO_REQUIRE_<CAP>=1` is set.
 #[track_caller]
 pub fn capability_unavailable(capability: Capability, reason: fmt::Arguments<'_>) {
     let location = std::panic::Location::caller();
@@ -419,13 +331,9 @@ pub fn capability_unavailable(capability: Capability, reason: fmt::Arguments<'_>
     );
 }
 
-/// The outcome of probing for a capability: `true`, `Some(value)` and
-/// `Ok(value)` mean available; the error of an `Err` is added to the message.
 pub trait Probe {
-    /// What the test gets when the capability is available.
     type Value;
 
-    /// Split the probe into its value or an optional detail message.
     fn into_probe(self) -> Result<Self::Value, Option<String>>;
 }
 
@@ -453,27 +361,6 @@ impl<T, E: fmt::Display> Probe for Result<T, E> {
     }
 }
 
-/// Evaluate a capability probe; on success yield its value, otherwise skip
-/// the test (return) or, under `TILO_REQUIRE_<CAP>=1`, fail it.
-///
-/// This example uses an available fixture adapter to demonstrate yielding
-/// the probed value.
-///
-/// ```
-/// use tilo_test_env::require_capability;
-///
-/// fn adapter() -> Option<&'static str> { Some("fixture adapter") }
-///
-/// fn renders_a_frame() {
-///     let adapter = require_capability!(Gpu, adapter(), "no wgpu adapter for offscreen render");
-///     assert_eq!(adapter, "fixture adapter");
-/// }
-/// # renders_a_frame();
-/// ```
-///
-/// The probe may be a `bool`, an `Option` or a `Result` whose error is
-/// appended to the message. The expansion contains `return;`, so use it in
-/// tests returning `()`; elsewhere call [`capability_unavailable`].
 #[macro_export]
 macro_rules! require_capability {
     ($capability:ident, $probe:expr, $($reason:tt)+) => {

@@ -1,109 +1,16 @@
-//! Process-environment fixtures for tests.
-//!
-//! The environment is process-global, and `cargo test` runs every test of a
-//! binary as a thread of one process. A test that sets `XDG_DATA_HOME` and
-//! forgets to put it back, or restores it by removing a value that was set
-//! before it ran, leaks into whichever test runs next — and a test that reads
-//! the variable while another thread is writing it sees either value.
-//!
-//! Prefer not to need this crate: an API that takes its root directory as an
-//! argument (`open_at(root, …)`, `*_in(root, …)`) needs no environment at all
-//! and its tests can run in parallel. Use the fixtures here only where the
-//! environment *is* the interface under test, such as the function that
-//! resolves `XDG_DATA_HOME` itself.
-//!
-//! - [`ScopedEnv`] sets and removes variables and restores every prior value
-//!   when dropped, including while unwinding from a failed assertion.
-//! - [`pin`] sets a variable for the rest of the process, for a fixture every
-//!   test of it shares.
-//! - [`TestHome`] points `HOME` and every XDG base directory at a fresh
-//!   temporary tree.
-//! - [`Fixture`] is a temporary tree a test fills with the files, documents
-//!   and workspace it starts from, for a test that needs no environment.
-//! - [`TestEnv`] is that tree with the wall clock and the network a test
-//!   drives code through: the clock starts at the moment a screenshot shows
-//!   and moves only when the test moves it, and the network starts closed.
-//! - [`runtime_tempdir`] is a private temporary directory with a path as
-//!   short as a real runtime directory's, for tests that bind sockets.
-//! - [`PrivateBus`] is a `dbus-daemon` of the test's own, configured so that it
-//!   starts without reading the caller's home directory out of the user
-//!   database.
-//! - [`lock`] is the single process-wide lock both of them hold. Every
-//!   scope in the process is serialised on it, and it is re-entrant, so
-//!   scopes nest on one thread.
-//! - [`script`] writes an executable fixture script without racing
-//!   concurrent `fork`/`exec` in sibling tests.
-//! - [`stand_in()`] writes a stand-in for a program the code under test starts
-//!   (a `tilo-launcher`, a host app), whose `hold` keeps it running only as
-//!   long as the test that wrote it.
-//! - [`require_capability!`] skips a test that needs a GPU, audio, codecs,
-//!   FUSE, fanotify, chown or namespaces where the host lacks it, and fails it
-//!   instead on a CI lane that sets `TILO_REQUIRE_<CAP>=1`.
-//! - [`hang`] waits for workers, daemons, sockets and events against one
-//!   workspace-wide bound that only catches a hang: [`wait_until`],
-//!   [`wait_for`], [`recv`] and [`within`].
-//! - [`relay`] is a packet relay on this machine's loopback, so a test's iroh
-//!   endpoint takes it as home instead of asking the person's relays out on
-//!   the internet.
-//! - [`idle`] counts how often idle threads wake: one thread of the test
-//!   process, or every thread of a process tree the test spawned.
-//! - [`require_isolated_desktop`] refuses to go on when a test binary was
-//!   started outside the test environment, where it could reach the caller's
-//!   session bus, portals, media players or display.
-//! - [`package_binary!`] finds a binary of the package under test where the
-//!   test run put it, which an archived run moves away from Cargo's path.
-//! - [`sibling_binary`] is the same for a binary of another package — an app or
-//!   a tool a test starts as a process of its own — which the run's harness
-//!   builds before the tests start.
-//! - [`in_own_process`] runs a test that changes what the whole process
-//!   sees, such as a held wall clock, in a process no other test shares;
-//!   [`in_own_process_here`] is the same for a test that drives its own
-//!   future.
-//! - [`held_wall_clock`] holds this thread's wall clock at the instant a
-//!   test environment and a capture start at, so two pictures of the desk a
-//!   test compares show the same date and time.
-//! - [`net`] is a network several devices share, whose delivery the test owns:
-//!   `FakeNet` with a `Peer` per device, partitions and heals, and the
-//!   `Converged` assertion that says which path or device disagrees.
-//! - [`scenario!`] folds a group of related tests into one test with a
-//!   labelled phase per former test, each phase in its own scope, and still
-//!   reports a failure by the case it came from.
-//!
-//! ## Scenarios
-//!
-//! A scenario is the one test a group of related tests becomes. Every case
-//! keeps its own fixture and every assertion; it is called a *phase*, and a
-//! second group of statements in the same scenario is a *step*. Both keep their
-//! own scope, so two of them may bind the same names, as two tests did:
-//!
-//! ```ignore
-//! scenario! {
-//!     fn a_saved_project_opens_as_the_same_timeline;
-//!
-//!     phase saving_writes_a_file_that_opens_back;
-//!     /// What a file is for, end to end through the app.
-//!     {
-//!         let (app, doc) = app_and_doc();
-//!         assert!(path.is_file(), "the file is on disk");
-//!     }
-//!
-//!     steps {
-//!         // Between two phases: a fixture the phases below share, run once.
-//!     }
-//! }
-//! ```
-//!
-//! [`scenario!`] writes the case function itself: a `#[test]` that runs every
-//! case in one pass, through the hook in [`scenario`](mod@scenario). `#[scenario]` is for a
-//! group that already has its test and only needs its cases collected. A case
-//! that fails is reported by phase, with the line inside it that raised, and
-//! the scenario's cases after it still run, so one pass shows every failure. A
-//! `#[cfg]` above the `fn` in [`scenario!`] applies to the function, as it
-//! would above any other `fn`.
-//!
-//! The lock only orders code that takes it. Code under test that reads the
-//! environment from a thread of its own is still racing any other test that
-//! mutates the variable without this crate.
+//! Process-environment fixtures for tests. The environment is process-global, and `cargo test` runs
+//! every test of a binary as a thread of one process. A test that sets `XDG_DATA_HOME` and forgets
+//! to put it back, or restores it by removing a value that was set before it ran, leaks into
+//! whichever test runs next, and a test that reads the variable while another thread is writing it
+//! sees either value. Prefer not to need this crate: an API that takes its root directory as an
+//! argument (`open_at(root, …)`, `*_in(root, …)`) needs no environment at all and its tests can run
+//! in parallel. Use the fixtures here only where the environment is the interface under test, such
+//! as the function that resolves `XDG_DATA_HOME` itself. [`ScopedEnv`], [`pin`], [`TestHome`],
+//! [`TestEnv`] and [`lock`] cover the environment; the other modules cover the machine a test used
+//! to reach for: [`net`], [`idle`], [`hang`], [`relay`], [`script`], [`swtpm`], [`capability`] and
+//! [`desktop`]. The lock only orders code that takes it. Code under test that reads the environment
+//! from a thread of its own is still racing any other test that mutates the variable without this
+//! crate.
 
 pub mod allocation;
 mod binary;
@@ -161,40 +68,6 @@ use std::thread::{self, ThreadId};
 use std::{env, fs, io};
 use tilo_lock::MutexRecover as _;
 
-/// One test with a labelled case per former test.
-///
-/// Its body holds three kinds of statement. Anything else it holds — a
-/// constant, a helper, a declaration — stays exactly where it was written,
-/// ahead of the cases.
-///
-/// - `phase NAME;` — the case `NAME`, which starts here and runs the
-///   statements in the braces that follow it;
-/// - `step NAME;` — the same, kept apart for a fixture written between cases
-///   rather than a test of its own;
-/// - `steps;` — the same, named for the file it came from.
-///
-/// Each case runs in a scope of its own, so two may bind the same names as two
-/// separate tests did, and the whole scenario runs in one pass: a failure is
-/// reported by the phase it came from, and the cases after it still run.
-///
-/// ```ignore
-/// scenario! {
-///     fn a_saved_project_opens_as_the_same_timeline;
-///
-///     phase saving_writes_a_file_that_opens_back;
-///     {
-///         let (app, doc) = app_and_doc();
-///         assert!(app.save(&doc, path).is_ok(), "the file is on disk");
-///     }
-///
-///     phase an_open_is_one_undoable_action;
-///     {
-///         // A fresh fixture, as the test this came from built.
-///         let (app, doc) = app_and_doc();
-///         assert!(opened_in_one_edit(&app), "an open is one edit");
-///     }
-/// }
-/// ```
 #[macro_export]
 macro_rules! scenario {
     ($(#[$meta:meta])* fn $name:ident; $($rest:tt)*) => {
@@ -209,25 +82,9 @@ macro_rules! scenario {
     };
 }
 
-/// The scenario's cases so far, and the statements after them.
-///
-/// A case is buffered as its name, the `file!()` and `line!()` it is written
-/// at, and the tokens of its body — never as the expression that becomes it.
-/// A path written into a buffer with `$crate` and spliced back out is matched
-/// by this macro's `$crate`, which is the crate the case ends up in only by
-/// accident. Everything is expanded once, at the end, in the caller's file.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __scenario {
-    // A case named `NAME`, of kind `phase` or `step` (or `steps`), which runs
-    // the statements in the braces that follow it, in a closure that keeps its
-    // bindings inside — inside a scope of its own, as the test it came from
-    // had, so two cases may bind the same names.
-    //
-    // The braces are captured as tokens and become the closure's body where
-    // they were written. A `block` fragment would be checked against the
-    // closure's own context before it could be handed on, and a block checked
-    // there does not fit back into a body.
     (
         @cases [$($case:tt)*] @rest
         $kind:ident $($name:ident)? ; { $($body:tt)* } $($rest:tt)*
@@ -245,7 +102,6 @@ macro_rules! __scenario {
         }
     };
 
-    // Nothing left: make a phase of each case and run them together.
     (@cases [$(($name:expr, $location:expr, $body:tt))*] @rest) => {
         $crate::scenario::run(::std::vec![
             $(
@@ -256,7 +112,6 @@ macro_rules! __scenario {
     };
 }
 
-/// One buffered case, as a phase.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __scenario_phase {
@@ -265,7 +120,6 @@ macro_rules! __scenario_phase {
     };
 }
 
-/// The name a case is reported by.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __scenario_name {
@@ -280,13 +134,6 @@ macro_rules! __scenario_name {
     };
 }
 
-/// A binary of the package under test, by its Cargo target name: where an
-/// archived nextest run relocated it (`NEXTEST_BIN_EXE_<name>`), else where
-/// Cargo built it (`CARGO_BIN_EXE_<name>`). A test that starts the build path
-/// directly finds nothing once the run moves its binaries.
-///
-/// A binary of *another* package has no such variable: the run's harness
-/// builds it, and [`sibling_binary`] finds it.
 #[macro_export]
 macro_rules! package_binary {
     ($name:literal) => {
@@ -294,8 +141,6 @@ macro_rules! package_binary {
     };
 }
 
-/// [`package_binary!`] with Cargo's path given: `NEXTEST_BIN_EXE_<name>`
-/// when the run relocated the binary, else `built_at`.
 #[must_use]
 pub fn package_binary_at(name: &str, built_at: &str) -> PathBuf {
     env::var_os(format!("NEXTEST_BIN_EXE_{name}"))
@@ -313,20 +158,11 @@ static STATE: Mutex<LockState> = Mutex::new(LockState {
 });
 static RELEASED: Condvar = Condvar::new();
 
-/// Holding this means no other thread holds an [`EnvLock`], a [`ScopedEnv`]
-/// or a [`TestHome`].
-///
-/// Re-entrant: the thread that holds it may take it again, so scopes nest.
-/// A test that panics while holding it releases it during unwinding rather
-/// than poisoning every later test.
 #[must_use = "the environment is only serialised while the lock is held"]
 pub struct EnvLock {
-    // Released on the thread that took it; the owner bookkeeping relies on it.
     _not_send: PhantomData<*const ()>,
 }
 
-/// Take the process-wide environment lock, waiting for any other thread
-/// that holds it.
 pub fn lock() -> EnvLock {
     let me = thread::current().id();
     let mut state = STATE.lock_recover();
@@ -367,35 +203,9 @@ impl Drop for EnvLock {
     }
 }
 
-/// Start a process with the environment as it stands outside every other
-/// test's [`ScopedEnv`].
-///
-/// A child copies the process environment when it starts. Started while
-/// another test's scope is open, it would inherit that test's values: a shell
-/// started beside a test that points `TILO_LAUNCHER_BIN` at a recording
-/// stand-in runs its app spawner through that stand-in, and the other test
-/// reads the launch as its own. These take [`lock`] for the moment the child
-/// starts, so it sees only what this thread set.
 pub trait SpawnUnderEnvLock {
-    /// [`std::process::Command::spawn`], under [`lock`].
-    ///
-    /// # Errors
-    ///
-    /// As `spawn`.
     fn spawn_locked(&mut self) -> io::Result<std::process::Child>;
-    /// [`std::process::Command::output`], under [`lock`] while the child starts:
-    /// its output and errors are captured, and its input is this process's
-    /// unless the command names one.
-    ///
-    /// # Errors
-    ///
-    /// As `output`.
     fn output_locked(&mut self) -> io::Result<std::process::Output>;
-    /// [`std::process::Command::status`], under [`lock`] while the child starts.
-    ///
-    /// # Errors
-    ///
-    /// As `status`.
     fn status_locked(&mut self) -> io::Result<std::process::ExitStatus>;
 }
 
@@ -416,31 +226,12 @@ impl SpawnUnderEnvLock for std::process::Command {
     }
 }
 
-/// [`SpawnUnderEnvLock`] for `tokio::process::Command`: the child starts
-/// under [`lock`], and the wait for it runs without the lock.
 #[cfg(feature = "tokio")]
 pub trait SpawnUnderEnvLockAsync {
-    /// `tokio::process::Command::spawn`, under [`lock`].
-    ///
-    /// # Errors
-    ///
-    /// As `spawn`.
     fn spawn_locked(&mut self) -> io::Result<tokio::process::Child>;
-    /// `tokio::process::Command::output`, under [`lock`] while the child
-    /// starts: its output and errors are captured, and its input is this
-    /// process's unless the command names one.
-    ///
-    /// # Errors
-    ///
-    /// As `output`.
     fn output_locked(
         &mut self,
     ) -> impl std::future::Future<Output = io::Result<std::process::Output>> + Send;
-    /// `tokio::process::Command::status`, under [`lock`] while the child starts.
-    ///
-    /// # Errors
-    ///
-    /// As `status`.
     fn status_locked(
         &mut self,
     ) -> impl std::future::Future<Output = io::Result<std::process::ExitStatus>> + Send;
@@ -475,8 +266,6 @@ impl SpawnUnderEnvLockAsync for tokio::process::Command {
     reason = "this crate is the one sanctioned writer of the process environment"
 )]
 fn write_var(key: &OsStr, value: Option<&OsStr>) {
-    // SAFETY: every caller holds the process-wide `EnvLock`, so no other
-    // cooperating test mutates or reads the environment concurrently.
     unsafe {
         match value {
             Some(value) => env::set_var(key, value),
@@ -485,22 +274,6 @@ fn write_var(key: &OsStr, value: Option<&OsStr>) {
     }
 }
 
-/// Environment changes that are undone on drop.
-///
-/// Holds [`lock`] for its whole lifetime. Dropping it restores each touched
-/// variable to the value it had before this scope first touched it — set if
-/// it was set, absent if it was absent — in reverse order, and then releases
-/// the lock. Drop also runs while a failing test unwinds, so an assertion
-/// failure cannot leak a value into the next test.
-///
-/// ```
-/// let mut env = tilo_test_env::ScopedEnv::new();
-/// env.set("TILO_EXAMPLE_ROOT", "/tmp/example")
-///     .remove("TILO_EXAMPLE_OVERRIDE");
-/// assert_eq!(std::env::var("TILO_EXAMPLE_ROOT").as_deref(), Ok("/tmp/example"));
-/// drop(env);
-/// assert!(std::env::var_os("TILO_EXAMPLE_ROOT").is_none());
-/// ```
 #[must_use = "the changes are undone as soon as the scope is dropped"]
 pub struct ScopedEnv {
     saved: Vec<(OsString, Option<OsString>)>,
@@ -508,7 +281,6 @@ pub struct ScopedEnv {
 }
 
 impl ScopedEnv {
-    /// Open a scope, waiting for the environment lock.
     pub fn new() -> Self {
         Self {
             saved: Vec::new(),
@@ -516,7 +288,6 @@ impl ScopedEnv {
         }
     }
 
-    /// Set `key` to `value` until this scope is dropped.
     pub fn set(&mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> &mut Self {
         let key = key.as_ref();
         self.remember(key);
@@ -524,7 +295,6 @@ impl ScopedEnv {
         self
     }
 
-    /// Remove `key` until this scope is dropped.
     pub fn remove(&mut self, key: impl AsRef<OsStr>) -> &mut Self {
         let key = key.as_ref();
         self.remember(key);
@@ -553,33 +323,12 @@ impl Drop for ScopedEnv {
     }
 }
 
-/// Set `key` to `value` for the rest of the process, and never restore it.
-///
-/// For a fixture every test of the process reads and whichever of them asks
-/// first builds: an app store a test run installs its apps into once, which
-/// each test's session then reads through the environment.
-///
-/// The write is taken under [`lock`], so it never lands while another thread's
-/// [`ScopedEnv`] is open. Use it for a key no scope names: a scope restores the
-/// value it opened with when it drops, which would put a pinned key back as it
-/// was before. Every variable that belongs to one test is a [`ScopedEnv`].
 pub fn pin(key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) {
     let _lock = lock();
     write_var(key.as_ref(), Some(value.as_ref()));
 }
 
-/// A temporary home directory with every XDG base directory inside it.
-///
-/// Sets `HOME`, `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
-/// `XDG_CACHE_HOME` and `XDG_RUNTIME_DIR` through a [`ScopedEnv`], so the
-/// process sees none of the developer's real configuration, keyring
-/// records or runtime sockets. The runtime directory is mode `0700`, as the
-/// XDG specification requires and as runtime-directory checks verify.
-///
-/// On drop the environment is restored first, then the tree is deleted.
 pub struct TestHome {
-    // Field order is drop order: restore the environment before the
-    // directory it points at disappears.
     env: ScopedEnv,
     home: PathBuf,
     data: PathBuf,
@@ -592,7 +341,6 @@ pub struct TestHome {
 }
 
 impl TestHome {
-    /// Create the tree and point the environment at it.
     pub fn new() -> io::Result<Self> {
         let root = tempfile::Builder::new()
             .prefix("tilo-test-home-")
@@ -627,7 +375,6 @@ impl TestHome {
         })
     }
 
-    /// The temporary directory holding the home and runtime trees.
     pub fn root(&self) -> &Path {
         self.root.path()
     }
@@ -636,60 +383,37 @@ impl TestHome {
         &self.home
     }
 
-    /// `$XDG_DATA_HOME`.
     pub fn data(&self) -> &Path {
         &self.data
     }
 
-    /// `$XDG_CONFIG_HOME`.
     pub fn config(&self) -> &Path {
         &self.config
     }
 
-    /// `$XDG_STATE_HOME`.
     pub fn state(&self) -> &Path {
         &self.state
     }
 
-    /// `$XDG_CACHE_HOME`.
     pub fn cache(&self) -> &Path {
         &self.cache
     }
 
-    /// `$XDG_RUNTIME_DIR`: a [`runtime_tempdir`], outside [`Self::root`].
     pub fn runtime(&self) -> &Path {
         &self.runtime
     }
 
-    /// The scope holding the variables above; more changes made through it
-    /// are undone with them.
     pub fn env(&mut self) -> &mut ScopedEnv {
         &mut self.env
     }
 }
 
-/// The longest socket path, in bytes, a local socket address holds on every
-/// Unix Tilo runs on: `sun_path` is 104 bytes on macOS and 108 on Linux, one
-/// of them the terminating NUL.
 const LOCAL_SOCKET_PATH_MAX: usize = 103;
 
-/// Room left below a [`runtime_tempdir`] for the names tests put there (a
-/// service directory and its socket, a uuid-named socket).
 const RUNTIME_NAMES_BUDGET: usize = 64;
 
-/// A fresh private (`0700`) temporary directory whose path is short enough
-/// that sockets below it fit a local socket address, as below a real runtime
-/// directory (`/run/user/<uid>`).
-///
-/// A test that binds a socket in [`tempfile::tempdir`] inherits the length of
-/// `$TMPDIR`, which on macOS (`/var/folders/…/T/`) and on CI runners' per-job
-/// scratch directories leaves too little of the 104 bytes macOS allows. This
-/// is `$TMPDIR` when that leaves room for `RUNTIME_NAMES_BUDGET` bytes of
-/// names below it, else `/tmp`, where the directory's random name and mode
-/// keep it private like any other temporary directory.
 pub fn runtime_tempdir() -> io::Result<tempfile::TempDir> {
     const PREFIX: &str = "tilo-rt-";
-    // `/<prefix><6 random characters>`, then the names below it.
     const LONGEST_BASE: usize =
         LOCAL_SOCKET_PATH_MAX - RUNTIME_NAMES_BUDGET - (1 + PREFIX.len() + 6);
     let builder = {
@@ -703,7 +427,6 @@ pub fn runtime_tempdir() -> io::Result<tempfile::TempDir> {
         builder
     };
     let temp = env::temp_dir();
-    // Code that canonicalizes a path sees macOS's `/var` as `/private/var`.
     let resolved = fs::canonicalize(&temp).unwrap_or_else(|_| temp.clone());
     if cfg!(unix) && resolved.as_os_str().len() > LONGEST_BASE {
         builder.tempdir_in("/tmp")
@@ -712,14 +435,6 @@ pub fn runtime_tempdir() -> io::Result<tempfile::TempDir> {
     }
 }
 
-/// A fresh temporary directory kept in memory where the platform has one
-/// ([`tilo_paths::memory_temp_dir`], `/dev/shm` on Linux), else
-/// [`tempfile::tempdir`].
-///
-/// For a test whose stores sync every write as they do for a person and
-/// whose crashes it simulates by reopening, not by losing power: the code
-/// still syncs, but a sync then costs nothing instead of waiting on a disk
-/// shared with every other job's writes.
 pub fn memory_tempdir() -> io::Result<tempfile::TempDir> {
     match tilo_paths::memory_temp_dir() {
         Some(memory) => tempfile::tempdir_in(memory),
@@ -727,16 +442,6 @@ pub fn memory_tempdir() -> io::Result<tempfile::TempDir> {
     }
 }
 
-/// A device key for a fixture's node — a device, host or relay that answers on
-/// the network — fresh on every call.
-///
-/// A relay or host answers on the Iroh node its device key names, and it
-/// publishes the address it listens on under that node's id (a relay derives
-/// its transport key from the device secret). Fixtures that mint a constant key
-/// are one node to every dialer: two of
-/// them alive at once answer each other's joins and each other's members'
-/// links, and their address records overwrite one another. Give each node of a
-/// test a key of its own, and keep a constant only where a test asserts on it.
 #[must_use]
 #[expect(
     clippy::expect_used,
@@ -748,35 +453,22 @@ pub fn node_key() -> [u8; 32] {
     seed
 }
 
-/// An executable fixture script written by [`script`].
 #[derive(Debug, Clone)]
 pub struct Script {
     path: PathBuf,
 }
 
-/// The interpreter [`Script::exec_argv`] runs fixtures through.
 pub const SHELL: &str = "/bin/sh";
 
 impl Script {
-    /// Where the script was written.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// `["/bin/sh", path]`: the argv to run this script with.
-    ///
-    /// Run fixtures through the shell rather than executing the path. While
-    /// any thread holds a file open for writing, `execve` of that file fails
-    /// with `ETXTBSY` — and a sibling test that forks between this script's
-    /// `open` and `close` leaves a copy of the write descriptor in its child
-    /// until that child calls `exec`. `/bin/sh` only reads the script, so a
-    /// stray writer is harmless.
     pub fn exec_argv(&self) -> [&OsStr; 2] {
         [OsStr::new(SHELL), self.path.as_os_str()]
     }
 
-    /// A [`std::process::Command`] that runs this script through
-    /// [`exec_argv`](Self::exec_argv).
     pub fn command(&self) -> std::process::Command {
         let mut command = std::process::Command::new(SHELL);
         command.arg(&self.path);
@@ -784,14 +476,6 @@ impl Script {
     }
 }
 
-/// Write `body` to `path` as an executable script.
-///
-/// The body goes to a uniquely named temporary file beside `path`, is
-/// flushed to disk, made executable and then renamed over `path`, so no
-/// reader ever observes a partial or non-executable script and an existing
-/// file is replaced atomically. Run the result with
-/// [`Script::exec_argv`] or [`Script::command`], not by executing `path`
-/// directly; see [`Script::exec_argv`] for why.
 #[cfg(unix)]
 pub fn script(path: impl AsRef<Path>, body: &str) -> io::Result<Script> {
     use std::io::Write as _;
@@ -851,8 +535,6 @@ mod tests {
         }
     }
 
-    /// A child started while another thread's scope is open waits for it to close, so it never
-    /// inherits that scope's values.
     #[cfg(unix)]
     #[test]
     fn a_child_started_beside_another_scope_inherits_none_of_it() {
@@ -862,7 +544,6 @@ mod tests {
             let mut env = ScopedEnv::new();
             env.set(LEAK, "the other test's value");
             opened.send(()).unwrap();
-            // Long enough that a child started without the lock starts inside the scope.
             thread::sleep(std::time::Duration::from_millis(200));
             drop(env);
         });
@@ -876,12 +557,8 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&output.stdout), "");
     }
 
-    /// Setting restores an absent variable to absent; set and remove restore the prior value; nested
-    /// scopes unwind in order on one thread; a panicking scope restores and releases the lock;
-    /// concurrent scopes are serialised.
     #[test]
     fn scoped_env_restores_every_prior_value_and_serialises_scopes() {
-        // Phase: set_restores_an_absent_variable_to_absent.
         {
             {
                 let mut env = ScopedEnv::new();
@@ -896,7 +573,6 @@ mod tests {
             assert_eq!(read(KEY), None);
         }
 
-        // Phase: set_and_remove_restore_the_prior_value.
         {
             let mut outer = ScopedEnv::new();
             outer.set(KEY, "prior");
@@ -918,7 +594,6 @@ mod tests {
             assert_eq!(read(KEY).as_deref(), Some("prior"), "removal is undone");
         }
 
-        // Phase: nested_scopes_unwind_in_order_on_one_thread.
         {
             let mut outer = ScopedEnv::new();
             outer.remove(KEY).set(OTHER, "outer");
@@ -935,10 +610,7 @@ mod tests {
             assert_eq!(read(OTHER), None);
         }
 
-        // Phase: a_panicking_scope_restores_and_releases_the_lock.
         {
-            // Every scope in this module leaves `KEY` absent, so absent is the
-            // prior value each panicking scope below must restore.
             let result = thread::spawn(|| {
                 let mut env = ScopedEnv::new();
                 env.set(KEY, "leaked?");
@@ -947,8 +619,6 @@ mod tests {
             .join();
             assert!(result.is_err(), "the scope's thread panicked");
             {
-                // Taking the lock again proves the panic released it; the value
-                // proves the unwinding drop restored it.
                 let _guard = lock();
                 assert_eq!(read(KEY), None);
             }
@@ -962,7 +632,6 @@ mod tests {
             assert_eq!(read(KEY), None);
         }
 
-        // Phase: concurrent_scopes_are_serialised.
         {
             const THREADS: usize = 8;
             const ROUNDS: usize = 50;
@@ -995,8 +664,6 @@ mod tests {
         }
     }
 
-    /// A pinned variable outlives the test that set it, and a scope taken
-    /// after it changes it for its own lifetime and restores the pin.
     #[test]
     fn a_pinned_variable_outlives_every_scope_taken_after_it() {
         const PINNED: &str = "TILO_TEST_ENV_SELFTEST_PINNED";
@@ -1026,7 +693,6 @@ mod tests {
 
     #[test]
     fn test_home_redirects_every_base_directory_and_restores_home() {
-        // Phase: test_home_points_every_base_directory_into_one_temporary_tree.
         {
             let root;
             let runtime;
@@ -1045,8 +711,6 @@ mod tests {
                     assert!(dir.is_dir(), "{key} exists");
                     assert!(dir.starts_with(&root), "{key} is inside the fixture");
                 }
-                // The runtime directory is a runtime_tempdir of its own, so
-                // its sockets fit a local socket address.
                 assert_eq!(
                     env::var_os("XDG_RUNTIME_DIR").as_deref(),
                     Some(runtime.as_os_str())
@@ -1075,7 +739,6 @@ mod tests {
             );
         }
 
-        // Phase: test_home_restores_the_previous_home.
         {
             let mut outer = ScopedEnv::new();
             outer.set("XDG_CONFIG_HOME", "/nonexistent/prior-config");
@@ -1095,12 +758,9 @@ mod tests {
         }
     }
 
-    /// A script is executable and complete and leaves no staging file; scripts written and run
-    /// concurrently never fail to start.
     #[cfg(unix)]
     #[test]
     fn test_scripts_are_written_whole_and_start_under_concurrency() {
-        // Phase: script_is_executable_complete_and_leaves_no_staging_file.
         {
             use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
@@ -1134,9 +794,6 @@ mod tests {
             assert_eq!(output.stdout, b"ran once");
         }
 
-        // Phase: scripts_written_and_run_concurrently_never_fail_to_start.
-        // Many threads writing and running fixtures at once is what made
-        // directly executed fixtures fail with `ETXTBSY`.
         {
             let dir = Arc::new(tempfile::tempdir().unwrap());
             let handles: Vec<_> = (0..8)
@@ -1162,8 +819,6 @@ mod tests {
             }
         }
     }
-    /// The cases a probe scenario ran, in order, so the test below can say
-    /// that a failure did not stop the cases after it.
     fn note(ran: &std::sync::Mutex<Vec<&'static str>>, case: &'static str) {
         ran.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1217,9 +872,6 @@ mod tests {
         );
     }
 
-    // A `scenario!` body collects its `phase`, `step` and `steps` statements
-    // into one test, in order, keeps a binding two phases share apart, and
-    // reads a declaration beside them without collecting it.
     scenario! {
         fn a_scenario_collects_phases_steps_and_declarations;
 
