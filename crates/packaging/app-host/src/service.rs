@@ -1096,79 +1096,177 @@ mod command_tests {
         }
     }
 
-    /// A declaration the app host cannot read makes a repository read fail with the reason the
-    /// Store shows, never an empty or silently unjudged catalogue.
-    #[test]
-    fn an_unreadable_system_declaration_refuses_the_repository_saying_the_system_needs_an_update() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("system-interfaces.toml");
-        std::fs::write(&path, "[interfaces]\nsystem = [1]\nshell-ui = [1]\n").unwrap();
-        let refused = super::system_declaration_readable(&path).unwrap_err();
-        assert!(
-            matches!(&refused, super::ReadError::Refused(crate::client::Refusal::SystemUpdateNeeded, detail) if detail.contains("system-interfaces.toml")),
-            "{refused}"
-        );
+    tilo_test_env::scenario! {
+        fn registry_catalogue_reads_and_installs_are_exact;
 
-        std::fs::write(
-            &path,
-            "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = 2\n\n[runtime]\nservices = [\"app-host\"]\n",
-        )
-        .unwrap();
-        assert!(super::system_declaration_readable(&path).is_ok());
-        // A host without a declaration (a development machine) judges
-        // nothing and reads repositories as before.
-        std::fs::remove_file(&path).unwrap();
-        assert!(super::system_declaration_readable(&path).is_ok());
-    }
-
-    #[test]
-    fn registry_catalogue_restricts_fetch_to_enabled_host_configuration() {
-        let mut configured = catalogue_configuration();
-        let json = super::registry_catalogue_from(&configured, "Configured source", |registry| {
-            assert_eq!(registry.base_url, "https://registry.example.test/");
-            assert_eq!(registry.owner_pubkey_hex, "17".repeat(32));
-            Ok(Vec::new())
-        })
-        .unwrap();
-        assert_eq!(json, "[]");
-        for name in ["", "https://attacker.example.test/", "Configured source\n"] {
+        phase an_unreadable_system_declaration_refuses_the_repository_saying_the_system_needs_an_update;
+        // A declaration the app host cannot read makes a repository read fail with the reason the
+        // Store shows, never an empty or silently unjudged catalogue.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("system-interfaces.toml");
+            std::fs::write(&path, "[interfaces]\nsystem = [1]\nshell-ui = [1]\n").unwrap();
+            let refused = super::system_declaration_readable(&path).unwrap_err();
             assert!(
-                super::registry_catalogue_from(&configured, name, |_| panic!("unconfigured fetch"))
-                    .is_err()
+                matches!(&refused, super::ReadError::Refused(crate::client::Refusal::SystemUpdateNeeded, detail) if detail.contains("system-interfaces.toml")),
+                "{refused}"
+            );
+
+            std::fs::write(
+                &path,
+                "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = 2\n\n[runtime]\nservices = [\"app-host\"]\n",
+            )
+            .unwrap();
+            assert!(super::system_declaration_readable(&path).is_ok());
+            // A host without a declaration (a development machine) judges
+            // nothing and reads repositories as before.
+            std::fs::remove_file(&path).unwrap();
+            assert!(super::system_declaration_readable(&path).is_ok());
+        }
+
+        phase registry_catalogue_restricts_fetch_to_enabled_host_configuration;
+        {
+            let mut configured = catalogue_configuration();
+            let json = super::registry_catalogue_from(&configured, "Configured source", |registry| {
+                assert_eq!(registry.base_url, "https://registry.example.test/");
+                assert_eq!(registry.owner_pubkey_hex, "17".repeat(32));
+                Ok(Vec::new())
+            })
+            .unwrap();
+            assert_eq!(json, "[]");
+            for name in ["", "https://attacker.example.test/", "Configured source\n"] {
+                assert!(
+                    super::registry_catalogue_from(&configured, name, |_| panic!("unconfigured fetch"))
+                        .is_err()
+                );
+            }
+            configured.registries[0].enabled = false;
+            assert!(
+                super::registry_catalogue_from(&configured, "Configured source", |_| panic!(
+                    "disabled fetch"
+                ))
+                .is_err()
             );
         }
-        configured.registries[0].enabled = false;
-        assert!(
-            super::registry_catalogue_from(&configured, "Configured source", |_| panic!(
-                "disabled fetch"
-            ))
-            .is_err()
-        );
-    }
 
-    #[test]
-    fn an_expired_catalogue_reaches_the_store_as_expired() {
-        let configured = catalogue_configuration();
-        let error = super::registry_catalogue_from(&configured, "Configured source", |_| {
-            Err(app_cli::client::RegistryError::Expired {
-                expired_at_unix: 1_792_587_897,
+        phase an_expired_catalogue_reaches_the_store_as_expired;
+        {
+            let configured = catalogue_configuration();
+            let error = super::registry_catalogue_from(&configured, "Configured source", |_| {
+                Err(app_cli::client::RegistryError::Expired {
+                    expired_at_unix: 1_792_587_897,
+                })
             })
-        })
-        .unwrap_err();
-        assert!(
-            matches!(
-                error,
-                super::ReadError::Refused(crate::client::Refusal::Expired, _)
-            ),
-            "{error}"
-        );
-        let other = super::registry_catalogue_from(&configured, "Configured source", |_| {
-            Err(app_cli::client::RegistryError::Http(
-                "connection refused".into(),
-            ))
-        })
-        .unwrap_err();
-        assert!(matches!(other, super::ReadError::Failed(_)), "{other}");
+            .unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    super::ReadError::Refused(crate::client::Refusal::Expired, _)
+                ),
+                "{error}"
+            );
+            let other = super::registry_catalogue_from(&configured, "Configured source", |_| {
+                Err(app_cli::client::RegistryError::Http(
+                    "connection refused".into(),
+                ))
+            })
+            .unwrap_err();
+            assert!(matches!(other, super::ReadError::Failed(_)), "{other}");
+        }
+
+        phase catalogue_install_requires_the_exact_selected_signed_identity;
+        {
+            let expected = crate::install::InstallExpectation {
+                package_root: tilo_app_package::PackageId::from_bytes([7; 32]),
+                publisher: [8; 32],
+                app_id: "so.tilo.notes".into(),
+                version: "1.2.3".into(),
+                size_bytes: 42,
+            };
+            let offer = app_cli::CatalogueApp {
+                package_id: expected.app_id.clone(),
+                display_name: "Notes".into(),
+                description: String::new(),
+                tagline: String::new(),
+                images: Vec::new(),
+                supported_languages: Vec::new(),
+                category: None,
+                version: expected.version.clone(),
+                registry: "Tilo main".into(),
+                download_url: "https://apps.tilo.so/notes.tapp".into(),
+                tapp_root_hash_hex: expected.package_root.to_hex(),
+                tapp_size_bytes: expected.size_bytes,
+                tapp_blake3_hex: "09".repeat(32),
+                architecture: std::env::consts::ARCH.into(),
+                isa: std::env::consts::ARCH.into(),
+                runtime: None,
+                publisher_pubkey_hex: hex::encode(expected.publisher),
+                trust: "verified".into(),
+            };
+            super::require_offer_identity(&offer, &expected).unwrap();
+            let mut replacements = Vec::new();
+            let mut changed = offer.clone();
+            changed.package_id = "so.tilo.settings".into();
+            replacements.push(changed);
+            let mut changed = offer.clone();
+            changed.version = "1.2.4".into();
+            replacements.push(changed);
+            let mut changed = offer.clone();
+            changed.tapp_root_hash_hex = "0a".repeat(32);
+            replacements.push(changed);
+            let mut changed = offer.clone();
+            changed.publisher_pubkey_hex = "0b".repeat(32);
+            replacements.push(changed);
+            let mut changed = offer;
+            changed.tapp_size_bytes += 1;
+            replacements.push(changed);
+            for replacement in replacements {
+                assert!(super::require_offer_identity(&replacement, &expected).is_err());
+            }
+
+            let missing = format!("tilo-runtime/2026.07+native.{}", "f".repeat(32));
+            let mut newest = offer_template(&expected);
+            newest.version = "1.2.4".into();
+            newest.runtime = Some(missing);
+            // The older build needs no runtime at all, so it runs here.
+            let mut runnable = offer_template(&expected);
+            runnable.version = "1.2.2".into();
+            let mut foreign = runnable.clone();
+            foreign.version = "1.2.3".into();
+            foreign.publisher_pubkey_hex = "0b".repeat(32);
+            let mut later = runnable.clone();
+            later.version = "1.2.5".into();
+            let offers = vec![later, newest.clone(), foreign, runnable.clone()];
+            assert_eq!(super::first_open_choice(&newest, &offers), &runnable);
+            // Nothing runnable: the requested version, runtime and all.
+            let only = vec![newest.clone()];
+            assert_eq!(super::first_open_choice(&newest, &only), &newest);
+            // A requested version that runs here is never replaced.
+            assert_eq!(super::first_open_choice(&runnable, &offers), &runnable);
+        }
+
+        phase repositories_are_what_app_repo_list_prints;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let app = dir.path().join("app");
+            let script = |body: &str| {
+                std::fs::write(&app, format!("#!/bin/sh\n{body}\n")).unwrap();
+                let mut permissions = std::fs::metadata(&app).unwrap().permissions();
+                std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+                std::fs::set_permissions(&app, permissions).unwrap();
+            };
+            script(r#"[ "$*" = "repo list --json" ] && echo '{"registry":[]}'"#);
+            assert_eq!(
+                repositories_json_from(&app).unwrap().trim(),
+                r#"{"registry":[]}"#
+            );
+            script("echo broken >&2; exit 3");
+            let error = repositories_json_from(&app).unwrap_err().to_string();
+            assert!(
+                error.contains("exited 3") && error.contains("broken"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
@@ -1233,141 +1331,169 @@ exit 1
         );
     }
 
-    /// Removing an app keeps its data and then removes the runtimes no app of the account uses any
-    /// more; a failed cleanup does not make the removal fail.
-    #[test]
-    fn removing_an_app_keeps_its_data_and_removes_runtimes_nothing_uses() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("flatpak");
-        let log = dir.path().join("calls");
-        for unused_exit in [0, 1] {
+    tilo_test_env::scenario! {
+        fn flatpak_changes_keep_scope_and_refusals;
+
+        phase removing_an_app_keeps_its_data_and_removes_runtimes_nothing_uses;
+        // Removing an app keeps its data and then removes the runtimes no app of the account uses any
+        // more; a failed cleanup does not make the removal fail.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let dir = tempfile::tempdir().unwrap();
+            let binary = dir.path().join("flatpak");
+            let log = dir.path().join("calls");
+            for unused_exit in [0, 1] {
+                std::fs::write(
+                    &binary,
+                    format!(
+                        "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$*\" in *--unused*) exit {unused_exit};; esac\n",
+                        log.display()
+                    ),
+                )
+                .unwrap();
+                std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+                let _ = std::fs::remove_file(&log);
+                super::flatpak_remove_from(&binary, "org.example.App").expect("removed");
+                let calls = std::fs::read_to_string(&log).unwrap();
+                assert_eq!(
+                    calls.lines().collect::<Vec<_>>(),
+                    [
+                        "uninstall --user --noninteractive -- org.example.App",
+                        "uninstall --user --unused --noninteractive",
+                    ],
+                    "no --delete-data: the app's data stays"
+                );
+            }
+            assert!(super::flatpak_remove_from(&binary, "--system").is_err());
+        }
+
+        phase app_and_source_changes_end_options_before_caller_values;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let dir = tempfile::tempdir().unwrap();
+            let binary = dir.path().join("flatpak");
+            std::fs::write(&binary, "#!/bin/sh\nprintf '%s ' \"$@\"\n").unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(
+                super::flatpak_app_from(&binary, "uninstall", "org.example.App")
+                    .unwrap()
+                    .trim(),
+                "uninstall --user --noninteractive -- org.example.App"
+            );
+            assert_eq!(
+                super::flatpak_remote_add_from(&binary, "tools", "--no-gpg-verify")
+                    .unwrap()
+                    .trim(),
+                "remote-add --user --if-not-exists -- tools --no-gpg-verify"
+            );
+            assert_eq!(
+                super::flatpak_remote_delete_from(&binary, "tools")
+                    .unwrap()
+                    .trim(),
+                "remote-delete --user --force -- tools"
+            );
+            // `--all` would uninstall every app the account has.
+            for selector in ["--all", "--delete-data", "", "a b"] {
+                assert!(super::flatpak_app_from(&binary, "uninstall", selector).is_err());
+                assert!(super::flatpak_remote_add_from(&binary, selector, "https://x").is_err());
+                assert!(super::flatpak_remote_delete_from(&binary, selector).is_err());
+            }
+        }
+
+        phase configured_remote_queries_and_installs_keep_scope_branch_and_failures;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let binary = dir.path().join("flatpak");
+            std::fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' \"$*\"\n").unwrap();
+            let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+            std::fs::set_permissions(&binary, permissions).unwrap();
+            for (user, scope) in [(true, "--user"), (false, "--system")] {
+                let result = catalogue_within_hang_bound(&binary, user).unwrap();
+                assert_eq!(
+                    result.trim(),
+                    format!(
+                        "remote-ls --cached {scope} --app --arch {} --columns=application,name,description,version,branch,origin -- tools",
+                        std::env::consts::ARCH
+                    )
+                );
+            }
+            let installed =
+                super::flatpak_install_remote_from(&binary, "tools", "org.example.Editor", "beta")
+                    .unwrap();
+            assert_eq!(
+                installed.trim(),
+                "install --user --noninteractive -- tools org.example.Editor//beta"
+            );
+            assert!(super::flatpak_catalogue_from(&binary, "--system", true).is_err());
+            assert!(
+                super::flatpak_install_remote_from(&binary, "tools", "--system", "stable").is_err()
+            );
+            assert!(
+                super::flatpak_install_remote_from(&binary, "tools", "org.example.Editor", "../main")
+                    .is_err()
+            );
             std::fs::write(
                 &binary,
-                format!(
-                    "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$*\" in *--unused*) exit {unused_exit};; esac\n",
-                    log.display()
-                ),
+                "#!/bin/sh\necho 'repository is unavailable' >&2\nexit 4\n",
             )
             .unwrap();
-            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-            let _ = std::fs::remove_file(&log);
-            super::flatpak_remove_from(&binary, "org.example.App").expect("removed");
-            let calls = std::fs::read_to_string(&log).unwrap();
-            assert_eq!(
-                calls.lines().collect::<Vec<_>>(),
-                [
-                    "uninstall --user --noninteractive -- org.example.App",
-                    "uninstall --user --unused --noninteractive",
-                ],
-                "no --delete-data: the app's data stays"
+            assert!(
+                catalogue_within_hang_bound(&binary, true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("repository is unavailable")
             );
         }
-        assert!(super::flatpak_remove_from(&binary, "--system").is_err());
-    }
 
-    #[test]
-    fn app_and_source_changes_end_options_before_caller_values() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("flatpak");
-        std::fs::write(&binary, "#!/bin/sh\nprintf '%s ' \"$@\"\n").unwrap();
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert_eq!(
-            super::flatpak_app_from(&binary, "uninstall", "org.example.App")
-                .unwrap()
-                .trim(),
-            "uninstall --user --noninteractive -- org.example.App"
-        );
-        assert_eq!(
-            super::flatpak_remote_add_from(&binary, "tools", "--no-gpg-verify")
-                .unwrap()
-                .trim(),
-            "remote-add --user --if-not-exists -- tools --no-gpg-verify"
-        );
-        assert_eq!(
-            super::flatpak_remote_delete_from(&binary, "tools")
-                .unwrap()
-                .trim(),
-            "remote-delete --user --force -- tools"
-        );
-        // `--all` would uninstall every app the account has.
-        for selector in ["--all", "--delete-data", "", "a b"] {
-            assert!(super::flatpak_app_from(&binary, "uninstall", selector).is_err());
-            assert!(super::flatpak_remote_add_from(&binary, selector, "https://x").is_err());
-            assert!(super::flatpak_remote_delete_from(&binary, selector).is_err());
-        }
-    }
-
-    #[test]
-    fn catalogue_install_requires_the_exact_selected_signed_identity() {
-        let expected = crate::install::InstallExpectation {
-            package_root: tilo_app_package::PackageId::from_bytes([7; 32]),
-            publisher: [8; 32],
-            app_id: "so.tilo.notes".into(),
-            version: "1.2.3".into(),
-            size_bytes: 42,
-        };
-        let offer = app_cli::CatalogueApp {
-            package_id: expected.app_id.clone(),
-            display_name: "Notes".into(),
-            description: String::new(),
-            tagline: String::new(),
-            images: Vec::new(),
-            supported_languages: Vec::new(),
-            category: None,
-            version: expected.version.clone(),
-            registry: "Tilo main".into(),
-            download_url: "https://apps.tilo.so/notes.tapp".into(),
-            tapp_root_hash_hex: expected.package_root.to_hex(),
-            tapp_size_bytes: expected.size_bytes,
-            tapp_blake3_hex: "09".repeat(32),
-            architecture: std::env::consts::ARCH.into(),
-            isa: std::env::consts::ARCH.into(),
-            runtime: None,
-            publisher_pubkey_hex: hex::encode(expected.publisher),
-            trust: "verified".into(),
-        };
-        super::require_offer_identity(&offer, &expected).unwrap();
-        let mut replacements = Vec::new();
-        let mut changed = offer.clone();
-        changed.package_id = "so.tilo.settings".into();
-        replacements.push(changed);
-        let mut changed = offer.clone();
-        changed.version = "1.2.4".into();
-        replacements.push(changed);
-        let mut changed = offer.clone();
-        changed.tapp_root_hash_hex = "0a".repeat(32);
-        replacements.push(changed);
-        let mut changed = offer.clone();
-        changed.publisher_pubkey_hex = "0b".repeat(32);
-        replacements.push(changed);
-        let mut changed = offer;
-        changed.tapp_size_bytes += 1;
-        replacements.push(changed);
-        for replacement in replacements {
-            assert!(super::require_offer_identity(&replacement, &expected).is_err());
+        phase official_system_flathub_install_materializes_only_the_account_descriptor;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let binary = flathub_install_fixture(dir.path());
+            std::fs::write(
+                dir.path().join("rows"),
+                "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\n",
+            )
+            .unwrap();
+            assert_eq!(
+                super::flatpak_install_flathub_from(&binary, "org.example.Editor")
+                    .unwrap()
+                    .trim(),
+                "Installed"
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("calls")).unwrap(),
+                concat!(
+                    "remotes --columns=name,url,title,options\n",
+                    "remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo\n",
+                    "install --user --noninteractive -- flathub org.example.Editor\n"
+                )
+            );
         }
 
-        let missing = format!("tilo-runtime/2026.07+native.{}", "f".repeat(32));
-        let mut newest = offer_template(&expected);
-        newest.version = "1.2.4".into();
-        newest.runtime = Some(missing);
-        // The older build needs no runtime at all, so it runs here.
-        let mut runnable = offer_template(&expected);
-        runnable.version = "1.2.2".into();
-        let mut foreign = runnable.clone();
-        foreign.version = "1.2.3".into();
-        foreign.publisher_pubkey_hex = "0b".repeat(32);
-        let mut later = runnable.clone();
-        later.version = "1.2.5".into();
-        let offers = vec![later, newest.clone(), foreign, runnable.clone()];
-        assert_eq!(super::first_open_choice(&newest, &offers), &runnable);
-        // Nothing runnable: the requested version, runtime and all.
-        let only = vec![newest.clone()];
-        assert_eq!(super::first_open_choice(&newest, &only), &newest);
-        // A requested version that runs here is never replaced.
-        assert_eq!(super::first_open_choice(&runnable, &offers), &runnable);
+        phase official_flathub_install_preserves_disabled_foreign_and_missing_sources;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let binary = flathub_install_fixture(dir.path());
+            for rows in [
+                "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\nflathub\thttps://dl.flathub.org/repo/\tFlathub\tuser,disabled\n",
+                "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\nflathub\thttps://foreign.example/repo\tOther\tuser\n",
+                "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem,disabled\n",
+                "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\nflathub\thttps://dl.flathub.org/repo/\tFlathub\tuser,no-gpg-verify\n",
+                "",
+            ] {
+                std::fs::write(dir.path().join("rows"), rows).unwrap();
+                std::fs::write(dir.path().join("calls"), "").unwrap();
+                let error =
+                    super::flatpak_install_flathub_from(&binary, "org.example.Editor").unwrap_err();
+                assert!(error.to_string().contains("Flathub source"), "{error}");
+                assert_eq!(
+                    std::fs::read_to_string(dir.path().join("calls")).unwrap(),
+                    "remotes --columns=name,url,title,options\n"
+                );
+            }
+            assert!(super::flatpak_install_flathub_from(&binary, "--no-gpg-verify").is_err());
+        }
     }
 
     fn offer_template(expected: &crate::install::InstallExpectation) -> app_cli::CatalogueApp {
@@ -1391,52 +1517,6 @@ exit 1
             publisher_pubkey_hex: hex::encode(expected.publisher),
             trust: "verified".into(),
         }
-    }
-
-    #[test]
-    fn configured_remote_queries_and_installs_keep_scope_branch_and_failures() {
-        let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("flatpak");
-        std::fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' \"$*\"\n").unwrap();
-        let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
-        std::fs::set_permissions(&binary, permissions).unwrap();
-        for (user, scope) in [(true, "--user"), (false, "--system")] {
-            let result = catalogue_within_hang_bound(&binary, user).unwrap();
-            assert_eq!(
-                result.trim(),
-                format!(
-                    "remote-ls --cached {scope} --app --arch {} --columns=application,name,description,version,branch,origin -- tools",
-                    std::env::consts::ARCH
-                )
-            );
-        }
-        let installed =
-            super::flatpak_install_remote_from(&binary, "tools", "org.example.Editor", "beta")
-                .unwrap();
-        assert_eq!(
-            installed.trim(),
-            "install --user --noninteractive -- tools org.example.Editor//beta"
-        );
-        assert!(super::flatpak_catalogue_from(&binary, "--system", true).is_err());
-        assert!(
-            super::flatpak_install_remote_from(&binary, "tools", "--system", "stable").is_err()
-        );
-        assert!(
-            super::flatpak_install_remote_from(&binary, "tools", "org.example.Editor", "../main")
-                .is_err()
-        );
-        std::fs::write(
-            &binary,
-            "#!/bin/sh\necho 'repository is unavailable' >&2\nexit 4\n",
-        )
-        .unwrap();
-        assert!(
-            catalogue_within_hang_bound(&binary, true)
-                .unwrap_err()
-                .to_string()
-                .contains("repository is unavailable")
-        );
     }
 
     #[test]
@@ -1495,25 +1575,69 @@ printf 'org.example.Editor\tEditor\tA signed editor\t1.0\tstable\ttools\n'
         binary
     }
 
-    #[test]
-    fn catalogue_does_not_retry_verification_disabled_or_foreign_cache_errors() {
-        for diagnostic in [
-            "GPG verification failed",
-            "Remote tools is disabled",
-            "No cached summary for remote 'other'",
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-            let script = format!(
-                r#"printf '%s\n' "$*" >> "$(dirname "$0")/calls"
+    tilo_test_env::scenario! {
+        fn a_cold_flatpak_catalogue_fails_without_retry_or_hang;
+
+        phase catalogue_does_not_retry_verification_disabled_or_foreign_cache_errors;
+        {
+            for diagnostic in [
+                "GPG verification failed",
+                "Remote tools is disabled",
+                "No cached summary for remote 'other'",
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let script = format!(
+                    r#"printf '%s\n' "$*" >> "$(dirname "$0")/calls"
 echo "{diagnostic}" >&2
 exit 1"#
+                );
+                let binary = catalogue_fixture(dir.path(), &script);
+                let error = catalogue_within_hang_bound(&binary, false).unwrap_err();
+                assert!(error.to_string().contains(diagnostic));
+                let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
+                assert_eq!(calls.lines().count(), 1);
+                assert!(calls.contains("--cached --system"));
+            }
+        }
+
+        phase cold_catalogue_fetch_is_killed_at_the_shared_deadline;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let binary = catalogue_fixture(
+                dir.path(),
+                r#"
+case "$*" in
+  *--cached*) echo "No cached summary for remote 'tools'" >&2; exit 1;;
+  *) echo $$ > "$(dirname "$0")/fetch.pid"; exec sleep infinity;;
+esac
+"#,
             );
-            let binary = catalogue_fixture(dir.path(), &script);
-            let error = catalogue_within_hang_bound(&binary, false).unwrap_err();
-            assert!(error.to_string().contains(diagnostic));
-            let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
-            assert_eq!(calls.lines().count(), 1);
-            assert!(calls.contains("--cached --system"));
+            // The fetch never ends on its own: only the deadline's kill ends the call.
+            let (done, fetched) = std::sync::mpsc::channel();
+            let fetch = binary;
+            std::thread::spawn(move || {
+                let fetched = super::flatpak_catalogue_with_timeout(
+                    &fetch,
+                    "tools",
+                    true,
+                    std::time::Duration::from_millis(100),
+                );
+                let _ = done.send(fetched.is_err());
+            });
+            assert!(tilo_test_env::recv(
+                "the timed-out catalogue fetch",
+                &fetched
+            ));
+            // A loaded machine can reach the deadline before the fetch starts, or
+            // between the shell creating the pid file and writing it: an empty
+            // file names no process, and `/proc/` itself never goes away.
+            if let Ok(pid) = std::fs::read_to_string(dir.path().join("fetch.pid"))
+                && let Ok(pid) = pid.trim().parse::<u32>()
+            {
+                tilo_test_env::wait_until("the killed fetch to be gone", || {
+                    !std::path::Path::new("/proc").join(pid.to_string()).exists()
+                });
+            }
         }
     }
 
@@ -1536,95 +1660,6 @@ exit 1
                 .to_string()
                 .contains("GPG verification failed")
         );
-    }
-
-    #[test]
-    fn cold_catalogue_fetch_is_killed_at_the_shared_deadline() {
-        let dir = tempfile::tempdir().unwrap();
-        let binary = catalogue_fixture(
-            dir.path(),
-            r#"
-case "$*" in
-  *--cached*) echo "No cached summary for remote 'tools'" >&2; exit 1;;
-  *) echo $$ > "$(dirname "$0")/fetch.pid"; exec sleep infinity;;
-esac
-"#,
-        );
-        // The fetch never ends on its own: only the deadline's kill ends the call.
-        let (done, fetched) = std::sync::mpsc::channel();
-        let fetch = binary;
-        std::thread::spawn(move || {
-            let fetched = super::flatpak_catalogue_with_timeout(
-                &fetch,
-                "tools",
-                true,
-                std::time::Duration::from_millis(100),
-            );
-            let _ = done.send(fetched.is_err());
-        });
-        assert!(tilo_test_env::recv(
-            "the timed-out catalogue fetch",
-            &fetched
-        ));
-        // A loaded machine can reach the deadline before the fetch starts, or
-        // between the shell creating the pid file and writing it: an empty
-        // file names no process, and `/proc/` itself never goes away.
-        if let Ok(pid) = std::fs::read_to_string(dir.path().join("fetch.pid"))
-            && let Ok(pid) = pid.trim().parse::<u32>()
-        {
-            tilo_test_env::wait_until("the killed fetch to be gone", || {
-                !std::path::Path::new("/proc").join(pid.to_string()).exists()
-            });
-        }
-    }
-
-    #[test]
-    fn official_system_flathub_install_materializes_only_the_account_descriptor() {
-        let dir = tempfile::tempdir().unwrap();
-        let binary = flathub_install_fixture(dir.path());
-        std::fs::write(
-            dir.path().join("rows"),
-            "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\n",
-        )
-        .unwrap();
-        assert_eq!(
-            super::flatpak_install_flathub_from(&binary, "org.example.Editor")
-                .unwrap()
-                .trim(),
-            "Installed"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("calls")).unwrap(),
-            concat!(
-                "remotes --columns=name,url,title,options\n",
-                "remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo\n",
-                "install --user --noninteractive -- flathub org.example.Editor\n"
-            )
-        );
-    }
-
-    #[test]
-    fn official_flathub_install_preserves_disabled_foreign_and_missing_sources() {
-        let dir = tempfile::tempdir().unwrap();
-        let binary = flathub_install_fixture(dir.path());
-        for rows in [
-            "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\nflathub\thttps://dl.flathub.org/repo/\tFlathub\tuser,disabled\n",
-            "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\nflathub\thttps://foreign.example/repo\tOther\tuser\n",
-            "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem,disabled\n",
-            "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\nflathub\thttps://dl.flathub.org/repo/\tFlathub\tuser,no-gpg-verify\n",
-            "",
-        ] {
-            std::fs::write(dir.path().join("rows"), rows).unwrap();
-            std::fs::write(dir.path().join("calls"), "").unwrap();
-            let error =
-                super::flatpak_install_flathub_from(&binary, "org.example.Editor").unwrap_err();
-            assert!(error.to_string().contains("Flathub source"), "{error}");
-            assert_eq!(
-                std::fs::read_to_string(dir.path().join("calls")).unwrap(),
-                "remotes --columns=name,url,title,options\n"
-            );
-        }
-        assert!(super::flatpak_install_flathub_from(&binary, "--no-gpg-verify").is_err());
     }
 
     fn flathub_install_fixture(dir: &std::path::Path) -> std::path::PathBuf {
@@ -1677,29 +1712,6 @@ esac
             .unwrap_err()
             .to_string();
         assert!(error.contains("unavailable"), "{error}");
-    }
-
-    #[test]
-    fn repositories_are_what_app_repo_list_prints() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("app");
-        let script = |body: &str| {
-            std::fs::write(&app, format!("#!/bin/sh\n{body}\n")).unwrap();
-            let mut permissions = std::fs::metadata(&app).unwrap().permissions();
-            std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
-            std::fs::set_permissions(&app, permissions).unwrap();
-        };
-        script(r#"[ "$*" = "repo list --json" ] && echo '{"registry":[]}'"#);
-        assert_eq!(
-            repositories_json_from(&app).unwrap().trim(),
-            r#"{"registry":[]}"#
-        );
-        script("echo broken >&2; exit 3");
-        let error = repositories_json_from(&app).unwrap_err().to_string();
-        assert!(
-            error.contains("exited 3") && error.contains("broken"),
-            "{error}"
-        );
     }
 
     #[test]
