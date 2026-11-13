@@ -193,10 +193,6 @@ impl AutomaticDisplayPrefs {
 }
 
 /// The display change being tried on this device, as the session writes it:
-/// what was asked for, the displays it was arranged for, what it replaces
-/// and how it stands. The session alone changes it (a change applied, kept,
-/// reverted or refused); Settings shows it and asks the session to keep or
-/// revert it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(default)]
 pub struct PendingDisplayChange {

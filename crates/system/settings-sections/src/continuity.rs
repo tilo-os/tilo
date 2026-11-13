@@ -1,8 +1,4 @@
 //! Device-local privacy policy for personal-device Continuity.
-//!
-//! Certified-device identity and transport stay owned by the existing device
-//! fleet and relay.  This module stores only this machine's release policy:
-//! which facets may leave or control it, plus a small non-secret audit trail.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource;

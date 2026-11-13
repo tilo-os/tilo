@@ -150,8 +150,6 @@ mod tests {
     use ui::tilo_resource::Replica;
 
     /// The device keeps its providers and the person their hosted ones:
-    /// each section refuses the other's, and the local provider follows
-    /// the model manager without touching the rest.
     #[test]
     fn each_section_keeps_its_own_providers() {
         let hosted = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);

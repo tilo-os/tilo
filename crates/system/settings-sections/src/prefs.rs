@@ -1,44 +1,7 @@
 //! The shared **system-preferences store** — durable per-user device and
 //! session preferences the Settings panes own.
 //!
-//! Preferences the rest of the system reads (system sounds, night light,
-//! pointer behaviour, update policy), one typed section each.
-//!
 //! # The document (a format contract, not a crate dependency)
-//!
-//! Preferences live in the **same** settings document the region store uses
-//! (`settings_store::Store`), namespaced by domain so each section grows
-//! independently and unrelated writers never collide:
-//!
-//! ```json
-//! {
-//!   "version": 1,
-//!   "locale":  { … },                       // owned by region.rs
-//!   "audio":   { "system_sounds": { "enabled": true, "volume": 0.7, … } },
-//!   "display": { "auto_brightness": false, "night_light": false },
-//!   "input":   { "touchpad_natural_scroll": true, "tap_to_click": true,
-//!                "pointer_speed": 0.5, "key_repeat": 0.5,
-//!                "keyboard_layout": "us" },
-//!   "updates": { "auto": true, "last_checked": "Never" },
-//!   "appearance": { "theme": "Dark", "high_contrast": false,
-//!                   "reduce_motion": false, "text_scale": 1.0, "ui_scale": 1.0 },
-//!   "notifications": { "do_not_disturb": false, "show_banners": true,
-//!                      "show_previews": true, "play_sounds": true,
-//!                      "show_on_lock_screen": false },
-//!   "accessibility": { "large_cursor": false, "cursor_size": 24,
-//!                      "screen_reader": false, "on_screen_keyboard": "auto",
-//!                      "sticky_keys": false, "slow_keys": false,
-//!                      "bounce_keys": false, "bounce_keys_delay_ms": 300,
-//!                      "bounce_keys_alert": false, "mouse_keys": false,
-//!                      "visual_alerts": false }
-//! }
-//! ```
-//!
-//! # Non-destructive writes
-//!
-//! Each section is stored on its own and keeps every key it does not name,
-//! so a pane that changes one preference never clobbers another pane's — or
-//! the region store's, or the compositor's — keys.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource;
@@ -49,7 +12,6 @@ use ui::tilo_resource;
 #[model(defaults)]
 pub struct AudioPrefs {
     /// "System sounds": master switch, volume, theme and per-event choices.
-    /// The compositor plays them; see [`settings_store::system_sounds`].
     #[serde(default)]
     pub system_sounds: settings_store::system_sounds::SystemSoundPrefs,
     /// Persistent left/right balance in UI space (`0` left, `0.5` centre,
@@ -111,7 +73,6 @@ pub struct NightLightPrefs {
     #[model(range = 2_000..=6_500)]
     pub night_light_temperature: u32,
     /// Follow the Appearance day/night schedule instead of the manual switch:
-    /// on from sunset, off from sunrise.
     #[serde(default)]
     pub night_light_schedule: bool,
 }
@@ -134,7 +95,6 @@ pub struct DisplayPrefs {
     #[model(readonly)]
     pub auto_brightness: bool,
     /// Whether the built-in panel stays put when a convertible is turned.
-    /// Changed only through [`DisplayPrefs::set_rotation_lock`].
     #[serde(default)]
     #[model(readonly)]
     pub rotation_lock: bool,
@@ -836,7 +796,6 @@ pub mod tablet_choices {
     }
 
     /// Make pad button `button` do `choice`. One button shows the map:
-    /// picking it for another moves it there.
     pub fn set_pad_button(config: &mut TabletConfig, button: u32, choice: PadButtonChoice) {
         if config.pad_map_button == Some(button) {
             config.pad_map_button = None;
@@ -1104,7 +1063,6 @@ pub struct PowerPrefs {
     pub blank_minutes: u32,
     /// Idle minutes before the session locks; `0` is the explicit "Never"
     /// choice. Manual lock and the mandatory pre-suspend lock remain active.
-    /// A longer delay or never weakens the lock; a shorter one does not.
     #[serde(default = "default_lock_minutes")]
     #[model(weaker = "higher", weakest = 0, range = 0..=MINUTES_PER_DAY)]
     pub lock_minutes: u32,

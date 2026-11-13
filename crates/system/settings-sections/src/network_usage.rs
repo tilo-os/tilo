@@ -332,9 +332,6 @@ pub fn local_day(at: i64, offset: i32) -> Option<NaiveDate> {
 impl NetworkUsage {
     /// Take in the totals read at `at`: what moved since the totals last
     /// read counts toward the connection on each counter, on the local day.
-    /// A total lower than the last, or from another boot, started again from
-    /// zero; a counter never read before only starts its count. Days older
-    /// than [`HORIZON_DAYS`] are let go. Whether anything changed.
     pub fn account(
         &mut self,
         readings: &[Reading],
