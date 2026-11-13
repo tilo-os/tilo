@@ -513,7 +513,7 @@ mod tests {
     fn the_wire_is_camel_case_json_with_optional_fields() {
         let page: DirectoryPage = serde_json::from_value(serde_json::json!({
             "workspaces": [{
-                "room": "r", "name": "Coffee", "defaultRole": "Editor", "door": "https://tilo.sh/",
+                "room": "r", "name": "Coffee", "defaultRole": "editor", "door": "https://tilo.sh/",
                 "community": true, "hereCount": 12
             }]
         }))
