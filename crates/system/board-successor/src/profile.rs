@@ -1150,34 +1150,39 @@ pub fn install_update_origin(root: &Root, override_ref: &str) -> Result<String> 
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_pattern_compiles() {
-        for pattern in [
-            &*TILO_VM_REF,
-            &*RELEASE_REF,
-            &*DEVELOPMENT_REF,
-            &*TAG_ARCHITECTURE,
-            &*OWNER_KEY,
-            &*PROFILE_ID,
-            &*PATH_PART,
-            &*MODULE_NAME,
-            &*KEYBOARD_ID,
-            &*KEYBOARD_NAME,
-            &*COMPATIBLE,
-            &*KERNEL_ARG,
-            &*DMI_VALUE,
-            &*KERNEL_VERSION,
-            &*DTB_DIGEST,
-        ] {
-            assert_ne!(pattern.as_str(), never().as_str());
-        }
-    }
+    tilo_test_env::scenario! {
+        /// The text helpers of the profile reader.
+        fn profile_patterns_compile_and_suffixes_follow_pathlib;
 
-    #[test]
-    fn suffix_is_pathlib_suffix() {
-        assert_eq!(suffix("qcom/board.dtb"), ".dtb");
-        assert_eq!(suffix(".dtb"), "");
-        assert_eq!(suffix("a.b.dtb"), ".dtb");
-        assert_eq!(suffix("board"), "");
+        phase every_pattern_compiles;
+        {
+            for pattern in [
+                &*TILO_VM_REF,
+                &*RELEASE_REF,
+                &*DEVELOPMENT_REF,
+                &*TAG_ARCHITECTURE,
+                &*OWNER_KEY,
+                &*PROFILE_ID,
+                &*PATH_PART,
+                &*MODULE_NAME,
+                &*KEYBOARD_ID,
+                &*KEYBOARD_NAME,
+                &*COMPATIBLE,
+                &*KERNEL_ARG,
+                &*DMI_VALUE,
+                &*KERNEL_VERSION,
+                &*DTB_DIGEST,
+            ] {
+                assert_ne!(pattern.as_str(), never().as_str());
+            }
+        }
+
+        phase suffix_is_pathlib_suffix;
+        {
+            assert_eq!(suffix("qcom/board.dtb"), ".dtb");
+            assert_eq!(suffix(".dtb"), "");
+            assert_eq!(suffix("a.b.dtb"), ".dtb");
+            assert_eq!(suffix("board"), "");
+        }
     }
 }
