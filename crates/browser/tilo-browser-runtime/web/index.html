@@ -385,6 +385,9 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .failure-actions .failure-secondary:hover { background: #26282e; }
     .failure-actions button:focus-visible, #arrival-failure-others button:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
     #arrival-failure-elsewhere { width: 100%; margin-top: 32px; padding-top: 20px; border-top: 1px solid #23252a; }
+    /* Nothing to try again: the other workspaces follow the words closely. */
+    .failure-actions:not(:has(button:not([hidden]))) { display: none; }
+    .failure-actions:not(:has(button:not([hidden]))) + #arrival-failure-elsewhere { margin-top: 8px; }
     #arrival-failure-elsewhere[hidden] { display: none; }
     #arrival-failure-others-heading { margin: 0 0 8px; font-size: 13px; line-height: 1.5; color: #8f8f99; }
     #arrival-failure-others { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }

@@ -216,6 +216,9 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
       case 'reconnect': {
         let peer = null;
         let held = false;
+        // Reaching the host now: a host that does not answer is waited on as
+        // the connection, not as this device starting Tilo.
+        onProgress({phase: 'connecting'});
         try {
           peer = await deps.reconnect?.({origin, room, onProgress});
         } catch (error) {
