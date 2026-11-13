@@ -174,6 +174,9 @@ fn assert_only_the_edited_line_is_damaged(damage: &[Rect]) {
     );
 }
 
+/// The bytes of one row of the 1200 px wide frames the comparison reads.
+const ROW: usize = 1200 * 4;
+
 fn assert_sparse_pixels(before: &Scene, after: &Scene, damage: &[Rect], background: Color) {
     let mut retained = ui::offscreen::OffscreenRenderer::new(1200, 900);
     let mut full = ui::offscreen::OffscreenRenderer::new(1200, 900);
@@ -213,29 +216,45 @@ fn assert_sparse_pixels(before: &Scene, after: &Scene, damage: &[Rect], backgrou
             .any(|rect| x >= rect.x0 && x < rect.x1 && y >= rect.y0 && y < rect.y1)
     };
     let mut noise = 0_usize;
-    let pixels = retained_pixels
-        .chunks_exact(4)
-        .zip(old_pixels.chunks_exact(4))
-        .zip(expected.chunks_exact(4));
-    for (pixel, ((retained, old), want)) in pixels.enumerate() {
-        let (column, row) = (pixel % 1200, pixel / 1200);
-        if !inside(column, row) {
-            assert_eq!(
-                retained, old,
-                "the sparse render left pixel ({column}, {row}) outside the damage as it was"
-            );
+    // The three frames are whole rows of the 1200 px window, so reading them
+    // a row at a time reads every pixel at the column and row it has.
+    assert_eq!(old_pixels.len(), expected.len());
+    assert_eq!(expected.len() % ROW, 0, "frames are whole rows");
+    let rows = retained_pixels
+        .chunks_exact(ROW)
+        .zip(old_pixels.chunks_exact(ROW))
+        .zip(expected.chunks_exact(ROW));
+    for (row, ((retained, old), want)) in rows.enumerate() {
+        // A row the sparse render kept byte for byte and the oracle drew byte
+        // for byte passes both checks at each of its pixels with no noise:
+        // only a row that changed is read pixel by pixel, which an
+        // unoptimised test build does slowly.
+        if retained == old && retained == want {
+            continue;
         }
-        let delta = retained
-            .iter()
-            .zip(want)
-            .map(|(a, b)| a.abs_diff(*b))
-            .max()
-            .unwrap_or(0);
-        assert!(
-            delta <= 1,
-            "retained pixel ({column}, {row}) differs from the full GPU oracle by {delta}"
-        );
-        noise = noise.saturating_add(usize::from(delta != 0));
+        let pixels = retained
+            .chunks_exact(4)
+            .zip(old.chunks_exact(4))
+            .zip(want.chunks_exact(4));
+        for (column, ((retained, old), want)) in pixels.enumerate() {
+            if !inside(column, row) {
+                assert_eq!(
+                    retained, old,
+                    "the sparse render left pixel ({column}, {row}) outside the damage as it was"
+                );
+            }
+            let delta = retained
+                .iter()
+                .zip(want)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap_or(0);
+            assert!(
+                delta <= 1,
+                "retained pixel ({column}, {row}) differs from the full GPU oracle by {delta}"
+            );
+            noise = noise.saturating_add(usize::from(delta != 0));
+        }
     }
     assert!(
         noise <= 16,
