@@ -221,12 +221,11 @@ pub(super) fn entry_for(hit: &Hit, id: String) -> CommandEntry {
                     ui::search::ActivationModifier::Ctrl,
                     crate::i18n::t("search-open-beside"),
                 ),
-            ui::icons::app_glyph(app, crate::availability::category_for(app)),
+            app_glyph(app),
         ),
-        Target::Window { app: Some(app), .. } => (
-            CommandEntry::new(id, hit.title.clone()),
-            ui::icons::app_glyph(app, crate::availability::category_for(app)),
-        ),
+        Target::Window { app: Some(app), .. } => {
+            (CommandEntry::new(id, hit.title.clone()), app_glyph(app))
+        }
         _ => (
             CommandEntry::new(id, hit.title.clone()),
             hit.icon
@@ -259,12 +258,23 @@ pub(super) fn entry_for(hit: &Hit, id: String) -> CommandEntry {
         entry = entry.previewed(preview.clone());
     }
     // An app's row wears the app's own artwork where it has some, its glyph until then.
-    if let Target::Launch { app, .. } | Target::Window { app: Some(app), .. } = &hit.target
-        && let Some(image) = ui::icons::app_artwork(app)
-    {
-        entry = entry.image(image);
-    }
+    entry.image = app_artwork(&hit.target);
     entry.icon(icon)
+}
+
+/// The glyph an app's rows wear, the one its windows wear.
+fn app_glyph(app: &str) -> ui::icons::Icon {
+    ui::icons::app_glyph(app, crate::availability::category_for(app))
+}
+
+/// The artwork of the app a row launches or whose window it is.
+fn app_artwork(target: &Target) -> Option<ui::icons::AppImage> {
+    match target {
+        Target::Launch { app, .. } | Target::Window { app: Some(app), .. } => {
+            ui::icons::app_artwork(app)
+        }
+        _ => None,
+    }
 }
 
 /// The sources a search over everything asks, in the order it asks them:

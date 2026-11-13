@@ -59,17 +59,13 @@ impl PreviewSource {
     }
 }
 
-/// What only the host knows about a window: its application's artwork and whether (and from where)
-/// it may be pictured. The defaults suit a host with neither.
+/// What only the host knows about a window: the glyph its application wears and whether (and from
+/// where) it may be pictured. Its artwork is the app's own, wherever apps are listed
+/// ([`ui::icons::app_artwork`]). The defaults suit a host with neither.
 pub trait WindowSource {
     /// The glyph shown for `tile` when its application has no artwork.
     fn app_kind(&self, tile: &TileContent) -> UiAppKind {
         tilo_desktop_surface::tile_app_kind(tile)
-    }
-
-    /// The application's own artwork for `tile` .
-    fn app_icon(&self, _tile: &TileContent) -> Option<AppImage> {
-        None
     }
 
     /// Where a preview of `tile` , the tab `tab` of group `group` , comes from. `shown` is whether
@@ -122,7 +118,7 @@ impl WindowApp {
             | TileContent::HostedWindow { app_id, .. } => Self {
                 key: format!("app:{app_id}"),
                 kind,
-                icon: source.app_icon(tile),
+                icon: ui::icons::app_artwork(app_id),
                 glyph: ui::icons::app_glyph(app_id, None),
             },
             TileContent::AppPlaceholder { kind: app, .. } | TileContent::Stub { kind: app, .. } => {
@@ -144,7 +140,7 @@ impl WindowApp {
         Self {
             key: app_key.to_owned(),
             kind: UiAppKind::App(glyph),
-            icon: None,
+            icon: ui::icons::app_artwork(app_key),
             glyph,
         }
     }
