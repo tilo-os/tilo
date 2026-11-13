@@ -118,51 +118,55 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    #[test]
-    fn a_stalled_disk_never_holds_the_thread_that_writes_the_trace() {
-        // The sink stands for a disk that does not answer: it takes nothing
-        // until the test lets it.
-        let (open_gate, gate) = channel::<()>();
-        let written = Arc::new(Mutex::new(Vec::<u8>::new()));
-        let seen = Arc::clone(&written);
-        let mut trace = TraceWriter::with_sink(move |job| {
-            let _ = gate.recv();
-            let (Job::Append(bytes) | Job::Replace(bytes)) = job;
-            seen.lock().expect("sink").extend_from_slice(&bytes);
-            Ok(())
-        });
-        for tick in 0..2000 {
-            writeln!(trace, "row {tick}").expect("format");
-            if tick % 60 == 0 {
-                trace.flush().expect("hand over");
-            }
-        }
-        trace.replace(b"window\n".to_vec()).expect("replace");
-        assert!(
-            written.lock().expect("sink").is_empty(),
-            "the loop reached this point with nothing written: it did not wait"
-        );
-        // The disk comes back; every byte arrives, in order.
-        for _ in 0..64 {
-            let _ = open_gate.send(());
-        }
-        drop(open_gate);
-        trace.close().expect("close");
-        let bytes = written.lock().expect("sink").clone();
-        let text = String::from_utf8(bytes).expect("utf8");
-        assert!(text.starts_with("row 0\n"));
-        assert!(text.contains("row 1999\n"));
-        assert!(text.ends_with("window\n"));
-    }
+    tilo_test_env::scenario! {
+        fn the_trace_writer_never_holds_its_thread_for_a_disk_that_stalls_or_fails;
 
-    #[test]
-    fn a_failed_write_disables_the_trace_instead_of_blocking_or_losing_the_loop() {
-        let mut trace = TraceWriter::with_sink(|_| Err(io::Error::other("disk gone")));
-        writeln!(trace, "row").expect("format");
-        trace.flush().expect("the first hand-over is accepted");
-        tilo_test_env::wait_until("a flush to report the failed write", || {
+        phase a_stalled_disk_never_holds_the_thread_that_writes_the_trace;
+        {
+            // The sink stands for a disk that does not answer: it takes nothing
+            // until the test lets it.
+            let (open_gate, gate) = channel::<()>();
+            let written = Arc::new(Mutex::new(Vec::<u8>::new()));
+            let seen = Arc::clone(&written);
+            let mut trace = TraceWriter::with_sink(move |job| {
+                let _ = gate.recv();
+                let (Job::Append(bytes) | Job::Replace(bytes)) = job;
+                seen.lock().expect("sink").extend_from_slice(&bytes);
+                Ok(())
+            });
+            for tick in 0..2000 {
+                writeln!(trace, "row {tick}").expect("format");
+                if tick % 60 == 0 {
+                    trace.flush().expect("hand over");
+                }
+            }
+            trace.replace(b"window\n".to_vec()).expect("replace");
+            assert!(
+                written.lock().expect("sink").is_empty(),
+                "the loop reached this point with nothing written: it did not wait"
+            );
+            // The disk comes back; every byte arrives, in order.
+            for _ in 0..64 {
+                let _ = open_gate.send(());
+            }
+            drop(open_gate);
+            trace.close().expect("close");
+            let bytes = written.lock().expect("sink").clone();
+            let text = String::from_utf8(bytes).expect("utf8");
+            assert!(text.starts_with("row 0\n"));
+            assert!(text.contains("row 1999\n"));
+            assert!(text.ends_with("window\n"));
+        }
+
+        phase a_failed_write_disables_the_trace_instead_of_blocking_or_losing_the_loop;
+        {
+            let mut trace = TraceWriter::with_sink(|_| Err(io::Error::other("disk gone")));
             writeln!(trace, "row").expect("format");
-            trace.flush().is_err()
-        });
+            trace.flush().expect("the first hand-over is accepted");
+            tilo_test_env::wait_until("a flush to report the failed write", || {
+                writeln!(trace, "row").expect("format");
+                trace.flush().is_err()
+            });
+        }
     }
 }

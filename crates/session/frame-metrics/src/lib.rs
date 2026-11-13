@@ -1155,53 +1155,57 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_frame_after_an_idle_park_is_late_only_by_its_own_work() {
-        let deadline = Instant::now();
-        let mut onset = DemandOnset::default();
-        // A widget deadline ended a 300 ms park with nothing to paint before it.
-        onset.note_tick(false, deadline + Duration::from_millis(10));
-        let woke = deadline + Duration::from_millis(300);
-        onset.note_tick(true, woke);
-        let submitted = woke + Duration::from_millis(4);
-        assert_eq!(
-            onset.lateness(submitted, deadline),
-            Duration::from_millis(4),
-            "the park before the frame was wanted is not the frame's lateness"
-        );
-        // The stale deadline alone would have charged the whole park.
-        assert_eq!(
-            submitted.saturating_duration_since(deadline),
-            Duration::from_millis(304)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_frame_is_late_only_by_its_own_work_after_it_was_wanted;
 
-    #[test]
-    fn a_frame_wanted_on_time_and_submitted_late_is_still_late() {
-        let start = Instant::now();
-        let mut onset = DemandOnset::default();
-        onset.note_tick(true, start);
-        // Held across ticks (off cadence, a full presenter): still the same frame.
-        onset.note_tick(true, start + Duration::from_millis(8));
-        let deadline = start + Duration::from_millis(16);
-        let submitted = start + Duration::from_millis(60);
-        assert_eq!(
-            onset.lateness(submitted, deadline),
-            Duration::from_millis(44),
-            "lateness after the deadline is kept when the frame was wanted before it"
-        );
-        onset.painted();
-        onset.note_tick(true, start + Duration::from_millis(100));
-        assert_eq!(
-            onset.lateness(start + Duration::from_millis(101), deadline),
-            Duration::from_millis(1),
-            "after a paint the next frame is wanted from its own tick"
-        );
-        // With no onset recorded the deadline alone is the reference.
-        assert_eq!(
-            DemandOnset::default().lateness(submitted, deadline),
-            Duration::from_millis(44)
-        );
+        phase a_frame_after_an_idle_park_is_late_only_by_its_own_work;
+        {
+            let deadline = Instant::now();
+            let mut onset = DemandOnset::default();
+            // A widget deadline ended a 300 ms park with nothing to paint before it.
+            onset.note_tick(false, deadline + Duration::from_millis(10));
+            let woke = deadline + Duration::from_millis(300);
+            onset.note_tick(true, woke);
+            let submitted = woke + Duration::from_millis(4);
+            assert_eq!(
+                onset.lateness(submitted, deadline),
+                Duration::from_millis(4),
+                "the park before the frame was wanted is not the frame's lateness"
+            );
+            // The stale deadline alone would have charged the whole park.
+            assert_eq!(
+                submitted.saturating_duration_since(deadline),
+                Duration::from_millis(304)
+            );
+        }
+
+        phase a_frame_wanted_on_time_and_submitted_late_is_still_late;
+        {
+            let start = Instant::now();
+            let mut onset = DemandOnset::default();
+            onset.note_tick(true, start);
+            // Held across ticks (off cadence, a full presenter): still the same frame.
+            onset.note_tick(true, start + Duration::from_millis(8));
+            let deadline = start + Duration::from_millis(16);
+            let submitted = start + Duration::from_millis(60);
+            assert_eq!(
+                onset.lateness(submitted, deadline),
+                Duration::from_millis(44),
+                "lateness after the deadline is kept when the frame was wanted before it"
+            );
+            onset.painted();
+            onset.note_tick(true, start + Duration::from_millis(100));
+            assert_eq!(
+                onset.lateness(start + Duration::from_millis(101), deadline),
+                Duration::from_millis(1),
+                "after a paint the next frame is wanted from its own tick"
+            );
+            // With no onset recorded the deadline alone is the reference.
+            assert_eq!(
+                DemandOnset::default().lateness(submitted, deadline),
+                Duration::from_millis(44)
+            );
+        }
     }
 
     #[test]
@@ -1228,15 +1232,17 @@ mod tests {
         assert_eq!(intern_clients("so.tilo.notes"), "so.tilo.notes");
     }
 
-    #[test]
-    fn percentiles_use_nearest_rank_and_handle_tiny_series() {
-        // Phase `percentiles_of_empty_series_are_zero_with_zero_count`.
+    tilo_test_env::scenario! {
+        fn percentiles_use_nearest_rank_and_handle_tiny_series;
+
+        phase percentiles_of_empty_series_are_zero_with_zero_count;
         {
             let p = percentiles(&[]);
             assert_eq!(p.count, 0, "empty series must report zero samples");
             assert_eq!(p.max, 0);
         }
-        // Phase `percentiles_use_nearest_rank_not_interpolation`.
+
+        phase percentiles_use_nearest_rank_not_interpolation;
         {
             // 1..=100. Nearest-rank p50 is the 50th value = 50; p95 = 95; p99 = 99 — an interpolating implementation would give 50.5 etc., so this pins the definition.
             let v: Vec<u32> = (1..=100).collect();
@@ -1249,7 +1255,8 @@ mod tests {
             assert_eq!(p.max, 100);
             assert_eq!(p.mean, 50, "integer mean of 1..=100 is 5050/100 = 50");
         }
-        // Phase `percentiles_handle_single_sample`.
+
+        phase percentiles_handle_single_sample;
         {
             let p = percentiles(&[42]);
             assert_eq!(
@@ -1260,9 +1267,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn summary_cadence_counts_only_painted_frames() {
-        // Phase `summarize_drops_the_first_sample_from_the_cadence_series`.
+    tilo_test_env::scenario! {
+        fn a_summary_counts_cadence_work_and_backpressure_of_real_frames;
+
+        phase summarize_drops_the_first_sample_from_the_cadence_series;
         {
             // The first tick has no predecessor, so its period is 0 — letting it into the series would report a bogus min of 0 and drag the p50 down.
             let s = vec![
@@ -1277,7 +1285,8 @@ mod tests {
             );
             assert_eq!(sum.tick_period.min, 16_000);
         }
-        // Phase `summarize_paint_period_measures_gaps_between_painted_frames_only`.
+
+        phase summarize_paint_period_measures_gaps_between_painted_frames_only;
         {
             // Ticks at 0/8/16/24 ms, painting only on the even ones. The paint period is 16 ms even though the tick period is 8 ms — the distinction redraw gating relies on.
             let s = vec![
@@ -1299,7 +1308,8 @@ mod tests {
                 "paint period must measure painted-to-painted, not tick-to-tick"
             );
         }
-        // Phase `summarize_on_cadence_ratio_rejects_a_loop_pacing_to_the_wrong_rate`.
+
+        phase summarize_on_cadence_ratio_rejects_a_loop_pacing_to_the_wrong_rate;
         {
             // A loop pinned at 60 Hz (16.6 ms) driving a 144 Hz panel (6.94 ms) must score 0.0: every frame is ~10 ms late.
             let mut s = Vec::new();
@@ -1319,7 +1329,8 @@ mod tests {
                 sum60.on_cadence_ratio
             );
         }
-        // Phase `summarize_fps_is_painted_frames_over_the_measured_span`.
+
+        phase summarize_fps_is_painted_frames_over_the_measured_span;
         {
             // 61 painted ticks spanning exactly 1 s → 61 painted / 1 s. Span is last.start - first.start, so 61 samples 16.667 ms apart span 1.0 s.
             let mut s = Vec::new();
@@ -1334,17 +1345,15 @@ mod tests {
                 sum.fps
             );
         }
-        // Phase `summarize_empty_input_is_all_zero`.
+
+        phase summarize_empty_input_is_all_zero;
         {
             let sum = summarize(&[], 16_667);
             assert_eq!(sum.ticks, 0);
             assert_eq!(sum.fps, 0.0);
         }
-    }
 
-    #[test]
-    fn summary_work_and_backpressure_subtract_real_parks() {
-        // Phase `summarize_reports_backpressure_and_painted_deadline_lateness`.
+        phase summarize_reports_backpressure_and_painted_deadline_lateness;
         {
             let mut idle = sample(0, 0, 0, false);
             idle.backpressured = true;
@@ -1361,7 +1370,8 @@ mod tests {
             assert_eq!(summary.deadline_lateness.p50, 300);
             assert_eq!(summary.deadline_lateness.max, 1_200);
         }
-        // Phase `summarize_work_subtracts_the_park_that_actually_happened_in_the_period`.
+
+        phase summarize_work_subtracts_the_park_that_actually_happened_in_the_period;
         {
             // `period_us` spans the previous tick's start to this one's, so the park inside it belongs to
             // the *previous* sample: tick 0 works 4 ms then parks 12 ms, tick 1 starts 16 ms later and its period contains tick 0's park; subtracting the sample's *own* sleep instead goes negative when a tick parks longer than its predecessor.
@@ -1380,7 +1390,8 @@ mod tests {
                  (the previous tick's), not the park this tick went on to do"
             );
         }
-        // Phase `work_never_goes_negative_when_a_tick_parks_longer_than_its_predecessor`.
+
+        phase work_never_goes_negative_when_a_tick_parks_longer_than_its_predecessor;
         {
             // A tick parked 16 ms following one that parked 2 ms: `saturating_sub` on the wrong operand would report a nonsense-but-positive number.
             let mut a = sample(0, 0, 0, true);
@@ -1393,7 +1404,8 @@ mod tests {
                 "5ms period containing a 2ms park is 3ms of work"
             );
         }
-        // Phase `summarize_layout_and_scene_ignore_ticks_that_did_not_paint`.
+
+        phase summarize_layout_and_scene_ignore_ticks_that_did_not_paint;
         {
             // An idle tick contributes layout=0/scene=0; folding those into the percentiles would make a busy loop look cheap.
             let mut painted = sample(0, 0, 0, true);
@@ -1407,13 +1419,10 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn recorder_measures_input_latency_to_the_exact_presented_frame() {
-        // Phase `disabled_recorder_retains_nothing`.
+    tilo_test_env::scenario! {
+        fn the_recorder_measures_input_to_the_exact_presented_frame_and_names_its_slowest_step;
+
+        phase disabled_recorder_retains_nothing;
         {
             let mut r = FrameRecorder::disabled();
             let t = Instant::now();
@@ -1427,7 +1436,8 @@ mod tests {
             );
             assert!(!r.is_enabled());
         }
-        // Phase `recorder_measures_input_latency_from_input_to_submit_completion`.
+
+        phase recorder_measures_input_latency_from_input_to_submit_completion;
         {
             // Drive the real recorder (not the summariser) so the note_input → mark_submit handshake is what's under test.
             let mut r = FrameRecorder::disabled();
@@ -1458,7 +1468,8 @@ mod tests {
                 "a synchronous submit must not be flagged async"
             );
         }
-        // Phase `recorder_keeps_the_earliest_pending_input_across_idle_ticks`.
+
+        phase recorder_keeps_the_earliest_pending_input_across_idle_ticks;
         {
             // Input arrives, then two ticks pass without painting; latency must be measured from the *original* input, not the tick that happened to paint.
             let mut r = FrameRecorder::disabled();
@@ -1496,7 +1507,8 @@ mod tests {
                 "a queued (threaded) submit must be flagged so readers don't mistake it for photons"
             );
         }
-        // Phase `an_input_settled_without_a_frame_is_not_charged_to_the_next_one`.
+
+        phase an_input_settled_without_a_frame_is_not_charged_to_the_next_one;
         {
             // A key release paints nothing and the loop parks; seconds later
             // another key paints. That frame answers the later key only.
@@ -1527,7 +1539,8 @@ mod tests {
                 "the frame's latency must run from its own input, not from one settled before it"
             );
         }
-        // Phase `pending_input_age_exposes_the_oldest_unpresented_input`.
+
+        phase pending_input_age_exposes_the_oldest_unpresented_input;
         {
             let mut r = FrameRecorder::disabled();
             r.enabled = true;
@@ -1541,7 +1554,8 @@ mod tests {
                 "a newer input must not hide the oldest outstanding latency"
             );
         }
-        // Phase `async_input_latency_waits_for_the_exact_retired_serial`.
+
+        phase async_input_latency_waits_for_the_exact_retired_serial;
         {
             let mut r = FrameRecorder::disabled();
             r.enabled = true;
@@ -1579,142 +1593,146 @@ mod tests {
                 Some(8_000)
             );
         }
-    }
 
-    #[test]
-    fn the_input_phase_names_its_slowest_step() {
-        let base = Instant::now();
-        let mut step = SlowestStep::starting_at(base);
-        step.step_at("poll", base + Duration::from_millis(2));
-        step.step_at("persist", base + Duration::from_millis(90));
-        step.step_at("flush", base + Duration::from_millis(91));
-        assert_eq!(step.slowest(), ("persist", Duration::from_millis(88)));
-        let mut recorder = FrameRecorder::disabled();
-        recorder.enabled = true;
-        recorder.env_enabled = true;
-        recorder.begin_tick(base);
-        recorder.mark_input_step(step);
-        recorder.end_tick();
-        let sample = recorder.samples()[0];
-        assert_eq!(
-            (sample.input_step, sample.input_step_us),
-            ("persist", 88_000)
-        );
-    }
-
-    #[test]
-    fn csv_row_column_count_matches_the_header() {
-        let mut buf = Vec::new();
-        FrameSample {
-            seq: 1,
-            start_us: 2,
-            period_us: 3,
-            input_us: 4,
-            pump_us: 5,
-            layout_us: 6,
-            scene_us: 7,
-            submit_us: 8,
-            testctl_us: 9,
-            clients_us: 10,
-            sleep_us: 11,
-            painted: true,
-            present_async: false,
-            input_latency_us: Some(12),
-            input_retirement_latency_us: Some(13),
-            backpressured: true,
-            deadline_late_us: 14,
-            wake: "cadence",
-            cpu_us: Some(15),
-            input_step: "events",
-            input_step_us: 16,
-            paint_reasons: paint_reason::APPS | paint_reason::REVISION,
-            paint_clients: "so.tilo.file-explorer",
-            testctl_cpu_us: Some(17),
-            paint_animations: "notification+content/DesktopSurface/TileHost",
-        }
-        .write_csv_row(&mut buf)
-        .expect("write csv row into a Vec");
-        let row = String::from_utf8(buf).expect("csv row is utf8");
-        assert_eq!(
-            row.trim_end().split(',').count(),
-            CSV_HEADER.split(',').count(),
-            "trace rows must have exactly as many columns as the header:\n  header: {CSV_HEADER}\n  row:    {}",
-            row.trim_end()
-        );
-    }
-
-    #[test]
-    fn metrics_cli_and_trace_output_are_well_formed() {
-        // Phase `parse_run_seconds_accepts_positive_values_only`.
-        assert_eq!(
-            super::parse_run_seconds(Some("2.5")),
-            Some(Duration::from_millis(2500))
-        );
-        assert_eq!(
-            super::parse_run_seconds(Some(" 10 ")),
-            Some(Duration::from_secs(10))
-        );
-        // Anything that isn't a positive finite number means "run forever" — never "exit immediately", which would hand a harness an empty trace it could mistake for a real result.
-        for bad in [
-            None,
-            Some(""),
-            Some("0"),
-            Some("-1"),
-            Some("nan"),
-            Some("inf"),
-            Some("abc"),
-        ] {
-            assert_eq!(
-                super::parse_run_seconds(bad),
-                None,
-                "{bad:?} must mean run-forever, not exit-immediately"
-            );
-        }
-        // Phase `production_trace_flushes_periodically_without_waiting_for_clean_exit`.
+        phase the_input_phase_names_its_slowest_step;
         {
-            let dir = tempfile::tempdir().expect("trace tempdir");
-            let path = dir.path().join("frame.csv");
-            let file = std::fs::File::create(&path).expect("create trace");
-            let mut file = file;
-            writeln!(file, "{CSV_HEADER}").expect("write trace header");
-            let mut recorder = FrameRecorder::disabled();
-            recorder.enabled = true;
-            recorder.env_enabled = true;
-            recorder.trace = Some(TraceWriter::to_file(file, path.clone()));
             let base = Instant::now();
-            recorder.begin_tick(base + Duration::from_secs(1));
-            recorder.end_tick();
-
-            let text = tests::wait_for_lines(&path, 2);
-            assert_eq!(
-                text.lines().count(),
-                2,
-                "one-second trace must include its sample, not only its header, before Drop"
-            );
-        }
-        // Phase `each_tick_records_the_cpu_its_thread_spent`.
-        #[cfg(unix)]
-        {
+            let mut step = SlowestStep::starting_at(base);
+            step.step_at("poll", base + Duration::from_millis(2));
+            step.step_at("persist", base + Duration::from_millis(90));
+            step.step_at("flush", base + Duration::from_millis(91));
+            assert_eq!(step.slowest(), ("persist", Duration::from_millis(88)));
             let mut recorder = FrameRecorder::disabled();
             recorder.enabled = true;
             recorder.env_enabled = true;
-            recorder.begin_tick(Instant::now());
-            let spin_from = thread_cpu_time().expect("unix has a per-thread CPU clock");
-            let mut acc = 0_u64;
-            while thread_cpu_time()
-                .is_some_and(|now| now.saturating_sub(spin_from) < Duration::from_millis(5))
-            {
-                acc = std::hint::black_box(acc.wrapping_add(1));
-            }
-            std::thread::sleep(Duration::from_millis(30));
+            recorder.begin_tick(base);
+            recorder.mark_input_step(step);
             recorder.end_tick();
-            let cpu = recorder.samples()[0]
-                .cpu_us
-                .expect("unix has a per-thread CPU clock");
-            assert!(
-                (5_000..30_000).contains(&cpu),
-                "5 ms of spinning counts as CPU, 30 ms asleep does not: {cpu} us"
+            let sample = recorder.samples()[0];
+            assert_eq!(
+                (sample.input_step, sample.input_step_us),
+                ("persist", 88_000)
             );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn trace_rows_and_the_metrics_cli_are_well_formed;
+
+        phase csv_row_column_count_matches_the_header;
+        {
+            let mut buf = Vec::new();
+            FrameSample {
+                seq: 1,
+                start_us: 2,
+                period_us: 3,
+                input_us: 4,
+                pump_us: 5,
+                layout_us: 6,
+                scene_us: 7,
+                submit_us: 8,
+                testctl_us: 9,
+                clients_us: 10,
+                sleep_us: 11,
+                painted: true,
+                present_async: false,
+                input_latency_us: Some(12),
+                input_retirement_latency_us: Some(13),
+                backpressured: true,
+                deadline_late_us: 14,
+                wake: "cadence",
+                cpu_us: Some(15),
+                input_step: "events",
+                input_step_us: 16,
+                paint_reasons: paint_reason::APPS | paint_reason::REVISION,
+                paint_clients: "so.tilo.file-explorer",
+                testctl_cpu_us: Some(17),
+                paint_animations: "notification+content/DesktopSurface/TileHost",
+            }
+            .write_csv_row(&mut buf)
+            .expect("write csv row into a Vec");
+            let row = String::from_utf8(buf).expect("csv row is utf8");
+            assert_eq!(
+                row.trim_end().split(',').count(),
+                CSV_HEADER.split(',').count(),
+                "trace rows must have exactly as many columns as the header:\n  header: {CSV_HEADER}\n  row:    {}",
+                row.trim_end()
+            );
+        }
+
+        phase metrics_cli_and_trace_output_are_well_formed;
+        {
+            // Phase `parse_run_seconds_accepts_positive_values_only`.
+            assert_eq!(
+                super::parse_run_seconds(Some("2.5")),
+                Some(Duration::from_millis(2500))
+            );
+            assert_eq!(
+                super::parse_run_seconds(Some(" 10 ")),
+                Some(Duration::from_secs(10))
+            );
+            // Anything that isn't a positive finite number means "run forever" — never "exit immediately", which would hand a harness an empty trace it could mistake for a real result.
+            for bad in [
+                None,
+                Some(""),
+                Some("0"),
+                Some("-1"),
+                Some("nan"),
+                Some("inf"),
+                Some("abc"),
+            ] {
+                assert_eq!(
+                    super::parse_run_seconds(bad),
+                    None,
+                    "{bad:?} must mean run-forever, not exit-immediately"
+                );
+            }
+            // Phase `production_trace_flushes_periodically_without_waiting_for_clean_exit`.
+            {
+                let dir = tempfile::tempdir().expect("trace tempdir");
+                let path = dir.path().join("frame.csv");
+                let file = std::fs::File::create(&path).expect("create trace");
+                let mut file = file;
+                writeln!(file, "{CSV_HEADER}").expect("write trace header");
+                let mut recorder = FrameRecorder::disabled();
+                recorder.enabled = true;
+                recorder.env_enabled = true;
+                recorder.trace = Some(TraceWriter::to_file(file, path.clone()));
+                let base = Instant::now();
+                recorder.begin_tick(base + Duration::from_secs(1));
+                recorder.end_tick();
+
+                let text = tests::wait_for_lines(&path, 2);
+                assert_eq!(
+                    text.lines().count(),
+                    2,
+                    "one-second trace must include its sample, not only its header, before Drop"
+                );
+            }
+            // Phase `each_tick_records_the_cpu_its_thread_spent`.
+            #[cfg(unix)]
+            {
+                let mut recorder = FrameRecorder::disabled();
+                recorder.enabled = true;
+                recorder.env_enabled = true;
+                recorder.begin_tick(Instant::now());
+                let spin_from = thread_cpu_time().expect("unix has a per-thread CPU clock");
+                let mut acc = 0_u64;
+                while thread_cpu_time()
+                    .is_some_and(|now| now.saturating_sub(spin_from) < Duration::from_millis(5))
+                {
+                    acc = std::hint::black_box(acc.wrapping_add(1));
+                }
+                std::thread::sleep(Duration::from_millis(30));
+                recorder.end_tick();
+                let cpu = recorder.samples()[0]
+                    .cpu_us
+                    .expect("unix has a per-thread CPU clock");
+                assert!(
+                    (5_000..30_000).contains(&cpu),
+                    "5 ms of spinning counts as CPU, 30 ms asleep does not: {cpu} us"
+                );
+            }
         }
     }
 }

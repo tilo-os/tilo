@@ -264,91 +264,95 @@ impl Inner {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_typed_key_is_timed_from_delivery_to_the_flip_that_shows_its_answer() {
-        let t0 = Instant::now();
-        let ms = |n: u64| t0 + Duration::from_millis(n);
-        {
-            let latency = KeyLatency::default();
-            latency.key_delivered(7, "so.tilo.notes", 30, t0);
-            latency.key_delivered(7, "so.tilo.notes", 31, ms(2));
-            latency.frame_submitted(1, ms(3));
-            assert!(latency.frames_retired(1, ms(4)).is_empty(), "no answer yet");
-            assert!(latency.surface_committed(9, ms(5)).is_empty());
-            assert!(latency.surface_committed(7, ms(12)).is_empty());
-            latency.frame_submitted(2, ms(14));
-            assert!(latency.frames_retired(1, ms(15)).is_empty());
-            assert_eq!(
-                latency.frames_retired(3, ms(30)),
-                vec![KeySample {
-                    app: "so.tilo.notes".to_owned(),
-                    key_to_commit_us: 12_000,
-                    key_to_submit_us: 14_000,
-                    key_to_present_us: 30_000,
-                }],
-                "the earliest unanswered key is the one timed"
-            );
-        }
-        {
-            let latency = KeyLatency::default();
-            latency.key_delivered(7, "so.tilo.notes", 42, t0);
-            latency.surface_committed(7, ms(1));
-            latency.frame_submitted(1, ms(2));
-            assert!(latency.frames_retired(1, ms(3)).is_empty());
-            latency.key_delivered(8, "so.tilo.settings", 30, t0);
-            assert_eq!(
-                latency.surface_committed(7, ms(6_000)),
-                vec!["so.tilo.settings".to_owned()]
-            );
-            latency.surface_committed(8, ms(6_001));
-            latency.frame_submitted(2, ms(6_002));
-            assert!(latency.frames_retired(2, ms(6_003)).is_empty());
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_key_is_timed_to_the_flip_that_shows_its_answer_and_summed_in_one_line;
 
-    /// A key that types nothing by itself starts no measurement: a modifier
-    /// held before a letter must not claim the frame that draws the letter.
-    #[test]
-    fn a_modifier_is_not_timed() {
-        let t0 = Instant::now();
-        let latency = KeyLatency::default();
-        for keycode in MODIFIER_KEYCODES {
-            latency.key_delivered(7, "so.tilo.notes", keycode, t0);
+        phase a_typed_key_is_timed_from_delivery_to_the_flip_that_shows_its_answer;
+        {
+            let t0 = Instant::now();
+            let ms = |n: u64| t0 + Duration::from_millis(n);
+            {
+                let latency = KeyLatency::default();
+                latency.key_delivered(7, "so.tilo.notes", 30, t0);
+                latency.key_delivered(7, "so.tilo.notes", 31, ms(2));
+                latency.frame_submitted(1, ms(3));
+                assert!(latency.frames_retired(1, ms(4)).is_empty(), "no answer yet");
+                assert!(latency.surface_committed(9, ms(5)).is_empty());
+                assert!(latency.surface_committed(7, ms(12)).is_empty());
+                latency.frame_submitted(2, ms(14));
+                assert!(latency.frames_retired(1, ms(15)).is_empty());
+                assert_eq!(
+                    latency.frames_retired(3, ms(30)),
+                    vec![KeySample {
+                        app: "so.tilo.notes".to_owned(),
+                        key_to_commit_us: 12_000,
+                        key_to_submit_us: 14_000,
+                        key_to_present_us: 30_000,
+                    }],
+                    "the earliest unanswered key is the one timed"
+                );
+            }
+            {
+                let latency = KeyLatency::default();
+                latency.key_delivered(7, "so.tilo.notes", 42, t0);
+                latency.surface_committed(7, ms(1));
+                latency.frame_submitted(1, ms(2));
+                assert!(latency.frames_retired(1, ms(3)).is_empty());
+                latency.key_delivered(8, "so.tilo.settings", 30, t0);
+                assert_eq!(
+                    latency.surface_committed(7, ms(6_000)),
+                    vec!["so.tilo.settings".to_owned()]
+                );
+                latency.surface_committed(8, ms(6_001));
+                latency.frame_submitted(2, ms(6_002));
+                assert!(latency.frames_retired(2, ms(6_003)).is_empty());
+            }
         }
-        latency.surface_committed(7, t0);
-        latency.frame_submitted(1, t0);
-        assert!(
-            latency.frames_retired(1, t0).is_empty(),
-            "no key, no sample"
-        );
-    }
 
-    /// Ten minutes of typing become one line of percentiles and the share
-    /// under the 20 ms bar; no line until the window is full, and none for
-    /// a window with no keys.
-    #[test]
-    fn the_log_sums_ten_minutes_of_keys_in_one_line() {
-        let t0 = Instant::now();
-        let mut window = LatencyWindow::default();
-        assert_eq!(window.summary(t0 + SUMMARY_EVERY), None, "no keys, no line");
-        for (index, ms) in [10_u128, 15, 30, 60].into_iter().enumerate() {
-            window.note(
-                t0 + Duration::from_secs(u64::try_from(index).unwrap_or_default()),
-                ms.saturating_mul(1000),
+        phase a_modifier_is_not_timed;
+        // A key that types nothing by itself starts no measurement: a modifier
+        // held before a letter must not claim the frame that draws the letter.
+        {
+            let t0 = Instant::now();
+            let latency = KeyLatency::default();
+            for keycode in MODIFIER_KEYCODES {
+                latency.key_delivered(7, "so.tilo.notes", keycode, t0);
+            }
+            latency.surface_committed(7, t0);
+            latency.frame_submitted(1, t0);
+            assert!(
+                latency.frames_retired(1, t0).is_empty(),
+                "no key, no sample"
             );
         }
-        assert_eq!(window.summary(t0 + Duration::from_secs(60)), None);
-        let line = window
-            .summary(t0 + SUMMARY_EVERY)
-            .expect("a full window sums its keys");
-        assert_eq!(
-            line,
-            "KEY-LATENCY-SUMMARY window_s=600 n=4 p50_ms=15.0 p90_ms=60.0 p99_ms=60.0 max_ms=60.0 under_20ms_pct=50.0"
-        );
-        assert_eq!(
-            window.summary(t0 + SUMMARY_EVERY + SUMMARY_EVERY),
-            None,
-            "the next window starts empty"
-        );
+
+        phase the_log_sums_ten_minutes_of_keys_in_one_line;
+        // Ten minutes of typing become one line of percentiles and the share
+        // under the 20 ms bar; no line until the window is full, and none for
+        // a window with no keys.
+        {
+            let t0 = Instant::now();
+            let mut window = LatencyWindow::default();
+            assert_eq!(window.summary(t0 + SUMMARY_EVERY), None, "no keys, no line");
+            for (index, ms) in [10_u128, 15, 30, 60].into_iter().enumerate() {
+                window.note(
+                    t0 + Duration::from_secs(u64::try_from(index).unwrap_or_default()),
+                    ms.saturating_mul(1000),
+                );
+            }
+            assert_eq!(window.summary(t0 + Duration::from_secs(60)), None);
+            let line = window
+                .summary(t0 + SUMMARY_EVERY)
+                .expect("a full window sums its keys");
+            assert_eq!(
+                line,
+                "KEY-LATENCY-SUMMARY window_s=600 n=4 p50_ms=15.0 p90_ms=60.0 p99_ms=60.0 max_ms=60.0 under_20ms_pct=50.0"
+            );
+            assert_eq!(
+                window.summary(t0 + SUMMARY_EVERY + SUMMARY_EVERY),
+                None,
+                "the next window starts empty"
+            );
+        }
     }
 }

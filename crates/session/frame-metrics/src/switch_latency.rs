@@ -252,139 +252,143 @@ mod tests {
         Duration::from_micros(n)
     }
 
-    #[test]
-    fn a_workspace_switch_is_timed_from_its_chord_to_its_first_and_resting_frames() {
-        // Phase `a_synchronous_run_reports_its_first_and_resting_frames`.
-        // A 400 ms frame run at 60 Hz on a synchronous presenter: one frame
-        // per interval, then the resting frame after the hold, one sample.
-        {
-            let chord = Instant::now();
-            let rest = chord + ms(400);
-            let tracker = SwitchLatency::default();
-            tracker.chord(chord);
-            let mut at = chord + ms(5);
-            let sample = loop {
-                let holding = at < rest;
-                let emitted = tracker.frame_queued(None, at, HZ60, holding);
-                if !holding {
-                    break emitted;
-                }
-                assert_eq!(emitted, None, "a held frame does not end the switch");
-                at += HZ60;
-            };
-            let sample = sample.expect("the resting frame completes the switch");
-            assert_eq!(sample.first_queued_us, 5_000);
-            assert_eq!(sample.first_shown_us, 5_000);
-            assert_eq!(sample.frames, 25, "24 held frames and the resting frame");
-            assert_eq!(sample.dropped, 0);
-            assert_eq!(sample.settled_queued_us, 405_008);
-            assert_eq!(sample.settled_shown_us, 405_008);
-            assert_eq!(sample.interval_us, 16_667);
-            assert_eq!(
-                tracker.frame_queued(None, chord + ms(500), HZ60, false),
-                None,
-                "a frame after the run belongs to no switch"
-            );
-        }
+    tilo_test_env::scenario! {
+        fn a_workspace_switch_is_timed_from_its_chord_on_either_presenter;
 
+        phase a_workspace_switch_is_timed_from_its_chord_to_its_first_and_resting_frames;
         {
-            let chord = Instant::now();
-            let tracker = SwitchLatency::default();
-            tracker.chord(chord);
-            tracker.chord(chord + ms(2));
-            let sample = tracker
-                .frame_queued(None, chord + ms(8), HZ60, false)
-                .expect("a run whose only frame is already resting completes");
-            assert_eq!(sample.first_queued_us, 8_000);
-            assert_eq!(sample.frames, 1);
-            tracker.chord(chord + ms(200));
-            assert_eq!(
-                tracker
-                    .frame_queued(None, chord + ms(210), HZ60, false)
-                    .map(|sample| sample.first_queued_us),
-                Some(10_000),
-                "a completed switch lets the next chord start a new one"
-            );
-        }
-
-        // Phase `missed_intervals_count_as_dropped_frames`.
-        // Frames shown 0, 1, 3 and 6 intervals in: 0 + 1 + 2 intervals were empty.
-        {
-            let chord = Instant::now();
-            let tracker = SwitchLatency::default();
-            tracker.chord(chord);
-            let frames = [
-                (us(3_000), true),
-                (us(19_667), true),
-                (us(53_001), true),
-                (us(103_002), false),
-            ];
-            let mut last = None;
-            for (offset, holding) in frames {
-                last = tracker.frame_queued(None, chord + offset, HZ60, holding);
+            // Phase `a_synchronous_run_reports_its_first_and_resting_frames`.
+            // A 400 ms frame run at 60 Hz on a synchronous presenter: one frame
+            // per interval, then the resting frame after the hold, one sample.
+            {
+                let chord = Instant::now();
+                let rest = chord + ms(400);
+                let tracker = SwitchLatency::default();
+                tracker.chord(chord);
+                let mut at = chord + ms(5);
+                let sample = loop {
+                    let holding = at < rest;
+                    let emitted = tracker.frame_queued(None, at, HZ60, holding);
+                    if !holding {
+                        break emitted;
+                    }
+                    assert_eq!(emitted, None, "a held frame does not end the switch");
+                    at += HZ60;
+                };
+                let sample = sample.expect("the resting frame completes the switch");
+                assert_eq!(sample.first_queued_us, 5_000);
+                assert_eq!(sample.first_shown_us, 5_000);
+                assert_eq!(sample.frames, 25, "24 held frames and the resting frame");
+                assert_eq!(sample.dropped, 0);
+                assert_eq!(sample.settled_queued_us, 405_008);
+                assert_eq!(sample.settled_shown_us, 405_008);
+                assert_eq!(sample.interval_us, 16_667);
+                assert_eq!(
+                    tracker.frame_queued(None, chord + ms(500), HZ60, false),
+                    None,
+                    "a frame after the run belongs to no switch"
+                );
             }
-            let sample = last.expect("the resting frame completes the switch");
-            assert_eq!(sample.frames, 4);
-            assert_eq!(sample.dropped, 3);
-        }
-    }
 
-    #[test]
-    fn an_asynchronous_switch_is_dated_when_its_frames_retire() {
-        // Phase `an_asynchronous_run_is_dated_at_retirement`.
-        // Frames are shown at their vblank, two retire together, and the
-        // sample waits for the resting frame's retirement.
+            {
+                let chord = Instant::now();
+                let tracker = SwitchLatency::default();
+                tracker.chord(chord);
+                tracker.chord(chord + ms(2));
+                let sample = tracker
+                    .frame_queued(None, chord + ms(8), HZ60, false)
+                    .expect("a run whose only frame is already resting completes");
+                assert_eq!(sample.first_queued_us, 8_000);
+                assert_eq!(sample.frames, 1);
+                tracker.chord(chord + ms(200));
+                assert_eq!(
+                    tracker
+                        .frame_queued(None, chord + ms(210), HZ60, false)
+                        .map(|sample| sample.first_queued_us),
+                    Some(10_000),
+                    "a completed switch lets the next chord start a new one"
+                );
+            }
+
+            // Phase `missed_intervals_count_as_dropped_frames`.
+            // Frames shown 0, 1, 3 and 6 intervals in: 0 + 1 + 2 intervals were empty.
+            {
+                let chord = Instant::now();
+                let tracker = SwitchLatency::default();
+                tracker.chord(chord);
+                let frames = [
+                    (us(3_000), true),
+                    (us(19_667), true),
+                    (us(53_001), true),
+                    (us(103_002), false),
+                ];
+                let mut last = None;
+                for (offset, holding) in frames {
+                    last = tracker.frame_queued(None, chord + offset, HZ60, holding);
+                }
+                let sample = last.expect("the resting frame completes the switch");
+                assert_eq!(sample.frames, 4);
+                assert_eq!(sample.dropped, 3);
+            }
+        }
+
+        phase an_asynchronous_switch_is_dated_when_its_frames_retire;
         {
-            let chord = Instant::now();
-            let tracker = SwitchLatency::default();
-            tracker.chord(chord);
-            assert_eq!(
-                tracker.frame_queued(Some(10), chord + ms(4), HZ60, true),
-                None
-            );
-            assert_eq!(
-                tracker.frames_retired(9, chord + ms(10)),
-                None,
-                "an older frame"
-            );
-            assert_eq!(tracker.frames_retired(10, chord + ms(16)), None);
-            assert_eq!(
-                tracker.frame_queued(Some(11), chord + ms(20), HZ60, true),
-                None
-            );
-            assert_eq!(
-                tracker.frame_queued(Some(12), chord + ms(36), HZ60, false),
-                None
-            );
-            let sample = tracker
-                .frames_retired(12, chord + us(49_334))
-                .expect("the resting frame's retirement completes the switch");
-            assert_eq!(sample.first_queued_us, 4_000);
-            assert_eq!(sample.first_shown_us, 16_000);
-            assert_eq!(sample.settled_queued_us, 36_000);
-            assert_eq!(sample.settled_shown_us, 49_334);
-            assert_eq!(sample.frames, 3);
-            assert_eq!(sample.dropped, 0, "two frames in two intervals drop none");
-            assert_eq!(
-                sample.to_string(),
-                "WORKSPACE-SWITCH first_queued_us=4000 first_shown_us=16000 \
+            // Phase `an_asynchronous_run_is_dated_at_retirement`.
+            // Frames are shown at their vblank, two retire together, and the
+            // sample waits for the resting frame's retirement.
+            {
+                let chord = Instant::now();
+                let tracker = SwitchLatency::default();
+                tracker.chord(chord);
+                assert_eq!(
+                    tracker.frame_queued(Some(10), chord + ms(4), HZ60, true),
+                    None
+                );
+                assert_eq!(
+                    tracker.frames_retired(9, chord + ms(10)),
+                    None,
+                    "an older frame"
+                );
+                assert_eq!(tracker.frames_retired(10, chord + ms(16)), None);
+                assert_eq!(
+                    tracker.frame_queued(Some(11), chord + ms(20), HZ60, true),
+                    None
+                );
+                assert_eq!(
+                    tracker.frame_queued(Some(12), chord + ms(36), HZ60, false),
+                    None
+                );
+                let sample = tracker
+                    .frames_retired(12, chord + us(49_334))
+                    .expect("the resting frame's retirement completes the switch");
+                assert_eq!(sample.first_queued_us, 4_000);
+                assert_eq!(sample.first_shown_us, 16_000);
+                assert_eq!(sample.settled_queued_us, 36_000);
+                assert_eq!(sample.settled_shown_us, 49_334);
+                assert_eq!(sample.frames, 3);
+                assert_eq!(sample.dropped, 0, "two frames in two intervals drop none");
+                assert_eq!(
+                    sample.to_string(),
+                    "WORKSPACE-SWITCH first_queued_us=4000 first_shown_us=16000 \
                  settled_queued_us=36000 settled_shown_us=49334 frames=3 dropped=0 \
                  interval_us=16667"
-            );
-        }
+                );
+            }
 
-        {
-            let chord = Instant::now();
-            let tracker = SwitchLatency::default();
-            tracker.chord(chord);
-            let _ = tracker.frame_queued(Some(1), chord + ms(5), HZ60, true);
-            let later = chord + STALE_AFTER + ms(1);
-            tracker.chord(later);
-            let sample = tracker
-                .frame_queued(None, later + ms(8), HZ60, false)
-                .expect("the stale run was replaced");
-            assert_eq!(sample.first_queued_us, 8_000);
-            assert_eq!(sample.frames, 1);
+            {
+                let chord = Instant::now();
+                let tracker = SwitchLatency::default();
+                tracker.chord(chord);
+                let _ = tracker.frame_queued(Some(1), chord + ms(5), HZ60, true);
+                let later = chord + STALE_AFTER + ms(1);
+                tracker.chord(later);
+                let sample = tracker
+                    .frame_queued(None, later + ms(8), HZ60, false)
+                    .expect("the stale run was replaced");
+                assert_eq!(sample.first_queued_us, 8_000);
+                assert_eq!(sample.frames, 1);
+            }
         }
     }
 }
