@@ -948,7 +948,7 @@ async fn applications_are_prepared_for_the_current_owner_only() {
             .find(|grant| grant.id.as_str() == "app-author:so.tilo.chat")
             .unwrap();
         assert_eq!(
-            grant.subject,
+            grant.grantee,
             tilo_action_policy::Grantee::app("so.tilo.chat")
         );
         assert!(policy.app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now),));

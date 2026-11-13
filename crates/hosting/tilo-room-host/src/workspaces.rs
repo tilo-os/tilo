@@ -1830,7 +1830,7 @@ impl Workspaces {
         Ok(policy
             .grants
             .iter()
-            .filter_map(|grant| match &grant.subject {
+            .filter_map(|grant| match &grant.grantee {
                 tilo_action_policy::Grantee::App(app) => Some(app.clone()),
                 _ => None,
             })

@@ -181,7 +181,7 @@ mod tests {
                         .grants
                         .into_iter()
                         .filter(|grant| {
-                            grant.subject == tilo_action_policy::Grantee::agent("scribe")
+                            grant.grantee == tilo_action_policy::Grantee::agent("scribe")
                         })
                         .collect())
                 },

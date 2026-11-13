@@ -190,7 +190,7 @@ fn bot_grants_carry_ids_installer_and_the_governance_deny() {
     assert_eq!(grants.len(), 3);
     for grant in &grants {
         assert!(grant.id.as_str().starts_with(&bot::grant_prefix(BOT)));
-        assert_eq!(grant.subject, Grantee::bot(BOT));
+        assert_eq!(grant.grantee, Grantee::bot(BOT));
         assert_eq!(grant.granted_by, Grantee::person(OWNER));
     }
     let deny = grants.last().expect("the governance deny");

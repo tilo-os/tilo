@@ -32,16 +32,16 @@ impl<'g> Decision<'g> {
     }
 }
 
-/// Decides for one set of subjects over one set of grants:
+/// Decides for one set of grantees over one set of grants:
 ///
-/// 1. Take the live grants whose subject is one of `subjects`, whose node is
+/// 1. Take the live grants naming one of `grantees` ([`names`]), whose node is
 ///    `node` or an ancestor of it, and whose kinds include `kind`.
 /// 2. The most specific node wins.
 /// 3. At the same node, Deny beats Ask beats Allow.
 /// 4. No grant: Deny.
 pub fn decide<'g>(
     grants: impl IntoIterator<Item = &'g Grant>,
-    subjects: &[Grantee],
+    grantees: &[Grantee],
     node: &TreePath,
     kind: ActionKind,
     cx: &Context<'_>,
@@ -49,7 +49,7 @@ pub fn decide<'g>(
     let mut best: Option<&'g Grant> = None;
     for grant in grants {
         if !grant.kinds.contains(kind)
-            || !cx.subject_matches(&grant.subject, subjects)
+            || !names(grant, grantees, cx)
             || !cx.covers(&grant.node, node)
             || !grant.is_live(cx)
         {
@@ -76,11 +76,30 @@ pub fn decide<'g>(
     )
 }
 
-/// One source of authority: the subjects someone is known by, the grants that
+/// Whether `grant` names one of `grantees`. A grant to a role names everyone
+/// holding that role and every higher one, except a built-in role's own grants:
+/// those are the role's rules ([`crate::roles::role_rules`]), each the whole
+/// answer for its role, and a higher role carries them already.
+#[must_use]
+pub fn names(grant: &Grant, grantees: &[Grantee], cx: &Context<'_>) -> bool {
+    if cx.grantee_matches(&grant.grantee, grantees) {
+        return true;
+    }
+    if crate::roles::is_role_grant(grant) {
+        return false;
+    }
+    grant.grantee.role_of().is_some_and(|wanted| {
+        grantees
+            .iter()
+            .any(|held| held.role_of().is_some_and(|held| held.includes(wanted)))
+    })
+}
+
+/// One source of authority: the grantees someone is known by, the grants that
 /// may name them, and the workspaces they own.
 #[derive(Clone, Debug, Default)]
 pub struct Party<'g> {
-    pub subjects: Vec<Grantee>,
+    pub grantees: Vec<Grantee>,
     pub grants: Vec<&'g Grant>,
     /// Nodes owned structurally: everything under them is allowed, whatever
     /// the grants say.
@@ -94,9 +113,9 @@ pub struct Party<'g> {
 
 impl<'g> Party<'g> {
     #[must_use]
-    pub fn new(subjects: Vec<Grantee>, grants: impl IntoIterator<Item = &'g Grant>) -> Self {
+    pub fn new(grantees: Vec<Grantee>, grants: impl IntoIterator<Item = &'g Grant>) -> Self {
         Self {
-            subjects,
+            grantees,
             grants: grants.into_iter().collect(),
             owns: Vec::new(),
             held_off: Vec::new(),
@@ -129,19 +148,19 @@ impl<'g> Party<'g> {
         self
     }
 
-    /// The same party, known as `subject` too: an agent's run of an issue
+    /// The same party, known as `grantee` too: an agent's run of an issue
     /// is the agent and the issue, so grants naming either decide for it,
     /// the most specific first.
     #[must_use]
-    pub fn also_as(mut self, subject: Grantee) -> Self {
-        self.subjects.push(subject);
+    pub fn also_as(mut self, grantee: Grantee) -> Self {
+        self.grantees.push(grantee);
         self
     }
 
-    /// [`Self::also_as`] for each of `subjects`.
+    /// [`Self::also_as`] for each of `grantees`.
     #[must_use]
-    pub fn with_also(mut self, subjects: impl IntoIterator<Item = Grantee>) -> Self {
-        self.subjects.extend(subjects);
+    pub fn with_also(mut self, grantees: impl IntoIterator<Item = Grantee>) -> Self {
+        self.grantees.extend(grantees);
         self
     }
 
@@ -152,12 +171,12 @@ impl<'g> Party<'g> {
         // by no person, is decided by its grants as anywhere else.
         if let Some(member) = crate::member_record::owner_of(node)
             && self
-                .subjects
+                .grantees
                 .iter()
                 .any(|grantee| grantee.person_id().is_some())
         {
             let theirs = self
-                .subjects
+                .grantees
                 .iter()
                 .any(|grantee| grantee.person_id() == Some(member));
             let held_off = self.held_off.iter().copied().find(|grant| {
@@ -192,7 +211,7 @@ impl<'g> Party<'g> {
                 basis: Basis::Grant(deny),
             };
         }
-        decide(self.grants.iter().copied(), &self.subjects, node, kind, cx)
+        decide(self.grants.iter().copied(), &self.grantees, node, kind, cx)
     }
 }
 

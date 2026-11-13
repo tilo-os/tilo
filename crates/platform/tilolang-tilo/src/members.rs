@@ -108,7 +108,7 @@ pub fn members_of(standing: &Standing, people: &People) -> Vec<Member> {
         // An agent admitted to the workspace holds its preset's grants (`agent-member:…`); the
         // answers a person gave an agent working for them admit nobody.
         .filter(|grant| grant.id.0.starts_with("agent-member:"))
-        .filter_map(|grant| match &grant.subject {
+        .filter_map(|grant| match &grant.grantee {
             Grantee::Member(tilo_action_policy::MemberId::Agent(agent)) => Some(agent.as_str()),
             _ => None,
         })

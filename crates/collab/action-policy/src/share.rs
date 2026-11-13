@@ -12,8 +12,8 @@
 //!   an empty route that a node cannot name, so an item of it is named under
 //!   `resource:*`: item ids are unique, so the node stays one item. A bare
 //!   `resource:*` would be every record of the kind and is refused.
-//! - **Everyone in the workspace below the owner.** A grant per role preset,
-//!   Viewer to Moderator: Read for a view share, Read and Undoable for an
+//! - **Everyone in the workspace.** One grant to the Viewer role, which every
+//!   higher role holds too: Read for a view share, Read and Undoable for an
 //!   edit share. A grant covers only the kinds it names, so a view share
 //!   strips no one: an Editor's Undoable on the shared item is still decided
 //!   by their role's grant on the workspace.
@@ -104,10 +104,6 @@ impl std::error::Error for ShareRefusal {}
 /// The longest share id.
 const MAX_SHARE_ID: usize = 128;
 
-/// The roles a share reaches: every preset below the owner, who holds
-/// everything already.
-const SHARED_WITH: [Role; 4] = [Role::Viewer, Role::Commenter, Role::Editor, Role::Moderator];
-
 /// The start of the id of every grant of the share `share`.
 #[must_use]
 pub fn share_id_prefix(share: &str) -> String {
@@ -143,23 +139,14 @@ pub fn share_grants(
         return Err(ShareRefusal::Id);
     }
     check_node(workspace, node)?;
-    Ok(SHARED_WITH
-        .into_iter()
-        .map(|role| {
-            Grant::new(
-                format!(
-                    "{}{}",
-                    share_id_prefix(share),
-                    role.name().to_ascii_lowercase()
-                ),
-                Grantee::role(role),
-                node.clone(),
-                access.kinds(),
-                Answer::Allow,
-                Grantee::person(sharer.to_owned()),
-            )
-        })
-        .collect())
+    Ok(vec![Grant::new(
+        format!("{}viewer", share_id_prefix(share)),
+        Grantee::role(Role::Viewer),
+        node.clone(),
+        access.kinds(),
+        Answer::Allow,
+        Grantee::person(sharer.to_owned()),
+    )])
 }
 
 /// Whether `node` names one record of `workspace`, or one item of a record.
@@ -357,7 +344,7 @@ mod tests {
             .kind("notes.notebook")
             .resource("plan");
         let ok = |node: &TreePath| share_grants(WORKSPACE, "ada", "m1", node, ShareAccess::View);
-        assert_eq!(ok(&record).unwrap().len(), 4);
+        assert_eq!(ok(&record).unwrap().len(), 1);
         assert!(ok(&record.clone().item("p1")).is_ok());
         assert!(ok(&item("p1")).is_ok());
         let every = TreePath::workspace(WORKSPACE)
@@ -394,7 +381,7 @@ mod tests {
         assert!(
             !grants
                 .iter()
-                .any(|grant| grant.subject == Grantee::role(Role::Owner))
+                .any(|grant| grant.grantee == Grantee::role(Role::Owner))
         );
         assert_eq!("edit".parse::<ShareAccess>(), Ok(ShareAccess::Edit));
         assert!("own".parse::<ShareAccess>().is_err());

@@ -127,7 +127,7 @@ pub fn agent_access_rows(
         ws.policy
             .grants
             .iter()
-            .filter(|grant| grant.subject == subject && agent_answers::is_answer(grant))
+            .filter(|grant| grant.grantee == subject && agent_answers::is_answer(grant))
             .filter_map(|grant| match AnswerScope::of_node(&grant.node)? {
                 AnswerScope::App { app }
                 | AnswerScope::Kind { app, .. }
@@ -165,7 +165,7 @@ pub fn agent_exceptions(
         .grants
         .iter()
         .filter(|grant| {
-            grant.subject == subject
+            grant.grantee == subject
                 && agent_answers::is_answer(grant)
                 && grant.answer == Answer::Allow
         })

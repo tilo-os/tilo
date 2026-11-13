@@ -88,12 +88,12 @@ fn a_grant_on_another_workspace_is_not_membership_here() {
     let mut ws = workspace();
     let here = agent_grant(&ws, "member", ws.node());
     ws.grant(Grant {
-        subject: Grantee::agent("member"),
+        grantee: Grantee::agent("member"),
         ..here
     });
     ws.grant(Grant {
         id: GrantId::new("other-workspace"),
-        subject: Grantee::agent("other-workspace"),
+        grantee: Grantee::agent("other-workspace"),
         node: TreePath::workspace("a-different-durable-workspace"),
         ..agent_grant(&ws, "other-workspace", ws.node())
     });

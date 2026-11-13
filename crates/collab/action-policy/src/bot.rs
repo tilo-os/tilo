@@ -83,7 +83,7 @@ pub fn grants(
     installer: &str,
     rules: &[Rule],
 ) -> Result<Vec<Grant>, BotRuleError> {
-    let subject = Grantee::bot(installation);
+    let grantee = Grantee::bot(installation);
     let granted_by = Grantee::person(installer);
     let prefix = grant_prefix(installation);
     let mut grants: Vec<Grant> = scoped_rules(workspace, rules)?
@@ -92,7 +92,7 @@ pub fn grants(
         .map(|(n, rule)| {
             Grant::new(
                 format!("{prefix}{n}"),
-                subject.clone(),
+                grantee.clone(),
                 rule.node,
                 rule.kinds,
                 rule.answer,
@@ -102,7 +102,7 @@ pub fn grants(
         .collect();
     grants.push(Grant::new(
         format!("{prefix}no-governance"),
-        subject,
+        grantee,
         roles::workspace_resource(workspace),
         KindSet::UNDOABLE.union(KindSet::OUTSIDE),
         Answer::Deny,

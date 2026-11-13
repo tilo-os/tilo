@@ -501,7 +501,7 @@ fn the_app_the_person_opens_authors_its_records_through_the_workspace() {
             .grants
             .iter()
             .any(|grant| grant.id.as_str() == format!("app-author:{app}")
-                && grant.subject.app_id().is_some()),
+                && grant.grantee.app_id().is_some()),
         "the workspace's governance holds the authorship, so every device has it"
     );
     assert!(

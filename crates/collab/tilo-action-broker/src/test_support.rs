@@ -208,7 +208,7 @@ impl crate::services::AgentRoster for TreeAgents {
         let kept = held.policy.grants.iter().any(|grant| {
             grant.node == node
                 && grant.answer == Answer::Allow
-                && grant.subject.agent_id() == Some(agent)
+                && grant.grantee.agent_id() == Some(agent)
         });
         if !kept {
             return None;
@@ -222,7 +222,7 @@ impl crate::services::AgentRoster for TreeAgents {
             .policy
             .grants
             .iter()
-            .filter_map(|grant| grant.subject.person_id())
+            .filter_map(|grant| grant.grantee.person_id())
             .collect();
         people.sort_unstable();
         people.dedup();

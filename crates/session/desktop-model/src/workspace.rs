@@ -642,7 +642,7 @@ impl Workspace {
             return false;
         }
         let person = Grantee::person(user.to_owned());
-        self.policy.grants.retain(|grant| grant.subject != person);
+        self.policy.grants.retain(|grant| grant.grantee != person);
         self.policy.joined.remove(user);
         self.policy.members.remove(user).is_some()
     }
@@ -667,7 +667,7 @@ impl Workspace {
         let person = Grantee::person(user.to_owned());
         let workspace_node = self.node();
         self.policy.grants.iter().any(|grant| {
-            grant.subject == person
+            grant.grantee == person
                 && grant.node == workspace_node
                 && grant.answer == Answer::Deny
                 && grant.kinds == KindSet::ALL
@@ -706,7 +706,7 @@ impl Workspace {
             .map(|(person, _)| (person, None))
             .collect();
         for grant in &self.policy.grants {
-            let Some(person) = grant.subject.person_id() else {
+            let Some(person) = grant.grantee.person_id() else {
                 continue;
             };
             if grant.answer != Answer::Allow
@@ -745,7 +745,7 @@ impl Workspace {
         let workspace_node = self.node();
         let mut agents: Vec<(String, KindSet)> = Vec::new();
         for grant in &self.policy.grants {
-            let Some(agent) = grant.subject.agent_id() else {
+            let Some(agent) = grant.grantee.agent_id() else {
                 continue;
             };
             if grant.node != workspace_node || grant.answer == Answer::Deny || !grant.is_live(&cx) {
@@ -766,7 +766,7 @@ impl Workspace {
         self.policy
             .grants
             .iter()
-            .find_map(|grant| match (&grant.subject, &grant.granted_by) {
+            .find_map(|grant| match (&grant.grantee, &grant.granted_by) {
                 (
                     Grantee::Member(MemberId::Agent(held)),
                     Grantee::Member(MemberId::Person(person)),
@@ -783,7 +783,7 @@ impl Workspace {
             .policy
             .grants
             .iter()
-            .filter_map(|grant| match &grant.subject {
+            .filter_map(|grant| match &grant.grantee {
                 Grantee::App(app) => Some(app.clone()),
                 _ => None,
             })
@@ -826,7 +826,7 @@ impl Workspace {
             .grants
             .iter()
             .filter(|grant| {
-                grant.subject.person_id().is_some()
+                grant.grantee.person_id().is_some()
                     && grant.node != workspace_node
                     && grant.answer != Answer::Deny
                     && grant.is_live(&cx)

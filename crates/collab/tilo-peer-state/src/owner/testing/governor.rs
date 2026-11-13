@@ -313,7 +313,7 @@ impl TestGovernor {
         Ok(policy
             .grants
             .into_iter()
-            .filter(|grant| grant.subject == agent)
+            .filter(|grant| grant.grantee == agent)
             .map(|grant| grant.id.as_str().to_owned())
             .collect())
     }

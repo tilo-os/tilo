@@ -983,7 +983,7 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
             .policy
             .grants
             .iter()
-            .all(|grant| grant.subject != tilo_action_policy::Grantee::app("so.tilo.caller")),
+            .all(|grant| grant.grantee != tilo_action_policy::Grantee::app("so.tilo.caller")),
         "nothing granted to the app"
     );
 }

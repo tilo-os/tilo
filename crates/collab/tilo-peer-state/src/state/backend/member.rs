@@ -20,7 +20,7 @@ trait Policy {
         let subject = Grantee::person(person.to_owned());
         let node = tilo_action_policy::TreePath::workspace(workspace);
         let blocked = self.grants().iter().any(|grant| {
-            grant.subject == subject
+            grant.grantee == subject
                 && grant.node == node
                 && grant.answer == tilo_action_policy::Answer::Deny
                 && grant.kinds == tilo_action_policy::KindSet::ALL

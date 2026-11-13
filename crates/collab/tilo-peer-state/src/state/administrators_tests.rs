@@ -414,7 +414,7 @@ fn an_administrators_own_device_changes_the_workspaces_settings_and_an_editors_c
         policy
             .grants
             .iter()
-            .any(|grant| grant.subject == tilo_action_policy::Grantee::agent("scribe"))
+            .any(|grant| grant.grantee == tilo_action_policy::Grantee::agent("scribe"))
     );
     assert!(
         change_settings(
@@ -511,7 +511,7 @@ fn an_administrator_lets_one_app_use_another_apps_action_and_takes_it_back() {
             .policy
             .grants
             .into_iter()
-            .filter(|grant| grant.subject == Grantee::app("so.tilo.lang.today"))
+            .filter(|grant| grant.grantee == Grantee::app("so.tilo.lang.today"))
             .collect()
     };
     assert!(change_settings(&mut peer, &editor, grant.clone(), now).unwrap());

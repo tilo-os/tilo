@@ -192,10 +192,10 @@ pub fn node(workspace: &str, app: &str, kind: &str) -> TreePath {
     TreePath::workspace(workspace).app(app).kind(kind)
 }
 
-/// The subject an agent's turn carries in a workspace: the agent, acting for
+/// The grantee an agent's turn carries in a workspace: the agent, acting for
 /// its person.
 #[must_use]
-pub fn subject(agent: &str) -> Grantee {
+pub fn grantee(agent: &str) -> Grantee {
     Grantee::agent(agent)
 }
 
@@ -230,7 +230,7 @@ mod tests {
             "each turn carries its own person"
         );
         assert_eq!(
-            bob.first().map(|grant| grant.subject.clone()),
+            bob.first().map(|grant| grant.grantee.clone()),
             Some(Grantee::agent("scribe")),
             "the turn acts as the agent"
         );
@@ -393,8 +393,8 @@ mod tests {
     }
 
     #[test]
-    fn the_subject_of_a_turn_is_its_agent() {
-        assert_eq!(subject("scribe"), Grantee::agent("scribe"));
+    fn the_grantee_of_a_turn_is_its_agent() {
+        assert_eq!(grantee("scribe"), Grantee::agent("scribe"));
         assert_eq!(
             super::node(WORKSPACE, "so.tilo.notes", "document"),
             TreePath::workspace(WORKSPACE)

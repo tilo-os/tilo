@@ -874,7 +874,7 @@ fn project(state_json: &str) -> Result<Vec<WsGrants>, serde_json::Error> {
             }
         }
         for grant in &ws.policy.grants {
-            let Some(app) = grant.subject.app_id() else {
+            let Some(app) = grant.grantee.app_id() else {
                 continue;
             };
             if let Some(view) = grant_view(grant) {

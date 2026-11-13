@@ -164,7 +164,7 @@ fn app_action_grants(
         .grants
         .iter()
         .filter(|grant| {
-            grant.subject == subject && (grant.node == node || node.covers(&grant.node))
+            grant.grantee == subject && (grant.node == node || node.covers(&grant.node))
         })
         .map(|grant| grant.id.clone())
         .collect()

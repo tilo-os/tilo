@@ -74,7 +74,7 @@ impl crate::services::AgentRoster for Native {
                 && held.policy.grants.iter().any(|grant| {
                     grant.node == held.node()
                         && grant.answer == Answer::Allow
-                        && grant.subject.agent_id() == Some(agent)
+                        && grant.grantee.agent_id() == Some(agent)
                 })
             {
                 kept = held.owner().cloned();

@@ -41,7 +41,7 @@ pub(in crate::state) fn member_authority<'a>(
     match delegate {
         Some(delegation) => authority.also_as(
             policy
-                .party_of(delegation.subject())
+                .party_of(delegation.grantee())
                 .with_grants(&delegation.grants),
         ),
         None => authority,

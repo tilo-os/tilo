@@ -341,7 +341,7 @@ impl fmt::Display for GrantId {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Grant {
     pub id: GrantId,
-    pub subject: Grantee,
+    pub grantee: Grantee,
     pub node: TreePath,
     pub kinds: KindSet,
     pub answer: Answer,
@@ -354,7 +354,7 @@ impl Grant {
     #[must_use]
     pub fn new(
         id: impl Into<String>,
-        subject: Grantee,
+        grantee: Grantee,
         node: TreePath,
         kinds: KindSet,
         answer: Answer,
@@ -362,7 +362,7 @@ impl Grant {
     ) -> Self {
         Self {
             id: GrantId::new(id),
-            subject,
+            grantee,
             node,
             kinds,
             answer,
@@ -450,15 +450,15 @@ impl<'a> Context<'a> {
         }
     }
 
-    /// Whether a grant to `granted` speaks for one of `subjects`, an app's under its earlier ids
+    /// Whether a grant to `granted` speaks for one of `grantees`, an app's under its earlier ids
     /// too.
     #[must_use]
-    pub fn subject_matches(&self, granted: &Grantee, subjects: &[Grantee]) -> bool {
+    pub fn grantee_matches(&self, granted: &Grantee, grantees: &[Grantee]) -> bool {
         match self.earlier {
-            Some(earlier) => earlier.subject_matches(granted, subjects),
+            Some(earlier) => earlier.grantee_matches(granted, grantees),
             None => {
-                subjects.contains(granted)
-                    || crate::earlier::with_held(|held| held.subject_matches(granted, subjects))
+                grantees.contains(granted)
+                    || crate::earlier::with_held(|held| held.grantee_matches(granted, grantees))
                         .unwrap_or(false)
             }
         }

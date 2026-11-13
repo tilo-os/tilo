@@ -152,20 +152,20 @@ impl EarlierIds {
                 .any(|earlier| pattern.covers(earlier))
     }
 
-    /// Whether a grant to `granted` speaks for one of `subjects`: the same subject, or the app
+    /// Whether a grant to `granted` speaks for one of `grantees`: the same grantee, or the app
     /// `granted` names was renamed to an app among them.
     #[must_use]
-    pub fn subject_matches(&self, granted: &Grantee, subjects: &[Grantee]) -> bool {
-        if subjects.contains(granted) {
+    pub fn grantee_matches(&self, granted: &Grantee, grantees: &[Grantee]) -> bool {
+        if grantees.contains(granted) {
             return true;
         }
         let Grantee::App(old) = granted else {
             return false;
         };
         self.successor(old).is_some_and(|app| {
-            subjects
+            grantees
                 .iter()
-                .any(|subject| matches!(subject, Grantee::App(held) if held == app))
+                .any(|grantee| matches!(grantee, Grantee::App(held) if held == app))
         })
     }
 }
@@ -271,9 +271,9 @@ mod tests {
     fn a_grant_to_the_earlier_app_is_the_renamed_apps() {
         let ids = tasks();
         let todo = Grantee::app("so.tilo.lang.todo");
-        assert!(ids.subject_matches(&todo, &[Grantee::app("so.tilo.lang.tasks")]));
-        assert!(!ids.subject_matches(&todo, &[Grantee::app("so.tilo.lang.notes")]));
-        assert!(!ids.subject_matches(
+        assert!(ids.grantee_matches(&todo, &[Grantee::app("so.tilo.lang.tasks")]));
+        assert!(!ids.grantee_matches(&todo, &[Grantee::app("so.tilo.lang.notes")]));
+        assert!(!ids.grantee_matches(
             &Grantee::app("so.tilo.lang.tasks"),
             &[Grantee::app("so.tilo.lang.todo")]
         ));
@@ -325,12 +325,12 @@ mod tests {
             Answer::Allow,
             Grantee::person("ada"),
         );
-        let subjects = [Grantee::person("ada")];
+        let grantees = [Grantee::person("ada")];
         let cx = Context::at(0);
-        let before = decide([&grant], &subjects, &node, ActionKind::Undoable, &cx);
+        let before = decide([&grant], &grantees, &node, ActionKind::Undoable, &cx);
         assert_eq!(before.answer, Answer::Deny);
         register("so.tilo.lang.tasks", ["so.tilo.lang.todo"]);
-        let after = decide([&grant], &subjects, &node, ActionKind::Undoable, &cx);
+        let after = decide([&grant], &grantees, &node, ActionKind::Undoable, &cx);
         assert_eq!(after.answer, Answer::Allow);
         assert_eq!(held_current("so.tilo.lang.todo"), "so.tilo.lang.tasks");
     }

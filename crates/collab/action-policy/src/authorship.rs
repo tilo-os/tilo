@@ -27,7 +27,7 @@ use crate::{Answer, Grant, Grantee, KindSet, Party, TreePath};
 pub fn code_grants(workspace: &str, author: &Grantee, trusted: bool) -> Vec<Grant> {
     let grant = |suffix: &str, kinds: KindSet, answer: Answer| {
         Grant::new(
-            format!("code-author:{}:{suffix}", subject_key(author)),
+            format!("code-author:{}:{suffix}", grantee_key(author)),
             author.clone(),
             TreePath::workspace(workspace),
             kinds,
@@ -67,11 +67,11 @@ pub fn code_party_in<'g>(
     let named: Vec<&'g Grant> = workspace
         .iter()
         .filter(|grant| match earlier {
-            Some(earlier) => earlier.subject_matches(&grant.subject, author_alone),
+            Some(earlier) => earlier.grantee_matches(&grant.grantee, author_alone),
             None => {
-                &grant.subject == author
+                &grant.grantee == author
                     || crate::earlier::with_held(|held| {
-                        held.subject_matches(&grant.subject, author_alone)
+                        held.grantee_matches(&grant.grantee, author_alone)
                     })
                     .unwrap_or(false)
             }
@@ -82,8 +82,8 @@ pub fn code_party_in<'g>(
         .held_off_by(named)
 }
 
-fn subject_key(subject: &Grantee) -> String {
-    match subject {
+fn grantee_key(grantee: &Grantee) -> String {
+    match grantee {
         Grantee::Member(crate::MemberId::Person(id)) => format!("person:{id}"),
         Grantee::Member(crate::MemberId::Agent(id)) => format!("agent:{id}"),
         Grantee::App(id) => format!("app:{id}"),

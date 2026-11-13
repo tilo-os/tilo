@@ -623,7 +623,7 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
         }
     }
     for grant in &ws.policy.grants {
-        if let Some(app) = grant.subject.app_id()
+        if let Some(app) = grant.grantee.app_id()
             && !tilo_action_policy::roles::is_make_up(grant)
         {
             apps.push(app.to_owned());
@@ -793,7 +793,7 @@ pub fn remove_agent(ws: &mut Workspace, actor: &UserId, agent: &str) -> PolicyEd
         .policy
         .grants
         .iter()
-        .filter(|grant| grant.subject == subject)
+        .filter(|grant| grant.grantee == subject)
         .map(|grant| tilo_action_policy::Change::Revoke(grant.id.clone()))
         .collect();
     ws.govern_all_at(actor, revokes, tilo_clock::unix_now())
@@ -956,7 +956,7 @@ fn classify_grant(grant: &tilo_action_policy::Grant) -> GrantSubject {
         .node
         .id_at(tilo_action_policy::Level::Action)
         .is_some();
-    let subject = &grant.subject;
+    let subject = &grant.grantee;
     if let Some(id) = subject.app_id() {
         return GrantSubject {
             kind: if names_action {
@@ -1031,8 +1031,8 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, Listed<'_>)> {
             .iter()
             .filter(|grant| {
                 let preset =
-                    grant.subject.role_of().is_some() && grant.id.as_str().starts_with("role:");
-                let admission = grant.subject.agent_id().is_some()
+                    grant.grantee.role_of().is_some() && grant.id.as_str().starts_with("role:");
+                let admission = grant.grantee.agent_id().is_some()
                     && grant.id.as_str().starts_with("agent-member:");
                 let make_up = tilo_action_policy::roles::is_make_up(grant);
                 !preset && !admission && !make_up

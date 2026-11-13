@@ -65,7 +65,7 @@ pub fn content(
                 .policy
                 .grants
                 .iter()
-                .filter(|grant| grant.subject == subject)
+                .filter(|grant| grant.grantee == subject)
                 .count();
             let (offers_role, offers_remove) = member_row_offers(owns, user, viewer);
             Person {

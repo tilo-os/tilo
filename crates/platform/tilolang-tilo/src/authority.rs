@@ -644,7 +644,7 @@ mod tests {
         // Nothing stored was rewritten: the grants name Todo as they did.
         assert_eq!(policy.grants, stored);
         assert!(stored.contains(&node_denied) && stored.contains(&editor));
-        assert_eq!(app_denied.subject, Grantee::app(APP));
+        assert_eq!(app_denied.grantee, Grantee::app(APP));
     }
 
     #[test]

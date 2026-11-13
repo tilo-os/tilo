@@ -295,7 +295,7 @@ fn open_levels_only_match_their_level() {
 }
 
 #[test]
-fn grants_apply_only_to_their_subject() {
+fn grants_apply_only_to_their_grantee() {
     let grants = [
         Grant::new(
             "bob",
@@ -331,6 +331,40 @@ fn grants_apply_only_to_their_subject() {
         &cx(),
     );
     assert_eq!(agent.answer, Answer::Deny);
+}
+
+/// A grant to a role names everyone holding it and everyone above it, so a
+/// workspace shares something with `Role::Viewer` and reaches every member.
+/// A built-in role's own grants name that role alone: they are its rules.
+#[test]
+fn a_grant_to_a_role_reaches_every_higher_role() {
+    let workspace = workspace_with_members(&[
+        (BOB, Role::Editor),
+        (CAROL, Role::Moderator),
+        ("v", Role::Viewer),
+    ]);
+    let shared = Grant::new(
+        "share:m1:viewer",
+        Grantee::role(Role::Viewer),
+        mail().kind("mail.message").resource("m1"),
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
+        alice(),
+    );
+    let mut policy = workspace.clone();
+    policy.grants.push(shared);
+    let edits = |person: &str| {
+        Authority::person(policy.party(person))
+            .decide(
+                &mail().kind("mail.message").resource("m1").action("archive"),
+                ActionKind::Undoable,
+                &cx(),
+            )
+            .answer
+    };
+    for person in [ALICE, CAROL, BOB, "v"] {
+        assert_eq!(edits(person), Answer::Allow, "{person}");
+    }
 }
 
 #[test]
@@ -613,9 +647,9 @@ fn role_presets_grant_what_the_table_says() {
         (Role::Owner, [Allow, Allow, Allow, Allow, Allow, Allow]),
     ];
     for (role, expected) in table {
-        let subjects = [Grantee::person("someone"), Grantee::role(role)];
+        let grantees = [Grantee::person("someone"), Grantee::role(role)];
         let at =
-            |node: &TreePath, kind| decide(&workspace.grants, &subjects, node, kind, &cx()).answer;
+            |node: &TreePath, kind| decide(&workspace.grants, &grantees, node, kind, &cx()).answer;
         let got = [
             at(&content, Read),
             at(&content, Undoable),
@@ -1332,7 +1366,7 @@ fn removing_a_member_drops_their_grants() {
         workspace
             .grants
             .iter()
-            .all(|grant| grant.subject != Grantee::person(BOB))
+            .all(|grant| grant.grantee != Grantee::person(BOB))
     );
 }
 
@@ -1536,7 +1570,7 @@ fn a_grant_written_while_the_level_was_named_for_workspaces_still_decides() {
     // A grant written while the outermost level was named for a workspace.
     let stored = serde_json::json!({
         "id": "notes-read",
-        "subject": {"member": {"person": ALICE}},
+        "grantee": {"member": {"person": ALICE}},
         "node": "workspace:r/app:notes/kind:notes.notebook/resource:*",
         "kinds": ["read", "undoable"],
         "answer": "allow",
@@ -2230,7 +2264,7 @@ fn built_in_roles_load_as_the_code_defines_them_and_a_workspace_keeps_its_own_gr
     // A workspace that holds none of a role's grants does not get them back.
     let mut bare = workspace_with_members(&[]);
     bare.grants
-        .retain(|grant| grant.subject != Grantee::role(Role::Viewer));
+        .retain(|grant| grant.grantee != Grantee::role(Role::Viewer));
     assert_eq!(bare.clone().with_current_roles(), bare);
 
     // A workspace already current comes back as stored, in its own order.
@@ -2264,7 +2298,7 @@ fn the_device_panel_reads_the_session_kind_and_no_other_app_does() {
         .iter()
         .find(|grant| roles::is_device_panel(grant))
         .expect("a new workspace grants its device's panel");
-    assert_eq!(panel.subject, Grantee::app(roles::DEVICE_PANEL.to_owned()));
+    assert_eq!(panel.grantee, Grantee::app(roles::DEVICE_PANEL.to_owned()));
     assert_eq!(
         panel.node,
         TreePath::workspace("r")
@@ -2302,7 +2336,7 @@ fn every_workspace_lets_its_files_app_author_its_files() {
         .iter()
         .find(|grant| roles::is_files_app(grant))
         .expect("a new workspace grants its files' app");
-    assert_eq!(files.subject, Grantee::app(roles::FILES_APP.to_owned()));
+    assert_eq!(files.grantee, Grantee::app(roles::FILES_APP.to_owned()));
     assert_eq!(files.node, TreePath::workspace("r").app(roles::FILES_APP));
     assert_eq!(files.kinds, KindSet::READ_UNDOABLE);
     assert!(roles::is_code_defined(files) && roles::is_make_up(files));

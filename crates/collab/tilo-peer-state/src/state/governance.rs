@@ -1058,7 +1058,7 @@ impl PeerGovernanceMut<'_> {
             .filter(|grant| {
                 tilo_action_policy::roles::is_legacy_administrator_grant(workspace, grant)
             })
-            .filter_map(|grant| match &grant.subject {
+            .filter_map(|grant| match &grant.grantee {
                 Grantee::Member(tilo_action_policy::MemberId::Person(person)) => {
                     Some(tilo_action_policy::roles::administrator_grant(
                         workspace,
@@ -1071,7 +1071,7 @@ impl PeerGovernanceMut<'_> {
             .collect::<Vec<_>>();
         // Every administrator moderates the workspace too.
         for grant in grants {
-            if let Some(person) = grant.subject.person_id()
+            if let Some(person) = grant.grantee.person_id()
                 && grant.id == tilo_action_policy::roles::administrator_grant_id(person)
                 && grant.answer == tilo_action_policy::Answer::Allow
             {
@@ -1196,7 +1196,7 @@ impl PeerGovernanceMut<'_> {
             policy
                 .grants
                 .iter()
-                .filter(|grant| grant.subject == Grantee::person(person.clone()))
+                .filter(|grant| grant.grantee == Grantee::person(person.clone()))
                 .map(|grant| Change::Revoke(grant.id.clone()))
                 .collect()
         };

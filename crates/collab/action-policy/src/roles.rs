@@ -224,7 +224,7 @@ pub fn administrator_grant_id(person: &str) -> GrantId {
 pub fn administrator_grant(workspace: &str, person: &str, granted_by: Grantee) -> Grant {
     Grant {
         id: administrator_grant_id(person),
-        subject: Grantee::person(person.to_owned()),
+        grantee: Grantee::person(person.to_owned()),
         node: governance_actions(workspace),
         kinds: KindSet::UNDOABLE.union(KindSet::OUTSIDE),
         answer: Answer::Allow,
@@ -248,7 +248,7 @@ pub fn administrator_moderation_grant_id(person: &str) -> GrantId {
 pub fn administrator_moderation_grant(workspace: &str, person: &str, granted_by: Grantee) -> Grant {
     Grant {
         id: administrator_moderation_grant_id(person),
-        subject: Grantee::person(person.to_owned()),
+        grantee: Grantee::person(person.to_owned()),
         node: moderation(workspace).any(Level::Action),
         kinds: KindSet::UNDOABLE.union(KindSet::OUTSIDE),
         answer: Answer::Allow,
@@ -264,7 +264,7 @@ pub fn administrator_moderation_grant(workspace: &str, person: &str, granted_by:
 /// not one, so rewriting never widens it.
 #[must_use]
 pub fn is_legacy_administrator_grant(workspace: &str, grant: &Grant) -> bool {
-    matches!(&grant.subject, Grantee::Member(crate::MemberId::Person(person)) if grant.id == administrator_grant_id(person))
+    matches!(&grant.grantee, Grantee::Member(crate::MemberId::Person(person)) if grant.id == administrator_grant_id(person))
         && grant.node == workspace_resource(workspace)
         && grant.answer == Answer::Allow
         && grant.lifetime == Lifetime::UntilRevoked
@@ -333,7 +333,7 @@ pub fn block_grant_id(person: &str) -> GrantId {
 pub fn block_grant(workspace: &str, person: &str, granted_by: Grantee) -> Grant {
     Grant {
         id: block_grant_id(person),
-        subject: Grantee::person(person.to_owned()),
+        grantee: Grantee::person(person.to_owned()),
         node: TreePath::workspace(workspace),
         kinds: KindSet::ALL,
         answer: Answer::Deny,
@@ -361,7 +361,7 @@ pub fn restriction_grant(
 ) -> Grant {
     Grant {
         id: restriction_grant_id(person),
-        subject: Grantee::person(person.to_owned()),
+        grantee: Grantee::person(person.to_owned()),
         node: TreePath::workspace(workspace),
         kinds: KindSet::UNDOABLE.union(KindSet::OUTSIDE),
         answer: Answer::Deny,
@@ -384,7 +384,7 @@ pub const MODERATOR_GOVERNANCE: [&str; 7] = [
     governance::RESUME_BOT,
 ];
 
-/// One rule of a preset: a grant without its subject.
+/// One rule of a preset: a grant without its grantee.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Rule {
     pub node: TreePath,
@@ -472,12 +472,12 @@ impl Preset {
         Ok(())
     }
 
-    /// The preset's grants for `subject`. Ids are `<prefix>:<index>`.
+    /// The preset's grants for `grantee`. Ids are `<prefix>:<index>`.
     #[must_use]
     pub fn assign(
         &self,
         prefix: &str,
-        subject: &Grantee,
+        grantee: &Grantee,
         granted_by: &Grantee,
         lifetime: &Lifetime,
     ) -> Vec<Grant> {
@@ -486,7 +486,7 @@ impl Preset {
             .enumerate()
             .map(|(index, rule)| Grant {
                 id: GrantId(format!("{prefix}:{index}")),
-                subject: subject.clone(),
+                grantee: grantee.clone(),
                 node: rule.node.clone(),
                 kinds: rule.kinds,
                 answer: rule.answer,
@@ -607,7 +607,7 @@ fn role_grant_prefix(role: Role) -> String {
 /// ids and custom presets assign `preset:` ids, so neither is one.
 #[must_use]
 pub fn is_role_grant(grant: &Grant) -> bool {
-    let Grantee::Role(role) = grant.subject else {
+    let Grantee::Role(role) = grant.grantee else {
         return false;
     };
     grant
@@ -644,7 +644,7 @@ pub fn current_role_grants(grants: Vec<Grant>) -> Vec<Grant> {
             out.push(Some(grant));
             continue;
         }
-        let Grantee::Role(role) = grant.subject else {
+        let Grantee::Role(role) = grant.grantee else {
             continue;
         };
         if !held.iter().any(|entry| entry.role == role) {
@@ -654,7 +654,7 @@ pub fn current_role_grants(grants: Vec<Grant>) -> Vec<Grant> {
             };
             let current = role_preset(role, workspace).assign(
                 &role_grant_prefix(role),
-                &grant.subject,
+                &grant.grantee,
                 &grant.granted_by,
                 &Lifetime::UntilRevoked,
             );
@@ -778,18 +778,18 @@ pub mod agent_policy {
 /// for the agent's record ([`crate::turn::authority`]).
 #[must_use]
 pub fn agent_grants(workspace: &str, agent: &str, person: &str, bound: &[Rule]) -> Vec<Grant> {
-    let subject = Grantee::agent(agent.to_owned());
+    let grantee = Grantee::agent(agent.to_owned());
     let granted_by = Grantee::person(person.to_owned());
     let prefix = format!("turn:agent:{agent}");
     let mut grants = role_preset(agent_policy::ROLE_CAP, workspace).assign(
         &prefix,
-        &subject,
+        &grantee,
         &granted_by,
         &Lifetime::UntilRevoked,
     );
     grants.extend(bound.iter().enumerate().map(|(index, rule)| Grant {
         id: GrantId(format!("{prefix}:bound:{index}")),
-        subject: subject.clone(),
+        grantee: grantee.clone(),
         node: rule.node.clone(),
         kinds: rule.kinds,
         answer: rule.answer,
@@ -828,7 +828,7 @@ pub const SESSION_APP_GRANT: &str = "session-app";
 #[must_use]
 pub fn is_session_app(grant: &Grant) -> bool {
     grant.id.as_str() == SESSION_APP_GRANT
-        && matches!(&grant.subject, Grantee::App(app) if app == SESSION_APP)
+        && matches!(&grant.grantee, Grantee::App(app) if app == SESSION_APP)
 }
 
 /// The grant making the desktop session's own app, [`SESSION_APP`], one of
@@ -855,7 +855,7 @@ pub const DEVICE_PANEL_GRANT: &str = "device-panel";
 #[must_use]
 pub fn is_device_panel(grant: &Grant) -> bool {
     grant.id.as_str() == DEVICE_PANEL_GRANT
-        && matches!(&grant.subject, Grantee::App(app) if app == DEVICE_PANEL)
+        && matches!(&grant.grantee, Grantee::App(app) if app == DEVICE_PANEL)
 }
 
 /// Whether `grant` is one the code defines and every read of a stored policy
@@ -887,7 +887,7 @@ pub const FILES_APP_GRANT: &str = "files-app";
 #[must_use]
 pub fn is_files_app(grant: &Grant) -> bool {
     grant.id.as_str() == FILES_APP_GRANT
-        && matches!(&grant.subject, Grantee::App(app) if app == FILES_APP)
+        && matches!(&grant.grantee, Grantee::App(app) if app == FILES_APP)
 }
 
 /// The grant making [`FILES_APP`] an author of `workspace`'s files: every

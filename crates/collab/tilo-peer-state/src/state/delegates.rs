@@ -366,9 +366,9 @@ pub struct ActingAs {
 }
 
 impl ActingAs {
-    /// The grant subject this actor is named by.
+    /// The grantee this actor is named by.
     #[must_use]
-    pub fn subject(&self) -> tilo_action_policy::Grantee {
-        self.actor.subject()
+    pub fn grantee(&self) -> tilo_action_policy::Grantee {
+        self.actor.grantee()
     }
 }

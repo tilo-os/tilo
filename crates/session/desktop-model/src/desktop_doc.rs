@@ -704,7 +704,7 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
         // `workspace_role_grants`: rebuild it (index 10 after 9, not after 1) before
         // exposing the policy to the live tree.
         fn role_order(grant: &Grant) -> usize {
-            match grant.subject {
+            match grant.grantee {
                 Grantee::Role(role) => Role::ALL
                     .iter()
                     .position(|r| *r == role)
@@ -713,7 +713,7 @@ fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
             }
         }
         fn role_index(grant: &Grant) -> Option<u64> {
-            match grant.subject {
+            match grant.grantee {
                 Grantee::Role(_) => grant.id.0.rsplit(':').next()?.parse().ok(),
                 _ => None,
             }

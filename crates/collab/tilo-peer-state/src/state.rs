@@ -125,7 +125,7 @@ pub(crate) fn agent_is_member(policy: &WorkspacePolicy, agent: &str, now: System
     let cx = tilo_action_policy::Context::at_time(now);
     let workspace = policy.node();
     policy.grants.iter().any(|grant| {
-        grant.subject.agent_id() == Some(agent)
+        grant.grantee.agent_id() == Some(agent)
             && grant.node == workspace
             && grant.answer != Answer::Deny
             && grant.is_live(&cx)

@@ -224,7 +224,7 @@ impl TopBarChrome {
                     .map(|participant| (workspace, participant))
             }) {
                 let is_agent = workspace.policy.grants.iter().any(|grant| {
-                    grant.subject.agent_id().is_some_and(|id| {
+                    grant.grantee.agent_id().is_some_and(|id| {
                         id.eq_ignore_ascii_case(&participant.id)
                             || id.eq_ignore_ascii_case(&participant.name)
                     })

@@ -305,7 +305,7 @@ pub fn workspace_shares(
         {
             continue;
         }
-        let Some(holder) = grant.subject.person_id() else {
+        let Some(holder) = grant.grantee.person_id() else {
             continue;
         };
         share(

@@ -285,7 +285,7 @@ pub fn grant_answer(grant: &[Rule], node: &TreePath, kind: ActionKind) -> StepGr
         .enumerate()
         .map(|(index, rule)| Grant {
             id: GrantId::new(index.to_string()),
-            subject: subject.clone(),
+            grantee: subject.clone(),
             node: rule.node.clone(),
             kinds: rule.kinds,
             answer: rule.answer,

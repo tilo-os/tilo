@@ -212,7 +212,7 @@ async fn an_app_action_grant_is_owner_signed_and_the_same_grant_however_often_gi
                 Ok(policy
                     .grants
                     .into_iter()
-                    .filter(|grant| grant.subject == Grantee::app("so.tilo.lang.today"))
+                    .filter(|grant| grant.grantee == Grantee::app("so.tilo.lang.today"))
                     .collect::<Vec<_>>())
             })
             .unwrap()

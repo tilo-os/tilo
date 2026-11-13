@@ -150,7 +150,7 @@ pub fn grant_id(agent: &str, scope: &AnswerScope, kind: ActionKind) -> GrantId {
 #[must_use]
 pub fn is_answer(grant: &Grant) -> bool {
     matches!(
-        grant.subject,
+        grant.grantee,
         Grantee::Member(crate::MemberId::Agent(_)) | Grantee::Task(_)
     ) && grant.id.as_str().starts_with(PREFIX)
 }

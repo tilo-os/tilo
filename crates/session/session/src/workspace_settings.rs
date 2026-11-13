@@ -892,7 +892,7 @@ fn general(
             .policy
             .grants
             .iter()
-            .filter(|grant| grant.subject.role_of().is_none());
+            .filter(|grant| grant.grantee.role_of().is_none());
         (
             workspace.roster().len(),
             sandbox.count().saturating_add(given.count()),
