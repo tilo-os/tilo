@@ -1072,6 +1072,10 @@ pub struct BranchArgs {
 }
 
 #[derive(Debug, Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one field per independent command-line switch"
+)]
 pub struct CreateArgs {
     /// The name to register the new VM under.
     pub name: String,
@@ -1136,6 +1140,9 @@ pub struct CreateArgs {
     /// UTM VM to clone.
     #[arg(long)]
     pub template: Option<String>,
+    /// No NIC on the network this host's VMs share (libvirt; on by default).
+    #[arg(long)]
+    pub no_lan: bool,
 }
 
 #[derive(Debug, Subcommand)]

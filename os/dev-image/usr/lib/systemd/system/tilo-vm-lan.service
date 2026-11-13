@@ -1,0 +1,12 @@
+# The address of this VM on the network the VMs tilo-vm runs on one host share,
+# from its NIC's MAC (/usr/libexec/tilo/tilo-vm-lan). Started by
+# 70-tilo-vm-lan.rules when that NIC appears. Dev images only.
+[Unit]
+Description=Address on tilo-vm's host network
+BindsTo=sys-subsystem-net-devices-tilolan0.device
+After=sys-subsystem-net-devices-tilolan0.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tilo/tilo-vm-lan

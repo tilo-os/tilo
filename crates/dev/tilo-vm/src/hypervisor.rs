@@ -318,6 +318,18 @@ pub trait Hypervisor {
     fn query_uuid(&self, _vm: &Vm<'_>, _runner: &mut dyn Runner) -> Option<String> {
         None
     }
+    /// Whether the VM is on a network the host's other VMs are on ([`crate::lan`]): `Ok` when
+    /// it is, else why not.
+    fn host_network(&self, _entry: &VmEntry) -> Result<(), String> {
+        Err(format!(
+            "the {} adapter's VMs reach out from this host but not each other",
+            self.name()
+        ))
+    }
+    /// Whether this adapter puts its VMs on [`crate::lan`]'s network.
+    fn joins_lan(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -509,8 +521,9 @@ pub fn domain_xml_with_uuid(
     };
     let e = quick_xml::escape::escape;
     let uuid = uuid.or(vm.entry.uuid.as_deref());
+    let lan = crate::lan::mac(vm.entry);
     Ok(format!(
-        "<domain type='{domain_type}'>
+        "<domain type='{domain_type}'{namespace}>
   <name>{name}</name>{uuid}
   <memory unit='MiB'>{memory}</memory>
   <vcpu>{cpus}</vcpu>
@@ -548,9 +561,11 @@ pub fn domain_xml_with_uuid(
     <graphics type='spice' autoport='yes'/>{gl}
     <video>{video}</video>
     <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
-  </devices>
+  </devices>{lan}
 </domain>
 ",
+        namespace = if lan.is_some() { crate::lan::QEMU_NAMESPACE } else { "" },
+        lan = lan.map_or_else(String::new, crate::lan::domain_commandline),
         name = e(vm.name),
         uuid = uuid.map_or_else(String::new, |u| format!("\n  <uuid>{}</uuid>", e(u))),
         system = uuid.map_or_else(String::new, |u| format!(
@@ -714,6 +729,16 @@ impl Hypervisor for Libvirt {
 
     fn branching(&self) -> Branching {
         Branching::Backing
+    }
+
+    fn host_network(&self, entry: &VmEntry) -> Result<(), String> {
+        crate::lan::mac(entry).map(|_| ()).ok_or_else(|| {
+            "its NIC on tilo-vm's host network is off (`lan = \"off\"` in vms.toml)".to_owned()
+        })
+    }
+
+    fn joins_lan(&self) -> bool {
+        true
     }
 
     fn stopped(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {
@@ -1076,6 +1101,11 @@ impl Hypervisor for Utm {
 
     fn branching(&self) -> Branching {
         Branching::Clone
+    }
+
+    fn host_network(&self, _entry: &VmEntry) -> Result<(), String> {
+        // UTM's default shared network (vmnet) puts its VMs on one subnet of the host.
+        Ok(())
     }
 
     fn stopped(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {

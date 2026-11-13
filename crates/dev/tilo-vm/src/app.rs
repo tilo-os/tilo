@@ -2089,7 +2089,17 @@ impl App {
         }
         let (uuid, nic_mac) = hypervisor::new_identity();
         let identified = matches!(plan.choice.adapter, "libvirt" | "whpx");
+        let lan = hypervisor::adapter(plan.choice.adapter)?
+            .joins_lan()
+            .then(|| {
+                if args.no_lan {
+                    crate::lan::OFF.to_owned()
+                } else {
+                    crate::lan::new_mac(|mac| lan_taken(&registry, mac))
+                }
+            });
         let entry = VmEntry {
+            lan,
             hypervisor: plan.choice.adapter.to_owned(),
             uuid: identified.then_some(uuid),
             nic_mac: identified.then_some(nic_mac),
@@ -2533,6 +2543,7 @@ impl App {
             });
         }
         let adapter = Self::adapter(&vm)?;
+        let vm = self.join_lan_now(adapter.as_ref(), vm)?;
         self.power_up(adapter.as_ref(), &vm)?;
         let started = Instant::now();
         let mut reachable = false;
@@ -5539,6 +5550,70 @@ fn yes(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
+impl App {
+    /// [`App::join_lan`] by the host's own tools, saying so among the warnings.
+    fn join_lan_now(
+        &mut self,
+        adapter: &dyn Hypervisor,
+        vm: Resolved,
+    ) -> Result<Resolved, CliError> {
+        let mut runner = SystemRunner {
+            cwd: self.runner.cwd.clone(),
+        };
+        let (vm, joined) = self.join_lan(&mut runner, adapter, vm)?;
+        self.warnings.extend(joined);
+        Ok(vm)
+    }
+}
+
+/// Whether a VM in `registry` has `mac` on the host network ([`crate::lan`]).
+pub(crate) fn lan_taken(registry: &Registry, mac: &str) -> bool {
+    registry
+        .vms
+        .values()
+        .any(|entry| entry.lan.as_deref() == Some(mac))
+}
+
+impl App {
+    /// Put `vm` on the network this host's VMs share before it boots, when its adapter has one
+    /// and the VM, made before it, has no NIC there yet: give it a MAC, record it, and redefine
+    /// the VM with it. A VM tilo-vm did not make keeps its definition, and `lan = "off"` none.
+    /// Says so when it joined.
+    pub(crate) fn join_lan(
+        &self,
+        runner: &mut dyn Runner,
+        adapter: &dyn Hypervisor,
+        vm: Resolved,
+    ) -> Result<(Resolved, Option<String>), CliError> {
+        let own = sshkey::key_path(&self.registry_path, &vm.name);
+        if !adapter.joins_lan()
+            || vm.entry.lan.is_some()
+            || vm.entry.key.as_deref().map(Path::new) != Some(own.as_path())
+        {
+            return Ok((vm, None));
+        }
+        let mut registry = self.registry()?;
+        let mac = crate::lan::new_mac(|mac| lan_taken(&registry, mac));
+        let mut entry = vm.entry.clone();
+        entry.lan = Some(mac.clone());
+        let root_key = sshkey::read_public(&own)?;
+        let joined = Resolved { entry, ..vm };
+        let define = adapter.redefine(&joined.vm(), &root_key, runner)?;
+        run_all(runner, &define)?;
+        registry
+            .vms
+            .insert(joined.name.clone(), joined.entry.clone());
+        registry.save(&self.registry_path)?;
+        let note = format!(
+            "{} joined {} as {}: it was made before that network",
+            joined.name,
+            crate::lan::describe(),
+            crate::lan::address(&mac).map_or_else(String::new, |ip| ip.to_string())
+        );
+        Ok((joined, Some(note)))
+    }
+}
+
 fn entry_image(registry: &Registry, name: &str) -> Option<String> {
     registry.vms.get(name).and_then(|e| e.image.clone())
 }
@@ -8240,6 +8315,7 @@ mod tests {
             ssh: None,
             ssh_port: None,
             template: None,
+            no_lan: false,
         }
     }
 

@@ -62,7 +62,10 @@ workspace list come along with the disk either way. So `vm branch` boots
 branches, as many at a time as the host's memory holds, waits until each has
 re-keyed and every workspace `box` hosts has taken it in, and stops them: the
 branches off, `box` as it was before (off, with `--stop`). That needs `box`
-to boot here; with too little free memory it says so, and `--no-admit` makes
+to boot here, and the source and its branches on one network of this host
+(libvirt VMs are, `tilo-vm guide platforms`, "One network for a host's
+VMs"); a branch that cannot reach `box` there is named after a minute rather
+than at the end of the wait. With too little free memory it says so, and `--no-admit` makes
 the branches without booting anything (each is then taken in at its first
 boot while `box` runs; the next `vm branch box` of the same names boots it
 to be taken in).

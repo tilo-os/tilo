@@ -1,0 +1,32 @@
+#!/bin/sh
+# The address of this VM on the network the VMs tilo-vm runs on one host share
+# (`tilo-vm guide platforms`, "One network for a host's VMs"). tilo-vm gives the
+# VM a NIC there whose MAC starts 52:54:01:00; 70-tilo-vm-lan.rules names it
+# tilolan0. It has no DHCP server, so the address comes from the MAC, as
+# tilo-vm computes it (crates/dev/tilo-vm/src/lan.rs): 198.18.<5th>.<6th>/16,
+# with no gateway, so it never becomes the default route.
+#
+#   tilo-vm-lan               give tilolan0 its address
+#   tilo-vm-lan address MAC   print the address of MAC
+set -eu
+
+address() {
+	case "$1" in
+	52:54:01:00:??:??) ;;
+	*) echo "tilo-vm-lan: $1 is not a MAC on tilo-vm's host network" >&2; return 1 ;;
+	esac
+	rest=${1#52:54:01:00:}
+	echo "198.18.$((0x${rest%:*})).$((0x${rest#*:}))"
+}
+
+if [ "${1:-}" = address ]; then
+	address "$(printf %s "$2" | tr 'A-F' 'a-f')"
+	exit
+fi
+
+dev=tilolan0
+ip=$(address "$(cat "/sys/class/net/$dev/address")")
+ip link set dev "$dev" up
+# A branched disk carries its source's address: the MAC is this VM's own.
+ip -4 address flush dev "$dev"
+ip address add "$ip/16" dev "$dev"
