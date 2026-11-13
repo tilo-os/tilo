@@ -54,8 +54,12 @@ if [[ $rpms_source != "$rpms_ref" ]]; then
 else
   epoch=$(bash os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")
 fi
+# The scripts the image copies, dated by its clock: a COPY keeps a file's time where it is older
+# than the clock, and the times a checkout gives a file differ from one checkout to the next.
+touch -d "@$epoch" os/scripts/finalize-rpmdb.sh os/scripts/clean-dnf-layer-state.sh
 podman build --security-opt label=disable --format oci --source-date-epoch "$epoch" --rewrite-timestamp \
-  --build-arg "BASE_REF=$BASE_REF" --build-arg "RPMS_REF=$RPMS_REF" \
+  --build-arg "SOURCE_DATE_EPOCH=$epoch" --build-arg "BASE_REF=$BASE_REF" --build-arg "RPMS_REF=$RPMS_REF" \
+  --build-context scripts=os/scripts \
   -f os/image/assembler.Containerfile -t localhost/tilo-assembler:latest os/image
 rm -rf "$out"
 mkdir -p "$out"
