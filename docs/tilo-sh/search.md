@@ -1,8 +1,7 @@
 # Search
 
-Anything in a workspace is reachable by walking it: the apps, then an app's records, then one record's
-contents. That is what works today from your code and from an agent, and it is enough to find by name.
-Searching by words is the desktop's search, and a hosted workspace does not run it yet.
+Two ways find something in a workspace: search it by words (`find`), or walk it: the apps, then an app's
+records, then one record's contents. Every host answers both, the same way.
 
 ## Walk it
 
@@ -70,9 +69,47 @@ curl -sS --fail-with-body "$resources?path=notes" -H "$auth" \
 
 ## Search by words
 
-`find` is Tilo's one search: the same ranking the desktop's search box uses, over what each app publishes
-for it. It answers hits, best first, one per resource: a `path` the other calls take, its `kind`, its
-`label`, and the `action` the row offers (`open` when the row opens the resource itself).
+`find` (`GET /v1/workspaces/{workspace}/search?q=`) is the host's search over what the workspace's
+records hold: their titles and text. It answers hits, best first, one per record, each as your own
+listing shows it: a `path` the other calls take, its `kind`, its `label`, and the `action` the row offers
+(`open` when the row opens the resource itself). A record sealed end to end that the host cannot open is
+not found by words; walk to it instead.
+
+```python example=find-by-words
+from tilo import Tilo
+
+tilo = Tilo()
+workspace = tilo.workspace(tilo.workspaces.create("Searching").id)
+workspace.do("notes#create-page", title="Visa checklist", markdown="- passport\n- photos\n")
+
+for hit in workspace.find("passport"):
+    print(hit.path, "|", hit.label, "|", hit.kind)
+```
+
+```typescript example=find-by-words
+import { Tilo } from "tilo-sdk";
+
+const tilo = new Tilo();
+const workspace = tilo.workspace((await tilo.workspaces.create("Searching")).id);
+await workspace.do("notes#create-page", { title: "Visa checklist", markdown: "- passport\n- photos\n" });
+
+for (const hit of await workspace.find("passport")) {
+  console.log(hit.path, "|", hit.label, "|", hit.kind);
+}
+```
+
+```curl example=find-by-words
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"
+workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
+  -d '{"name": "Searching"}' | jq -r .id)
+curl -sS --fail-with-body "$api/workspaces/$workspace/resources/notes/actions/create-page" -H "$auth" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Visa checklist", "markdown": "- passport\n- photos\n"}' > /dev/null
+
+curl -sS --fail-with-body "$api/workspaces/$workspace/search?q=passport" -H "$auth" \
+  | jq -r '.hits[] | "\(.path) | \(.label) | \(.kind)"'
+```
 `ws.find(query, app=None, limit=None)` narrows it to one app and a count.
 
 > [!NOTE]

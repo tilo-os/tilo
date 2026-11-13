@@ -1,8 +1,8 @@
 # Webhooks and events
 
 A backend that waits for something to happen should not poll for it. Tilo answers a **watch**: a stream of what
-happened in a workspace, from a cursor. There are no webhooks yet: nothing calls your server. A watch is what
-exists, and this page is about it.
+happened in a workspace, from a cursor. An API server also posts the same events to your server, signed, as
+**webhooks** ([below](#webhooks)).
 
 ## The stream
 
@@ -37,17 +37,18 @@ async def main() -> None:
     tilo = AsyncTilo()
     workspace = tilo.workspace((await tilo.workspaces.create("Watching")).id)
 
-    async def first_event():
+    async def first_change():
         async for event in workspace.watch():
-            return event
-        raise RuntimeError("the watch ended without an event")
+            if event.kind == "change":
+                return event
+        raise RuntimeError("the watch ended without a change")
 
-    watcher = asyncio.create_task(first_event())
+    watcher = asyncio.create_task(first_change())
     await asyncio.sleep(1)                      # let the watch attach
     await workspace.do("notes#create-page", title="Arrivals", markdown="- 09:40 Jane Doe\n")
 
     event = await asyncio.wait_for(watcher, timeout=30)
-    print("kind:", event.kind, "path:", event.path, "phase:", event.phase, "run:", event.title)
+    print("kind:", event.kind, "path:", event.path, "sentence:", event.sentence, "run:", event.run)
     await tilo.aclose()
 
 
@@ -60,32 +61,60 @@ import { Tilo } from "tilo-sdk";
 const tilo = new Tilo();
 const workspace = tilo.workspace((await tilo.workspaces.create("Watching")).id);
 
-async function firstEvent() {
+async function firstChange() {
   for await (const event of workspace.watch()) {
-    return event;
+    if (event.kind === "change") {
+      return event;
+    }
   }
-  throw new Error("the watch ended without an event");
+  throw new Error("the watch ended without a change");
 }
 
-const watcher = firstEvent();
+const watcher = firstChange();
 await new Promise((resolve) => setTimeout(resolve, 1000)); // let the watch attach
 await workspace.do("notes#create-page", { title: "Arrivals", markdown: "- 09:40 Jane Doe\n" });
 
 const event = await Promise.race([
   watcher,
-  new Promise<never>((_, reject) => setTimeout(() => reject(new Error("no event in 30s")), 30000)),
+  new Promise<never>((_, reject) => setTimeout(() => reject(new Error("no change in 30s")), 30000)),
 ]);
-console.log("kind:", event.kind, "path:", event.path, "phase:", event.phase, "run:", event.run);
+console.log("kind:", event.kind, "path:", event.path, "sentence:", event.sentence, "run:", event.run);
+process.exit(0);
 ```
 
-The first event to arrive is often the `run` event of the call you just made, which is what the example
-prints. A `change` event names the record's path and the sentence a person would read.
+```curl example=watch-stream
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"
+workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
+  -d '{"name": "Watching"}' | jq -r .id)
+
+# The stream, read in the background until its first change.
+curl -sSN "$api/workspaces/$workspace/events" -H "$auth" > events.txt &
+watching=$!
+sleep 1
+curl -sS --fail-with-body "$api/workspaces/$workspace/resources/notes/actions/create-page" -H "$auth" \
+  -H "Content-Type: application/json" -d '{"title": "Arrivals", "markdown": "- 09:40 Jane Doe\n"}' > /dev/null
+for _ in $(seq 30); do grep -q '^event: change' events.txt && break; sleep 1; done
+kill "$watching"
+grep -A1 '^event: change' events.txt | head -2
+```
+
+The call's own `run` events arrive too; the example reads past them to the first `change`, which names the
+app, the record, the sentence a person would read, and the run that made it.
 
 ## Watching one run
 
 A `Run` has the same stream narrowed to itself: `run.output()` answers its events, from `started` to
 `succeeded`, `failed` or `cancelled`, and stops there. That is how a caller follows a long action without
 polling its status.
+
+## Webhooks
+
+On an API server, `POST /v1/workspaces/{workspace}/webhooks` with `{"url", "events"?, "path"?}` posts each
+event to `url` as it happens: the same events, as JSON, with a `Tilo-Signature` header (an HMAC-SHA256 of
+the timestamp and the body under the secret the call answers once) and a `Tilo-Delivery` id to deduplicate
+by. A delivery not answered with a `2xx` is tried again, in order, for close to three hours. The
+[API reference](../developers/api.md#webhooks) has the details.
 
 ## Tools
 
