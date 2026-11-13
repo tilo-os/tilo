@@ -777,14 +777,11 @@ d-rfgelicn = Showing
 
 d-p4owlmpg = Always
 
-d-sscc6gs3 = While no window covers it; it hides when a window would cover it
-    .doc = While no window covers it; it hides when a window would cover it.
+d-sscc6gs3 = While no window covers it
 
-d-v2eyzsgr = At the screen's edge: hidden until the pointer bumps the edge it rides
-    .doc = At the screen's edge: hidden until the pointer bumps the edge it rides.
+d-v2eyzsgr = At the screen's edge
 
-d-62fazfo4 = After a moment: hidden once the pointer has not been over it for a while
-    .doc = After a moment: hidden once the pointer has not been over it for a while.
+d-62fazfo4 = After a moment
 
 d-v3z2zasp = Size
     .doc = How large the parts are.
@@ -1296,6 +1293,11 @@ d-ebrt7kdg = Preview dock
 d-grqdyggg = Shell settings
     .w-top-bar = Top bar
     .w-show-the-top-bar = Show the top bar
+    .w-edge = Edge
+    .w-fit = Fit
+    .w-material = Material
+    .w-when-it-shows = When it shows
+    .w-size = Size
     .w-dock = Dock
     .w-show-the-dock = Show the dock
 

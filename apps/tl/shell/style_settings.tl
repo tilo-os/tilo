@@ -70,9 +70,10 @@ view style_panel(d: Desk) {
                 }
             }
             body: {
-                // The settings scroll inside the panel: a screen shorter than what a style sets
-                // never stands past the desk.
-                scroll(fill) {
+                // The settings are as tall as what the style sets, and scroll only where a screen
+                // is shorter than that: a panel over the desk never stands past it, and never
+                // takes room it has nothing to put in.
+                scroll {
                     style_settings_body(d)
                 }
             }
@@ -125,7 +126,7 @@ view style_settings_body(d: Desk) {
 }
 
 /// The desktop style's settings: whether the top bar shows, where the dock rides, how big it is,
-/// and when it shows. Each is one row: its words, and the switch or the strip of choices that
+/// and when it shows. Each is one setting: its words, and the switch or the strip of choices that
 /// sets it, so what a person changes stands beside what it changes.
 view desktop_style_settings(s: Shell) {
     stack(gap: .related) {
@@ -139,24 +140,28 @@ view desktop_style_settings(s: Shell) {
             spacer
             toggle("Show the dock", bind: s.dock_shown)
         }
-        // Each choice is the setting's own action at that case, so a press here and an agent's
-        // call change the dock the same way; the row wraps where the panel is narrow.
-        row(gap: .tight, align: .center, wrap: true) {
-            ui.Text("Dock edge")
+        // Each choice is one strip of the setting's cases, the case it holds filled, and a press
+        // runs that setting's own action at the case pressed: one press here and an agent's call
+        // change the dock the same way.
+        ui.ToggleGroup(caption: "Dock edge", fill: true) {
             for edge in cases(Edge) {
-                button(edge.label(), on: dock_on(s, edge))
+                ui.Segment(edge.label(), chosen: s.dock_edge == edge) {
+                    on press: dock_on(s, edge)
+                }
             }
         }
-        row(gap: .tight, align: .center, wrap: true) {
-            ui.Text("Dock size")
+        ui.ToggleGroup(caption: "Dock size", fill: true) {
             for size in cases(Size) {
-                button(size.label(), on: set_dock_size(s, size))
+                ui.Segment(size.label(), chosen: s.dock_size == size) {
+                    on press: set_dock_size(s, size)
+                }
             }
         }
-        row(gap: .tight, align: .center, wrap: true) {
-            ui.Text("Dock, when it shows")
+        ui.ToggleGroup(caption: "Dock, when it shows", fill: true) {
             for showing in cases(Showing) {
-                button(showing.label(), on: set_dock_showing(s, showing))
+                ui.Segment(showing.label(), chosen: s.dock_showing == showing) {
+                    on press: set_dock_showing(s, showing)
+                }
             }
         }
     }
@@ -164,7 +169,7 @@ view desktop_style_settings(s: Shell) {
 
 /// The strips style's settings: whether a strip of several places shows its tab bar.
 view strips_style_settings(s: Shell) {
-    stack(fill, gap: .related) {
+    stack(gap: .related) {
         row(gap: .related, align: .center, wrap: true) {
             ui.Text("Show the tabs of a strip")
             spacer
@@ -175,7 +180,7 @@ view strips_style_settings(s: Shell) {
 
 /// The frames style's settings: whether a place let go on the canvas lands on the grid.
 view frames_style_settings(s: Shell) {
-    stack(fill, gap: .related) {
+    stack(gap: .related) {
         row(gap: .related, align: .center, wrap: true) {
             ui.Text("Snap places to a grid")
             spacer

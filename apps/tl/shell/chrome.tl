@@ -36,11 +36,17 @@ enum Finish {
 enum Showing {
     /// Always
     always
-    /// While no window covers it; it hides when a window would cover it.
+    /// While no window covers it
+    ///
+    /// It hides while a window would cover it, and comes back when that window goes.
     no_overlap
-    /// At the screen's edge: hidden until the pointer bumps the edge it rides.
+    /// At the screen's edge
+    ///
+    /// Hidden until the pointer bumps the edge it rides.
     edge_reveal
-    /// After a moment: hidden once the pointer has not been over it for a while.
+    /// After a moment
+    ///
+    /// Hidden once the pointer has not been over it for a while.
     auto_hide
 }
 

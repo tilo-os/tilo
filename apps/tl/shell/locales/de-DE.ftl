@@ -687,14 +687,11 @@ d-rfgelicn = Zeigen
 
 d-p4owlmpg = Immer
 
-d-sscc6gs3 = Gezeigt, solange kein Fenster sie überlappt; sie verbirgt sich, wenn ein Fenster sie decken würde
-    .doc = Gezeigt, solange kein Fenster sie überlappt; sie verbirgt sich, wenn ein Fenster sie decken würde.
+d-sscc6gs3 = Solange kein Fenster es deckt
 
-d-v2eyzsgr = Verborgen, bis der Zeiger an die Bildschirmkante stößt, an der sie fährt
-    .doc = Verborgen, bis der Zeiger an die Bildschirmkante stößt, an der sie fährt.
+d-v2eyzsgr = An der Bildschirmkante
 
-d-62fazfo4 = Verborgen, wenn der Zeiger eine Weile nicht darauf war, gezeigt, wenn er zurückkommt
-    .doc = Verborgen, wenn der Zeiger eine Weile nicht darauf war, gezeigt, wenn er zurückkommt.
+d-62fazfo4 = Nach einer Weile
 
 d-v3z2zasp = Größe
     .doc = Wie groß die Teile sind.
@@ -1119,6 +1116,11 @@ d-ebrt7kdg = Vorschaudock
 d-grqdyggg = Einstellungen der Shell
     .w-top-bar = Obere Leiste
     .w-show-the-top-bar = Die obere Leiste zeigen
+    .w-edge = Kante
+    .w-fit = Sitz
+    .w-material = Ausführung
+    .w-when-it-shows = Wann sie zeigt
+    .w-size = Größe
     .w-dock = Dock
     .w-show-the-dock = Das Dock zeigen
 

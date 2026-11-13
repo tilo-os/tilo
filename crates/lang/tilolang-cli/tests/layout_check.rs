@@ -110,8 +110,10 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // No window in this fixture opens an item into its row, so no document stands beside
             // the rows of the list it opened from.
             | Kind::ItemShownTwice
-            // The fixture's cards each hold what they are given, so none stands empty.
+            // The fixture's cards each hold what they are given, so none stands empty, and no
+            // panel of it gives its title a body the title alone fills.
             | Kind::EmptySurface
+            | Kind::HeaderOnly
             // No window in this fixture docks a bar at the foot of a page column, and none lines
             // its edges with a card or a notice, nor stands one against another.
             | Kind::DockedColumn

@@ -368,6 +368,101 @@ fn text_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
     }
 }
 
+/// The boxes of the headings `node` shows, its own and its descendants', each as much of it as
+/// can be seen: the words a surface goes by.
+fn heading_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
+    use ui::a11y::Role;
+    if floats(&node.widget) {
+        return;
+    }
+    let inner = node
+        .child_clip
+        .map_or(clip, |child_clip| clip.intersect(rect(child_clip)));
+    let heading = node
+        .semantics
+        .as_ref()
+        .is_some_and(|access| matches!(access.role, Role::Heading { .. }));
+    if heading {
+        let seen = rect(node.rect).intersect(clip);
+        if has_area(seen) {
+            out.push(seen);
+        }
+        return;
+    }
+    for child in &node.children {
+        heading_boxes(child, inner, out);
+    }
+}
+
+/// The boxes of what a person acts on in `node`, its own and its descendants': the controls a
+/// screen offers, as much of each as can be seen.
+fn control_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
+    if floats(&node.widget) {
+        return;
+    }
+    let inner = node
+        .child_clip
+        .map_or(clip, |child_clip| clip.intersect(rect(child_clip)));
+    let acts = node
+        .semantics
+        .as_ref()
+        .is_some_and(|access| interactive(access.role) && !access.state.hidden);
+    if acts {
+        let seen = node
+            .semantics
+            .as_ref()
+            .and_then(|access| access.bounds)
+            .map_or(rect(node.rect), |bounds| {
+                rect(node.rect).union(bounds.to_rect())
+            })
+            .intersect(clip);
+        if has_area(seen) {
+            out.push(seen);
+        }
+    }
+    for child in &node.children {
+        control_boxes(child, inner, out);
+    }
+}
+
+/// The title of a surface that says what it is for and shows nothing under it, with the band that
+/// title stands in: the room below the band holds no words and no control, so a person reads the
+/// name of a thing that is not there.
+fn shows_nothing_under_its_title(node: &InspectionNode, own: Rect) -> Option<(Rect, Rect)> {
+    if !paints_surface(&node.widget) {
+        return None;
+    }
+    // A band folded away says nothing of what it holds until it opens.
+    if node
+        .semantics
+        .as_ref()
+        .is_some_and(|access| access.state.expanded == Some(false))
+    {
+        return None;
+    }
+    let mut headings = Vec::new();
+    heading_boxes(node, own, &mut headings);
+    let title = headings.first().copied()?;
+    let mut content = headings;
+    text_boxes(node, own, &mut content);
+    control_boxes(node, own, &mut content);
+    // What stands beside the title is the header's own band: a subtitle, a count, the control that
+    // closes it. What stands under the band is the surface's body.
+    let band = content
+        .iter()
+        .filter(|box_| box_.y0 < title.y1 - EPSILON)
+        .fold(title, |band, box_| band.union(*box_));
+    if content
+        .iter()
+        .any(|box_| box_.y0 >= band.y1 - EPSILON && has_area(box_.intersect(own)))
+    {
+        return None;
+    }
+    // A surface only as tall as what it says is a surface of its words, with no body to be empty:
+    // the fault is a title given room under it and nothing to put there.
+    (own.y1 - band.y1 >= CARD_GAP).then_some((title, band))
+}
+
 /// Whether some text of `a` and some text of `b` stand on each other, so
 /// neither can be read: two boxes laid over each other on purpose (a dock
 /// over the desk under the bar) whose text stands apart can both be read.
@@ -820,6 +915,7 @@ impl Walk<'_> {
         self.lone_door(node, keys, above);
         self.empty_heading(node, keys, own);
         self.empty_surface(node, keys, own);
+        self.header_only(node, keys, own);
         self.rounded_on_edge(node, keys, own);
         self.repeated_day_fact(node, keys);
         if under_page.is_some() {
@@ -1171,6 +1267,24 @@ impl Walk<'_> {
             node,
             keys,
             format!("it paints {} and holds nothing", size(own)),
+        );
+    }
+
+    /// A panel or a sheet that says what it is for and holds nothing under its title: the person
+    /// reads the name of what they opened and finds no control and no word of the thing itself.
+    fn header_only(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
+        let Some((title, _)) = shows_nothing_under_its_title(node, own) else {
+            return;
+        };
+        self.push(
+            Kind::HeaderOnly,
+            node,
+            keys,
+            format!(
+                "it says what it shows in {} of words at its top, in a surface {} tall, and everything under them is empty",
+                size(title),
+                size(own).rsplit('×').next().unwrap_or_default()
+            ),
         );
     }
 

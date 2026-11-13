@@ -70,6 +70,9 @@ pub enum Kind {
     /// A surface with nothing in it: a filled block standing where a person reads it as a card, a
     /// page or a band, and holding no words and nothing laid out of its own.
     EmptySurface,
+    /// A surface that says what it is for and shows nothing under it: a panel's or a sheet's title
+    /// standing over an empty body, so the name of a thing stands where the thing cannot be used.
+    HeaderOnly,
     /// A column's header naming the page while the page shows the same words as its own heading, or
     /// in the field it edits its title in: one title on screen, and the page's.
     RepeatedPageTitle,
@@ -222,6 +225,7 @@ impl Kind {
             Self::MixedLanguage => "mixed-language",
             Self::OpenOutsideList => "open-outside-list",
             Self::EmptySurface => "empty-surface",
+            Self::HeaderOnly => "header-only",
             Self::RepeatedPageTitle => "repeated-page-title",
             Self::DoubleNavigation => "double-navigation",
             Self::FirstLevelIndent => "first-level-indent",

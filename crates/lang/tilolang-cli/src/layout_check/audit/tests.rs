@@ -892,6 +892,96 @@ fn empty_surfaces(root: &InspectionNode) -> Vec<Problem> {
         .collect()
 }
 
+fn header_only(root: &InspectionNode) -> Vec<Problem> {
+    inspect(root, (1280, 800), None, 1.0)
+        .into_iter()
+        .filter(|p| p.kind == Kind::HeaderOnly)
+        .collect()
+}
+
+/// A panel that says what it is for and holds nothing under its title shows a header over
+/// nothing: the title the person opened the panel for stands over an empty body, whatever the
+/// body's own reason for being empty.
+#[test]
+fn a_panel_that_holds_nothing_under_its_title_is_caught() {
+    let panel = |body: Vec<InspectionNode>, tall: f64| {
+        let mut children = vec![holding(
+            node("Row", "header", [468.0, 404.0, 344.0, 32.0], None),
+            vec![
+                node(
+                    "Text",
+                    "title",
+                    [468.0, 404.0, 200.0, 32.0],
+                    Some(Role::Heading { level: 2 }),
+                ),
+                node(
+                    "Button",
+                    "close",
+                    [776.0, 404.0, 32.0, 32.0],
+                    Some(Role::Button),
+                ),
+            ],
+        )];
+        children.extend(body);
+        holding(
+            node("FloatingPanel", "panel", [460.0, 396.0, 360.0, tall], None),
+            children,
+        )
+    };
+    let apart = |root: InspectionNode| {
+        holding(
+            node("Stack", "desk", [0.0, 0.0, 1280.0, 800.0], None),
+            vec![root],
+        )
+    };
+    let empty = header_only(&apart(panel(
+        vec![holding(
+            node("Container", "body", [468.0, 452.0, 344.0, 0.0], None),
+            Vec::new(),
+        )],
+        64.0,
+    )));
+    assert_eq!(empty.len(), 1, "{empty:?}");
+    assert_eq!(empty[0].keys.first().map(String::as_str), Some("panel"));
+    assert!(
+        empty[0].detail.contains("everything under them is empty"),
+        "it says what the person meets: {}",
+        empty[0].detail
+    );
+    let setting = header_only(&apart(panel(
+        vec![holding(
+            node("Container", "body", [468.0, 452.0, 344.0, 100.0], None),
+            vec![node(
+                "Switch",
+                "dock",
+                [468.0, 460.0, 344.0, 48.0],
+                Some(Role::Switch),
+            )],
+        )],
+        164.0,
+    )));
+    assert!(
+        setting.is_empty(),
+        "a panel showing the first thing it sets is no header over nothing: {setting:?}"
+    );
+    let note = header_only(&apart(panel(
+        vec![holding(
+            node("Container", "body", [468.0, 452.0, 344.0, 60.0], None),
+            vec![node(
+                "Text",
+                "note",
+                [468.0, 460.0, 344.0, 42.0],
+                Some(Role::StaticText),
+            )],
+        )],
+        124.0,
+    )));
+    assert!(
+        note.is_empty(),
+        "a panel that says one thing under its title shows it: {note:?}"
+    );
+}
+
 fn unruled_bodies(root: &InspectionNode) -> Vec<Problem> {
     inspect(root, (1280, 800), None, 1.0)
         .into_iter()

@@ -33,11 +33,50 @@ pub use component::{SegmentProps, ToggleGroupProps, ViewTabsProps};
 mod fold;
 #[path = "toggle_group_layout.rs"]
 mod layout;
-use layout::{flow, packed, partition, partition_sized, stack, tab_fit};
+use layout::{flow, packed, partition, partition_sized, shared, stack, tab_fit};
 
 /// No segment chosen, as [`ToggleGroup::selected`] says it ([`ToggleGroup::selection`]
 /// says it as `None`).
 pub const NONE_CHOSEN: usize = usize::MAX;
+
+/// What a press on one choice runs, where the choices are a setting's own actions at its cases
+/// rather than one report of the strip's index: the action the person's app published, queued the
+/// way every control's action is, or the view's own intent.
+#[derive(Default)]
+pub enum Press {
+    /// Nothing: the strip reports the press as the index it chose.
+    #[default]
+    Nothing,
+    /// An action the app published, invoked through the door.
+    Action(ActionEmitter<()>),
+    /// The view's own handler.
+    View(Box<dyn FnMut()>),
+}
+
+impl Press {
+    /// The press `event` runs.
+    #[must_use]
+    pub fn of(event: crate::component::Event) -> Self {
+        match event {
+            crate::component::Event::None => Self::Nothing,
+            crate::component::Event::Action(binding) => Self::Action(ActionEmitter::new(binding)),
+            crate::component::Event::View(intent) => Self::View(Box::new(intent.sender())),
+        }
+    }
+
+    /// Run it.
+    pub fn run(&mut self) {
+        match self {
+            Self::Nothing => {}
+            Self::Action(emitter) => {
+                if let Err(error) = emitter.emit(()) {
+                    tracing::warn!(%error, "a chosen case's action refused its arguments");
+                }
+            }
+            Self::View(handler) => handler(),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct SegmentedTouchGroup<'a> {
@@ -279,6 +318,10 @@ pub struct ToggleGroup {
     segments: Vec<Segment>,
     selected: usize,
     chosen: Option<Vec<bool>>,
+    /// What a press on each segment runs, where a choice is a setting's own action at its case
+    /// rather than the strip's index: the strip then shows the case the setting holds and never
+    /// chooses one itself.
+    presses: Vec<Press>,
     cursor: usize,
     on_change: Option<ChangeCallback>,
     action: Option<ActionEmitter<usize>>,
@@ -347,6 +390,7 @@ impl ToggleGroup {
             segments,
             selected,
             chosen: None,
+            presses: Vec::new(),
             cursor: 0,
             on_change: None,
             action: None,
@@ -568,6 +612,26 @@ impl ToggleGroup {
         }
     }
 
+    /// Each segment's own action, in order: a strip of a setting's cases, where a press runs the
+    /// setting at that case and the case it holds is what the strip fills. [`None`] for a segment
+    /// leaves that choice to the strip, which reports the press as its index.
+    pub fn set_presses(&mut self, presses: Vec<Press>) {
+        let kinds = |presses: &[Press]| {
+            presses
+                .iter()
+                .map(|press| match press {
+                    Press::Nothing => 0,
+                    Press::Action(_) => 1,
+                    Press::View(_) => 2,
+                })
+                .collect::<Vec<_>>()
+        };
+        if kinds(&self.presses) != kinds(&presses) {
+            self.presses = presses;
+            self.cache_dirty = true;
+        }
+    }
+
     #[must_use]
     pub fn on_action(mut self, binding: crate::tilo_actions::ActionBinding<usize>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
@@ -637,6 +701,14 @@ impl ToggleGroup {
 
     fn request_selection(&mut self, index: usize) {
         if self.segments.get(index).is_some_and(|s| s.disabled) {
+            return;
+        }
+        // A choice that runs its own action runs it: what the strip shows is the case the setting
+        // holds, which the app sets, so the strip chooses nothing here.
+        if let Some(press) = self.presses.get_mut(index)
+            && !matches!(press, Press::Nothing)
+        {
+            press.run();
             return;
         }
         if self.chosen.is_some() {
@@ -782,7 +854,14 @@ impl ToggleGroup {
             self.scroll_x = self.scroll_x.clamp(0.0, (content - rect.width()).max(0.0));
             (packed(rect, &widths, self.scroll_x), use_short)
         } else if measured {
-            partition_sized(rect, &self.naturals)
+            // A strip given the whole row shares it equally: one segment per choice, each the
+            // same width, whichever of its words fit that share.
+            let sharing = if self.fill {
+                shared(rect, &self.naturals)
+            } else {
+                None
+            };
+            sharing.unwrap_or_else(|| partition_sized(rect, &self.naturals))
         } else {
             (
                 partition(rect, self.segments.len()),
@@ -2344,32 +2423,47 @@ impl Widget for ToggleGroup {
             self.segments.get(self.selected).map(|s| s.label.clone())
         };
         // Segments are drawn, not child widgets: each is a synthetic child so assistive
-        // technology enumerates the choices, not just the active one.
+        // technology enumerates the choices, not just the active one. A strip folded into a picker
+        // offers its choices through the menu it opens, so the one control a person reaches is the
+        // picker itself.
         let count = self.segments.len();
-        let seg_children: Vec<AccessNode> = self
-            .segments
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                let on = match &self.chosen {
-                    Some(chosen) => chosen.get(i).copied().unwrap_or(false),
-                    None => i == self.selected,
-                };
-                let node = AccessNode::new(Role::ToggleButton)
-                    .with_action_target(self.segment_id(i))
-                    .with_name(s.label.clone())
+        let seg_children: Vec<AccessNode> = if self.folded {
+            vec![
+                AccessNode::new(Role::Button)
+                    .with_action_target(self.segment_id(self.selected))
+                    .with_name(value.clone().unwrap_or_default())
                     .with_state(
                         AccessState::new()
-                            .checked(on)
-                            .disabled(!self.is_enabled() || s.disabled),
+                            .expanded(self.menu.is_open())
+                            .disabled(!self.is_enabled()),
                     )
-                    .with_position(i.saturating_add(1), count);
-                match self.segment_rects.get(i) {
-                    Some(rect) => node.with_bounds(self.target_rect(*rect)),
-                    None => node,
-                }
-            })
-            .collect();
+                    .with_bounds(self.target_rect(self.rect)),
+            ]
+        } else {
+            self.segments
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    let on = match &self.chosen {
+                        Some(chosen) => chosen.get(i).copied().unwrap_or(false),
+                        None => i == self.selected,
+                    };
+                    let node = AccessNode::new(Role::ToggleButton)
+                        .with_action_target(self.segment_id(i))
+                        .with_name(s.label.clone())
+                        .with_state(
+                            AccessState::new()
+                                .checked(on)
+                                .disabled(!self.is_enabled() || s.disabled),
+                        )
+                        .with_position(i.saturating_add(1), count);
+                    match self.segment_rects.get(i) {
+                        Some(rect) => node.with_bounds(self.target_rect(*rect)),
+                        None => node,
+                    }
+                })
+                .collect()
+        };
         let name = self
             .accessible_name
             .as_deref()
@@ -2463,12 +2557,23 @@ impl crate::widget::controls::ActionControls for ToggleGroup {
         if let Some(action) = &mut self.chosen_action {
             let _ = action.install_custody(domain, attachment);
         }
+        for press in &mut self.presses {
+            if let Press::Action(action) = press {
+                let _ = action.install_custody(domain, attachment);
+            }
+        }
     }
     fn take_control_invocation(&mut self) -> Option<crate::tilo_actions::ControlInvocation> {
         self.action
             .as_mut()
             .and_then(ActionEmitter::take)
             .or_else(|| self.chosen_action.as_mut().and_then(ActionEmitter::take))
+            .or_else(|| {
+                self.presses.iter_mut().find_map(|press| match press {
+                    Press::Action(action) => action.take(),
+                    Press::Nothing | Press::View(_) => None,
+                })
+            })
     }
     fn refresh_control_action_availability(
         &mut self,
@@ -2480,8 +2585,25 @@ impl crate::widget::controls::ActionControls for ToggleGroup {
         if let Some(action) = &mut self.chosen_action {
             action.refresh_availability(allowed);
         }
+        for press in &mut self.presses {
+            if let Press::Action(action) = press {
+                action.refresh_availability(allowed);
+            }
+        }
     }
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let per_segment: Vec<ControlBindingMetadata> = self
+            .presses
+            .iter()
+            .enumerate()
+            .filter_map(|(index, press)| match press {
+                Press::Action(action) => Some(action.metadata(self.segment_id(index))),
+                Press::Nothing | Press::View(_) => None,
+            })
+            .collect();
+        if !per_segment.is_empty() {
+            return per_segment;
+        }
         if let Some(action) = &self.chosen_action {
             return (0..self.segments.len())
                 .map(|index| action.metadata(self.segment_id(index)))
