@@ -231,13 +231,15 @@ tilo account workspaces rm applicant-jane-doe   # when the customer leaves
 
 ## What is underneath
 
-Making and deleting workspaces and minting keys are actions on your account
-(`account/workspaces#create`, `account/workspaces#delete`, `account/keys#mint`), inviting is the
-workspace's own (`workspace/members#invite`), and everything in a workspace is reached through the API at
-`https://mcp.tilo.sh/w/<workspace>/`. A minted key is a certificate your key signed, narrower than it: the
+Making and deleting workspaces and minting keys are the account's
+(`POST /v1/workspaces`, `DELETE /v1/workspaces/<workspace>`, `POST /v1/keys`), inviting is the
+workspace's own (`POST /v1/workspaces/<workspace>/members/invitations`), and everything in a
+workspace is a resource under `/v1/workspaces/<workspace>/resources/...`. A minted key is a
+certificate your key signed, narrower than it: the
 hosts and the runtime check it like any other device of yours, and it ends when your key is revoked
 ([design](../architecture/workspace-api.md)).
 
-There is no separate REST API, and nothing here needs one: the SDKs ask for typed answers over the same
-calls an agent makes, and a file's bytes go up in one request before an app takes the reference
+Every one of these is also an MCP call an agent makes (`account/workspaces#create`,
+`account/keys#mint`, `workspace/members#invite`), answered typed: one API, two ways to say it
+([`api.md`](api.md)). A file's bytes go up in one request before an app takes the reference
 ([files](../tilo-sh/files.md)).

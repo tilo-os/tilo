@@ -152,5 +152,6 @@ curl -sS "$api/workspaces/$workspace/resources" -H "$agent" \
 - **Your grants page**, `https://mcp.tilo.sh/grants`: every key and every agent you let in, with its
   scope, when it was last used, which of your devices approved it, and a Revoke button.
 - **The command**: `tilo keys create "My backend"`, `tilo keys ls`, `tilo keys mint -w <workspace>`,
-  `tilo keys revoke <grant>`.
+  `tilo keys revoke <grant>`, and `tilo keys export --out <file>` for this computer's own key as
+  a key file a program here acts with.
 - **The SDKs**: `tilo.keys.list()`, `create()`, `mint()`, `revoke()`, and `workspace.keys.mint()`.

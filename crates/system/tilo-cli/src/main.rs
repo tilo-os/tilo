@@ -40,6 +40,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 mod agent;
 mod aliases;
+mod api;
 mod cleanup;
 mod desktop;
 mod docs;
@@ -82,9 +83,16 @@ struct Cli {
         short = 'w',
         long,
         global = true,
-        help = "A hosted workspace to act in, by name or id (key: TILO_API_KEY)"
+        help = "A hosted workspace to act in, by name or id"
     )]
     workspace: Option<String>,
+    #[arg(
+        long,
+        global = true,
+        value_name = "FILE",
+        help = "A key this computer holds (`tilo keys export`), instead of TILO_API_KEY"
+    )]
+    key_file: Option<std::path::PathBuf>,
     #[arg(
         long,
         global = true,
@@ -97,10 +105,12 @@ struct Cli {
 }
 
 impl Cli {
-    /// The command `cmd`, with no hosted workspace or API server named.
+    /// The command `cmd`, with no hosted workspace, key file or API server
+    /// named.
     const fn of(cmd: Cmd) -> Self {
         Self {
             workspace: None,
+            key_file: None,
             api: None,
             cmd,
         }
@@ -179,7 +189,8 @@ enum Cmd {
                       tilo -w jane-doe do pdf-viewer/application.pdf#read-form-fields\n\n\
                       `tilo actions` lists what there is. Options are written name=value; a single\n\
                       value goes to the one the action needs. With -w, the path is app/resource#action\n\
-                      in that hosted workspace, as an agent's tilo_do takes it, with the key in TILO_API_KEY."
+                      in that hosted workspace, over Tilo's API (key: TILO_API_KEY, or this computer's\n\
+                      own when it logged in)."
     )]
     Do {
         /// The action's name, as `tilo actions` lists it, or words of its title.
@@ -197,7 +208,8 @@ enum Cmd {
     #[command(
         after_help = "Examples:\n  tilo keys create \"Visa backend\"   Ask for a key; you approve it in your Tilo\n  \
                             tilo keys mint -w jane-doe          A key for one workspace, for an agent there\n  \
-                            tilo keys ls\n  tilo keys revoke grant-…           Revokes the keys it minted too"
+                            tilo keys ls\n  tilo keys export --out visa.json   This computer's own key, for a program here\n  \
+                            tilo keys revoke grant-…           Revokes the keys it minted too"
     )]
     Keys {
         /// The answer as JSON, typed as the SDK gets it.
@@ -800,7 +812,7 @@ fn app_open(args: &[OsString], spelling: &tilo_control::front::Spelling) -> Resu
 /// `tilo do`: in the hosted workspace `-w` names, else on this desktop. A
 /// `-w` or `--json` after the action lands in its options, and is taken out.
 fn run_do(
-    api: Option<&str>,
+    reach: api::Reach<'_>,
     mut workspace: Option<String>,
     action: String,
     mut args: Vec<String>,
@@ -817,9 +829,10 @@ fn run_do(
     let Some(workspace) = workspace else {
         return desktop::run_action(desktop::ActionCmd::Run { action, args }, spelling);
     };
-    let json = args.iter().any(|arg| arg == "--json");
+    let json = reach.json | args.iter().any(|arg| arg == "--json");
     args.retain(|arg| arg != "--json");
-    hosted::act(api, json, &workspace, &action, &args)
+    let reach = api::Reach { json, ..reach };
+    hosted::act(reach, &workspace, &action, &args)
 }
 
 /// `tilo completions <shell>`: every name this program goes by.
@@ -864,32 +877,44 @@ fn completions(shell: Shell) -> Result<ExitCode> {
 /// there): their answer, or the command back when it is none of them.
 fn run_hosted(
     api: Option<&str>,
+    key_file: Option<&std::path::Path>,
     workspace: Option<String>,
     cmd: Cmd,
     spelling: &tilo_control::front::Spelling,
 ) -> Result<Result<ExitCode>, Cmd> {
     let needs_workspace = || anyhow::anyhow!("name the workspace: -w <name or id>");
+    let reach = |json: bool| api::Reach {
+        api,
+        key_file,
+        json,
+    };
     Ok(match cmd {
-        Cmd::Do { action, args } => Ok(run_do(api, workspace, action, args, spelling)),
-        Cmd::Keys { json, cmd } => Ok(hosted::keys(api, json, workspace.as_deref(), cmd)),
+        Cmd::Do { action, args } => Ok(run_do(reach(false), workspace, action, args, spelling)),
+        Cmd::Keys { json, cmd } => Ok(hosted::keys(reach(json), workspace.as_deref(), cmd)),
         Cmd::Members { json, cmd } => workspace
             .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::members(api, json, &workspace, cmd)),
-        Cmd::Account { json, cmd } => Ok(hosted::account(api, json, cmd)),
+            .map(|workspace| hosted::members(reach(json), &workspace, cmd)),
+        Cmd::Account { json, cmd } => Ok(hosted::account(reach(json), cmd)),
         Cmd::Files { json, cmd } => workspace
             .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::files(api, json, &workspace, cmd)),
+            .map(|workspace| hosted::files(reach(json), &workspace, cmd)),
         Cmd::Run { file, json } => workspace
             .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::program(api, json, &workspace, &file)),
-        Cmd::Sdk { cmd } => Ok(sdk::generate(api, workspace.as_deref(), cmd)),
+            .map(|workspace| hosted::program(reach(json), &workspace, &file)),
+        Cmd::Sdk { cmd } => Ok(sdk::generate(reach(false), workspace.as_deref(), cmd)),
         other => return Err(other),
     })
 }
 
 fn run(cli: Cli) -> Result<ExitCode> {
     let spelling = tilo_control::front::Spelling::tilo();
-    let cmd = match run_hosted(cli.api.as_deref(), cli.workspace, cli.cmd, &spelling) {
+    let cmd = match run_hosted(
+        cli.api.as_deref(),
+        cli.key_file.as_deref(),
+        cli.workspace,
+        cli.cmd,
+        &spelling,
+    ) {
         Ok(answered) => return answered,
         Err(cmd) => cmd,
     };
@@ -1977,7 +2002,8 @@ mod tests {
                 "  help       Print this message or the help of the given subcommand(s)\n",
                 "\n",
                 "Options:\n",
-                "  -w, --workspace <WORKSPACE>  A hosted workspace to act in, by name or id (key: TILO_API_KEY)\n",
+                "  -w, --workspace <WORKSPACE>  A hosted workspace to act in, by name or id\n",
+                "      --key-file <FILE>        A key this computer holds (`tilo keys export`), instead of TILO_API_KEY\n",
                 "  -h, --help                   Print help\n",
                 "  -V, --version                Print version\n",
                 "\n",

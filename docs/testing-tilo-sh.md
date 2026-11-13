@@ -310,8 +310,8 @@ that half to what a customer gets (`integration/hosted-terminal.py`):
     command, where it ran, when, how it ended, what it printed, who ran it)
     and a step of History named after the key that ran it, for the person.
 16. an agent's key, minted for that one workspace, runs a command there
-    through the `tilo` command (with `TILO_API_KEY`, the MCP behind it), and
-    History keeps that run as the agent's, apart from the person's.
+    through the `tilo` command (with `TILO_API_KEY`, the API's `/v1` behind
+    it), and History keeps that run as the agent's, apart from the person's.
 17. the Linux session runs as the VM's tenant, not as the account its Browser
     session runs as: `id` says `tilo` (uid 1000), the tenant cannot read the
     Browser user's home, and the Browser user cannot read a file the tenant

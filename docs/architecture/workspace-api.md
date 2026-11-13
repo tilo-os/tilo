@@ -53,9 +53,9 @@ and end:
 
 - the `tilo_sk_` prefix lets secret scanners recognise the token;
 - the token is shown exactly once (the API server keeps only its digest);
-- the keys list (`/grants`, `account/keys#list`, `tilo keys ls`) shows when
+- the keys list (`/grants`, `GET /v1/keys`, `account/keys#list`, `tilo keys ls`) shows when
   each key was last used and which of the person's devices approved it;
-- revoking is one click on `/grants`, or `tilo keys revoke <grant>`.
+- revoking is one click on `/grants`, `DELETE /v1/keys/<grant>`, or `tilo keys revoke <grant>`.
 
 `tilo keys create` cannot open a browser on a server, so it follows the
 device-authorization pattern. It asks the API server for an approval link and a poll
@@ -110,7 +110,10 @@ There are two places a grant ends, and both cascade:
 
 Making workspaces and keys are actions on the account, reached through the
 same tools as everything else (see [the SDK design](../developers/sdk.md)).
-An agent, the SDK and the CLI all use them the same way. In a session at the
+The API's own routes name them ([`api.md`](../developers/api.md)):
+`GET`/`POST /v1/workspaces`, `DELETE /v1/workspaces/<workspace>`, `GET`/`POST /v1/keys`
+and `DELETE /v1/keys/<grant>`, which `tilo account` and `tilo keys` call. Every route is
+the same call an agent makes. In a session at the
 door's root (`/mcp`) with a grant reaching all workspaces, a call that names
 no `workspace` and whose path is under `account` is answered by the API server:
 

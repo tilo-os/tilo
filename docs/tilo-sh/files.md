@@ -112,5 +112,6 @@ tilo files get tilo.content:… -w jane-doe -o cover-letter.docx    # or straigh
 A member who may change the workspace's records puts files and takes them out; a viewer only reads. An
 agent is held to the same line: its key reaches the one workspace, and its role there decides.
 
-Under the covers an upload is one `PUT` to the workspace's host, which answers the reference; a download
-comes back in pieces. Both SDKs and the command do that for you.
+Under the covers an upload is one `POST /v1/workspaces/<workspace>/uploads`, which answers the reference;
+a download is `GET /v1/workspaces/<workspace>/content/<reference>`. Both SDKs and the command do that for
+you.
