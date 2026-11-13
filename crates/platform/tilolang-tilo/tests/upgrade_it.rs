@@ -16,3 +16,4 @@
 #[path = "fixtures.rs"]
 mod fixtures;
 mod upgrade_fields;
+mod window;

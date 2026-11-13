@@ -5,7 +5,7 @@
 //! through the record's history verb.
 
 use automerge::{AutoCommit, ChangeHash};
-use tilo_actions::{ActionRegistry, Verified, entry_of, verify_change};
+use tilo_actions::{Verified, entry_of};
 use tilolang_runtime::{ResourceRef, Store, UiNode, UndoAsk, Value, ViewEvent, ViewInstance};
 use tilolang_tilo::instance::HistoryAsk;
 
@@ -1077,29 +1077,6 @@ impl LongPost {
     }
 }
 
-/// A replica's window: the wake scope its code runs in, and the content store lent to it, sealed
-/// as a record's is — where the large parts of the actions it records are kept, and read back
-/// from.
-struct Window {
-    scope: ui::WakeScope,
-    content: ui::content::ContentStore,
-}
-
-impl Window {
-    fn new() -> Self {
-        let scope = ui::WakeScope::new();
-        let content = ui::content::ContentStore::memory().sealing();
-        tilo_actions::content::register(&scope.handle(), content.clone());
-        Self { scope, content }
-    }
-
-    /// Run `run` as this window's code: what it records keeps its large parts in this store.
-    fn run<T>(&self, run: impl FnOnce() -> T) -> T {
-        let _in_this_window = self.scope.enter();
-        run()
-    }
-}
-
 /// What `from`'s actions kept as content reaches `to`'s record store, as the record's route
 /// brings it: sealed, by the reference the record names, verified against it.
 fn bring_content(from: &Replica, to: &ui::content::ContentStore) {
@@ -1108,21 +1085,6 @@ fn bring_content(from: &Replica, to: &ui::content::ContentStore) {
             to.put_as(&reference, &bytes).unwrap();
         }
     }
-}
-
-/// What the record `doc` holds of the change `change` decodes as, read on a thread no window of
-/// this replica lent a content store: what its action kept as content comes from `store`, the
-/// record's own, and is fetched on the record's route when the record does not hold it yet.
-fn decoded(doc: &mut AutoCommit, change: ChangeHash, store: ui::content::ContentStore) -> Verified {
-    let mut peer = doc.fork();
-    std::thread::spawn(move || {
-        let mut registry = ActionRegistry::new();
-        tilolang_tilo::history::register(&mut registry);
-        registry.connect_content(store);
-        verify_change(&mut peer, change, &registry).unwrap()
-    })
-    .join()
-    .unwrap()
 }
 
 /// The body Ada pastes over the post's: seventeen paragraphs, past a mebibyte in all, each
@@ -1141,8 +1103,7 @@ fn pasted_body() -> Vec<String> {
 fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
     use tilolang_runtime::store::Store as _;
     // Its writing is one window's: a note past a mebibyte keeps its body in the window's store.
-    let window = Window::new();
-    let _in_the_window = window.scope.enter();
+    let _window = crate::window::store();
     let mut post = LongPost::new(paragraphs);
     let chars = PARAGRAPH.chars().count().saturating_mul(paragraphs);
     // Bo types one word in the first paragraph, in his own replica, and it reaches Ada's.
@@ -1221,8 +1182,7 @@ fn two_people_typing_into_different_paragraphs_of_a_long_note_at_once_both_keep_
     // A note past a hundred thousand characters, whose editor hands over the whole body on each
     // keystroke: what the keystroke records is the paragraph it typed into, never the note.
     // Its writing is one window's: a note past a mebibyte keeps its body in the window's store.
-    let window = Window::new();
-    let _in_the_window = window.scope.enter();
+    let _window = crate::window::store();
     let mut post = LongPost::new(1_571);
     // Each types into their own copy before either hears of the other.
     for recorded in [
@@ -1260,9 +1220,13 @@ fn two_people_typing_into_different_paragraphs_of_a_long_note_at_once_both_keep_
     }
 }
 
-/// The parts the change `change` on `post` kept as content in `window`'s store: the body of a
-/// paste too large to record inline, kept sealed and named by reference.
-fn pasted_parts(post: &LongPost, change: ChangeHash, window: &Window) -> Vec<String> {
+/// The parts the change `change` on `post` kept as content in `store`: the body of a paste too
+/// large to record inline, kept sealed and named by reference.
+fn pasted_parts(
+    post: &LongPost,
+    change: ChangeHash,
+    store: &tilo_content::ContentStore,
+) -> Vec<String> {
     let entry =
         entry_of(post.ada.doc.committed_document(), change).expect("the change names its step");
     let recorded = entry.action.expect("the change records its action");
@@ -1288,7 +1252,7 @@ fn pasted_parts(post: &LongPost, change: ChangeHash, window: &Window) -> Vec<Str
         "the parts are sealed: {parts:?}"
     );
     assert!(
-        parts.iter().all(|reference| window.content.has(reference)),
+        parts.iter().all(|reference| store.has(reference)),
         "her own window holds what the paste kept"
     );
     parts
@@ -1338,19 +1302,19 @@ fn words_pasted(post: &LongPost) -> Vec<String> {
 fn a_paste_over_a_mebibyte_reads_back_whole_and_decodes_on_the_peers_replica() {
     // A post of three paragraphs, which Ada pastes a body past a mebibyte over: one edit, too
     // large to record inline, whose change keeps the body as content in the record's store.
+    let ada_window = crate::window::store();
     let mut post = LongPost::new(3);
-    let ada_window = Window::new();
     let pasted = pasted_body();
-    let paste = ada_window.run(|| post.write(false, &pasted));
+    let paste = post.write(false, &pasted);
     pasted_parts(&post, paste, &ada_window);
 
     // The record returns to Ada, through Bo's replica, which now holds the paste too. She then
     // types into the paragraph she pasted: the store knows the record already holds her paste,
     // so it never writes the pasted body over the record's, and her word reads back at once.
-    ada_window.run(|| post.ada.sync_with(&mut post.bo));
+    post.ada.sync_with(&mut post.bo);
     let mut lines = post.reads(&post.ada);
     lines[0] = lines[0].replacen("Pasted", "Typed", 1);
-    ada_window.run(|| post.write(false, &lines));
+    post.write(false, &lines);
     let read = post.reads(&post.ada);
     assert_eq!(
         read.len(),
@@ -1378,14 +1342,14 @@ fn a_paste_over_a_mebibyte_reads_back_whole_and_decodes_on_the_peers_replica() {
     let bo_store = ui::content::ContentStore::memory().sealing();
     assert!(
         matches!(
-            decoded(&mut post.bo.doc, paste, bo_store.clone()),
+            crate::window::decoded(post.bo.doc.fork(), paste, bo_store.clone()).unwrap(),
             Verified::ContentMissing(_)
         ),
         "the action names content Bo does not hold yet"
     );
     bring_content(&post.ada, &bo_store);
     assert_eq!(
-        decoded(&mut post.bo.doc, paste, bo_store),
+        crate::window::decoded(post.bo.doc.fork(), paste, bo_store).unwrap(),
         Verified::Reproduced,
         "the action decodes through Bo's store and reproduces its change"
     );
@@ -1395,7 +1359,7 @@ fn a_paste_over_a_mebibyte_reads_back_whole_and_decodes_on_the_peers_replica() {
     let mut lines = post.reads(&post.bo);
     lines[10] = lines[10].replacen("Pasted", "Pasted by Bo", 1);
     post.write(true, &lines);
-    ada_window.run(|| post.ada.sync_with(&mut post.bo));
+    post.ada.sync_with(&mut post.bo);
     both_read(
         &post,
         pasted.len(),

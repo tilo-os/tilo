@@ -149,13 +149,9 @@ impl Replica {
         invoker: ActionInvoker,
         ambient: Option<&ActionContext>,
     ) {
-        let mut context = ActionContext::for_resource(
-            action.resources().first().copied().unwrap_or("workspace"),
-            &action.kind,
-            &action.kind,
-        )
-        .with_app("so.tilo.lang", "tilolang")
-        .with_invoker(invoker);
+        // Recorded in this thread's window, whose store keeps an action's large parts.
+        let _window = crate::window::store();
+        let mut context = context_of(action, "so.tilo.lang").with_invoker(invoker);
         // As the record does: every change of a run names it, so the workspace commits the
         // action and its calls as one, and one undo takes the whole of it back.
         if let Some(run) = &action.authorship.invocation {
@@ -240,6 +236,17 @@ impl Replica {
         let root = self.host.root_of(app).unwrap();
         self.host.store().record(&root.doc).unwrap()
     }
+}
+
+/// The context `action` is recorded under for `app`: what it acts on, its kind, and the app whose
+/// code ran it.
+pub fn context_of(action: &DynAction, app: &str) -> ActionContext {
+    ActionContext::for_resource(
+        action.resources().first().copied().unwrap_or("workspace"),
+        &action.kind,
+        &action.kind,
+    )
+    .with_app(app, "tilolang")
 }
 
 /// The id of the type `ty` of `meta`.

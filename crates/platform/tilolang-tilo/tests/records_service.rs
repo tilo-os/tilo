@@ -430,24 +430,6 @@ fn kept_as_content(doc: &mut tilo_resource::Doc) -> (automerge::ChangeHash, Vec<
         .expect("the paste's change keeps its body as content")
 }
 
-/// What replaying the change `change` of `doc` shows, its action's parts read from `store` alone:
-/// on a thread no window lent a store, as a history read or a peer's check is.
-fn decoded(
-    doc: &tilo_resource::Doc,
-    change: automerge::ChangeHash,
-    store: tilo_content::ContentStore,
-) -> tilo_actions::Verified {
-    let mut replay = doc.clone();
-    std::thread::spawn(move || {
-        let mut registry = tilo_actions::ActionRegistry::new();
-        tilolang_tilo::history::register(&mut registry);
-        registry.connect_content(store);
-        tilo_actions::verify_change(&mut replay, change, &registry).unwrap()
-    })
-    .join()
-    .unwrap()
-}
-
 /// The address a sealed reference names its ciphertext by.
 fn address(reference: &str) -> &str {
     reference
@@ -500,7 +482,7 @@ fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
     // and the note the reopened record publishes reads the paste back.
     let reopened = reopened_service(service.record(), &store);
     assert_eq!(
-        decoded(reopened.record(), paste, store.clone()),
+        crate::window::decoded(reopened.record().clone(), paste, store.clone()).unwrap(),
         tilo_actions::Verified::Reproduced,
         "after the record opens again, the paste reads back as it ran"
     );
@@ -520,7 +502,7 @@ fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
     );
     assert!(
         matches!(
-            decoded(reopened.record(), paste, theirs.clone()),
+            crate::window::decoded(reopened.record().clone(), paste, theirs.clone()).unwrap(),
             tilo_actions::Verified::ContentMissing(_)
         ),
         "the peer lacks the paste until it arrives"
@@ -540,7 +522,7 @@ fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
         lane.arrive(hash.to_owned(), bytes);
     }
     assert_eq!(
-        decoded(reopened.record(), paste, theirs),
+        crate::window::decoded(reopened.record().clone(), paste, theirs).unwrap(),
         tilo_actions::Verified::Reproduced,
         "once the paste arrived, the peer's action reproduces its change"
     );

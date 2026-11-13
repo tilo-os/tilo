@@ -9,7 +9,7 @@ use std::rc::Rc;
 use automerge::AutoCommit;
 use serde_json::Value as Json;
 use serde_json::json;
-use tilo_actions::{ActionContext, ActionInvoker};
+use tilo_actions::ActionInvoker;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Edit, EditOp, Model as _, Segment};
 use tilolang_runtime::Principal;
@@ -81,13 +81,10 @@ fn create(doc: &mut AutoCommit, family: &(Meta, String, String), id: &str, title
 /// ([`tilo_actions::ActionContext`]).
 fn apply_recorded(doc: &mut AutoCommit, action: &DynAction) {
     let encoded = action.encode().expect("the action encodes");
-    let context = ActionContext::for_resource(
-        action.resources().first().copied().unwrap_or("room"),
-        &action.kind,
-        &action.kind,
-    )
-    .with_app(&action.app, "tilolang")
-    .with_invoker(ActionInvoker::actor("ada"));
+    // Recorded in this thread's window, whose store keeps an action's large parts.
+    let _window = crate::window::store();
+    let context =
+        crate::fixtures::context_of(action, &action.app).with_invoker(ActionInvoker::actor("ada"));
     // The document's own actor writes it: a fork of it is a replica of its own, and two
     // replicas' changes never share a sequence number.
     tilo_actions::apply_local_with_context(doc, action, encoded, None, context)
