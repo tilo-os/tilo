@@ -86,6 +86,11 @@ DESK_EMAIL = "desk-person@example.invalid"
 # it by the page's title.
 DESK_WINDOW = "browser|visa"
 PERSON_PAGE = Path(__file__).with_name("person.mjs")
+# The person's own page, where it stays open on the site (person.mjs
+# --answer): the questions of the submissions are answered on its sheet, and
+# the person's view of each is kept beside its answers.
+PAGE_ASKS = os.environ.get("HOSTED_VISA_PAGE_ASKS", "")
+PAGE_ANSWERS = os.environ.get("HOSTED_VISA_PAGE_ANSWERS", "")
 # What the agent puts in the page's fields, by the name the page gives each
 # of them: the words of its label, which is what `find-page-element` matches.
 FILLED = {
@@ -190,6 +195,44 @@ def check_leaves(question: dict, what: str) -> None:
     check(page.get("method") == "POST", f"the question about {what} names the method ({page})")
     check(page.get("destination"), f"the question about {what} names where it goes ({page})")
     check(page.get("picture"), f"the question about {what} shows the filled page ({page})")
+
+
+class PagePerson:
+    """The person answering on their own page's question sheet, as they do in
+    their browser (person.mjs --answer): each answer is asked of the page by
+    name, which keeps the person's view of the question and of the page once
+    they answered. A device of theirs that answers nothing (`tilo-approve`,
+    "none") reads the same question beside it, so what it names is held as
+    it is for the device that answers."""
+
+    def __init__(self, asks: str, answers: str, watcher: Person) -> None:
+        self.asks = asks
+        self.answers = answers
+        self.watcher = watcher
+        self.seen: list[dict] = []
+
+    def begin(self, answer: str, name: str) -> tuple[object, str, float]:
+        watching = self.watcher.begin("none", within=300)
+        with open(self.asks, "w") as asks:
+            asks.write(f"{answer} {name}\n")
+        return watching, name, time.perf_counter()
+
+    async def settle(self, started: tuple[object, str, float]) -> list[dict]:
+        watching, name, began = started
+        questions = await self.watcher.settle(watching, within=300, watching=True)  # type: ignore[arg-type]
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            if os.path.isfile(self.answers):
+                with open(self.answers) as answered:
+                    for line in answered:
+                        seen = json.loads(line)
+                        if seen.get("name") == name:
+                            seen["seconds"] = round(time.perf_counter() - began, 2)
+                            self.seen.append(seen)
+                            check(True, f"the person answered {name} on their page's sheet ({seen['answer']})")
+                            return questions
+            await asyncio.sleep(0.2)
+        raise AssertionError(f"the person's page did not answer {name} in 120 s ({self.answers})")
 
 
 class Page:
@@ -411,7 +454,16 @@ async def fill_phase(report: dict[str, object]) -> int:
     aws = agent.workspace(workspace)
     page = Page(aws, str(state["window"]))
     person = Person(APPROVER, PERSON_ROOT, HOST, check=check)
+    on_page = PagePerson(PAGE_ASKS, PAGE_ANSWERS, person) if PAGE_ASKS and PAGE_ANSWERS else None
     reviewer = None
+
+    def ask(answer: str, name: str) -> object:
+        """The person answers `name`: on their page's sheet where it is open,
+        else on their approving device."""
+        return on_page.begin(answer, name) if on_page else person.begin(answer)
+
+    async def answered(started: object) -> list[dict]:
+        return await (on_page.settle(started) if on_page else person.settle(started))  # type: ignore[arg-type]
 
     say("b. the agent fills the visa form through page actions, and the person is asked nothing")
     async with aws.run(RUN_TITLE):
@@ -463,9 +515,11 @@ async def fill_phase(report: dict[str, object]) -> int:
         report["capture"] = saved
 
         say("d. the person refuses a submission, and the form does not leave")
-        asked = person.begin("deny")
+        asked = ask("deny", "submission-denied")
+        began = time.perf_counter()
         refused = await refusal_of(page.do("submit-page", element=submit))
-        questions = await person.settle(asked)
+        report["deny_seconds"] = round(time.perf_counter() - began, 2)
+        questions = await answered(asked)
         check(len(questions) == 1, f"the person was asked exactly once ({questions})")
         check("submit" in json.dumps(questions[0]).lower(), f"the question names the submission ({questions[0]})")
         check_leaves(questions[0], "a submission")
@@ -480,10 +534,12 @@ async def fill_phase(report: dict[str, object]) -> int:
 
         say("e. a second form instance is submitted, and the person allows it")
         submit = await fill(page)
-        asked = person.begin("allow")
+        asked = ask("allow", "submission-allowed")
+        began = time.perf_counter()
         run = await outcome(page.do("submit-page", element=submit))
+        report["allow_seconds"] = round(time.perf_counter() - began, 2)
         check("released" in json.dumps(run), f"the submission ran once the person allowed it ({run})")
-        questions = await person.settle(asked)
+        questions = await answered(asked)
         check(len(questions) == 1, f"the person was asked exactly once ({questions})")
         check("submit" in json.dumps(questions[0]).lower(), f"the question names the submission ({questions[0]})")
         receipt = await page.read()
@@ -581,6 +637,10 @@ async def fill_phase(report: dict[str, object]) -> int:
 
     report["questions_asked"] = person.answered()
     write_json("questions.json", person.asked)
+    if on_page:
+        report["answered_on_page"] = on_page.seen
+        with open(PAGE_ASKS, "w") as asks:
+            asks.write("done\n")
 
     for client in (agent, reviewer):
         if client is None:

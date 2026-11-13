@@ -43,10 +43,13 @@
 #      are looking at — before anyone is asked to approve anything; then the
 #      submission runs once the person allows that one submission, the
 #      receipt reaches the same desk, and a second submission is refused when
-#      they deny it, a click on the submit button held and asked once; a key
-#      minted with the scope unticked is asked about the page actions that act
-#      on the page; a reviewer who joined by invitation reads the run in
-#      History, and page actions past the plans file's free ones are refused;
+#      they deny it — both answered by the person on the question sheet of
+#      their own page, open on the site since step 1, their view of each kept
+#      as WORK/startup/submission-{denied,allowed}-{asked,answered}.png — and
+#      a click on the submit button is held and asked once; a key minted with
+#      the scope unticked is asked about the page actions that act on the
+#      page; a reviewer who joined by invitation reads the run in History, and
+#      page actions past the plans file's free ones are refused;
 #  13. a Linux command in that workspace's VM, from an agent's run, while the
 #      provider's plans file names no card for the account: refused at once,
 #      in words that say what would let it through, having run nothing
@@ -107,7 +110,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 pids=()
 trap 'for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done' EXIT
 # The Python SDK as this checkout has it, from stack.sh (sourced below).
-key= plain_key= reviewer_port= entries=() visa_seconds=0 at=$SECONDS began=$SECONDS
+key= plain_key= person_asks= reviewer_port= entries=() visa_seconds=0 at=$SECONDS began=$SECONDS
 step() {
   printf '\n== %s (%ss, %ss in)\n' "$*" $((SECONDS - at)) $((SECONDS - began))
   at=$SECONDS
@@ -119,10 +122,30 @@ step() {
 # `tilo keys create` asks for, and one that may not operate web pages.
 startup_identity() {
   step '1. a fresh startup identity approves a server key on the local site'
-  node "$here/integration/person.mjs" "$site" "$relay" "$work/startup" \
-    --key 'Visa backend' --tilo "$tilo" --api "$api" --no-pages \
-    --root "$work/startup/person.json" > "$work/startup.json" \
-    || fail "the startup's key was not approved (see $work/startup)"
+  local args=(--key 'Visa backend' --tilo "$tilo" --api "$api" --no-pages --root "$work/startup/person.json")
+  if [[ ${TILO_SH_VM_HOST:-0} == 1 ]] && runs_step 12; then
+    # The person stays on the site in their browser, whose page holds their
+    # root: step 12 has them answer the submissions their agent's page holds
+    # there, on its question sheet, and keeps what they saw. The check holds
+    # the FIFO open so each answer asked of it is one line, not its end.
+    mkdir -p "$work/startup"
+    person_asks=$work/startup/asks
+    rm -f "$person_asks" "$work/startup/answers.jsonl"
+    mkfifo "$person_asks"
+    exec {person_asks_fd}<>"$person_asks"
+    node "$here/integration/person.mjs" "$site" "$relay" "$work/startup" "${args[@]}" \
+      --answer "$person_asks" > "$work/startup.json" 2> "$work/startup.log" &
+    local person=$!
+    pids+=("$person")
+    until [[ -s $work/startup.json ]]; do
+      kill -0 "$person" 2>/dev/null || { cat "$work/startup.log" >&2; fail "the startup's key was not approved (see $work/startup)"; }
+      sleep 0.5
+    done
+    cat "$work/startup.log" >&2
+  else
+    node "$here/integration/person.mjs" "$site" "$relay" "$work/startup" "${args[@]}" > "$work/startup.json" \
+      || fail "the startup's key was not approved (see $work/startup)"
+  fi
   key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$work/startup.json")
   # The key they did not let operate web pages, made on the API server's grants page:
   # what the last step holds to being asked about each page action.
@@ -381,6 +404,7 @@ if [[ $hosted == 1 ]]; then
       HOSTED_VISA_APPROVER=$approve HOSTED_VISA_ROOT=$work/startup/root \
       HOSTED_VISA_RELAY=$relay_address HOSTED_VISA_UNSCOPED_KEY=$plain_key \
       HOSTED_VISA_SITE=$site HOSTED_VISA_SITE_RELAY=$relay \
+      HOSTED_VISA_PAGE_ASKS=${person_asks:-} HOSTED_VISA_PAGE_ANSWERS=${person_asks:+$work/startup/answers.jsonl} \
       sdk_python "$here/integration/hosted-visa.py" "$api" "$key" "$work/hosted" "$form_url" "$1"
   }
   # A Linux command in that workspace's VM, as its people and their agents

@@ -38,8 +38,17 @@
 //                   authenticator, as a platform one answers), the browser
 //                   then forgets the site, and they sign in again with that
 //                   passkey: the same person comes back.
+//   --answer FIFO   once the rest is done, the report is printed and they
+//                   stay on the site, where the page holding their root shows
+//                   what their agents' hosts ask them on its question sheet.
+//                   Each line read from FIFO, `allow NAME` or `deny NAME`,
+//                   waits for the next question, keeps the person's view of it
+//                   as NAME-asked.png, presses Allow once or Deny on the sheet,
+//                   and keeps NAME-answered.png once the sheet is gone; a line
+//                   of {name, answer, sheet, askedMs, answeredMs} is appended
+//                   to OUT_DIR/answers.jsonl. `done` (or the FIFO's end) ends it.
 //
-// usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE] [--passkey]
+// usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE] [--passkey] [--answer FIFO]
 //
 // Prints one JSON line: {arrivedMs, joinedMs, room, followed, key, entered}.
 // `arrivedMs` is a fresh visitor's entry: from navigating to the site to the
@@ -49,7 +58,8 @@
 // also keeps what the person reads there, in both appearances: the sign-in
 // card they allow, the door's grants page, and the key that page makes.
 import {spawn} from 'node:child_process';
-import {existsSync, mkdirSync, writeFileSync} from 'node:fs';
+import {appendFileSync, createReadStream, existsSync, mkdirSync, writeFileSync} from 'node:fs';
+import {createInterface} from 'node:readline';
 import {join} from 'node:path';
 import {inflateSync} from 'node:zlib';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
@@ -74,6 +84,7 @@ const windowName = option('--window');
 const typed = option('--type');
 const pageName = option('--page');
 const changes = Number(option('--changes') ?? 1);
+const answerFifo = option('--answer');
 mkdirSync(out, {recursive: true});
 
 const report = {site, relay};
@@ -101,9 +112,11 @@ const finish = async (code, message) => {
     if (said.length) console.error(`--- the page said:\n${said.join('\n')}`);
     console.error(`FAIL: ${message}`);
   }
-  console.log(JSON.stringify(report));
+  // With --answer the report was printed before the person stayed.
+  if (!reported) console.log(JSON.stringify(report));
   process.exit(code);
 };
+let reported = false;
 const until = async (expression, what, timeout = 180_000) => {
   const deadline = Date.now() + timeout;
   for (;;) {
@@ -568,5 +581,75 @@ if (keyName) {
     report.noPagesSaid = report.madeOnPage;
   }
   await capture('key');
+}
+// The page's semantic layer names every control it draws: the first node
+// whose accessible name matches `pattern` (and whose role is `role`, if
+// named), as a screen reader finds it, or null after `within` ms.
+const axNamed = async (pattern, {role = null, within = 180_000} = {}) => {
+  await tab.send('Accessibility.enable', {}).catch(() => {});
+  const waiting = Date.now();
+  for (;;) {
+    const {result} = await tab.send('Accessibility.getFullAXTree', {}).catch(() => ({result: {nodes: []}}));
+    const found = (result?.nodes ?? []).find(node => !node.ignored && node.backendDOMNodeId
+      && pattern.test(String(node.name?.value ?? '')) && (!role || node.role?.value === role));
+    if (found || Date.now() - waiting > within) return found ?? null;
+    await sleep(250);
+  }
+};
+// A click at the middle of `node`'s box, as a mouse gives it; false when it
+// has no box on the page.
+const clickNode = async node => {
+  const {result: box} = await tab.send('DOM.getBoxModel', {backendNodeId: node.backendDOMNodeId});
+  const quad = box?.model?.content ?? [];
+  if (quad.length < 8) return false;
+  const x = (quad[0] + quad[4]) / 2;
+  const y = (quad[1] + quad[5]) / 2;
+  for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+    await tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'left', clickCount: 1});
+  }
+  return true;
+};
+
+if (answerFifo) {
+  // The report now: the caller reads it while the person stays.
+  console.log(JSON.stringify(report));
+  reported = true;
+  // Back on the site, where the page holding their root answers what their
+  // agents' hosts ask them (entry-page.mjs, answerAgentQuestions).
+  await tab.navigate(site);
+  await until(`document.documentElement.dataset.arrival === 'done'`, 'the page arriving again to answer questions');
+  console.error('ok: the person is on the site, answering their agents\' questions');
+  const asks = createInterface({input: createReadStream(answerFifo)});
+  for await (const line of asks) {
+    const [answer, name] = line.trim().split(/\s+/);
+    if (!answer) continue;
+    if (answer === 'done') break;
+    if (!['allow', 'deny'].includes(answer) || !name) await finish(2, `--answer reads "allow NAME" or "deny NAME", not ${JSON.stringify(line)}`);
+    const waiting = Date.now();
+    const button = await axNamed(answer === 'allow' ? /^Allow once$/ : /^Deny$/, {within: 300_000});
+    if (!button) await finish(1, `no question came to the person's sheet for ${name} in 300 s (the page reads: ${await text()})`);
+    const askedMs = Date.now() - waiting;
+    // The sheet as the person reads it, before they answer.
+    await sleep(400);
+    const sheet = await text();
+    const asked = await tab.screenshot().catch(() => null);
+    if (asked) writeFileSync(join(out, `${name}-asked.png`), asked);
+    if (!await clickNode(button)) await finish(1, `the sheet's ${answer} button for ${name} has no box to press`);
+    const pressed = Date.now();
+    const gone = await (async () => {
+      while (Date.now() - pressed < 30_000) {
+        if (!await axNamed(/^(Allow once|Deny)$/, {within: 0})) return true;
+        await sleep(200);
+      }
+      return false;
+    })();
+    if (!gone) await finish(1, `the sheet stayed up after the person pressed ${answer} for ${name}`);
+    const answeredMs = Date.now() - pressed;
+    await sleep(600);
+    const after = await tab.screenshot().catch(() => null);
+    if (after) writeFileSync(join(out, `${name}-answered.png`), after);
+    appendFileSync(join(out, 'answers.jsonl'), `${JSON.stringify({name, answer, sheet, askedMs, answeredMs})}\n`);
+    console.error(`ok: the person saw the question for ${name} after ${askedMs} ms and pressed ${answer}`);
+  }
 }
 await finish(0);

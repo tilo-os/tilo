@@ -53,8 +53,15 @@ class Person:
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
 
-    async def settle(self, started: "asyncio.Future[asyncio.subprocess.Process]", within: int = 180) -> list[dict]:
-        """The questions the process saw, once it answered or gave up."""
+    async def settle(
+        self,
+        started: "asyncio.Future[asyncio.subprocess.Process]",
+        within: int = 180,
+        watching: bool = False,
+    ) -> list[dict]:
+        """The questions the process saw, once it answered or gave up. A
+        process begun with "none" while `watching` reads the question another
+        of the person's devices answers, and answers nothing itself."""
         process = await started
         try:
             out, err = await asyncio.wait_for(process.communicate(), timeout=within + 30)
@@ -69,7 +76,7 @@ class Person:
             seen = json.loads(line)
             if seen.get("question"):
                 questions.append(seen["question"])
-            if "watched" in seen and seen["watched"]:
+            if "watched" in seen and seen["watched"] and not watching:
                 raise AssertionError(f"the person was asked {seen['watched']} unexpected questions")
         if process.returncode not in (0, 1, 3):
             raise AssertionError(f"the approver stopped ({process.returncode}): {err.decode()[-800:]}")
