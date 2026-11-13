@@ -1193,6 +1193,19 @@ impl<R: FloatingRow> FloatingList<R> {
         });
     }
 
+    /// Whether the rows' width is measured already, by a paint or a layout:
+    /// placing the list again measures nothing.
+    #[must_use]
+    pub fn is_measured(&self) -> bool {
+        self.measured.is_some()
+    }
+
+    /// Forget the measured width, so the next paint or layout measures the
+    /// rows again: the theme's type changed under them.
+    pub fn forget_width(&mut self) {
+        self.measured = None;
+    }
+
     /// The panel's radius: one row alone is concentric with it.
     pub fn panel_radius(&self, theme: &Theme) -> f64 {
         let single =
