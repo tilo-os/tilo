@@ -955,18 +955,23 @@ mod tests {
         );
     }
 
+    /// Readings that put no menu up, one row each: a failure names its row.
     #[test]
-    fn a_reading_with_no_menu_up_draws_nothing() {
-        let surface = WindowMenuSurface::showing(r#"{"tab":null,"anchor":null,"rows":[]}"#);
-        assert!(!surface.is_open());
-        assert!(surface.labels().is_empty());
-    }
-
-    #[test]
-    fn a_reading_the_session_never_sent_draws_nothing() {
-        let surface = WindowMenuSurface::showing("not a reading");
-        assert!(!surface.is_open());
-        assert!(surface.labels().is_empty());
+    fn a_reading_without_a_menu_draws_nothing() {
+        for (row, reading) in [
+            (
+                "a_reading_with_no_menu_up_draws_nothing",
+                r#"{"tab":null,"anchor":null,"rows":[]}"#,
+            ),
+            (
+                "a_reading_the_session_never_sent_draws_nothing",
+                "not a reading",
+            ),
+        ] {
+            let surface = WindowMenuSurface::showing(reading);
+            assert!(!surface.is_open(), "{row}");
+            assert!(surface.labels().is_empty(), "{row}");
+        }
     }
 
     /// The menu ends in the shared row every other menu has: the one the context menu adds itself,
