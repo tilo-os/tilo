@@ -8,6 +8,7 @@
 )]
 
 use crate::common::{Harness, row_center};
+use file_explorer::views::file_view::drag_threshold;
 
 use vello::kurbo::Point;
 
@@ -120,16 +121,35 @@ fn dropping_a_folder_on_itself_is_a_noop() {
     std::fs::write(d.path().join("keep/inner.txt"), b"x").unwrap();
 
     let folder_pt = row_center(d.path(), 0);
-    let mut h = Harness::new(d.path());
+    // Each row presses the folder in a window of its own, carries it `moved` px and lets
+    // it go where it was pressed: a drag starts only past the threshold, and whether one
+    // started or not the folder stays where it is.
+    let threshold = drag_threshold();
+    for (moved, drags) in [(16.0, true), (threshold + 1.0, true), (threshold, false)] {
+        let mut h = Harness::new(d.path());
+        h.move_cursor(folder_pt);
+        h.press();
+        h.move_cursor(Point::new(folder_pt.x + moved, folder_pt.y));
+        assert_eq!(
+            h.w.state().debug_pin_dragging(),
+            drags,
+            "a press carried {moved} px, with the drag threshold at {threshold} px"
+        );
+        h.move_cursor(folder_pt);
+        h.release();
 
-    drag_from_to(&mut h, folder_pt, folder_pt);
-
-    assert!(
-        d.path().join("keep/inner.txt").exists(),
-        "the folder is untouched"
-    );
-    assert!(
-        !d.path().join("keep/keep").exists(),
-        "the folder was not moved into itself"
-    );
+        assert!(
+            d.path().join("keep/inner.txt").exists(),
+            "carried {moved} px: the folder is untouched"
+        );
+        assert!(
+            !d.path().join("keep/keep").exists(),
+            "carried {moved} px: the folder was not moved into itself"
+        );
+        let names: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["keep"], "carried {moved} px: nothing else appeared");
+    }
 }
