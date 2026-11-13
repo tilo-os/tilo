@@ -115,35 +115,73 @@ impl NameHost for Names {
 mod tests {
     use super::*;
 
+    /// What a window with no roster and no identity bound, as under test, calls each id: the id,
+    /// the label, and why.
     #[test]
     fn a_participant_is_named_by_what_they_are_never_by_part_of_their_id() {
         let names = Names::new("me-id");
-        assert_eq!(names.label("agent:planner"), "Planner (agent)");
-        assert_eq!(
-            names.label("0123456789abcdef0123456789abcdef"),
-            "Unknown participant",
-            "a key nobody named is never shown, in full or cut short"
-        );
-        assert_eq!(names.label("tomas"), "Unknown participant");
-        assert_eq!(names.label("scenario:Mia"), "Mia");
-        assert_eq!(names.label("trigger:so.tilo.lang.today"), "Today");
-    }
-
-    #[test]
-    fn an_app_reads_as_the_name_the_session_sent_for_it() {
-        let names = Names::new("me-id");
-        assert_eq!(names.label("app:so.tilo.lang.today"), "Today");
-        assert_eq!(names.label("app:so.tilo.lang.notes"), "Notes");
-        assert_eq!(
-            names.label("app:org.example.Editor"),
-            "Editor",
-            "an app installed nowhere here reads as the words its id makes"
-        );
-    }
-
-    #[test]
-    fn the_window_s_own_participant_reads_as_you_without_a_known_name() {
-        // No identity is bound under test.
-        assert_eq!(Names::new("me-id").label("me-id"), "You");
+        let rows: &[(&str, &str, &str)] = &[
+            ("agent:planner", "Planner (agent)", "an agent by its name"),
+            (
+                "0123456789abcdef0123456789abcdef",
+                "Unknown participant",
+                "a key nobody named is never shown, in full or cut short",
+            ),
+            ("tomas", "Unknown participant", "a person nobody named"),
+            ("scenario:Mia", "Mia", "a scenario's sample person"),
+            (
+                "trigger:so.tilo.lang.today",
+                "Today",
+                "an app acting by itself",
+            ),
+            ("app:so.tilo.lang.today", "Today", "an app by its own name"),
+            ("app:so.tilo.lang.notes", "Notes", "an app by its own name"),
+            (
+                "app:org.example.Editor",
+                "Editor",
+                "an app installed nowhere here reads as the words its id makes",
+            ),
+            (
+                "me-id",
+                "You",
+                "the window's own participant, no identity bound",
+            ),
+            ("", "Unknown participant", "no id at all"),
+            (
+                "agent:",
+                "Unknown participant (agent)",
+                "an agent that gave no name still reads as an agent",
+            ),
+            (
+                "  agent:planner  ",
+                "Planner (agent)",
+                "the spaces around an id are not part of it",
+            ),
+            ("app:", "Unknown participant", "an app id with no words"),
+            (
+                "app:org.gnome.TextEditor",
+                "Text Editor",
+                "a camel-case hump is a space",
+            ),
+            (
+                "app:so.tilo.lang.read-later",
+                "Read Later",
+                "a dash is a space, and each word is capitalised",
+            ),
+            (
+                "bot:helper",
+                "Helper",
+                "a bot nobody named, by its own name",
+            ),
+            ("shortcut:morning", "Morning", "a shortcut by its name"),
+            (
+                "migration:so.tilo.lang.today@1f2e",
+                "Today",
+                "an update to a later build is the app's own act",
+            ),
+        ];
+        for (id, expected, why) in rows {
+            assert_eq!(names.label(id), *expected, "{id:?}: {why}");
+        }
     }
 }
