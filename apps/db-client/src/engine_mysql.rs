@@ -372,10 +372,11 @@ mod tests {
     use super::*;
     use crate::model::{ConnectionProfile, Engine};
 
-    /// Options carry profile fields and the default port; values map across scalar families, text protocol bytes coerce, and hostile cells are bounded.
-    #[test]
-    fn mysql_options_and_value_mapping_are_faithful_and_bounded() {
-        // --- phase: opts_carry_profile_fields ---
+    tilo_test_env::scenario! {
+        /// Options carry profile fields and the default port; values map across scalar families, text protocol bytes coerce, and hostile cells are bounded.
+        fn mysql_options_and_value_mapping_are_faithful_and_bounded;
+
+        phase opts_carry_profile_fields;
         {
             let mut p = ConnectionProfile::new("shop", Engine::MySql);
             p.host = "mysql.example".into();
@@ -390,7 +391,7 @@ mod tests {
             assert_eq!(opts.get_db_name(), Some("shop"));
         }
 
-        // --- phase: opts_default_port_when_zero ---
+        phase opts_default_port_when_zero;
         {
             let mut p = ConnectionProfile::new("x", Engine::MySql);
             p.port = 0;
@@ -398,7 +399,7 @@ mod tests {
             assert_eq!(opts.get_tcp_port(), 3306);
         }
 
-        // --- phase: value_mapping_covers_scalar_families ---
+        phase value_mapping_covers_scalar_families;
         {
             assert_eq!(mysql_value_to_cell(Value::NULL), Cell::Null);
             assert_eq!(mysql_value_to_cell(Value::Int(-7)), Cell::Integer(-7));
@@ -418,7 +419,7 @@ mod tests {
             );
         }
 
-        // --- phase: text_protocol_bytes_coerce_to_typed_numerics ---
+        phase text_protocol_bytes_coerce_to_typed_numerics;
         {
             // The text protocol hands back integer/float columns as raw bytes; the
             // column type recovers a typed numeric cell so the grid right-aligns.
@@ -454,7 +455,7 @@ mod tests {
             );
         }
 
-        // --- phase: hostile_text_protocol_cell_is_retained_at_a_bounded_size ---
+        phase hostile_text_protocol_cell_is_retained_at_a_bounded_size;
         {
             let Cell::Text(value) = cell_from_value(
                 Value::Bytes(vec![b'x'; Cell::MAX_RETAINED_TEXT_BYTES + 99]),

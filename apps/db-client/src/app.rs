@@ -1711,9 +1711,10 @@ mod tests {
         harness.set_modifiers(&[]);
     }
 
-    #[test]
-    fn start_state_is_empty_with_a_new_connection_action() {
-        // --- phase: live_app_starts_empty ---
+    tilo_test_env::scenario! {
+        fn start_state_is_empty_with_a_new_connection_action;
+
+        phase live_app_starts_empty;
         {
             let app = DbClientApp::new();
             assert!(
@@ -1731,7 +1732,7 @@ mod tests {
             );
         }
 
-        // --- phase: the_first_run_action_opens_the_new_connection_dialog ---
+        phase the_first_run_action_opens_the_new_connection_dialog;
         {
             let mut harness = mounted(DbClientApp::new());
             assert!(
@@ -1749,7 +1750,7 @@ mod tests {
             );
         }
 
-        // --- phase: ctrl_n_opens_the_dialog_from_anywhere ---
+        phase ctrl_n_opens_the_dialog_from_anywhere;
         {
             let mut harness = mounted(DbClientApp::sampled());
             chord(&mut harness, "n");
@@ -1889,11 +1890,12 @@ mod tests {
         }
     }
 
-    /// Without the framework dispatcher the editor only shows the shared
-    /// text: typing changes nothing, and a collaborator's edit shows.
-    #[test]
-    fn the_editor_shows_the_shared_sql() {
-        // --- phase: without_a_dispatcher_typing_changes_nothing ---
+    tilo_test_env::scenario! {
+        /// Without the framework dispatcher the editor only shows the shared
+        /// text: typing changes nothing, and a collaborator's edit shows.
+        fn the_editor_shows_the_shared_sql;
+
+        phase without_a_dispatcher_typing_changes_nothing;
         {
             let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
@@ -1914,7 +1916,7 @@ mod tests {
             );
         }
 
-        // --- phase: sync_pulls_a_collaborators_sql_edit_into_the_editor ---
+        phase sync_pulls_a_collaborators_sql_edit_into_the_editor;
         {
             let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
@@ -1979,10 +1981,11 @@ mod tests {
         );
     }
 
-    /// Running a query writes nothing to the document, and a statement that changes data asks first.
-    #[test]
-    fn running_asks_before_changing_data_and_never_writes_the_document() {
-        // --- phase: running_a_query_writes_nothing_to_the_document ---
+    tilo_test_env::scenario! {
+        /// Running a query writes nothing to the document, and a statement that changes data asks first.
+        fn running_asks_before_changing_data_and_never_writes_the_document;
+
+        phase running_a_query_writes_nothing_to_the_document;
         {
             let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
@@ -1998,7 +2001,7 @@ mod tests {
             assert_eq!(app(&harness).dialog, None, "a read runs without asking");
         }
 
-        // --- phase: the_run_button_runs_the_query_in_the_editor ---
+        phase the_run_button_runs_the_query_in_the_editor;
         {
             let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
@@ -2031,7 +2034,7 @@ mod tests {
             assert_eq!(result.rows[0][0].display(), "42");
         }
 
-        // --- phase: destructive_sql_requires_an_explicit_confirmation ---
+        phase destructive_sql_requires_an_explicit_confirmation;
         {
             let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
@@ -2056,7 +2059,7 @@ mod tests {
             assert_eq!(root.pending_query_confirmation, None);
         }
 
-        // --- phase: confirming_runs_the_statement ---
+        phase confirming_runs_the_statement;
         {
             let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
@@ -2282,14 +2285,15 @@ mod tests {
         );
     }
 
-    /// Resource queries stay pending until the worker finishes; the live rows cover schema, results and transactions without secrets and stay schema-qualified.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
-    #[test]
-    fn resource_tree_and_queries_are_schema_qualified_and_secret_free() {
-        // --- phase: resource_query_is_pending_until_the_database_worker_finishes ---
+    tilo_test_env::scenario! {
+        /// Resource queries stay pending until the worker finishes; the live rows cover schema, results and transactions without secrets and stay schema-qualified.
+        #[allow(
+            clippy::too_many_lines,
+            reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+        )]
+        fn resource_tree_and_queries_are_schema_qualified_and_secret_free;
+
+        phase resource_query_is_pending_until_the_database_worker_finishes;
         {
             use ui::framework::testing::TestApp;
             let _keyring = ui::secrets::scope_thread(ui::secrets::memory_backend());
@@ -2335,7 +2339,7 @@ mod tests {
             });
         }
 
-        // --- phase: live_rows_cover_schema_results_and_transactions_without_secrets ---
+        phase live_rows_cover_schema_results_and_transactions_without_secrets;
         {
             use ui::tilo_resource::Effect as _;
 
@@ -2386,7 +2390,7 @@ mod tests {
             );
         }
 
-        // --- phase: relation_resources_and_browse_payloads_remain_schema_qualified ---
+        phase relation_resources_and_browse_payloads_remain_schema_qualified;
         {
             let (app, _doc) = synced();
             let mut state = app.state();
@@ -2429,10 +2433,11 @@ mod tests {
         }
     }
 
-    /// Destructive SQL is recognised, read queries stay fast, and CSV fields neutralise formulas without losing values.
-    #[test]
-    fn sql_safety_and_csv_export_guard_destructive_or_formula_input() {
-        // --- phase: sql_safety_check_leaves_read_queries_fast ---
+    tilo_test_env::scenario! {
+        /// Destructive SQL is recognised, read queries stay fast, and CSV fields neutralise formulas without losing values.
+        fn sql_safety_and_csv_export_guard_destructive_or_formula_input;
+
+        phase sql_safety_check_leaves_read_queries_fast;
         {
             assert!(!sql_is_potentially_destructive("SELECT * FROM tracks"));
             assert!(!sql_is_potentially_destructive("EXPLAIN SELECT 1"));
@@ -2455,7 +2460,7 @@ mod tests {
             assert!(!sql_is_potentially_destructive("-- DELETE\nSELECT 1"));
         }
 
-        // --- phase: csv_fields_neutralize_spreadsheet_formulas_without_losing_values ---
+        phase csv_fields_neutralize_spreadsheet_formulas_without_losing_values;
         {
             assert_eq!(csv_field("=SUM(A1:A2)"), "\"'=SUM(A1:A2)\"");
             assert_eq!(csv_field(" \t@cmd"), "\"' \t@cmd\"");
@@ -2465,10 +2470,11 @@ mod tests {
         }
     }
 
-    /// An error stays until it is dismissed, and the data pages follow the page controls.
-    #[test]
-    fn errors_and_pages() {
-        // --- phase: an_error_stays_until_it_is_dismissed ---
+    tilo_test_env::scenario! {
+        /// An error stays until it is dismissed, and the data pages follow the page controls.
+        fn errors_and_pages;
+
+        phase an_error_stays_until_it_is_dismissed;
         {
             let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
@@ -2485,7 +2491,7 @@ mod tests {
             assert!(!failed(&harness), "dismissing clears the error");
         }
 
-        // --- phase: the_page_intents_move_through_the_table ---
+        phase the_page_intents_move_through_the_table;
         {
             let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
@@ -2543,10 +2549,11 @@ mod tests {
         audit(&harness, "first run");
     }
 
-    /// The staged captures are what they claim: the track listing holds the query that produced its rows, and the failed connection is a remote one with no stale results.
-    #[test]
-    fn staged_captures_are_consistent() {
-        // --- phase: the_track_listing_shows_its_own_query_and_rows ---
+    tilo_test_env::scenario! {
+        /// The staged captures are what they claim: the track listing holds the query that produced its rows, and the failed connection is a remote one with no stale results.
+        fn staged_captures_are_consistent;
+
+        phase the_track_listing_shows_its_own_query_and_rows;
         {
             let sampled = DbClientApp::sampled();
             sampled.state().stage_scenario(Some("wide"));
@@ -2580,7 +2587,7 @@ mod tests {
             );
         }
 
-        // --- phase: a_failed_connection_is_a_remote_one_with_nothing_open ---
+        phase a_failed_connection_is_a_remote_one_with_nothing_open;
         {
             let sampled = DbClientApp::sampled();
             sampled.state().stage_scenario(Some("error"));
