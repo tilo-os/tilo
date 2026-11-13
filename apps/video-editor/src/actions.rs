@@ -1,22 +1,14 @@
-//! What the editor does beyond the project's own verbs — revealing an item,
-//! showing a panel, splitting what its person selected, project file import
-//! and export and render jobs ([`VideoEditorEffect`]) — and the verbs
-//! it offers bound to where its person is: their playhead, and the mix their
-//! monitor measured ([`surface_declarations`]).
-//!
-//! Every change of the project is a field edit or a verb of
-//! [`Project`] ([`crate::resource`]); clip metadata is
-//! the document, pixels and sound are produced outside it.
+//! What the editor does beyond the project's own verbs: revealing an item,
+//! showing a panel, splitting the selection, project file and render jobs, and
+//! the project's verbs bound to the playhead. Every change of the project is a
+//! field edit or a verb of [`Project`](crate::resource); pixels and sound are
+//! produced outside it.
 
 use ui::tilo_resource::{self, ActionDecl, Effect};
 
 use crate::model::Project;
 use crate::resource::video_project;
 
-/// What the editor does beyond the project's own verbs: revealing a track,
-/// clip, effect, marker or source, showing the media, the inspector or the
-/// export settings, splitting the selection, and project file and render
-/// jobs.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "video_editor.effect")]
 pub enum VideoEditorEffect {
@@ -219,8 +211,8 @@ pub enum VideoEditorEffect {
     },
 }
 
-/// Writing a project file where the person chooses risks nothing; over a
-/// path a caller names, it may replace a file, so it asks first.
+/// Writing where the person chooses replaces nothing; over a path a caller
+/// names it may, so it asks first.
 fn project_file_risk(effect: &VideoEditorEffect) -> tilo_actions::RiskLevel {
     match effect {
         VideoEditorEffect::ExportProjectFile { path: Some(_) } => {
@@ -230,20 +222,16 @@ fn project_file_risk(effect: &VideoEditorEffect) -> tilo_actions::RiskLevel {
     }
 }
 
-/// Where this participant is, which the verbs it offers are bound to.
 pub struct VideoResourceCtx {
     pub project: Project,
     pub playhead: f64,
-    /// What the mixer last measured — see [`crate::audio::MixMeters`]: app
-    /// state like the playhead, here so a caller with no screen can act on
-    /// a mix that went over.
+    /// What the mixer last measured: app state like the playhead, here so a
+    /// caller with no screen can act on a mix that went over.
     pub mix: crate::audio::MixSnapshot,
 }
 
-/// The project's verbs bound to the playhead and the measured mix: mark in
-/// and out, add or remove a marker here, cut or trim a clip here, and trim
-/// a mix that went over. Each is the verb itself with its time (or its
-/// lanes and level) filled in.
+/// The project's verbs bound to the playhead and the measured mix: each is the
+/// verb itself with its time, or its lanes and level, filled in.
 pub fn surface_declarations(ctx: &VideoResourceCtx) -> Vec<ActionDecl<Project>> {
     let playhead = ctx.playhead;
     let mut decls = Vec::new();
@@ -284,9 +272,8 @@ pub fn surface_declarations(ctx: &VideoResourceCtx) -> Vec<ActionDecl<Project>> 
             "trim-out-here",
             ui::tilo_resource::word!("video-editor-project-trim-out-here"),
         ));
-    // Two angles of one moment, side by side: offered only where two
-    // pictures meet that may be moved to their halves, so the control is
-    // absent rather than inert.
+    // Offered only where it can act, so the control is absent rather than
+    // inert.
     if ctx.project.side_by_side_available(playhead) {
         add(Project::PLACE_SIDE_BY_SIDE
             .bind(video_project::PlaceSideBySide::paths().at, playhead)

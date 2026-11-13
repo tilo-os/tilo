@@ -1,26 +1,13 @@
-//! Real audio waveform peaks, read from the source's own samples.
+//! Waveform peaks, read from the source's own samples: an uncompressed WAV
+//! directly, everything else decoded to PCM under `--features decode`.
 //!
-//! A waveform must be the signal or nothing. Two producers, in order:
+//! When no samples can be had — an un-hydrated reference, no audio, no decoder
+//! linked — the answer is [`WaveformState::Unavailable`] and the lane is drawn
+//! as a flat line. Never a synthesized envelope: it cannot be told apart from
+//! real peaks, so it would hide the absence it stands for.
 //!
-//!   * **Uncompressed WAV** (PCM 8/16/24/32-bit and 32-bit float) is read
-//!     directly with no decoder, so peaks are real even on a build with no
-//!     media stack.
-//!   * **Everything else** (MP3, AAC, Opus, FLAC, the audio track of a video
-//!     …) is decoded to PCM under `--features decode` by [`media::pcm`], fed
-//!     by the shared [`media::Source`] seam, off the UI thread and bounded to
-//!     one decode at a time.
-//!
-//! When neither can produce samples — an un-hydrated reference, a file with
-//! no audio, no decoder linked — the answer is [`WaveformState::Unavailable`]
-//! and the renderer must draw a flat neutral line. It must **not** substitute
-//! a synthesized envelope: a sum of sines looks exactly like a waveform and
-//! carries none of the source's information, which is worse than an obviously
-//! empty lane because it cannot be told apart from the real thing.
-//!
-//! [`WaveformCache`] keeps the result per source and computes it off the UI
-//! thread for the live app (delivered over a channel, drained each frame); a
-//! synchronous [`WaveformCache::warm_blocking`] path keeps `--shots` captures
-//! deterministic.
+//! [`WaveformCache`] computes each source's peaks once, off the UI thread;
+//! [`WaveformCache::warm_blocking`] keeps captures deterministic.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -32,29 +19,23 @@ use crate::media::MediaSource;
 use crate::model::MediaId;
 use ui::lock::MutexRecover as _;
 
-/// Peak resolution stored per source; the renderer samples this to fit a clip.
+/// Peak resolution per source; the renderer samples this to fit a clip.
 pub const WAVE_BUCKETS: usize = 512;
 
-/// Cap on bytes read for peak computation so a very long source can't stall the
-/// compute. Peaks cover the read prefix; for typical clips this is the whole file.
+/// Peaks cover only the read prefix, so a very long source cannot stall the
+/// compute; for typical clips this is the whole file.
 const READ_CAP: u64 = 48 * 1024 * 1024;
 
-/// Sample rate the decode path resamples to before measuring peaks. An
-/// envelope needs no more; it keeps a long track's PCM small and the decode
-/// cheap.
+/// An envelope needs no more, which keeps a long track's PCM small.
 #[cfg(feature = "decode")]
 const PEAK_RATE: u32 = 8_000;
 
-/// Wall-clock ceiling on one decode, so a pathological file cannot pin the
-/// worker.
+/// A pathological file must not pin the worker.
 #[cfg(feature = "decode")]
 const DECODE_BUDGET: Duration = Duration::from_secs(30);
 
-/// Compute `buckets` normalized peak amplitudes (0..1) from the real audio at
-/// `path`: PCM read directly for a WAV, a real decode for anything else.
-///
-/// `None` means no samples could be obtained — the caller must show that as
-/// absence, never as a stand-in shape.
+/// `buckets` normalized peak amplitudes (0..1). `None` when no samples could be
+/// had, which the caller must show as absence.
 pub fn peaks_from_file(path: &Path, buckets: usize) -> Option<Vec<f32>> {
     let data = crate::files::read_prefix(path, READ_CAP).ok()?;
     if let Some(p) = peaks_from_wav_bytes(&data, buckets) {
@@ -63,24 +44,17 @@ pub fn peaks_from_file(path: &Path, buckets: usize) -> Option<Vec<f32>> {
     peaks_by_decoding(path, buckets)
 }
 
-/// Decode `path`'s first audio stream to PCM and measure its real peaks.
-/// Compiled out without the decode feature, where it is honestly `None`.
 #[cfg(not(feature = "decode"))]
 fn peaks_by_decoding(_path: &Path, _buckets: usize) -> Option<Vec<f32>> {
     None
 }
 
-/// Decode `path`'s first audio stream to mono PCM and reduce it to
-/// `buckets` real peaks.
-///
-/// The source comes from the shared [`media::Source`] seam, so a file on the
-/// `/var/workspace` FUSE is read *through* the mount and hydrates on demand,
-/// exactly as playback does.
+/// Reads through [`media::Source`], so a file under the mount hydrates on
+/// demand, as playback does.
 #[cfg(feature = "decode")]
 fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
-    // Two-stage reduction: a peak per short window while decoding, then down
-    // to `buckets`. Taking the max at each stage preserves the true peak
-    // exactly while keeping memory flat for a long track.
+    // A peak per short window while decoding, then down to `buckets`: the max at
+    // each stage keeps the true peak and memory flat.
     const WINDOW: usize = 256;
 
     let mut windows: Vec<f32> = Vec::new();
@@ -103,15 +77,14 @@ fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
             }
         },
     );
-    // A budget that ran out, or a stream damaged part way, still leaves the
-    // peaks of everything decoded before it.
+    // A budget that ran out or a damaged stream still leaves the peaks of
+    // everything decoded before it.
     if in_window > 0 {
         windows.push(acc);
     }
     (!windows.is_empty()).then(|| bucketize(&windows, buckets))
 }
 
-/// Pure peak computation from WAV bytes (unit-testable on crafted PCM).
 pub fn peaks_from_wav_bytes(d: &[u8], buckets: usize) -> Option<Vec<f32>> {
     let buckets = buckets.max(1);
     let layout = crate::probe::wav_layout(d)?;
@@ -128,7 +101,7 @@ pub fn peaks_from_wav_bytes(d: &[u8], buckets: usize) -> Option<Vec<f32>> {
     Some(bucketize(&samples, buckets))
 }
 
-/// Decode interleaved PCM into a mono (channel-averaged) `f32` stream in -1..1.
+/// Interleaved PCM as mono `f32` in -1..1.
 fn decode_samples(d: &[u8], fmt: u16, bits: u16, channels: u16) -> Option<Vec<f32>> {
     let ch = channels as usize;
     let bytes_per = (bits / 8) as usize;
@@ -139,8 +112,8 @@ fn decode_samples(d: &[u8], fmt: u16, bits: u16, channels: u16) -> Option<Vec<f3
     let mut out = Vec::with_capacity(d.len() / frame);
     for frame_bytes in d.chunks_exact(frame) {
         let mut acc = 0.0f32;
-        // Every sample is exactly `bits / 8` bytes, so each arm's slice
-        // pattern matches whenever its `(fmt, bits)` does.
+        // Each sample is exactly `bits / 8` bytes, so every arm matches its
+        // `(fmt, bits)`.
         for sample in frame_bytes.chunks_exact(bytes_per) {
             let v = match (fmt, bits, sample) {
                 (1, 8, &[b]) => (f32::from(b) - 128.0) / 128.0,
@@ -165,8 +138,7 @@ fn decode_samples(d: &[u8], fmt: u16, bits: u16, channels: u16) -> Option<Vec<f3
     Some(out)
 }
 
-/// Reduce a sample stream to `buckets` peak amplitudes (max abs per bucket),
-/// normalized so the loudest bucket is 1.0.
+/// `buckets` peak amplitudes (max abs per bucket), scaled so the loudest is 1.0.
 fn bucketize(samples: &[f32], buckets: usize) -> Vec<f32> {
     let mut peaks = vec![0.0f32; buckets];
     let n = samples.len();
@@ -195,32 +167,27 @@ enum Slot {
     Missing,
 }
 
-/// What the renderer may draw for one source's audio. Exhaustive on purpose:
-/// there is no "draw something plausible" case.
+/// What the renderer may draw for one source. There is no "draw something
+/// plausible" case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaveformState {
     /// Nothing has been asked for yet.
     Unrequested,
-    /// A real compute is running. Draw the same neutral line as
-    /// [`WaveformState::Unavailable`] — the answer simply is not in yet.
+    /// Draw the same flat line as [`WaveformState::Unavailable`].
     Pending,
-    /// Real peaks are cached; fetch them with [`WaveformCache::peaks`].
+    /// Fetch the peaks with [`WaveformCache::peaks`].
     Ready,
-    /// The samples cannot be obtained: an un-hydrated reference, a source with
-    /// no audio, or no decoder linked. Draw a flat neutral placeholder and
-    /// **never** a synthesized envelope.
+    /// No samples: an un-hydrated reference, no audio, or no decoder linked.
     Unavailable,
 }
 
-/// One queued peak computation.
 struct Task {
     id: MediaId,
     path: PathBuf,
 }
 
-/// The single background worker's shared state. One worker, one decode at a
-/// time: peak extraction runs a real pipeline, and a timeline full of audio
-/// clips must not stand up one per clip at once.
+/// One worker, one decode at a time: a timeline full of audio clips must not
+/// stand up a decode per clip at once.
 #[derive(Default)]
 struct Work {
     queue: VecDeque<Task>,
@@ -228,8 +195,6 @@ struct Work {
     shutdown: bool,
 }
 
-/// Per-source waveform cache: computes peaks once, off the UI thread, and holds
-/// the result for the renderer.
 pub struct WaveformCache {
     map: HashMap<MediaId, Slot>,
     work: Arc<(Mutex<Work>, Condvar)>,
@@ -243,7 +208,6 @@ impl Default for WaveformCache {
     }
 }
 
-/// How long the idle worker waits before retiring.
 const WORKER_IDLE: Duration = Duration::from_secs(20);
 
 impl WaveformCache {
@@ -257,20 +221,19 @@ impl WaveformCache {
         }
     }
 
-    /// Pull completed background computations into the cache. Call each `sync`.
+    /// Called each sync.
     pub fn drain(&mut self) {
         while let Ok((id, res)) = self.rx.try_recv() {
             let slot = match res {
                 Some(p) => Slot::Ready(Arc::new(p)),
-                // Terminal: the samples are not obtainable. Recorded so the
-                // request stops being pending and is never re-issued.
+                // Terminal: the samples cannot be had, so it is never asked
+                // again.
                 None => Slot::Missing,
             };
             self.map.insert(id, slot);
         }
     }
 
-    /// Queue a background compute for `id` if it hasn't been requested yet.
     pub fn request(&mut self, id: MediaId, source: &MediaSource) {
         if self.map.contains_key(&id) {
             return;
@@ -298,7 +261,7 @@ impl WaveformCache {
         cv.notify_one();
     }
 
-    /// Compute `id`'s peaks synchronously (deterministic `--shots`/tests).
+    /// Synchronous, for deterministic captures and tests.
     pub fn warm_blocking(&mut self, id: MediaId, source: &MediaSource) {
         if matches!(self.map.get(&id), Some(Slot::Ready(_) | Slot::Missing)) {
             return;
@@ -315,7 +278,6 @@ impl WaveformCache {
         self.map.insert(id, slot);
     }
 
-    /// The ready peaks for `id`, or `None` while pending / unavailable.
     pub fn peaks(&self, id: MediaId) -> Option<&Arc<Vec<f32>>> {
         match self.map.get(&id) {
             Some(Slot::Ready(p)) => Some(p),
@@ -323,8 +285,8 @@ impl WaveformCache {
         }
     }
 
-    /// What the renderer may draw for `id`. Use this rather than treating a
-    /// `None` from [`Self::peaks`] as licence to synthesize something.
+    /// What the renderer may draw. A `None` from [`Self::peaks`] is no licence
+    /// to synthesize something.
     pub fn state(&self, id: MediaId) -> WaveformState {
         match self.map.get(&id) {
             None => WaveformState::Unrequested,
@@ -334,8 +296,6 @@ impl WaveformCache {
         }
     }
 
-    /// Whether any requested waveform is still computing (so the app keeps
-    /// syncing until it lands).
     pub fn has_pending(&self) -> bool {
         self.map.values().any(|s| matches!(s, Slot::Pending))
     }
@@ -352,8 +312,7 @@ impl Drop for WaveformCache {
     }
 }
 
-/// The single peak worker: drains the queue one source at a time and retires
-/// when idle.
+/// Drains the queue one source at a time and retires when idle.
 fn run_worker(work: &(Mutex<Work>, Condvar), tx: &Sender<(MediaId, Option<Vec<f32>>)>) {
     let (lock, cv) = work;
     loop {
@@ -401,7 +360,6 @@ fn run_worker(work: &(Mutex<Work>, Condvar), tx: &Sender<(MediaId, Option<Vec<f3
 mod tests {
     use super::*;
 
-    /// Build a real 16-bit PCM mono WAV with the given samples (-1..1).
     fn wav_16(samples: &[f32], sr: u32) -> Vec<u8> {
         let mut data = Vec::new();
         for &s in samples {
@@ -430,8 +388,8 @@ mod tests {
     #[test]
     fn wav_peaks_decode_every_format_and_prefix_safely() {
         {
-            // A download cut short can end anywhere: inside the chunk header,
-            // inside `fmt `, or mid-sample. None of those may read past the end.
+            // A download cut short can end anywhere: inside a chunk header or
+            // mid-sample. None of those may read past the end.
             let wav = wav_16(&[0.5, -0.5, 0.25, -0.25], 8000);
             for n in 0..wav.len() {
                 let _ = peaks_from_wav_bytes(&wav[..n], 4);
@@ -488,9 +446,7 @@ mod tests {
             assert!(peaks_from_wav_bytes(&[], 32).is_none());
         }
         {
-            // Two different signals must give two different envelopes. A
-            // synthesized fallback would give the same picture for both — that is
-            // exactly what makes it indistinguishable from real data and wrong.
+            // Two signals must give two envelopes.
             let sr = 8000;
             let rising: Vec<f32> = (0..sr)
                 .map(|i| (i as f32 / sr as f32) * (i as f32 * 0.2).sin())
@@ -506,7 +462,6 @@ mod tests {
 
     #[test]
     fn waveform_cache_settles_real_missing_and_unavailable_sources() {
-        // Case `cache_warm_blocking_reads_a_real_file`.
         {
             let dir = std::env::temp_dir();
             let f = dir.join(format!("tilo-ve-wave-{}.wav", std::process::id()));
@@ -549,8 +504,8 @@ mod tests {
             );
         }
         {
-            // Drive the real queue + worker, not a stub: a readable WAV must land
-            // as Ready and `has_pending` must fall back to false.
+            // The real queue and worker: a readable WAV must land as Ready and
+            // `has_pending` must fall back to false.
             let f = std::env::temp_dir().join(format!("tilo-ve-queue-{}.wav", std::process::id()));
             let samples: Vec<f32> = (0..6000).map(|i| 0.8 * (i as f32 * 0.05).sin()).collect();
             std::fs::write(&f, wav_16(&samples, 8000)).unwrap();
@@ -578,9 +533,7 @@ mod tests {
 
     #[test]
     fn a_source_with_no_readable_audio_settles_as_unavailable() {
-        // A real file that is not WAV and holds no decodable audio. With no
-        // decoder linked this is immediate; with one, the pipeline finds no
-        // audio stream. Either way the answer is absence, never a shape.
+        // A real file that is not WAV and holds no audio: absence, not a shape.
         let f = std::env::temp_dir().join(format!("tilo-ve-noaudio-{}.bin", std::process::id()));
         std::fs::write(&f, vec![0x5Au8; 4096]).unwrap();
         let mut cache = WaveformCache::new();
