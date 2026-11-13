@@ -17539,6 +17539,7 @@ name = "tilo-app-id"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "workspace-hack",
 ]
 
 [[package]]
