@@ -12,27 +12,17 @@ use vello::peniko::Color;
 
 use crate::highlight;
 
-/// The style line numbers and counters are set in: `Caption`, with tabular
-/// figures so columns of digits line up.
 pub fn number_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Caption).numeric()
 }
 
-/// Measured sizes every code pane shares, read from the theme and the
-/// renderer so they follow the text scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CodeMetrics {
-    /// One line of code: the `Code` line box, in whole pixels.
     pub row_h: f64,
-    /// Top offset that centres a code line in `row_h`.
     pub text_dy: f64,
-    /// Width of one monospace cell.
     pub cell_w: f64,
-    /// A column header band: one `Label` line between `s2` insets.
     pub header_h: f64,
-    /// Inset of code from the pane edge.
     pub pad: f64,
-    /// Gap between a gutter or marker and what follows it.
     pub gap: f64,
 }
 
@@ -72,7 +62,6 @@ impl CodeMetrics {
         }
     }
 
-    /// Width of a line-number gutter that holds `digits` figures.
     pub fn gutter_w(&self, tr: &mut TextRenderer, theme: &Theme, digits: usize) -> f64 {
         let sample = "0".repeat(digits.max(1));
         let (w, _) = tr.measure_style(&sample, None, &number_style(theme));
@@ -80,9 +69,6 @@ impl CodeMetrics {
     }
 }
 
-/// A column header: the file's name in `Label` and, after it, the revision in
-/// `Caption`, in the band `rect`. `rule` is the colour of the rule under it,
-/// the hairline of the ground when `None`.
 pub fn paint_header(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, rule: Option<Color>) {
     let colors = &ctx.theme.tokens.colors;
     let pad = f64::from(ctx.theme.tokens.spacing.s3);
@@ -140,8 +126,6 @@ pub fn paint_header(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, rule: Optio
     }
 }
 
-/// The opaque status wash of `tone` on the content ground; the change under
-/// review (`active`) takes the selected wash, which keeps the hue.
 pub fn washed(theme: &Theme, tone: Tone, active: bool) -> Color {
     let strength = if active {
         WashStrength::Selected
@@ -152,7 +136,6 @@ pub fn washed(theme: &Theme, tone: Tone, active: bool) -> Color {
     colors.wash_on(colors.surfaces.content, tone, strength).fill
 }
 
-/// A line's top-left, centred in a row of `m` that starts at `y`.
 pub fn line_origin(x: f64, y: f64, m: &CodeMetrics) -> Point {
     Point::new(x, y + m.text_dy)
 }

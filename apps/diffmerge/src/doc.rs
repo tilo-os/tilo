@@ -1,14 +1,7 @@
-//! The diff/merge session's record.
-//!
-//! What is open — the two files of a comparison, the three inputs of a merge
-//! — and the merge result everyone edits live in one record, so a
-//! collaborator, a reload and history see the same session. Opening inputs
-//! replaces them whole (they are written as atoms, never merged by
-//! character), so two people opening different files at once end with one of
-//! the two sets, never a mix. The merged result is a text two people type
-//! into character by character. `resolutions` records the side taken for
-//! each hunk and `written` the text a hunk was resolved with instead; opening
-//! a new merge clears both, since the old hunk indices no longer correspond.
+//! The session's record: the inputs of what is open and the merged result everyone edits,
+//! so a collaborator, a reload and history see the same session. Inputs are written as
+//! atoms, so two people opening different files end with one of the two sets. `resolutions`
+//! and `written` hold how each hunk was taken, and a new merge clears both.
 
 use std::collections::BTreeMap;
 
@@ -17,22 +10,18 @@ use ui::tilo_resource::{self, Atom, JsonSchema, Model};
 
 use crate::model::{DiffModel, MergeModel, Resolution};
 
-/// Which side a change hunk takes. Only the outcomes a person chooses, so a
-/// record can never hold the internal conflict or automatic states.
+/// Which side a change takes: only the outcomes a person chooses, never the internal
+/// conflict or automatic states.
 #[derive(Model, Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum HunkChoice {
-    /// Take our side (the left / "ours" column).
     #[default]
     Ours,
-    /// Take their side (the right / "theirs" column).
     Theirs,
-    /// Take both, ours then theirs.
     Both,
 }
 
 impl HunkChoice {
-    /// The [`Resolution`] this choice sets on a hunk.
     pub fn to_resolution(self) -> Resolution {
         match self {
             HunkChoice::Ours => Resolution::TookOurs,
@@ -42,7 +31,6 @@ impl HunkChoice {
     }
 }
 
-/// The two files of a two-way comparison.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Comparison {
     /// Left name
@@ -56,13 +44,10 @@ pub struct Comparison {
 }
 
 impl Comparison {
-    /// The comparison's line-aligned diff, shared with every reader of the
-    /// same two texts.
     pub fn model(&self) -> std::sync::Arc<DiffModel> {
         crate::model::comparison(&self.left.0, &self.right.0)
     }
 
-    /// `left ↔ right`, as the palette names the comparison.
     pub fn title(&self) -> String {
         if self.left_label.0.is_empty() && self.right_label.0.is_empty() {
             "Comparison".into()
@@ -72,7 +57,6 @@ impl Comparison {
     }
 }
 
-/// The three inputs of a three-way merge.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 pub struct MergeInputs {
     /// Base name
@@ -89,8 +73,6 @@ pub struct MergeInputs {
     pub theirs: Atom,
 }
 
-/// What a merge of `ours` and `theirs` is called: the file when both sides
-/// are the same file, else both names.
 pub fn merge_title(ours: &str, theirs: &str) -> String {
     use crate::i18n::{t, t_args, text};
     let (ours_name, theirs_name) = (
@@ -110,48 +92,34 @@ pub fn merge_title(ours: &str, theirs: &str) -> String {
 }
 
 impl MergeInputs {
-    /// The merge of the inputs, before any side is taken.
     pub fn model(&self) -> MergeModel {
         MergeModel::compute(&self.base.0, &self.ours.0, &self.theirs.0)
     }
 
-    /// `Merge · ours ↔ theirs`, as the palette and history name the merge.
     pub fn title(&self) -> String {
         merge_title(&self.ours_label.0, &self.theirs_label.0)
     }
 }
 
-/// The diff/merge session: what is open and the merged result.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Session {
     /// Comparison
-    ///
-    /// The open two-way comparison. Only opening files changes it.
     #[model(readonly)]
     pub comparison: Option<Comparison>,
     /// Merge
-    ///
-    /// The open three-way merge. Only opening a merge changes it.
     #[model(readonly)]
     pub merge: Option<MergeInputs>,
     /// Merged result
     pub merged: String,
     /// Sides taken
-    ///
-    /// The side taken for each change, by its hunk index. Only taking a side
-    /// changes it.
     #[model(readonly)]
     pub resolutions: BTreeMap<String, HunkChoice>,
     /// Texts written for changes
-    ///
-    /// The text a change was resolved with instead of a side, by its hunk
-    /// index. Only resolving a change with text changes it.
     #[model(readonly)]
     pub written: BTreeMap<String, String>,
 }
 
 impl Session {
-    /// The merge's hunks, each with the side or the text recorded for it.
     pub fn merge_model(&self) -> MergeModel {
         let mut model = self
             .merge
@@ -179,15 +147,13 @@ impl Session {
         model
     }
 
-    /// Whether the merged result is exactly what the recorded sides compose
-    /// in `model` ([`Self::merge_model`]). Once someone edits it by hand,
-    /// taking a side would overwrite the edit, so hunks are resolved in the
-    /// text from then on.
+    /// Whether the merged result is exactly what the recorded sides compose. Once someone
+    /// edits it by hand, taking a side would overwrite the edit, so hunks are resolved in
+    /// the text from then on.
     pub fn composed(&self, model: &MergeModel) -> bool {
         self.merge.is_some() && model.merged_text() == self.merged
     }
 
-    /// Every recorded `(hunk index, choice)` pair, in ascending hunk order.
     pub fn resolutions(&self) -> Vec<(usize, HunkChoice)> {
         let mut out: Vec<(usize, HunkChoice)> = self
             .resolutions
@@ -198,7 +164,6 @@ impl Session {
         out
     }
 
-    /// What the session is called: the merge, else the comparison.
     pub fn title(&self) -> String {
         self.merge
             .as_ref()
@@ -223,8 +188,6 @@ mod tests {
         }
     }
 
-    /// The alignment of two texts is computed once and shared; other texts
-    /// get their own.
     #[test]
     fn the_alignment_of_two_texts_is_shared_and_replacing_one_recomputes_it() {
         let first = Comparison {
@@ -243,8 +206,6 @@ mod tests {
         assert!(!std::sync::Arc::ptr_eq(&model, &changed.model()));
     }
 
-    /// Recorded sides apply to the merge's changes, and the session says
-    /// whether the merged result is still what they compose.
     #[test]
     fn resolutions_apply_to_the_merge_and_composed_follows_the_result() {
         let mut session = Session {

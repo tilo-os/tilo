@@ -1,9 +1,4 @@
 //! Comparing two folders.
-//!
-//! A folder comparison is a way into comparisons, like the file chooser: the
-//! listing of what differs lives here, on this device, and every comparison
-//! it opens is in the document. The walk runs off the UI thread, so a folder
-//! that turns out to be a whole disk cannot freeze the window.
 
 use std::rc::Rc;
 
@@ -17,8 +12,6 @@ use crate::app::DiffMergeApp;
 use crate::doc::Session;
 use crate::i18n::{t, t_args, text};
 
-/// Compare two folders: with both paths, read them now; with none, ask for
-/// the left one and then the right one through the host's chooser.
 pub(super) fn answer_compare_folders(
     store: &Shared,
     cx: &mut EffectCx<Session>,
@@ -32,8 +25,6 @@ pub(super) fn answer_compare_folders(
     }
 }
 
-/// Ask for one of the two folders, the left one unless `left` holds it
-/// already, and then for the other.
 fn choose_folder(
     store: &Shared,
     cx: &mut EffectCx<Session>,
@@ -63,7 +54,6 @@ fn choose_folder(
     })
 }
 
-/// Read both trees off the UI thread and show the listing.
 fn read_folders(
     store: &Shared,
     cx: &mut EffectCx<Session>,
@@ -77,7 +67,6 @@ fn read_folders(
     )
 }
 
-/// The folder walk finished.
 fn finish_folders(
     store: &Shared,
     result: Result<crate::folder::FolderComparison, String>,
@@ -98,7 +87,6 @@ fn finish_folders(
 }
 
 impl DiffMergeApp {
-    /// Show the listing of two folders that were compared.
     pub(super) fn show_folders(&mut self, comparison: crate::folder::FolderComparison) {
         self.folders = Some(comparison);
         self.showing_folders = true;
@@ -109,8 +97,6 @@ impl DiffMergeApp {
         self.publish_header();
     }
 
-    /// Choose the folder entry under review, opening those two files as a
-    /// comparison.
     pub(super) fn open_folder_entry(&mut self, index: usize) {
         let Some(comparison) = &self.folders else {
             return;
@@ -140,7 +126,6 @@ impl DiffMergeApp {
         }
     }
 
-    /// Scroll the listing so the chosen row shows whole.
     pub(super) fn reveal_folder_row(&mut self, index: usize, row_h: f64) {
         #[expect(
             clippy::cast_precision_loss,
@@ -158,7 +143,6 @@ impl DiffMergeApp {
         self.folder_scroll = self.folder_scroll.clamp(0.0, max);
     }
 
-    /// Move the folder listing's selection by `step` entries.
     pub(super) fn step_folder(&mut self, step: isize) {
         let Some(comparison) = &self.folders else {
             return;

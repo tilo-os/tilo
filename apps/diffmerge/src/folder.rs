@@ -1,15 +1,4 @@
 //! Comparing two folder trees.
-//!
-//! A folder comparison is a listing, not a document: it names the files that
-//! differ between two roots, and each of them opens as an ordinary
-//! comparison. The walk is bounded (depth and entry count) so a folder that
-//! is really a whole disk cannot hang the tool, and a walk that stopped at
-//! its bound says so instead of pretending the listing is complete.
-//!
-//! Files are compared by content: two files of the same length are read (up
-//! to `MAX_COMPARE_BYTES`) and compared byte for byte; larger files are
-//! compared by length alone, and the listing says which files that applies
-//! to through [`FolderEntry::by_length`].
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -17,28 +6,21 @@ use std::path::Path;
 use tilo_files::{Kind, VPath};
 use ui::tilo_resource::AbsolutePath;
 
-/// Most differing entries a comparison keeps.
 pub const MAX_ENTRIES: usize = 5_000;
-/// Most files one tree's walk visits before it stops.
 const MAX_VISITED: usize = 50_000;
-/// Deepest folder the walk enters.
 const MAX_DEPTH: usize = 24;
-/// Files up to this size are compared byte for byte; larger ones by length.
 const MAX_COMPARE_BYTES: u64 = 8 * 1024 * 1024;
 
-/// How a file differs between the two roots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FolderKind {
     /// Only on the left (the other side has no such file).
     Added,
     /// Only on the right.
     Removed,
-    /// On both sides, with different contents.
     Modified,
 }
 
 impl FolderKind {
-    /// The short word the listing shows for this kind.
     pub fn tag(self) -> &'static str {
         match self {
             Self::Added => "added",
@@ -48,21 +30,17 @@ impl FolderKind {
     }
 }
 
-/// One file that differs, by its path relative to its root.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FolderEntry {
     pub path: String,
     pub kind: FolderKind,
-    /// Bytes on the left; zero when the left has no such file.
     pub left_len: u64,
-    /// Bytes on the right; zero when the right has no such file.
     pub right_len: u64,
     /// The files were too large to compare by content, so only their
     /// lengths were compared.
     pub by_length: bool,
 }
 
-/// What two folders hold that the other does not, as a listing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FolderComparison {
     pub left_label: String,
@@ -70,12 +48,10 @@ pub struct FolderComparison {
     pub right_label: String,
     pub right_root: String,
     pub entries: Vec<FolderEntry>,
-    /// The walk stopped at its bound: more files exist than were compared.
     pub truncated: bool,
 }
 
 impl FolderComparison {
-    /// How many entries of each kind the listing holds.
     pub fn counts(&self) -> (usize, usize, usize) {
         let count = |kind: FolderKind| self.entries.iter().filter(|e| e.kind == kind).count();
         (
@@ -85,9 +61,6 @@ impl FolderComparison {
         )
     }
 
-    /// The two files `entry` names, as paths on this device. The roots
-    /// are the absolute folders [`compare`] took, so a path under one is
-    /// absolute too.
     pub fn paths(&self, entry: &FolderEntry) -> (Option<AbsolutePath>, Option<AbsolutePath>) {
         let left = (entry.kind != FolderKind::Removed)
             .then(|| join(&self.left_root, &entry.path))
@@ -103,7 +76,6 @@ fn join(root: &str, relative: &str) -> Option<AbsolutePath> {
     AbsolutePath::new(Path::new(root).join(relative)).ok()
 }
 
-/// The name a root is listed under: its own folder name.
 pub fn root_label(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
@@ -111,7 +83,6 @@ pub fn root_label(path: &Path) -> String {
     )
 }
 
-/// Compare the trees under `left` and `right`.
 pub fn compare(left: &AbsolutePath, right: &AbsolutePath) -> Result<FolderComparison, String> {
     let (left_tree, left_truncated) = walk(left)?;
     let (right_tree, right_truncated) = walk(right)?;
@@ -186,8 +157,6 @@ pub fn differences(
     entries
 }
 
-/// Every file under `root`, by relative path and length, and whether the
-/// walk stopped at its bound.
 fn walk(root: &Path) -> Result<(BTreeMap<String, u64>, bool), String> {
     let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", root.display());
     let dir = tilo_files::Dir::open(tilo_files::Location::Native(root.to_path_buf()))
@@ -235,14 +204,11 @@ fn walk(root: &Path) -> Result<(BTreeMap<String, u64>, bool), String> {
     Ok((files, truncated))
 }
 
-/// One file's bytes, read through the file API the rest of the app uses, so
-/// this works wherever the app does.
 fn read(path: &Path) -> Option<Vec<u8>> {
     let (directory, name) = tilo_files::file_at(path).ok()?;
     tilo_files::blocking::read(&directory, &name).ok()
 }
 
-/// Whether two files on disk hold the same bytes.
 fn files_equal(left: &Path, right: &Path) -> bool {
     match (read(left), read(right)) {
         (Some(left), Some(right)) => left == right,
@@ -297,8 +263,6 @@ mod tests {
         assert!(differences(&left, &right, |_| true).is_empty());
     }
 
-    /// Two real folders: a rewritten file, an added one and a deleted one,
-    /// each named by its relative path.
     #[test]
     fn comparing_two_folders_names_the_files_that_differ() {
         let base = std::env::temp_dir().join(format!(
@@ -348,7 +312,6 @@ mod tests {
         std::fs::remove_dir_all(&base).unwrap();
     }
 
-    /// A root that is not there is a failure, not an empty listing.
     #[test]
     fn a_missing_folder_fails() {
         let missing =

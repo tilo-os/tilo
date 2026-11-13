@@ -2,7 +2,6 @@
 //! three-way conflict to resolve, and the folder comparison a screenshot
 //! scenario shows.
 
-/// A named text input with a short display label (shown in headers / pickers).
 #[derive(Clone, Debug)]
 pub struct Sample {
     pub label: String,
@@ -18,15 +17,12 @@ impl Sample {
     }
 }
 
-/// The two-way diff demo: an old and a new revision of a small Rust file with
-/// additions, removals, and modified lines so every row kind is represented.
 pub fn diff_pair() -> (Sample, Sample) {
     let left = Sample::new(
         "rate_limiter.rs (HEAD)",
         "\
 use ui::time::Instant;
 
-/// Token-bucket rate limiter.
 pub struct RateLimiter {
     capacity: u32,
     tokens: u32,
@@ -61,7 +57,6 @@ impl RateLimiter {
         "\
 use ui::time::{Duration, Instant};
 
-/// Token-bucket rate limiter with time-based refill.
 pub struct RateLimiter {
     capacity: u32,
     tokens: f64,
@@ -102,9 +97,6 @@ impl RateLimiter {
     (left, right)
 }
 
-/// The three-way merge demo: a common base config and two divergent edits that
-/// genuinely conflict on the `timeout` line and the feature list, while other
-/// regions auto-resolve cleanly.
 pub fn merge_triple() -> (Sample, Sample, Sample) {
     let base = Sample::new(
         "config.toml (base)",
@@ -162,8 +154,6 @@ format = \"json\"
     (base, ours, theirs)
 }
 
-/// A folder comparison for the screenshots: what a working tree looks like
-/// after a morning's edits, in the shape the walk reports.
 #[cfg(feature = "samples")]
 pub fn folder_comparison() -> crate::folder::FolderComparison {
     use crate::folder::{FolderComparison, FolderEntry, FolderKind};

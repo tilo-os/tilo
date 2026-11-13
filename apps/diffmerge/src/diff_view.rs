@@ -1,11 +1,6 @@
-//! Side-by-side two-way diff view.
-//!
-//! Renders [`DiffModel`] as two aligned columns with line-number gutters,
-//! per-row add/remove/modify washes, syntax highlighting, a change minimap on
-//! the right edge, and prev/next-change navigation. Draws everything directly
-//! into the Vello scene (no nested taffy children) and owns its own vertical
-//! scroll offset. The content ground, the headers' rule and every size come
-//! from the theme; nothing here fills the pane.
+//! The side-by-side two-way diff: two aligned columns with line gutters, per-row change
+//! washes, syntax highlighting, a change minimap and prev/next navigation. It draws into
+//! the scene itself and owns its scroll offset.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,22 +33,12 @@ use crate::scroll::{HScroll, wheel_pixels};
 
 const EAGER_SYNTAX_BYTES: usize = 256 * 1024;
 
-/// Row metrics measured from the renderer the panel paints with. Refreshed at
-/// the top of every draw and read by scrolling, block rects (accessibility
-/// bounds), the compact source switcher and the paint, so all of them follow
-/// the same line height.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Metrics {
     code: CodeMetrics,
-    /// Line-number gutter width.
     gutter_w: f64,
-    /// The change-marker slot between the gutter and the code: the marker's
-    /// glyph with a gap on each side.
     marker_w: f64,
-    /// Width of the overview strip, the width of a scroll bar's gutter.
     strip_w: f64,
-    /// Below this width two code columns cease to be readable and the pane
-    /// shows one source at a time.
     breakpoint: f64,
 }
 
@@ -66,7 +51,6 @@ impl Metrics {
         }
     }
 
-    /// What is known before the first frame measures anything.
     fn unmeasured(theme: &Theme) -> Self {
         let code = CodeMetrics::unmeasured(theme);
         Self {
@@ -85,18 +69,15 @@ impl Metrics {
         }
     }
 
-    /// Where code starts in a column that begins at `x0`.
     fn code_x(&self, x0: f64) -> f64 {
         x0 + self.gutter_w + self.marker_w
     }
 
-    /// Where a change marker starts in a column that begins at `x0`.
     fn marker_x(&self, x0: f64) -> f64 {
         x0 + self.gutter_w + self.code.gap
     }
 }
 
-/// One of the two sides of a comparison.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Side {
     Left,
@@ -104,7 +85,6 @@ enum Side {
 }
 
 impl Side {
-    /// The line this side holds on `row`, if it holds one.
     fn text(self, row: &AlignedRow) -> Option<&str> {
         match self {
             Self::Left => row.left.as_deref(),
@@ -112,7 +92,6 @@ impl Side {
         }
     }
 
-    /// Its 1-based line number on `row`.
     fn number(self, row: &AlignedRow) -> Option<usize> {
         match self {
             Self::Left => row.left_no,
@@ -174,9 +153,8 @@ fn gap_label(side: Side, gap: SourceGap) -> String {
     )
 }
 
-/// Build a single-leaf taffy node. `new_leaf` only fails when the tree itself
-/// is corrupted, which cannot happen for a tree we just built in this same
-/// function — mirrors the established `TaffyTreeExt` convention used by `ui`.
+/// Build a single-leaf taffy node; `new_leaf` cannot fail for a tree built in this
+/// function.
 #[allow(
     clippy::unwrap_used,
     reason = "new_leaf cannot fail for a freshly-built tree; see doc comment"
@@ -185,13 +163,11 @@ fn leaf_node(taffy: &mut TaffyTree<()>, style: Style) -> NodeId {
     taffy.new_leaf(style).unwrap()
 }
 
-/// Side-by-side diff panel.
 pub struct DiffView {
     model: Arc<DiffModel>,
     left_label: String,
     right_label: String,
     gaps: [Vec<SourceGap>; 2],
-    /// Syntax spans per source line of each side, tokenized as a whole file.
     left_spans: Vec<Arc<[Span]>>,
     right_spans: Vec<Arc<[Span]>>,
     left_highlight: Option<highlight::BackgroundDocument>,
@@ -200,23 +176,16 @@ pub struct DiffView {
     rect: Rect,
     focused: bool,
     scroll_y: f64,
-    /// Index into `model.blocks` of the most recently navigated-to change.
     active_block: Option<usize>,
     dirty: bool,
     compact_show_right: bool,
     compact_source_hits: [Rect; 2],
     cursor: Point,
     modifiers: ModifiersState,
-    /// The overview strip's scroll bar: the thumb is the visible window.
     strip_bar: Scrollbar,
-    /// Where the strip's track was drawn last.
     strip_track: Rect,
-    /// Horizontal scroll shared by the code columns.
     across: HScroll,
-    /// The widest source line in characters, which sets how far code scrolls.
     widest: usize,
-    /// Last measured row metrics (see [`Metrics`]); an estimate until the
-    /// first draw.
     metrics: Metrics,
 }
 
@@ -255,9 +224,6 @@ impl DiffView {
         }
     }
 
-    /// Place the panel at `rect` directly (the parent app reserves the status
-    /// bar below it and re-places the view when that band's measured height
-    /// changes, so paint and layout agree within one frame).
     pub(crate) fn place(&mut self, rect: Rect) {
         if rect != self.rect {
             self.rect = rect;
@@ -265,7 +231,6 @@ impl DiffView {
         }
     }
 
-    /// `(row_h, header_h, gutter_w)` from the last draw.
     #[cfg(test)]
     pub(crate) fn metrics_for_test(&self) -> (f64, f64, f64) {
         (
@@ -283,8 +248,6 @@ impl DiffView {
         ];
         self.left_label = left_label.to_string();
         self.right_label = right_label.to_string();
-        // Small sources finish immediately; large ones paint the complete
-        // diff immediately and receive continuous grammar results in batches.
         self.left_highlight = None;
         self.right_highlight = None;
         self.left_spans.clear();
@@ -374,8 +337,6 @@ impl DiffView {
         self.compact_show_right
     }
 
-    /// Jump the active change to the next/previous block and scroll it into
-    /// view. Returns true if navigation occurred.
     pub fn navigate(&mut self, forward: bool) -> bool {
         if self.model.blocks.is_empty() {
             return false;
@@ -404,7 +365,6 @@ impl DiffView {
         let row_h = self.metrics.code.row_h;
         let block_top = b.first_row as f64 * row_h;
         let viewport_h = self.body_height();
-        // Centre the block in the viewport where possible.
         let target = block_top - viewport_h / 2.0 + row_h;
         self.scroll_y = target.max(0.0).min(self.max_scroll());
     }
@@ -433,10 +393,6 @@ impl DiffView {
         self.rect.width() < self.metrics.breakpoint
     }
 
-    /// The fill of a row on one side, `None` for an unchanged row. `present`
-    /// says the side holds a line; an absent one is the filler that keeps the
-    /// columns aligned. The change under review (`active`) takes a stronger
-    /// wash of its own hue; where it has no hue it takes the selection lift.
     fn row_fill(
         kind: RowKind,
         present: bool,
@@ -469,7 +425,6 @@ impl DiffView {
         }
     }
 
-    /// The marker a row shows beside its code on one side.
     fn row_marker(
         kind: RowKind,
         present: bool,
@@ -522,7 +477,6 @@ impl Widget for DiffView {
         // all follow the renderer's actual line height.
         let mut measured = Metrics::measure(tr, theme);
         if self.rect.width() < measured.breakpoint {
-            // Source choices and file metadata occupy separate rows.
             let caption_h = f64::from(
                 tr.measure_style("Ag", None, &theme.text(TextRole::Caption))
                     .1,
@@ -552,13 +506,11 @@ impl Widget for DiffView {
         let m = self.metrics;
         let (left_col, right_col) = self.column_rects();
 
-        // --- Column headers ---
         for (col, label) in [(left_col, &self.left_label), (right_col, &self.right_label)] {
             let band = Rect::new(col.x0, col.y0, col.x1, col.y0 + m.code.header_h);
             pane::paint_header(&mut ctx, band, label, None);
         }
 
-        // Divider between columns.
         let edge = ui::surface::edge_on(theme.tokens.colors.surfaces.content);
         ctx.fill_rect(
             Rect::new(
@@ -570,13 +522,11 @@ impl Widget for DiffView {
             edge,
         );
 
-        // --- Body (clipped + scrolled) ---
         self.draw_column(&mut ctx, left_col, Side::Left);
         self.draw_column(&mut ctx, right_col, Side::Right);
         let tracks = [left_col, right_col].map(|col| HScroll::track_in(self.code_view(col), theme));
         self.across.draw(&mut ctx, &tracks);
 
-        // --- Overview strip on the right edge ---
         self.draw_strip(&mut ctx);
         self.dirty = false;
     }
@@ -599,8 +549,6 @@ impl Widget for DiffView {
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) =
                     wheel_pixels(*delta, self.metrics.code.row_h, self.modifiers.shift_key());
-                // The host routes the wheel to the focused subtree, so the
-                // pane scrolls whenever it sees one.
                 self.scroll_by(dy);
                 if self.across.scroll_by(dx) {
                     self.dirty = true;
@@ -725,9 +673,6 @@ impl Widget for DiffView {
 }
 
 impl DiffView {
-    /// The controls of the last draw as accessibility nodes: the source switch
-    /// of the narrow layout and every change block. The root publishes them,
-    /// so they are exposed once.
     pub(crate) fn access_controls(&self) -> Vec<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -876,7 +821,6 @@ impl DiffView {
         }
     }
 
-    /// Column rects for the two source panes, excluding the overview strip.
     fn column_rects(&self) -> (Rect, Rect) {
         let r = self.rect;
         let content_right = r.x1 - self.metrics.strip_w;
@@ -887,8 +831,6 @@ impl DiffView {
         )
     }
 
-    /// Where the code of the column `col` shows: right of its gutter and
-    /// markers, below its header.
     fn code_view(&self, col: Rect) -> Rect {
         Rect::new(
             self.metrics.code_x(col.x0),
@@ -898,8 +840,6 @@ impl DiffView {
         )
     }
 
-    /// Tell the horizontal scroll how wide the code is and how much of it
-    /// shows.
     fn fit_across(&mut self) {
         let m = self.metrics;
         let col_w = if self.is_compact() {
@@ -925,8 +865,6 @@ impl DiffView {
         )
     }
 
-    /// The narrow layout: one source at a time, chosen by a segmented switch
-    /// in the header band.
     fn draw_compact(&mut self, ctx: &mut PaintCtx<'_>) {
         let theme = ctx.theme;
         let r = self.rect;
@@ -1056,8 +994,6 @@ impl DiffView {
                 Self::row_marker(row.kind, present, side, theme),
             );
         }
-        // Code scrolls across under the gutter's edge, so it clips to its own
-        // view.
         let view = self.code_view(col);
         ctx.scene.push_layer(
             Fill::NonZero,
@@ -1085,8 +1021,6 @@ impl DiffView {
         ctx.scene.pop_layer();
     }
 
-    /// A row's line number and change marker, in the column that starts at
-    /// `x0`.
     fn draw_gutter(
         ctx: &mut PaintCtx<'_>,
         m: &Metrics,
@@ -1144,8 +1078,6 @@ impl DiffView {
         self.scroll_by(offset - self.scroll_y);
     }
 
-    /// The strip along the trailing edge: the scroll bar of the rows, over a
-    /// map of where the changes are. The thumb is the window the columns show.
     fn draw_strip(&mut self, ctx: &mut PaintCtx<'_>) {
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
@@ -1171,7 +1103,6 @@ impl DiffView {
             );
         }
 
-        // Where each change block sits in the whole comparison.
         let total = self.model.rows.len().max(1) as f64;
         let tick = f64::from(theme.tokens.spacing.s1) / 2.0;
         for b in &self.model.blocks {
@@ -1189,7 +1120,6 @@ impl DiffView {
     }
 }
 
-/// The spans of 1-based source line `number` on one side.
 fn line_spans(spans: &[Arc<[Span]>], number: Option<usize>) -> &[Span] {
     number
         .and_then(|number| number.checked_sub(1))

@@ -1,125 +1,93 @@
-//! Diff & Merge's effects and the pure helpers its verbs and places use.
-//!
-//! Every change to the session is a verb or a field edit of
-//! [`crate::doc::Session`] ([`crate::resource`]). Reading files from disk or a
-//! file chooser is an effect ([`DiffmergeEffect`]) whose result opens a
-//! comparison through a verb. Scrolling, the active hunk and the mode shown
-//! are view state; the effects that move them (also [`DiffmergeEffect`])
-//! change nothing in the record.
+//! Diff & Merge's effects and the pure helpers its verbs and places use. Every change to
+//! the session is a verb or a field edit of [`crate::doc::Session`]; reading files is an
+//! effect whose result opens a comparison through a verb. Scrolling, the active hunk and
+//! the mode shown are view state.
 
 use ui::prelude::Effect;
-// The effect derive names its runtime crate by this path.
 use ui::tilo_resource;
 
 use crate::doc::HunkChoice;
 use crate::model::{BlockKind, ChangeBlock, DiffModel, MergeHunk, MergeModel, Resolution};
 
-/// Keep global search/contextual expansion bounded even for enormous diffs.
 pub const CONTEXTUAL_CHILD_LIMIT: usize = 64;
 
-/// Bringing inputs in from outside the document, and moving around what is
-/// open (no document delta).
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "diffmerge.effects")]
 pub enum DiffmergeEffect {
-    /// Open files
     #[effect(attended, job, cancellable)]
+    /// Open files
     OpenFiles {
         #[param("absolute left file path (omit both paths to choose the files)")]
         left: Option<tilo_resource::AbsolutePath>,
         #[param("absolute right file path")]
         right: Option<tilo_resource::AbsolutePath>,
     },
-    /// Open one file against nothing
-    ///
-    /// A file only one folder of a comparison has: shown against an empty
-    /// side, which reads as the whole file being added or removed.
     #[effect(attended, job, cancellable)]
+    /// Open one file against nothing
     OpenOne {
         #[param("absolute path of the file to show")]
         path: tilo_resource::AbsolutePath,
         #[param("which side it takes (left or right)")]
         side: String,
     },
-    /// Save merged result
-    ///
-    /// Writes the merged result where the person last saved it, asking for a
-    /// place the first time; `path` names one instead. A merge that cannot
-    /// be handed back is a merge that has not been done, so this is the verb
-    /// the tool exists for.
     #[effect(attended, job, cancellable)]
+    /// Save merged result
     SaveMerged {
         #[param(
             "absolute path to write the merged result to (omit to use the last place, or choose one)"
         )]
         path: Option<tilo_resource::AbsolutePath>,
     },
+    #[effect(attended, job, cancellable)]
     /// Save merged result as…
-    ///
-    /// Always asks for a place, even when the merged result was saved before.
-    #[effect(attended, job, cancellable)]
     SaveMergedAs,
-    /// Compare folders
-    ///
-    /// Lists the files that differ between two folders; each one opens as an
-    /// ordinary comparison. With no paths, both folders are chosen through
-    /// the host's chooser.
     #[effect(attended, job, cancellable)]
+    /// Compare folders
     CompareFolders {
         #[param("absolute left folder path (omit both paths to choose the folders)")]
         left: Option<tilo_resource::AbsolutePath>,
         #[param("absolute right folder path")]
         right: Option<tilo_resource::AbsolutePath>,
     },
-    /// Load sample
     #[effect(own_device)]
+    /// Load sample
     LoadSample,
+    #[effect(view, idempotent)]
     /// Show two-way diff.
-    #[effect(view, idempotent)]
     ShowDiff,
-    /// Show three-way merge.
     #[effect(view, idempotent)]
+    /// Show three-way merge.
     ShowMerge,
+    #[effect(view)]
     /// Previous change.
-    #[effect(view)]
     PreviousChange,
-    /// Next change.
     #[effect(view)]
+    /// Next change.
     NextChange,
-    /// Show change.
     #[effect(view, row)]
+    /// Show change.
     Show {
         #[param("The change's index")]
         block: u64,
-        /// Snapshot fingerprint of the exact aligned rows this address named.
-        /// The index is only a fast lookup hint; this prevents a stale palette
-        /// result from selecting a newly recomputed, different block.
+        /// Fingerprint of the exact aligned rows this address named: the index is only a
+        /// lookup hint, so a stale palette result never selects a recomputed block.
         #[param("The change's fingerprint")]
         fingerprint: String,
     },
 }
 
-/// Compose the merged output with `hunk`'s contribution forced to `choice`,
-/// every other hunk keeping its current resolution.
 pub fn compose_choice(model: &MergeModel, hunk: usize, choice: HunkChoice) -> String {
     model.merged_text_with(hunk, choice.to_resolution(), &[])
 }
 
-/// Compose the merged output with `hunk` replaced by the user's typed `text`,
-/// every other hunk keeping its current resolution. Backs the per-hunk
-/// "resolve with custom text" affordance.
 pub fn compose_custom(model: &MergeModel, hunk: usize, text: &str) -> String {
     let lines: Vec<String> = text.lines().map(str::to_owned).collect();
     model.merged_text_with(hunk, Resolution::Written, &lines)
 }
 
-/// Stable digest of the exact aligned rows addressed by a change block.
-///
-/// This is deliberately derived from semantic row content, not its first/last
-/// visual line number: recomputing after a source edit can shift an unrelated
-/// block into the same index and range. The operation still carries its index
-/// as an efficient lookup hint, but the receiver must compare this digest
-/// before navigating.
+/// Stable digest of the aligned rows a change block addresses, from their content rather
+/// than their line numbers: an edit can shift another block into the same index. The index
+/// stays a lookup hint, and the receiver must compare this digest before navigating.
 pub fn diff_block_fingerprint(model: &DiffModel, index: usize) -> Option<String> {
     let block = model.blocks.get(index)?;
     let mut hasher = blake3::Hasher::new();
@@ -166,7 +134,6 @@ pub(crate) fn diff_block_resource_id(
     format!("diffmerge.diff-block:{kind}:{fingerprint}:{occurrence}")
 }
 
-/// A short one-line preview of a hunk for the palette label.
 pub(crate) fn hunk_preview(h: &MergeHunk) -> String {
     let first = h
         .ours
@@ -183,14 +150,12 @@ pub(crate) fn hunk_preview(h: &MergeHunk) -> String {
     t
 }
 
-/// Content-derived identity for a merge hunk. The model can be recomputed or
-/// reordered without making an old address point at a different conflict.
-/// The occurrence number only distinguishes byte-equal hunks, which are
-/// semantically interchangeable until one changes.
+/// Content-derived identity for a merge hunk, so an old address never points at a different
+/// conflict. The occurrence number tells byte-equal hunks apart.
 pub(crate) fn hunk_resource_id(h: &MergeHunk, occurrence: usize) -> String {
     let mut hasher = fnv::FnvHasher::default();
     for (section, lines) in [&h.base, &h.ours, &h.theirs].into_iter().enumerate() {
-        // Separate base/ours/theirs as well as individual lines: otherwise
+        // Separate base, ours and theirs as well as individual lines: otherwise
         // `base=[a], ours=[b]` would hash like `base=[a,b], ours=[]`.
         std::hash::Hasher::write_u8(&mut hasher, u8::try_from(section).unwrap_or(0));
         for line in lines {
@@ -206,7 +171,6 @@ pub(crate) fn hunk_resource_id(h: &MergeHunk, occurrence: usize) -> String {
 mod tests {
     use super::*;
 
-    /// A change block's address follows its content, never only its index.
     #[test]
     fn a_change_blocks_fingerprint_follows_its_content() {
         let first = DiffModel::compute("unchanged\nold\n", "unchanged\nnew\n");
@@ -218,8 +182,6 @@ mod tests {
         );
     }
 
-    /// A change's id is derived from its content; byte-equal changes are told
-    /// apart by their occurrence.
     #[test]
     fn a_changes_id_is_its_content_and_occurrence() {
         let model = MergeModel::compute("a\nb\nc\n", "a\nOURS\nc\n", "a\nTHEIRS\nc\n");

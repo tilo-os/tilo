@@ -1,12 +1,7 @@
-//! The session's verbs, the places derived from it, and the app.
-//!
-//! Typing in the merged result is the built-in field edit of its path
-//! (`Session::paths().merged.splice(..)`); opening inputs and taking a side
-//! for a change are verbs. The merge's changes and the comparison's change
-//! blocks are derived from the session and published as places that offer
-//! the verbs (or the view) that act on them. The merge is recomputed inside a
-//! verb from the inputs the record holds, a pure function of them, so every
-//! peer composes the same result.
+//! The session's verbs, the places derived from it, and the app. Typing in the merged
+//! result is the field edit at its path; opening inputs and taking a side are verbs. A
+//! merge is recomputed inside a verb from the record's inputs, so every peer composes the
+//! same result.
 
 use crate::chrome::Chrome;
 use std::rc::Rc;
@@ -26,13 +21,8 @@ use crate::doc::{Comparison, HunkChoice, MergeInputs, Session};
 use crate::model::{BlockKind, MergeModel};
 
 impl Session {
-    /// What the record holds: the inputs compared, which side each change takes, and the merged
-    /// result.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: the inputs compared, which side each change takes, and the
+    /// merged result.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -65,8 +55,6 @@ impl Session {
     }
 
     /// Merge three texts.
-    ///
-    /// The merged result starts with no side taken, and no side is recorded.
     #[action]
     pub fn open_merge(
         &mut self,
@@ -118,8 +106,6 @@ impl Session {
     ) -> Result<(), Refusal> {
         let (model, index) = self.change(hunk)?;
         self.merged = compose_custom(&model, index, &text);
-        // Recorded, so the result is still what the record composes and the
-        // other changes can still take a side.
         self.resolutions.remove(&index.to_string());
         self.written.insert(index.to_string(), text);
         Ok(())
@@ -127,9 +113,6 @@ impl Session {
 }
 
 impl Session {
-    /// The merge and the index of its change `hunk`, refused when no merge
-    /// is open, the merge has no such change, or the merged result was edited
-    /// by hand (which a recomposition would overwrite).
     fn change(&self, hunk: u64) -> Result<(MergeModel, usize), Refusal> {
         if self.merge.is_none() {
             return Err(Refusal::new("no merge is open"));
@@ -150,7 +133,6 @@ impl Session {
         Ok((model, index))
     }
 
-    /// Record `choice` for change `hunk` and recompose the merged result.
     fn take(&mut self, hunk: u64, choice: HunkChoice) -> Result<(), Refusal> {
         let (model, index) = self.change(hunk)?;
         self.merged = compose_choice(&model, index, choice);
@@ -159,9 +141,6 @@ impl Session {
         Ok(())
     }
 
-    /// The places derived from the session: the merge's changes while sides
-    /// can still be taken, each offering its sides and a custom resolution,
-    /// and the open comparison with its change blocks, each shown on demand.
     fn places(&self) -> Vec<Derived<Self>> {
         let model = self.merge_model();
         let mut places = Vec::new();
@@ -174,9 +153,8 @@ impl Session {
         places
     }
 
-    /// Each change of `model` as a place, under an id derived from its
-    /// content so a recomputed merge never points an old address at a
-    /// different change.
+    /// Each change as a place, under an id derived from its content, so a recomputed merge
+    /// never points an old address at a different change.
     fn change_places(model: &MergeModel) -> Vec<Derived<Self>> {
         let mut places = Vec::new();
         let mut ordinal = 0usize;
@@ -214,8 +192,7 @@ impl Session {
         places
     }
 
-    /// The open comparison, with one place per change block (bounded) that
-    /// shows it.
+    /// The open comparison, one place per change block (bounded).
     fn comparison_place(comparison: &Comparison) -> Derived<Self> {
         let model = comparison.model();
         let mut place = Derived::new(comparison.title())
@@ -254,7 +231,6 @@ impl Session {
     }
 }
 
-/// The bundled sample comparison and merge, as the verbs that open them.
 pub fn sample_invocations() -> [Invoke<Session>; 2] {
     let (left, right) = crate::samples::diff_pair();
     let (base, ours, theirs) = crate::samples::merge_triple();
@@ -276,7 +252,6 @@ pub fn sample_invocations() -> [Invoke<Session>; 2] {
     ]
 }
 
-/// Framework app: the diff/merge widget over [`Session`].
 pub struct DiffmergeShell;
 
 impl ResourceApp for DiffmergeShell {
@@ -309,8 +284,6 @@ impl ResourceApp for DiffmergeShell {
                 .borrow_mut()
                 .ask(crate::app::Asked::Stage(scenario.map(str::to_owned)));
         });
-        // One column: the shell draws the header row that holds the
-        // comparison's controls.
         Box::new(
             NavShell::new()
                 .content_kind(ui::widget::ContentKind::Document)
@@ -327,8 +300,8 @@ impl ResourceApp for DiffmergeShell {
         &["empty", "diff", "merge", "folders", "error", "status"]
     }
 
-    /// Every scenario but the empty one shows the bundled samples; the
-    /// folder listing shows the sample tree comparison instead.
+    /// Every scenario but the empty one shows the bundled samples; the folder listing
+    /// shows the sample tree comparison instead.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Session>> {
         if name == Some("empty") {
             return Vec::new();

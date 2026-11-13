@@ -1,9 +1,4 @@
 //! The window's header controls and what they share with the comparison.
-//!
-//! The mode switch, change navigation and the file actions sit in the content
-//! column's header, which the shell draws. They are ordinary shared controls;
-//! each one queues a [`Command`] that the comparison drains on its next sync,
-//! and the comparison publishes the [`Header`] state the controls show.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -17,7 +12,6 @@ use ui::widget::{Button, ButtonRole, ControlSize, Element, ModelView};
 use crate::app::Mode;
 use crate::i18n::t;
 
-/// What a header control asks of the comparison.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Command {
     Mode(Mode),
@@ -25,41 +19,27 @@ pub(crate) enum Command {
     Next,
     Open,
     LoadSample,
-    /// Write the merged result where it was last saved, or ask for a place.
     SaveMerged,
-    /// Choose two folders and list what differs between them.
     CompareFolders,
-    /// Show the folder listing again after a paired comparison was opened.
     ShowFolders,
 }
 
-/// What the header controls show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Header {
     pub mode: Mode,
-    /// A comparison with changes is loaded, so there is somewhere to go.
     pub changes: bool,
     pub merge: MergeResult,
-    /// A folder comparison is open, so its listing can be shown again.
     pub folders: bool,
-    /// The window is too narrow for the controls' labels: they drop to short
-    /// labels and icons.
     pub compact: bool,
 }
 
-/// The merged result the Save control offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MergeResult {
-    /// No merge is open, so there is nothing to save.
     None,
-    /// The merged result holds something not yet written.
     Unsaved,
-    /// The merged result holds nothing that is not already written.
     Saved,
 }
 
-/// The state the header and the comparison share. Clones refer to the same
-/// state.
 #[derive(Clone)]
 pub(crate) struct Chrome {
     header: LocalState<Header>,
@@ -80,12 +60,10 @@ impl Chrome {
         }
     }
 
-    /// The next control request, oldest first.
     pub(crate) fn take(&self) -> Option<Command> {
         self.commands.borrow_mut().pop_front()
     }
 
-    /// Show `header` on the controls; nothing happens when it is unchanged.
     pub(crate) fn publish(&self, header: Header) {
         if self.header.get() != header {
             self.header.set(header);
@@ -181,16 +159,10 @@ impl Chrome {
                 } else {
                     "toolbar-sample"
                 });
-                // The relayed effect decides who may run it, so the button
-                // itself asks nothing.
                 Button::new("diffmerge.load-sample", &label)
                     .on_own_device_effect(self.request(command))
             }
             Command::SaveMerged => {
-                // The tool's reason to exist: hand the merged result back.
-                // It stays available once saved, writing to the same place
-                // again, so the label says whether anything is pending
-                // rather than disabling the control.
                 let label = if header.merge == MergeResult::Saved {
                     t(if header.compact {
                         "toolbar-saved-short"
