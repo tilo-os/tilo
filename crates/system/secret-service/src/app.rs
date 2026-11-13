@@ -265,201 +265,205 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_program_the_person_installed_is_a_local_process() {
-        let tree = tempfile::tempdir().unwrap();
-        let exe = tree.path().join("home/chat");
-        fs::create_dir_all(exe.parent().unwrap()).unwrap();
-        fs::write(&exe, b"").unwrap();
-        fake_process(tree.path(), 7, 1000, &exe, "0::/\n", None);
-        let id = identify_process(tree.path(), 7, 1000).unwrap();
-        assert_eq!(id.trust(), Trust::Local);
-        assert!(id.as_str().starts_with("local-process:"));
-    }
+    tilo_test_env::scenario! {
+        fn a_caller_is_identified_by_what_the_kernel_says_of_its_process;
 
-    #[test]
-    fn a_process_of_another_user_is_refused() {
-        let tree = tempfile::tempdir().unwrap();
-        fake_process(
-            tree.path(),
-            7,
-            1001,
-            Path::new("/usr/bin/true"),
-            "0::/\n",
-            None,
-        );
-        assert_eq!(
-            identify_process(tree.path(), 7, 1000),
-            Err(UnknownCaller::OtherUser)
-        );
-        assert_eq!(
-            identify_process(tree.path(), 8, 1000),
-            Err(UnknownCaller::Unreadable)
-        );
-    }
+        phase a_program_the_person_installed_is_a_local_process;
+        {
+            let tree = tempfile::tempdir().unwrap();
+            let exe = tree.path().join("home/chat");
+            fs::create_dir_all(exe.parent().unwrap()).unwrap();
+            fs::write(&exe, b"").unwrap();
+            fake_process(tree.path(), 7, 1000, &exe, "0::/\n", None);
+            let id = identify_process(tree.path(), 7, 1000).unwrap();
+            assert_eq!(id.trust(), Trust::Local);
+            assert!(id.as_str().starts_with("local-process:"));
+        }
 
-    #[test]
-    fn an_image_executable_is_a_binary_identity() {
-        let tree = tempfile::tempdir().unwrap();
-        fake_process(
-            tree.path(),
-            7,
-            1000,
-            Path::new("/usr/bin/true"),
-            "0::/\n",
-            None,
-        );
-        assert_eq!(
-            identify_process(tree.path(), 7, 1000).unwrap().as_str(),
-            "binary:/usr/bin/true"
-        );
-    }
+        phase a_process_of_another_user_is_refused;
+        {
+            let tree = tempfile::tempdir().unwrap();
+            fake_process(
+                tree.path(),
+                7,
+                1001,
+                Path::new("/usr/bin/true"),
+                "0::/\n",
+                None,
+            );
+            assert_eq!(
+                identify_process(tree.path(), 7, 1000),
+                Err(UnknownCaller::OtherUser)
+            );
+            assert_eq!(
+                identify_process(tree.path(), 8, 1000),
+                Err(UnknownCaller::Unreadable)
+            );
+        }
 
-    #[test]
-    fn a_dbus_proxy_cannot_stand_in_for_an_app() {
-        let tree = tempfile::tempdir().unwrap();
-        fake_process(
-            tree.path(),
-            7,
-            1000,
-            Path::new("/usr/bin/xdg-dbus-proxy"),
-            "0::/\n",
-            None,
-        );
-        assert_eq!(
-            identify_process(tree.path(), 7, 1000),
-            Err(UnknownCaller::Proxied)
-        );
-    }
+        phase an_image_executable_is_a_binary_identity;
+        {
+            let tree = tempfile::tempdir().unwrap();
+            fake_process(
+                tree.path(),
+                7,
+                1000,
+                Path::new("/usr/bin/true"),
+                "0::/\n",
+                None,
+            );
+            assert_eq!(
+                identify_process(tree.path(), 7, 1000).unwrap().as_str(),
+                "binary:/usr/bin/true"
+            );
+        }
 
-    #[test]
-    fn a_flatpak_needs_its_scope_and_its_info_to_agree() {
-        let tree = tempfile::tempdir().unwrap();
-        let cgroup = "0::/user.slice/app.slice/app-flatpak-org.example.Chat-4242.scope\n";
-        let info = "[Application]\nname=org.example.Chat\n";
-        fake_process(
-            tree.path(),
-            1,
-            1000,
-            Path::new("/app/bin/chat"),
-            cgroup,
-            Some(info),
-        );
-        assert_eq!(
-            identify_process(tree.path(), 1, 1000).unwrap().as_str(),
-            "flatpak:org.example.Chat"
-        );
-        let forged = "[Application]\nname=org.example.Bank\n";
-        fake_process(
-            tree.path(),
-            2,
-            1000,
-            Path::new("/app/bin/chat"),
-            cgroup,
-            Some(forged),
-        );
-        assert!(
-            identify_process(tree.path(), 2, 1000)
-                .unwrap()
-                .as_str()
-                .starts_with("local-process:")
-        );
-    }
+        phase a_dbus_proxy_cannot_stand_in_for_an_app;
+        {
+            let tree = tempfile::tempdir().unwrap();
+            fake_process(
+                tree.path(),
+                7,
+                1000,
+                Path::new("/usr/bin/xdg-dbus-proxy"),
+                "0::/\n",
+                None,
+            );
+            assert_eq!(
+                identify_process(tree.path(), 7, 1000),
+                Err(UnknownCaller::Proxied)
+            );
+        }
 
-    #[test]
-    fn a_proof_stands_in_only_for_a_link_the_kernel_refuses() {
-        let refused = || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
-        let gone = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
-        let shell = Path::new("/usr/bin/shell");
-        assert_eq!(executable(refused(), Some(shell)), Ok(shell.to_path_buf()));
-        // Non-dumpable and unproven: refused, as before.
-        assert_eq!(executable(refused(), None), Err(UnknownCaller::Unreadable));
-        // An exited process is never named by an earlier proof.
-        assert_eq!(
-            executable(gone(), Some(shell)),
-            Err(UnknownCaller::Unreadable)
-        );
-        // A readable link always wins over what the caller claimed.
-        assert_eq!(
-            executable(Ok(PathBuf::from("/home/me/chat")), Some(shell)),
-            Ok(PathBuf::from("/home/me/chat"))
-        );
-    }
+        phase a_flatpak_needs_its_scope_and_its_info_to_agree;
+        {
+            let tree = tempfile::tempdir().unwrap();
+            let cgroup = "0::/user.slice/app.slice/app-flatpak-org.example.Chat-4242.scope\n";
+            let info = "[Application]\nname=org.example.Chat\n";
+            fake_process(
+                tree.path(),
+                1,
+                1000,
+                Path::new("/app/bin/chat"),
+                cgroup,
+                Some(info),
+            );
+            assert_eq!(
+                identify_process(tree.path(), 1, 1000).unwrap().as_str(),
+                "flatpak:org.example.Chat"
+            );
+            let forged = "[Application]\nname=org.example.Bank\n";
+            fake_process(
+                tree.path(),
+                2,
+                1000,
+                Path::new("/app/bin/chat"),
+                cgroup,
+                Some(forged),
+            );
+            assert!(
+                identify_process(tree.path(), 2, 1000)
+                    .unwrap()
+                    .as_str()
+                    .starts_with("local-process:")
+            );
+        }
 
-    #[test]
-    fn a_proven_executable_is_classified_like_a_link() {
-        let tree = tempfile::tempdir().unwrap();
-        fake_process(
-            tree.path(),
-            7,
-            1000,
-            Path::new("/usr/bin/true"),
-            "0::/\n",
-            None,
-        );
-        let process = tree.path().join("7");
-        assert_eq!(
-            classify(&process, Path::new("/usr/bin/true"))
-                .unwrap()
-                .as_str(),
-            "binary:/usr/bin/true"
-        );
-        let home = tree.path().join("home/chat");
-        fs::create_dir_all(home.parent().unwrap()).unwrap();
-        fs::write(&home, b"").unwrap();
-        assert!(
-            classify(&process, &home)
-                .unwrap()
-                .as_str()
-                .starts_with("local-process:")
-        );
-        assert_eq!(
-            classify(&process, Path::new("/usr/bin/shell (deleted)")),
-            Err(UnknownCaller::Replaced)
-        );
-        assert_eq!(
-            classify(&process, Path::new("/usr/bin/xdg-dbus-proxy")),
-            Err(UnknownCaller::Proxied)
-        );
-        // A caller of another user is refused before any proof is looked at.
-        fake_process(
-            tree.path(),
-            8,
-            1001,
-            Path::new("/usr/bin/true"),
-            "0::/\n",
-            None,
-        );
-        assert_eq!(
-            identify_proven_process(tree.path(), 8, 1000, Some(Path::new("/usr/bin/true"))),
-            Err(UnknownCaller::OtherUser)
-        );
-        assert_eq!(
-            identify_proven_process(tree.path(), 7, 1000, Some(&home))
-                .unwrap()
-                .as_str(),
-            "binary:/usr/bin/true"
-        );
-    }
+        phase a_proof_stands_in_only_for_a_link_the_kernel_refuses;
+        {
+            let refused = || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            let gone = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+            let shell = Path::new("/usr/bin/shell");
+            assert_eq!(executable(refused(), Some(shell)), Ok(shell.to_path_buf()));
+            // Non-dumpable and unproven: refused, as before.
+            assert_eq!(executable(refused(), None), Err(UnknownCaller::Unreadable));
+            // An exited process is never named by an earlier proof.
+            assert_eq!(
+                executable(gone(), Some(shell)),
+                Err(UnknownCaller::Unreadable)
+            );
+            // A readable link always wins over what the caller claimed.
+            assert_eq!(
+                executable(Ok(PathBuf::from("/home/me/chat")), Some(shell)),
+                Ok(PathBuf::from("/home/me/chat"))
+            );
+        }
 
-    #[test]
-    fn interpreters_never_identify_a_program() {
-        assert!(is_interpreter("python3.14"));
-        assert!(is_interpreter("bash"));
-        assert!(!is_interpreter("chromium"));
-    }
+        phase a_proven_executable_is_classified_like_a_link;
+        {
+            let tree = tempfile::tempdir().unwrap();
+            fake_process(
+                tree.path(),
+                7,
+                1000,
+                Path::new("/usr/bin/true"),
+                "0::/\n",
+                None,
+            );
+            let process = tree.path().join("7");
+            assert_eq!(
+                classify(&process, Path::new("/usr/bin/true"))
+                    .unwrap()
+                    .as_str(),
+                "binary:/usr/bin/true"
+            );
+            let home = tree.path().join("home/chat");
+            fs::create_dir_all(home.parent().unwrap()).unwrap();
+            fs::write(&home, b"").unwrap();
+            assert!(
+                classify(&process, &home)
+                    .unwrap()
+                    .as_str()
+                    .starts_with("local-process:")
+            );
+            assert_eq!(
+                classify(&process, Path::new("/usr/bin/shell (deleted)")),
+                Err(UnknownCaller::Replaced)
+            );
+            assert_eq!(
+                classify(&process, Path::new("/usr/bin/xdg-dbus-proxy")),
+                Err(UnknownCaller::Proxied)
+            );
+            // A caller of another user is refused before any proof is looked at.
+            fake_process(
+                tree.path(),
+                8,
+                1001,
+                Path::new("/usr/bin/true"),
+                "0::/\n",
+                None,
+            );
+            assert_eq!(
+                identify_proven_process(tree.path(), 8, 1000, Some(Path::new("/usr/bin/true"))),
+                Err(UnknownCaller::OtherUser)
+            );
+            assert_eq!(
+                identify_proven_process(tree.path(), 7, 1000, Some(&home))
+                    .unwrap()
+                    .as_str(),
+                "binary:/usr/bin/true"
+            );
+        }
 
-    #[test]
-    fn identities_parse_only_in_the_known_forms() {
-        assert!(CallerId::parse("binary:/usr/bin/shell").is_some());
-        assert!(CallerId::parse("sandbox:so.tilo.notes").is_some());
-        assert!(CallerId::parse("so.tilo.notes").is_none());
-        assert!(CallerId::parse("binary:/usr/bin/x\nbinary:/usr/bin/shell").is_none());
-        assert_eq!(
-            CallerId::parse("binary:/usr/lib64/chromium/chromium")
-                .unwrap()
-                .display_name(),
-            "chromium"
-        );
+        phase interpreters_never_identify_a_program;
+        {
+            assert!(is_interpreter("python3.14"));
+            assert!(is_interpreter("bash"));
+            assert!(!is_interpreter("chromium"));
+        }
+
+        phase identities_parse_only_in_the_known_forms;
+        {
+            assert!(CallerId::parse("binary:/usr/bin/shell").is_some());
+            assert!(CallerId::parse("sandbox:so.tilo.notes").is_some());
+            assert!(CallerId::parse("so.tilo.notes").is_none());
+            assert!(CallerId::parse("binary:/usr/bin/x\nbinary:/usr/bin/shell").is_none());
+            assert_eq!(
+                CallerId::parse("binary:/usr/lib64/chromium/chromium")
+                    .unwrap()
+                    .display_name(),
+                "chromium"
+            );
+        }
     }
 }
