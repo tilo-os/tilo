@@ -1,9 +1,6 @@
-//! Cards, hand ranking and pots: the rules of Texas hold'em, with no state of
-//! their own.
-//!
-//! A card is a number below 52: `rank = card % 13` (0 is a two, 12 an ace)
-//! and `suit = card / 13`. The resource stores cards as these numbers, so a
-//! deck is a plain list every replica shuffles the same way from one seed.
+//! Cards, hand ranking and pots: the rules of Texas hold'em, with no state of their own. A
+//! card is a number below 52: `rank = card % 13` (0 is a two, 12 an ace) and `suit = card /
+//! 13`.
 
 pub const DECK_SIZE: u8 = 52;
 
@@ -76,9 +73,8 @@ pub const fn suit_message(card: u8) -> &'static str {
     }
 }
 
-/// A full deck in `seed`'s order: a Fisher–Yates shuffle driven by a
-/// `SplitMix64` stream, so every replica that applies the deal produces the
-/// same deck.
+/// A full deck in `seed`'s order: a Fisher–Yates shuffle driven by a `SplitMix64` stream,
+/// so every replica that applies the deal produces the same deck.
 #[must_use]
 pub fn shuffled(seed: u64) -> Vec<u8> {
     let mut deck: Vec<u8> = (0..DECK_SIZE).collect();
@@ -180,7 +176,6 @@ fn five(cards: [u8; 5]) -> Strength {
                 .all(|r| counts.get(*r).is_some_and(|c| *c == 1))
                 .then_some(3)
         });
-    // Ranks ordered by how many there are, then by rank: what breaks ties.
     let mut groups: Vec<(u8, u8)> = counts
         .iter()
         .enumerate()
@@ -249,14 +244,11 @@ pub fn best(cards: &[u8]) -> Option<Strength> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pot {
     pub amount: i64,
-    /// The positions (into the hand's players) that contributed to it and
-    /// have not folded.
     pub eligible: Vec<usize>,
 }
 
-/// The main pot and side pots that `committed` (each player's chips in the
-/// hand) makes, given who has `folded`. A folded player's chips stay in the
-/// pots they reached, but they can win none.
+/// The main pot and side pots that `committed` (each player's chips in the hand) makes,
+/// given who has `folded`.
 #[must_use]
 pub fn pots(committed: &[i64], folded: &[bool]) -> Vec<Pot> {
     let mut levels: Vec<i64> = committed
@@ -286,8 +278,6 @@ pub fn pots(committed: &[i64], folded: &[bool]) -> Vec<Pot> {
         }
         floor = level;
     }
-    // Chips committed above every live player's level (a folded player's
-    // larger bet) go to the last pot.
     let counted: i64 = pots.iter().map(|pot| pot.amount).sum();
     let total: i64 = committed.iter().sum();
     if let Some(last) = pots.last_mut() {

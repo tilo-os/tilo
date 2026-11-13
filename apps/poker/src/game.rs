@@ -1,24 +1,9 @@
-//! The table: who sits where, and the hand being played.
-//!
-//! Everything here is the shared record. Every move is an `#[action]`, so a
-//! person's click, an agent's call and a script land on the same rules, and
-//! every replica that applies the move reaches the same table.
-//!
-//! Collaboration shapes the model:
-//!
-//! - Players are keyed by participant id, so two people sitting down at the
-//!   same moment both keep their entry. Where both asked for the same seat,
-//!   [`Table::seating`] gives the later one the next free seat, the same way
-//!   on every replica.
-//! - Only the player whose turn it is may act, and only the dealer
-//!   ([`Table::dealer`]) may deal, so two people never write the same hand at
-//!   once.
-//! - Randomness comes from the action ([`ActionCx::uuid`]): the deal carries
-//!   its own shuffle, and replaying it deals the same cards.
-//!
-//! The deck and every player's cards are in the shared record. The view
-//! shows a player only their own cards until the showdown, and History
-//! hides the cards of a hand in progress.
+//! The table: who sits where, and the hand being played. Where both asked for the same
+//! seat, [`Table::seating`] gives the later one the next free seat, the same way on every
+//! replica. - Only the player whose turn it is may act, and only the dealer
+//! ([`Table::dealer`]) may deal, so two people never write the same hand at once. -
+//! Randomness comes from the action ([`ActionCx::uuid`]): the deal carries its own shuffle,
+//! and replaying it deals the same cards.
 
 use std::collections::BTreeMap;
 
@@ -26,17 +11,12 @@ use ui::prelude::*;
 
 use crate::cards;
 
-/// Seats at the table.
 pub const SEATS: usize = 6;
-/// Chips a player sits down with, and rebuys to.
 pub const BUY_IN: i64 = 1000;
 /// The small blind; the big blind is twice it.
 pub const SMALL_BLIND: i64 = 5;
-/// The big blind.
 pub const BIG_BLIND: i64 = SMALL_BLIND * 2;
-/// How long a player may take before anyone else may fold their hand.
 pub const TURN_MS: i64 = 30_000;
-/// How long after a hand ends anyone, not only the dealer, may deal the next.
 pub const DEAL_GRACE_MS: i64 = 15_000;
 
 /// Someone who sat down.
@@ -46,22 +26,19 @@ pub struct Player {
     pub seat: u8,
     /// Chips in front of them between hands.
     pub chips: i64,
-    /// When they sat down: the earlier of two people asking for one seat
-    /// gets it.
+    /// When they sat down: the earlier of two people asking for one seat gets it.
     pub joined_ms: i64,
 }
 
 /// Where a hand is.
 #[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Street {
-    /// No hand has been dealt yet.
     #[default]
     Idle,
     Preflop,
     Flop,
     Turn,
     River,
-    /// The hand is over: the pots have been paid.
     Done,
 }
 
@@ -317,7 +294,6 @@ impl Hand {
                     return;
                 }
             };
-            // Betting goes on only while two players can still bet.
             if self.players.iter().filter(|p| p.can_act()).count() >= 2 {
                 let button = usize::try_from(self.button).unwrap_or(0);
                 let first = self.next_from(button, InHand::can_act);
@@ -368,7 +344,6 @@ impl Hand {
             }
             let share = pot.amount.checked_div(count).unwrap_or(0);
             let mut odd = pot.amount.checked_rem(count).unwrap_or(0);
-            // The odd chips go to the first winners left of the button.
             let n = self.players.len();
             let mut order = winners.clone();
             order.sort_by_key(|at| {
@@ -428,9 +403,7 @@ pub struct Table {
 }
 
 impl Table {
-    /// Who sits in each seat. Two people who asked for one seat at the same
-    /// time are seated in the order they sat down; the later one takes the
-    /// next free seat to the left.
+    /// Who sits in each seat.
     #[must_use]
     pub fn seating(&self) -> [Option<String>; SEATS] {
         let mut order: Vec<(&String, &Player)> = self.players.iter().collect();
@@ -462,8 +435,7 @@ impl Table {
         self.seating().iter().position(Option::is_none)
     }
 
-    /// The player who deals the next hand: whoever has been at the table
-    /// longest.
+    /// The player who deals the next hand: whoever has been at the table longest.
     #[must_use]
     pub fn dealer(&self) -> Option<&str> {
         self.players
@@ -472,8 +444,8 @@ impl Table {
             .map(|(id, _)| id.as_str())
     }
 
-    /// Chips in front of `player`: their stack in the hand while they play
-    /// one, else what they sat down with or won.
+    /// Chips in front of `player`: their stack in the hand while they play one, else what
+    /// they sat down with or won.
     #[must_use]
     pub fn chips(&self, player: &str) -> i64 {
         if self.hand.street.in_play()
@@ -495,17 +467,15 @@ impl Table {
             .collect()
     }
 
-    /// The earliest instant anyone but the dealer may deal, in milliseconds
-    /// since the Unix epoch: the hand's end plus [`DEAL_GRACE_MS`]. `None`
-    /// while a hand is in play, where nobody deals regardless.
+    /// The earliest instant anyone but the dealer may deal, in milliseconds since the Unix
+    /// epoch: the hand's end plus [`DEAL_GRACE_MS`].
     #[must_use]
     pub fn deal_opens_ms(&self) -> Option<i64> {
         (!self.hand.street.in_play()).then(|| self.hand.since_ms.saturating_add(DEAL_GRACE_MS))
     }
 
-    /// The earliest instant anyone may fold for the player to act, in
-    /// milliseconds since the Unix epoch: [`TURN_MS`] after their turn began.
-    /// `None` when nobody is to act.
+    /// The earliest instant anyone may fold for the player to act, in milliseconds since
+    /// the Unix epoch: [`TURN_MS`] after their turn began.
     #[must_use]
     pub fn skip_opens_ms(&self) -> Option<i64> {
         if !self.hand.street.in_play() {
@@ -582,8 +552,6 @@ impl Table {
         };
         if total > before {
             let raise = total.saturating_sub(before);
-            // A short all-in raise does not reopen the betting by its full
-            // size, but everyone still has to answer it.
             if raise >= hand.min_raise {
                 hand.min_raise = raise;
             }
@@ -599,11 +567,6 @@ impl Table {
 
 impl Table {
     /// What the record holds: who sits where, with what, and the hand being played.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -651,7 +614,7 @@ impl Table {
         Ok(())
     }
 
-    /// Leave the table. A hand you are playing is folded.
+    /// Leave the table.
     #[action]
     pub fn leave(&mut self, cx: &mut ActionCx) -> Result<(), &'static str> {
         let me = cx.author().ok_or("only a player can leave")?.to_owned();
@@ -699,7 +662,6 @@ impl Table {
             .take(8)
             .fold(0_u64, |seed, byte| (seed << 8) | u64::from(*byte));
         let mut deck = cards::shuffled(seed);
-        // The button moves to the next player left of the last button.
         let last = usize::from(self.button_seat);
         let button = ready.iter().position(|(seat, _)| *seat > last).unwrap_or(0);
         let mut players: Vec<InHand> = ready
@@ -734,7 +696,6 @@ impl Table {
             since_ms: now,
             awards: Vec::new(),
         };
-        // Heads up, the button posts the small blind and acts first.
         let small = if n == 2 { button } else { after(button, n) };
         let big = after(small, n);
         hand.put_in(small, SMALL_BLIND);
@@ -753,7 +714,6 @@ impl Table {
             .max(BIG_BLIND);
         let first = hand.next_from(big, InHand::can_act);
         hand.give_turn(first, now);
-        // With everyone but one all in on the blinds, nobody bets.
         let current = hand.current_bet;
         let open = hand
             .players

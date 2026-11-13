@@ -1,7 +1,5 @@
-//! A playing card, drawn on the theme: the face on a floating surface with the
-//! rank and suit in the theme's ink, or the back in its owner's presence
-//! colour. It is a picture with a name, so a screen reader, an agent and a
-//! test read what it shows.
+//! A playing card, drawn on the theme: the face on a floating surface with the rank and
+//! suit in the theme's ink, or the back in its owner's presence colour.
 
 use std::collections::HashMap;
 
@@ -16,15 +14,12 @@ use crate::cards;
 /// How big a card is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardSize {
-    /// In front of a player.
     Small,
-    /// On the board.
     Large,
 }
 
 impl CardSize {
-    /// The card's width and height: the picture of a playing card, in its
-    /// proportions.
+    /// The card's width and height: the picture of a playing card, in its proportions.
     const fn extent(self) -> (f32, f32) {
         match self {
             Self::Small => (44.0, 62.0),
@@ -43,9 +38,7 @@ impl CardSize {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Showing {
     Face(u8),
-    /// Its back, in the presence colour of whoever holds it.
     Back((u8, u8, u8)),
-    /// A place on the board no card has reached yet.
     Slot,
 }
 
@@ -141,17 +134,13 @@ impl CardView {
         let field = self.rect.inset(-inset);
         let radius = SurfaceLevel::Floating.inner_radius(&on, inset);
         let well = RoundedRect::from_rect(field, radius);
-        // ratchet-allow(raw_paint): the back of a playing card is the picture of a card, content
         scene.fill(
             Fill::NonZero,
             transform,
-            // ratchet-allow(literal_alpha): the back's field is its owner's presence colour, washed out under its lattice
             tint.multiply_alpha(0.35),
             None,
             &well,
         );
-        // A lattice of diamonds across the back, four across; the clip
-        // trims the last row.
         let step = field.width() / 4.0;
         let r = step * 0.32;
         let mut lattice = BezPath::new();
@@ -167,7 +156,6 @@ impl CardView {
             }
         }
         scene.push_clip_layer(Fill::NonZero, transform, &well);
-        // ratchet-allow(raw_paint): the lattice printed on the card's back, content
         scene.fill(Fill::NonZero, transform, tint, None, &lattice);
         scene.pop_layer();
     }
@@ -175,9 +163,7 @@ impl CardView {
     fn paint_slot(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let colors = &theme.tokens.colors;
         let slot = RoundedRect::from_rect(self.rect, SurfaceLevel::Raised.radius(theme));
-        // ratchet-allow(raw_paint): the outline of a card not dealt yet, drawn on the board as content
         scene.fill(Fill::NonZero, transform, colors.overlay_subtle, None, &slot);
-        // ratchet-allow(raw_paint): the outline of a card not dealt yet, drawn on the board as content
         scene.stroke(
             &ui::vello::kurbo::Stroke::new(1.0),
             transform,
@@ -197,7 +183,6 @@ fn fill_suit(scene: &mut Scene, transform: Affine, card: u8, centre: Point, size
     let place = transform * Affine::translate(centre.to_vec2()) * Affine::scale(size);
     let mut path = BezPath::new();
     match cards::suit(card) {
-        // Spades: a heart upside down on a stem.
         0 => {
             path.move_to((0.0, -0.95));
             path.curve_to((-0.9, -0.3), (-1.0, 0.25), (-0.55, 0.55));
@@ -229,7 +214,6 @@ fn fill_suit(scene: &mut Scene, transform: Affine, card: u8, centre: Point, size
             stem(&mut path, 0.1);
         }
     }
-    // ratchet-allow(raw_paint): a suit printed on a card's face, content
     scene.fill(Fill::NonZero, place, ink, None, &path);
 }
 
