@@ -665,79 +665,83 @@ impl RelayCoeditSession {
 mod tests {
     use super::*;
 
-    #[test]
-    fn coedit_wrappers_round_trip_and_reject_foreign_bytes() {
-        use automerge::transaction::Transactable;
+    tilo_test_env::scenario! {
+        fn coedit_payloads_round_trip_and_name_their_retention;
 
-        // Every payload variant round-trips.
-        let checkpoint = CoeditPayload::Checkpoint {
-            channel: [3; 32],
-            body: vec![6, 5],
-        };
-        let retained = CoeditPayload::RetainedDelta {
-            channel: [4; 32],
-            body: vec![2, 1],
-        };
-        for payload in [checkpoint, retained] {
-            assert_eq!(
-                CoeditPayload::decode(&payload.encode().unwrap()),
-                Some(payload)
+        phase coedit_wrappers_round_trip_and_reject_foreign_bytes;
+        {
+            use automerge::transaction::Transactable;
+
+            // Every payload variant round-trips.
+            let checkpoint = CoeditPayload::Checkpoint {
+                channel: [3; 32],
+                body: vec![6, 5],
+            };
+            let retained = CoeditPayload::RetainedDelta {
+                channel: [4; 32],
+                body: vec![2, 1],
+            };
+            for payload in [checkpoint, retained] {
+                assert_eq!(
+                    CoeditPayload::decode(&payload.encode().unwrap()),
+                    Some(payload)
+                );
+            }
+
+            // The author key must survive the presence wrapper so a remote cursor
+            // is drawn against the right collaborator — the host envelope carries
+            // no author of its own.
+            let wrapped = AttributedPresence {
+                author: [7u8; 32],
+                body: vec![10, 20, 30],
+            };
+            let decoded = AttributedPresence::decode(&wrapped.encode().unwrap()).unwrap();
+            assert_eq!(decoded.author, [7u8; 32]);
+            assert_eq!(decoded.body, vec![10, 20, 30]);
+
+            // Bodies that are not a CoeditPayload must not decode into a bogus
+            // variant — `recv` skips such frames rather than mis-apply them.
+            // Empty, an out-of-range enum tag, and a genuine Automerge
+            // incremental delta all fail to decode.
+            assert!(CoeditPayload::decode(&[]).is_none());
+            assert!(CoeditPayload::decode(&[5, 0, 0]).is_none());
+            let mut doc = automerge::AutoCommit::new();
+            doc.put(automerge::ROOT, "k", "v").unwrap();
+            let raw_delta = doc.save_incremental();
+            assert!(!raw_delta.is_empty());
+            assert!(
+                CoeditPayload::decode(&raw_delta).is_none(),
+                "a raw Automerge delta must not be mistaken for a CoeditPayload"
             );
         }
 
-        // The author key must survive the presence wrapper so a remote cursor
-        // is drawn against the right collaborator — the host envelope carries
-        // no author of its own.
-        let wrapped = AttributedPresence {
-            author: [7u8; 32],
-            body: vec![10, 20, 30],
-        };
-        let decoded = AttributedPresence::decode(&wrapped.encode().unwrap()).unwrap();
-        assert_eq!(decoded.author, [7u8; 32]);
-        assert_eq!(decoded.body, vec![10, 20, 30]);
-
-        // Bodies that are not a CoeditPayload must not decode into a bogus
-        // variant — `recv` skips such frames rather than mis-apply them.
-        // Empty, an out-of-range enum tag, and a genuine Automerge
-        // incremental delta all fail to decode.
-        assert!(CoeditPayload::decode(&[]).is_none());
-        assert!(CoeditPayload::decode(&[5, 0, 0]).is_none());
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, "k", "v").unwrap();
-        let raw_delta = doc.save_incremental();
-        assert!(!raw_delta.is_empty());
-        assert!(
-            CoeditPayload::decode(&raw_delta).is_none(),
-            "a raw Automerge delta must not be mistaken for a CoeditPayload"
-        );
-    }
-
-    #[test]
-    fn retention_metadata_reports_only_kind_and_channel() {
-        for (payload, expected) in [
-            (
-                CoeditPayload::Checkpoint {
-                    channel: [3; 32],
-                    body: vec![8; 1024],
-                },
-                ([3; 32], RetentionKind::Checkpoint),
-            ),
-            (
-                CoeditPayload::RetainedDelta {
-                    channel: [4; 32],
-                    body: vec![7; 1024],
-                },
-                ([4; 32], RetentionKind::Delta),
-            ),
-        ] {
-            let encoded = payload.encode().unwrap();
-            assert_eq!(retention_metadata(&encoded), Some(expected));
-            let mut trailing = encoded;
-            trailing.push(0);
-            assert_eq!(retention_metadata(&trailing), Some(expected));
-            assert!(CoeditPayload::decode(&trailing).is_some());
+        phase retention_metadata_reports_only_kind_and_channel;
+        {
+            for (payload, expected) in [
+                (
+                    CoeditPayload::Checkpoint {
+                        channel: [3; 32],
+                        body: vec![8; 1024],
+                    },
+                    ([3; 32], RetentionKind::Checkpoint),
+                ),
+                (
+                    CoeditPayload::RetainedDelta {
+                        channel: [4; 32],
+                        body: vec![7; 1024],
+                    },
+                    ([4; 32], RetentionKind::Delta),
+                ),
+            ] {
+                let encoded = payload.encode().unwrap();
+                assert_eq!(retention_metadata(&encoded), Some(expected));
+                let mut trailing = encoded;
+                trailing.push(0);
+                assert_eq!(retention_metadata(&trailing), Some(expected));
+                assert!(CoeditPayload::decode(&trailing).is_some());
+            }
+            assert_eq!(retention_metadata(&[]), None);
         }
-        assert_eq!(retention_metadata(&[]), None);
     }
 
     #[tokio::test]
