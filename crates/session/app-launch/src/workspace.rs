@@ -281,43 +281,6 @@ mod tests {
             );
         }
 
-        phase a_launch_reads_back_only_what_this_app_was_granted;
-        {
-            let directory = tempfile::tempdir().expect("a directory");
-            let mut workspace = Workspace::under(directory.path(), "workspace-7");
-            workspace.policy = Some(WorkspacePolicy::new("workspace-7", "person-7"));
-            workspace.person = "person-7".to_owned();
-            workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
-            workspace.grants = {
-                let mut grants = workspace.grants.clone();
-                grants.sandbox.push(
-                    CapOverride::grant(
-                        Grantee::person("person-7"),
-                        Scope::FsPath("/home/you/mail".into()),
-                        Access::Read,
-                    )
-                    .through("so.tilo.mail"),
-                );
-                grants
-            };
-            let path = workspace
-                .write_grants("so.tilo.notes")
-                .expect("written")
-                .expect("a capability file");
-            let read: LaunchGrants =
-                serde_json::from_slice(&std::fs::read(&path).expect("readable")).expect("JSON");
-            assert_eq!(
-                read,
-                workspace.grants_for_launch("so.tilo.notes", None),
-                "the launcher reads what was granted to this app, not the workspace's other grants"
-            );
-            assert_eq!(read.sandbox.len(), 1);
-            assert!(
-                read.author,
-                "the person may change the workspace through the app"
-            );
-        }
-
         phase a_workspace_refuses_a_launch_whose_app_id_could_leave_its_directory;
         {
             let directory = tempfile::tempdir().expect("a directory");
@@ -334,5 +297,42 @@ mod tests {
                 "a launch outside a workspace names no workspace"
             );
         }
+    }
+
+    #[test]
+    fn a_launch_reads_back_only_what_this_app_was_granted() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let mut workspace = Workspace::under(directory.path(), "workspace-7");
+        workspace.policy = Some(WorkspacePolicy::new("workspace-7", "person-7"));
+        workspace.person = "person-7".to_owned();
+        workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
+        workspace.grants = {
+            let mut grants = workspace.grants.clone();
+            grants.sandbox.push(
+                CapOverride::grant(
+                    Grantee::person("person-7"),
+                    Scope::FsPath("/home/you/mail".into()),
+                    Access::Read,
+                )
+                .through("so.tilo.mail"),
+            );
+            grants
+        };
+        let path = workspace
+            .write_grants("so.tilo.notes")
+            .expect("written")
+            .expect("a capability file");
+        let read: LaunchGrants =
+            serde_json::from_slice(&std::fs::read(&path).expect("readable")).expect("JSON");
+        assert_eq!(
+            read,
+            workspace.grants_for_launch("so.tilo.notes", None),
+            "the launcher reads what was granted to this app, not the workspace's other grants"
+        );
+        assert_eq!(read.sandbox.len(), 1);
+        assert!(
+            read.author,
+            "the person may change the workspace through the app"
+        );
     }
 }
