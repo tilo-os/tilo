@@ -171,6 +171,10 @@ fn living_room() -> Script {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
     fn a_calibration_measures_each_speaker_and_applies_only_when_asked;
 
     phase each_speaker_is_measured_from_the_listening_position;
@@ -338,6 +342,10 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
     fn a_calibration_waits_for_microphone_consent_and_stops_when_refused_or_cancelled;
 
     phase measuring_waits_for_microphone_consent_and_leaves_out_who_did_not_answer;

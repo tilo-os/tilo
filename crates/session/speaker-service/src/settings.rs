@@ -924,6 +924,10 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn what_settings_sends_is_checked_bounded_and_rate_limited;
 
         phase every_role_survives_the_settings_wire;

@@ -192,6 +192,10 @@ fn joined_pair(
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
     fn a_group_invites_its_remote_members_and_a_member_answers_once;
 
     phase a_new_group_asks_only_remote_members_and_the_member_sees_one_prompt;
@@ -347,6 +351,10 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
     fn a_consented_group_admits_sessions_from_its_source_only;
 
     phase any_of_your_devices_can_play_to_a_consented_group;
@@ -638,6 +646,10 @@ fn admitted_session(
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
     fn consent_ends_when_the_group_changes_under_a_member_and_survives_a_trim;
 
     phase leaving_withdraws_consent_ends_sessions_and_silences_invites;
@@ -972,6 +984,10 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+    )]
     fn a_groups_microphones_listen_only_for_the_leader_and_with_consent;
 
     phase only_the_leader_can_ask_a_consented_member_for_a_sweep;
