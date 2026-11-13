@@ -4,12 +4,13 @@
     reason = "migration stack lint debt is scoped to this target"
 )]
 
-//! Broker-backed identity signing on an owned, connected byte stream.
+//! Broker-backed identity signing on an owned, connected byte stream:
+//! [`BrokerSigningIdentity`] asks for public metadata and signatures and never
+//! receives private key material.
 //!
-//! [`BrokerSigningIdentity`] requests public metadata and signatures without
-//! receiving private key material. The caller must supply a connection to its
-//! trusted host; this crate does not discover or authenticate that host.
-//! Inherited descriptors are the only environment-supplied capabilities accepted.
+//! The caller supplies the connection to its trusted host, which this crate
+//! neither discovers nor authenticates. Inherited descriptors are the only
+//! capabilities it takes from the environment.
 
 mod public_metadata;
 pub use public_metadata::{IdentitySummary, KeyProtection};
@@ -60,9 +61,8 @@ pub fn resolve_active_identity(_dir: &std::path::Path) -> Option<std::path::Path
     None
 }
 
-/// Public fields from an identity record. Reading these never unlocks or
-/// materializes the account signing share; app-facing brokers use the
-/// certified device key for signatures.
+/// Public fields of an identity record: reading them never unlocks the account
+/// signing share, which app-facing brokers never see either.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdentityMetadata {
     pub profile_photo: Option<ProfilePhoto>,
@@ -72,14 +72,12 @@ pub struct IdentityMetadata {
     pub threshold: u16,
     pub total_shares: u16,
     pub share_index: u16,
-    /// Whether the record is a 1-of-1 identity holding a local share.
     pub single_device: bool,
 }
 
-/// Public avatar from the launcher's authenticated identity broker only.
-///
-/// Never reads a config record, resolves an account name, or unlocks a signing
-/// share. Hosts without an inherited broker return no presentation.
+/// The avatar from the launcher's authenticated identity broker only: no config
+/// record, account name or signing share is read, and a host without an
+/// inherited broker shows none.
 #[must_use]
 pub fn bound_profile_photo() -> Option<([u8; 32], ProfilePhoto)> {
     #[cfg(unix)]
@@ -96,10 +94,9 @@ pub fn bound_profile_photo() -> Option<([u8; 32], ProfilePhoto)> {
 pub const IDENTITY_SERVICE: &str = "identity";
 const COLLABORATION_JOIN_TAG: &[u8] = b"tilo-collaboration-join-v1\0";
 
-/// Domain-separated bytes signed by an enrolled device when joining one
-/// collaboration workspace. The NUL-terminated domain tag and the remaining
-/// workspace bytes make the single-field encoding unambiguous; this exact
-/// concatenation is fixed wire ABI for peer verification.
+/// Domain-separated bytes an enrolled device signs when it joins a workspace:
+/// a NUL-terminated domain tag, then the workspace bytes. This concatenation is
+/// fixed wire ABI for peer verification.
 #[must_use]
 pub fn collaboration_join_signing_bytes(workspace_id: &str) -> Vec<u8> {
     let workspace = workspace_id.as_bytes();
@@ -109,42 +106,33 @@ pub fn collaboration_join_signing_bytes(workspace_id: &str) -> Vec<u8> {
     message
 }
 
-/// Small synchronous wire protocol used over a connected identity stream. The launcher writes `Handshake` before the sandbox starts, so
-/// an app cannot claim another package or workspace.
+/// The synchronous wire protocol over a connected identity stream. The
+/// launcher writes `Handshake` before the sandbox starts, so an app cannot
+/// claim another package or workspace.
 pub mod wire {
     use serde::{Deserialize, Serialize};
     use wire_frame::Framing;
 
-    /// What an identity service that predates membership-based signing
-    /// refused with while its workspace had no identity picked. Retained as
-    /// wire text: such a host's answer reads as an ordinary refusal.
     pub const NO_IDENTITY_SELECTED: &str = "no identity selected for this workspace";
 
     /// The launcher's [`Handshake`]: a little-endian `u32` length, then JSON.
     pub const HANDSHAKE_FRAMING: Framing = Framing::little_endian(1024 * 1024);
 
     /// Every [`Request`] and [`Response`] after the handshake: a little-endian
-    /// `u32` length, then postcard.
-    ///
-    /// The bound admits real document snapshots in app-controlled traffic.
-    /// Postcard keeps byte vectors compact; the preceding JSON wire
-    /// represented every byte as a decimal number and hit its 1 MiB cap much
-    /// earlier than the underlying document did.
+    /// `u32` length, then postcard, whose byte vectors are compact enough for a
+    /// real document snapshot.
     pub const FRAMING: Framing = Framing::little_endian(64 * 1024 * 1024);
 
     #[derive(Debug, Serialize, Deserialize)]
     pub struct Handshake {
         pub workspace_id: String,
         pub app_id: String,
-        /// The surface file the app was started with (`TILO_SURFACE`, its
-        /// hash checked): what a development host takes as the surface of
-        /// an app it holds no package of.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub surface: Option<String>,
     }
 
-    /// Additive JSON negotiation; zero serializes exactly the legacy handshake.
-    /// Old hosts ignore the optional field and return legacy Metadata.
+    /// Additive JSON negotiation: zero serializes exactly the older handshake, and
+    /// a host that knows no presentation ignores the field.
     #[derive(Debug, Serialize, Deserialize)]
     pub struct PresentationHandshake {
         #[serde(flatten)]
@@ -159,10 +147,6 @@ pub mod wire {
         version == 0
     }
     pub const PRESENTATION_VERSION: u16 = 1;
-    /// The identity service version that understands presentation: the
-    /// runtime interface's (`runtime_portal::RUNTIME_INTERFACE_VERSION`),
-    /// every session service speaking the runtime's one version
-    /// (docs/architecture/compatibility.md).
     pub const PRESENTATION_SERVICE_VERSION: u32 = runtime_portal::RUNTIME_INTERFACE_VERSION;
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -172,27 +156,22 @@ pub mod wire {
             action: String,
             message: Vec<u8>,
         },
-        /// Prove possession of the enrolled device key for the workspace the
-        /// launcher bound into the handshake. The broker constructs the
-        /// domain-separated message; callers cannot use this as a generic
-        /// signing escape hatch.
         CollaborationJoin {
             workspace_id: String,
         },
-        /// Sign a pre-constructed `collab_types::SignedOp` only after the
-        /// workspace-bound broker verifies its route, certified device author,
-        /// document payload kind, policy class, timestamp, and live role.
+        /// Sign a pre-constructed `collab_types::SignedOp`, once the workspace-bound
+        /// broker has verified its route, device author, payload kind, policy class,
+        /// timestamp and the caller's live role.
         CollaborationOp {
             workspace_id: String,
             app_id: String,
             record_id: String,
             unsigned_op: Vec<u8>,
         },
-        /// The content keys of one document route of the bound workspace
-        /// and app, once this device has been admitted to its encrypted
-        /// channel. `known_generation` is the generation of the keys the
-        /// caller already holds; an unchanged state answers without keys.
-        /// Appended so earlier requests keep their encoding.
+        /// The content keys of one document route of the bound workspace and app, once
+        /// this device is admitted to its encrypted channel. `known_generation` is the
+        /// generation the caller already holds, which answers without keys when
+        /// unchanged. Appended, so earlier requests keep their encoding.
         ChannelKeys {
             workspace_id: String,
             app_id: String,
@@ -201,20 +180,17 @@ pub mod wire {
         },
     }
 
-    /// What the device may do with a route's content, as the identity
-    /// service reports it to the route's endpoints.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum ChannelAccess {
-        /// Admitted; the response carries the channel's content keys.
         Ready,
         /// Asked the channel's participants for access and not admitted yet.
         Waiting,
         Removed,
         /// The channel cannot be provisioned on this device right now.
         Unavailable,
-        /// This device has no secret store open, and only rooms its own
-        /// room host takes part in have keys without one. Appended so earlier
-        /// answers keep their encoding.
+        /// This device has no secret store open; only the workspaces whose host it
+        /// takes part in have keys without one. Appended, so earlier answers keep
+        /// their encoding.
         NoSecretStore,
     }
 
@@ -225,7 +201,6 @@ pub mod wire {
             avatar_color: [u8; 3],
             group_public_key: [u8; 32],
             signing_public_key: [u8; 32],
-            /// JSON-encoded root-signed `tilo_user_identity::DeviceCert`.
             device_certificate: Option<Vec<u8>>,
             threshold: u16,
             total_shares: u16,
@@ -243,7 +218,6 @@ pub mod wire {
             generation: u64,
             keys: Vec<u8>,
         },
-        /// Negotiated public presentation; appended to preserve all old encodings.
         MetadataWithPresentation {
             display_name: String,
             avatar_color: [u8; 3],
@@ -257,7 +231,6 @@ pub mod wire {
         },
     }
 
-    /// A decoded [`Response::ChannelKeys`].
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct ChannelKeysReply {
         pub access: ChannelAccess,
