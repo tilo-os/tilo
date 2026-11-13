@@ -14,11 +14,13 @@
 )]
 
 //! App-scoped secret storage: one API on Linux, macOS, Windows and the web.
-//! App-scoped secret storage: one API on Linux, macOS, Windows and the web.
 //!
 //! A [`SecretStore`] belongs to one app ([`SecretStore::for_app`]), and its keys name
 //! that app's secrets and no other app's. [`SecretStore::memory`] keeps them in the
 //! process, for tests.
+//!
+//! | Target | Backend | [`Protection`] |
+//! |---|---|---|
 //! | Linux | the freedesktop Secret Service over D-Bus (GNOME Keyring, `KWallet`) | [`Protection::OsKeychain`] |
 //! | macOS | the login Keychain's generic passwords | [`Protection::OsKeychain`] |
 //! | Windows | generic credentials in the user's Credential Manager (DPAPI-encrypted, this machine only) | [`Protection::OsKeychain`] |
