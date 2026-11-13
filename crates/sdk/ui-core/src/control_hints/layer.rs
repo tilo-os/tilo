@@ -612,200 +612,204 @@ mod place_tests {
         }
     }
 
-    /// A hint keeps off the cards standing over the shell: it sits on the other side of its
-    /// anchor when that side is free, never over a card's content.
-    #[test]
-    fn a_hint_stands_beside_its_anchor_clear_of_the_cards_over_the_shell() {
-        let area = Rect::new(0.0, 40.0, 1280.0, 800.0);
-        let free = place(
-            &place_at(PopoverSide::Right, Vec::new()),
-            (220.0, 60.0),
-            area,
-        )
-        .expect("area beside its anchor");
-        assert_eq!(free.0.x0, 700.0 + card::NOTCH_D + 4.0);
-        let card = Rect::new(700.0, 300.0, 1260.0, 740.0);
-        let (rect, _) = place(
-            &place_at(PopoverSide::Right, vec![card]),
-            (220.0, 60.0),
-            area,
-        )
-        .expect("the other side is free");
-        assert!(!rect.overlaps(card), "{rect:?} over the card {card:?}");
-        assert!(rect.x1 <= card.x0, "beside it, not over it: {rect:?}");
-        let left = Rect::new(0.0, 60.0, 600.0, 760.0);
-        assert!(
-            place(
-                &place_at(PopoverSide::Right, vec![card, left]),
-                (220.0, 60.0),
-                area
-            )
-            .is_none(),
-            "no place clear of both cards"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_hint_is_placed_clear_of_content_or_leaves;
 
-    /// Every placement keeps out of the content it is given, wherever it is: in the bar at the
-    /// leading end of the width beside its clock, or beside its anchor on either side. A placement
-    /// that cannot is one that does not show.
-    #[test]
-    fn no_placement_stands_over_the_content_it_keeps_clear_of() {
-        let area = Rect::new(0.0, 32.0, 1280.0, 800.0);
-        let band = Rect::new(628.0, 0.0, 1100.0, 32.0);
-        let kept = [
-            Rect::new(700.0, 72.0, 1268.0, 788.0),
-            Rect::new(1120.0, 84.0, 1240.0, 136.0),
-            Rect::new(0.0, 600.0, 300.0, 780.0),
-        ];
-        let (rect, notch) = place(&in_bar(band, kept.to_vec()), (240.0, 28.0), area)
-            .expect("the bar keeps area beside its clock");
-        assert_eq!(notch, None, "it points at no control");
-        assert_eq!(rect.x0, band.x0, "right beside the clock: {rect:?}");
-        assert_eq!(rect.center().y, band.center().y, "a line tall: {rect:?}");
-        assert!(band.contains_rect(rect), "{rect:?} in {band:?}");
-        for kept in kept {
-            assert!(!rect.overlaps(kept), "{rect:?} over {kept:?}");
+        // A hint keeps off the cards standing over the shell: it sits on the other side of its
+        // anchor when that side is free, never over a card's content.
+        phase a_hint_stands_beside_its_anchor_clear_of_the_cards_over_the_shell;
+        {
+            let area = Rect::new(0.0, 40.0, 1280.0, 800.0);
+            let free = place(
+                &place_at(PopoverSide::Right, Vec::new()),
+                (220.0, 60.0),
+                area,
+            )
+            .expect("area beside its anchor");
+            assert_eq!(free.0.x0, 700.0 + card::NOTCH_D + 4.0);
+            let card = Rect::new(700.0, 300.0, 1260.0, 740.0);
+            let (rect, _) = place(
+                &place_at(PopoverSide::Right, vec![card]),
+                (220.0, 60.0),
+                area,
+            )
+            .expect("the other side is free");
+            assert!(!rect.overlaps(card), "{rect:?} over the card {card:?}");
+            assert!(rect.x1 <= card.x0, "beside it, not over it: {rect:?}");
+            let left = Rect::new(0.0, 60.0, 600.0, 760.0);
+            assert!(
+                place(
+                    &place_at(PopoverSide::Right, vec![card, left]),
+                    (220.0, 60.0),
+                    area
+                )
+                .is_none(),
+                "no place clear of both cards"
+            );
         }
-        assert!(
-            place(
-                &in_bar(Rect::new(628.0, 0.0, 860.0, 32.0), kept.to_vec()),
-                (240.0, 28.0),
-                area
-            )
-            .is_none(),
-            "no area for the pill whole"
-        );
-        assert!(
-            place(
-                &in_bar(Rect::new(628.0, 0.0, 1100.0, 24.0), kept.to_vec()),
-                (240.0, 28.0),
-                area
-            )
-            .is_none(),
-            "a bar too shallow to hold it"
-        );
-        assert!(
-            place(
-                &in_bar(band, vec![Rect::new(600.0, 0.0, 900.0, 32.0)]),
-                (240.0, 28.0),
-                area
-            )
-            .is_none()
-        );
-        for side in [
-            PopoverSide::Below,
-            PopoverSide::Above,
-            PopoverSide::Right,
-            PopoverSide::Left,
-        ] {
-            if let Some((rect, _)) = place(&place_at(side, kept.to_vec()), (220.0, 56.0), area) {
-                for kept in kept {
-                    assert!(
-                        !rect.overlaps(kept),
-                        "{side:?}'s hint {rect:?} over {kept:?}"
-                    );
+
+        // Every placement keeps out of the content it is given, wherever it is: in the bar at the
+        // leading end of the width beside its clock, or beside its anchor on either side. A placement
+        // that cannot is one that does not show.
+        phase no_placement_stands_over_the_content_it_keeps_clear_of;
+        {
+            let area = Rect::new(0.0, 32.0, 1280.0, 800.0);
+            let band = Rect::new(628.0, 0.0, 1100.0, 32.0);
+            let kept = [
+                Rect::new(700.0, 72.0, 1268.0, 788.0),
+                Rect::new(1120.0, 84.0, 1240.0, 136.0),
+                Rect::new(0.0, 600.0, 300.0, 780.0),
+            ];
+            let (rect, notch) = place(&in_bar(band, kept.to_vec()), (240.0, 28.0), area)
+                .expect("the bar keeps area beside its clock");
+            assert_eq!(notch, None, "it points at no control");
+            assert_eq!(rect.x0, band.x0, "right beside the clock: {rect:?}");
+            assert_eq!(rect.center().y, band.center().y, "a line tall: {rect:?}");
+            assert!(band.contains_rect(rect), "{rect:?} in {band:?}");
+            for kept in kept {
+                assert!(!rect.overlaps(kept), "{rect:?} over {kept:?}");
+            }
+            assert!(
+                place(
+                    &in_bar(Rect::new(628.0, 0.0, 860.0, 32.0), kept.to_vec()),
+                    (240.0, 28.0),
+                    area
+                )
+                .is_none(),
+                "no area for the pill whole"
+            );
+            assert!(
+                place(
+                    &in_bar(Rect::new(628.0, 0.0, 1100.0, 24.0), kept.to_vec()),
+                    (240.0, 28.0),
+                    area
+                )
+                .is_none(),
+                "a bar too shallow to hold it"
+            );
+            assert!(
+                place(
+                    &in_bar(band, vec![Rect::new(600.0, 0.0, 900.0, 32.0)]),
+                    (240.0, 28.0),
+                    area
+                )
+                .is_none()
+            );
+            for side in [
+                PopoverSide::Below,
+                PopoverSide::Above,
+                PopoverSide::Right,
+                PopoverSide::Left,
+            ] {
+                if let Some((rect, _)) = place(&place_at(side, kept.to_vec()), (220.0, 56.0), area) {
+                    for kept in kept {
+                        assert!(
+                            !rect.overlaps(kept),
+                            "{side:?}'s hint {rect:?} over {kept:?}"
+                        );
+                    }
                 }
             }
         }
-    }
 
-    #[test]
-    fn a_hint_with_nowhere_to_stand_leaves_rather_than_covering_a_card() {
-        static RESIZE: &[HintSpec<()>] = &[HintSpec {
-            id: "resize",
-            when: &[Cue::Holds(())],
-            only_while: &[],
-            learned_by: &[],
-            gesture: Gesture::ResizeEdge,
-            words: "resize",
-            touch_words: None,
-        }];
-        let area = Rect::new(0.0, 40.0, 700.0, 800.0);
-        let card = Rect::new(0.0, 60.0, 700.0, 760.0);
-        let placed = |_spec: &HintSpec<()>| Some(place_at(PopoverSide::Right, vec![card]));
-        let mut hints = HintLayer::new(RESIZE, Learned::default());
-        let at = crate::time::now();
-        hints.update(at, &|()| true, None, &placed, EffectiveMotion::default());
-        assert!(hints.coach().current().is_some(), "fixture: it begins");
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        hints.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::default(),
-            at,
-            &HintLook {
-                colour: None,
-                keep_at: None,
-                area,
-            },
-        );
-        assert!(hints.card_rect().is_none(), "nothing stands over the card");
-        assert!(hints.painted_rect().is_none());
-        assert!(
-            matches!(
-                hints.coach().current(),
-                Some(Current {
-                    phase: Phase::Leaving(_),
-                    ..
-                })
-            ),
-            "a hint with nowhere to stand goes"
-        );
-    }
-
-    #[test]
-    fn a_hint_whose_anchor_has_no_clear_side_stands_in_the_bar_with_its_edge_lit() {
-        static RESIZE: &[HintSpec<()>] = &[HintSpec {
-            id: "resize",
-            when: &[Cue::Holds(())],
-            only_while: &[],
-            learned_by: &[],
-            gesture: Gesture::ResizeEdge,
-            words: "resize",
-            touch_words: None,
-        }];
-        let area = Rect::new(0.0, 40.0, 1440.0, 900.0);
-        let band = Rect::new(780.0, 0.0, 1300.0, 32.0);
-        let left = Rect::new(32.0, 80.0, 696.0, 888.0);
-        let right = Rect::new(704.0, 80.0, 1408.0, 888.0);
-        let edge = Line::new((700.0, 96.0), (700.0, 880.0));
-        let spot = HintPlace {
-            edge: Some(edge),
-            bar: Some(band),
-            ..place_at(PopoverSide::Right, vec![left, right])
-        };
-        let placed = |_spec: &HintSpec<()>| Some(spot.clone());
-        let mut hints = HintLayer::new(RESIZE, Learned::default());
-        let at = crate::time::now();
-        hints.update(at, &|()| true, None, &placed, EffectiveMotion::default());
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        hints.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::default(),
-            at,
-            &HintLook {
-                colour: None,
-                keep_at: None,
-                area,
-            },
-        );
-        let card = hints.card_rect().expect("it stands in the bar");
-        assert!(
-            band.contains_rect(card),
-            "{card:?} in the bar's area {band:?}"
-        );
-        for content in [left, right] {
-            assert!(!card.overlaps(content), "{card:?} over {content:?}");
+        phase a_hint_with_nowhere_to_stand_leaves_rather_than_covering_a_card;
+        {
+            static RESIZE: &[HintSpec<()>] = &[HintSpec {
+                id: "resize",
+                when: &[Cue::Holds(())],
+                only_while: &[],
+                learned_by: &[],
+                gesture: Gesture::ResizeEdge,
+                words: "resize",
+                touch_words: None,
+            }];
+            let area = Rect::new(0.0, 40.0, 700.0, 800.0);
+            let card = Rect::new(0.0, 60.0, 700.0, 760.0);
+            let placed = |_spec: &HintSpec<()>| Some(place_at(PopoverSide::Right, vec![card]));
+            let mut hints = HintLayer::new(RESIZE, Learned::default());
+            let at = crate::time::now();
+            hints.update(at, &|()| true, None, &placed, EffectiveMotion::default());
+            assert!(hints.coach().current().is_some(), "fixture: it begins");
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            hints.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::default(),
+                at,
+                &HintLook {
+                    colour: None,
+                    keep_at: None,
+                    area,
+                },
+            );
+            assert!(hints.card_rect().is_none(), "nothing stands over the card");
+            assert!(hints.painted_rect().is_none());
+            assert!(
+                matches!(
+                    hints.coach().current(),
+                    Some(Current {
+                        phase: Phase::Leaving(_),
+                        ..
+                    })
+                ),
+                "a hint with nowhere to stand goes"
+            );
         }
-        let painted = hints.painted_rect().expect("it painted");
-        assert!(
-            painted.contains(edge.p0) && painted.contains(edge.p1),
-            "the edge lights where the gesture is done"
-        );
+
+        phase a_hint_whose_anchor_has_no_clear_side_stands_in_the_bar_with_its_edge_lit;
+        {
+            static RESIZE: &[HintSpec<()>] = &[HintSpec {
+                id: "resize",
+                when: &[Cue::Holds(())],
+                only_while: &[],
+                learned_by: &[],
+                gesture: Gesture::ResizeEdge,
+                words: "resize",
+                touch_words: None,
+            }];
+            let area = Rect::new(0.0, 40.0, 1440.0, 900.0);
+            let band = Rect::new(780.0, 0.0, 1300.0, 32.0);
+            let left = Rect::new(32.0, 80.0, 696.0, 888.0);
+            let right = Rect::new(704.0, 80.0, 1408.0, 888.0);
+            let edge = Line::new((700.0, 96.0), (700.0, 880.0));
+            let spot = HintPlace {
+                edge: Some(edge),
+                bar: Some(band),
+                ..place_at(PopoverSide::Right, vec![left, right])
+            };
+            let placed = |_spec: &HintSpec<()>| Some(spot.clone());
+            let mut hints = HintLayer::new(RESIZE, Learned::default());
+            let at = crate::time::now();
+            hints.update(at, &|()| true, None, &placed, EffectiveMotion::default());
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            hints.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &Theme::default(),
+                at,
+                &HintLook {
+                    colour: None,
+                    keep_at: None,
+                    area,
+                },
+            );
+            let card = hints.card_rect().expect("it stands in the bar");
+            assert!(
+                band.contains_rect(card),
+                "{card:?} in the bar's area {band:?}"
+            );
+            for content in [left, right] {
+                assert!(!card.overlaps(content), "{card:?} over {content:?}");
+            }
+            let painted = hints.painted_rect().expect("it painted");
+            assert!(
+                painted.contains(edge.p0) && painted.contains(edge.p1),
+                "the edge lights where the gesture is done"
+            );
+        }
     }
 }

@@ -253,52 +253,56 @@ mod tests {
         }
     }
 
-    #[test]
-    fn each_resolution_draws_its_own_face() {
-        let granted = Door::granted(Capability::FIREWALL);
-        assert_eq!(granted.control(|| "apply"), Some("apply"));
-        assert_eq!(
-            granted.face(|| "control", |_| "grant", |_, _| "none"),
-            "control"
-        );
+    tilo_test_env::scenario! {
+        fn a_capability_door_draws_what_its_authority_resolves;
 
-        let grantable = Door::grantable(Capability::FIREWALL, "allow changing firewall rules");
-        assert_eq!(grantable.control(|| "apply"), None);
-        assert_eq!(
-            grantable.face(
-                || "control".to_owned(),
-                str::to_owned,
-                |_, _| "none".to_owned()
-            ),
-            "allow changing firewall rules"
-        );
+        phase each_resolution_draws_its_own_face;
+        {
+            let granted = Door::granted(Capability::FIREWALL);
+            assert_eq!(granted.control(|| "apply"), Some("apply"));
+            assert_eq!(
+                granted.face(|| "control", |_| "grant", |_, _| "none"),
+                "control"
+            );
 
-        let unavailable = Door::unavailable(Capability::FIREWALL, "firewalld isn't running").face(
-            || ("control".to_owned(), None),
-            |_| ("grant".to_owned(), None),
-            |reason, remedy| (reason.to_owned(), remedy.map(str::to_owned)),
-        );
-        assert_eq!(
-            unavailable,
-            ("firewalld isn't running".to_owned(), None),
-            "unavailable draws no control"
-        );
-    }
+            let grantable = Door::grantable(Capability::FIREWALL, "allow changing firewall rules");
+            assert_eq!(grantable.control(|| "apply"), None);
+            assert_eq!(
+                grantable.face(
+                    || "control".to_owned(),
+                    str::to_owned,
+                    |_, _| "none".to_owned()
+                ),
+                "allow changing firewall rules"
+            );
 
-    #[test]
-    fn an_authority_answers_the_door_and_carries_the_remedy() {
-        let authority = Fixed(Resolution::unavailable("no daemon").with_remedy("start firewalld"));
-        let door = door(&authority, Capability::FIREWALL);
-        assert_eq!(door.capability(), Capability::FIREWALL);
-        assert_eq!(door.unavailable_reason(), Some("no daemon"));
-        assert_eq!(door.remedy(), Some("start firewalld"));
-        assert!(!door.is_granted());
-        assert!(!door.is_grantable());
-    }
+            let unavailable = Door::unavailable(Capability::FIREWALL, "firewalld isn't running").face(
+                || ("control".to_owned(), None),
+                |_| ("grant".to_owned(), None),
+                |reason, remedy| (reason.to_owned(), remedy.map(str::to_owned)),
+            );
+            assert_eq!(
+                unavailable,
+                ("firewalld isn't running".to_owned(), None),
+                "unavailable draws no control"
+            );
+        }
 
-    #[test]
-    fn a_capability_names_the_thing_it_reaches() {
-        assert_eq!(Capability::FIREWALL.id(), "network.firewall");
-        assert_eq!(Capability::new("custom.thing").to_string(), "custom.thing");
+        phase an_authority_answers_the_door_and_carries_the_remedy;
+        {
+            let authority = Fixed(Resolution::unavailable("no daemon").with_remedy("start firewalld"));
+            let door = door(&authority, Capability::FIREWALL);
+            assert_eq!(door.capability(), Capability::FIREWALL);
+            assert_eq!(door.unavailable_reason(), Some("no daemon"));
+            assert_eq!(door.remedy(), Some("start firewalld"));
+            assert!(!door.is_granted());
+            assert!(!door.is_grantable());
+        }
+
+        phase a_capability_names_the_thing_it_reaches;
+        {
+            assert_eq!(Capability::FIREWALL.id(), "network.firewall");
+            assert_eq!(Capability::new("custom.thing").to_string(), "custom.thing");
+        }
     }
 }

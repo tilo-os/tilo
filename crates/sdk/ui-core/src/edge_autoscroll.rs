@@ -82,52 +82,56 @@ impl EdgeAutoscroll {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_drag_pressed_in_a_band_scrolls_only_past_where_it_was_pressed() {
-        let band = 8.0;
-        assert_eq!(velocity_past_press(3.0, 3.0, 0.0, 1000.0, band), 0.0);
-        assert_eq!(velocity_past_press(6.0, 3.0, 0.0, 1000.0, band), 0.0);
-        let past = velocity_past_press(1.0, 3.0, 0.0, 1000.0, band);
-        assert!(
-            (past + EDGE_AUTOSCROLL_PX_PER_S / 4.0).abs() < 1e-9,
-            "{past}"
-        );
-        assert_eq!(velocity_past_press(997.0, 997.0, 0.0, 1000.0, band), 0.0);
-        assert!(velocity_past_press(999.0, 997.0, 0.0, 1000.0, band) > 0.0);
-        assert_eq!(velocity_past_press(10.0, 500.0, 0.0, 1000.0, band), 0.0);
-        assert_eq!(
-            velocity_past_press(0.0, 500.0, 0.0, 1000.0, band),
-            -EDGE_AUTOSCROLL_PX_PER_S
-        );
-    }
+    tilo_test_env::scenario! {
+        fn edge_autoscroll_speeds_by_band_and_clock;
 
-    #[test]
-    fn speed_grows_through_the_band_and_holds_past_the_edge() {
-        let band = EDGE_AUTOSCROLL_BAND;
-        assert_eq!(velocity(500.0, 0.0, 1000.0), 0.0);
-        assert_eq!(velocity(band, 0.0, 1000.0), 0.0);
-        let half = velocity(band / 2.0, 0.0, 1000.0);
-        assert!((half + EDGE_AUTOSCROLL_PX_PER_S / 2.0).abs() < 1e-9);
-        assert_eq!(velocity(0.0, 0.0, 1000.0), -EDGE_AUTOSCROLL_PX_PER_S);
-        assert_eq!(velocity(-50.0, 0.0, 1000.0), -EDGE_AUTOSCROLL_PX_PER_S);
-        assert_eq!(velocity(1050.0, 0.0, 1000.0), EDGE_AUTOSCROLL_PX_PER_S);
-        assert_eq!(
-            velocity(1.0, 0.0, band * 2.0),
-            0.0,
-            "too small for both bands"
-        );
-    }
+        phase a_drag_pressed_in_a_band_scrolls_only_past_where_it_was_pressed;
+        {
+            let band = 8.0;
+            assert_eq!(velocity_past_press(3.0, 3.0, 0.0, 1000.0, band), 0.0);
+            assert_eq!(velocity_past_press(6.0, 3.0, 0.0, 1000.0, band), 0.0);
+            let past = velocity_past_press(1.0, 3.0, 0.0, 1000.0, band);
+            assert!(
+                (past + EDGE_AUTOSCROLL_PX_PER_S / 4.0).abs() < 1e-9,
+                "{past}"
+            );
+            assert_eq!(velocity_past_press(997.0, 997.0, 0.0, 1000.0, band), 0.0);
+            assert!(velocity_past_press(999.0, 997.0, 0.0, 1000.0, band) > 0.0);
+            assert_eq!(velocity_past_press(10.0, 500.0, 0.0, 1000.0, band), 0.0);
+            assert_eq!(
+                velocity_past_press(0.0, 500.0, 0.0, 1000.0, band),
+                -EDGE_AUTOSCROLL_PX_PER_S
+            );
+        }
 
-    #[test]
-    fn the_clock_starts_on_entry_caps_stalls_and_stops_on_exit() {
-        let t0 = crate::time::now();
-        let mut clock = EdgeAutoscroll::default();
-        assert_eq!(clock.advance(100.0, t0), 0.0);
-        let step = clock.advance(100.0, t0 + Duration::from_millis(10));
-        assert!((step - 1.0).abs() < 1e-9);
-        let stalled = clock.advance(100.0, t0 + Duration::from_secs(5));
-        assert!((stalled - distance(100.0, EDGE_AUTOSCROLL_MAX_STEP)).abs() < 1e-9);
-        assert_eq!(clock.advance(0.0, t0 + Duration::from_secs(6)), 0.0);
-        assert_eq!(clock.advance(100.0, t0 + Duration::from_secs(7)), 0.0);
+        phase speed_grows_through_the_band_and_holds_past_the_edge;
+        {
+            let band = EDGE_AUTOSCROLL_BAND;
+            assert_eq!(velocity(500.0, 0.0, 1000.0), 0.0);
+            assert_eq!(velocity(band, 0.0, 1000.0), 0.0);
+            let half = velocity(band / 2.0, 0.0, 1000.0);
+            assert!((half + EDGE_AUTOSCROLL_PX_PER_S / 2.0).abs() < 1e-9);
+            assert_eq!(velocity(0.0, 0.0, 1000.0), -EDGE_AUTOSCROLL_PX_PER_S);
+            assert_eq!(velocity(-50.0, 0.0, 1000.0), -EDGE_AUTOSCROLL_PX_PER_S);
+            assert_eq!(velocity(1050.0, 0.0, 1000.0), EDGE_AUTOSCROLL_PX_PER_S);
+            assert_eq!(
+                velocity(1.0, 0.0, band * 2.0),
+                0.0,
+                "too small for both bands"
+            );
+        }
+
+        phase the_clock_starts_on_entry_caps_stalls_and_stops_on_exit;
+        {
+            let t0 = crate::time::now();
+            let mut clock = EdgeAutoscroll::default();
+            assert_eq!(clock.advance(100.0, t0), 0.0);
+            let step = clock.advance(100.0, t0 + Duration::from_millis(10));
+            assert!((step - 1.0).abs() < 1e-9);
+            let stalled = clock.advance(100.0, t0 + Duration::from_secs(5));
+            assert!((stalled - distance(100.0, EDGE_AUTOSCROLL_MAX_STEP)).abs() < 1e-9);
+            assert_eq!(clock.advance(0.0, t0 + Duration::from_secs(6)), 0.0);
+            assert_eq!(clock.advance(100.0, t0 + Duration::from_secs(7)), 0.0);
+        }
     }
 }

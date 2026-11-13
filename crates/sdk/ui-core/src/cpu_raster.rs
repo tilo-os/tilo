@@ -205,39 +205,43 @@ mod tests {
             .expect("valid CPU frame");
     }
 
-    #[test]
-    fn damaged_move_erases_old_pixels_and_matches_full_render() {
-        let mut canvas = CpuCanvas::new();
-        render(
-            &mut canvas,
-            &scene(Rect::new(1.0, 1.0, 5.0, 5.0)),
-            &[],
-            true,
-        );
-        assert_eq!(&canvas.pixels[136..140], &[128, 0, 0, 128]);
-        let next = scene(Rect::new(6.0, 1.0, 10.0, 5.0));
-        render(&mut canvas, &next, &[Rect::new(1.0, 1.0, 10.0, 5.0)], false);
-        let mut oracle = CpuCanvas::new();
-        render(&mut oracle, &next, &[], true);
-        assert_eq!(canvas.pixels, oracle.pixels);
-        assert_eq!(canvas.regions, vec![Region::new(1, 1, 9, 4)]);
-    }
+    tilo_test_env::scenario! {
+        fn cpu_damage_matches_a_full_render_and_resets_on_handoff;
 
-    #[test]
-    fn gpu_handoff_invalidates_cpu_damage_history() {
-        let mut canvas = CpuCanvas::new();
-        render(
-            &mut canvas,
-            &scene(Rect::new(1.0, 1.0, 5.0, 5.0)),
-            &[],
-            true,
-        );
-        canvas.invalidate();
-        let next = scene(Rect::new(6.0, 1.0, 10.0, 5.0));
-        render(&mut canvas, &next, &[Rect::new(6.0, 1.0, 10.0, 5.0)], false);
-        let mut oracle = CpuCanvas::new();
-        render(&mut oracle, &next, &[], true);
-        assert_eq!(canvas.pixels, oracle.pixels);
-        assert_eq!(canvas.regions, vec![Region::new(0, 0, 16, 16)]);
+        phase damaged_move_erases_old_pixels_and_matches_full_render;
+        {
+            let mut canvas = CpuCanvas::new();
+            render(
+                &mut canvas,
+                &scene(Rect::new(1.0, 1.0, 5.0, 5.0)),
+                &[],
+                true,
+            );
+            assert_eq!(&canvas.pixels[136..140], &[128, 0, 0, 128]);
+            let next = scene(Rect::new(6.0, 1.0, 10.0, 5.0));
+            render(&mut canvas, &next, &[Rect::new(1.0, 1.0, 10.0, 5.0)], false);
+            let mut oracle = CpuCanvas::new();
+            render(&mut oracle, &next, &[], true);
+            assert_eq!(canvas.pixels, oracle.pixels);
+            assert_eq!(canvas.regions, vec![Region::new(1, 1, 9, 4)]);
+        }
+
+        phase gpu_handoff_invalidates_cpu_damage_history;
+        {
+            let mut canvas = CpuCanvas::new();
+            render(
+                &mut canvas,
+                &scene(Rect::new(1.0, 1.0, 5.0, 5.0)),
+                &[],
+                true,
+            );
+            canvas.invalidate();
+            let next = scene(Rect::new(6.0, 1.0, 10.0, 5.0));
+            render(&mut canvas, &next, &[Rect::new(6.0, 1.0, 10.0, 5.0)], false);
+            let mut oracle = CpuCanvas::new();
+            render(&mut oracle, &next, &[], true);
+            assert_eq!(canvas.pixels, oracle.pixels);
+            assert_eq!(canvas.regions, vec![Region::new(0, 0, 16, 16)]);
+        }
     }
 }

@@ -452,106 +452,114 @@ fn change_recent(change: impl FnOnce(&mut EmojiRecents)) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_shortcode_names_an_emoji_and_an_unknown_name_does_not() {
-        assert_eq!(shortcode_emoji("pizza"), Some("🍕".to_owned()));
-        assert_eq!(shortcode_emoji(":pizza:"), Some("🍕".to_owned()));
-        assert_eq!(shortcode_emoji("definitely_not_an_emoji"), None);
-        assert_eq!(shortcode_emoji(""), None);
-    }
+    tilo_test_env::scenario! {
+        fn emoji_names_resolve_through_the_catalogue;
 
-    #[test]
-    fn what_was_typed_finds_the_emoji_whose_name_starts_with_it() {
-        let found = shortcode_matches("piz", 8);
-        assert!(found.iter().any(|shortcode| shortcode.emoji == "🍕"));
-        assert!(found.iter().all(|shortcode| !shortcode.name.is_empty()));
-        assert!(shortcode_matches("zzzzzz", 8).is_empty());
-    }
-
-    #[test]
-    fn recents_dedup_spellings_keep_custom_emoji_and_cap() {
-        let mut recents = EmojiRecents::default();
-        recents.record("👍");
-        recents.record(":party_parrot:");
-        recents.record("👍🏽");
-        assert_eq!(recents.items(), ["👍🏽", ":party_parrot:"]);
-        for n in 0..40 {
-            recents.record(&format!(":e{n}:"));
-        }
-        assert_eq!(recents.items().len(), EmojiRecents::CAPACITY);
-        assert_eq!(recents.items()[0], ":e39:");
-        let restored = EmojiRecents::from_items(recents.items().to_vec());
-        assert_eq!(restored, recents, "a kept list reads back in its order");
-    }
-
-    #[test]
-    fn a_forgotten_emoji_is_gone_in_every_spelling() {
-        let mut recents = EmojiRecents::default();
-        recents.record("👍");
-        recents.record("🎉");
-        recents.record("👍🏽");
-        assert!(recents.forget("👍"), "its other spelling is there");
-        assert_eq!(recents.items(), ["🎉"], "every spelling of it is gone");
-        assert!(!recents.forget("👍🏻"), "a tone of it is no longer there");
-        assert!(!recents.forget("🍕"), "what was never there is no change");
-    }
-
-    #[test]
-    fn the_recents_are_kept_where_the_program_keeps_them() {
-        use std::rc::Rc;
-        struct Kept(Rc<RefCell<Vec<String>>>);
-        impl RecentsStore for Kept {
-            fn load(&self) -> Vec<String> {
-                self.0.borrow().clone()
-            }
-            fn save(&self, items: &[String]) {
-                *self.0.borrow_mut() = items.to_vec();
-            }
-        }
-        let kept = Rc::new(RefCell::new(vec!["🎉".to_owned()]));
-        keep_recents_in(Box::new(Kept(Rc::clone(&kept))));
-        assert_eq!(recents(), ["🎉"], "what was kept reads back");
-        record_recent(":tilo:");
-        assert_eq!(*kept.borrow(), [":tilo:", "🎉"]);
-        assert_eq!(recents(), [":tilo:", "🎉"]);
-    }
-
-    #[test]
-    fn a_name_without_a_catalogue_is_the_emoji_itself() {
-        assert_eq!(emoji_name(":party_parrot:"), ":party_parrot:");
-    }
-
-    #[test]
-    fn the_recents_kept_on_the_device_come_back_next_time() {
-        let dir = tempfile::tempdir().expect("a temporary directory");
-        let path = dir.path().join("state/tilo/emoji-recents.json");
-        let store = DeviceRecents::at(&path);
-        assert!(
-            store.load().is_empty(),
-            "a device with nothing kept has no recents"
-        );
-
-        let used = vec!["👍".to_owned(), ":party_parrot:".to_owned()];
-        store.save(&used);
-        assert_eq!(
-            DeviceRecents::at(&path).load(),
-            used,
-            "what was picked comes back in the order it was picked"
-        );
-        #[cfg(unix)]
+        phase a_shortcode_names_an_emoji_and_an_unknown_name_does_not;
         {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(&path)
-                .expect("the kept file")
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o077, 0, "only the person reads their recents");
+            assert_eq!(shortcode_emoji("pizza"), Some("🍕".to_owned()));
+            assert_eq!(shortcode_emoji(":pizza:"), Some("🍕".to_owned()));
+            assert_eq!(shortcode_emoji("definitely_not_an_emoji"), None);
+            assert_eq!(shortcode_emoji(""), None);
         }
 
-        std::fs::write(&path, b"{ not recents").expect("damage the kept file");
-        assert!(
-            store.load().is_empty(),
-            "an unreadable file reads as no recents, never a failure"
-        );
+        phase what_was_typed_finds_the_emoji_whose_name_starts_with_it;
+        {
+            let found = shortcode_matches("piz", 8);
+            assert!(found.iter().any(|shortcode| shortcode.emoji == "🍕"));
+            assert!(found.iter().all(|shortcode| !shortcode.name.is_empty()));
+            assert!(shortcode_matches("zzzzzz", 8).is_empty());
+        }
+
+        phase a_name_without_a_catalogue_is_the_emoji_itself;
+        {
+            assert_eq!(emoji_name(":party_parrot:"), ":party_parrot:");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn emoji_recents_dedup_forget_and_persist;
+
+        phase recents_dedup_spellings_keep_custom_emoji_and_cap;
+        {
+            let mut recents = EmojiRecents::default();
+            recents.record("👍");
+            recents.record(":party_parrot:");
+            recents.record("👍🏽");
+            assert_eq!(recents.items(), ["👍🏽", ":party_parrot:"]);
+            for n in 0..40 {
+                recents.record(&format!(":e{n}:"));
+            }
+            assert_eq!(recents.items().len(), EmojiRecents::CAPACITY);
+            assert_eq!(recents.items()[0], ":e39:");
+            let restored = EmojiRecents::from_items(recents.items().to_vec());
+            assert_eq!(restored, recents, "a kept list reads back in its order");
+        }
+
+        phase a_forgotten_emoji_is_gone_in_every_spelling;
+        {
+            let mut recents = EmojiRecents::default();
+            recents.record("👍");
+            recents.record("🎉");
+            recents.record("👍🏽");
+            assert!(recents.forget("👍"), "its other spelling is there");
+            assert_eq!(recents.items(), ["🎉"], "every spelling of it is gone");
+            assert!(!recents.forget("👍🏻"), "a tone of it is no longer there");
+            assert!(!recents.forget("🍕"), "what was never there is no change");
+        }
+
+        phase the_recents_are_kept_where_the_program_keeps_them;
+        {
+            use std::rc::Rc;
+            struct Kept(Rc<RefCell<Vec<String>>>);
+            impl RecentsStore for Kept {
+                fn load(&self) -> Vec<String> {
+                    self.0.borrow().clone()
+                }
+                fn save(&self, items: &[String]) {
+                    *self.0.borrow_mut() = items.to_vec();
+                }
+            }
+            let kept = Rc::new(RefCell::new(vec!["🎉".to_owned()]));
+            keep_recents_in(Box::new(Kept(Rc::clone(&kept))));
+            assert_eq!(recents(), ["🎉"], "what was kept reads back");
+            record_recent(":tilo:");
+            assert_eq!(*kept.borrow(), [":tilo:", "🎉"]);
+            assert_eq!(recents(), [":tilo:", "🎉"]);
+        }
+
+        phase the_recents_kept_on_the_device_come_back_next_time;
+        {
+            let dir = tempfile::tempdir().expect("a temporary directory");
+            let path = dir.path().join("state/tilo/emoji-recents.json");
+            let store = DeviceRecents::at(&path);
+            assert!(
+                store.load().is_empty(),
+                "a device with nothing kept has no recents"
+            );
+
+            let used = vec!["👍".to_owned(), ":party_parrot:".to_owned()];
+            store.save(&used);
+            assert_eq!(
+                DeviceRecents::at(&path).load(),
+                used,
+                "what was picked comes back in the order it was picked"
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let mode = std::fs::metadata(&path)
+                    .expect("the kept file")
+                    .permissions()
+                    .mode();
+                assert_eq!(mode & 0o077, 0, "only the person reads their recents");
+            }
+
+            std::fs::write(&path, b"{ not recents").expect("damage the kept file");
+            assert!(
+                store.load().is_empty(),
+                "an unreadable file reads as no recents, never a failure"
+            );
+        }
     }
 }

@@ -261,66 +261,127 @@ fn start_drag_with(offers: Vec<(String, Offer)>) -> bool {
 mod outgoing_tests {
     use super::*;
 
-    #[test]
-    fn a_copied_file_list_reads_back_as_the_files_it_names() {
-        // Case `a_uri_list_reads_back_as_the_paths_it_was_written_from`:
-        // what `uri_list` escapes has to come back as the same path, or a
-        // file with a space in its name is pasted under a broken name.
+    tilo_test_env::scenario! {
+        fn outgoing_file_lists_encode_and_read_back;
+
+        phase a_copied_file_list_reads_back_as_the_files_it_names;
         {
-            let paths = [PathBuf::from("/home/me/my photo#1.png")];
-            let body = uri_list(&paths);
-            assert_eq!(
-                copied_files(URI_LIST_MIME, &body),
-                CopiedFiles {
-                    paths: paths.to_vec(),
-                    cut: false
-                }
+            // Case `a_uri_list_reads_back_as_the_paths_it_was_written_from`:
+            // what `uri_list` escapes has to come back as the same path, or a
+            // file with a space in its name is pasted under a broken name.
+            {
+                let paths = [PathBuf::from("/home/me/my photo#1.png")];
+                let body = uri_list(&paths);
+                assert_eq!(
+                    copied_files(URI_LIST_MIME, &body),
+                    CopiedFiles {
+                        paths: paths.to_vec(),
+                        cut: false
+                    }
+                );
+                assert!(!copied_files(URI_LIST_MIME, &body).cut, "a uri list copies");
+                let copied = copied_files_list(&paths, false);
+                assert!(copied.starts_with("copy\r\n"), "a copy says so: {copied}");
+                assert_eq!(
+                    copied_files(COPIED_FILES_MIME, &copied),
+                    CopiedFiles {
+                        paths: paths.to_vec(),
+                        cut: false
+                    },
+                    "a copy reads back with every file it names"
+                );
+                assert!(copied_files(COPIED_FILES_MIME, &copied_files_list(&paths, true)).cut);
+            }
+
+            {
+                let body = "cut\r\nfile:///home/me/a.txt\r\nfile:///home/me/b.txt\r\n";
+                assert_eq!(
+                    copied_files(COPIED_FILES_MIME, body),
+                    CopiedFiles {
+                        paths: vec![
+                            PathBuf::from("/home/me/a.txt"),
+                            PathBuf::from("/home/me/b.txt")
+                        ],
+                        cut: true
+                    }
+                );
+            }
+
+            // Case `a_list_with_a_comment_or_a_stray_line_keeps_its_files`:
+            // One line that is not a file URI must not lose the paste.
+            {
+                let body =
+                    "# copied from Files\r\nfile:///a\r\nhttps://example.com/b\r\n\r\nfile:///c\r\n";
+                assert_eq!(
+                    copied_files(URI_LIST_MIME, body).paths,
+                    vec![PathBuf::from("/a"), PathBuf::from("/c")]
+                );
+            }
+
+            assert!(is_file_mime(URI_LIST_MIME));
+            assert!(is_file_mime(COPIED_FILES_MIME));
+            assert!(
+                !is_file_mime("text/plain;charset=utf-8"),
+                "text is not files"
             );
-            assert!(!copied_files(URI_LIST_MIME, &body).cut, "a uri list copies");
-            let copied = copied_files_list(&paths, false);
-            assert!(copied.starts_with("copy\r\n"), "a copy says so: {copied}");
-            assert_eq!(
-                copied_files(COPIED_FILES_MIME, &copied),
-                CopiedFiles {
-                    paths: paths.to_vec(),
-                    cut: false
-                },
-                "a copy reads back with every file it names"
-            );
-            assert!(copied_files(COPIED_FILES_MIME, &copied_files_list(&paths, true)).cut);
         }
 
+        phase outgoing_drags_encode_uri_lists_and_content_types;
         {
-            let body = "cut\r\nfile:///home/me/a.txt\r\nfile:///home/me/b.txt\r\n";
-            assert_eq!(
-                copied_files(COPIED_FILES_MIME, body),
-                CopiedFiles {
-                    paths: vec![
-                        PathBuf::from("/home/me/a.txt"),
-                        PathBuf::from("/home/me/b.txt")
-                    ],
-                    cut: true
-                }
-            );
-        }
+            {
+                assert_eq!(
+                    uri_list(&[PathBuf::from("/home/me/my photo#1.png")]),
+                    "file:///home/me/my%20photo%231.png\r\n"
+                );
+            }
 
-        // Case `a_list_with_a_comment_or_a_stray_line_keeps_its_files`:
-        // One line that is not a file URI must not lose the paste.
-        {
-            let body =
-                "# copied from Files\r\nfile:///a\r\nhttps://example.com/b\r\n\r\nfile:///c\r\n";
-            assert_eq!(
-                copied_files(URI_LIST_MIME, body).paths,
-                vec![PathBuf::from("/a"), PathBuf::from("/c")]
-            );
-        }
+            {
+                assert_eq!(
+                    uri_list(&[PathBuf::from("/a.png"), PathBuf::from("/b.png")]),
+                    "file:///a.png\r\nfile:///b.png\r\n"
+                );
+            }
 
-        assert!(is_file_mime(URI_LIST_MIME));
-        assert!(is_file_mime(COPIED_FILES_MIME));
-        assert!(
-            !is_file_mime("text/plain;charset=utf-8"),
-            "text is not files"
-        );
+            // Case `a_known_extension_names_a_content_type_and_an_unknown_one_does_not`:
+            // The content type is what a confined receiver actually uses, so an
+            // unknown extension must not claim one.
+            {
+                assert_eq!(mime_for_path(Path::new("/x/photo.PNG")), Some("image/png"));
+                assert_eq!(mime_for_path(Path::new("/x/scan.jpeg")), Some("image/jpeg"));
+                assert_eq!(mime_for_path(Path::new("/x/archive.tar.zst")), None);
+                assert_eq!(mime_for_path(Path::new("/x/noext")), None);
+            }
+
+            // Case `a_dragged_file_is_offered_unread`:
+            // Starting a drag runs inside a pointer motion on the app's thread;
+            // reading the file there froze Files for 11 s on a 4.3 GB video. The
+            // drag names the file and its bytes stream when a receiver asks.
+            {
+                let video = PathBuf::from("/home/me/Downloads/film.png");
+                assert_eq!(
+                    file_offers(std::slice::from_ref(&video)),
+                    vec![
+                        ("image/png".to_string(), Offer::File(video.clone())),
+                        (
+                            URI_LIST_MIME.to_string(),
+                            Offer::Bytes(uri_list(std::slice::from_ref(&video)).into_bytes())
+                        ),
+                    ]
+                );
+                let folder = PathBuf::from("/home/me/Downloads");
+                assert_eq!(
+                    file_offers(std::slice::from_ref(&folder)),
+                    vec![(
+                        URI_LIST_MIME.to_string(),
+                        Offer::Bytes(uri_list(std::slice::from_ref(&folder)).into_bytes())
+                    )]
+                );
+            }
+
+            {
+                assert!(!start_file_drag(&[]));
+            }
+        }
     }
 
     #[test]
@@ -337,62 +398,5 @@ mod outgoing_tests {
             "files travel as their URI list"
         );
         assert_eq!(take_hosted_drag(), None, "taken once");
-    }
-
-    #[test]
-    fn outgoing_drags_encode_uri_lists_and_content_types() {
-        {
-            assert_eq!(
-                uri_list(&[PathBuf::from("/home/me/my photo#1.png")]),
-                "file:///home/me/my%20photo%231.png\r\n"
-            );
-        }
-
-        {
-            assert_eq!(
-                uri_list(&[PathBuf::from("/a.png"), PathBuf::from("/b.png")]),
-                "file:///a.png\r\nfile:///b.png\r\n"
-            );
-        }
-
-        // Case `a_known_extension_names_a_content_type_and_an_unknown_one_does_not`:
-        // The content type is what a confined receiver actually uses, so an
-        // unknown extension must not claim one.
-        {
-            assert_eq!(mime_for_path(Path::new("/x/photo.PNG")), Some("image/png"));
-            assert_eq!(mime_for_path(Path::new("/x/scan.jpeg")), Some("image/jpeg"));
-            assert_eq!(mime_for_path(Path::new("/x/archive.tar.zst")), None);
-            assert_eq!(mime_for_path(Path::new("/x/noext")), None);
-        }
-
-        // Case `a_dragged_file_is_offered_unread`:
-        // Starting a drag runs inside a pointer motion on the app's thread;
-        // reading the file there froze Files for 11 s on a 4.3 GB video. The
-        // drag names the file and its bytes stream when a receiver asks.
-        {
-            let video = PathBuf::from("/home/me/Downloads/film.png");
-            assert_eq!(
-                file_offers(std::slice::from_ref(&video)),
-                vec![
-                    ("image/png".to_string(), Offer::File(video.clone())),
-                    (
-                        URI_LIST_MIME.to_string(),
-                        Offer::Bytes(uri_list(std::slice::from_ref(&video)).into_bytes())
-                    ),
-                ]
-            );
-            let folder = PathBuf::from("/home/me/Downloads");
-            assert_eq!(
-                file_offers(std::slice::from_ref(&folder)),
-                vec![(
-                    URI_LIST_MIME.to_string(),
-                    Offer::Bytes(uri_list(std::slice::from_ref(&folder)).into_bytes())
-                )]
-            );
-        }
-
-        {
-            assert!(!start_file_drag(&[]));
-        }
     }
 }

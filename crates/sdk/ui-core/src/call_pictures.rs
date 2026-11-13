@@ -384,72 +384,76 @@ fn test_pattern(width: u16, height: u16, variant: u8, frame: u8) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_test_picture_is_colour_bars_with_a_moving_block() {
-        let first = test_pattern(70, 40, 0, 0);
-        let later = test_pattern(70, 40, 0, 4);
-        assert_eq!(first.len(), 70 * 40 * 4);
-        assert_eq!(&first[..4], &[192, 192, 192, 255]);
-        let last = 69 * 4;
-        assert_eq!(&first[last..last + 4], &[0, 0, 192, 255]);
-        assert_ne!(first, later, "the block moves");
-        assert_ne!(
-            test_pattern(70, 40, 1, 0),
-            first,
-            "each variant has its own shade"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn call_pictures_show_test_bars_hold_back_and_retain;
 
-    #[test]
-    fn a_dropped_picture_holds_its_stream_back_until_a_keyframe() {
-        use runtime_collab::native_media::{PictureCodec, PictureLayer, PictureUnit};
-        let object = |keyframe| {
-            PictureUnit {
-                keyframe,
-                codec: PictureCodec::H264,
-                width: 2,
-                height: 2,
-                payload: &[0, 0, 0, 1],
-            }
-            .to_object(PictureLayer::Low, 0, 0)
-        };
-        let mut pictures = CallPictures::new();
-        pictures.behind.insert(("s".into(), PictureSource::Camera));
-        pictures.receive(vec![Picture {
-            person: "ab".repeat(32),
-            stream: "s".into(),
-            source: PictureSource::Camera,
-            object: object(false),
-        }]);
-        assert_eq!(pictures.pending(), 0, "nothing reached a decoder");
-        pictures.receive(vec![Picture {
-            person: "ab".repeat(32),
-            stream: "s".into(),
-            source: PictureSource::Camera,
-            object: object(true),
-        }]);
-        assert!(
-            pictures.behind.is_empty(),
-            "a keyframe catches the stream up"
-        );
-    }
+        phase the_test_picture_is_colour_bars_with_a_moving_block;
+        {
+            let first = test_pattern(70, 40, 0, 0);
+            let later = test_pattern(70, 40, 0, 4);
+            assert_eq!(first.len(), 70 * 40 * 4);
+            assert_eq!(&first[..4], &[192, 192, 192, 255]);
+            let last = 69 * 4;
+            assert_eq!(&first[last..last + 4], &[0, 0, 192, 255]);
+            assert_ne!(first, later, "the block moves");
+            assert_ne!(
+                test_pattern(70, 40, 1, 0),
+                first,
+                "each variant has its own shade"
+            );
+        }
 
-    #[test]
-    fn a_picture_decoded_elsewhere_shows_until_its_person_stops_showing_it() {
-        let mut pictures = CallPictures::new();
-        let image = ImageData {
-            data: vello::peniko::Blob::new(Arc::new(vec![0; 4])),
-            format: vello::peniko::ImageFormat::Rgba8,
-            alpha_type: vello::peniko::ImageAlphaType::Alpha,
-            width: 1,
-            height: 1,
-        };
-        pictures.insert("ana", PictureSource::Camera, image);
-        assert!(pictures.take_changed());
-        assert!(pictures.picture("ana", PictureSource::Camera).is_some());
-        assert!(!pictures.take_changed());
-        pictures.retain(|person, _| person != "ana");
-        assert!(pictures.take_changed());
-        assert!(pictures.picture("ana", PictureSource::Camera).is_none());
+        phase a_dropped_picture_holds_its_stream_back_until_a_keyframe;
+        {
+            use runtime_collab::native_media::{PictureCodec, PictureLayer, PictureUnit};
+            let object = |keyframe| {
+                PictureUnit {
+                    keyframe,
+                    codec: PictureCodec::H264,
+                    width: 2,
+                    height: 2,
+                    payload: &[0, 0, 0, 1],
+                }
+                .to_object(PictureLayer::Low, 0, 0)
+            };
+            let mut pictures = CallPictures::new();
+            pictures.behind.insert(("s".into(), PictureSource::Camera));
+            pictures.receive(vec![Picture {
+                person: "ab".repeat(32),
+                stream: "s".into(),
+                source: PictureSource::Camera,
+                object: object(false),
+            }]);
+            assert_eq!(pictures.pending(), 0, "nothing reached a decoder");
+            pictures.receive(vec![Picture {
+                person: "ab".repeat(32),
+                stream: "s".into(),
+                source: PictureSource::Camera,
+                object: object(true),
+            }]);
+            assert!(
+                pictures.behind.is_empty(),
+                "a keyframe catches the stream up"
+            );
+        }
+
+        phase a_picture_decoded_elsewhere_shows_until_its_person_stops_showing_it;
+        {
+            let mut pictures = CallPictures::new();
+            let image = ImageData {
+                data: vello::peniko::Blob::new(Arc::new(vec![0; 4])),
+                format: vello::peniko::ImageFormat::Rgba8,
+                alpha_type: vello::peniko::ImageAlphaType::Alpha,
+                width: 1,
+                height: 1,
+            };
+            pictures.insert("ana", PictureSource::Camera, image);
+            assert!(pictures.take_changed());
+            assert!(pictures.picture("ana", PictureSource::Camera).is_some());
+            assert!(!pictures.take_changed());
+            pictures.retain(|person, _| person != "ana");
+            assert!(pictures.take_changed());
+            assert!(pictures.picture("ana", PictureSource::Camera).is_none());
+        }
     }
 }

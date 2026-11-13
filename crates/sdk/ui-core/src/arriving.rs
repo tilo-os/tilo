@@ -669,131 +669,139 @@ mod tests {
         base + Duration::from_millis(ms)
     }
 
-    #[test]
-    fn a_local_answer_inside_the_budget_shows_at_once_without_motion() {
-        let t0 = crate::time::now();
-        let mut clock = ArrivalClock::with_budget(t0, Source::Local, BUDGET);
-        assert!(clock.holds_frame(t0), "the first frame waits for it");
-        assert_eq!(clock.holds_frame_until(t0), Some(t0 + BUDGET));
-        assert_eq!(clock.step(t0), Step::Ground);
-        clock.arrive(at(t0, 8));
-        assert!(!clock.holds_frame(at(t0, 8)));
-        assert_eq!(clock.step(at(t0, 8)), Step::Shown);
-        assert!(!clock.arrives_with_motion());
-        assert_eq!(clock.next_step_at(at(t0, 8)), None);
+    tilo_test_env::scenario! {
+        fn an_arrival_clock_steps_from_ground_to_shown;
+
+        phase a_local_answer_inside_the_budget_shows_at_once_without_motion;
+        {
+            let t0 = crate::time::now();
+            let mut clock = ArrivalClock::with_budget(t0, Source::Local, BUDGET);
+            assert!(clock.holds_frame(t0), "the first frame waits for it");
+            assert_eq!(clock.holds_frame_until(t0), Some(t0 + BUDGET));
+            assert_eq!(clock.step(t0), Step::Ground);
+            clock.arrive(at(t0, 8));
+            assert!(!clock.holds_frame(at(t0, 8)));
+            assert_eq!(clock.step(at(t0, 8)), Step::Shown);
+            assert!(!clock.arrives_with_motion());
+            assert_eq!(clock.next_step_at(at(t0, 8)), None);
+        }
+
+        phase a_local_read_past_its_budget_behaves_like_a_remote_one;
+        {
+            let t0 = crate::time::now();
+            let mut clock = ArrivalClock::with_budget(t0, Source::Local, BUDGET);
+            assert!(!clock.holds_frame(at(t0, 17)), "the frame stops waiting");
+            assert_eq!(clock.step(at(t0, 100)), Step::Ground);
+            assert_eq!(clock.step(at(t0, 150)), Step::Skeleton);
+            assert_eq!(clock.step(at(t0, 5_000)), Step::Skeleton);
+            clock.arrive(at(t0, 60));
+            assert!(clock.arrives_with_motion());
+        }
+
+        phase a_remote_read_shows_ground_then_a_skeleton_then_its_source;
+        {
+            let t0 = crate::time::now();
+            let clock = ArrivalClock::with_budget(t0, Source::host("eu1.tilo.sh"), BUDGET);
+            assert!(!clock.holds_frame(t0), "a remote read never holds a frame");
+            assert_eq!(clock.step(t0), Step::Ground);
+            assert_eq!(clock.step(at(t0, 149)), Step::Ground);
+            assert_eq!(clock.next_step_at(t0), Some(t0 + GRACE));
+            assert_eq!(clock.step(at(t0, 150)), Step::Skeleton);
+            assert_eq!(
+                clock.next_step_at(at(t0, 150)),
+                Some(t0 + NAME_SOURCE_AFTER)
+            );
+            assert_eq!(clock.step(at(t0, 2_000)), Step::Named);
+            assert_eq!(
+                clock.next_step_at(at(t0, 2_000)),
+                None,
+                "nothing changes until the answer lands"
+            );
+        }
+
+        phase a_skeleton_never_shows_for_less_than_its_minimum;
+        {
+            let t0 = crate::time::now();
+            let mut clock = ArrivalClock::with_budget(t0, Source::peer("Laptop"), BUDGET);
+            clock.arrive(at(t0, 200));
+            assert_eq!(clock.shows_at(), Some(t0 + GRACE + MIN_SHOWN));
+            assert_eq!(clock.step(at(t0, 200)), Step::Skeleton);
+            assert_eq!(clock.step(at(t0, 449)), Step::Skeleton);
+            assert_eq!(
+                clock.next_step_at(at(t0, 200)),
+                Some(t0 + GRACE + MIN_SHOWN)
+            );
+            assert_eq!(clock.step(at(t0, 450)), Step::Shown);
+            assert_eq!(clock.replaced_step(), Step::Skeleton);
+            assert!(clock.arrives_with_motion());
+        }
+
+        phase a_remote_answer_before_the_grace_period_shows_without_a_skeleton;
+        {
+            let t0 = crate::time::now();
+            let mut clock = ArrivalClock::with_budget(t0, Source::peer("Laptop"), BUDGET);
+            clock.arrive(at(t0, 90));
+            assert_eq!(clock.shows_at(), Some(at(t0, 90)));
+            assert_eq!(clock.step(at(t0, 90)), Step::Shown);
+            assert_eq!(clock.replaced_step(), Step::Ground);
+            assert!(clock.arrives_with_motion(), "it fades onto its ground");
+        }
+
+        phase a_late_answer_shows_when_it_lands;
+        {
+            let t0 = crate::time::now();
+            let mut clock = ArrivalClock::with_budget(t0, Source::host("host"), BUDGET);
+            clock.arrive(at(t0, 3_000));
+            assert_eq!(clock.shows_at(), Some(at(t0, 3_000)));
+            assert_eq!(clock.replaced_step(), Step::Named);
+        }
     }
 
-    #[test]
-    fn a_local_read_past_its_budget_behaves_like_a_remote_one() {
-        let t0 = crate::time::now();
-        let mut clock = ArrivalClock::with_budget(t0, Source::Local, BUDGET);
-        assert!(!clock.holds_frame(at(t0, 17)), "the frame stops waiting");
-        assert_eq!(clock.step(at(t0, 100)), Step::Ground);
-        assert_eq!(clock.step(at(t0, 150)), Step::Skeleton);
-        assert_eq!(clock.step(at(t0, 5_000)), Step::Skeleton);
-        clock.arrive(at(t0, 60));
-        assert!(clock.arrives_with_motion());
-    }
+    tilo_test_env::scenario! {
+        fn an_arriving_read_restarts_retries_and_settles;
 
-    #[test]
-    fn a_remote_read_shows_ground_then_a_skeleton_then_its_source() {
-        let t0 = crate::time::now();
-        let clock = ArrivalClock::with_budget(t0, Source::host("eu1.tilo.sh"), BUDGET);
-        assert!(!clock.holds_frame(t0), "a remote read never holds a frame");
-        assert_eq!(clock.step(t0), Step::Ground);
-        assert_eq!(clock.step(at(t0, 149)), Step::Ground);
-        assert_eq!(clock.next_step_at(t0), Some(t0 + GRACE));
-        assert_eq!(clock.step(at(t0, 150)), Step::Skeleton);
-        assert_eq!(
-            clock.next_step_at(at(t0, 150)),
-            Some(t0 + NAME_SOURCE_AFTER)
-        );
-        assert_eq!(clock.step(at(t0, 2_000)), Step::Named);
-        assert_eq!(
-            clock.next_step_at(at(t0, 2_000)),
-            None,
-            "nothing changes until the answer lands"
-        );
-    }
+        phase a_restart_makes_an_older_completion_stale;
+        {
+            let arriving: Arriving<u32> = Arriving::pending(Source::Local);
+            let first = arriving.begin(Source::Local);
+            let second = arriving.begin(Source::host("host"));
+            assert!(!first.is_current());
+            assert!(
+                !first.finish(Ok(1)),
+                "a slow answer cannot overwrite a newer read"
+            );
+            assert_eq!(
+                arriving.with(Clone::clone),
+                Arrival::Pending {
+                    from: Source::host("host")
+                }
+            );
+            assert!(second.finish(Ok(2)));
+            assert_eq!(arriving.with(Clone::clone), Arrival::Ready(2));
+        }
 
-    #[test]
-    fn a_skeleton_never_shows_for_less_than_its_minimum() {
-        let t0 = crate::time::now();
-        let mut clock = ArrivalClock::with_budget(t0, Source::peer("Laptop"), BUDGET);
-        clock.arrive(at(t0, 200));
-        assert_eq!(clock.shows_at(), Some(t0 + GRACE + MIN_SHOWN));
-        assert_eq!(clock.step(at(t0, 200)), Step::Skeleton);
-        assert_eq!(clock.step(at(t0, 449)), Step::Skeleton);
-        assert_eq!(
-            clock.next_step_at(at(t0, 200)),
-            Some(t0 + GRACE + MIN_SHOWN)
-        );
-        assert_eq!(clock.step(at(t0, 450)), Step::Shown);
-        assert_eq!(clock.replaced_step(), Step::Skeleton);
-        assert!(clock.arrives_with_motion());
-    }
+        phase a_retry_asks_again_the_way_the_read_was_asked;
+        {
+            let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = Arc::clone(&asked);
+            let arriving: Arriving<u32> =
+                Arriving::pending(Source::Local).on_retry(move |arriving: &Arriving<u32>| {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let _ = arriving.begin(Source::Local);
+                });
+            arriving.writer().fail(String::from("disk unplugged"));
+            assert!(arriving.can_retry());
+            arriving.retry();
+            assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert!(arriving.with(Arrival::is_pending));
+        }
 
-    #[test]
-    fn a_remote_answer_before_the_grace_period_shows_without_a_skeleton() {
-        let t0 = crate::time::now();
-        let mut clock = ArrivalClock::with_budget(t0, Source::peer("Laptop"), BUDGET);
-        clock.arrive(at(t0, 90));
-        assert_eq!(clock.shows_at(), Some(at(t0, 90)));
-        assert_eq!(clock.step(at(t0, 90)), Step::Shown);
-        assert_eq!(clock.replaced_step(), Step::Ground);
-        assert!(clock.arrives_with_motion(), "it fades onto its ground");
-    }
-
-    #[test]
-    fn a_late_answer_shows_when_it_lands() {
-        let t0 = crate::time::now();
-        let mut clock = ArrivalClock::with_budget(t0, Source::host("host"), BUDGET);
-        clock.arrive(at(t0, 3_000));
-        assert_eq!(clock.shows_at(), Some(at(t0, 3_000)));
-        assert_eq!(clock.replaced_step(), Step::Named);
-    }
-
-    #[test]
-    fn a_restart_makes_an_older_completion_stale() {
-        let arriving: Arriving<u32> = Arriving::pending(Source::Local);
-        let first = arriving.begin(Source::Local);
-        let second = arriving.begin(Source::host("host"));
-        assert!(!first.is_current());
-        assert!(
-            !first.finish(Ok(1)),
-            "a slow answer cannot overwrite a newer read"
-        );
-        assert_eq!(
-            arriving.with(Clone::clone),
-            Arrival::Pending {
-                from: Source::host("host")
-            }
-        );
-        assert!(second.finish(Ok(2)));
-        assert_eq!(arriving.with(Clone::clone), Arrival::Ready(2));
-    }
-
-    #[test]
-    fn a_retry_asks_again_the_way_the_read_was_asked() {
-        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counted = Arc::clone(&asked);
-        let arriving: Arriving<u32> =
-            Arriving::pending(Source::Local).on_retry(move |arriving: &Arriving<u32>| {
-                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let _ = arriving.begin(Source::Local);
-            });
-        arriving.writer().fail(String::from("disk unplugged"));
-        assert!(arriving.can_retry());
-        arriving.retry();
-        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert!(arriving.with(Arrival::is_pending));
-    }
-
-    #[test]
-    fn a_settled_read_holds_no_frame_and_has_no_clock() {
-        let arriving: Arriving<u32> = Arriving::ready(3);
-        assert_eq!(arriving.clock(), None);
-        assert_eq!(arriving.holds_frame_until(crate::time::now()), None);
+        phase a_settled_read_holds_no_frame_and_has_no_clock;
+        {
+            let arriving: Arriving<u32> = Arriving::ready(3);
+            assert_eq!(arriving.clock(), None);
+            assert_eq!(arriving.holds_frame_until(crate::time::now()), None);
+        }
     }
 
     #[test]

@@ -38,18 +38,22 @@ impl Drop for Held {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_tree_no_host_named_keeps_its_carets() {
-        assert!(shown(), "nothing said otherwise");
-    }
+    tilo_test_env::scenario! {
+        fn only_the_tree_holding_the_keyboard_shows_carets;
 
-    #[test]
-    fn a_held_keyboard_shows_carets_and_gives_them_back() {
-        let outer = shown();
+        phase a_tree_no_host_named_keeps_its_carets;
         {
-            let _without = holding(false);
-            assert!(!shown());
+            assert!(shown(), "nothing said otherwise");
         }
-        assert_eq!(shown(), outer, "the surface around keeps what it had");
+
+        phase a_held_keyboard_shows_carets_and_gives_them_back;
+        {
+            let outer = shown();
+            {
+                let _without = holding(false);
+                assert!(!shown());
+            }
+            assert_eq!(shown(), outer, "the surface around keeps what it had");
+        }
     }
 }

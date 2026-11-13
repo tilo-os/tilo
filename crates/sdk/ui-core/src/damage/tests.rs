@@ -89,151 +89,159 @@ fn covers_every_pixel(merged: &[FineDamageRect], input: &[FineDamageRect]) -> bo
     damage_area(&both) == before
 }
 
-#[test]
-fn the_area_counts_each_pixel_once_however_many_rectangles_overlap_it() {
-    assert_eq!(damage_area(&[]), 0);
-    assert_eq!(damage_area(&[rect(3, 4, 10, 20)]), 200);
-    assert_eq!(
-        damage_area(&[rect(0, 0, 100, 50), rect(50, 0, 100, 50)]),
-        150 * 50
-    );
-    assert_eq!(damage_area(&vec![rect(10, 10, 2, 16); 300]), 32);
-    assert_eq!(
-        damage_area(&[rect(10, 0, 10, 30), rect(0, 10, 30, 10)]),
-        300 + 300 - 100
-    );
+tilo_test_env::scenario! {
+    fn damage_rectangles_are_counted_rounded_and_nested_once;
 
-    let (width, height) = (96, 64);
-    let mut lists = Lists(0x9e37_79b9_7f4a_7c15);
-    for case in 0..400 {
-        let rects = lists.small(case % 40, width, height);
-        let expected = pixels(&rects, width, height)
-            .into_iter()
-            .filter(|&p| p)
-            .count() as u64;
-        assert_eq!(damage_area(&rects), expected, "{rects:?}");
-    }
-}
-
-#[test]
-fn merging_covers_every_damaged_pixel_within_the_limit_and_inside_the_damage_bounds() {
-    let (width, height) = (96, 64);
-    let mut lists = Lists(0x2545_f491_4f6c_dd1d);
-    for case in 0..600 {
-        let count = [0, 1, 2, 5, 17, 64, 65, 130, 300][case % 9];
-        let limit = [1, 2, 7, 64][(case / 9) % 4];
-        let input = lists.small(count, width, height);
-        let merged = coalesce_damage(input.clone(), limit);
-
-        assert!(
-            merged.len() <= limit,
-            "{} rects for a limit of {limit}",
-            merged.len()
+    phase the_area_counts_each_pixel_once_however_many_rectangles_overlap_it;
+    {
+        assert_eq!(damage_area(&[]), 0);
+        assert_eq!(damage_area(&[rect(3, 4, 10, 20)]), 200);
+        assert_eq!(
+            damage_area(&[rect(0, 0, 100, 50), rect(50, 0, 100, 50)]),
+            150 * 50
         );
-        let before = pixels(&input, width, height);
-        let after = pixels(&merged, width, height);
-        for (index, (&damaged, &repainted)) in before.iter().zip(&after).enumerate() {
+        assert_eq!(damage_area(&vec![rect(10, 10, 2, 16); 300]), 32);
+        assert_eq!(
+            damage_area(&[rect(10, 0, 10, 30), rect(0, 10, 30, 10)]),
+            300 + 300 - 100
+        );
+
+        let (width, height) = (96, 64);
+        let mut lists = Lists(0x9e37_79b9_7f4a_7c15);
+        for case in 0..400 {
+            let rects = lists.small(case % 40, width, height);
+            let expected = pixels(&rects, width, height)
+                .into_iter()
+                .filter(|&p| p)
+                .count() as u64;
+            assert_eq!(damage_area(&rects), expected, "{rects:?}");
+        }
+    }
+
+    phase damage_regions_merge_only_when_that_saves_raster_work;
+    {
+        assert_eq!(
+            coalesce_regions(vec![rect(10, 76, 100, 40), rect(10, 96, 100, 40)]),
+            vec![rect(10, 76, 100, 60)]
+        );
+        assert_eq!(
+            coalesce_regions(vec![rect(0, 0, 10, 10), rect(12, 0, 10, 10)]).len(),
+            2
+        );
+        assert_eq!(
+            coalesce_regions(vec![rect(0, 0, 20, 20), rect(3_800, 2_000, 20, 20)]).len(),
+            2
+        );
+    }
+
+    phase a_pixel_rect_rounds_out_and_clamps_to_the_target;
+    {
+        let target = |x0, y0, x1, y1| pixel_rect(Rect::new(x0, y0, x1, y1), 100, 50);
+        assert_eq!(target(1.5, 2.5, 10.2, 20.0), Some(rect(1, 2, 10, 18)));
+        assert_eq!(target(-5.0, -5.0, 500.0, 500.0), Some(rect(0, 0, 100, 50)));
+        assert_eq!(target(120.0, 0.0, 130.0, 10.0), None);
+    }
+
+    phase nested_damage_regions_are_rasterised_once;
+    {
+        let card = rect(100, 100, 300, 200);
+        let grown = rect(100, 100, 300, 400);
+        let blur = rect(120, 120, 200, 100);
+        let elsewhere = rect(900, 0, 10, 10);
+        assert_eq!(
+            without_contained(vec![card, grown, blur, elsewhere, grown]),
+            vec![grown, elsewhere]
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn coalescing_damage_covers_every_pixel_within_its_limit;
+
+    phase merging_covers_every_damaged_pixel_within_the_limit_and_inside_the_damage_bounds;
+    {
+        let (width, height) = (96, 64);
+        let mut lists = Lists(0x2545_f491_4f6c_dd1d);
+        for case in 0..600 {
+            let count = [0, 1, 2, 5, 17, 64, 65, 130, 300][case % 9];
+            let limit = [1, 2, 7, 64][(case / 9) % 4];
+            let input = lists.small(count, width, height);
+            let merged = coalesce_damage(input.clone(), limit);
+
             assert!(
-                !damaged || repainted,
-                "pixel {index} of {input:?} is lost by {merged:?}"
+                merged.len() <= limit,
+                "{} rects for a limit of {limit}",
+                merged.len()
             );
-        }
-        // Merging repaints more, but never outside the box the damage spans.
-        if let Some(bounds) = input.iter().copied().reduce(damage_union) {
-            assert!(merged.iter().all(|&m| contains(bounds, m)), "{merged:?}");
-        }
-    }
-}
-
-#[test]
-fn a_short_list_only_loses_the_rectangles_another_contains_and_keeps_its_order() {
-    let list = vec![
-        rect(50, 50, 4, 4),
-        rect(0, 0, 10, 10),
-        rect(2, 2, 3, 3),
-        rect(50, 50, 4, 4),
-        rect(30, 0, 5, 40),
-        rect(0, 0, 10, 10),
-    ];
-    assert_eq!(
-        coalesce_damage(list, 64),
-        [rect(50, 50, 4, 4), rect(0, 0, 10, 10), rect(30, 0, 5, 40)]
-    );
-    assert_eq!(
-        coalesce_damage(vec![rect(100, 100, 2, 16); 500], 64),
-        [rect(100, 100, 2, 16)]
-    );
-}
-
-#[test]
-fn merging_joins_the_pair_whose_union_adds_the_least_first() {
-    let merged = coalesce_damage(
-        vec![
-            rect(10, 10, 2, 16),
-            rect(1000, 900, 2, 16),
-            rect(13, 10, 2, 16),
-        ],
-        2,
-    );
-    assert_eq!(merged, [rect(10, 10, 5, 16), rect(1000, 900, 2, 16)]);
-}
-
-/// The merge is quadratic only if it searches every pair: about 0.5, 3.6 and 23 ms for 128, 256 and
-/// 512 such rectangles in an optimised build on an Apple M-series laptop, against about 0.07, 0.2 and
-/// 0.7 ms when each rectangle remembers its cheapest partner. The timing is printed, not asserted: a
-/// loaded runner must not fail it.
-#[test]
-fn busy_frames_of_128_256_and_512_rectangles_merge_to_the_dispatch_limit() {
-    let mut lists = Lists(0xdead_beef_cafe_f00d);
-    for count in [128, 256, 512] {
-        let frames: Vec<_> = (0..8).map(|_| lists.busy_frame(count)).collect();
-        let start = Instant::now();
-        let merged: Vec<_> = frames
-            .iter()
-            .map(|frame| coalesce_damage(frame.clone(), 64))
-            .collect();
-        let per_frame = start.elapsed() / 8;
-        eprintln!("coalesce_damage: {count} rects in {per_frame:?} per frame");
-        for (frame, merged) in frames.iter().zip(&merged) {
-            assert!(merged.len() <= 64, "{} rects", merged.len());
-            assert!(covers_every_pixel(merged, frame));
-            assert!(damage_area(merged) >= damage_area(frame));
+            let before = pixels(&input, width, height);
+            let after = pixels(&merged, width, height);
+            for (index, (&damaged, &repainted)) in before.iter().zip(&after).enumerate() {
+                assert!(
+                    !damaged || repainted,
+                    "pixel {index} of {input:?} is lost by {merged:?}"
+                );
+            }
+            // Merging repaints more, but never outside the box the damage spans.
+            if let Some(bounds) = input.iter().copied().reduce(damage_union) {
+                assert!(merged.iter().all(|&m| contains(bounds, m)), "{merged:?}");
+            }
         }
     }
-}
 
-#[test]
-fn damage_regions_merge_only_when_that_saves_raster_work() {
-    assert_eq!(
-        coalesce_regions(vec![rect(10, 76, 100, 40), rect(10, 96, 100, 40)]),
-        vec![rect(10, 76, 100, 60)]
-    );
-    assert_eq!(
-        coalesce_regions(vec![rect(0, 0, 10, 10), rect(12, 0, 10, 10)]).len(),
-        2
-    );
-    assert_eq!(
-        coalesce_regions(vec![rect(0, 0, 20, 20), rect(3_800, 2_000, 20, 20)]).len(),
-        2
-    );
-}
+    phase a_short_list_only_loses_the_rectangles_another_contains_and_keeps_its_order;
+    {
+        let list = vec![
+            rect(50, 50, 4, 4),
+            rect(0, 0, 10, 10),
+            rect(2, 2, 3, 3),
+            rect(50, 50, 4, 4),
+            rect(30, 0, 5, 40),
+            rect(0, 0, 10, 10),
+        ];
+        assert_eq!(
+            coalesce_damage(list, 64),
+            [rect(50, 50, 4, 4), rect(0, 0, 10, 10), rect(30, 0, 5, 40)]
+        );
+        assert_eq!(
+            coalesce_damage(vec![rect(100, 100, 2, 16); 500], 64),
+            [rect(100, 100, 2, 16)]
+        );
+    }
 
-#[test]
-fn a_pixel_rect_rounds_out_and_clamps_to_the_target() {
-    let target = |x0, y0, x1, y1| pixel_rect(Rect::new(x0, y0, x1, y1), 100, 50);
-    assert_eq!(target(1.5, 2.5, 10.2, 20.0), Some(rect(1, 2, 10, 18)));
-    assert_eq!(target(-5.0, -5.0, 500.0, 500.0), Some(rect(0, 0, 100, 50)));
-    assert_eq!(target(120.0, 0.0, 130.0, 10.0), None);
-}
+    phase merging_joins_the_pair_whose_union_adds_the_least_first;
+    {
+        let merged = coalesce_damage(
+            vec![
+                rect(10, 10, 2, 16),
+                rect(1000, 900, 2, 16),
+                rect(13, 10, 2, 16),
+            ],
+            2,
+        );
+        assert_eq!(merged, [rect(10, 10, 5, 16), rect(1000, 900, 2, 16)]);
+    }
 
-#[test]
-fn nested_damage_regions_are_rasterised_once() {
-    let card = rect(100, 100, 300, 200);
-    let grown = rect(100, 100, 300, 400);
-    let blur = rect(120, 120, 200, 100);
-    let elsewhere = rect(900, 0, 10, 10);
-    assert_eq!(
-        without_contained(vec![card, grown, blur, elsewhere, grown]),
-        vec![grown, elsewhere]
-    );
+    // The merge is quadratic only if it searches every pair: about 0.5, 3.6 and 23 ms for 128, 256 and
+    // 512 such rectangles in an optimised build on an Apple M-series laptop, against about 0.07, 0.2 and
+    // 0.7 ms when each rectangle remembers its cheapest partner. The timing is printed, not asserted: a
+    // loaded runner must not fail it.
+    phase busy_frames_of_128_256_and_512_rectangles_merge_to_the_dispatch_limit;
+    {
+        let mut lists = Lists(0xdead_beef_cafe_f00d);
+        for count in [128, 256, 512] {
+            let frames: Vec<_> = (0..8).map(|_| lists.busy_frame(count)).collect();
+            let start = Instant::now();
+            let merged: Vec<_> = frames
+                .iter()
+                .map(|frame| coalesce_damage(frame.clone(), 64))
+                .collect();
+            let per_frame = start.elapsed() / 8;
+            eprintln!("coalesce_damage: {count} rects in {per_frame:?} per frame");
+            for (frame, merged) in frames.iter().zip(&merged) {
+                assert!(merged.len() <= 64, "{} rects", merged.len());
+                assert!(covers_every_pixel(merged, frame));
+                assert!(damage_area(merged) >= damage_area(frame));
+            }
+        }
+    }
 }

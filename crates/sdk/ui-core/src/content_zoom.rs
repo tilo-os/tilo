@@ -547,139 +547,151 @@ mod tests {
     use super::*;
     use crate::platform::Platform;
 
-    #[test]
-    fn steps_move_between_the_levels_and_reset_to_the_default() {
-        assert!((ZoomStep::In.apply(1.0) - 1.1).abs() < 1e-6);
-        assert!((ZoomStep::Out.apply(1.0) - 0.9).abs() < 1e-6);
-        assert!((ZoomStep::In.apply(MAX) - MAX).abs() < 1e-6);
-        assert!((ZoomStep::Out.apply(MIN) - MIN).abs() < 1e-6);
-        assert!((ZoomStep::Reset.apply(2.5) - 1.0).abs() < 1e-6);
-        assert!((ZoomStep::In.apply(1.2) - 1.25).abs() < 1e-6);
+    tilo_test_env::scenario! {
+        fn zoom_steps_move_between_levels_by_key;
+
+        phase steps_move_between_the_levels_and_reset_to_the_default;
+        {
+            assert!((ZoomStep::In.apply(1.0) - 1.1).abs() < 1e-6);
+            assert!((ZoomStep::Out.apply(1.0) - 0.9).abs() < 1e-6);
+            assert!((ZoomStep::In.apply(MAX) - MAX).abs() < 1e-6);
+            assert!((ZoomStep::Out.apply(MIN) - MIN).abs() < 1e-6);
+            assert!((ZoomStep::Reset.apply(2.5) - 1.0).abs() < 1e-6);
+            assert!((ZoomStep::In.apply(1.2) - 1.25).abs() < 1e-6);
+        }
+
+        phase the_keys_are_the_command_modifier_with_plus_minus_and_zero;
+        {
+            let linux = PlatformConventions::new(Platform::Linux);
+            let ctrl = ModifiersState::CONTROL;
+            let key = |s: &str| Key::Character(s.into());
+            assert_eq!(
+                ZoomStep::from_key(linux, ctrl, &key("+")),
+                Some(ZoomStep::In)
+            );
+            assert_eq!(
+                ZoomStep::from_key(linux, ctrl, &key("=")),
+                Some(ZoomStep::In)
+            );
+            assert_eq!(
+                ZoomStep::from_key(linux, ctrl, &key("-")),
+                Some(ZoomStep::Out)
+            );
+            assert_eq!(
+                ZoomStep::from_key(linux, ctrl, &key("0")),
+                Some(ZoomStep::Reset)
+            );
+            assert_eq!(
+                ZoomStep::from_key(linux, ModifiersState::empty(), &key("+")),
+                None
+            );
+            assert_eq!(
+                ZoomStep::from_key(linux, ctrl | ModifiersState::ALT, &key("+")),
+                None
+            );
+            let mac = PlatformConventions::new(Platform::MacOs);
+            assert_eq!(
+                ZoomStep::from_key(mac, ModifiersState::SUPER, &key("+")),
+                Some(ZoomStep::In)
+            );
+        }
     }
 
-    #[test]
-    fn a_model_steps_between_its_own_levels_and_resets_to_its_own_size() {
-        let mut photo = ZoomModel::stepping([1.0, 1.5, 2.0, 4.0, 8.0], 1.0);
-        assert!(photo.is_default());
-        assert_eq!(photo.label("Fit to frame"), "Fit to frame");
-        assert_eq!(photo.step(ZoomStep::In), 1.5);
-        assert_eq!(photo.label("Fit to frame"), "150%");
-        assert_eq!(photo.step(ZoomStep::In), 2.0);
-        assert_eq!(photo.step(ZoomStep::Reset), 1.0);
-        assert!(!photo.can_step(ZoomStep::Reset), "already at its own size");
-        // Out at the smallest level stays there, and says so.
-        assert!(!photo.can_step(ZoomStep::Out));
-        assert_eq!(photo.step(ZoomStep::Out), 1.0);
-        assert_eq!(photo.step(ZoomStep::In), 1.5);
-        assert_eq!(photo.max(), Some(8.0));
-        assert_eq!(photo.min(), Some(1.0));
+    tilo_test_env::scenario! {
+        fn a_zoom_model_keeps_its_own_levels;
+
+        phase a_model_steps_between_its_own_levels_and_resets_to_its_own_size;
+        {
+            let mut photo = ZoomModel::stepping([1.0, 1.5, 2.0, 4.0, 8.0], 1.0);
+            assert!(photo.is_default());
+            assert_eq!(photo.label("Fit to frame"), "Fit to frame");
+            assert_eq!(photo.step(ZoomStep::In), 1.5);
+            assert_eq!(photo.label("Fit to frame"), "150%");
+            assert_eq!(photo.step(ZoomStep::In), 2.0);
+            assert_eq!(photo.step(ZoomStep::Reset), 1.0);
+            assert!(!photo.can_step(ZoomStep::Reset), "already at its own size");
+            // Out at the smallest level stays there, and says so.
+            assert!(!photo.can_step(ZoomStep::Out));
+            assert_eq!(photo.step(ZoomStep::Out), 1.0);
+            assert_eq!(photo.step(ZoomStep::In), 1.5);
+            assert_eq!(photo.max(), Some(8.0));
+            assert_eq!(photo.min(), Some(1.0));
+        }
+
+        phase a_models_levels_are_sorted_and_its_bad_ones_dropped;
+        {
+            let model = ZoomModel::stepping([4.0, f32::NAN, 0.0, 1.0, 2.0, -1.0], f32::NAN);
+            assert_eq!(model.levels(), [1.0, 2.0, 4.0]);
+            assert!((model.default_factor() - 1.0).abs() < 1e-6);
+            assert_eq!(ZoomModel::stepping([], 1.0).levels(), LEVELS);
+        }
+
+        phase an_adopted_factor_stays_inside_the_levels;
+        {
+            let mut model = ZoomModel::stepping([1.0, 2.0, 4.0], 1.0);
+            assert_eq!(model.set(3.0), 3.0, "a fit computed from the frame is kept");
+            assert_eq!(model.set(100.0), 4.0);
+            assert_eq!(model.set(0.1), 1.0);
+            assert_eq!(model.set(f32::NAN), 1.0, "a broken reading changes nothing");
+        }
+
+        phase a_step_is_offered_only_where_it_changes_the_factor;
+        {
+            let mut model = ZoomModel::stepping([1.0, 2.0], 1.0);
+            assert!(!model.can_step(ZoomStep::Out), "nothing under its own size");
+            assert!(model.can_step(ZoomStep::In));
+            assert!(!model.can_step(ZoomStep::Reset), "already at its own size");
+            model.step(ZoomStep::In);
+            assert_eq!(model.label("Fit to frame"), "200%");
+            assert!(model.can_step(ZoomStep::Reset));
+            assert!(
+                !model.can_step(ZoomStep::In),
+                "already at the largest level"
+            );
+            assert_eq!(controls("photo", &model, "Fit to frame", |_| {}).len(), 3);
+        }
     }
 
-    #[test]
-    fn a_models_levels_are_sorted_and_its_bad_ones_dropped() {
-        let model = ZoomModel::stepping([4.0, f32::NAN, 0.0, 1.0, 2.0, -1.0], f32::NAN);
-        assert_eq!(model.levels(), [1.0, 2.0, 4.0]);
-        assert!((model.default_factor() - 1.0).abs() < 1e-6);
-        assert_eq!(ZoomModel::stepping([], 1.0).levels(), LEVELS);
-    }
+    tilo_test_env::scenario! {
+        fn window_zoom_adds_up_gestures_and_shows_its_level;
 
-    #[test]
-    fn an_adopted_factor_stays_inside_the_levels() {
-        let mut model = ZoomModel::stepping([1.0, 2.0, 4.0], 1.0);
-        assert_eq!(model.set(3.0), 3.0, "a fit computed from the frame is kept");
-        assert_eq!(model.set(100.0), 4.0);
-        assert_eq!(model.set(0.1), 1.0);
-        assert_eq!(model.set(f32::NAN), 1.0, "a broken reading changes nothing");
-    }
+        phase scroll_and_pinch_add_up_to_steps;
+        {
+            let mut zoom = WindowZoom::default();
+            assert_eq!(
+                zoom.scroll_step(&MouseScrollDelta::LineDelta(0.0, 1.0)),
+                Some(ZoomStep::In)
+            );
+            assert_eq!(
+                zoom.scroll_step(&MouseScrollDelta::LineDelta(0.0, -1.0)),
+                Some(ZoomStep::Out)
+            );
+            let px = |y| MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, y));
+            assert_eq!(zoom.scroll_step(&px(30.0)), None);
+            assert_eq!(zoom.scroll_step(&px(30.0)), Some(ZoomStep::In));
+            assert_eq!(zoom.pinch_step(0.05, TouchPhase::Started), None);
+            assert_eq!(zoom.pinch_step(0.08, TouchPhase::Moved), Some(ZoomStep::In));
+            assert_eq!(
+                zoom.pinch_step(-0.2, TouchPhase::Moved),
+                Some(ZoomStep::Out)
+            );
+            assert_eq!(zoom.pinch_step(0.0, TouchPhase::Ended), None);
+        }
 
-    #[test]
-    fn a_step_is_offered_only_where_it_changes_the_factor() {
-        let mut model = ZoomModel::stepping([1.0, 2.0], 1.0);
-        assert!(!model.can_step(ZoomStep::Out), "nothing under its own size");
-        assert!(model.can_step(ZoomStep::In));
-        assert!(!model.can_step(ZoomStep::Reset), "already at its own size");
-        model.step(ZoomStep::In);
-        assert_eq!(model.label("Fit to frame"), "200%");
-        assert!(model.can_step(ZoomStep::Reset));
-        assert!(
-            !model.can_step(ZoomStep::In),
-            "already at the largest level"
-        );
-        assert_eq!(controls("photo", &model, "Fit to frame", |_| {}).len(), 3);
-    }
-
-    #[test]
-    fn the_keys_are_the_command_modifier_with_plus_minus_and_zero() {
-        let linux = PlatformConventions::new(Platform::Linux);
-        let ctrl = ModifiersState::CONTROL;
-        let key = |s: &str| Key::Character(s.into());
-        assert_eq!(
-            ZoomStep::from_key(linux, ctrl, &key("+")),
-            Some(ZoomStep::In)
-        );
-        assert_eq!(
-            ZoomStep::from_key(linux, ctrl, &key("=")),
-            Some(ZoomStep::In)
-        );
-        assert_eq!(
-            ZoomStep::from_key(linux, ctrl, &key("-")),
-            Some(ZoomStep::Out)
-        );
-        assert_eq!(
-            ZoomStep::from_key(linux, ctrl, &key("0")),
-            Some(ZoomStep::Reset)
-        );
-        assert_eq!(
-            ZoomStep::from_key(linux, ModifiersState::empty(), &key("+")),
-            None
-        );
-        assert_eq!(
-            ZoomStep::from_key(linux, ctrl | ModifiersState::ALT, &key("+")),
-            None
-        );
-        let mac = PlatformConventions::new(Platform::MacOs);
-        assert_eq!(
-            ZoomStep::from_key(mac, ModifiersState::SUPER, &key("+")),
-            Some(ZoomStep::In)
-        );
-    }
-
-    #[test]
-    fn scroll_and_pinch_add_up_to_steps() {
-        let mut zoom = WindowZoom::default();
-        assert_eq!(
-            zoom.scroll_step(&MouseScrollDelta::LineDelta(0.0, 1.0)),
-            Some(ZoomStep::In)
-        );
-        assert_eq!(
-            zoom.scroll_step(&MouseScrollDelta::LineDelta(0.0, -1.0)),
-            Some(ZoomStep::Out)
-        );
-        let px = |y| MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, y));
-        assert_eq!(zoom.scroll_step(&px(30.0)), None);
-        assert_eq!(zoom.scroll_step(&px(30.0)), Some(ZoomStep::In));
-        assert_eq!(zoom.pinch_step(0.05, TouchPhase::Started), None);
-        assert_eq!(zoom.pinch_step(0.08, TouchPhase::Moved), Some(ZoomStep::In));
-        assert_eq!(
-            zoom.pinch_step(-0.2, TouchPhase::Moved),
-            Some(ZoomStep::Out)
-        );
-        assert_eq!(zoom.pinch_step(0.0, TouchPhase::Ended), None);
-    }
-
-    #[test]
-    fn a_step_changes_the_factor_and_shows_the_indicator() {
-        let mut zoom = WindowZoom::default();
-        let now = crate::time::now();
-        assert!(zoom.step(ZoomStep::In, now));
-        assert!((zoom.factor() - 1.1).abs() < 1e-6);
-        assert!(zoom.indicator_visible(now));
-        assert!(zoom.step(ZoomStep::Reset, now));
-        assert!((zoom.factor() - 1.0).abs() < 1e-6);
-        assert!(!zoom.step(ZoomStep::Reset, now), "already the default");
-        assert!(
-            zoom.indicator_visible(now),
-            "a step at a bound still says the level"
-        );
+        phase a_step_changes_the_factor_and_shows_the_indicator;
+        {
+            let mut zoom = WindowZoom::default();
+            let now = crate::time::now();
+            assert!(zoom.step(ZoomStep::In, now));
+            assert!((zoom.factor() - 1.1).abs() < 1e-6);
+            assert!(zoom.indicator_visible(now));
+            assert!(zoom.step(ZoomStep::Reset, now));
+            assert!((zoom.factor() - 1.0).abs() < 1e-6);
+            assert!(!zoom.step(ZoomStep::Reset, now), "already the default");
+            assert!(
+                zoom.indicator_visible(now),
+                "a step at a bound still says the level"
+            );
+        }
     }
 }

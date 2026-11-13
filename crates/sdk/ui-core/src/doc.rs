@@ -146,25 +146,150 @@ mod tests {
     use super::*;
     use automerge::ROOT;
 
-    #[test]
-    fn text_readers_distinguish_scalars_from_text_objects() {
-        let mut doc = AutoCommit::new();
-        doc.put(&ROOT, "str", "plain").unwrap();
-        seed_text(&mut doc, "text", "rich");
-        doc.put(&ROOT, "yes", true).unwrap();
-        doc.put_object(&ROOT, "map", ObjType::Map).unwrap();
-        assert_eq!(read_text(&doc, &ROOT, "text").as_deref(), Some("rich"));
-        assert_eq!(read_text(&doc, &ROOT, "str"), None);
-        assert_eq!(
-            read_str_or_text(&doc, &ROOT, "str").as_deref(),
-            Some("plain")
-        );
-        assert_eq!(
-            read_str_or_text(&doc, &ROOT, "text").as_deref(),
-            Some("rich")
-        );
-        for missing in ["absent", "yes", "map"] {
-            assert_eq!(read_str_or_text(&doc, &ROOT, missing), None, "{missing}");
+    tilo_test_env::scenario! {
+        fn text_reads_and_writes_keep_scalars_objects_and_spans_apart;
+
+        phase text_readers_distinguish_scalars_from_text_objects;
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(&ROOT, "str", "plain").unwrap();
+            seed_text(&mut doc, "text", "rich");
+            doc.put(&ROOT, "yes", true).unwrap();
+            doc.put_object(&ROOT, "map", ObjType::Map).unwrap();
+            assert_eq!(read_text(&doc, &ROOT, "text").as_deref(), Some("rich"));
+            assert_eq!(read_text(&doc, &ROOT, "str"), None);
+            assert_eq!(
+                read_str_or_text(&doc, &ROOT, "str").as_deref(),
+                Some("plain")
+            );
+            assert_eq!(
+                read_str_or_text(&doc, &ROOT, "text").as_deref(),
+                Some("rich")
+            );
+            for missing in ["absent", "yes", "map"] {
+                assert_eq!(read_str_or_text(&doc, &ROOT, missing), None, "{missing}");
+            }
+        }
+
+        phase text_writes_splice_only_the_changed_span_and_stay_bounded;
+        {
+            {
+                let mut doc = AutoCommit::new();
+                let long = "abcdefghijklmnopqrstuvwxyz0123456789";
+                let id = seed_text(&mut doc, "t", long);
+                let mut target = long.to_string();
+                target.push('!');
+
+                let edit = splice_text_diffed(&mut doc, &id, &target);
+
+                assert_eq!(
+                    edit,
+                    TextEdit {
+                        pos: long.chars().count(),
+                        del: 0,
+                        ins: 1
+                    },
+                    "appending one char must splice exactly one char, not rewrite the text"
+                );
+                assert!(edit.ins < long.chars().count());
+                assert_eq!(
+                    doc.text(&id).unwrap(),
+                    target,
+                    "must round-trip to the new value"
+                );
+            }
+
+            {
+                let mut doc = AutoCommit::new();
+                let before = "the quick brown fox";
+                let id = seed_text(&mut doc, "t", before);
+
+                let edit = splice_text_diffed(&mut doc, &id, "the slow brown fox");
+
+                assert_eq!(edit.pos, 4, "prefix 'the ' is common");
+                assert_eq!(edit.del, 5, "'quick' is deleted");
+                assert_eq!(edit.ins, 4, "'slow' is inserted");
+                assert!(
+                    edit.del < before.chars().count() && edit.ins < before.chars().count(),
+                    "the splice must be bounded well under the full text length"
+                );
+                assert_eq!(doc.text(&id).unwrap(), "the slow brown fox");
+            }
+
+            {
+                let mut doc = AutoCommit::new();
+                let id = seed_text(&mut doc, "t", "unchanged");
+                let before = doc.save().len();
+
+                let edit = splice_text_diffed(&mut doc, &id, "unchanged");
+
+                assert!(edit.is_noop(), "re-storing the same value must be a no-op");
+                assert_eq!(
+                    edit,
+                    TextEdit {
+                        pos: 0,
+                        del: 0,
+                        ins: 0
+                    }
+                );
+                assert_eq!(
+                    doc.save().len(),
+                    before,
+                    "an idempotent no-op must not grow the document"
+                );
+            }
+
+            {
+                let mut doc = AutoCommit::new();
+
+                let e0 = put_text_diffed(&mut doc, &ROOT, "body", "hello world");
+                assert_eq!(
+                    e0,
+                    TextEdit {
+                        pos: 0,
+                        del: 0,
+                        ins: 11
+                    }
+                );
+
+                let e1 = put_text_diffed(&mut doc, &ROOT, "body", "hello world!");
+                assert_eq!(
+                    e1,
+                    TextEdit {
+                        pos: 11,
+                        del: 0,
+                        ins: 1
+                    }
+                );
+
+                let (v, tid) = doc.get(&ROOT, "body").unwrap().unwrap();
+                assert!(
+                    matches!(v, Value::Object(ObjType::Text)),
+                    "field is a CRDT Text"
+                );
+                assert_eq!(doc.text(&tid).unwrap(), "hello world!");
+            }
+
+            {
+                let mut doc = AutoCommit::new();
+                let mut s = String::new();
+                for i in 0..500 {
+                    s.push(if i % 7 == 6 { ' ' } else { 'x' });
+                    put_text_diffed(&mut doc, &ROOT, "b", &s);
+                }
+                let size = doc.save().len();
+                assert!(
+                    size < 12 * s.len(),
+                    "document is {size} bytes for {} typed chars — CRDT churn regressed",
+                    s.len()
+                );
+                let (_, tid) = doc.get(&ROOT, "b").unwrap().unwrap();
+                assert_eq!(
+                    doc.text(&tid).unwrap(),
+                    s,
+                    "typed value must round-trip exactly"
+                );
+            }
         }
     }
 
@@ -172,126 +297,5 @@ mod tests {
         let id = doc.put_object(&ROOT, key, ObjType::Text).unwrap();
         doc.splice_text(&id, 0, 0, s).unwrap();
         id
-    }
-
-    #[test]
-    fn text_writes_splice_only_the_changed_span_and_stay_bounded() {
-        {
-            let mut doc = AutoCommit::new();
-            let long = "abcdefghijklmnopqrstuvwxyz0123456789";
-            let id = seed_text(&mut doc, "t", long);
-            let mut target = long.to_string();
-            target.push('!');
-
-            let edit = splice_text_diffed(&mut doc, &id, &target);
-
-            assert_eq!(
-                edit,
-                TextEdit {
-                    pos: long.chars().count(),
-                    del: 0,
-                    ins: 1
-                },
-                "appending one char must splice exactly one char, not rewrite the text"
-            );
-            assert!(edit.ins < long.chars().count());
-            assert_eq!(
-                doc.text(&id).unwrap(),
-                target,
-                "must round-trip to the new value"
-            );
-        }
-
-        {
-            let mut doc = AutoCommit::new();
-            let before = "the quick brown fox";
-            let id = seed_text(&mut doc, "t", before);
-
-            let edit = splice_text_diffed(&mut doc, &id, "the slow brown fox");
-
-            assert_eq!(edit.pos, 4, "prefix 'the ' is common");
-            assert_eq!(edit.del, 5, "'quick' is deleted");
-            assert_eq!(edit.ins, 4, "'slow' is inserted");
-            assert!(
-                edit.del < before.chars().count() && edit.ins < before.chars().count(),
-                "the splice must be bounded well under the full text length"
-            );
-            assert_eq!(doc.text(&id).unwrap(), "the slow brown fox");
-        }
-
-        {
-            let mut doc = AutoCommit::new();
-            let id = seed_text(&mut doc, "t", "unchanged");
-            let before = doc.save().len();
-
-            let edit = splice_text_diffed(&mut doc, &id, "unchanged");
-
-            assert!(edit.is_noop(), "re-storing the same value must be a no-op");
-            assert_eq!(
-                edit,
-                TextEdit {
-                    pos: 0,
-                    del: 0,
-                    ins: 0
-                }
-            );
-            assert_eq!(
-                doc.save().len(),
-                before,
-                "an idempotent no-op must not grow the document"
-            );
-        }
-
-        {
-            let mut doc = AutoCommit::new();
-
-            let e0 = put_text_diffed(&mut doc, &ROOT, "body", "hello world");
-            assert_eq!(
-                e0,
-                TextEdit {
-                    pos: 0,
-                    del: 0,
-                    ins: 11
-                }
-            );
-
-            let e1 = put_text_diffed(&mut doc, &ROOT, "body", "hello world!");
-            assert_eq!(
-                e1,
-                TextEdit {
-                    pos: 11,
-                    del: 0,
-                    ins: 1
-                }
-            );
-
-            let (v, tid) = doc.get(&ROOT, "body").unwrap().unwrap();
-            assert!(
-                matches!(v, Value::Object(ObjType::Text)),
-                "field is a CRDT Text"
-            );
-            assert_eq!(doc.text(&tid).unwrap(), "hello world!");
-        }
-
-        {
-            let mut doc = AutoCommit::new();
-            let mut s = String::new();
-            for i in 0..500 {
-                s.push(if i % 7 == 6 { ' ' } else { 'x' });
-                put_text_diffed(&mut doc, &ROOT, "b", &s);
-            }
-            let size = doc.save().len();
-            assert!(
-                size < 12 * s.len(),
-                "document is {size} bytes for {} typed chars — CRDT churn regressed",
-                s.len()
-            );
-            let (_, tid) = doc.get(&ROOT, "b").unwrap().unwrap();
-            assert_eq!(
-                doc.text(&tid).unwrap(),
-                s,
-                "typed value must round-trip exactly"
-            );
-        }
     }
 }

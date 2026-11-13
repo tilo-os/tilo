@@ -69,31 +69,35 @@ mod tests {
     use super::*;
     use chrono::{Datelike, Timelike};
 
-    #[test]
-    fn each_style_reads_its_example() {
-        let time = chrono::NaiveTime::from_hms_opt(14, 5, 0).unwrap();
-        let words = crate::format::words();
-        for style in TimeStyle::ALL {
-            assert_eq!(style.format(&time, words), style.example(words));
-        }
-        assert_eq!(TimeStyle::H24.example(words), "14:05");
-        assert_eq!(TimeStyle::H12.example(words), "2:05 PM");
-        let midnight = chrono::NaiveTime::from_hms_opt(0, 7, 0).unwrap();
-        assert_eq!(TimeStyle::H24.format(&midnight, words), "00:07");
-        assert_eq!(TimeStyle::H12.format(&midnight, words), "12:07 AM");
-    }
+    tilo_test_env::scenario! {
+        fn clock_styles_read_their_examples_and_a_capture_keeps_its_time;
 
-    #[test]
-    fn a_capture_shows_the_same_local_date_and_time() {
-        let at = capture_wall().expect("the capture time exists in the local zone");
-        crate::time::testing::with_wall(at, || {
-            let now = local_now();
-            assert_eq!(
-                (now.year(), now.month(), now.day(), now.hour(), now.minute()),
-                CAPTURE_LOCAL_TIME
-            );
-            assert_eq!(today(), now.date_naive());
-            assert_eq!(local_now(), now, "the frozen clock does not move");
-        });
+        phase each_style_reads_its_example;
+        {
+            let time = chrono::NaiveTime::from_hms_opt(14, 5, 0).unwrap();
+            let words = crate::format::words();
+            for style in TimeStyle::ALL {
+                assert_eq!(style.format(&time, words), style.example(words));
+            }
+            assert_eq!(TimeStyle::H24.example(words), "14:05");
+            assert_eq!(TimeStyle::H12.example(words), "2:05 PM");
+            let midnight = chrono::NaiveTime::from_hms_opt(0, 7, 0).unwrap();
+            assert_eq!(TimeStyle::H24.format(&midnight, words), "00:07");
+            assert_eq!(TimeStyle::H12.format(&midnight, words), "12:07 AM");
+        }
+
+        phase a_capture_shows_the_same_local_date_and_time;
+        {
+            let at = capture_wall().expect("the capture time exists in the local zone");
+            crate::time::testing::with_wall(at, || {
+                let now = local_now();
+                assert_eq!(
+                    (now.year(), now.month(), now.day(), now.hour(), now.minute()),
+                    CAPTURE_LOCAL_TIME
+                );
+                assert_eq!(today(), now.date_naive());
+                assert_eq!(local_now(), now, "the frozen clock does not move");
+            });
+        }
     }
 }
