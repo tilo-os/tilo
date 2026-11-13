@@ -27,7 +27,6 @@ pub struct CaptureOutput {
     pub on_pcm: Arc<PcmObserver>,
     pub on_rendered: Arc<dyn Fn() + Send + Sync>,
 }
-/// The same decoded PCM goes to a system sink or an observable clocked capture.
 #[derive(Clone)]
 pub enum Output {
     System,
@@ -481,8 +480,8 @@ async fn run(
 
 /// Runs native playback's own code with no account, network or audio device:
 /// parses a track identity and builds the session and player configuration a
-/// session starts from. Proves that the library carrying librespot (Music's
-/// engine library in a thin build) loads and runs; the report holds no
+/// session starts from, proving that the library carrying librespot (Music's
+/// engine library in a thin build) loads and runs. The report holds no
 /// account or device data.
 pub fn self_check() -> Result<String, String> {
     let uri = SpotifyUri::from_uri("spotify:track:4uLU6hMCjMI75M1A2tKUQC")
