@@ -166,63 +166,67 @@ pub fn is_server_address(address: IpAddr) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn networks_are_canonical_and_round_trip_as_text() {
-        let net: Ipv4Net = "192.168.1.0/24".parse().unwrap();
-        assert_eq!(net.to_string(), "192.168.1.0/24");
-        assert!(
-            "192.168.1.7/24".parse::<Ipv4Net>().is_err(),
-            "host bits set"
-        );
-        assert!("10.0.0.0/33".parse::<Ipv4Net>().is_err());
-        assert_eq!(
-            Ipv4Net::containing(Ipv4Addr::new(192, 168, 1, 7), 24),
-            Some(net)
-        );
-        let json = serde_json::to_string(&net).unwrap();
-        assert_eq!(json, r#""192.168.1.0/24""#);
-        assert_eq!(serde_json::from_str::<Ipv4Net>(&json).unwrap(), net);
-        assert!(serde_json::from_str::<Ipv4Net>(r#""1.2.3.4/8""#).is_err());
-        assert_eq!(
-            Ipv4Net::new(Ipv4Addr::UNSPECIFIED, 0).map(Ipv4Net::mask),
-            Some(0)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn tunnel_and_home_networks_are_canonical_and_bounded;
 
-    #[test]
-    fn home_networks_exclude_what_must_never_be_routed_to_an_exit() {
-        for good in [
-            "192.168.1.0/24",
-            "10.0.0.0/8",
-            "172.16.4.0/22",
-            "203.0.113.0/24",
-        ] {
+        phase networks_are_canonical_and_round_trip_as_text;
+        {
+            let net: Ipv4Net = "192.168.1.0/24".parse().unwrap();
+            assert_eq!(net.to_string(), "192.168.1.0/24");
             assert!(
-                good.parse::<Ipv4Net>().unwrap().is_routable_home(),
-                "{good}"
+                "192.168.1.7/24".parse::<Ipv4Net>().is_err(),
+                "host bits set"
+            );
+            assert!("10.0.0.0/33".parse::<Ipv4Net>().is_err());
+            assert_eq!(
+                Ipv4Net::containing(Ipv4Addr::new(192, 168, 1, 7), 24),
+                Some(net)
+            );
+            let json = serde_json::to_string(&net).unwrap();
+            assert_eq!(json, r#""192.168.1.0/24""#);
+            assert_eq!(serde_json::from_str::<Ipv4Net>(&json).unwrap(), net);
+            assert!(serde_json::from_str::<Ipv4Net>(r#""1.2.3.4/8""#).is_err());
+            assert_eq!(
+                Ipv4Net::new(Ipv4Addr::UNSPECIFIED, 0).map(Ipv4Net::mask),
+                Some(0)
             );
         }
-        for bad in [
-            "0.0.0.0/0",
-            "127.0.0.0/8",
-            "169.254.0.0/16",
-            "224.0.0.0/4",
-            "100.100.64.0/24",
-            "100.100.0.0/16",
-            "100.100.64.128/25",
-            "0.0.0.0/8",
-        ] {
-            assert!(!bad.parse::<Ipv4Net>().unwrap().is_routable_home(), "{bad}");
-        }
-    }
 
-    #[test]
-    fn clients_get_tunnel_hosts_other_than_the_gateway() {
-        assert!(is_client_address(Ipv4Addr::new(100, 100, 64, 2)));
-        assert!(is_client_address(Ipv4Addr::new(100, 100, 64, 254)));
-        assert!(!is_client_address(GATEWAY));
-        assert!(!is_client_address(Ipv4Addr::new(100, 100, 64, 255)));
-        assert!(!is_client_address(Ipv4Addr::new(100, 100, 64, 0)));
-        assert!(!is_client_address(Ipv4Addr::new(100, 100, 65, 2)));
+        phase home_networks_exclude_what_must_never_be_routed_to_an_exit;
+        {
+            for good in [
+                "192.168.1.0/24",
+                "10.0.0.0/8",
+                "172.16.4.0/22",
+                "203.0.113.0/24",
+            ] {
+                assert!(
+                    good.parse::<Ipv4Net>().unwrap().is_routable_home(),
+                    "{good}"
+                );
+            }
+            for bad in [
+                "0.0.0.0/0",
+                "127.0.0.0/8",
+                "169.254.0.0/16",
+                "224.0.0.0/4",
+                "100.100.64.0/24",
+                "100.100.0.0/16",
+                "100.100.64.128/25",
+                "0.0.0.0/8",
+            ] {
+                assert!(!bad.parse::<Ipv4Net>().unwrap().is_routable_home(), "{bad}");
+            }
+        }
+
+        phase clients_get_tunnel_hosts_other_than_the_gateway;
+        {
+            assert!(is_client_address(Ipv4Addr::new(100, 100, 64, 2)));
+            assert!(is_client_address(Ipv4Addr::new(100, 100, 64, 254)));
+            assert!(!is_client_address(GATEWAY));
+            assert!(!is_client_address(Ipv4Addr::new(100, 100, 64, 255)));
+            assert!(!is_client_address(Ipv4Addr::new(100, 100, 64, 0)));
+            assert!(!is_client_address(Ipv4Addr::new(100, 100, 65, 2)));
+        }
     }
 }

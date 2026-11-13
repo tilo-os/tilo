@@ -165,35 +165,39 @@ mod tests {
     use super::*;
     use std::io::{Read as _, Seek as _, Write as _};
 
-    #[test]
-    fn a_descriptor_travels_with_its_line() {
-        let (a, b) = UnixStream::pair().unwrap();
-        let mut file = tempfile::tempfile().unwrap();
-        file.write_all(b"tun").unwrap();
-        file.rewind().unwrap();
-        write_line_with_fd(
-            &a,
-            b"{\"result\":\"opened\"}\n",
-            Some(std::os::fd::AsFd::as_fd(&file)),
-        )
-        .unwrap();
-        drop(file);
-        let (line, fd) = read_line_with_fd(&b, 1024).unwrap();
-        assert_eq!(line, b"{\"result\":\"opened\"}");
-        let mut received = std::fs::File::from(fd.expect("a descriptor"));
-        let mut text = String::new();
-        received.read_to_string(&mut text).unwrap();
-        assert_eq!(text, "tun");
-    }
+    tilo_test_env::scenario! {
+        fn a_line_crosses_the_socket_with_or_without_a_descriptor;
 
-    #[test]
-    fn a_line_without_a_descriptor_and_a_long_line_are_told_apart() {
-        let (a, b) = UnixStream::pair().unwrap();
-        write_line_with_fd(&a, b"done\n", None).unwrap();
-        let (line, fd) = read_line_with_fd(&b, 1024).unwrap();
-        assert_eq!(line, b"done");
-        assert!(fd.is_none());
-        write_line_with_fd(&a, b"0123456789\n", None).unwrap();
-        assert!(read_line_with_fd(&b, 4).is_err());
+        phase a_descriptor_travels_with_its_line;
+        {
+            let (a, b) = UnixStream::pair().unwrap();
+            let mut file = tempfile::tempfile().unwrap();
+            file.write_all(b"tun").unwrap();
+            file.rewind().unwrap();
+            write_line_with_fd(
+                &a,
+                b"{\"result\":\"opened\"}\n",
+                Some(std::os::fd::AsFd::as_fd(&file)),
+            )
+            .unwrap();
+            drop(file);
+            let (line, fd) = read_line_with_fd(&b, 1024).unwrap();
+            assert_eq!(line, b"{\"result\":\"opened\"}");
+            let mut received = std::fs::File::from(fd.expect("a descriptor"));
+            let mut text = String::new();
+            received.read_to_string(&mut text).unwrap();
+            assert_eq!(text, "tun");
+        }
+
+        phase a_line_without_a_descriptor_and_a_long_line_are_told_apart;
+        {
+            let (a, b) = UnixStream::pair().unwrap();
+            write_line_with_fd(&a, b"done\n", None).unwrap();
+            let (line, fd) = read_line_with_fd(&b, 1024).unwrap();
+            assert_eq!(line, b"done");
+            assert!(fd.is_none());
+            write_line_with_fd(&a, b"0123456789\n", None).unwrap();
+            assert!(read_line_with_fd(&b, 4).is_err());
+        }
     }
 }

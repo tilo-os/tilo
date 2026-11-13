@@ -520,148 +520,152 @@ mod tests {
         BTreeMap::from([("work".to_owned(), Switch::default())])
     }
 
-    #[test]
-    fn a_release_already_acted_on_is_not_acted_on_again() {
-        let mut follow = Follow::new(kept(Some(4)));
-        assert!(
-            follow
-                .released(&choices(Some(4)), &reading(None, 0))
-                .is_empty()
-        );
-        assert_eq!(
-            follow.released(&choices(Some(5)), &reading(None, 0)),
-            ["work"]
-        );
-        assert!(
-            follow
-                .released(&choices(Some(5)), &reading(None, 0))
-                .is_empty()
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_profile_block_follows_networkmanager_and_the_persons_choices;
 
-    #[test]
-    fn each_time_networkmanager_says_a_profile_went_down_on_purpose_releases_it_once() {
-        let mut follow = Follow::new(ProfileIntent::default());
-        assert!(
-            follow
-                .released(&choices(None), &reading(None, 0))
-                .is_empty()
-        );
-        assert_eq!(follow.released(&choices(None), &reading(None, 1)), ["work"]);
-        assert!(
-            follow
-                .released(&choices(None), &reading(None, 1))
-                .is_empty()
-        );
-        assert_eq!(follow.released(&choices(None), &reading(None, 2)), ["work"]);
-    }
+        phase a_release_already_acted_on_is_not_acted_on_again;
+        {
+            let mut follow = Follow::new(kept(Some(4)));
+            assert!(
+                follow
+                    .released(&choices(Some(4)), &reading(None, 0))
+                    .is_empty()
+            );
+            assert_eq!(
+                follow.released(&choices(Some(5)), &reading(None, 0)),
+                ["work"]
+            );
+            assert!(
+                follow
+                    .released(&choices(Some(5)), &reading(None, 0))
+                    .is_empty()
+            );
+        }
 
-    /// A shell starting after one crashed blocks at once for a profile still
-    /// set to connect, with the servers looked up before, and keeps that.
-    #[test]
-    fn a_new_shell_takes_over_the_block_of_a_profile_still_set_to_connect() {
-        let mut follow = Follow::new(kept(Some(4)));
-        let released = follow.released(&choices(Some(4)), &reading(None, 0));
-        let blocking = follow
-            .intent
-            .decide(&switches(), &BTreeMap::new(), &released)
-            .expect("still set to connect and down: it blocks");
-        assert_eq!(
-            block_for(&blocking, &follow.servers),
-            ProfileBlock {
-                servers: vec!["198.51.100.7".parse().unwrap()],
-                allow_local: false,
-            },
-            "its server stays reachable, so the tunnel can come back"
-        );
-        assert_eq!(follow.intent(), kept(Some(4)));
-        assert_eq!(follow.intent(), follow.kept, "nothing new to keep");
-    }
+        phase each_time_networkmanager_says_a_profile_went_down_on_purpose_releases_it_once;
+        {
+            let mut follow = Follow::new(ProfileIntent::default());
+            assert!(
+                follow
+                    .released(&choices(None), &reading(None, 0))
+                    .is_empty()
+            );
+            assert_eq!(follow.released(&choices(None), &reading(None, 1)), ["work"]);
+            assert!(
+                follow
+                    .released(&choices(None), &reading(None, 1))
+                    .is_empty()
+            );
+            assert_eq!(follow.released(&choices(None), &reading(None, 2)), ["work"]);
+        }
 
-    /// A profile the person turned off while no shell ran is lifted, and
-    /// that is kept.
-    #[test]
-    fn a_new_shell_lifts_what_was_turned_off_while_it_was_away() {
-        let mut follow = Follow::new(kept(Some(4)));
-        let released = follow.released(&choices(Some(5)), &reading(None, 0));
-        assert_eq!(released, ["work"]);
-        assert_eq!(
-            follow
+        phase a_new_shell_takes_over_the_block_of_a_profile_still_set_to_connect;
+        // A shell starting after one crashed blocks at once for a profile still
+        // set to connect, with the servers looked up before, and keeps that.
+        {
+            let mut follow = Follow::new(kept(Some(4)));
+            let released = follow.released(&choices(Some(4)), &reading(None, 0));
+            let blocking = follow
                 .intent
-                .decide(&switches(), &BTreeMap::new(), &released),
-            None
-        );
-        assert_eq!(
-            follow.intent(),
-            ProfileIntent {
-                connecting: BTreeMap::new(),
-                release_seen: Some(5),
-            }
-        );
-    }
+                .decide(&switches(), &BTreeMap::new(), &released)
+                .expect("still set to connect and down: it blocks");
+            assert_eq!(
+                block_for(&blocking, &follow.servers),
+                ProfileBlock {
+                    servers: vec!["198.51.100.7".parse().unwrap()],
+                    allow_local: false,
+                },
+                "its server stays reachable, so the tunnel can come back"
+            );
+            assert_eq!(follow.intent(), kept(Some(4)));
+            assert_eq!(follow.intent(), follow.kept, "nothing new to keep");
+        }
 
-    /// A profile whose kill switch is turned on while it is connected has its servers looked
-    /// up then, so the block goes up at once with them rather than waiting on a lookup while
-    /// traffic leaves outside the tunnel. Once known, they are not looked up again.
-    #[test]
-    fn a_profile_switched_on_while_connected_has_its_servers_looked_up_before_it_drops() {
-        let mut follow = Follow::new(ProfileIntent::default());
-        let connected = BTreeMap::from([("work".to_owned(), Activity::Activated)]);
-        let blocking = follow.intent.decide(&switches(), &connected, &[]);
-        assert_eq!(blocking, None, "connected: nothing blocks");
-        assert_eq!(
-            follow.to_look_up(&switches(), &connected, blocking.as_ref()),
-            ["work"],
-            "looked up while the tunnel is up"
-        );
-        follow
-            .servers
-            .insert("work".into(), vec!["198.51.100.7".parse().unwrap()]);
-        assert!(
-            follow
-                .to_look_up(&switches(), &connected, blocking.as_ref())
-                .is_empty(),
-            "known servers are not looked up again"
-        );
-        let dropped = follow.intent.decide(&switches(), &BTreeMap::new(), &[]);
-        assert!(dropped.is_some(), "dropped: it blocks");
-        assert!(
-            follow
-                .to_look_up(&switches(), &BTreeMap::new(), dropped.as_ref())
-                .is_empty(),
-            "the drop blocks at once, without a lookup first"
-        );
-    }
+        phase a_new_shell_lifts_what_was_turned_off_while_it_was_away;
+        // A profile the person turned off while no shell ran is lifted, and
+        // that is kept.
+        {
+            let mut follow = Follow::new(kept(Some(4)));
+            let released = follow.released(&choices(Some(5)), &reading(None, 0));
+            assert_eq!(released, ["work"]);
+            assert_eq!(
+                follow
+                    .intent
+                    .decide(&switches(), &BTreeMap::new(), &released),
+                None
+            );
+            assert_eq!(
+                follow.intent(),
+                ProfileIntent {
+                    connecting: BTreeMap::new(),
+                    release_seen: Some(5),
+                }
+            );
+        }
 
-    /// A connected profile without its kill switch, or not set to connect,
-    /// is never looked up.
-    #[test]
-    fn only_profiles_set_to_connect_are_looked_up() {
-        let follow = Follow::new(ProfileIntent::default());
-        let connected = BTreeMap::from([("work".to_owned(), Activity::Activated)]);
-        assert!(
+        phase a_profile_switched_on_while_connected_has_its_servers_looked_up_before_it_drops;
+        // A profile whose kill switch is turned on while it is connected has its servers looked
+        // up then, so the block goes up at once with them rather than waiting on a lookup while
+        // traffic leaves outside the tunnel. Once known, they are not looked up again.
+        {
+            let mut follow = Follow::new(ProfileIntent::default());
+            let connected = BTreeMap::from([("work".to_owned(), Activity::Activated)]);
+            let blocking = follow.intent.decide(&switches(), &connected, &[]);
+            assert_eq!(blocking, None, "connected: nothing blocks");
+            assert_eq!(
+                follow.to_look_up(&switches(), &connected, blocking.as_ref()),
+                ["work"],
+                "looked up while the tunnel is up"
+            );
             follow
-                .to_look_up(&BTreeMap::new(), &connected, None)
-                .is_empty()
-        );
-        assert!(
-            follow.to_look_up(&switches(), &connected, None).is_empty(),
-            "not yet decided as set to connect"
-        );
-    }
+                .servers
+                .insert("work".into(), vec!["198.51.100.7".parse().unwrap()]);
+            assert!(
+                follow
+                    .to_look_up(&switches(), &connected, blocking.as_ref())
+                    .is_empty(),
+                "known servers are not looked up again"
+            );
+            let dropped = follow.intent.decide(&switches(), &BTreeMap::new(), &[]);
+            assert!(dropped.is_some(), "dropped: it blocks");
+            assert!(
+                follow
+                    .to_look_up(&switches(), &BTreeMap::new(), dropped.as_ref())
+                    .is_empty(),
+                "the drop blocks at once, without a lookup first"
+            );
+        }
 
-    #[test]
-    fn networkmanagers_states_map_to_the_decisions_activities() {
-        assert_eq!(
-            activity(ActiveState::Activating),
-            Some(Activity::Activating)
-        );
-        assert_eq!(activity(ActiveState::Activated), Some(Activity::Activated));
-        assert_eq!(
-            activity(ActiveState::Deactivating),
-            Some(Activity::Deactivating)
-        );
-        assert_eq!(activity(ActiveState::Deactivated), None);
-        assert_eq!(activity(ActiveState::Unknown), None);
+        phase only_profiles_set_to_connect_are_looked_up;
+        // A connected profile without its kill switch, or not set to connect,
+        // is never looked up.
+        {
+            let follow = Follow::new(ProfileIntent::default());
+            let connected = BTreeMap::from([("work".to_owned(), Activity::Activated)]);
+            assert!(
+                follow
+                    .to_look_up(&BTreeMap::new(), &connected, None)
+                    .is_empty()
+            );
+            assert!(
+                follow.to_look_up(&switches(), &connected, None).is_empty(),
+                "not yet decided as set to connect"
+            );
+        }
+
+        phase networkmanagers_states_map_to_the_decisions_activities;
+        {
+            assert_eq!(
+                activity(ActiveState::Activating),
+                Some(Activity::Activating)
+            );
+            assert_eq!(activity(ActiveState::Activated), Some(Activity::Activated));
+            assert_eq!(
+                activity(ActiveState::Deactivating),
+                Some(Activity::Deactivating)
+            );
+            assert_eq!(activity(ActiveState::Deactivated), None);
+            assert_eq!(activity(ActiveState::Unknown), None);
+        }
     }
 }

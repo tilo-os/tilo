@@ -112,36 +112,40 @@ fn resolver_of(text: &str) -> SocketAddr {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_resolver_is_the_first_nameserver() {
-        assert_eq!(
-            resolver_of(
-                "# NetworkManager\nsearch home\nnameserver 127.0.0.1\nnameserver 9.9.9.9\n"
-            ),
-            "127.0.0.1:53".parse().unwrap()
-        );
-        assert_eq!(resolver_of("nameserver ::1\n"), "[::1]:53".parse().unwrap());
-        assert_eq!(resolver_of(""), "127.0.0.1:53".parse().unwrap());
-    }
+    tilo_test_env::scenario! {
+        fn the_gateway_knows_its_resolver_and_its_queries;
 
-    #[test]
-    fn only_udp_to_the_gateways_dns_port_is_a_query() {
-        let client = SocketAddrV4::new(Ipv4Addr::new(100, 100, 64, 2), 40_000);
-        let query =
-            packet::udp_packet(client, SocketAddrV4::new(GATEWAY, PORT), b"\x12\x34q").unwrap();
-        assert_eq!(
-            Query::of(&Ipv4Packet::parse(&query).unwrap()),
-            Some(Query {
-                client,
-                payload: b"\x12\x34q".to_vec()
-            })
-        );
-        let elsewhere =
-            packet::udp_packet(client, "9.9.9.9:53".parse().unwrap(), b"\x12\x34q").unwrap();
-        assert_eq!(Query::of(&Ipv4Packet::parse(&elsewhere).unwrap()), None);
-        let other_port =
-            packet::udp_packet(client, SocketAddrV4::new(GATEWAY, 5353), b"\x12\x34q").unwrap();
-        assert_eq!(Query::of(&Ipv4Packet::parse(&other_port).unwrap()), None);
+        phase the_resolver_is_the_first_nameserver;
+        {
+            assert_eq!(
+                resolver_of(
+                    "# NetworkManager\nsearch home\nnameserver 127.0.0.1\nnameserver 9.9.9.9\n"
+                ),
+                "127.0.0.1:53".parse().unwrap()
+            );
+            assert_eq!(resolver_of("nameserver ::1\n"), "[::1]:53".parse().unwrap());
+            assert_eq!(resolver_of(""), "127.0.0.1:53".parse().unwrap());
+        }
+
+        phase only_udp_to_the_gateways_dns_port_is_a_query;
+        {
+            let client = SocketAddrV4::new(Ipv4Addr::new(100, 100, 64, 2), 40_000);
+            let query =
+                packet::udp_packet(client, SocketAddrV4::new(GATEWAY, PORT), b"\x12\x34q").unwrap();
+            assert_eq!(
+                Query::of(&Ipv4Packet::parse(&query).unwrap()),
+                Some(Query {
+                    client,
+                    payload: b"\x12\x34q".to_vec()
+                })
+            );
+            let elsewhere =
+                packet::udp_packet(client, "9.9.9.9:53".parse().unwrap(), b"\x12\x34q").unwrap();
+            assert_eq!(Query::of(&Ipv4Packet::parse(&elsewhere).unwrap()), None);
+            let other_port =
+                packet::udp_packet(client, SocketAddrV4::new(GATEWAY, 5353), b"\x12\x34q").unwrap();
+            assert_eq!(Query::of(&Ipv4Packet::parse(&other_port).unwrap()), None);
+        }
     }
 
     #[tokio::test]
