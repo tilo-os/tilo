@@ -1,4 +1,4 @@
-//! Containers — standard Tilo application entry point.
+//! Containers' entry point.
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;

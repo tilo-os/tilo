@@ -1,16 +1,12 @@
-//! The local container engine as search entries.
-//!
-//! Hits are anchored at the same live rows agents and collaborators use;
-//! opening one shows its row. The entries are read from the already-loaded engine, so a search
-//! never invokes podman on the palette's latency-sensitive query path.
+//! The container engine as search entries, anchored at the same live rows agents use.
+//! They read the loaded engine, so a search never invokes podman.
 
 use ui::tilo_resource::SearchEntry;
 
 use crate::model::Engine;
 
-/// Everything the engine runs and keeps, as search hits: containers and
-/// their recent log output, images, volumes and distroboxes, each opening
-/// its live row.
+/// Everything the engine runs and keeps, as search hits: containers and their recent
+/// logs, images, volumes and distroboxes, each opening its live row.
 pub fn engine_entries(engine: &Engine) -> Vec<SearchEntry> {
     let mut entries = Vec::new();
     for container in &engine.containers {
@@ -90,7 +86,6 @@ mod tests {
     use super::*;
     use ui::search::SearchProvider;
 
-    /// The app's search source over `engine`, as the framework builds it.
     fn source(engine: &Engine) -> impl SearchProvider + use<> {
         ui::framework::testing::search_source::<crate::resource::Containers>(engine_entries(engine))
     }
