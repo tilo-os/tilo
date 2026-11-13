@@ -102,6 +102,10 @@ mod route_parity;
 #[path = "workspace_actions/share_link.rs"]
 mod share_link;
 
+#[cfg(test)]
+#[path = "workspace_actions/workspace_per_customer.rs"]
+mod workspace_per_customer;
+
 #[cfg(not(test))]
 #[path = "mounted_resource/mod.rs"]
 pub mod mounted_resource;
