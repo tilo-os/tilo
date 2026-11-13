@@ -2979,7 +2979,6 @@ impl Music {
                 table.rows.iter().position(|tk| tk.id == song)
             });
 
-        let slot_index = self.track_tables_drawn;
         if self.page.track_tables.len() <= slot_index {
             self.page.track_tables.push(super::TrackTableSlot {
                 table: TrackTableHost::new(shape.clone(), theme),
