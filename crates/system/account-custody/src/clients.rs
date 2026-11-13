@@ -1,11 +1,8 @@
-//! Tilo's public `OAuth` client registrations, as data.
-//!
-//! The committed table `oauth-clients.toml` holds what each issuer's
-//! developer console issued: the client id, Google's installed-app client
-//! secret, the loopback ports an issuer that matches redirect URIs exactly
-//! has registered, and the scopes of each use (cloud storage, mail) of that
-//! one client. An environment variable overrides the id (and Google's
-//! secret) at runtime, then at build time.
+//! Tilo's public OAuth client registrations, as data: the committed table
+//! `oauth-clients.toml` holds what each issuer's developer console issued — the
+//! client id, the client secret, the loopback ports and redirect shape, and the
+//! scopes of each use of that one client. An environment variable overrides the
+//! id (and Google's secret) at runtime, then at build time.
 
 use std::sync::OnceLock;
 
@@ -14,13 +11,11 @@ use tilo_oauth::{Provider, Redirect, RedirectPorts, Refresh, Registration};
 
 use crate::providers::{Capability, OAuthCloud, OAuthIssuer, OAuthUse};
 
-/// The committed defaults.
 const DEFAULTS: &str = include_str!("../oauth-clients.toml");
 
-/// Where a Copilot subscription's GitHub token is traded for Copilot tokens.
 pub const COPILOT_TOKEN_ENDPOINT: &str = "https://api.github.com/copilot_internal/v2/token";
 
-/// The scopes each use of one client asks for. An empty list: this issuer
+/// The scopes each use of one client asks for; an empty list means this issuer
 /// is not used for that.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -50,7 +45,6 @@ impl Scopes {
     }
 }
 
-/// One issuer's entry.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ClientEntry {
@@ -58,17 +52,16 @@ pub struct ClientEntry {
     pub client_secret: String,
     /// Empty: any free loopback port.
     pub redirect_ports: Vec<u16>,
-    /// The redirect's host when the issuer registered one other than
-    /// `127.0.0.1`; empty for that.
+    /// The redirect's host when the issuer registered one other than `127.0.0.1`;
+    /// empty for that.
     pub redirect_host: String,
-    /// The redirect's path when the issuer registered one other than
-    /// `/oauth`; empty for that.
+    /// The redirect's path when the issuer registered one other than `/oauth`;
+    /// empty for that.
     pub redirect_path: String,
     pub paste_code_fallback: bool,
     pub scopes: Scopes,
 }
 
-/// The whole table.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ClientTable {
@@ -87,7 +80,6 @@ impl ClientTable {
         toml::from_str(text)
     }
 
-    /// The committed table.
     pub fn defaults() -> &'static Self {
         static TABLE: OnceLock<ClientTable> = OnceLock::new();
         TABLE.get_or_init(|| {
@@ -115,17 +107,17 @@ impl ClientTable {
         self.client(cloud.issuer())
     }
 
-    /// The scopes `oauth_use` asks for; empty when this table does not
-    /// configure that use.
+    /// The scopes `oauth_use` asks for; empty when this table does not configure
+    /// that use.
     pub fn scopes(&self, oauth_use: OAuthUse) -> &[String] {
         self.client(oauth_use.issuer)
             .scopes
             .of(oauth_use.capability)
     }
 
-    /// The issuer's descriptor with the scopes of `oauth_use`. A GitHub
-    /// grant for models is a Copilot subscription's: it is renewed by
-    /// trading the GitHub token for a Copilot token.
+    /// The issuer's descriptor with the scopes of `oauth_use`. A GitHub grant for
+    /// models is a Copilot subscription's: it is renewed by trading the GitHub token
+    /// for a Copilot token.
     pub fn descriptor(&self, oauth_use: OAuthUse) -> Provider {
         let refresh = match (oauth_use.issuer, oauth_use.capability) {
             (OAuthIssuer::GitHub, Capability::Models) => Refresh::CopilotToken {
@@ -140,9 +132,8 @@ impl ClientTable {
         }
     }
 
-    /// The registration of `issuer`: environment overrides first, then this
-    /// table. `None` when no client id is known (the "not configured"
-    /// state).
+    /// The registration of `issuer`: environment overrides first, then this table.
+    /// `None` when no client id is known, the "not configured" state.
     pub fn client_registration(&self, issuer: OAuthIssuer) -> Option<Registration> {
         let entry = self.client(issuer);
         let non_empty = |value: &str| {
@@ -176,14 +167,12 @@ impl ClientTable {
         })
     }
 
-    /// The registration for a cloud storage provider; see
-    /// [`Self::client_registration`].
     pub fn registration(&self, cloud: OAuthCloud) -> Option<Registration> {
         self.client_registration(cloud.issuer())
     }
 
-    /// The descriptor and registration of `oauth_use`, `None` when the
-    /// issuer has no client id or the use has no scopes.
+    /// The descriptor and registration of `oauth_use`, `None` when the issuer has
+    /// no client id or the use has no scopes.
     pub fn config(&self, oauth_use: OAuthUse) -> Option<(Provider, Registration)> {
         if self.scopes(oauth_use).is_empty() {
             return None;
@@ -192,8 +181,6 @@ impl ClientTable {
         Some((self.descriptor(oauth_use), registration))
     }
 
-    /// Whether `oauth_use` can sign in with this table (and the
-    /// environment).
     pub fn is_configured(&self, oauth_use: OAuthUse) -> bool {
         self.config(oauth_use).is_some()
     }
@@ -224,8 +211,8 @@ mod tests {
         );
         assert!(!table.microsoft.client_id.is_empty());
         assert!(!table.dropbox.client_id.is_empty());
-        // Google and Microsoft match loopback redirects without the port;
-        // Dropbox matches exactly and so needs registered ports.
+        // Google and Microsoft match loopback redirects without the port; Dropbox
+        // matches exactly and so needs registered ports.
         assert!(table.google.redirect_ports.is_empty());
         assert!(table.microsoft.redirect_ports.is_empty());
         assert!(!table.dropbox.redirect_ports.is_empty());
@@ -268,8 +255,8 @@ mod tests {
             table.scopes(OAuthCloud::GoogleDrive.oauth_use()),
             ["https://www.googleapis.com/auth/drive"]
         );
-        // Vertex AI asks for the cloud scope alone, in its own grant: none
-        // of the Google uses shares a scope with another.
+        // Vertex AI asks for the cloud scope alone, in its own grant: none of the Google
+        // uses shares a scope with another.
         let vertex = OAuthUse::new(OAuthIssuer::Google, Capability::Models);
         assert_eq!(
             table.scopes(vertex),
@@ -327,7 +314,7 @@ mod tests {
             }
         );
         assert_eq!(client.redirect, Redirect::default());
-        // A GitHub grant for anything else would be refreshed as usual.
+        // A GitHub grant for anything else is refreshed as usual.
         assert_eq!(
             table
                 .descriptor(OAuthUse::identity(OAuthIssuer::GitHub))
@@ -335,9 +322,9 @@ mod tests {
             Refresh::RefreshToken
         );
 
-        // Hugging Face signs in for downloads on any loopback port of its
-        // registered `/callback`, with a device code where there is no
-        // browser; its registration has no inference scope.
+        // Hugging Face signs in for downloads on any loopback port of its registered
+        // `/callback`, with a device code where there is no browser; its registration
+        // has no inference scope.
         let downloads = OAuthUse::new(OAuthIssuer::HuggingFace, Capability::ModelDownloads);
         let (provider, client) = table.config(downloads).expect("Hugging Face is configured");
         assert_eq!(provider.scopes, ["openid", "profile", "gated-repos"]);

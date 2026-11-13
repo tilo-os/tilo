@@ -38,7 +38,6 @@ impl fmt::Debug for ICloudSessionState {
     }
 }
 
-/// Opaque state of a sign-in waiting for its verification code.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ICloudChallenge(pub Zeroizing<String>);
 
@@ -48,10 +47,8 @@ impl fmt::Debug for ICloudChallenge {
     }
 }
 
-/// Short-lived request headers for the storage daemon.
 pub struct ICloudHeaders {
     pub headers: Vec<(String, Zeroizing<String>)>,
-    /// Unix seconds after which the headers stop working, if known.
     pub expires_unix: Option<u64>,
 }
 
@@ -71,7 +68,6 @@ impl fmt::Debug for ICloudHeaders {
     }
 }
 
-/// The outcome of submitting Apple ID and password.
 #[derive(Debug)]
 pub enum ICloudSignIn {
     /// Signed in without a code (a trusted session was still valid).
@@ -80,23 +76,16 @@ pub enum ICloudSignIn {
     NeedsCode(ICloudChallenge),
 }
 
-/// Typed `iCloud` sign-in failures.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ICloudAuthError {
-    /// Apple ID or password rejected.
     InvalidCredentials,
-    /// The verification code was wrong or expired.
     InvalidCode,
     /// Advanced Data Protection is on and web access to `iCloud` data is off,
     /// so `iCloud` Drive cannot be reached through the web API.
     AdvancedDataProtection,
-    /// The session needs the two-factor step again.
     NeedsReauthentication,
-    /// The Apple ID is locked or needs attention at appleid.apple.com.
     AccountLocked,
-    /// Apple could not be reached.
     Offline,
-    /// No `iCloud` provider is linked into this build.
     Unavailable,
     /// Anything else, without secrets or response bodies.
     Other(String),
@@ -125,42 +114,24 @@ impl fmt::Display for ICloudAuthError {
 
 impl std::error::Error for ICloudAuthError {}
 
-/// The `iCloud` sign-in surface Settings drives.
 pub trait ICloudAuth: Send + Sync {
-    /// Whether this build can sign in to `iCloud` Drive at all.
     fn is_available(&self) -> bool {
         true
     }
 
-    /// Submit Apple ID and password.
-    ///
-    /// # Errors
-    /// See [`ICloudAuthError`].
     fn sign_in(&self, apple_id: &str, password: &str) -> Result<ICloudSignIn, ICloudAuthError>;
 
-    /// Submit the verification code for a pending sign-in.
-    ///
-    /// # Errors
-    /// See [`ICloudAuthError`].
     fn verify_code(
         &self,
         challenge: &ICloudChallenge,
         code: &str,
     ) -> Result<ICloudSessionState, ICloudAuthError>;
 
-    /// Derive short-lived request headers from a stored session, renewing it
-    /// where the session allows. Returns the (possibly renewed) state to
-    /// store back. [`ICloudAuthError::NeedsReauthentication`] when the
-    /// session requires the two-factor step again.
-    ///
-    /// # Errors
-    /// See [`ICloudAuthError`].
     fn resume(
         &self,
         session: &ICloudSessionState,
     ) -> Result<(ICloudSessionState, ICloudHeaders), ICloudAuthError>;
 
-    /// End the session at Apple, best effort.
     fn sign_out(&self, _session: &ICloudSessionState) {}
 
     /// The non-secret mount configuration of accounts signed in here (the
@@ -170,9 +141,6 @@ pub trait ICloudAuth: Send + Sync {
     }
 }
 
-/// `iCloud` sign-in through [`Authenticator`]:
-/// SRP with Apple ID and password, the two-factor code, and renewal of the
-/// stored session without a person.
 #[derive(Clone, Debug)]
 pub struct WebICloud {
     auth: Authenticator,
@@ -189,10 +157,6 @@ impl WebICloud {
             .map_err(auth_error)
     }
 
-    /// Against Apple's production endpoints.
-    ///
-    /// # Errors
-    /// See [`Self::new`].
     pub fn apple() -> Result<Self, ICloudAuthError> {
         Self::new(Endpoints::apple())
     }
@@ -266,7 +230,6 @@ impl ICloudAuth for WebICloud {
             session_state(&renewed),
             ICloudHeaders {
                 headers,
-                // Apple does not say; a rejected request asks for new ones.
                 expires_unix: None,
             },
         ))
@@ -278,7 +241,6 @@ impl ICloudAuth for WebICloud {
     }
 }
 
-/// The [`ICloudAuth`] of a build without an `iCloud` provider.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UnavailableICloud;
 
