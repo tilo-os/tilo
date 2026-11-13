@@ -225,7 +225,7 @@ fn the_panel_on_a_laptops_output_stays_inside_it_over_the_desk() {
     let mut laptop = session_of_device_at(&[panel()], Machine::Owned, OUTPUT);
     let session = &mut laptop.session;
     let desk = at_rest(session);
-    open_the_panel(session);
+    open_the_panel_over(session, &desk);
     until_ready(session, "toggle-wifi");
     let frame = at_rest(session);
     save(&frame, "session-quick-settings-1280x800");
@@ -338,16 +338,27 @@ fn the_panel_opens_each_radios_details_in_place() {
 
 /// How many pixels of `after` differ from `before` by more than a shade.
 fn differing(before: &Screenshot, after: &Screenshot) -> usize {
+    // A whole number of pixels, compared as bytes first: most of a frame is
+    // the desk around the panel, the same in both, and a run of equal bytes
+    // holds no pixel to count. Only the runs that differ are read a pixel at
+    // a time, which an unoptimised build does slowly.
+    const RUN: usize = 4096;
     before
         .rgba
-        .chunks_exact(4)
-        .zip(after.rgba.chunks_exact(4))
-        .filter(|(a, b)| {
-            a.iter()
-                .zip(b.iter())
-                .any(|(a, b)| u8::abs_diff(*a, *b) > 8)
+        .chunks(RUN)
+        .zip(after.rgba.chunks(RUN))
+        .filter(|(was, is)| was != is)
+        .map(|(was, is)| {
+            was.chunks_exact(4)
+                .zip(is.chunks_exact(4))
+                .filter(|(a, b)| {
+                    a.iter()
+                        .zip(b.iter())
+                        .any(|(a, b)| u8::abs_diff(*a, *b) > 8)
+                })
+                .count()
         })
-        .count()
+        .sum()
 }
 
 #[test]
@@ -573,7 +584,7 @@ fn the_panel_draws_at_scale_2() {
     let mut laptop = session_of_device_at_scale(&[panel()], Machine::Owned, PIXELS, SCALE);
     let session = &mut laptop.session;
     let desk = at_rest(session);
-    open_the_panel(session);
+    open_the_panel_over(session, &desk);
     until_ready(session, "toggle-wifi");
     let frame = drawn_on(session, &desk, PIXELS.0);
     save(&frame, "session-quick-settings-scale-2");
@@ -730,6 +741,12 @@ fn open_the_panel(session: &mut Session) {
     // The desk as it stands before the panel, at rest: what changes after it
     // opens is the panel coming up, never the desk still settling.
     let desk = at_rest(session);
+    open_the_panel_over(session, &desk);
+}
+
+/// [`open_the_panel`] over `desk`, the desk at rest as the test just read it:
+/// a test that keeps that frame to compare the panel with reads it once.
+fn open_the_panel_over(session: &mut Session, desk: &Screenshot) {
     session
         .invoke(
             OVERLAYS,
@@ -1270,13 +1287,23 @@ fn save(frame: &Screenshot, name: &str) {
     else {
         panic!("the frame's pixels do not fill it");
     };
+    // A frame with no pixels is one no picture can be made of, whether or
+    // not this run keeps it.
+    assert!(
+        frame.width > 0 && frame.height > 0,
+        "the frame has no pixels to keep: {}x{}",
+        frame.width,
+        frame.height
+    );
+    // The picture is encoded for a run that keeps it, and only then: no run
+    // reads one it did not ask for.
+    let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(PathBuf::from) else {
+        return;
+    };
     let mut png = Vec::new();
     pixels
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .expect("the shot");
-    let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(PathBuf::from) else {
-        return;
-    };
     std::fs::create_dir_all(&directory).expect("the directory for shots");
     std::fs::write(directory.join(format!("{name}.png")), png).expect("the shot");
 }
