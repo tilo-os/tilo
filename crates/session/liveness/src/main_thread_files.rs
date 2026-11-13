@@ -612,61 +612,65 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_site_names_the_code_and_the_handler_it_runs_under() {
-        let walk = walk(
-            "   3: statx\n   4: std::sys::fs::unix::try_statx\n   5: std::fs::metadata::<&std::path::Path>\n\
+    tilo_test_env::scenario! {
+        fn a_walk_names_its_site_and_handler_from_its_backtrace;
+
+        phase a_site_names_the_code_and_the_handler_it_runs_under;
+        {
+            let walk = walk(
+                "   3: statx\n   4: std::sys::fs::unix::try_statx\n   5: std::fs::metadata::<&std::path::Path>\n\
              \x20  6: <tilo_identity_host::registry::DirStamp>::of\n\
              \x20            at ./crates/runtime/tilo-identity-host/src/registry.rs:234:20\n\
              \x20  7: <tilo_session::network::Network>::kick_periodic_sync\n\
              \x20  8: <tilo_session::network::Network>::frame_tick\n\
              \x20  9: tilo_session::Session::run\n  10: tilo_session::run\n  11: main",
-        );
-        assert_eq!(walk.site(), "<tilo_identity_host::registry::DirStamp>::of");
-        assert_eq!(
-            walk.handler(),
-            "<tilo_session::network::Network>::frame_tick"
-        );
-    }
+            );
+            assert_eq!(walk.site(), "<tilo_identity_host::registry::DirStamp>::of");
+            assert_eq!(
+                walk.handler(),
+                "<tilo_session::network::Network>::frame_tick"
+            );
+        }
 
-    #[test]
-    fn a_site_is_named_past_frames_the_symbol_table_could_not_name() {
-        // libc's openat, which only the executable is named for: the site is
-        // the code that walked the path, not the object the call is in.
-        let walk = walk(
-            "   0: <unknown> /lib64/libc.so.6+0x7b350 (build-id 85075e2a)\n\
+        phase a_site_is_named_past_frames_the_symbol_table_could_not_name;
+        {
+            // libc's openat, which only the executable is named for: the site is
+            // the code that walked the path, not the object the call is in.
+            let walk = walk(
+                "   0: <unknown> /lib64/libc.so.6+0x7b350 (build-id 85075e2a)\n\
              \x20  1: <std::sys::fs::unix::File>::open_c\n\
              \x20  2: std::fs::read_to_string\n\
              \x20  3: tilo_session::host_runtime::proc_stat\n\
              \x20  4: tilo_session::run\n",
-        );
-        assert_eq!(walk.site(), "tilo_session::host_runtime::proc_stat");
-    }
+            );
+            assert_eq!(walk.site(), "tilo_session::host_runtime::proc_stat");
+        }
 
-    #[test]
-    fn a_storage_wait_names_the_store_caller_and_not_the_audit() {
-        let wait = FileWalk {
-            syscall: STORAGE_WAIT.into(),
-            ..walk(
-                "   0: backtrace::backtrace::libunwind::trace\n\
+        phase a_storage_wait_names_the_store_caller_and_not_the_audit;
+        {
+            let wait = FileWalk {
+                syscall: STORAGE_WAIT.into(),
+                ..walk(
+                    "   0: backtrace::backtrace::libunwind::trace\n\
                  \x20  1: tilo_liveness::main_thread_files::record_storage_wait\n\
                  \x20  2: durable_store::waiting::call\n\
                  \x20  3: app_state::fs_store::Store::commit\n\
                  \x20  4: settings_store::write::flush\n\
                  \x20  5: tilo_session::Session::run\n\
                  \x20  6: tilo_session::run\n",
-            )
-        };
-        assert_eq!(wait.site(), "settings_store::write::flush");
-    }
+                )
+            };
+            assert_eq!(wait.site(), "settings_store::write::flush");
+        }
 
-    #[test]
-    fn a_site_drops_generics_closure_numbers_and_hashes() {
-        assert_eq!(
-            normalize_frame(
-                "settings_store::watch::watch_file_at::<<tilo_session::X as y::Z>::f::{closure#0}>::{closure#3}::h0123456789abcdef"
-            ),
-            "settings_store::watch::watch_file_at::{closure}"
-        );
+        phase a_site_drops_generics_closure_numbers_and_hashes;
+        {
+            assert_eq!(
+                normalize_frame(
+                    "settings_store::watch::watch_file_at::<<tilo_session::X as y::Z>::f::{closure#0}>::{closure#3}::h0123456789abcdef"
+                ),
+                "settings_store::watch::watch_file_at::{closure}"
+            );
+        }
     }
 }

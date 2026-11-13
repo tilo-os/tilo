@@ -400,85 +400,89 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_a_thread_asleep_without_running_past_the_bound_is_hung() {
-        let start = Instant::now();
-        let at = |ms: u64| start.checked_add(Duration::from_millis(ms)).unwrap();
-        let bound = Duration::from_millis(100);
-        let mut stall = None;
-        assert_eq!(judge(&mut stall, &sample('S', 5), at(0), bound), None);
-        assert_eq!(
-            judge(&mut stall, &sample('S', 5), at(100), bound),
-            None,
-            "at the bound"
-        );
-        assert_eq!(
-            judge(&mut stall, &sample('S', 6), at(150), bound),
-            None,
-            "it ran: a bounded wait ended"
-        );
-        assert_eq!(judge(&mut stall, &sample('S', 6), at(200), bound), None);
-        assert_eq!(
-            judge(&mut stall, &sample('S', 6), at(251), bound),
-            Some(Duration::from_millis(101)),
-            "asleep since 150 without running once"
-        );
+    tilo_test_env::scenario! {
+        fn a_hang_is_judged_from_samples_of_the_thread_against_the_bound;
 
-        let mut stall = None;
-        for ms in [0, 200, 400, 600] {
+        phase only_a_thread_asleep_without_running_past_the_bound_is_hung;
+        {
+            let start = Instant::now();
+            let at = |ms: u64| start.checked_add(Duration::from_millis(ms)).unwrap();
+            let bound = Duration::from_millis(100);
+            let mut stall = None;
+            assert_eq!(judge(&mut stall, &sample('S', 5), at(0), bound), None);
             assert_eq!(
-                judge(&mut stall, &sample('D', 1), at(ms), bound),
+                judge(&mut stall, &sample('S', 5), at(100), bound),
                 None,
-                "in the kernel's uninterruptible sleep, which ending cannot cut short ({ms} ms)"
+                "at the bound"
+            );
+            assert_eq!(
+                judge(&mut stall, &sample('S', 6), at(150), bound),
+                None,
+                "it ran: a bounded wait ended"
+            );
+            assert_eq!(judge(&mut stall, &sample('S', 6), at(200), bound), None);
+            assert_eq!(
+                judge(&mut stall, &sample('S', 6), at(251), bound),
+                Some(Duration::from_millis(101)),
+                "asleep since 150 without running once"
+            );
+
+            let mut stall = None;
+            for ms in [0, 200, 400, 600] {
+                assert_eq!(
+                    judge(&mut stall, &sample('D', 1), at(ms), bound),
+                    None,
+                    "in the kernel's uninterruptible sleep, which ending cannot cut short ({ms} ms)"
+                );
+            }
+
+            let mut stall = None;
+            for (ms, state) in [(0, 'S'), (200, 'R'), (400, 'S'), (450, 'S')] {
+                assert_eq!(
+                    judge(&mut stall, &sample(state, 1), at(ms), bound),
+                    None,
+                    "running or runnable is working or starved, not hung ({ms} ms)"
+                );
+            }
+            let mut stall = None;
+            for (ms, state) in [(0, 'S'), (200, 't'), (400, 'T')] {
+                assert_eq!(
+                    judge(&mut stall, &sample(state, 1), at(ms), bound),
+                    None,
+                    "stopped"
+                );
+            }
+            let mut stall = None;
+            let traced = Sample {
+                traced: true,
+                ..sample('S', 1)
+            };
+            assert_eq!(judge(&mut stall, &sample('S', 1), at(0), bound), None);
+            assert_eq!(
+                judge(&mut stall, &traced, at(500), bound),
+                None,
+                "under a debugger"
             );
         }
 
-        let mut stall = None;
-        for (ms, state) in [(0, 'S'), (200, 'R'), (400, 'S'), (450, 'S')] {
-            assert_eq!(
-                judge(&mut stall, &sample(state, 1), at(ms), bound),
-                None,
-                "running or runnable is working or starved, not hung ({ms} ms)"
-            );
+        phase proc_fields_parse;
+        {
+            assert_eq!(state_of("1234 (tilo (main) x) S 1 2 3"), Some('S'));
+            assert_eq!(state_of("garbage"), None);
+            let status = "Name:\tshell\nTracerPid:\t0\nvoluntary_ctxt_switches:\t40\nnonvoluntary_ctxt_switches:\t2\n";
+            assert_eq!(switches_of(status), Some(42));
+            assert_eq!(status_field(status, "TracerPid"), Some(0));
+            assert!(Sample::of(gettid()).is_some(), "this thread samples");
         }
-        let mut stall = None;
-        for (ms, state) in [(0, 'S'), (200, 't'), (400, 'T')] {
-            assert_eq!(
-                judge(&mut stall, &sample(state, 1), at(ms), bound),
-                None,
-                "stopped"
-            );
-        }
-        let mut stall = None;
-        let traced = Sample {
-            traced: true,
-            ..sample('S', 1)
-        };
-        assert_eq!(judge(&mut stall, &sample('S', 1), at(0), bound), None);
-        assert_eq!(
-            judge(&mut stall, &traced, at(500), bound),
-            None,
-            "under a debugger"
-        );
-    }
 
-    #[test]
-    fn proc_fields_parse() {
-        assert_eq!(state_of("1234 (tilo (main) x) S 1 2 3"), Some('S'));
-        assert_eq!(state_of("garbage"), None);
-        let status = "Name:\tshell\nTracerPid:\t0\nvoluntary_ctxt_switches:\t40\nnonvoluntary_ctxt_switches:\t2\n";
-        assert_eq!(switches_of(status), Some(42));
-        assert_eq!(status_field(status, "TracerPid"), Some(0));
-        assert!(Sample::of(gettid()).is_some(), "this thread samples");
-    }
-
-    #[test]
-    fn the_production_bound_is_past_every_bounded_wait() {
-        for wait in [SESSION_END_SAVE_FLUSH, GPU_JOB_TIMEOUT, SEAT_CALL_TIMEOUT] {
-            assert!(LONGEST_BOUNDED_WAIT >= wait, "{wait:?}");
+        phase the_production_bound_is_past_every_bounded_wait;
+        {
+            for wait in [SESSION_END_SAVE_FLUSH, GPU_JOB_TIMEOUT, SEAT_CALL_TIMEOUT] {
+                assert!(LONGEST_BOUNDED_WAIT >= wait, "{wait:?}");
+            }
+            assert!(HUNG_AFTER > LONGEST_BOUNDED_WAIT);
+            assert_eq!(Policy::COMPOSITOR.hung_after, HUNG_AFTER);
         }
-        assert!(HUNG_AFTER > LONGEST_BOUNDED_WAIT);
-        assert_eq!(Policy::COMPOSITOR.hung_after, HUNG_AFTER);
     }
 
     /// The test thread holds `lock` and the watched loop blocks on it.
