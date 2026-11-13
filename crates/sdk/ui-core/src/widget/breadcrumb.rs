@@ -705,248 +705,254 @@ mod tests {
 
     use crate::synthetic_input::mouse_press;
 
-    #[test]
-    fn breadcrumb_paints_separators_centres_labels_and_truncates() {
-        fn breadcrumb_with_one_segment_paints_no_separator() {
-            let bc = Breadcrumb::new(vec!["home".to_string()]);
-            let mut tr = TextRenderer::new();
-            let theme = Theme::dark();
-            let mut bc = bc;
-            bc.rect = Rect::new(0.0, 0.0, 500.0, 24.0);
-            bc.apply_layout_helper(&theme, &mut tr);
-            assert_eq!(
-                bc.separator_count(),
-                0,
-                "one-segment breadcrumb must report zero separators"
-            );
-            assert_eq!(bc.cached_visible, vec!["home".to_string()]);
-        }
+    tilo_test_env::scenario! {
+        /// The breadcrumb.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_breadcrumb_paints_and_navigates_its_segments;
 
-        /// Labels and chevrons are centred on the line the renderer measured,
-        /// not on the font size — the latter sat every segment 1.5 px below the
-        /// row's centre (12 px type lays out as a 15 px line).
-        fn breadcrumb_labels_and_chevrons_centre_their_measured_line() {
-            let mut bc = Breadcrumb::new(vec!["home".to_string(), "docs".to_string()]);
-            let mut tr = TextRenderer::new();
-            let theme = Theme::dark();
-            // An 18 px band, as `build_layout` gives a small-type trail.
-            let rect = Rect::new(10.0, 40.0, 500.0, 58.0);
-            bc.rect = rect;
-            bc.apply_layout_helper(&theme, &mut tr);
-            let mut scene = Scene::new();
-            bc.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &crate::presence::PresenceCtx::default(),
-            );
-            assert_eq!(
-                scene.encoding().resources.glyph_runs.len(),
-                2,
-                "home and docs; the chevron is an icon, not a glyph"
-            );
-            let style = theme.text(TextRole::Caption);
-            for (index, text) in ["home", "docs"].into_iter().enumerate() {
-                crate::widget::text::assert_glyph_run_centred_in_band(
-                    &scene,
-                    index,
-                    text,
-                    &style,
-                    rect.y0,
-                    rect.height(),
-                    &mut tr,
-                    theme.text_primary,
+        phase breadcrumb_paints_separators_centres_labels_and_truncates;
+        {
+            fn breadcrumb_with_one_segment_paints_no_separator() {
+                let bc = Breadcrumb::new(vec!["home".to_string()]);
+                let mut tr = TextRenderer::new();
+                let theme = Theme::dark();
+                let mut bc = bc;
+                bc.rect = Rect::new(0.0, 0.0, 500.0, 24.0);
+                bc.apply_layout_helper(&theme, &mut tr);
+                assert_eq!(
+                    bc.separator_count(),
+                    0,
+                    "one-segment breadcrumb must report zero separators"
                 );
+                assert_eq!(bc.cached_visible, vec!["home".to_string()]);
             }
-        }
 
-        fn breadcrumb_with_long_path_truncates_middle_segments() {
-            let segments: Vec<String> = (0..10).map(|i| format!("segment_{i:02}")).collect();
-            let bc = Breadcrumb::new(segments);
-            let mut tr = TextRenderer::new();
-            let theme = Theme::dark();
-            let labels =
-                |shown: &[&str]| shown.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
-            let first_two_last = [Some(0), None, Some(8), Some(9)];
-            let first_last = [Some(0), None, Some(9)];
-            let wide = bc.width_of(&first_two_last, &theme, &mut tr);
-            assert_eq!(
-                bc.visible_segments(wide, &theme, &mut tr),
-                labels(&["segment_00", ELLIPSIS, "segment_08", "segment_09"]),
-                "a long path collapses to the first, `...` and the last two"
-            );
-            let middling = bc.width_of(&first_last, &theme, &mut tr);
-            assert!(middling < wide);
-            assert_eq!(
-                bc.visible_segments(middling, &theme, &mut tr),
-                labels(&["segment_00", ELLIPSIS, "segment_09"]),
-                "narrower, the second-last goes too"
-            );
-            assert_eq!(
-                bc.visible_segments(middling - 1.0, &theme, &mut tr),
-                labels(&[ELLIPSIS, "segment_09"]),
-                "at the narrowest the current folder still shows"
-            );
-            assert!(
-                bc.width_of(&[None, Some(9)], &theme, &mut tr) <= middling - 1.0,
-                "and fits"
-            );
-        }
-
-        fn breadcrumb_of_two_long_segments_stays_inside_its_width() {
-            let mut bc = Breadcrumb::new(vec![
-                "Samsung SSD 990 PRO 1TB".to_string(),
-                "system partition".to_string(),
-            ]);
-            let mut tr = TextRenderer::new();
-            let theme = Theme::dark();
-            let both = bc.width_of(&[Some(0), Some(1)], &theme, &mut tr);
-            assert_eq!(
-                bc.visible_segments(both - 1.0, &theme, &mut tr),
-                vec![ELLIPSIS.to_string(), "system partition".to_string()],
-                "a trail of two too wide for its room keeps the current segment"
-            );
-            let rect = Rect::new(10.0, 0.0, 70.0, 24.0);
-            bc.set_rect(rect);
-            bc.rebuild_rects(&theme, &mut tr);
-            let end = bc.segment_rects.last().map(|r| r.x1).unwrap_or_default();
-            assert!(end <= rect.x1, "the trail ends at {end}, inside {rect:?}");
-            let shown = bc.cached_visible.last().cloned().unwrap_or_default();
-            let style = theme.text(bc.role);
-            let (shown_w, _) = tr.measure_style(&shown, None, &style);
-            let last = bc.segment_rects.last().copied().unwrap_or(Rect::ZERO);
-            assert!(
-                shown != "system partition" && f64::from(shown_w) <= last.width() + 0.5,
-                "the current segment's label is cut to its room: {shown}"
-            );
-        }
-
-        fn deep_trail_never_paints_past_its_width() {
-            let levels = ["Home", "Documents", "Projects", "Tilo", "designs"];
-            let mut bc = Breadcrumb::new(
-                levels
-                    .iter()
-                    .map(|level| (*level).to_string())
-                    .chain(std::iter::once("app-language".to_string()))
-                    .collect(),
-            )
-            .with_role(TextRole::Body);
-            let mut tr = TextRenderer::new();
-            let theme = Theme::dark();
-            let style = theme.text(bc.role);
-            let sep = separator_width(&theme) + f64::from(theme.tokens.spacing.s2) * 2.0;
-            let mut forms = Vec::new();
-            for width in (4..=520).step_by(4).map(f64::from) {
-                let rect = Rect::new(20.0, 0.0, 20.0 + width, 28.0);
-                bc.set_rect(rect);
-                bc.rebuild_rects(&theme, &mut tr);
-                let n = bc.segment_rects.len();
-                for (i, (seg, label)) in bc.segment_rects.iter().zip(&bc.cached_visible).enumerate()
-                {
-                    let ink = if bc.visible_origin[i].is_none() {
-                        seg.width()
-                    } else {
-                        f64::from(tr.measure_style(label, None, &style).0)
-                    };
-                    let chevron = if i + 1 < n { sep } else { 0.0 };
-                    assert!(
-                        seg.x0 >= rect.x0 && seg.x0 + ink + chevron <= rect.x1 + 0.5,
-                        "{width} px: {label:?} at {seg:?} ({ink} px) paints past {rect:?}: {:?}",
-                        bc.cached_visible
+            /// Labels and chevrons are centred on the line the renderer measured,
+            /// not on the font size — the latter sat every segment 1.5 px below the
+            /// row's centre (12 px type lays out as a 15 px line).
+            fn breadcrumb_labels_and_chevrons_centre_their_measured_line() {
+                let mut bc = Breadcrumb::new(vec!["home".to_string(), "docs".to_string()]);
+                let mut tr = TextRenderer::new();
+                let theme = Theme::dark();
+                // An 18 px band, as `build_layout` gives a small-type trail.
+                let rect = Rect::new(10.0, 40.0, 500.0, 58.0);
+                bc.rect = rect;
+                bc.apply_layout_helper(&theme, &mut tr);
+                let mut scene = Scene::new();
+                bc.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    &crate::presence::PresenceCtx::default(),
+                );
+                assert_eq!(
+                    scene.encoding().resources.glyph_runs.len(),
+                    2,
+                    "home and docs; the chevron is an icon, not a glyph"
+                );
+                let style = theme.text(TextRole::Caption);
+                for (index, text) in ["home", "docs"].into_iter().enumerate() {
+                    crate::widget::text::assert_glyph_run_centred_in_band(
+                        &scene,
+                        index,
+                        text,
+                        &style,
+                        rect.y0,
+                        rect.height(),
+                        &mut tr,
+                        theme.text_primary,
                     );
                 }
-                let last = bc.cached_visible.last().cloned().unwrap_or_default();
-                assert!(
-                    "app-language".starts_with(last.trim_end_matches(crate::text_render::ELLIPSIS)),
-                    "{width} px: the current folder ends the trail: {last:?}"
-                );
-                forms.push(bc.visible_origin.clone());
             }
-            forms.dedup();
-            assert_eq!(
-                forms.first(),
-                Some(&vec![Some(5)]),
-                "at the narrowest the current folder stands alone: {forms:?}"
-            );
-            assert!(
-                forms.contains(&vec![None, Some(5)]),
-                "before that it is cut short beside the `…`: {forms:?}"
-            );
-            assert_eq!(
-                forms.last(),
-                Some(&(0..6).map(Some).collect::<Vec<_>>()),
-                "wide, every level shows: {forms:?}"
-            );
+
+            fn breadcrumb_with_long_path_truncates_middle_segments() {
+                let segments: Vec<String> = (0..10).map(|i| format!("segment_{i:02}")).collect();
+                let bc = Breadcrumb::new(segments);
+                let mut tr = TextRenderer::new();
+                let theme = Theme::dark();
+                let labels =
+                    |shown: &[&str]| shown.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+                let first_two_last = [Some(0), None, Some(8), Some(9)];
+                let first_last = [Some(0), None, Some(9)];
+                let wide = bc.width_of(&first_two_last, &theme, &mut tr);
+                assert_eq!(
+                    bc.visible_segments(wide, &theme, &mut tr),
+                    labels(&["segment_00", ELLIPSIS, "segment_08", "segment_09"]),
+                    "a long path collapses to the first, `...` and the last two"
+                );
+                let middling = bc.width_of(&first_last, &theme, &mut tr);
+                assert!(middling < wide);
+                assert_eq!(
+                    bc.visible_segments(middling, &theme, &mut tr),
+                    labels(&["segment_00", ELLIPSIS, "segment_09"]),
+                    "narrower, the second-last goes too"
+                );
+                assert_eq!(
+                    bc.visible_segments(middling - 1.0, &theme, &mut tr),
+                    labels(&[ELLIPSIS, "segment_09"]),
+                    "at the narrowest the current folder still shows"
+                );
+                assert!(
+                    bc.width_of(&[None, Some(9)], &theme, &mut tr) <= middling - 1.0,
+                    "and fits"
+                );
+            }
+
+            fn breadcrumb_of_two_long_segments_stays_inside_its_width() {
+                let mut bc = Breadcrumb::new(vec![
+                    "Samsung SSD 990 PRO 1TB".to_string(),
+                    "system partition".to_string(),
+                ]);
+                let mut tr = TextRenderer::new();
+                let theme = Theme::dark();
+                let both = bc.width_of(&[Some(0), Some(1)], &theme, &mut tr);
+                assert_eq!(
+                    bc.visible_segments(both - 1.0, &theme, &mut tr),
+                    vec![ELLIPSIS.to_string(), "system partition".to_string()],
+                    "a trail of two too wide for its room keeps the current segment"
+                );
+                let rect = Rect::new(10.0, 0.0, 70.0, 24.0);
+                bc.set_rect(rect);
+                bc.rebuild_rects(&theme, &mut tr);
+                let end = bc.segment_rects.last().map(|r| r.x1).unwrap_or_default();
+                assert!(end <= rect.x1, "the trail ends at {end}, inside {rect:?}");
+                let shown = bc.cached_visible.last().cloned().unwrap_or_default();
+                let style = theme.text(bc.role);
+                let (shown_w, _) = tr.measure_style(&shown, None, &style);
+                let last = bc.segment_rects.last().copied().unwrap_or(Rect::ZERO);
+                assert!(
+                    shown != "system partition" && f64::from(shown_w) <= last.width() + 0.5,
+                    "the current segment's label is cut to its room: {shown}"
+                );
+            }
+
+            fn deep_trail_never_paints_past_its_width() {
+                let levels = ["Home", "Documents", "Projects", "Tilo", "designs"];
+                let mut bc = Breadcrumb::new(
+                    levels
+                        .iter()
+                        .map(|level| (*level).to_string())
+                        .chain(std::iter::once("app-language".to_string()))
+                        .collect(),
+                )
+                .with_role(TextRole::Body);
+                let mut tr = TextRenderer::new();
+                let theme = Theme::dark();
+                let style = theme.text(bc.role);
+                let sep = separator_width(&theme) + f64::from(theme.tokens.spacing.s2) * 2.0;
+                let mut forms = Vec::new();
+                for width in (4..=520).step_by(4).map(f64::from) {
+                    let rect = Rect::new(20.0, 0.0, 20.0 + width, 28.0);
+                    bc.set_rect(rect);
+                    bc.rebuild_rects(&theme, &mut tr);
+                    let n = bc.segment_rects.len();
+                    for (i, (seg, label)) in bc.segment_rects.iter().zip(&bc.cached_visible).enumerate()
+                    {
+                        let ink = if bc.visible_origin[i].is_none() {
+                            seg.width()
+                        } else {
+                            f64::from(tr.measure_style(label, None, &style).0)
+                        };
+                        let chevron = if i + 1 < n { sep } else { 0.0 };
+                        assert!(
+                            seg.x0 >= rect.x0 && seg.x0 + ink + chevron <= rect.x1 + 0.5,
+                            "{width} px: {label:?} at {seg:?} ({ink} px) paints past {rect:?}: {:?}",
+                            bc.cached_visible
+                        );
+                    }
+                    let last = bc.cached_visible.last().cloned().unwrap_or_default();
+                    assert!(
+                        "app-language".starts_with(last.trim_end_matches(crate::text_render::ELLIPSIS)),
+                        "{width} px: the current folder ends the trail: {last:?}"
+                    );
+                    forms.push(bc.visible_origin.clone());
+                }
+                forms.dedup();
+                assert_eq!(
+                    forms.first(),
+                    Some(&vec![Some(5)]),
+                    "at the narrowest the current folder stands alone: {forms:?}"
+                );
+                assert!(
+                    forms.contains(&vec![None, Some(5)]),
+                    "before that it is cut short beside the `…`: {forms:?}"
+                );
+                assert_eq!(
+                    forms.last(),
+                    Some(&(0..6).map(Some).collect::<Vec<_>>()),
+                    "wide, every level shows: {forms:?}"
+                );
+            }
+
+            deep_trail_never_paints_past_its_width();
+            breadcrumb_of_two_long_segments_stays_inside_its_width();
+            breadcrumb_with_one_segment_paints_no_separator();
+            breadcrumb_labels_and_chevrons_centre_their_measured_line();
+            breadcrumb_with_long_path_truncates_middle_segments();
         }
 
-        deep_trail_never_paints_past_its_width();
-        breadcrumb_of_two_long_segments_stays_inside_its_width();
-        breadcrumb_with_one_segment_paints_no_separator();
-        breadcrumb_labels_and_chevrons_centre_their_measured_line();
-        breadcrumb_with_long_path_truncates_middle_segments();
-    }
+        phase breadcrumb_navigation_and_semantics_name_the_current_segment;
+        {
+            fn breadcrumb_clicking_middle_segment_calls_on_navigate_with_that_index() {
+                let received = Rc::new(RefCell::new(None::<usize>));
+                let received_clone = received.clone();
+                let mut bc = Breadcrumb::new(vec![
+                    "home".to_string(),
+                    "docs".to_string(),
+                    "project".to_string(),
+                ])
+                .on_navigate(move |idx| {
+                    *received_clone.borrow_mut() = Some(idx);
+                });
 
-    #[test]
-    fn breadcrumb_navigation_and_semantics_name_the_current_segment() {
-        fn breadcrumb_clicking_middle_segment_calls_on_navigate_with_that_index() {
-            let received = Rc::new(RefCell::new(None::<usize>));
-            let received_clone = received.clone();
-            let mut bc = Breadcrumb::new(vec![
-                "home".to_string(),
-                "docs".to_string(),
-                "project".to_string(),
-            ])
-            .on_navigate(move |idx| {
-                *received_clone.borrow_mut() = Some(idx);
-            });
+                bc.rect = Rect::new(0.0, 0.0, 800.0, 24.0);
+                let mut tr = TextRenderer::new();
+                let theme = Theme::dark();
+                bc.apply_layout_helper(&theme, &mut tr);
 
-            bc.rect = Rect::new(0.0, 0.0, 800.0, 24.0);
-            let mut tr = TextRenderer::new();
-            let theme = Theme::dark();
-            bc.apply_layout_helper(&theme, &mut tr);
+                assert_eq!(
+                    bc.segment_rects.len(),
+                    3,
+                    "expected one rect per visible segment"
+                );
+                let middle_center = bc.segment_rects[1].center();
+                dispatch(&mut bc, &cursor_at(middle_center));
+                dispatch(&mut bc, &mouse_press());
 
-            assert_eq!(
-                bc.segment_rects.len(),
-                3,
-                "expected one rect per visible segment"
-            );
-            let middle_center = bc.segment_rects[1].center();
-            dispatch(&mut bc, &cursor_at(middle_center));
-            dispatch(&mut bc, &mouse_press());
+                assert_eq!(
+                    *received.borrow(),
+                    Some(1),
+                    "clicking the middle segment must call on_navigate with the original index 1"
+                );
+            }
 
-            assert_eq!(
-                *received.borrow(),
-                Some(1),
-                "clicking the middle segment must call on_navigate with the original index 1"
-            );
+            fn accessibility_reports_list_role_name_and_current_segment() {
+                use crate::a11y::Role;
+                let bc = Breadcrumb::new(vec![
+                    "home".to_string(),
+                    "docs".to_string(),
+                    "readme.md".to_string(),
+                ]);
+                let node = Widget::accessibility(&bc).expect("breadcrumb is not presentational");
+                assert_eq!(node.role, Role::List);
+                assert_eq!(node.name.as_deref(), Some("Path"));
+                assert_eq!(
+                    node.value.as_deref(),
+                    Some("readme.md"),
+                    "the rightmost segment is the current page"
+                );
+            }
+
+            fn accessibility_empty_trail_has_no_value() {
+                let bc = Breadcrumb::new(Vec::new());
+                let node = Widget::accessibility(&bc).unwrap();
+                assert_eq!(node.value, None, "empty trail → no current segment");
+            }
+
+            breadcrumb_clicking_middle_segment_calls_on_navigate_with_that_index();
+            accessibility_reports_list_role_name_and_current_segment();
+            accessibility_empty_trail_has_no_value();
         }
-
-        fn accessibility_reports_list_role_name_and_current_segment() {
-            use crate::a11y::Role;
-            let bc = Breadcrumb::new(vec![
-                "home".to_string(),
-                "docs".to_string(),
-                "readme.md".to_string(),
-            ]);
-            let node = Widget::accessibility(&bc).expect("breadcrumb is not presentational");
-            assert_eq!(node.role, Role::List);
-            assert_eq!(node.name.as_deref(), Some("Path"));
-            assert_eq!(
-                node.value.as_deref(),
-                Some("readme.md"),
-                "the rightmost segment is the current page"
-            );
-        }
-
-        fn accessibility_empty_trail_has_no_value() {
-            let bc = Breadcrumb::new(Vec::new());
-            let node = Widget::accessibility(&bc).unwrap();
-            assert_eq!(node.value, None, "empty trail → no current segment");
-        }
-
-        breadcrumb_clicking_middle_segment_calls_on_navigate_with_that_index();
-        accessibility_reports_list_role_name_and_current_segment();
-        accessibility_empty_trail_has_no_value();
     }
 }

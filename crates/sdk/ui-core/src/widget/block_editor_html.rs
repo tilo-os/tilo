@@ -898,162 +898,168 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn the_editors_own_html_round_trips() {
-        let group = Some("g".to_owned());
-        let mut code_a =
-            BlockContent::paragraph("", "fn main() {").with_kind(BlockKind::CodeBlock {
-                lang: Some("rust".into()),
-            });
-        code_a.code_group.clone_from(&group);
-        let mut code_b =
-            BlockContent::paragraph("", "    a < b && c").with_kind(BlockKind::CodeBlock {
-                lang: Some("rust".into()),
-            });
-        code_b.code_group = group;
-        let blocks = vec![
-            BlockContent::paragraph("", "Title").with_kind(BlockKind::Heading(1)),
-            para(
-                "plain bold italic both",
-                vec![
-                    MarkSpan::new(6..10, Mark::Bold),
-                    MarkSpan::new(11..17, Mark::Italic),
-                    MarkSpan::new(18..22, Mark::Bold),
-                    MarkSpan::new(18..22, Mark::Italic),
-                ],
-            ),
-            para(
-                "a link & <tag>",
-                vec![MarkSpan::new(
-                    2..6,
-                    Mark::ExternalLink("https://tilo.so/?a=1&b=\"2\"".into()),
-                )],
-            ),
-            BlockContent::paragraph("", "one").with_kind(BlockKind::Bullet { indent: 0 }),
-            BlockContent::paragraph("", "nested").with_kind(BlockKind::Bullet { indent: 1 }),
-            BlockContent::paragraph("", "first").with_kind(BlockKind::Numbered { indent: 0 }),
-            BlockContent::paragraph("", "done").with_kind(BlockKind::Checklist {
-                indent: 0,
-                done: true,
-            }),
-            BlockContent::paragraph("", "open").with_kind(BlockKind::Checklist {
-                indent: 0,
-                done: false,
-            }),
-            BlockContent::paragraph("", "said").with_kind(BlockKind::Quote),
-            BlockContent::paragraph("", "careful")
-                .with_kind(BlockKind::Callout(CalloutKind::Warning)),
-            BlockContent::paragraph("", "").with_kind(BlockKind::Divider),
-            code_a,
-            code_b,
-            para(
-                "under strike code",
-                vec![
-                    MarkSpan::new(0..5, Mark::Underline),
-                    MarkSpan::new(6..12, Mark::Strikethrough),
-                    MarkSpan::new(13..17, Mark::Code),
-                ],
-            ),
-        ];
-        let html = blocks_to_html(&blocks);
-        let back = blocks_from_html(&html);
-        assert_eq!(kinds(&back), kinds(&blocks), "{html}");
-        let sorted = |marks: &[MarkSpan]| {
-            let mut marks: Vec<String> = marks
-                .iter()
-                .map(|span| format!("{:?} {:?}", span.range, span.mark))
-                .collect();
-            marks.sort();
-            marks
-        };
-        for (got, want) in back.iter().zip(&blocks) {
+    tilo_test_env::scenario! {
+        /// The editor's HTML and what foreign HTML pastes.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn blocks_round_trip_through_html;
+
+        phase the_editors_own_html_round_trips;
+        {
+            let group = Some("g".to_owned());
+            let mut code_a =
+                BlockContent::paragraph("", "fn main() {").with_kind(BlockKind::CodeBlock {
+                    lang: Some("rust".into()),
+                });
+            code_a.code_group.clone_from(&group);
+            let mut code_b =
+                BlockContent::paragraph("", "    a < b && c").with_kind(BlockKind::CodeBlock {
+                    lang: Some("rust".into()),
+                });
+            code_b.code_group = group;
+            let blocks = vec![
+                BlockContent::paragraph("", "Title").with_kind(BlockKind::Heading(1)),
+                para(
+                    "plain bold italic both",
+                    vec![
+                        MarkSpan::new(6..10, Mark::Bold),
+                        MarkSpan::new(11..17, Mark::Italic),
+                        MarkSpan::new(18..22, Mark::Bold),
+                        MarkSpan::new(18..22, Mark::Italic),
+                    ],
+                ),
+                para(
+                    "a link & <tag>",
+                    vec![MarkSpan::new(
+                        2..6,
+                        Mark::ExternalLink("https://tilo.so/?a=1&b=\"2\"".into()),
+                    )],
+                ),
+                BlockContent::paragraph("", "one").with_kind(BlockKind::Bullet { indent: 0 }),
+                BlockContent::paragraph("", "nested").with_kind(BlockKind::Bullet { indent: 1 }),
+                BlockContent::paragraph("", "first").with_kind(BlockKind::Numbered { indent: 0 }),
+                BlockContent::paragraph("", "done").with_kind(BlockKind::Checklist {
+                    indent: 0,
+                    done: true,
+                }),
+                BlockContent::paragraph("", "open").with_kind(BlockKind::Checklist {
+                    indent: 0,
+                    done: false,
+                }),
+                BlockContent::paragraph("", "said").with_kind(BlockKind::Quote),
+                BlockContent::paragraph("", "careful")
+                    .with_kind(BlockKind::Callout(CalloutKind::Warning)),
+                BlockContent::paragraph("", "").with_kind(BlockKind::Divider),
+                code_a,
+                code_b,
+                para(
+                    "under strike code",
+                    vec![
+                        MarkSpan::new(0..5, Mark::Underline),
+                        MarkSpan::new(6..12, Mark::Strikethrough),
+                        MarkSpan::new(13..17, Mark::Code),
+                    ],
+                ),
+            ];
+            let html = blocks_to_html(&blocks);
+            let back = blocks_from_html(&html);
+            assert_eq!(kinds(&back), kinds(&blocks), "{html}");
+            let sorted = |marks: &[MarkSpan]| {
+                let mut marks: Vec<String> = marks
+                    .iter()
+                    .map(|span| format!("{:?} {:?}", span.range, span.mark))
+                    .collect();
+                marks.sort();
+                marks
+            };
+            for (got, want) in back.iter().zip(&blocks) {
+                assert_eq!(
+                    sorted(&got.marks),
+                    sorted(&want.marks),
+                    "marks of {:?} in {html}",
+                    want.text
+                );
+            }
             assert_eq!(
-                sorted(&got.marks),
-                sorted(&want.marks),
-                "marks of {:?} in {html}",
-                want.text
+                back[11].code_group, back[12].code_group,
+                "one fence stays one"
             );
         }
-        assert_eq!(
-            back[11].code_group, back[12].code_group,
-            "one fence stays one"
-        );
-    }
 
-    #[test]
-    fn a_table_round_trips_through_html() {
-        let table = BlockContent::paragraph("", "| a | b |\n| --- | --- |\n| 1 | 2 |")
-            .with_kind(BlockKind::Table { visual: true });
-        let html = blocks_to_html(std::slice::from_ref(&table));
-        assert!(
-            html.contains(
-                "<table><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></table>"
-            ),
-            "{html}"
-        );
-        assert_eq!(kinds(&blocks_from_html(&html)), kinds(&[table]));
-    }
-
-    #[test]
-    fn foreign_html_pastes_its_words_and_formatting_only() {
-        let docs = r#"<meta charset="utf-8"><b style="font-weight:normal;" id="docs-internal-guid-1"><p dir="ltr"><span style="font-weight:700;">Bold</span><span style="font-weight:400;"> and </span><span style="font-style:italic;">italic</span></p><ul><li><p><span>item</span></p></li></ul></b>"#;
-        let blocks = blocks_from_html(docs);
-        assert_eq!(
-            kinds(&blocks),
-            [
-                (BlockKind::Paragraph, "Bold and italic"),
-                (BlockKind::Bullet { indent: 0 }, "item"),
-            ]
-        );
-        assert_eq!(
-            blocks[0].marks,
-            [
-                MarkSpan::new(0..4, Mark::Bold),
-                MarkSpan::new(9..15, Mark::Italic)
-            ]
-        );
-
-        // A web page: scripts, styles, comments and attributes go; entities
-        // resolve; whitespace collapses; a line break splits the block.
-        let page = "<html><head><style>p { color: red }</style><title>x</title></head><body><!--StartFragment--><script>alert(1)</script><p onclick=\"evil()\">Caf&#233; &amp; t&#233;a&nbsp;&#x1F600;\n   more<br>next</p><pre><code class=\"language-py\">if a:\n    b()\n</code></pre><!--EndFragment--></body></html>";
-        let blocks = blocks_from_html(page);
-        assert_eq!(
-            kinds(&blocks),
-            [
-                (BlockKind::Paragraph, "Café & téa 😀 more"),
-                (BlockKind::Paragraph, "next"),
-                (
-                    BlockKind::CodeBlock {
-                        lang: Some("py".into())
-                    },
-                    "if a:"
+        phase a_table_round_trips_through_html;
+        {
+            let table = BlockContent::paragraph("", "| a | b |\n| --- | --- |\n| 1 | 2 |")
+                .with_kind(BlockKind::Table { visual: true });
+            let html = blocks_to_html(std::slice::from_ref(&table));
+            assert!(
+                html.contains(
+                    "<table><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></table>"
                 ),
-                (
-                    BlockKind::CodeBlock {
-                        lang: Some("py".into())
-                    },
-                    "    b()"
-                ),
-            ]
-        );
-        assert!(blocks.iter().all(|b| !b.text.contains("alert")));
+                "{html}"
+            );
+            assert_eq!(kinds(&blocks_from_html(&html)), kinds(&[table]));
+        }
 
-        let blocks = blocks_from_html(
-            "<a href=\"javascript:alert(1)\">click</a> <a href=\"https://tilo.so\">site</a>",
-        );
-        assert_eq!(blocks[0].text, "click site");
-        assert_eq!(
-            blocks[0].marks,
-            [MarkSpan::new(
-                6..10,
-                Mark::ExternalLink("https://tilo.so".into())
-            )]
-        );
+        phase foreign_html_pastes_its_words_and_formatting_only;
+        {
+            let docs = r#"<meta charset="utf-8"><b style="font-weight:normal;" id="docs-internal-guid-1"><p dir="ltr"><span style="font-weight:700;">Bold</span><span style="font-weight:400;"> and </span><span style="font-style:italic;">italic</span></p><ul><li><p><span>item</span></p></li></ul></b>"#;
+            let blocks = blocks_from_html(docs);
+            assert_eq!(
+                kinds(&blocks),
+                [
+                    (BlockKind::Paragraph, "Bold and italic"),
+                    (BlockKind::Bullet { indent: 0 }, "item"),
+                ]
+            );
+            assert_eq!(
+                blocks[0].marks,
+                [
+                    MarkSpan::new(0..4, Mark::Bold),
+                    MarkSpan::new(9..15, Mark::Italic)
+                ]
+            );
 
-        assert!(blocks_from_html("<p>  </p><div></div>").is_empty());
-        assert_eq!(
-            blocks_from_html("a < b").first().map(|b| b.text.as_str()),
-            Some("a < b")
-        );
+            // A web page: scripts, styles, comments and attributes go; entities
+            // resolve; whitespace collapses; a line break splits the block.
+            let page = "<html><head><style>p { color: red }</style><title>x</title></head><body><!--StartFragment--><script>alert(1)</script><p onclick=\"evil()\">Caf&#233; &amp; t&#233;a&nbsp;&#x1F600;\n   more<br>next</p><pre><code class=\"language-py\">if a:\n    b()\n</code></pre><!--EndFragment--></body></html>";
+            let blocks = blocks_from_html(page);
+            assert_eq!(
+                kinds(&blocks),
+                [
+                    (BlockKind::Paragraph, "Café & téa 😀 more"),
+                    (BlockKind::Paragraph, "next"),
+                    (
+                        BlockKind::CodeBlock {
+                            lang: Some("py".into())
+                        },
+                        "if a:"
+                    ),
+                    (
+                        BlockKind::CodeBlock {
+                            lang: Some("py".into())
+                        },
+                        "    b()"
+                    ),
+                ]
+            );
+            assert!(blocks.iter().all(|b| !b.text.contains("alert")));
+
+            let blocks = blocks_from_html(
+                "<a href=\"javascript:alert(1)\">click</a> <a href=\"https://tilo.so\">site</a>",
+            );
+            assert_eq!(blocks[0].text, "click site");
+            assert_eq!(
+                blocks[0].marks,
+                [MarkSpan::new(
+                    6..10,
+                    Mark::ExternalLink("https://tilo.so".into())
+                )]
+            );
+
+            assert!(blocks_from_html("<p>  </p><div></div>").is_empty());
+            assert_eq!(
+                blocks_from_html("a < b").first().map(|b| b.text.as_str()),
+                Some("a < b")
+            );
+        }
     }
 }

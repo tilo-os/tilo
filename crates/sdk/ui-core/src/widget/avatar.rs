@@ -969,21 +969,6 @@ mod tests {
         crate::raster::rgba8(vec![200; pixels], width, height)
     }
 
-    #[test]
-    fn an_app_glyph_replaces_the_initials_on_the_neutral_square() {
-        let theme = Theme::dark();
-        // A nameless neutral tile paints only the tile.
-        let blank = paint_face(AvatarFace::new("", "so.tilo.notes").neutral(), &theme);
-        let glyph = paint_face(
-            AvatarFace::new("", "so.tilo.notes").glyph(crate::icons::Icon::FileText),
-            &theme,
-        );
-        assert!(
-            tags(&glyph, DrawTag::COLOR) > tags(&blank, DrawTag::COLOR),
-            "the glyph's strokes are painted on the tile"
-        );
-    }
-
     fn paint_face(face: AvatarFace<'_>, theme: &Theme) -> Scene {
         let mut text = TextRenderer::new();
         let mut scene = Scene::new();
@@ -1089,89 +1074,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn initials_come_from_the_name_and_colour_from_the_identity() {
-        assert_eq!(initials_for_name("Ada Lovelace"), "AL");
-        assert_eq!(initials_for_name("  grace   brewster hopper "), "GH");
-        assert_eq!(initials_for_name("(Ops) team"), "OT");
-        assert_eq!(initials_for_name(""), "");
-
-        let theme = Theme::dark();
-        let a = AvatarFace::new("Ada Lovelace", "ada@example.org").colour(&theme);
-        let again = AvatarFace::new("A. Lovelace", "ada@example.org").colour(&theme);
-        assert_eq!(a, again);
-        let expected = theme
-            .tokens
-            .colors
-            .presence
-            .hue(PresenceHue::of_identity("ada@example.org"));
-        assert_eq!(a, expected);
-        let own = AvatarFace::new("Bob", "bob")
-            .presence(Color::from_rgb8(0xe0, 0x60, 0x20))
-            .colour(&theme);
-        assert_eq!(
-            own,
-            theme
-                .tokens
-                .colors
-                .presence
-                .of(Color::from_rgb8(0xe0, 0x60, 0x20))
-        );
-    }
-
-    #[test]
-    fn initials_ink_reads_on_every_presence_hue_in_every_preset() {
-        for theme in [Theme::dark(), Theme::light()] {
-            for hue in PresenceHue::ALL {
-                let fill = theme.tokens.colors.presence.hue(hue);
-                let ink = initial_ink(fill, &theme);
-                let ratio = crate::color::contrast_ratio(ink, fill);
-                assert!(
-                    ratio >= 3.0,
-                    "{}: initials on {hue:?} reach only {ratio:.2}:1",
-                    theme.name
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn a_picture_replaces_the_initials_and_is_cover_fitted() {
-        let theme = Theme::dark();
-        let picture = image(64, 32);
-        let with_image = paint_face(
-            AvatarFace::new("Ada Lovelace", "ada").image(Some(&picture)),
-            &theme,
-        );
-        assert_eq!(tags(&with_image, DrawTag::IMAGE), 1);
-        assert_eq!(tags(&with_image, DrawTag::COLOR), 0, "no initials disc");
-        let fallback = paint_face(AvatarFace::new("Ada Lovelace", "ada"), &theme);
-        assert_eq!(tags(&fallback, DrawTag::IMAGE), 0);
-        assert!(tags(&fallback, DrawTag::COLOR) >= 2, "disc and glyphs");
-    }
-
-    #[test]
-    fn sizes_follow_the_metrics_and_square_avatars_use_concentric_radii() {
-        let theme = Theme::dark();
-        let small = AvatarSize::Small.side(&theme);
-        let regular = AvatarSize::Regular.side(&theme);
-        let large = AvatarSize::Large.side(&theme);
-        let hero = AvatarSize::Hero.side(&theme);
-        assert!(small < regular && regular < large && large < hero);
-        let scaled = Theme::dark().with_ui_scale(2.0);
-        assert!((AvatarSize::Regular.side(&scaled) - regular * 2.0).abs() < 0.5);
-
-        let face = AvatarFace::new("Site", "site").square();
-        let shape = face.shape(Rect::new(0.0, 0.0, 48.0, 48.0), &theme);
-        assert!((shape.radii().top_left - f64::from(theme.tokens.radii.control)).abs() < 0.01);
-        let circle = AvatarFace::new("Ada", "ada").shape(Rect::new(0.0, 0.0, 48.0, 30.0), &theme);
-        assert!((circle.radii().top_left - 15.0).abs() < 0.01);
-        assert!(
-            (circle.rect().width() - 30.0).abs() < 0.01,
-            "centred square"
-        );
-    }
-
     #[cfg(feature = "local-daemons")]
     #[test]
     fn bound_name_refresh_keeps_photo_and_adjacent_input_selection() {
@@ -1257,127 +1159,237 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_culled_avatar_does_not_stay_layout_dirty() {
-        let mut avatar = Avatar::person("Ada Lovelace", "ada");
-        let mut taffy = TaffyTree::new();
-        let mut map = std::collections::HashMap::new();
-        let node = avatar.build_layout(&mut taffy, &Theme::dark(), &mut map);
-        taffy
-            .compute_layout(node, <taffy::Size<taffy::AvailableSpace> as taffy::prelude::TaffyMaxContent>::MAX_CONTENT)
-            .unwrap();
-        avatar.apply_layout(&taffy, node, Point::new(0.0, 4000.0));
-        // Never drawn (off-screen), yet the layout is settled.
-        assert!(!avatar.is_layout_dirty());
-        let node = Widget::accessibility(&avatar).unwrap();
-        assert_eq!(node.name.as_deref(), Some("Ada Lovelace"));
-    }
+    tilo_test_env::scenario! {
+        /// Avatar initials and their ink.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn initials_come_from_the_name_and_read_on_every_fill;
 
-    #[test]
-    fn overflow_disc_paints_on_its_ground() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut scene = Scene::new();
-        AvatarFace::paint_overflow(
-            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-            Rect::new(0.0, 0.0, 32.0, 32.0),
-            4,
-            Some(theme.tokens.colors.surfaces.content),
-        );
-        assert!(tags(&scene, DrawTag::COLOR) >= 3, "ring, disc, label");
-        let mut empty = Scene::new();
-        AvatarFace::paint_overflow(
-            &mut PaintCtx::new(&mut empty, Affine::IDENTITY, &mut text, &theme),
-            Rect::new(0.0, 0.0, 32.0, 32.0),
-            0,
-            Some(theme.tokens.colors.surfaces.content),
-        );
-        assert_eq!(tags(&empty, DrawTag::COLOR), 0);
-    }
+        phase initials_come_from_the_name_and_colour_from_the_identity;
+        {
+            assert_eq!(initials_for_name("Ada Lovelace"), "AL");
+            assert_eq!(initials_for_name("  grace   brewster hopper "), "GH");
+            assert_eq!(initials_for_name("(Ops) team"), "OT");
+            assert_eq!(initials_for_name(""), "");
 
-    #[test]
-    fn initials_reach_small_text_contrast_on_every_avatar_fill() {
-        for theme in [Theme::dark(), Theme::light()] {
-            for (index, &hue) in theme.tokens.colors.presence.colors.iter().enumerate() {
-                let fill = initials_fill(hue, &theme);
-                let ink = initial_ink(fill, &theme);
-                let ratio = crate::color::contrast_ratio(ink, fill);
-                assert!(
-                    ratio >= crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST - 0.05,
-                    "{}: initials on presence hue {index} reach only {ratio:.2}:1",
-                    theme.name
-                );
-                let (before, after) = (
-                    crate::color::Oklch::from_color(hue).h,
-                    crate::color::Oklch::from_color(fill).h,
-                );
-                let turn = (before - after).abs().min(360.0 - (before - after).abs());
-                assert!(
-                    turn < 8.0,
-                    "{}: the fill keeps the person's hue",
-                    theme.name
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn initials_ink_is_one_legible_direction_per_palette() {
-        for theme in [Theme::dark(), Theme::light()] {
-            let palette = theme.tokens.colors.presence;
-            let inks: Vec<Color> = palette
+            let theme = Theme::dark();
+            let a = AvatarFace::new("Ada Lovelace", "ada@example.org").colour(&theme);
+            let again = AvatarFace::new("A. Lovelace", "ada@example.org").colour(&theme);
+            assert_eq!(a, again);
+            let expected = theme
+                .tokens
                 .colors
-                .iter()
-                .map(|&fill| initial_ink(fill, &theme))
-                .collect();
-            for (ink, fill) in inks.iter().zip(palette.colors) {
-                let ratio = crate::color::contrast_ratio(*ink, fill);
-                assert!(ratio >= 4.5, "{}: initials at {ratio:.2}:1", theme.name);
-            }
-            let dark = |c: &Color| crate::color::relative_luminance(*c) < 0.18;
-            assert!(
-                inks.iter().all(dark) || !inks.iter().any(dark),
-                "{}: initials flip between dark and light inks",
-                theme.name
+                .presence
+                .hue(PresenceHue::of_identity("ada@example.org"));
+            assert_eq!(a, expected);
+            let own = AvatarFace::new("Bob", "bob")
+                .presence(Color::from_rgb8(0xe0, 0x60, 0x20))
+                .colour(&theme);
+            assert_eq!(
+                own,
+                theme
+                    .tokens
+                    .colors
+                    .presence
+                    .of(Color::from_rgb8(0xe0, 0x60, 0x20))
             );
         }
+
+        phase initials_ink_reads_on_every_presence_hue_in_every_preset;
+        {
+            for theme in [Theme::dark(), Theme::light()] {
+                for hue in PresenceHue::ALL {
+                    let fill = theme.tokens.colors.presence.hue(hue);
+                    let ink = initial_ink(fill, &theme);
+                    let ratio = crate::color::contrast_ratio(ink, fill);
+                    assert!(
+                        ratio >= 3.0,
+                        "{}: initials on {hue:?} reach only {ratio:.2}:1",
+                        theme.name
+                    );
+                }
+            }
+        }
+
+        phase initials_reach_small_text_contrast_on_every_avatar_fill;
+        {
+            for theme in [Theme::dark(), Theme::light()] {
+                for (index, &hue) in theme.tokens.colors.presence.colors.iter().enumerate() {
+                    let fill = initials_fill(hue, &theme);
+                    let ink = initial_ink(fill, &theme);
+                    let ratio = crate::color::contrast_ratio(ink, fill);
+                    assert!(
+                        ratio >= crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST - 0.05,
+                        "{}: initials on presence hue {index} reach only {ratio:.2}:1",
+                        theme.name
+                    );
+                    let (before, after) = (
+                        crate::color::Oklch::from_color(hue).h,
+                        crate::color::Oklch::from_color(fill).h,
+                    );
+                    let turn = (before - after).abs().min(360.0 - (before - after).abs());
+                    assert!(
+                        turn < 8.0,
+                        "{}: the fill keeps the person's hue",
+                        theme.name
+                    );
+                }
+            }
+        }
+
+        phase initials_ink_is_one_legible_direction_per_palette;
+        {
+            for theme in [Theme::dark(), Theme::light()] {
+                let palette = theme.tokens.colors.presence;
+                let inks: Vec<Color> = palette
+                    .colors
+                    .iter()
+                    .map(|&fill| initial_ink(fill, &theme))
+                    .collect();
+                for (ink, fill) in inks.iter().zip(palette.colors) {
+                    let ratio = crate::color::contrast_ratio(*ink, fill);
+                    assert!(ratio >= 4.5, "{}: initials at {ratio:.2}:1", theme.name);
+                }
+                let dark = |c: &Color| crate::color::relative_luminance(*c) < 0.18;
+                assert!(
+                    inks.iter().all(dark) || !inks.iter().any(dark),
+                    "{}: initials flip between dark and light inks",
+                    theme.name
+                );
+            }
+        }
+
+        phase initials_skip_words_without_letters;
+        {
+            assert_eq!(initials_for_name("Tilo 4"), "T");
+            assert_eq!(initials_for_name("Ada 2"), "A");
+            assert_eq!(initials_for_name("Pixel 7 Pro"), "PP");
+            assert_eq!(initials_for_name("2024"), "");
+        }
     }
 
-    #[test]
-    fn initials_skip_words_without_letters() {
-        assert_eq!(initials_for_name("Tilo 4"), "T");
-        assert_eq!(initials_for_name("Ada 2"), "A");
-        assert_eq!(initials_for_name("Pixel 7 Pro"), "PP");
-        assert_eq!(initials_for_name("2024"), "");
-    }
+    tilo_test_env::scenario! {
+        /// What an avatar draws: glyph, picture, size, overflow disc and status badge.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn an_avatar_paints_its_face_shape_and_badge;
 
-    #[test]
-    fn a_status_badge_sits_on_the_corner_and_is_spoken() {
-        let theme = Theme::dark();
-        let face = AvatarFace::new("Ada Lovelace", "ada").status(PresenceStatus::Online);
-        let rect = Rect::new(0.0, 0.0, 40.0, 40.0);
-        let badge = face.status_rect(rect, &theme);
-        assert!(badge.center().x > rect.center().x && badge.center().y > rect.center().y);
-        assert!(badge.x1 <= rect.x1 + 0.5 && badge.y1 <= rect.y1 + 0.5);
-        let mut text = TextRenderer::new();
-        let mut with = Scene::new();
-        face.paint(
-            &mut PaintCtx::new(&mut with, Affine::IDENTITY, &mut text, &theme),
-            rect,
-        );
-        let mut without = Scene::new();
-        AvatarFace::new("Ada Lovelace", "ada").paint(
-            &mut PaintCtx::new(&mut without, Affine::IDENTITY, &mut text, &theme),
-            rect,
-        );
-        assert!(with.encoding().draw_tags.len() > without.encoding().draw_tags.len());
-        let avatar = Avatar::person("Ada Lovelace", "ada").status(PresenceStatus::Away);
-        assert_eq!(
-            Widget::accessibility(&avatar).unwrap().name.as_deref(),
-            Some("Ada Lovelace, away")
-        );
-        let neutral = AvatarFace::new("Notes", "notes").neutral();
-        assert_eq!(neutral.colour(&theme), theme.tokens.colors.surfaces.raised);
+        phase an_app_glyph_replaces_the_initials_on_the_neutral_square;
+        {
+            let theme = Theme::dark();
+            // A nameless neutral tile paints only the tile.
+            let blank = paint_face(AvatarFace::new("", "so.tilo.notes").neutral(), &theme);
+            let glyph = paint_face(
+                AvatarFace::new("", "so.tilo.notes").glyph(crate::icons::Icon::FileText),
+                &theme,
+            );
+            assert!(
+                tags(&glyph, DrawTag::COLOR) > tags(&blank, DrawTag::COLOR),
+                "the glyph's strokes are painted on the tile"
+            );
+        }
+
+        phase a_picture_replaces_the_initials_and_is_cover_fitted;
+        {
+            let theme = Theme::dark();
+            let picture = image(64, 32);
+            let with_image = paint_face(
+                AvatarFace::new("Ada Lovelace", "ada").image(Some(&picture)),
+                &theme,
+            );
+            assert_eq!(tags(&with_image, DrawTag::IMAGE), 1);
+            assert_eq!(tags(&with_image, DrawTag::COLOR), 0, "no initials disc");
+            let fallback = paint_face(AvatarFace::new("Ada Lovelace", "ada"), &theme);
+            assert_eq!(tags(&fallback, DrawTag::IMAGE), 0);
+            assert!(tags(&fallback, DrawTag::COLOR) >= 2, "disc and glyphs");
+        }
+
+        phase sizes_follow_the_metrics_and_square_avatars_use_concentric_radii;
+        {
+            let theme = Theme::dark();
+            let small = AvatarSize::Small.side(&theme);
+            let regular = AvatarSize::Regular.side(&theme);
+            let large = AvatarSize::Large.side(&theme);
+            let hero = AvatarSize::Hero.side(&theme);
+            assert!(small < regular && regular < large && large < hero);
+            let scaled = Theme::dark().with_ui_scale(2.0);
+            assert!((AvatarSize::Regular.side(&scaled) - regular * 2.0).abs() < 0.5);
+
+            let face = AvatarFace::new("Site", "site").square();
+            let shape = face.shape(Rect::new(0.0, 0.0, 48.0, 48.0), &theme);
+            assert!((shape.radii().top_left - f64::from(theme.tokens.radii.control)).abs() < 0.01);
+            let circle = AvatarFace::new("Ada", "ada").shape(Rect::new(0.0, 0.0, 48.0, 30.0), &theme);
+            assert!((circle.radii().top_left - 15.0).abs() < 0.01);
+            assert!(
+                (circle.rect().width() - 30.0).abs() < 0.01,
+                "centred square"
+            );
+        }
+
+        phase a_culled_avatar_does_not_stay_layout_dirty;
+        {
+            let mut avatar = Avatar::person("Ada Lovelace", "ada");
+            let mut taffy = TaffyTree::new();
+            let mut map = std::collections::HashMap::new();
+            let node = avatar.build_layout(&mut taffy, &Theme::dark(), &mut map);
+            taffy
+                .compute_layout(node, <taffy::Size<taffy::AvailableSpace> as taffy::prelude::TaffyMaxContent>::MAX_CONTENT)
+                .unwrap();
+            avatar.apply_layout(&taffy, node, Point::new(0.0, 4000.0));
+            // Never drawn (off-screen), yet the layout is settled.
+            assert!(!avatar.is_layout_dirty());
+            let node = Widget::accessibility(&avatar).unwrap();
+            assert_eq!(node.name.as_deref(), Some("Ada Lovelace"));
+        }
+
+        phase overflow_disc_paints_on_its_ground;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let mut scene = Scene::new();
+            AvatarFace::paint_overflow(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+                Rect::new(0.0, 0.0, 32.0, 32.0),
+                4,
+                Some(theme.tokens.colors.surfaces.content),
+            );
+            assert!(tags(&scene, DrawTag::COLOR) >= 3, "ring, disc, label");
+            let mut empty = Scene::new();
+            AvatarFace::paint_overflow(
+                &mut PaintCtx::new(&mut empty, Affine::IDENTITY, &mut text, &theme),
+                Rect::new(0.0, 0.0, 32.0, 32.0),
+                0,
+                Some(theme.tokens.colors.surfaces.content),
+            );
+            assert_eq!(tags(&empty, DrawTag::COLOR), 0);
+        }
+
+        phase a_status_badge_sits_on_the_corner_and_is_spoken;
+        {
+            let theme = Theme::dark();
+            let face = AvatarFace::new("Ada Lovelace", "ada").status(PresenceStatus::Online);
+            let rect = Rect::new(0.0, 0.0, 40.0, 40.0);
+            let badge = face.status_rect(rect, &theme);
+            assert!(badge.center().x > rect.center().x && badge.center().y > rect.center().y);
+            assert!(badge.x1 <= rect.x1 + 0.5 && badge.y1 <= rect.y1 + 0.5);
+            let mut text = TextRenderer::new();
+            let mut with = Scene::new();
+            face.paint(
+                &mut PaintCtx::new(&mut with, Affine::IDENTITY, &mut text, &theme),
+                rect,
+            );
+            let mut without = Scene::new();
+            AvatarFace::new("Ada Lovelace", "ada").paint(
+                &mut PaintCtx::new(&mut without, Affine::IDENTITY, &mut text, &theme),
+                rect,
+            );
+            assert!(with.encoding().draw_tags.len() > without.encoding().draw_tags.len());
+            let avatar = Avatar::person("Ada Lovelace", "ada").status(PresenceStatus::Away);
+            assert_eq!(
+                Widget::accessibility(&avatar).unwrap().name.as_deref(),
+                Some("Ada Lovelace, away")
+            );
+            let neutral = AvatarFace::new("Notes", "notes").neutral();
+            assert_eq!(neutral.colour(&theme), theme.tokens.colors.surfaces.raised);
+        }
     }
 }
 

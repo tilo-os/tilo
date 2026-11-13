@@ -480,68 +480,74 @@ mod tests {
         tilo_actions::ActionBinding::unit_for(&spec, action).expect("the card publishes it")
     }
 
-    #[test]
-    fn a_card_bound_to_an_action_runs_it_once_as_the_person_presses_it() {
-        let bound = published("res-a", "open");
-        let address = bound.address().clone();
-        let mut card = card_body(
-            "a",
-            vec![Box::new(Text::new("body"))],
-            Some(ResourceId("res-a".into())),
-            false,
-            Event::Action(bound),
-        );
-        let mut doc = automerge::AutoCommit::new();
-        let mut state = crate::widget::Edits::lend(&mut doc);
-        let path = automerge::ROOT;
-        assert!(
-            card.perform_action(&crate::a11y::Action::Activate, &[], &mut state, &path),
-            "the card takes the press"
-        );
-        let taken = crate::widget::controls::take_control_invocation(&mut *card);
-        assert_eq!(
-            taken.as_ref().map(|taken| taken.address.clone()),
-            Some(address),
-            "one press runs the card's action once"
-        );
-        assert!(
-            crate::widget::controls::take_control_invocation(&mut *card).is_none(),
-            "the press is taken once"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// What a board's cards run and report.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_boards_cards_bind_actions_and_report_drops;
 
-    #[test]
-    fn a_boards_inventory_carries_the_action_its_card_binds() {
-        let bound = published("res-a", "open");
-        let address = bound.address().clone();
-        let board: Board = Described::from_props(
-            "board",
-            BoardProps {
-                name: Some("Plan".into()),
-                lanes: vec![BoardLaneProps {
-                    key: "todo".into(),
-                    cards: vec![BoardCardProps {
-                        key: "a".into(),
-                        item: Some(ResourceId("res-a".into())),
-                        body: vec![Box::new(Text::new("body"))],
-                        activate: Event::Action(bound),
-                        ..BoardCardProps::default()
+        phase a_card_bound_to_an_action_runs_it_once_as_the_person_presses_it;
+        {
+            let bound = published("res-a", "open");
+            let address = bound.address().clone();
+            let mut card = card_body(
+                "a",
+                vec![Box::new(Text::new("body"))],
+                Some(ResourceId("res-a".into())),
+                false,
+                Event::Action(bound),
+            );
+            let mut doc = automerge::AutoCommit::new();
+            let mut state = crate::widget::Edits::lend(&mut doc);
+            let path = automerge::ROOT;
+            assert!(
+                card.perform_action(&crate::a11y::Action::Activate, &[], &mut state, &path),
+                "the card takes the press"
+            );
+            let taken = crate::widget::controls::take_control_invocation(&mut *card);
+            assert_eq!(
+                taken.as_ref().map(|taken| taken.address.clone()),
+                Some(address),
+                "one press runs the card's action once"
+            );
+            assert!(
+                crate::widget::controls::take_control_invocation(&mut *card).is_none(),
+                "the press is taken once"
+            );
+        }
+
+        phase a_boards_inventory_carries_the_action_its_card_binds;
+        {
+            let bound = published("res-a", "open");
+            let address = bound.address().clone();
+            let board: Board = Described::from_props(
+                "board",
+                BoardProps {
+                    name: Some("Plan".into()),
+                    lanes: vec![BoardLaneProps {
+                        key: "todo".into(),
+                        cards: vec![BoardCardProps {
+                            key: "a".into(),
+                            item: Some(ResourceId("res-a".into())),
+                            body: vec![Box::new(Text::new("body"))],
+                            activate: Event::Action(bound),
+                            ..BoardCardProps::default()
+                        }],
+                        ..BoardLaneProps::default()
                     }],
-                    ..BoardLaneProps::default()
-                }],
-            },
-        );
-        let bindings = crate::widget::controls::control_action_bindings(&board);
-        let card = bindings
-            .iter()
-            .find(|binding| {
-                matches!(
-                    &binding.kind,
-                    crate::widget::ControlBindingKind::Action(found) if *found == address
-                )
-            })
-            .expect("the card's press is a control of the board");
-        assert_eq!(card.control_id, "a", "named by the card's own key");
+                },
+            );
+            let bindings = crate::widget::controls::control_action_bindings(&board);
+            let card = bindings
+                .iter()
+                .find(|binding| {
+                    matches!(
+                        &binding.kind,
+                        crate::widget::ControlBindingKind::Action(found) if *found == address
+                    )
+                })
+                .expect("the card's press is a control of the board");
+            assert_eq!(card.control_id, "a", "named by the card's own key");
+        }
     }
 
     fn lane(key: &str, keys: &[&str]) -> BoardLaneProps {
@@ -560,82 +566,6 @@ mod tests {
         }
     }
 
-    /// A board no lane heads has nothing to line its cards up with: no lane keeps a heading's height,
-    /// so the first card stands where the first row of a list of the same items does.
-    #[test]
-    fn a_board_no_lane_heads_starts_its_cards_where_a_list_starts_its_first_row() {
-        let host = laid_out(BoardProps {
-            name: Some("Loose".into()),
-            lanes: vec![lane("loose", &["a", "b"])],
-        });
-        let (card, lane) = {
-            let root = host.root::<Board>();
-            (root.card_rects(0)[0], root.lane_rects()[0])
-        };
-        assert!(
-            (card.y0 - lane.y0).abs() < 0.5,
-            "no band stands over the cards: {card:?} in a lane from {lane:?}"
-        );
-        let list = crate::headless::FrameHarness::for_root(
-            crate::State::new(),
-            crate::widget::Column::new()
-                .with_no_padding()
-                .push(Box::new(crate::widget::ListRow::new("a", "body"))),
-            (900, 600),
-            Theme::dark(),
-        );
-        let list = list.inspection();
-        let row = list
-            .root
-            .children
-            .iter()
-            .find(|node| node.widget == "ListRow")
-            .map(|node| node.rect[1])
-            .expect("the list shows its row");
-        assert!(
-            (card.y0 - row).abs() < 0.5,
-            "the first card starts where a list's first row does: {card:?} against {row}"
-        );
-        assert_eq!(
-            headings(&host.inspection()),
-            0,
-            "no lane of the board heads itself, so no heading row stands over the cards"
-        );
-    }
-
-    /// A lane nobody named keeps a heading's height while a lane beside it has one, so the cards of
-    /// every lane line up and the unnamed lane heads nothing.
-    #[test]
-    fn a_lane_nobody_named_keeps_the_heading_row_of_the_lanes_beside_it() {
-        let mut named = lane("doing", &["c"]);
-        named.title = Some("Doing".into());
-        let host = laid_out(BoardProps {
-            name: Some("Plan".into()),
-            lanes: vec![lane("loose", &["a"]), named],
-        });
-        let (loose, doing, top) = {
-            let root = host.root::<Board>();
-            (
-                root.card_rects(0)[0],
-                root.card_rects(1)[0],
-                root.lane_rects()[0].y0,
-            )
-        };
-        assert!(
-            (loose.y0 - doing.y0).abs() < 0.5,
-            "the lanes' cards line up: {loose:?} against {doing:?}"
-        );
-        assert!(
-            loose.y0 > top,
-            "the headings stand over the cards: {loose:?} in a lane from {top}"
-        );
-        assert_eq!(
-            headings(&host.inspection()),
-            2,
-            "the unnamed lane keeps the heading row of the lane beside it"
-        );
-    }
-
     fn headings(frame: &crate::headless::InspectionSnapshot) -> usize {
         let mut children = vec![&frame.root];
         let mut found = 0;
@@ -648,93 +578,175 @@ mod tests {
         found
     }
 
-    #[test]
-    fn a_card_whose_body_is_a_row_is_that_row_shown_as_a_card() {
-        let mut props = props(&Intents::default());
-        let row = crate::widget::ListRow::new("row", "Measure the new bedroom").meta("Thursday");
-        props.lanes[0].cards[0].body = vec![Box::new(crate::widget::ContextMenuArea::new(
-            Box::new(
-                crate::widget::Container::new()
-                    .with_no_padding()
-                    .with_child(Box::new(row)),
-            ),
-            |_| Vec::new(),
-        ))];
-        let host = crate::headless::FrameHarness::for_root(
-            crate::State::new(),
-            Board::from_props("board", props),
-            (900, 600),
-            Theme::dark(),
-        );
-        let root = host.root::<Board>();
-        let card = root.card_rects(0)[0];
-        assert!(
-            (44.0..=56.0).contains(&card.height()),
-            "a card of one title line and its facts is {} tall",
-            card.height()
-        );
-    }
+    tilo_test_env::scenario! {
+        /// Lane headings, measures and card rows of a board.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_board_lays_its_lanes_out_like_lists;
 
-    #[test]
-    fn a_lane_keeps_a_comfortable_measure() {
-        let theme = Theme::dark();
-        let lane = f64::from(Board::lane_width(&theme, 1280.0));
-        assert!((300.0..=340.0).contains(&lane), "a lane reads {lane} wide");
-        // Wider panes leave the extra room open beside the lanes instead of stretching them.
-        assert_eq!(
-            Board::lane_width(&theme, 2000.0),
-            Board::lane_width(&theme, 1280.0)
-        );
-        // A pane too narrow for one lane and the board's gutters gives its lane the pane, so
-        // the next lane does not show as a sliver.
-        let narrow = 350.0;
-        assert!((f64::from(Board::lane_width(&theme, narrow)) - (narrow - 48.0)).abs() < 0.5);
-        let least = f64::from(crate::widget::CardWidth::Regular.min_width(&theme));
-        assert!(f64::from(Board::lane_width(&theme, least)) >= least);
-    }
-
-    #[test]
-    fn a_board_in_a_sideways_pane_keeps_its_lanes_a_comfortable_measure() {
-        let board = Board::from_props("board", props(&Intents::default()));
-        let pane = crate::widget::Scrollable::new_horizontal()
-            .with_content_min_viewport_width()
-            .with_child(Box::new(board));
-        // The room the pane shows through: 656 wide, a column of the window.
-        let column = crate::widget::Container::new()
-            .with_no_padding()
-            .with_width(656.0)
-            .with_child(Box::new(pane));
-        let mut host = crate::headless::FrameHarness::for_root(
-            crate::State::new(),
-            column,
-            (656, 600),
-            Theme::dark(),
-        );
-        let mut column = host.root_mut::<crate::widget::Container>();
-        let mut column_children = crate::widget::Widget::children_mut(&mut *column);
-        let scroll = column_children[0]
-            .as_any_mut()
-            .and_then(|any| any.downcast_mut::<crate::widget::Scrollable>())
-            .expect("the column shows the pane");
-        let mut pane_children = crate::widget::Widget::children_mut(scroll);
-        let board = pane_children[0]
-            .as_any_mut()
-            .and_then(|any| any.downcast_mut::<Board>())
-            .expect("the pane shows the board");
-        let lanes = board.lane_rects();
-        assert_eq!(lanes.len(), 2);
-        let theme = Theme::dark();
-        let lane = f64::from(theme.tokens.metrics.board_lane_width);
-        for (index, rect) in lanes.iter().enumerate() {
+        phase a_board_no_lane_heads_starts_its_cards_where_a_list_starts_its_first_row;
+        // A board no lane heads has nothing to line its cards up with: no lane keeps a heading's height,
+        // so the first card stands where the first row of a list of the same items does.
+        {
+            let host = laid_out(BoardProps {
+                name: Some("Loose".into()),
+                lanes: vec![lane("loose", &["a", "b"])],
+            });
+            let (card, lane) = {
+                let root = host.root::<Board>();
+                (root.card_rects(0)[0], root.lane_rects()[0])
+            };
             assert!(
-                (rect.width() - lane).abs() < 0.5,
-                "lane {index} reads {rect:?}, a comfortable measure {lane} wide"
+                (card.y0 - lane.y0).abs() < 0.5,
+                "no band stands over the cards: {card:?} in a lane from {lane:?}"
+            );
+            let list = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                crate::widget::Column::new()
+                    .with_no_padding()
+                    .push(Box::new(crate::widget::ListRow::new("a", "body"))),
+                (900, 600),
+                Theme::dark(),
+            );
+            let list = list.inspection();
+            let row = list
+                .root
+                .children
+                .iter()
+                .find(|node| node.widget == "ListRow")
+                .map(|node| node.rect[1])
+                .expect("the list shows its row");
+            assert!(
+                (card.y0 - row).abs() < 0.5,
+                "the first card starts where a list's first row does: {card:?} against {row}"
+            );
+            assert_eq!(
+                headings(&host.inspection()),
+                0,
+                "no lane of the board heads itself, so no heading row stands over the cards"
             );
         }
-        assert!(
-            (lanes[1].x1 - lanes[0].x0 - (2.0 * lane + 12.0)).abs() < 0.5,
-            "{lanes:?}"
-        );
+
+        phase a_lane_nobody_named_keeps_the_heading_row_of_the_lanes_beside_it;
+        // A lane nobody named keeps a heading's height while a lane beside it has one, so the cards of
+        // every lane line up and the unnamed lane heads nothing.
+        {
+            let mut named = lane("doing", &["c"]);
+            named.title = Some("Doing".into());
+            let host = laid_out(BoardProps {
+                name: Some("Plan".into()),
+                lanes: vec![lane("loose", &["a"]), named],
+            });
+            let (loose, doing, top) = {
+                let root = host.root::<Board>();
+                (
+                    root.card_rects(0)[0],
+                    root.card_rects(1)[0],
+                    root.lane_rects()[0].y0,
+                )
+            };
+            assert!(
+                (loose.y0 - doing.y0).abs() < 0.5,
+                "the lanes' cards line up: {loose:?} against {doing:?}"
+            );
+            assert!(
+                loose.y0 > top,
+                "the headings stand over the cards: {loose:?} in a lane from {top}"
+            );
+            assert_eq!(
+                headings(&host.inspection()),
+                2,
+                "the unnamed lane keeps the heading row of the lane beside it"
+            );
+        }
+
+        phase a_card_whose_body_is_a_row_is_that_row_shown_as_a_card;
+        {
+            let mut props = props(&Intents::default());
+            let row = crate::widget::ListRow::new("row", "Measure the new bedroom").meta("Thursday");
+            props.lanes[0].cards[0].body = vec![Box::new(crate::widget::ContextMenuArea::new(
+                Box::new(
+                    crate::widget::Container::new()
+                        .with_no_padding()
+                        .with_child(Box::new(row)),
+                ),
+                |_| Vec::new(),
+            ))];
+            let host = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                Board::from_props("board", props),
+                (900, 600),
+                Theme::dark(),
+            );
+            let root = host.root::<Board>();
+            let card = root.card_rects(0)[0];
+            assert!(
+                (44.0..=56.0).contains(&card.height()),
+                "a card of one title line and its facts is {} tall",
+                card.height()
+            );
+        }
+
+        phase a_lane_keeps_a_comfortable_measure;
+        {
+            let theme = Theme::dark();
+            let lane = f64::from(Board::lane_width(&theme, 1280.0));
+            assert!((300.0..=340.0).contains(&lane), "a lane reads {lane} wide");
+            // Wider panes leave the extra room open beside the lanes instead of stretching them.
+            assert_eq!(
+                Board::lane_width(&theme, 2000.0),
+                Board::lane_width(&theme, 1280.0)
+            );
+            // A pane too narrow for one lane and the board's gutters gives its lane the pane, so
+            // the next lane does not show as a sliver.
+            let narrow = 350.0;
+            assert!((f64::from(Board::lane_width(&theme, narrow)) - (narrow - 48.0)).abs() < 0.5);
+            let least = f64::from(crate::widget::CardWidth::Regular.min_width(&theme));
+            assert!(f64::from(Board::lane_width(&theme, least)) >= least);
+        }
+
+        phase a_board_in_a_sideways_pane_keeps_its_lanes_a_comfortable_measure;
+        {
+            let board = Board::from_props("board", props(&Intents::default()));
+            let pane = crate::widget::Scrollable::new_horizontal()
+                .with_content_min_viewport_width()
+                .with_child(Box::new(board));
+            // The room the pane shows through: 656 wide, a column of the window.
+            let column = crate::widget::Container::new()
+                .with_no_padding()
+                .with_width(656.0)
+                .with_child(Box::new(pane));
+            let mut host = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                column,
+                (656, 600),
+                Theme::dark(),
+            );
+            let mut column = host.root_mut::<crate::widget::Container>();
+            let mut column_children = crate::widget::Widget::children_mut(&mut *column);
+            let scroll = column_children[0]
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<crate::widget::Scrollable>())
+                .expect("the column shows the pane");
+            let mut pane_children = crate::widget::Widget::children_mut(scroll);
+            let board = pane_children[0]
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<Board>())
+                .expect("the pane shows the board");
+            let lanes = board.lane_rects();
+            assert_eq!(lanes.len(), 2);
+            let theme = Theme::dark();
+            let lane = f64::from(theme.tokens.metrics.board_lane_width);
+            for (index, rect) in lanes.iter().enumerate() {
+                assert!(
+                    (rect.width() - lane).abs() < 0.5,
+                    "lane {index} reads {rect:?}, a comfortable measure {lane} wide"
+                );
+            }
+            assert!(
+                (lanes[1].x1 - lanes[0].x0 - (2.0 * lane + 12.0)).abs() < 0.5,
+                "{lanes:?}"
+            );
+        }
     }
 
     #[test]

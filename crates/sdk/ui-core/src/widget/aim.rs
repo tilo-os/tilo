@@ -262,72 +262,78 @@ mod tests {
 
     const BUTTON: Rect = Rect::new(100.0, 0.0, 140.0, 20.0);
 
-    #[test]
-    fn passing_over_a_control_is_not_aiming_at_it() {
-        let (sweep, t0) = path(&[(40.0, 10.0, 0), (80.0, 10.0, 8), (120.0, 10.0, 16)]);
-        assert!(
-            !sweep.aims_at(BUTTON, ms(t0, 16)),
-            "mid-sweep, on the button"
-        );
-        assert!(sweep.in_transit(0.6, 0.6));
-        assert!(
-            sweep.aims_at(BUTTON, ms(t0, 16) + SETTLE),
-            "it stopped there after all"
-        );
+    tilo_test_env::scenario! {
+        /// The pointer trajectory and its aim hull.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_pointer_path_aims_at_the_target_it_heads_for;
 
-        let (brake, t0) = path(&[(40.0, 10.0, 0), (80.0, 10.0, 8), (104.0, 10.0, 16)]);
-        assert!(
-            brake.aims_at(BUTTON, ms(t0, 16)),
-            "5 px/ms then 3: it stops inside"
-        );
-        assert!(brake.braking(1.0, 0.6) || !brake.in_transit(0.6, 0.6));
+        phase passing_over_a_control_is_not_aiming_at_it;
+        {
+            let (sweep, t0) = path(&[(40.0, 10.0, 0), (80.0, 10.0, 8), (120.0, 10.0, 16)]);
+            assert!(
+                !sweep.aims_at(BUTTON, ms(t0, 16)),
+                "mid-sweep, on the button"
+            );
+            assert!(sweep.in_transit(0.6, 0.6));
+            assert!(
+                sweep.aims_at(BUTTON, ms(t0, 16) + SETTLE),
+                "it stopped there after all"
+            );
 
-        let (crawl, t0) = path(&[(118.0, 10.0, 0), (119.0, 10.0, 40)]);
-        assert!(
-            crawl.aims_at(BUTTON, ms(t0, 40)),
-            "slow: settling where it is"
-        );
-        assert!(!crawl.aims_at(Rect::new(0.0, 0.0, 10.0, 10.0), ms(t0, 40)));
-    }
+            let (brake, t0) = path(&[(40.0, 10.0, 0), (80.0, 10.0, 8), (104.0, 10.0, 16)]);
+            assert!(
+                brake.aims_at(BUTTON, ms(t0, 16)),
+                "5 px/ms then 3: it stops inside"
+            );
+            assert!(brake.braking(1.0, 0.6) || !brake.in_transit(0.6, 0.6));
 
-    #[test]
-    fn heading_needs_a_direction_toward_the_target() {
-        let (toward, _) = path(&[(0.0, 10.0, 0), (20.0, 10.0, 8), (40.0, 10.0, 16)]);
-        assert!(toward.heading_for(BUTTON));
-        let (away, _) = path(&[(60.0, 10.0, 0), (40.0, 10.0, 8), (20.0, 10.0, 16)]);
-        assert!(!away.heading_for(BUTTON));
-        let (still, _) = path(&[(40.0, 10.0, 0), (40.0, 10.0, 8)]);
-        assert!(
-            !still.heading_for(BUTTON),
-            "a repeated position has no direction"
-        );
-    }
-
-    #[test]
-    fn the_apex_trails_the_newest_sample_and_the_path_is_bounded() {
-        let (mut trajectory, t0) = path(&[(0.0, 0.0, 0)]);
-        assert_eq!(trajectory.apex(), None);
-        for k in 1..=20_u32 {
-            trajectory.push(Point::new(f64::from(k), 0.0), ms(t0, u64::from(k) * 8));
+            let (crawl, t0) = path(&[(118.0, 10.0, 0), (119.0, 10.0, 40)]);
+            assert!(
+                crawl.aims_at(BUTTON, ms(t0, 40)),
+                "slow: settling where it is"
+            );
+            assert!(!crawl.aims_at(Rect::new(0.0, 0.0, 10.0, 10.0), ms(t0, 40)));
         }
-        assert_eq!(trajectory.samples().len(), MAX_SAMPLES);
-        assert_eq!(trajectory.apex(), Some(Point::new(17.0, 0.0)));
-        assert_eq!(trajectory.recent_origin(), Some(Point::new(18.0, 0.0)));
-        assert_eq!(
-            trajectory.settle_deadline(ms(t0, 160)),
-            Some(ms(t0, 160) + SETTLE)
-        );
-        assert_eq!(trajectory.settle_deadline(ms(t0, 160) + SETTLE), None);
-    }
 
-    #[test]
-    fn the_hull_covers_the_cone_toward_the_target_and_nothing_behind_it() {
-        let target = Rect::new(100.0, 0.0, 120.0, 20.0);
-        let apex = Point::new(0.0, 10.0);
-        assert!(in_aim_hull(Point::new(50.0, 10.0), apex, target));
-        assert!(in_aim_hull(Point::new(110.0, 5.0), apex, target));
-        assert!(!in_aim_hull(Point::new(50.0, 30.0), apex, target));
-        assert!(!in_aim_hull(Point::new(-5.0, 10.0), apex, target));
-        assert!(!in_aim_hull(Point::new(130.0, 10.0), apex, target));
+        phase heading_needs_a_direction_toward_the_target;
+        {
+            let (toward, _) = path(&[(0.0, 10.0, 0), (20.0, 10.0, 8), (40.0, 10.0, 16)]);
+            assert!(toward.heading_for(BUTTON));
+            let (away, _) = path(&[(60.0, 10.0, 0), (40.0, 10.0, 8), (20.0, 10.0, 16)]);
+            assert!(!away.heading_for(BUTTON));
+            let (still, _) = path(&[(40.0, 10.0, 0), (40.0, 10.0, 8)]);
+            assert!(
+                !still.heading_for(BUTTON),
+                "a repeated position has no direction"
+            );
+        }
+
+        phase the_apex_trails_the_newest_sample_and_the_path_is_bounded;
+        {
+            let (mut trajectory, t0) = path(&[(0.0, 0.0, 0)]);
+            assert_eq!(trajectory.apex(), None);
+            for k in 1..=20_u32 {
+                trajectory.push(Point::new(f64::from(k), 0.0), ms(t0, u64::from(k) * 8));
+            }
+            assert_eq!(trajectory.samples().len(), MAX_SAMPLES);
+            assert_eq!(trajectory.apex(), Some(Point::new(17.0, 0.0)));
+            assert_eq!(trajectory.recent_origin(), Some(Point::new(18.0, 0.0)));
+            assert_eq!(
+                trajectory.settle_deadline(ms(t0, 160)),
+                Some(ms(t0, 160) + SETTLE)
+            );
+            assert_eq!(trajectory.settle_deadline(ms(t0, 160) + SETTLE), None);
+        }
+
+        phase the_hull_covers_the_cone_toward_the_target_and_nothing_behind_it;
+        {
+            let target = Rect::new(100.0, 0.0, 120.0, 20.0);
+            let apex = Point::new(0.0, 10.0);
+            assert!(in_aim_hull(Point::new(50.0, 10.0), apex, target));
+            assert!(in_aim_hull(Point::new(110.0, 5.0), apex, target));
+            assert!(!in_aim_hull(Point::new(50.0, 30.0), apex, target));
+            assert!(!in_aim_hull(Point::new(-5.0, 10.0), apex, target));
+            assert!(!in_aim_hull(Point::new(130.0, 10.0), apex, target));
+        }
     }
 }

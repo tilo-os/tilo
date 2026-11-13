@@ -35,74 +35,80 @@ fn typed(text: &str) -> BlockEditor {
     editor
 }
 
-#[test]
-fn a_typed_rule_is_a_divider_and_typing_goes_on_below_it() {
-    let mut doc = AutoCommit::new();
-    let mut editor = BlockEditor::new();
-    editor.focus_block(0, CursorPlacement::Start);
-    type_text(&mut editor, &mut doc, "---");
-    assert_eq!(editor.blocks()[0].kind, BlockKind::Divider);
-    type_text(&mut editor, &mut doc, "Next");
-    assert_eq!(editor.blocks().len(), 2);
-    assert_eq!(editor.blocks()[1].text(), "Next");
-    let prose = typed("a---");
-    assert_eq!(prose.blocks()[0].kind, BlockKind::Paragraph);
-    assert_eq!(prose.blocks()[0].text(), "a---");
-}
+tilo_test_env::scenario! {
+    /// Rules, deep headings and links typed as markdown.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn typed_markdown_shortcuts_become_blocks_and_links;
 
-#[test]
-fn four_to_six_hashes_make_the_deeper_headings_and_keep_their_level() {
-    for (prefix, level) in [("#### ", 4), ("##### ", 5), ("###### ", 6)] {
-        let editor = typed(&format!("{prefix}Notes"));
-        assert_eq!(
-            editor.blocks()[0].kind,
-            BlockKind::Heading(level),
-            "{prefix:?}"
-        );
-        assert_eq!(editor.blocks()[0].text(), "Notes");
-        assert_eq!(editor.to_markdown().trim(), format!("{prefix}Notes"));
+    phase a_typed_rule_is_a_divider_and_typing_goes_on_below_it;
+    {
+        let mut doc = AutoCommit::new();
+        let mut editor = BlockEditor::new();
+        editor.focus_block(0, CursorPlacement::Start);
+        type_text(&mut editor, &mut doc, "---");
+        assert_eq!(editor.blocks()[0].kind, BlockKind::Divider);
+        type_text(&mut editor, &mut doc, "Next");
+        assert_eq!(editor.blocks().len(), 2);
+        assert_eq!(editor.blocks()[1].text(), "Next");
+        let prose = typed("a---");
+        assert_eq!(prose.blocks()[0].kind, BlockKind::Paragraph);
+        assert_eq!(prose.blocks()[0].text(), "a---");
     }
-    let seven = typed("####### Notes");
-    assert_eq!(
-        seven.blocks()[0].kind,
-        BlockKind::Paragraph,
-        "Markdown has six"
-    );
-}
 
-#[test]
-fn a_typed_link_and_a_typed_address_become_links() {
-    let editor = typed("see [the plan](https://tilo.so/plan)");
-    assert_eq!(editor.blocks()[0].text(), "see the plan");
-    assert_eq!(
-        editor.blocks()[0].line.marks(),
-        [MarkSpan::new(
-            4..12,
-            Mark::ExternalLink("https://tilo.so/plan".into())
-        )]
-    );
+    phase four_to_six_hashes_make_the_deeper_headings_and_keep_their_level;
+    {
+        for (prefix, level) in [("#### ", 4), ("##### ", 5), ("###### ", 6)] {
+            let editor = typed(&format!("{prefix}Notes"));
+            assert_eq!(
+                editor.blocks()[0].kind,
+                BlockKind::Heading(level),
+                "{prefix:?}"
+            );
+            assert_eq!(editor.blocks()[0].text(), "Notes");
+            assert_eq!(editor.to_markdown().trim(), format!("{prefix}Notes"));
+        }
+        let seven = typed("####### Notes");
+        assert_eq!(
+            seven.blocks()[0].kind,
+            BlockKind::Paragraph,
+            "Markdown has six"
+        );
+    }
 
-    let resource = typed("[Standup](tilo://open#/me/so.tilo.calendar/-/calendar.event:e-1)");
-    assert_eq!(resource.blocks()[0].text(), "Standup");
-    assert_eq!(
-        resource.blocks()[0].line.marks(),
-        [MarkSpan::new(
-            0..7,
-            Mark::ResourceLink("tilo://open#/me/so.tilo.calendar/-/calendar.event:e-1".into())
-        )]
-    );
+    phase a_typed_link_and_a_typed_address_become_links;
+    {
+        let editor = typed("see [the plan](https://tilo.so/plan)");
+        assert_eq!(editor.blocks()[0].text(), "see the plan");
+        assert_eq!(
+            editor.blocks()[0].line.marks(),
+            [MarkSpan::new(
+                4..12,
+                Mark::ExternalLink("https://tilo.so/plan".into())
+            )]
+        );
 
-    let address = typed("read https://tilo.so/docs. then");
-    assert_eq!(
-        address.blocks()[0].text(),
-        "read https://tilo.so/docs. then",
-        "the address stays as typed"
-    );
-    assert_eq!(
-        address.blocks()[0].line.marks(),
-        [MarkSpan::new(
-            5..25,
-            Mark::ExternalLink("https://tilo.so/docs".into())
-        )]
-    );
+        let resource = typed("[Standup](tilo://open#/me/so.tilo.calendar/-/calendar.event:e-1)");
+        assert_eq!(resource.blocks()[0].text(), "Standup");
+        assert_eq!(
+            resource.blocks()[0].line.marks(),
+            [MarkSpan::new(
+                0..7,
+                Mark::ResourceLink("tilo://open#/me/so.tilo.calendar/-/calendar.event:e-1".into())
+            )]
+        );
+
+        let address = typed("read https://tilo.so/docs. then");
+        assert_eq!(
+            address.blocks()[0].text(),
+            "read https://tilo.so/docs. then",
+            "the address stays as typed"
+        );
+        assert_eq!(
+            address.blocks()[0].line.marks(),
+            [MarkSpan::new(
+                5..25,
+                Mark::ExternalLink("https://tilo.so/docs".into())
+            )]
+        );
+    }
 }

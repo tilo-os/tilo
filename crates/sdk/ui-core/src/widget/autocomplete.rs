@@ -1326,178 +1326,6 @@ mod tests {
     use crate::testing::dispatch;
     use automerge::AutoCommit;
 
-    #[test]
-    fn suggestions_open_highlight_accept_or_cancel() {
-        fn accessible_edits_update_suggestions_and_activate_the_selected_value() {
-            use crate::a11y::{Action, hash_key};
-            let mut ac = suggester_paths();
-            let mut state = AutoCommit::new();
-            assert!(ac.perform_action(
-                &Action::SetValue("al".into()),
-                &[],
-                &mut crate::widget::Edits::lend(&mut state),
-                &automerge::ROOT
-            ));
-            assert_eq!(ac.suggestions().len(), 2);
-            let node = ac.accessibility().unwrap();
-            assert_eq!(node.children[1].name.as_deref(), Some("album"));
-            let key = hash_key(&("autocomplete-suggestion", "album"));
-            assert!(ac.perform_action(
-                &Action::Activate,
-                &[key],
-                &mut crate::widget::Edits::lend(&mut state),
-                &automerge::ROOT
-            ));
-            assert_eq!(ac.text(), "album");
-            assert_eq!(
-                ac.take_outcome(),
-                AutocompleteOutcome::Accepted("album".into())
-            );
-            assert!(!ac.is_open());
-            assert!(!ac.perform_action(
-                &Action::Activate,
-                &[key],
-                &mut crate::widget::Edits::lend(&mut state),
-                &automerge::ROOT
-            ));
-        }
-
-        fn typing_recomputes_and_opens_the_dropdown() {
-            let mut ac = suggester_paths();
-            ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-            ac.begin_edit();
-            // The field starts empty, so both letters insert normally (no select-all
-            // to swallow the first one).
-            dispatch(&mut ac, &char_key("a"));
-            dispatch(&mut ac, &char_key("l"));
-            assert_eq!(ac.text(), "al");
-            let vals: Vec<&str> = ac.suggestions().iter().map(|s| s.value.as_str()).collect();
-            assert_eq!(vals, ["alpha", "album"], "prefix filter applied");
-            assert!(ac.is_open(), "dropdown opens as the user types");
-        }
-
-        fn arrows_move_highlight_and_enter_accepts_it() {
-            let mut ac = suggester_paths();
-            ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-            ac.begin_edit();
-            dispatch(&mut ac, &char_key("a"));
-            dispatch(&mut ac, &char_key("l"));
-            // No highlight yet → Enter would commit the typed text. Arrow down arms
-            // the first suggestion.
-            assert!(ac.highlighted().is_none());
-            assert!(dispatch(&mut ac, &named_key(NamedKey::ArrowDown)));
-            assert_eq!(ac.highlighted().unwrap().value, "alpha");
-            assert!(dispatch(&mut ac, &named_key(NamedKey::ArrowDown)));
-            assert_eq!(ac.highlighted().unwrap().value, "album");
-            assert!(dispatch(&mut ac, &named_key(NamedKey::Enter)));
-            assert_eq!(
-                ac.take_outcome(),
-                AutocompleteOutcome::Accepted("album".into())
-            );
-            assert_eq!(ac.text(), "album", "accepted value loaded into the field");
-            assert!(!ac.is_open(), "accept closes the dropdown");
-        }
-
-        fn enter_without_a_highlight_commits_the_typed_text() {
-            let mut ac = suggester_paths();
-            ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-            ac.begin_edit();
-            dispatch(&mut ac, &char_key("b"));
-            assert!(
-                !dispatch(&mut ac, &named_key(NamedKey::Enter)),
-                "Enter goes on to the form's default action"
-            );
-            assert_eq!(ac.take_outcome(), AutocompleteOutcome::Accepted("b".into()));
-        }
-
-        fn escape_cancels() {
-            let mut ac = suggester_paths();
-            ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-            ac.begin_edit();
-            dispatch(&mut ac, &char_key("a"));
-            assert!(dispatch(&mut ac, &named_key(NamedKey::Escape)));
-            assert_eq!(ac.take_outcome(), AutocompleteOutcome::Cancelled);
-            assert!(!ac.is_open());
-        }
-
-        fn clicking_a_row_accepts_that_suggestion() {
-            let mut ac = suggester_paths();
-            ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-            ac.begin_edit();
-            dispatch(&mut ac, &char_key("a")); // → "alpha","album"
-            let panel = ac.dropdown_rect().expect("dropdown open");
-            let row = ac.row_rect(panel, 1);
-            let c = row.center();
-            dispatch(&mut ac, &cursor_moved(c.x, c.y));
-            assert!(dispatch(&mut ac, &mouse_press()));
-            assert_eq!(
-                ac.take_outcome(),
-                AutocompleteOutcome::Accepted("album".into())
-            );
-        }
-
-        fn tab_completes_without_accepting() {
-            let mut ac = suggester_paths();
-            ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-            ac.begin_edit();
-            dispatch(&mut ac, &char_key("a")); // "alpha","album"
-            assert!(dispatch(&mut ac, &named_key(NamedKey::Tab)));
-            assert_eq!(ac.text(), "alpha");
-            assert_eq!(
-                ac.take_outcome(),
-                AutocompleteOutcome::None,
-                "Tab is not an accept"
-            );
-        }
-
-        fn click_outside_cancels_without_consuming() {
-            let mut ac = suggester_paths();
-            ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-            ac.begin_edit();
-            dispatch(&mut ac, &char_key("a"));
-            dispatch(&mut ac, &cursor_moved(900.0, 900.0));
-            let consumed = dispatch(&mut ac, &mouse_press());
-            assert!(!consumed, "the outside click still reaches the host");
-            assert_eq!(ac.take_outcome(), AutocompleteOutcome::Cancelled);
-        }
-
-        accessible_edits_update_suggestions_and_activate_the_selected_value();
-        typing_recomputes_and_opens_the_dropdown();
-        arrows_move_highlight_and_enter_accepts_it();
-        enter_without_a_highlight_commits_the_typed_text();
-        escape_cancels();
-        clicking_a_row_accepts_that_suggestion();
-        tab_completes_without_accepting();
-        click_outside_cancels_without_consuming();
-    }
-
-    #[test]
-    fn controlled_autocomplete_with_id_preserves_supplied_input() {
-        let autocomplete = Autocomplete::new_with_controlled_input(
-            TextInput::local_with_language("en_US")
-                .with_spellcheck(false)
-                .with_autocorrect(false)
-                .with_initial_value("sentinel route"),
-        )
-        .with_id("route-search");
-
-        assert_eq!(Widget::test_id(&autocomplete), Some("route-search"));
-        let semantics = Widget::accessibility(&autocomplete).expect("text field semantics");
-        // The autocomplete publishes one keyed route under its id for the
-        // embedded input and its rows, never the inner input's own target.
-        let keyed = semantics.action_target.as_deref().unwrap_or_default();
-        assert!(
-            keyed.starts_with("tilo.key-action:route-search:"),
-            "{keyed}"
-        );
-        assert_eq!(semantics.semantic_key.as_deref(), Some(keyed));
-        assert_eq!(autocomplete.text(), "sentinel route");
-        assert_eq!(autocomplete.input.spell_language(), "en_US");
-        assert!(!autocomplete.input.spellcheck_enabled());
-        assert!(!autocomplete.input.autocorrect_enabled());
-        assert_eq!(autocomplete.input.kind(), TextInputKind::Search);
-    }
-
     fn suggester_paths() -> Autocomplete {
         Autocomplete::new().with_suggester(|q| {
             ["alpha", "album", "beta"]
@@ -1516,226 +1344,405 @@ mod tests {
 
     use crate::synthetic_input::mouse_press;
 
-    #[test]
-    fn begin_edit_selection_arms_only_for_preseeded_values() {
-        fn freshly_focused_empty_field_keeps_every_letter() {
-            let mut ac = Autocomplete::new();
-            ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-            ac.begin_edit();
-            dispatch(&mut ac, &char_key("a"));
-            assert_eq!(
-                ac.input.selection_range_public(),
-                None,
-                "no selection after first char"
-            );
-            dispatch(&mut ac, &char_key("b"));
-            dispatch(&mut ac, &char_key("c"));
-            assert_eq!(ac.text(), "abc", "every letter is kept (not \"bc\")");
+    tilo_test_env::scenario! {
+        /// The autocomplete field: its list, its selection and its rows.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn autocomplete_suggests_accepts_and_keeps_its_input;
+
+        phase suggestions_open_highlight_accept_or_cancel;
+        {
+            fn accessible_edits_update_suggestions_and_activate_the_selected_value() {
+                use crate::a11y::{Action, hash_key};
+                let mut ac = suggester_paths();
+                let mut state = AutoCommit::new();
+                assert!(ac.perform_action(
+                    &Action::SetValue("al".into()),
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut state),
+                    &automerge::ROOT
+                ));
+                assert_eq!(ac.suggestions().len(), 2);
+                let node = ac.accessibility().unwrap();
+                assert_eq!(node.children[1].name.as_deref(), Some("album"));
+                let key = hash_key(&("autocomplete-suggestion", "album"));
+                assert!(ac.perform_action(
+                    &Action::Activate,
+                    &[key],
+                    &mut crate::widget::Edits::lend(&mut state),
+                    &automerge::ROOT
+                ));
+                assert_eq!(ac.text(), "album");
+                assert_eq!(
+                    ac.take_outcome(),
+                    AutocompleteOutcome::Accepted("album".into())
+                );
+                assert!(!ac.is_open());
+                assert!(!ac.perform_action(
+                    &Action::Activate,
+                    &[key],
+                    &mut crate::widget::Edits::lend(&mut state),
+                    &automerge::ROOT
+                ));
+            }
+
+            fn typing_recomputes_and_opens_the_dropdown() {
+                let mut ac = suggester_paths();
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+                ac.begin_edit();
+                // The field starts empty, so both letters insert normally (no select-all
+                // to swallow the first one).
+                dispatch(&mut ac, &char_key("a"));
+                dispatch(&mut ac, &char_key("l"));
+                assert_eq!(ac.text(), "al");
+                let vals: Vec<&str> = ac.suggestions().iter().map(|s| s.value.as_str()).collect();
+                assert_eq!(vals, ["alpha", "album"], "prefix filter applied");
+                assert!(ac.is_open(), "dropdown opens as the user types");
+            }
+
+            fn arrows_move_highlight_and_enter_accepts_it() {
+                let mut ac = suggester_paths();
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+                ac.begin_edit();
+                dispatch(&mut ac, &char_key("a"));
+                dispatch(&mut ac, &char_key("l"));
+                // No highlight yet → Enter would commit the typed text. Arrow down arms
+                // the first suggestion.
+                assert!(ac.highlighted().is_none());
+                assert!(dispatch(&mut ac, &named_key(NamedKey::ArrowDown)));
+                assert_eq!(ac.highlighted().unwrap().value, "alpha");
+                assert!(dispatch(&mut ac, &named_key(NamedKey::ArrowDown)));
+                assert_eq!(ac.highlighted().unwrap().value, "album");
+                assert!(dispatch(&mut ac, &named_key(NamedKey::Enter)));
+                assert_eq!(
+                    ac.take_outcome(),
+                    AutocompleteOutcome::Accepted("album".into())
+                );
+                assert_eq!(ac.text(), "album", "accepted value loaded into the field");
+                assert!(!ac.is_open(), "accept closes the dropdown");
+            }
+
+            fn enter_without_a_highlight_commits_the_typed_text() {
+                let mut ac = suggester_paths();
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+                ac.begin_edit();
+                dispatch(&mut ac, &char_key("b"));
+                assert!(
+                    !dispatch(&mut ac, &named_key(NamedKey::Enter)),
+                    "Enter goes on to the form's default action"
+                );
+                assert_eq!(ac.take_outcome(), AutocompleteOutcome::Accepted("b".into()));
+            }
+
+            fn escape_cancels() {
+                let mut ac = suggester_paths();
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+                ac.begin_edit();
+                dispatch(&mut ac, &char_key("a"));
+                assert!(dispatch(&mut ac, &named_key(NamedKey::Escape)));
+                assert_eq!(ac.take_outcome(), AutocompleteOutcome::Cancelled);
+                assert!(!ac.is_open());
+            }
+
+            fn clicking_a_row_accepts_that_suggestion() {
+                let mut ac = suggester_paths();
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+                ac.begin_edit();
+                dispatch(&mut ac, &char_key("a")); // → "alpha","album"
+                let panel = ac.dropdown_rect().expect("dropdown open");
+                let row = ac.row_rect(panel, 1);
+                let c = row.center();
+                dispatch(&mut ac, &cursor_moved(c.x, c.y));
+                assert!(dispatch(&mut ac, &mouse_press()));
+                assert_eq!(
+                    ac.take_outcome(),
+                    AutocompleteOutcome::Accepted("album".into())
+                );
+            }
+
+            fn tab_completes_without_accepting() {
+                let mut ac = suggester_paths();
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+                ac.begin_edit();
+                dispatch(&mut ac, &char_key("a")); // "alpha","album"
+                assert!(dispatch(&mut ac, &named_key(NamedKey::Tab)));
+                assert_eq!(ac.text(), "alpha");
+                assert_eq!(
+                    ac.take_outcome(),
+                    AutocompleteOutcome::None,
+                    "Tab is not an accept"
+                );
+            }
+
+            fn click_outside_cancels_without_consuming() {
+                let mut ac = suggester_paths();
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+                ac.begin_edit();
+                dispatch(&mut ac, &char_key("a"));
+                dispatch(&mut ac, &cursor_moved(900.0, 900.0));
+                let consumed = dispatch(&mut ac, &mouse_press());
+                assert!(!consumed, "the outside click still reaches the host");
+                assert_eq!(ac.take_outcome(), AutocompleteOutcome::Cancelled);
+            }
+
+            accessible_edits_update_suggestions_and_activate_the_selected_value();
+            typing_recomputes_and_opens_the_dropdown();
+            arrows_move_highlight_and_enter_accepts_it();
+            enter_without_a_highlight_commits_the_typed_text();
+            escape_cancels();
+            clicking_a_row_accepts_that_suggestion();
+            tab_completes_without_accepting();
+            click_outside_cancels_without_consuming();
         }
 
-        fn begin_edit_on_empty_field_arms_no_selection() {
-            let mut ac = Autocomplete::new();
-            ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-            ac.begin_edit();
-            assert_eq!(
-                ac.input.selection_range_public(),
-                None,
-                "empty focus = no selection"
-            );
-        }
+        phase controlled_autocomplete_with_id_preserves_supplied_input;
+        {
+            let autocomplete = Autocomplete::new_with_controlled_input(
+                TextInput::local_with_language("en_US")
+                    .with_spellcheck(false)
+                    .with_autocorrect(false)
+                    .with_initial_value("sentinel route"),
+            )
+            .with_id("route-search");
 
-        fn redundant_begin_edit_does_not_reselect_typed_text() {
-            let mut ac = suggester_paths();
-            ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-            ac.begin_edit();
-            dispatch(&mut ac, &char_key("a")); // field now holds "a"
-            assert_eq!(ac.text(), "a");
-            ac.begin_edit();
-            assert_eq!(
-                ac.input.selection_range_public(),
-                None,
-                "typed text is not re-selected"
-            );
-            dispatch(&mut ac, &char_key("l"));
-            assert_eq!(
-                ac.text(),
-                "al",
-                "second char appends — the first letter survives"
-            );
-        }
-
-        fn begin_edit_still_selects_a_preseeded_value_for_replace() {
-            let mut ac = Autocomplete::new();
-            ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-            ac.set_text("/home/user");
-            ac.begin_edit();
-            assert_eq!(
-                ac.input.selection_range_public(),
-                Some((0, "/home/user".len())),
-                "fresh entry into a pre-seeded field selects the whole value",
-            );
-            dispatch(&mut ac, &char_key("x"));
-            assert_eq!(
-                ac.text(),
-                "x",
-                "the first keystroke replaces the selected seed"
-            );
-        }
-
-        freshly_focused_empty_field_keeps_every_letter();
-        begin_edit_on_empty_field_arms_no_selection();
-        redundant_begin_edit_does_not_reselect_typed_text();
-        begin_edit_still_selects_a_preseeded_value_for_replace();
-    }
-
-    #[test]
-    fn reactive_suggestions_status_line_and_scaled_rows() {
-        fn set_suggestions_supports_reactive_hosts() {
-            let mut ac = Autocomplete::new();
-            ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-            ac.begin_edit();
-            ac.set_suggestions(vec![Suggestion::labelled("/home/u/Docs", "Docs")]);
-            ac.open = true;
-            assert!(ac.is_open());
-            assert_eq!(ac.suggestions()[0].value, "/home/u/Docs");
-        }
-
-        fn status_line_keeps_the_dropdown_open_with_no_rows() {
-            let mut ac = Autocomplete::new();
-            ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-            ac.begin_edit();
-            assert!(ac.dropdown_rect().is_none(), "nothing to show yet");
-            ac.set_status(Some("Searching…".into()));
-            ac.open();
-            let panel = ac.dropdown_rect().expect("status keeps the dropdown open");
-            assert!(panel.height() > 0.0);
-            assert!(ac.highlighted().is_none());
+            assert_eq!(Widget::test_id(&autocomplete), Some("route-search"));
+            let semantics = Widget::accessibility(&autocomplete).expect("text field semantics");
+            // The autocomplete publishes one keyed route under its id for the
+            // embedded input and its rows, never the inner input's own target.
+            let keyed = semantics.action_target.as_deref().unwrap_or_default();
             assert!(
-                ac.row_at(panel.center()).is_none(),
-                "the status line is not a row"
+                keyed.starts_with("tilo.key-action:route-search:"),
+                "{keyed}"
             );
+            assert_eq!(semantics.semantic_key.as_deref(), Some(keyed));
+            assert_eq!(autocomplete.text(), "sentinel route");
+            assert_eq!(autocomplete.input.spell_language(), "en_US");
+            assert!(!autocomplete.input.spellcheck_enabled());
+            assert!(!autocomplete.input.autocorrect_enabled());
+            assert_eq!(autocomplete.input.kind(), TextInputKind::Search);
         }
 
-        fn reactive_suggestions_after_open_replace_the_status_line() {
-            let mut ac = Autocomplete::new();
-            ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
-            ac.begin_edit();
-            ac.set_status(Some("Searching…".into()));
-            ac.open();
-            ac.set_suggestions(vec![Suggestion::new("Paris"), Suggestion::new("Parma")]);
-            ac.open();
-            assert!(ac.is_open());
-            assert_eq!(ac.suggestions().len(), 2);
-            dispatch(&mut ac, &named_key(NamedKey::ArrowDown));
-            assert_eq!(ac.highlighted().unwrap().value, "Paris");
-            dispatch(&mut ac, &named_key(NamedKey::ArrowDown));
-            assert_eq!(ac.highlighted().unwrap().value, "Parma");
+        phase begin_edit_selection_arms_only_for_preseeded_values;
+        {
+            fn freshly_focused_empty_field_keeps_every_letter() {
+                let mut ac = Autocomplete::new();
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+                ac.begin_edit();
+                dispatch(&mut ac, &char_key("a"));
+                assert_eq!(
+                    ac.input.selection_range_public(),
+                    None,
+                    "no selection after first char"
+                );
+                dispatch(&mut ac, &char_key("b"));
+                dispatch(&mut ac, &char_key("c"));
+                assert_eq!(ac.text(), "abc", "every letter is kept (not \"bc\")");
+            }
+
+            fn begin_edit_on_empty_field_arms_no_selection() {
+                let mut ac = Autocomplete::new();
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+                ac.begin_edit();
+                assert_eq!(
+                    ac.input.selection_range_public(),
+                    None,
+                    "empty focus = no selection"
+                );
+            }
+
+            fn redundant_begin_edit_does_not_reselect_typed_text() {
+                let mut ac = suggester_paths();
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+                ac.begin_edit();
+                dispatch(&mut ac, &char_key("a")); // field now holds "a"
+                assert_eq!(ac.text(), "a");
+                ac.begin_edit();
+                assert_eq!(
+                    ac.input.selection_range_public(),
+                    None,
+                    "typed text is not re-selected"
+                );
+                dispatch(&mut ac, &char_key("l"));
+                assert_eq!(
+                    ac.text(),
+                    "al",
+                    "second char appends — the first letter survives"
+                );
+            }
+
+            fn begin_edit_still_selects_a_preseeded_value_for_replace() {
+                let mut ac = Autocomplete::new();
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+                ac.set_text("/home/user");
+                ac.begin_edit();
+                assert_eq!(
+                    ac.input.selection_range_public(),
+                    Some((0, "/home/user".len())),
+                    "fresh entry into a pre-seeded field selects the whole value",
+                );
+                dispatch(&mut ac, &char_key("x"));
+                assert_eq!(
+                    ac.text(),
+                    "x",
+                    "the first keystroke replaces the selected seed"
+                );
+            }
+
+            freshly_focused_empty_field_keeps_every_letter();
+            begin_edit_on_empty_field_arms_no_selection();
+            redundant_begin_edit_does_not_reselect_typed_text();
+            begin_edit_still_selects_a_preseeded_value_for_replace();
         }
 
-        fn large_text_scales_dropdown_rows_and_hit_geometry_together() {
-            let mut ac = Autocomplete::new();
-            ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 68.0));
-            ac.set_suggestions(vec![
-                Suggestion::new("A very long destination name").with_detail("First detail"),
-                Suggestion::new("Second destination").with_detail("Second detail"),
-            ]);
-            ac.open();
+        phase reactive_suggestions_status_line_and_scaled_rows;
+        {
+            fn set_suggestions_supports_reactive_hosts() {
+                let mut ac = Autocomplete::new();
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+                ac.begin_edit();
+                ac.set_suggestions(vec![Suggestion::labelled("/home/u/Docs", "Docs")]);
+                ac.open = true;
+                assert!(ac.is_open());
+                assert_eq!(ac.suggestions()[0].value, "/home/u/Docs");
+            }
+
+            fn status_line_keeps_the_dropdown_open_with_no_rows() {
+                let mut ac = Autocomplete::new();
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+                ac.begin_edit();
+                assert!(ac.dropdown_rect().is_none(), "nothing to show yet");
+                ac.set_status(Some("Searching…".into()));
+                ac.open();
+                let panel = ac.dropdown_rect().expect("status keeps the dropdown open");
+                assert!(panel.height() > 0.0);
+                assert!(ac.highlighted().is_none());
+                assert!(
+                    ac.row_at(panel.center()).is_none(),
+                    "the status line is not a row"
+                );
+            }
+
+            fn reactive_suggestions_after_open_replace_the_status_line() {
+                let mut ac = Autocomplete::new();
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+                ac.begin_edit();
+                ac.set_status(Some("Searching…".into()));
+                ac.open();
+                ac.set_suggestions(vec![Suggestion::new("Paris"), Suggestion::new("Parma")]);
+                ac.open();
+                assert!(ac.is_open());
+                assert_eq!(ac.suggestions().len(), 2);
+                dispatch(&mut ac, &named_key(NamedKey::ArrowDown));
+                assert_eq!(ac.highlighted().unwrap().value, "Paris");
+                dispatch(&mut ac, &named_key(NamedKey::ArrowDown));
+                assert_eq!(ac.highlighted().unwrap().value, "Parma");
+            }
+
+            fn large_text_scales_dropdown_rows_and_hit_geometry_together() {
+                let mut ac = Autocomplete::new();
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 68.0));
+                ac.set_suggestions(vec![
+                    Suggestion::new("A very long destination name").with_detail("First detail"),
+                    Suggestion::new("Second destination").with_detail("Second detail"),
+                ]);
+                ac.open();
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                let theme = Theme::dark().with_text_scale(2.0);
+                text.set_text_scale(theme.text_scale);
+                ac.draw_overlay(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                let panel = ac.dropdown_rect().expect("large-text dropdown");
+                let first = ac.row_rect(panel, 0);
+                let second = ac.row_rect(panel, 1);
+                assert!(
+                    first.height() > f64::from(crate::tokens::Metrics::BASE.menu_row_height),
+                    "rows grow with the text: {first:?}"
+                );
+                assert_eq!(first.y1, second.y0, "rows do not overlap");
+                assert_eq!(ac.row_at(second.center()), Some(1));
+            }
+
+            set_suggestions_supports_reactive_hosts();
+            status_line_keeps_the_dropdown_open_with_no_rows();
+            reactive_suggestions_after_open_replace_the_status_line();
+            large_text_scales_dropdown_rows_and_hit_geometry_together();
+        }
+
+        phase a_short_label_leaves_its_detail_the_rest_of_the_row;
+        {
+            // "Amsterdam" beside "North Holland, The Netherlands" in a 300 px row:
+            // the detail gets what the label leaves, not a fixed half.
+            assert!((detail_room(300.0, 80.0, 8.0) - 204.0).abs() < f64::EPSILON);
+            assert!((detail_room(300.0, 250.0, 8.0) - 150.0).abs() < f64::EPSILON);
+        }
+
+        phase the_suggestion_list_flips_scrolls_and_waits;
+        {
+            let mut list = SuggestionList::new().with_max_visible(3);
+            list.set_rows(
+                (0..10)
+                    .map(|i| Suggestion::new(format!("item {i}")).with_detail("fn"))
+                    .collect(),
+            );
+            list.set_anchor(Rect::new(10.0, 560.0, 210.0, 592.0));
+            list.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+            let rect = list.rect().expect("rows show");
+            assert!(
+                rect.y1 <= 560.0,
+                "no room below: the list opens above: {rect:?}"
+            );
+            list.set_highlight(Some(7));
+            assert!(
+                list.row_rect(7).is_some(),
+                "the armed row scrolls into view"
+            );
+            assert!(list.row_rect(0).is_none());
+            let row = list.row_rect(7).unwrap();
+            assert_eq!(list.row_at(row.center()), Some(7));
+
+            let mut busy = SuggestionList::new();
+            busy.set_anchor(Rect::new(0.0, 0.0, 200.0, 32.0));
+            assert!(busy.rect().is_none());
+            let asked = crate::time::now();
+            busy.set_arriving(Some(crate::arriving::ArrivalClock::new(
+                asked,
+                crate::arriving::Source::host("Open-Meteo"),
+            )));
+            assert!(busy.rect().is_some());
+            let rows = busy.access_rows(|_| 0);
+            assert_eq!(rows.len(), 1);
+            assert!(rows[0].state.busy);
             let mut scene = Scene::new();
-            let mut text = TextRenderer::new();
-            let theme = Theme::dark().with_text_scale(2.0);
-            text.set_text_scale(theme.text_scale);
-            ac.draw_overlay(
+            busy.paint(
                 &mut scene,
                 Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &PresenceCtx::empty(),
+                &mut TextRenderer::new(),
+                &Theme::dark(),
             );
-            let panel = ac.dropdown_rect().expect("large-text dropdown");
-            let first = ac.row_rect(panel, 0);
-            let second = ac.row_rect(panel, 1);
+
+            let mut ac = Autocomplete::with_input(TextInput::local().with_placeholder("City"));
+            ac.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 32.0));
+            ac.set_arriving(Some(crate::arriving::ArrivalClock::new(
+                asked,
+                crate::arriving::Source::host("Open-Meteo"),
+            )));
+            ac.open();
+            assert!(ac.list_rect().is_some());
             assert!(
-                first.height() > f64::from(crate::tokens::Metrics::BASE.menu_row_height),
-                "rows grow with the text: {first:?}"
+                !Widget::needs_animation_frame(&ac),
+                "rows on their way draw no frames between their steps"
             );
-            assert_eq!(first.y1, second.y0, "rows do not overlap");
-            assert_eq!(ac.row_at(second.center()), Some(1));
+            assert_eq!(
+                Widget::next_wake_deadline(&ac),
+                crate::arriving::ArrivalClock::new(asked, crate::arriving::Source::host("Open-Meteo"))
+                    .next_step_at(crate::time::now()),
+                "the placeholder steps on at its deadline"
+            );
         }
-
-        set_suggestions_supports_reactive_hosts();
-        status_line_keeps_the_dropdown_open_with_no_rows();
-        reactive_suggestions_after_open_replace_the_status_line();
-        large_text_scales_dropdown_rows_and_hit_geometry_together();
-    }
-    #[test]
-    fn a_short_label_leaves_its_detail_the_rest_of_the_row() {
-        // "Amsterdam" beside "North Holland, The Netherlands" in a 300 px row:
-        // the detail gets what the label leaves, not a fixed half.
-        assert!((detail_room(300.0, 80.0, 8.0) - 204.0).abs() < f64::EPSILON);
-        assert!((detail_room(300.0, 250.0, 8.0) - 150.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn the_suggestion_list_flips_scrolls_and_waits() {
-        let mut list = SuggestionList::new().with_max_visible(3);
-        list.set_rows(
-            (0..10)
-                .map(|i| Suggestion::new(format!("item {i}")).with_detail("fn"))
-                .collect(),
-        );
-        list.set_anchor(Rect::new(10.0, 560.0, 210.0, 592.0));
-        list.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
-        let rect = list.rect().expect("rows show");
-        assert!(
-            rect.y1 <= 560.0,
-            "no room below: the list opens above: {rect:?}"
-        );
-        list.set_highlight(Some(7));
-        assert!(
-            list.row_rect(7).is_some(),
-            "the armed row scrolls into view"
-        );
-        assert!(list.row_rect(0).is_none());
-        let row = list.row_rect(7).unwrap();
-        assert_eq!(list.row_at(row.center()), Some(7));
-
-        let mut busy = SuggestionList::new();
-        busy.set_anchor(Rect::new(0.0, 0.0, 200.0, 32.0));
-        assert!(busy.rect().is_none());
-        let asked = crate::time::now();
-        busy.set_arriving(Some(crate::arriving::ArrivalClock::new(
-            asked,
-            crate::arriving::Source::host("Open-Meteo"),
-        )));
-        assert!(busy.rect().is_some());
-        let rows = busy.access_rows(|_| 0);
-        assert_eq!(rows.len(), 1);
-        assert!(rows[0].state.busy);
-        let mut scene = Scene::new();
-        busy.paint(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-        );
-
-        let mut ac = Autocomplete::with_input(TextInput::local().with_placeholder("City"));
-        ac.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 32.0));
-        ac.set_arriving(Some(crate::arriving::ArrivalClock::new(
-            asked,
-            crate::arriving::Source::host("Open-Meteo"),
-        )));
-        ac.open();
-        assert!(ac.list_rect().is_some());
-        assert!(
-            !Widget::needs_animation_frame(&ac),
-            "rows on their way draw no frames between their steps"
-        );
-        assert_eq!(
-            Widget::next_wake_deadline(&ac),
-            crate::arriving::ArrivalClock::new(asked, crate::arriving::Source::host("Open-Meteo"))
-                .next_step_at(crate::time::now()),
-            "the placeholder steps on at its deadline"
-        );
     }
 }

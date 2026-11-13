@@ -583,84 +583,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn each_reference_reads_as_the_readers_inline_view_and_a_click_opens_it() {
-        let queue = crate::Intents::<Fired>::default();
-        let props = BlockEditorProps {
-            value: Some(text(vec![
-                (
-                    "u-ada",
-                    InlineView::Person {
-                        identity: "u-ada".into(),
-                        name: "Ada Lovelace".into(),
-                    },
-                ),
-                (
-                    TASK,
-                    InlineView::Resource {
-                        title: "Fix the build".into(),
-                        icon: None,
-                        detail: Some("T-12".into()),
-                    },
-                ),
-                (SECRET, InlineView::Unreadable),
-            ])),
-            open_reference: Event::View(Intent::new(&queue, "post", OPEN_REFERENCE)),
-            ..BlockEditorProps::default()
-        };
-        let mut editor = BlockEditor::from_props("post", props);
-        assert!(editor.is_read_only());
-        let shown = editor.blocks()[0].text().to_owned();
-        assert_eq!(
-            shown, "Ask @Ada Lovelace about T-12 Fix the build, not Not shared with you.",
-            "a person by their name now, a task by its number and title now, and what the \
-             reader cannot read only as being there"
-        );
-        assert!(
-            !shown.contains("secret"),
-            "nothing of an unreadable resource shows"
-        );
-
-        let mut renderer = TextRenderer::new();
-        laid_out(&mut editor, &mut renderer);
-        let hits = editor.reference_hits().to_vec();
-        let task = hits
-            .iter()
-            .find(|(_, reference)| reference == TASK)
-            .map(|(rect, _)| *rect)
-            .expect("the task is painted as a chip");
-        assert!(hits.iter().any(|(_, reference)| reference == "u-ada"));
-        assert!(hits.iter().any(|(_, reference)| reference == SECRET));
-        assert_eq!(
-            editor.cursor_shape(task.center()),
-            Some(winit::window::CursorIcon::Pointer)
-        );
-
-        crate::testing::dispatch(
-            &mut editor,
-            &crate::synthetic_input::cursor_moved(task.center().x, task.center().y),
-        );
-        assert!(crate::testing::dispatch(
-            &mut editor,
-            &crate::synthetic_input::mouse_release()
-        ));
-        assert_eq!(
-            queue.take(),
-            vec![Fired {
-                key: "post".into(),
-                event: OPEN_REFERENCE.into(),
-                value: Some(Value::Text(TASK.into())),
-            }],
-            "a click opens the reference, by the reference"
-        );
-        crate::testing::dispatch(&mut editor, &crate::synthetic_input::cursor_moved(1.0, 1.0));
-        crate::testing::dispatch(&mut editor, &crate::synthetic_input::mouse_release());
-        assert!(
-            queue.take().is_empty(),
-            "a click beside a reference opens nothing"
-        );
-    }
-
     fn type_keys(editor: &mut BlockEditor, text: &str) {
         for ch in text.chars() {
             let typed = ch.to_string();
@@ -674,165 +596,6 @@ mod tests {
             };
             crate::testing::dispatch(editor, &event);
         }
-    }
-
-    #[test]
-    fn the_records_a_view_links_are_offered_and_chosen_as_references_to_them() {
-        use crate::widget::CursorPlacement;
-        use crate::widget::marks::Mark;
-
-        let fired = crate::Intents::<Fired>::default();
-        let body = crate::LocalState::new(RichText::default());
-        let plan = |title: &str| Link {
-            reference: "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1".into(),
-            title: title.into(),
-        };
-        let mut editor = BlockEditor::from_props(
-            "b",
-            BlockEditorProps {
-                rich: bound(&fired, body.clone()),
-                links: vec![plan("Plan")],
-                ..BlockEditorProps::default()
-            },
-        );
-        editor.focus_block(0, CursorPlacement::End);
-        type_keys(&mut editor, "[[pl");
-        assert!(editor.link_popover().is_visible());
-        assert_eq!(
-            editor
-                .link_popover()
-                .highlighted()
-                .map(|page| page.title.as_str()),
-            Some("Plan"),
-            "the record the view named, by the title it reads as now"
-        );
-        crate::testing::dispatch(
-            &mut editor,
-            &crate::synthetic_input::key_press(
-                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
-                None,
-            ),
-        );
-        assert_eq!(editor.blocks()[0].text(), "Plan");
-        eprintln!("MARKS {:?}", editor.blocks()[0].line.marks());
-        assert!(
-            matches!(
-                editor.blocks()[0].line.marks().first().map(|span| &span.mark),
-                Some(Mark::Mention(reference)) if reference == "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1"
-            ),
-            "what is written names the record, so it reads as it reads now wherever it goes"
-        );
-
-        editor.take_body_edits();
-        let edit = fired
-            .take()
-            .into_iter()
-            .rev()
-            .find_map(|fired| match fired.value {
-                Some(Value::Rich(rich)) => Some(rich),
-                _ => None,
-            });
-        let edited = edit.expect("the view is told what the document is now");
-        let mention = edited.blocks[0]
-            .marks
-            .iter()
-            .find(|mark| mark.name == "mention")
-            .expect("a mention mark");
-        assert_eq!(
-            edited.blocks[0].text, "Plan",
-            "the run reads as the record's title"
-        );
-        assert!(matches!(
-            &mention.value,
-            tilo_ui_graph::rich::Attr::Text(reference)
-                if reference == "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1"
-        ));
-
-        // A record renamed later is offered by its new title: the view names the record, and the
-        // title is how it reads now, never text kept from before.
-        editor.set_props(BlockEditorProps {
-            rich: bound(&fired, body),
-            links: vec![plan("Plan for Q4")],
-            ..BlockEditorProps::default()
-        });
-        assert_eq!(
-            editor
-                .link_popover()
-                .highlighted()
-                .map(|page| page.title.as_str()),
-            Some("Plan for Q4")
-        );
-    }
-
-    #[test]
-    fn the_picker_tells_its_view_when_it_opens_and_what_is_typed_in_it() {
-        use crate::widget::CursorPlacement;
-
-        let fired = crate::Intents::<Fired>::default();
-        let asked = crate::Intents::<Fired>::default();
-        let body = crate::LocalState::new(RichText::default());
-        let link = |title: &str| Link {
-            reference: "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1".into(),
-            title: title.into(),
-        };
-        let props = |links: Vec<Link>| BlockEditorProps {
-            rich: bound(&fired, body.clone()),
-            links_open: Event::View(Intent::new(&asked, "b", "links_open")),
-            links_query: Event::View(Intent::new(&asked, "b", "links_query")),
-            links,
-            ..BlockEditorProps::default()
-        };
-        let mut editor = BlockEditor::from_props("b", props(Vec::new()));
-        editor.focus_block(0, CursorPlacement::End);
-        type_keys(&mut editor, "[[gr");
-
-        // It is told the picker opened, and each text typed into it in turn.
-        let told = asked.take();
-        assert!(
-            matches!(
-                told.first(),
-                Some(Fired { event, value: Some(Value::Bool(true)), .. }) if event == "links_open"
-            ),
-            "the picker opening reaches the view: {told:?}"
-        );
-        let texts: Vec<&str> = told
-            .iter()
-            .filter(|fired| fired.event == "links_query")
-            .filter_map(|fired| match &fired.value {
-                Some(Value::Text(text)) => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(texts, ["g", "gr"], "what was typed: {told:?}");
-
-        editor.set_props(props(vec![link("Groceries")]));
-        assert_eq!(
-            editor
-                .link_popover()
-                .highlighted()
-                .map(|page| page.title.as_str()),
-            Some("Groceries"),
-            "the record the view found by what was typed"
-        );
-
-        // Closing tells it the picker is shut, so a view reading a collection stops.
-        crate::testing::dispatch(
-            &mut editor,
-            &crate::synthetic_input::key_press(
-                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
-                None,
-            ),
-        );
-        assert!(!editor.link_popover().is_visible());
-        assert_eq!(
-            asked.take(),
-            vec![Fired {
-                key: "b".into(),
-                event: "links_open".into(),
-                value: Some(Value::Bool(false)),
-            }],
-            "the picker closing reaches the view"
-        );
     }
 
     fn embedding(views: Vec<(&str, InlineView)>) -> RichText {
@@ -885,473 +648,668 @@ mod tests {
     const GROCERIES: &str = "tl:so.tilo.lang.notes:tl.so.tilo.lang.notes.d/f:g1";
     const PLAN: &str = "tl:so.tilo.lang.notes:tl.so.tilo.lang.notes.d/f:p1";
 
-    #[test]
-    fn an_embed_of_a_record_shows_its_start_and_opens_what_it_names() {
-        let queue = crate::Intents::<Fired>::default();
-        let mut editor = BlockEditor::from_props(
-            "n",
-            BlockEditorProps {
-                value: Some(embedding(vec![
-                    (
-                        GROCERIES,
-                        InlineView::Resource {
-                            title: "Shopping".into(),
-                            icon: None,
-                            detail: None,
-                        },
-                    ),
-                    (
-                        PLAN,
-                        InlineView::Resource {
-                            title: "Plan".into(),
-                            icon: None,
-                            detail: None,
-                        },
-                    ),
-                ])),
-                open_reference: Event::View(Intent::new(&queue, "n", OPEN_REFERENCE)),
-                ..BlockEditorProps::default()
-            },
-        );
-        assert_eq!(
-            editor.blocks()[0].text(),
-            "Shopping",
-            "the card reads as the record's title now, not the one its run kept"
-        );
-        assert_eq!(editor.blocks().len(), 2, "an embed opens nothing out");
+    tilo_test_env::scenario! {
+        /// Embeds of records.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn an_embed_shows_a_record_and_writes_its_projection;
 
-        let mut renderer = TextRenderer::new();
-        laid_out(&mut editor, &mut renderer);
-        let card = {
-            let document = crate::widget::Widget::accessibility(&editor).expect("semantics");
-            document
-                .children
-                .iter()
-                .flat_map(|row| &row.children)
-                .find(|node| {
-                    node.action_target.as_deref() == Some(&*format!("notes.reference:{GROCERIES}"))
-                })
-                .cloned()
-                .expect("the card is a control a reader opens")
-        };
-        assert!(
-            card.name
-                .as_deref()
-                .is_some_and(|name| name.contains("Shopping")),
-            "named by what it projects: {:?}",
-            card.name
-        );
-        // What it projects is painted under it: a link for the note inside it, and one for the
-        // note that projects this one back — a loop ends in a link, never in another card.
-        let links: Vec<String> = editor
-            .card_link_hits()
-            .iter()
-            .map(|(_, reference)| reference.clone())
-            .collect();
-        assert_eq!(
-            links,
-            vec![PLAN.to_owned(), GROCERIES.to_owned()],
-            "{links:?}"
-        );
-
-        let plan = editor
-            .card_link_hits()
-            .iter()
-            .find(|(_, reference)| reference == PLAN)
-            .map(|(rect, _)| rect.center())
-            .expect("the note it names, painted");
-        crate::testing::dispatch(
-            &mut editor,
-            &crate::synthetic_input::cursor_moved(plan.x, plan.y),
-        );
-        assert!(crate::testing::dispatch(
-            &mut editor,
-            &crate::synthetic_input::mouse_release()
-        ));
-        assert_eq!(
-            queue.take(),
-            vec![Fired {
-                key: "n".into(),
-                event: OPEN_REFERENCE.into(),
-                value: Some(Value::Text(PLAN.into())),
-            }],
-        );
-
-        let card = card.bounds.expect("where the card is").to_rect();
-        let at = Point::new(card.x0 + 4.0, card.y0 + 3.0);
-        assert!(
-            !editor
-                .card_link_hits()
-                .iter()
-                .any(|(rect, _)| rect.contains(at)),
-            "a spot on the card that is not one of its links"
-        );
-        crate::testing::dispatch(
-            &mut editor,
-            &crate::synthetic_input::cursor_moved(at.x, at.y),
-        );
-        assert!(crate::testing::dispatch(
-            &mut editor,
-            &crate::synthetic_input::mouse_release()
-        ));
-        assert_eq!(
-            queue.take(),
-            vec![Fired {
-                key: "n".into(),
-                event: OPEN_REFERENCE.into(),
-                value: Some(Value::Text(GROCERIES.into())),
-            }],
-            "the card opens the record it projects"
-        );
-    }
-
-    #[test]
-    fn a_document_being_edited_shows_an_embed_of_a_record_as_it_reads_and_opens_it() {
-        let fired = crate::Intents::<Fired>::default();
-        let body = crate::LocalState::new(embedding(vec![
-            (
-                GROCERIES,
-                InlineView::Resource {
-                    title: "Shopping".into(),
-                    icon: None,
-                    detail: None,
-                },
-            ),
-            (
-                PLAN,
-                InlineView::Resource {
-                    title: "Plan".into(),
-                    icon: None,
-                    detail: None,
-                },
-            ),
-        ]));
-        let mut editor = BlockEditor::from_props(
-            "b",
-            BlockEditorProps {
-                rich: bound(&fired, body.clone()),
-                open_reference: Event::View(Intent::new(&fired, "b", OPEN_REFERENCE)),
-                ..BlockEditorProps::default()
-            },
-        );
-        let mut renderer = TextRenderer::new();
-        laid_out(&mut editor, &mut renderer);
-        let card = {
-            let document = crate::widget::Widget::accessibility(&editor).expect("semantics");
-            document
-                .children
-                .iter()
-                .flat_map(|row| &row.children)
-                .find(|node| {
-                    node.action_target.as_deref() == Some(&*format!("notes.reference:{GROCERIES}"))
-                })
-                .cloned()
-                .expect("the card is a control a reader opens")
-        };
-        assert!(
-            card.name
-                .as_deref()
-                .is_some_and(|name| name.contains("Shopping")),
-            "a bound document's card reads the record's title now: {:?}",
-            card.name
-        );
-        assert_eq!(
-            editor
-                .card_link_hits()
-                .iter()
-                .map(|(_, reference)| reference.as_str())
-                .collect::<Vec<_>>(),
-            vec![PLAN, GROCERIES],
-            "and shows the start of what it says, its references as links"
-        );
-
-        let card = card.bounds.expect("where the card is").to_rect();
-        let at = Point::new(card.x0 + 4.0, card.y0 + 3.0);
-        crate::testing::dispatch(
-            &mut editor,
-            &crate::synthetic_input::cursor_moved(at.x, at.y),
-        );
-        assert!(crate::testing::dispatch(
-            &mut editor,
-            &crate::synthetic_input::mouse_release()
-        ));
-        assert_eq!(
-            fired.take(),
-            vec![Fired {
-                key: "b".into(),
-                event: OPEN_REFERENCE.into(),
-                value: Some(Value::Text(GROCERIES.into())),
-            }],
-        );
-
-        let mut moved = embedding(vec![
-            (
-                GROCERIES,
-                InlineView::Resource {
-                    title: "Groceries".into(),
-                    icon: None,
-                    detail: None,
-                },
-            ),
-            (
-                PLAN,
-                InlineView::Resource {
-                    title: "Plan".into(),
-                    icon: None,
-                    detail: None,
-                },
-            ),
-        ]);
-        if let Some(embed) = moved.embeds.first_mut() {
-            embed.preview = Some(vec![tilo_ui_graph::rich::Run {
-                text: "Bread and cheese".into(),
-                reference: None,
-            }]);
-        }
-        body.set(moved);
-        assert!(editor.follow_body(), "the field changed elsewhere");
-        laid_out(&mut editor, &mut renderer);
-        assert_eq!(
-            editor
-                .card_link_hits()
-                .iter()
-                .map(|(_, reference)| reference.as_str())
-                .collect::<Vec<_>>(),
-            Vec::<&str>::new(),
-            "the card shows what it says now, a line with no link in it"
-        );
-    }
-
-    #[test]
-    fn typing_an_embed_or_choosing_it_writes_a_projection_of_the_record() {
-        use crate::widget::CursorPlacement;
-        use crate::widget::marks::Mark;
-        use winit::keyboard::{Key, NamedKey};
-
-        let fired = crate::Intents::<Fired>::default();
-        let reference = "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1";
-        let editor_of = || {
-            BlockEditor::from_props(
-                "b",
+        phase an_embed_of_a_record_shows_its_start_and_opens_what_it_names;
+        {
+            let queue = crate::Intents::<Fired>::default();
+            let mut editor = BlockEditor::from_props(
+                "n",
                 BlockEditorProps {
-                    rich: bound(&fired, crate::LocalState::new(RichText::default())),
-                    links: vec![Link {
-                        reference: reference.into(),
-                        title: "Plan".into(),
-                    }],
+                    value: Some(embedding(vec![
+                        (
+                            GROCERIES,
+                            InlineView::Resource {
+                                title: "Shopping".into(),
+                                icon: None,
+                                detail: None,
+                            },
+                        ),
+                        (
+                            PLAN,
+                            InlineView::Resource {
+                                title: "Plan".into(),
+                                icon: None,
+                                detail: None,
+                            },
+                        ),
+                    ])),
+                    open_reference: Event::View(Intent::new(&queue, "n", OPEN_REFERENCE)),
                     ..BlockEditorProps::default()
                 },
-            )
-        };
-        let mut editor = editor_of();
-        editor.focus_block(0, CursorPlacement::End);
-        type_keys(&mut editor, "![[pl");
-        assert!(editor.link_popover().is_visible());
-        crate::testing::dispatch(
-            &mut editor,
-            &crate::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
-        );
-        assert_eq!(editor.blocks()[0].text(), "Plan");
-        assert!(
-            matches!(
-                editor.blocks()[0].line.marks().first().map(|span| &span.mark),
-                Some(Mark::Embed(named)) if named == reference
-            ),
-            "the paragraph projects the record, and says which: {:?}",
-            editor.blocks()[0].line.marks()
-        );
+            );
+            assert_eq!(
+                editor.blocks()[0].text(),
+                "Shopping",
+                "the card reads as the record's title now, not the one its run kept"
+            );
+            assert_eq!(editor.blocks().len(), 2, "an embed opens nothing out");
 
-        let mut editor = editor_of();
-        editor.focus_block(0, CursorPlacement::End);
-        type_keys(&mut editor, " /embed");
-        crate::testing::dispatch(
-            &mut editor,
-            &crate::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
-        );
-        assert!(
-            editor.link_popover().is_visible(),
-            "the picker offers the records"
-        );
-        crate::testing::dispatch(
-            &mut editor,
-            &crate::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
-        );
-        assert_eq!(editor.blocks()[0].text(), "Plan");
-        assert!(
-            editor.blocks()[0]
-                .line
-                .marks()
+            let mut renderer = TextRenderer::new();
+            laid_out(&mut editor, &mut renderer);
+            let card = {
+                let document = crate::widget::Widget::accessibility(&editor).expect("semantics");
+                document
+                    .children
+                    .iter()
+                    .flat_map(|row| &row.children)
+                    .find(|node| {
+                        node.action_target.as_deref() == Some(&*format!("notes.reference:{GROCERIES}"))
+                    })
+                    .cloned()
+                    .expect("the card is a control a reader opens")
+            };
+            assert!(
+                card.name
+                    .as_deref()
+                    .is_some_and(|name| name.contains("Shopping")),
+                "named by what it projects: {:?}",
+                card.name
+            );
+            // What it projects is painted under it: a link for the note inside it, and one for the
+            // note that projects this one back — a loop ends in a link, never in another card.
+            let links: Vec<String> = editor
+                .card_link_hits()
                 .iter()
-                .any(|span| matches!(&span.mark, Mark::Embed(named) if named == reference)),
-            "{:?}",
-            editor.blocks()[0].line.marks()
-        );
+                .map(|(_, reference)| reference.clone())
+                .collect();
+            assert_eq!(
+                links,
+                vec![PLAN.to_owned(), GROCERIES.to_owned()],
+                "{links:?}"
+            );
+
+            let plan = editor
+                .card_link_hits()
+                .iter()
+                .find(|(_, reference)| reference == PLAN)
+                .map(|(rect, _)| rect.center())
+                .expect("the note it names, painted");
+            crate::testing::dispatch(
+                &mut editor,
+                &crate::synthetic_input::cursor_moved(plan.x, plan.y),
+            );
+            assert!(crate::testing::dispatch(
+                &mut editor,
+                &crate::synthetic_input::mouse_release()
+            ));
+            assert_eq!(
+                queue.take(),
+                vec![Fired {
+                    key: "n".into(),
+                    event: OPEN_REFERENCE.into(),
+                    value: Some(Value::Text(PLAN.into())),
+                }],
+            );
+
+            let card = card.bounds.expect("where the card is").to_rect();
+            let at = Point::new(card.x0 + 4.0, card.y0 + 3.0);
+            assert!(
+                !editor
+                    .card_link_hits()
+                    .iter()
+                    .any(|(rect, _)| rect.contains(at)),
+                "a spot on the card that is not one of its links"
+            );
+            crate::testing::dispatch(
+                &mut editor,
+                &crate::synthetic_input::cursor_moved(at.x, at.y),
+            );
+            assert!(crate::testing::dispatch(
+                &mut editor,
+                &crate::synthetic_input::mouse_release()
+            ));
+            assert_eq!(
+                queue.take(),
+                vec![Fired {
+                    key: "n".into(),
+                    event: OPEN_REFERENCE.into(),
+                    value: Some(Value::Text(GROCERIES.into())),
+                }],
+                "the card opens the record it projects"
+            );
+        }
+
+        phase a_document_being_edited_shows_an_embed_of_a_record_as_it_reads_and_opens_it;
+        {
+            let fired = crate::Intents::<Fired>::default();
+            let body = crate::LocalState::new(embedding(vec![
+                (
+                    GROCERIES,
+                    InlineView::Resource {
+                        title: "Shopping".into(),
+                        icon: None,
+                        detail: None,
+                    },
+                ),
+                (
+                    PLAN,
+                    InlineView::Resource {
+                        title: "Plan".into(),
+                        icon: None,
+                        detail: None,
+                    },
+                ),
+            ]));
+            let mut editor = BlockEditor::from_props(
+                "b",
+                BlockEditorProps {
+                    rich: bound(&fired, body.clone()),
+                    open_reference: Event::View(Intent::new(&fired, "b", OPEN_REFERENCE)),
+                    ..BlockEditorProps::default()
+                },
+            );
+            let mut renderer = TextRenderer::new();
+            laid_out(&mut editor, &mut renderer);
+            let card = {
+                let document = crate::widget::Widget::accessibility(&editor).expect("semantics");
+                document
+                    .children
+                    .iter()
+                    .flat_map(|row| &row.children)
+                    .find(|node| {
+                        node.action_target.as_deref() == Some(&*format!("notes.reference:{GROCERIES}"))
+                    })
+                    .cloned()
+                    .expect("the card is a control a reader opens")
+            };
+            assert!(
+                card.name
+                    .as_deref()
+                    .is_some_and(|name| name.contains("Shopping")),
+                "a bound document's card reads the record's title now: {:?}",
+                card.name
+            );
+            assert_eq!(
+                editor
+                    .card_link_hits()
+                    .iter()
+                    .map(|(_, reference)| reference.as_str())
+                    .collect::<Vec<_>>(),
+                vec![PLAN, GROCERIES],
+                "and shows the start of what it says, its references as links"
+            );
+
+            let card = card.bounds.expect("where the card is").to_rect();
+            let at = Point::new(card.x0 + 4.0, card.y0 + 3.0);
+            crate::testing::dispatch(
+                &mut editor,
+                &crate::synthetic_input::cursor_moved(at.x, at.y),
+            );
+            assert!(crate::testing::dispatch(
+                &mut editor,
+                &crate::synthetic_input::mouse_release()
+            ));
+            assert_eq!(
+                fired.take(),
+                vec![Fired {
+                    key: "b".into(),
+                    event: OPEN_REFERENCE.into(),
+                    value: Some(Value::Text(GROCERIES.into())),
+                }],
+            );
+
+            let mut moved = embedding(vec![
+                (
+                    GROCERIES,
+                    InlineView::Resource {
+                        title: "Groceries".into(),
+                        icon: None,
+                        detail: None,
+                    },
+                ),
+                (
+                    PLAN,
+                    InlineView::Resource {
+                        title: "Plan".into(),
+                        icon: None,
+                        detail: None,
+                    },
+                ),
+            ]);
+            if let Some(embed) = moved.embeds.first_mut() {
+                embed.preview = Some(vec![tilo_ui_graph::rich::Run {
+                    text: "Bread and cheese".into(),
+                    reference: None,
+                }]);
+            }
+            body.set(moved);
+            assert!(editor.follow_body(), "the field changed elsewhere");
+            laid_out(&mut editor, &mut renderer);
+            assert_eq!(
+                editor
+                    .card_link_hits()
+                    .iter()
+                    .map(|(_, reference)| reference.as_str())
+                    .collect::<Vec<_>>(),
+                Vec::<&str>::new(),
+                "the card shows what it says now, a line with no link in it"
+            );
+        }
+
+        phase typing_an_embed_or_choosing_it_writes_a_projection_of_the_record;
+        {
+            use crate::widget::CursorPlacement;
+            use crate::widget::marks::Mark;
+            use winit::keyboard::{Key, NamedKey};
+
+            let fired = crate::Intents::<Fired>::default();
+            let reference = "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1";
+            let editor_of = || {
+                BlockEditor::from_props(
+                    "b",
+                    BlockEditorProps {
+                        rich: bound(&fired, crate::LocalState::new(RichText::default())),
+                        links: vec![Link {
+                            reference: reference.into(),
+                            title: "Plan".into(),
+                        }],
+                        ..BlockEditorProps::default()
+                    },
+                )
+            };
+            let mut editor = editor_of();
+            editor.focus_block(0, CursorPlacement::End);
+            type_keys(&mut editor, "![[pl");
+            assert!(editor.link_popover().is_visible());
+            crate::testing::dispatch(
+                &mut editor,
+                &crate::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
+            );
+            assert_eq!(editor.blocks()[0].text(), "Plan");
+            assert!(
+                matches!(
+                    editor.blocks()[0].line.marks().first().map(|span| &span.mark),
+                    Some(Mark::Embed(named)) if named == reference
+                ),
+                "the paragraph projects the record, and says which: {:?}",
+                editor.blocks()[0].line.marks()
+            );
+
+            let mut editor = editor_of();
+            editor.focus_block(0, CursorPlacement::End);
+            type_keys(&mut editor, " /embed");
+            crate::testing::dispatch(
+                &mut editor,
+                &crate::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
+            );
+            assert!(
+                editor.link_popover().is_visible(),
+                "the picker offers the records"
+            );
+            crate::testing::dispatch(
+                &mut editor,
+                &crate::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
+            );
+            assert_eq!(editor.blocks()[0].text(), "Plan");
+            assert!(
+                editor.blocks()[0]
+                    .line
+                    .marks()
+                    .iter()
+                    .any(|span| matches!(&span.mark, Mark::Embed(named) if named == reference)),
+                "{:?}",
+                editor.blocks()[0].line.marks()
+            );
+        }
     }
 
-    #[test]
-    fn the_views_commands_run_by_their_labels_and_it_hears_the_documents_headings() {
-        use tilo_ui_graph::rich::{Attr, Block};
+    tilo_test_env::scenario! {
+        /// References in a document: how they read, how they are picked and what the view hears.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn references_read_as_inline_views_and_are_picked;
 
-        let fired = crate::Intents::<Fired>::default();
-        let rich = RichText {
-            blocks: vec![
-                Block {
-                    kind: "heading".into(),
-                    text: "Plan".into(),
-                    attrs: [("level".to_owned(), Attr::Int(2))].into(),
-                    ..Block::default()
-                },
-                Block {
-                    kind: "paragraph".into(),
-                    text: "ship it".into(),
-                    ..Block::default()
-                },
-            ],
-            embeds: Vec::new(),
-        };
-        let body = crate::LocalState::new(rich);
-        let props = |value: &crate::LocalState<RichText>| BlockEditorProps {
-            rich: bound(&fired, value.clone()),
-            commands: vec!["Link to note…".into()],
-            command: Event::View(Intent::new(&fired, "b", "command")),
-            headings: Event::View(Intent::new(&fired, "b", "headings")),
-            ..BlockEditorProps::default()
-        };
-        let mut editor = BlockEditor::from_props("b", props(&body));
-        assert_eq!(
-            editor.headings(),
-            vec![(2, "Plan".to_owned())],
-            "the document's headings, each with its level"
-        );
-        assert_eq!(
-            fired.take(),
-            vec![Fired {
-                key: "b".into(),
-                event: "headings".into(),
-                value: Some(Value::List(vec![Value::Text("Plan".into())])),
-            }],
-            "the view is told them, to draw an outline of the document"
-        );
-
-        editor.focus_block(0, crate::widget::CursorPlacement::End);
-        type_keys(&mut editor, " /link");
-        let _ = fired.take();
-        crate::testing::dispatch(
-            &mut editor,
-            &crate::synthetic_input::key_press(
-                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
-                None,
-            ),
-        );
-        assert!(
-            fired.take().iter().any(|fired| fired.event == "command"
-                && fired.value == Some(Value::Text("Link to note…".into()))),
-            "the command the person chose, by its label"
-        );
-    }
-
-    #[test]
-    fn a_reference_with_no_reading_reads_as_its_run() {
-        let mut editor = BlockEditor::from_props(
-            "post",
-            BlockEditorProps {
-                value: Some(text(vec![(TASK, InlineView::Elsewhere)])),
-                open_reference: Event::None,
+        phase each_reference_reads_as_the_readers_inline_view_and_a_click_opens_it;
+        {
+            let queue = crate::Intents::<Fired>::default();
+            let props = BlockEditorProps {
+                value: Some(text(vec![
+                    (
+                        "u-ada",
+                        InlineView::Person {
+                            identity: "u-ada".into(),
+                            name: "Ada Lovelace".into(),
+                        },
+                    ),
+                    (
+                        TASK,
+                        InlineView::Resource {
+                            title: "Fix the build".into(),
+                            icon: None,
+                            detail: Some("T-12".into()),
+                        },
+                    ),
+                    (SECRET, InlineView::Unreadable),
+                ])),
+                open_reference: Event::View(Intent::new(&queue, "post", OPEN_REFERENCE)),
                 ..BlockEditorProps::default()
-            },
-        );
-        assert_eq!(
-            editor.blocks()[0].text(),
-            "Ask @ada about Fix it, not secret."
-        );
-        assert!(!editor.show_rich_text(&text(vec![(TASK, InlineView::Elsewhere)])));
-        assert!(editor.show_rich_text(&text(vec![(TASK, InlineView::Unreadable)])));
-        assert_eq!(
-            editor.blocks()[0].text(),
-            "Ask @ada about Not shared with you, not secret."
-        );
-    }
+            };
+            let mut editor = BlockEditor::from_props("post", props);
+            assert!(editor.is_read_only());
+            let shown = editor.blocks()[0].text().to_owned();
+            assert_eq!(
+                shown, "Ask @Ada Lovelace about T-12 Fix the build, not Not shared with you.",
+                "a person by their name now, a task by its number and title now, and what the \
+             reader cannot read only as being there"
+            );
+            assert!(
+                !shown.contains("secret"),
+                "nothing of an unreadable resource shows"
+            );
 
-    #[test]
-    fn any_editor_paints_a_resource_as_a_chip_and_people_as_its_owner_does() {
-        let mut editor = BlockEditor::new();
-        let owner = MentionColors {
-            ink: vello::peniko::Color::from_rgb8(200, 30, 30),
-            band: None,
-        };
-        editor.set_mention_paint(Some(Rc::new(move |_: &str| owner)));
-        editor.present_blocks(&crate::widget::rich_doc::blocks_of(&text(Vec::new())));
-        let mut renderer = TextRenderer::new();
-        laid_out(&mut editor, &mut renderer);
-        let paint = editor.mention_paint().cloned().expect("painted");
-        assert_eq!(
-            paint("u-ada"),
-            owner,
-            "a person in the owner's colours for them"
-        );
-        let chip = paint(TASK);
-        assert!(chip.band.is_some(), "a resource, in any form, is a chip");
-        assert_eq!(
-            paint("tilo://open#/me/so.tilo.chat/-/chat.channel:general"),
-            chip
-        );
-        assert_eq!(paint("tl:so.tilo.lang.board:d/f:t1"), chip);
-        let hits = editor.reference_hits();
-        assert_eq!(hits.len(), 3, "every reference can be pointed at: {hits:?}");
-    }
+            let mut renderer = TextRenderer::new();
+            laid_out(&mut editor, &mut renderer);
+            let hits = editor.reference_hits().to_vec();
+            let task = hits
+                .iter()
+                .find(|(_, reference)| reference == TASK)
+                .map(|(rect, _)| *rect)
+                .expect("the task is painted as a chip");
+            assert!(hits.iter().any(|(_, reference)| reference == "u-ada"));
+            assert!(hits.iter().any(|(_, reference)| reference == SECRET));
+            assert_eq!(
+                editor.cursor_shape(task.center()),
+                Some(winit::window::CursorIcon::Pointer)
+            );
 
-    #[test]
-    fn shown_times_wake_the_editor_to_read_again() {
-        let mut editor = BlockEditor::new();
-        let mut rich = text(Vec::new());
-        assert!(editor.show_rich_text(&rich));
-        assert_eq!(
-            editor.references_wake(),
-            None,
-            "no time, nothing to wake for"
-        );
-        let soon = crate::widget::rich_doc::InlineTime {
-            at: crate::clock::local_now().with_timezone(&chrono::Utc) + chrono::Duration::hours(1),
-            show: crate::widget::rich_doc::TimeShow::Countdown,
-        };
-        rich.blocks[0].marks.push(RichMark {
-            start: 0,
-            end: 3,
-            name: crate::widget::rich_doc::TIME_MARK.into(),
-            value: Attr::Text(soon.mark_value()),
-        });
-        assert!(editor.show_rich_text(&rich));
-        assert!(
-            editor.references_wake().is_some(),
-            "a countdown asks to be read again as it ticks"
-        );
-        assert!(
-            !editor.blocks()[0].text().starts_with("Ask"),
-            "the time reads as it does now: {}",
-            editor.blocks()[0].text()
-        );
-    }
+            crate::testing::dispatch(
+                &mut editor,
+                &crate::synthetic_input::cursor_moved(task.center().x, task.center().y),
+            );
+            assert!(crate::testing::dispatch(
+                &mut editor,
+                &crate::synthetic_input::mouse_release()
+            ));
+            assert_eq!(
+                queue.take(),
+                vec![Fired {
+                    key: "post".into(),
+                    event: OPEN_REFERENCE.into(),
+                    value: Some(Value::Text(TASK.into())),
+                }],
+                "a click opens the reference, by the reference"
+            );
+            crate::testing::dispatch(&mut editor, &crate::synthetic_input::cursor_moved(1.0, 1.0));
+            crate::testing::dispatch(&mut editor, &crate::synthetic_input::mouse_release());
+            assert!(
+                queue.take().is_empty(),
+                "a click beside a reference opens nothing"
+            );
+        }
 
-    #[test]
-    fn a_shown_body_starts_at_its_edge_as_what_stands_beside_it_does() {
-        let props = BlockEditorProps {
-            value: Some(text(Vec::new())),
-            open_reference: Event::default(),
-            ..BlockEditorProps::default()
-        };
-        let mut editor = BlockEditor::from_props("post", props);
-        let mut renderer = TextRenderer::new();
-        laid_out(&mut editor, &mut renderer);
-        assert_eq!(
-            editor.text_inset(&Theme::light()),
-            0.0,
-            "a message's body lines up with its author's name, quote and chips"
-        );
-        let editable = BlockEditor::new();
-        assert!(
-            editable.text_inset(&Theme::light()) > 0.0,
-            "a document keeps its inset"
-        );
+        phase the_records_a_view_links_are_offered_and_chosen_as_references_to_them;
+        {
+            use crate::widget::CursorPlacement;
+            use crate::widget::marks::Mark;
+
+            let fired = crate::Intents::<Fired>::default();
+            let body = crate::LocalState::new(RichText::default());
+            let plan = |title: &str| Link {
+                reference: "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1".into(),
+                title: title.into(),
+            };
+            let mut editor = BlockEditor::from_props(
+                "b",
+                BlockEditorProps {
+                    rich: bound(&fired, body.clone()),
+                    links: vec![plan("Plan")],
+                    ..BlockEditorProps::default()
+                },
+            );
+            editor.focus_block(0, CursorPlacement::End);
+            type_keys(&mut editor, "[[pl");
+            assert!(editor.link_popover().is_visible());
+            assert_eq!(
+                editor
+                    .link_popover()
+                    .highlighted()
+                    .map(|page| page.title.as_str()),
+                Some("Plan"),
+                "the record the view named, by the title it reads as now"
+            );
+            crate::testing::dispatch(
+                &mut editor,
+                &crate::synthetic_input::key_press(
+                    winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+                    None,
+                ),
+            );
+            assert_eq!(editor.blocks()[0].text(), "Plan");
+            eprintln!("MARKS {:?}", editor.blocks()[0].line.marks());
+            assert!(
+                matches!(
+                    editor.blocks()[0].line.marks().first().map(|span| &span.mark),
+                    Some(Mark::Mention(reference)) if reference == "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1"
+                ),
+                "what is written names the record, so it reads as it reads now wherever it goes"
+            );
+
+            editor.take_body_edits();
+            let edit = fired
+                .take()
+                .into_iter()
+                .rev()
+                .find_map(|fired| match fired.value {
+                    Some(Value::Rich(rich)) => Some(rich),
+                    _ => None,
+                });
+            let edited = edit.expect("the view is told what the document is now");
+            let mention = edited.blocks[0]
+                .marks
+                .iter()
+                .find(|mark| mark.name == "mention")
+                .expect("a mention mark");
+            assert_eq!(
+                edited.blocks[0].text, "Plan",
+                "the run reads as the record's title"
+            );
+            assert!(matches!(
+                &mention.value,
+                tilo_ui_graph::rich::Attr::Text(reference)
+                    if reference == "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1"
+            ));
+
+            // A record renamed later is offered by its new title: the view names the record, and the
+            // title is how it reads now, never text kept from before.
+            editor.set_props(BlockEditorProps {
+                rich: bound(&fired, body),
+                links: vec![plan("Plan for Q4")],
+                ..BlockEditorProps::default()
+            });
+            assert_eq!(
+                editor
+                    .link_popover()
+                    .highlighted()
+                    .map(|page| page.title.as_str()),
+                Some("Plan for Q4")
+            );
+        }
+
+        phase the_picker_tells_its_view_when_it_opens_and_what_is_typed_in_it;
+        {
+            use crate::widget::CursorPlacement;
+
+            let fired = crate::Intents::<Fired>::default();
+            let asked = crate::Intents::<Fired>::default();
+            let body = crate::LocalState::new(RichText::default());
+            let link = |title: &str| Link {
+                reference: "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1".into(),
+                title: title.into(),
+            };
+            let props = |links: Vec<Link>| BlockEditorProps {
+                rich: bound(&fired, body.clone()),
+                links_open: Event::View(Intent::new(&asked, "b", "links_open")),
+                links_query: Event::View(Intent::new(&asked, "b", "links_query")),
+                links,
+                ..BlockEditorProps::default()
+            };
+            let mut editor = BlockEditor::from_props("b", props(Vec::new()));
+            editor.focus_block(0, CursorPlacement::End);
+            type_keys(&mut editor, "[[gr");
+
+            // It is told the picker opened, and each text typed into it in turn.
+            let told = asked.take();
+            assert!(
+                matches!(
+                    told.first(),
+                    Some(Fired { event, value: Some(Value::Bool(true)), .. }) if event == "links_open"
+                ),
+                "the picker opening reaches the view: {told:?}"
+            );
+            let texts: Vec<&str> = told
+                .iter()
+                .filter(|fired| fired.event == "links_query")
+                .filter_map(|fired| match &fired.value {
+                    Some(Value::Text(text)) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(texts, ["g", "gr"], "what was typed: {told:?}");
+
+            editor.set_props(props(vec![link("Groceries")]));
+            assert_eq!(
+                editor
+                    .link_popover()
+                    .highlighted()
+                    .map(|page| page.title.as_str()),
+                Some("Groceries"),
+                "the record the view found by what was typed"
+            );
+
+            // Closing tells it the picker is shut, so a view reading a collection stops.
+            crate::testing::dispatch(
+                &mut editor,
+                &crate::synthetic_input::key_press(
+                    winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+                    None,
+                ),
+            );
+            assert!(!editor.link_popover().is_visible());
+            assert_eq!(
+                asked.take(),
+                vec![Fired {
+                    key: "b".into(),
+                    event: "links_open".into(),
+                    value: Some(Value::Bool(false)),
+                }],
+                "the picker closing reaches the view"
+            );
+        }
+
+        phase the_views_commands_run_by_their_labels_and_it_hears_the_documents_headings;
+        {
+            use tilo_ui_graph::rich::{Attr, Block};
+
+            let fired = crate::Intents::<Fired>::default();
+            let rich = RichText {
+                blocks: vec![
+                    Block {
+                        kind: "heading".into(),
+                        text: "Plan".into(),
+                        attrs: [("level".to_owned(), Attr::Int(2))].into(),
+                        ..Block::default()
+                    },
+                    Block {
+                        kind: "paragraph".into(),
+                        text: "ship it".into(),
+                        ..Block::default()
+                    },
+                ],
+                embeds: Vec::new(),
+            };
+            let body = crate::LocalState::new(rich);
+            let props = |value: &crate::LocalState<RichText>| BlockEditorProps {
+                rich: bound(&fired, value.clone()),
+                commands: vec!["Link to note…".into()],
+                command: Event::View(Intent::new(&fired, "b", "command")),
+                headings: Event::View(Intent::new(&fired, "b", "headings")),
+                ..BlockEditorProps::default()
+            };
+            let mut editor = BlockEditor::from_props("b", props(&body));
+            assert_eq!(
+                editor.headings(),
+                vec![(2, "Plan".to_owned())],
+                "the document's headings, each with its level"
+            );
+            assert_eq!(
+                fired.take(),
+                vec![Fired {
+                    key: "b".into(),
+                    event: "headings".into(),
+                    value: Some(Value::List(vec![Value::Text("Plan".into())])),
+                }],
+                "the view is told them, to draw an outline of the document"
+            );
+
+            editor.focus_block(0, crate::widget::CursorPlacement::End);
+            type_keys(&mut editor, " /link");
+            let _ = fired.take();
+            crate::testing::dispatch(
+                &mut editor,
+                &crate::synthetic_input::key_press(
+                    winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+                    None,
+                ),
+            );
+            assert!(
+                fired.take().iter().any(|fired| fired.event == "command"
+                    && fired.value == Some(Value::Text("Link to note…".into()))),
+                "the command the person chose, by its label"
+            );
+        }
+
+        phase a_reference_with_no_reading_reads_as_its_run;
+        {
+            let mut editor = BlockEditor::from_props(
+                "post",
+                BlockEditorProps {
+                    value: Some(text(vec![(TASK, InlineView::Elsewhere)])),
+                    open_reference: Event::None,
+                    ..BlockEditorProps::default()
+                },
+            );
+            assert_eq!(
+                editor.blocks()[0].text(),
+                "Ask @ada about Fix it, not secret."
+            );
+            assert!(!editor.show_rich_text(&text(vec![(TASK, InlineView::Elsewhere)])));
+            assert!(editor.show_rich_text(&text(vec![(TASK, InlineView::Unreadable)])));
+            assert_eq!(
+                editor.blocks()[0].text(),
+                "Ask @ada about Not shared with you, not secret."
+            );
+        }
+
+        phase any_editor_paints_a_resource_as_a_chip_and_people_as_its_owner_does;
+        {
+            let mut editor = BlockEditor::new();
+            let owner = MentionColors {
+                ink: vello::peniko::Color::from_rgb8(200, 30, 30),
+                band: None,
+            };
+            editor.set_mention_paint(Some(Rc::new(move |_: &str| owner)));
+            editor.present_blocks(&crate::widget::rich_doc::blocks_of(&text(Vec::new())));
+            let mut renderer = TextRenderer::new();
+            laid_out(&mut editor, &mut renderer);
+            let paint = editor.mention_paint().cloned().expect("painted");
+            assert_eq!(
+                paint("u-ada"),
+                owner,
+                "a person in the owner's colours for them"
+            );
+            let chip = paint(TASK);
+            assert!(chip.band.is_some(), "a resource, in any form, is a chip");
+            assert_eq!(
+                paint("tilo://open#/me/so.tilo.chat/-/chat.channel:general"),
+                chip
+            );
+            assert_eq!(paint("tl:so.tilo.lang.board:d/f:t1"), chip);
+            let hits = editor.reference_hits();
+            assert_eq!(hits.len(), 3, "every reference can be pointed at: {hits:?}");
+        }
     }
 
     fn bound<T: Default + 'static>(
@@ -1366,63 +1324,123 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_value_from_elsewhere_shows_and_the_shown_markdown_follows_it() {
-        let fired = crate::Intents::<Fired>::default();
-        let value = crate::LocalState::new("First line".to_owned());
-        let props = BlockEditorProps {
-            markdown: bound(&fired, value.clone()),
-            ..BlockEditorProps::default()
-        };
-        let mut editor = BlockEditor::from_props("b", props);
-        assert_eq!(editor.to_markdown().trim(), "First line");
-        value.set("Changed by a collaborator".to_owned());
-        assert!(editor.follow_body());
-        assert_eq!(editor.to_markdown().trim(), "Changed by a collaborator");
-    }
+    tilo_test_env::scenario! {
+        /// Shown times, bodies, values and documents.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn shown_values_follow_what_they_read;
 
-    #[test]
-    fn a_rich_document_shows_as_its_blocks() {
-        let fired = crate::Intents::<Fired>::default();
-        let rich = RichText {
-            blocks: vec![
-                Block {
-                    kind: "heading".into(),
-                    text: "Plan".into(),
-                    attrs: [("level".to_owned(), Attr::Int(2))].into(),
-                    ..Block::default()
-                },
-                Block {
-                    kind: "list_item".into(),
-                    text: "ship it".into(),
-                    ..Block::default()
-                },
-            ],
-            embeds: Vec::new(),
-        };
-        let value = crate::LocalState::new(rich.clone());
-        let props = BlockEditorProps {
-            rich: bound(&fired, value.clone()),
-            ..BlockEditorProps::default()
-        };
-        let mut editor = BlockEditor::from_props("b", props);
-        let kinds: Vec<_> = editor
-            .blocks()
-            .iter()
-            .map(|block| block.kind.clone())
-            .collect();
-        assert_eq!(
-            kinds,
-            vec![
-                crate::widget::BlockKind::Heading(2),
-                crate::widget::BlockKind::Bullet { indent: 0 }
-            ]
-        );
+        phase shown_times_wake_the_editor_to_read_again;
+        {
+            let mut editor = BlockEditor::new();
+            let mut rich = text(Vec::new());
+            assert!(editor.show_rich_text(&rich));
+            assert_eq!(
+                editor.references_wake(),
+                None,
+                "no time, nothing to wake for"
+            );
+            let soon = crate::widget::rich_doc::InlineTime {
+                at: crate::clock::local_now().with_timezone(&chrono::Utc) + chrono::Duration::hours(1),
+                show: crate::widget::rich_doc::TimeShow::Countdown,
+            };
+            rich.blocks[0].marks.push(RichMark {
+                start: 0,
+                end: 3,
+                name: crate::widget::rich_doc::TIME_MARK.into(),
+                value: Attr::Text(soon.mark_value()),
+            });
+            assert!(editor.show_rich_text(&rich));
+            assert!(
+                editor.references_wake().is_some(),
+                "a countdown asks to be read again as it ticks"
+            );
+            assert!(
+                !editor.blocks()[0].text().starts_with("Ask"),
+                "the time reads as it does now: {}",
+                editor.blocks()[0].text()
+            );
+        }
 
-        let mut changed = rich;
-        changed.blocks[1].text = "shipped".into();
-        value.set(changed);
-        assert!(editor.follow_body());
-        assert_eq!(editor.blocks()[1].content().text, "shipped");
+        phase a_shown_body_starts_at_its_edge_as_what_stands_beside_it_does;
+        {
+            let props = BlockEditorProps {
+                value: Some(text(Vec::new())),
+                open_reference: Event::default(),
+                ..BlockEditorProps::default()
+            };
+            let mut editor = BlockEditor::from_props("post", props);
+            let mut renderer = TextRenderer::new();
+            laid_out(&mut editor, &mut renderer);
+            assert_eq!(
+                editor.text_inset(&Theme::light()),
+                0.0,
+                "a message's body lines up with its author's name, quote and chips"
+            );
+            let editable = BlockEditor::new();
+            assert!(
+                editable.text_inset(&Theme::light()) > 0.0,
+                "a document keeps its inset"
+            );
+        }
+
+        phase a_value_from_elsewhere_shows_and_the_shown_markdown_follows_it;
+        {
+            let fired = crate::Intents::<Fired>::default();
+            let value = crate::LocalState::new("First line".to_owned());
+            let props = BlockEditorProps {
+                markdown: bound(&fired, value.clone()),
+                ..BlockEditorProps::default()
+            };
+            let mut editor = BlockEditor::from_props("b", props);
+            assert_eq!(editor.to_markdown().trim(), "First line");
+            value.set("Changed by a collaborator".to_owned());
+            assert!(editor.follow_body());
+            assert_eq!(editor.to_markdown().trim(), "Changed by a collaborator");
+        }
+
+        phase a_rich_document_shows_as_its_blocks;
+        {
+            let fired = crate::Intents::<Fired>::default();
+            let rich = RichText {
+                blocks: vec![
+                    Block {
+                        kind: "heading".into(),
+                        text: "Plan".into(),
+                        attrs: [("level".to_owned(), Attr::Int(2))].into(),
+                        ..Block::default()
+                    },
+                    Block {
+                        kind: "list_item".into(),
+                        text: "ship it".into(),
+                        ..Block::default()
+                    },
+                ],
+                embeds: Vec::new(),
+            };
+            let value = crate::LocalState::new(rich.clone());
+            let props = BlockEditorProps {
+                rich: bound(&fired, value.clone()),
+                ..BlockEditorProps::default()
+            };
+            let mut editor = BlockEditor::from_props("b", props);
+            let kinds: Vec<_> = editor
+                .blocks()
+                .iter()
+                .map(|block| block.kind.clone())
+                .collect();
+            assert_eq!(
+                kinds,
+                vec![
+                    crate::widget::BlockKind::Heading(2),
+                    crate::widget::BlockKind::Bullet { indent: 0 }
+                ]
+            );
+
+            let mut changed = rich;
+            changed.blocks[1].text = "shipped".into();
+            value.set(changed);
+            assert!(editor.follow_body());
+            assert_eq!(editor.blocks()[1].content().text, "shipped");
+        }
     }
 }

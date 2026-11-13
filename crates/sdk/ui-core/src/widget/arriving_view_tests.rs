@@ -52,58 +52,6 @@ fn walk(widget: &dyn Widget, found: &mut Vec<(String, Option<String>)>) {
 }
 
 #[test]
-fn local_data_inside_the_budget_paints_on_frame_one_without_a_placeholder() {
-    let t0 = crate::time::now();
-    let mut frame = ShotFrame::new((400, 300), Theme::dark());
-    let height = content_height(&mut frame);
-    let (arriving, mut view) = with_monotonic_time(t0, || {
-        let arriving: Arriving<f32> = Arriving::pending(Source::Local);
-        let view = arriving
-            .view(|height| Box::new(Spacer::fixed(*height)))
-            .shaped(SHAPE);
-        (arriving, view)
-    });
-    with_monotonic_time(t0, || frame.sync(&mut view));
-    assert_eq!(
-        view.holds_frame_until(t0),
-        Some(t0 + frame_budget()),
-        "the frame that would show the view waits for the local read"
-    );
-
-    arriving.writer().ready(height);
-    let landed = ms(t0, 8);
-    assert_eq!(view.holds_frame_until(landed), None, "the frame goes ahead");
-    frame_at(&mut frame, &mut view, landed);
-    assert_eq!(view.showing(), Showing::Answer);
-    assert_eq!(shown(&view), "Spacer");
-    with_monotonic_time(landed, || {
-        assert!(!view.needs_animation_frame(), "it lands without motion");
-        assert!(view.fade.outgoing(landed).is_none());
-        assert_eq!(view.next_wake_deadline(), None);
-    });
-}
-
-#[test]
-fn a_local_read_past_its_budget_releases_the_frame_and_wakes_it() {
-    let t0 = crate::time::now();
-    let mut frame = ShotFrame::new((400, 300), Theme::dark());
-    let mut view = with_monotonic_time(t0, || {
-        let arriving: Arriving<f32> = Arriving::pending(Source::Local);
-        arriving.view(|height| Box::new(Spacer::fixed(*height)))
-    });
-    with_monotonic_time(t0, || frame.sync(&mut view));
-    let budget = t0 + frame_budget();
-    with_monotonic_time(t0, || {
-        assert_eq!(
-            view.next_wake_deadline(),
-            Some(budget),
-            "the window wakes to draw the frame it held"
-        );
-    });
-    assert_eq!(view.holds_frame_until(budget), None);
-}
-
-#[test]
 fn remote_data_shows_ground_then_a_skeleton_then_cross_fades_in_without_moving() {
     let t0 = crate::time::now();
     let mut frame = ShotFrame::new((400, 300), Theme::dark());
@@ -196,52 +144,6 @@ fn a_skeleton_never_shows_for_less_than_its_minimum() {
 }
 
 #[test]
-fn a_pending_view_draws_no_frames_between_its_timed_steps() {
-    let t0 = crate::time::now();
-    let mut frame = ShotFrame::new((400, 300), Theme::dark());
-    let mut view = with_monotonic_time(t0, || {
-        let arriving: Arriving<f32> = Arriving::pending(Source::peer("Laptop"));
-        arriving.view(|height| Box::new(Spacer::fixed(*height)))
-    });
-    let steps = [
-        (ms(t0, 50), Step::Ground, Some(t0 + GRACE)),
-        (ms(t0, 1_000), Step::Skeleton, Some(t0 + NAME_SOURCE_AFTER)),
-        (ms(t0, 2_500), Step::Named, None),
-    ];
-    for (at, step, next) in steps {
-        frame_at(&mut frame, &mut view, at);
-        assert_eq!(view.step(at), step);
-        with_monotonic_time(at, || {
-            assert!(
-                !view.needs_animation_frame(),
-                "idle while pending at {step:?}"
-            );
-            assert!(!view.needs_redraw(), "nothing to repaint at {step:?}");
-            assert_eq!(view.next_wake_deadline(), next);
-        });
-    }
-    let named_due = t0 + NAME_SOURCE_AFTER;
-    let mut view = with_monotonic_time(t0, || {
-        let arriving: Arriving<f32> = Arriving::pending(Source::peer("Laptop"));
-        arriving.view(|height| Box::new(Spacer::fixed(*height)))
-    });
-    frame_at(&mut frame, &mut view, ms(t0, 1_000));
-    with_monotonic_time(named_due, || {
-        assert!(view.needs_animation_frame(), "the due step is drawn");
-        assert!(view.serve_deadline(named_due));
-    });
-    frame_at(&mut frame, &mut view, named_due);
-    with_monotonic_time(named_due, || assert!(!view.needs_animation_frame()));
-    with_monotonic_time(named_due, || {
-        assert_eq!(
-            view.accessibility().and_then(|node| node.name).as_deref(),
-            Some("From Laptop"),
-            "it says where the data comes from"
-        );
-    });
-}
-
-#[test]
 fn a_failure_shows_the_error_with_a_retry_that_asks_again() {
     let t0 = crate::time::now();
     let mut frame = ShotFrame::new((400, 300), Theme::dark());
@@ -295,105 +197,209 @@ fn a_read_without_a_way_to_retry_shows_its_failure_alone() {
     );
 }
 
-#[test]
-fn a_refreshed_answer_replaces_the_shown_one_without_a_placeholder() {
-    let t0 = crate::time::now();
-    let mut frame = ShotFrame::new((400, 300), Theme::dark());
-    let (arriving, mut view) = with_monotonic_time(t0, || {
-        let arriving: Arriving<f32> = Arriving::ready(10.0);
-        let view = arriving.view(|height| Box::new(Spacer::fixed(*height)));
-        (arriving, view)
-    });
-    frame_at(&mut frame, &mut view, t0);
-    assert_eq!(
-        view.showing(),
-        Showing::Answer,
-        "an answer already here shows at once"
-    );
-    let completion = with_monotonic_time(ms(t0, 10), || arriving.begin(Source::peer("Laptop")));
-    frame_at(&mut frame, &mut view, ms(t0, 500));
-    assert_eq!(view.showing(), Showing::Answer, "the shown answer stays");
-    assert!(completion.finish(Ok(20.0)));
-    frame_at(&mut frame, &mut view, ms(t0, 600));
-    assert_eq!(view.showing(), Showing::Answer);
-    assert!(
-        (shown_height(&view) - 20.0).abs() < 0.5,
-        "the new answer shows"
-    );
-}
+tilo_test_env::scenario! {
+    /// A view waiting on data: budget, ground, skeleton, cross-fade, refresh and failure.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn an_arriving_view_steps_from_ground_to_its_answer_or_its_failure;
 
-#[test]
-fn an_arrival_paints_its_placeholder_steps_inside_its_rect() {
-    let t0 = crate::time::now();
-    let mut clock = ArrivalClock::with_budget(t0, Source::host("eu1.tilo.sh"), frame_budget());
-    assert_eq!(ArrivalFace::new(SHAPE, &clock, t0).step(), Step::Ground);
-    let named = ArrivalFace::new(SHAPE, &clock, t0 + NAME_SOURCE_AFTER);
-    assert_eq!(named.caption().as_deref(), Some("From eu1.tilo.sh"));
-    clock.arrive(ms(t0, 3_000));
-    assert_eq!(
-        ArrivalFace::new(SHAPE, &clock, ms(t0, 3_000)).step(),
-        Step::Shown
-    );
-}
-
-#[test]
-fn a_placeholder_keeps_its_timing_however_often_its_view_is_built() {
-    let t0 = crate::time::now();
-    let mut frame = ShotFrame::new((400, 300), Theme::dark());
-    let skeleton = t0 + GRACE;
-    let mut view = with_monotonic_time(ms(t0, 120), || {
-        ArrivingView::placeholder_since(Source::host("eu1.tilo.sh"), t0, SHAPE)
-    });
-    frame_at(&mut frame, view.as_mut(), ms(t0, 120));
-    with_monotonic_time(ms(t0, 120), || {
-        assert_eq!(view.next_wake_deadline(), Some(skeleton));
-        assert!(!view.needs_animation_frame());
-        assert!(
-            !view.has_pending_visual_work(),
-            "a capture does not wait on an answer that comes with a new view"
-        );
-    });
-    frame_at(&mut frame, view.as_mut(), skeleton);
-    let height = reserved_height(view.as_ref());
-    assert!(
-        (height - f64::from(content_height(&mut frame))).abs() < 0.5,
-        "it reserves its shape's geometry"
-    );
-    with_monotonic_time(t0 + NAME_SOURCE_AFTER, || {
+    phase local_data_inside_the_budget_paints_on_frame_one_without_a_placeholder;
+    {
+        let t0 = crate::time::now();
+        let mut frame = ShotFrame::new((400, 300), Theme::dark());
+        let height = content_height(&mut frame);
+        let (arriving, mut view) = with_monotonic_time(t0, || {
+            let arriving: Arriving<f32> = Arriving::pending(Source::Local);
+            let view = arriving
+                .view(|height| Box::new(Spacer::fixed(*height)))
+                .shaped(SHAPE);
+            (arriving, view)
+        });
+        with_monotonic_time(t0, || frame.sync(&mut view));
         assert_eq!(
-            view.accessibility().and_then(|node| node.name).as_deref(),
-            Some("From eu1.tilo.sh")
+            view.holds_frame_until(t0),
+            Some(t0 + frame_budget()),
+            "the frame that would show the view waits for the local read"
         );
-    });
-}
 
-/// A failure that moved to the box showing it takes the view out of the children this one
-/// lists, walks and hands out to change at the same time: an action a route addresses by index
-/// reaches the view the walk found, or nothing, never the view that moved away.
-#[test]
-fn a_failure_moved_away_leaves_the_child_lists_agreeing() {
-    let t0 = crate::time::now();
-    let mut view = with_monotonic_time(t0, || {
-        let arriving: Arriving<f32> = Arriving::pending(Source::Local);
-        arriving
-            .view(|height| Box::new(Spacer::fixed(*height)))
-            .shaped(SHAPE)
-    });
-    view.respoken = true;
-    view.reveal.set(Reveal {
-        showing: Showing::Failure,
-        revision: 0,
-        speaks: false,
-    });
-    assert!(view.failure_moved_away());
-    let listed = view.children().len();
-    let mut walked = 0;
-    view.for_each_child(&mut |_| walked += 1);
-    let handed = view.children_mut().len();
-    assert_eq!(listed, handed, "the lists hold the same children");
-    assert_eq!(walked, listed, "the walk visits the children listed");
-    assert_eq!(
-        listed, 0,
-        "the view that moved its failure away is no child here"
-    );
+        arriving.writer().ready(height);
+        let landed = ms(t0, 8);
+        assert_eq!(view.holds_frame_until(landed), None, "the frame goes ahead");
+        frame_at(&mut frame, &mut view, landed);
+        assert_eq!(view.showing(), Showing::Answer);
+        assert_eq!(shown(&view), "Spacer");
+        with_monotonic_time(landed, || {
+            assert!(!view.needs_animation_frame(), "it lands without motion");
+            assert!(view.fade.outgoing(landed).is_none());
+            assert_eq!(view.next_wake_deadline(), None);
+        });
+    }
+
+    phase a_local_read_past_its_budget_releases_the_frame_and_wakes_it;
+    {
+        let t0 = crate::time::now();
+        let mut frame = ShotFrame::new((400, 300), Theme::dark());
+        let mut view = with_monotonic_time(t0, || {
+            let arriving: Arriving<f32> = Arriving::pending(Source::Local);
+            arriving.view(|height| Box::new(Spacer::fixed(*height)))
+        });
+        with_monotonic_time(t0, || frame.sync(&mut view));
+        let budget = t0 + frame_budget();
+        with_monotonic_time(t0, || {
+            assert_eq!(
+                view.next_wake_deadline(),
+                Some(budget),
+                "the window wakes to draw the frame it held"
+            );
+        });
+        assert_eq!(view.holds_frame_until(budget), None);
+    }
+
+    phase a_pending_view_draws_no_frames_between_its_timed_steps;
+    {
+        let t0 = crate::time::now();
+        let mut frame = ShotFrame::new((400, 300), Theme::dark());
+        let mut view = with_monotonic_time(t0, || {
+            let arriving: Arriving<f32> = Arriving::pending(Source::peer("Laptop"));
+            arriving.view(|height| Box::new(Spacer::fixed(*height)))
+        });
+        let steps = [
+            (ms(t0, 50), Step::Ground, Some(t0 + GRACE)),
+            (ms(t0, 1_000), Step::Skeleton, Some(t0 + NAME_SOURCE_AFTER)),
+            (ms(t0, 2_500), Step::Named, None),
+        ];
+        for (at, step, next) in steps {
+            frame_at(&mut frame, &mut view, at);
+            assert_eq!(view.step(at), step);
+            with_monotonic_time(at, || {
+                assert!(
+                    !view.needs_animation_frame(),
+                    "idle while pending at {step:?}"
+                );
+                assert!(!view.needs_redraw(), "nothing to repaint at {step:?}");
+                assert_eq!(view.next_wake_deadline(), next);
+            });
+        }
+        let named_due = t0 + NAME_SOURCE_AFTER;
+        let mut view = with_monotonic_time(t0, || {
+            let arriving: Arriving<f32> = Arriving::pending(Source::peer("Laptop"));
+            arriving.view(|height| Box::new(Spacer::fixed(*height)))
+        });
+        frame_at(&mut frame, &mut view, ms(t0, 1_000));
+        with_monotonic_time(named_due, || {
+            assert!(view.needs_animation_frame(), "the due step is drawn");
+            assert!(view.serve_deadline(named_due));
+        });
+        frame_at(&mut frame, &mut view, named_due);
+        with_monotonic_time(named_due, || assert!(!view.needs_animation_frame()));
+        with_monotonic_time(named_due, || {
+            assert_eq!(
+                view.accessibility().and_then(|node| node.name).as_deref(),
+                Some("From Laptop"),
+                "it says where the data comes from"
+            );
+        });
+    }
+
+    phase a_refreshed_answer_replaces_the_shown_one_without_a_placeholder;
+    {
+        let t0 = crate::time::now();
+        let mut frame = ShotFrame::new((400, 300), Theme::dark());
+        let (arriving, mut view) = with_monotonic_time(t0, || {
+            let arriving: Arriving<f32> = Arriving::ready(10.0);
+            let view = arriving.view(|height| Box::new(Spacer::fixed(*height)));
+            (arriving, view)
+        });
+        frame_at(&mut frame, &mut view, t0);
+        assert_eq!(
+            view.showing(),
+            Showing::Answer,
+            "an answer already here shows at once"
+        );
+        let completion = with_monotonic_time(ms(t0, 10), || arriving.begin(Source::peer("Laptop")));
+        frame_at(&mut frame, &mut view, ms(t0, 500));
+        assert_eq!(view.showing(), Showing::Answer, "the shown answer stays");
+        assert!(completion.finish(Ok(20.0)));
+        frame_at(&mut frame, &mut view, ms(t0, 600));
+        assert_eq!(view.showing(), Showing::Answer);
+        assert!(
+            (shown_height(&view) - 20.0).abs() < 0.5,
+            "the new answer shows"
+        );
+    }
+
+    phase an_arrival_paints_its_placeholder_steps_inside_its_rect;
+    {
+        let t0 = crate::time::now();
+        let mut clock = ArrivalClock::with_budget(t0, Source::host("eu1.tilo.sh"), frame_budget());
+        assert_eq!(ArrivalFace::new(SHAPE, &clock, t0).step(), Step::Ground);
+        let named = ArrivalFace::new(SHAPE, &clock, t0 + NAME_SOURCE_AFTER);
+        assert_eq!(named.caption().as_deref(), Some("From eu1.tilo.sh"));
+        clock.arrive(ms(t0, 3_000));
+        assert_eq!(
+            ArrivalFace::new(SHAPE, &clock, ms(t0, 3_000)).step(),
+            Step::Shown
+        );
+    }
+
+    phase a_placeholder_keeps_its_timing_however_often_its_view_is_built;
+    {
+        let t0 = crate::time::now();
+        let mut frame = ShotFrame::new((400, 300), Theme::dark());
+        let skeleton = t0 + GRACE;
+        let mut view = with_monotonic_time(ms(t0, 120), || {
+            ArrivingView::placeholder_since(Source::host("eu1.tilo.sh"), t0, SHAPE)
+        });
+        frame_at(&mut frame, view.as_mut(), ms(t0, 120));
+        with_monotonic_time(ms(t0, 120), || {
+            assert_eq!(view.next_wake_deadline(), Some(skeleton));
+            assert!(!view.needs_animation_frame());
+            assert!(
+                !view.has_pending_visual_work(),
+                "a capture does not wait on an answer that comes with a new view"
+            );
+        });
+        frame_at(&mut frame, view.as_mut(), skeleton);
+        let height = reserved_height(view.as_ref());
+        assert!(
+            (height - f64::from(content_height(&mut frame))).abs() < 0.5,
+            "it reserves its shape's geometry"
+        );
+        with_monotonic_time(t0 + NAME_SOURCE_AFTER, || {
+            assert_eq!(
+                view.accessibility().and_then(|node| node.name).as_deref(),
+                Some("From eu1.tilo.sh")
+            );
+        });
+    }
+
+    phase a_failure_moved_away_leaves_the_child_lists_agreeing;
+    // A failure that moved to the box showing it takes the view out of the children this one
+    // lists, walks and hands out to change at the same time: an action a route addresses by index
+    // reaches the view the walk found, or nothing, never the view that moved away.
+    {
+        let t0 = crate::time::now();
+        let mut view = with_monotonic_time(t0, || {
+            let arriving: Arriving<f32> = Arriving::pending(Source::Local);
+            arriving
+                .view(|height| Box::new(Spacer::fixed(*height)))
+                .shaped(SHAPE)
+        });
+        view.respoken = true;
+        view.reveal.set(Reveal {
+            showing: Showing::Failure,
+            revision: 0,
+            speaks: false,
+        });
+        assert!(view.failure_moved_away());
+        let listed = view.children().len();
+        let mut walked = 0;
+        view.for_each_child(&mut |_| walked += 1);
+        let handed = view.children_mut().len();
+        assert_eq!(listed, handed, "the lists hold the same children");
+        assert_eq!(walked, listed, "the walk visits the children listed");
+        assert_eq!(
+            listed, 0,
+            "the view that moved its failure away is no child here"
+        );
+    }
 }

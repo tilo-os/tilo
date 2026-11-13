@@ -176,172 +176,178 @@ fn message(queue: &crate::Intents<Fired>) -> (Attachments, Vec<MenuPart>) {
     (attached, menu)
 }
 
-#[test]
-fn a_views_menu_comes_first_and_the_system_adds_what_it_did_not_place() {
-    let queue = crate::Intents::default();
-    let (attached, offered) = message(&queue);
-    let menu = item_menu(attached.menu, offered);
-    assert_eq!(
-        labels(&menu),
-        ["emoji 👍🎉", "—", "Reply", "Pin", "—", "Delete"],
-        "the view's order first; Pin is placed already, so only Delete is added after a rule"
-    );
-}
+tilo_test_env::scenario! {
+    /// What a view attaches to an item: its menu, its swipe and the commands the system adds.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn attached_menus_place_what_a_view_and_the_system_offer;
 
-#[test]
-fn every_offered_action_stays_reachable_when_the_view_places_none() {
-    let queue = crate::Intents::default();
-    let (_, offered) = message(&queue);
-    let menu = item_menu(Vec::new(), offered);
-    assert_eq!(labels(&menu), ["Pin", "Delete"], "no leading rule");
-}
+    phase a_views_menu_comes_first_and_the_system_adds_what_it_did_not_place;
+    {
+        let queue = crate::Intents::default();
+        let (attached, offered) = message(&queue);
+        let menu = item_menu(attached.menu, offered);
+        assert_eq!(
+            labels(&menu),
+            ["emoji 👍🎉", "—", "Reply", "Pin", "—", "Delete"],
+            "the view's order first; Pin is placed already, so only Delete is added after a rule"
+        );
+    }
 
-#[test]
-fn a_view_that_places_every_action_gets_nothing_added() {
-    let queue = crate::Intents::default();
-    let placed = vec![
-        MenuPart::Item(MenuItemProps {
+    phase every_offered_action_stays_reachable_when_the_view_places_none;
+    {
+        let queue = crate::Intents::default();
+        let (_, offered) = message(&queue);
+        let menu = item_menu(Vec::new(), offered);
+        assert_eq!(labels(&menu), ["Pin", "Delete"], "no leading rule");
+    }
+
+    phase a_view_that_places_every_action_gets_nothing_added;
+    {
+        let queue = crate::Intents::default();
+        let placed = vec![
+            MenuPart::Item(MenuItemProps {
+                label: "Pin".into(),
+                choose: bound("m1", "pin"),
+                ..MenuItemProps::default()
+            }),
+            MenuPart::Item(MenuItemProps {
+                label: "Delete".into(),
+                choose: bound("m1", "delete"),
+                ..MenuItemProps::default()
+            }),
+        ];
+        let (_, offered) = message(&queue);
+        assert_eq!(labels(&item_menu(placed, offered)), ["Pin", "Delete"]);
+    }
+
+    phase the_same_action_on_another_resource_is_not_placed;
+    {
+        let queue = crate::Intents::default();
+        let placed = vec![MenuPart::Item(MenuItemProps {
             label: "Pin".into(),
-            choose: bound("m1", "pin"),
+            choose: bound("m2", "pin"),
             ..MenuItemProps::default()
-        }),
-        MenuPart::Item(MenuItemProps {
-            label: "Delete".into(),
-            choose: bound("m1", "delete"),
-            ..MenuItemProps::default()
-        }),
-    ];
-    let (_, offered) = message(&queue);
-    assert_eq!(labels(&item_menu(placed, offered)), ["Pin", "Delete"]);
-}
-
-#[test]
-fn the_same_action_on_another_resource_is_not_placed() {
-    let queue = crate::Intents::default();
-    let placed = vec![MenuPart::Item(MenuItemProps {
-        label: "Pin".into(),
-        choose: bound("m2", "pin"),
-        ..MenuItemProps::default()
-    })];
-    let (_, offered) = message(&queue);
-    assert_eq!(
-        labels(&item_menu(placed, offered)),
-        ["Pin", "—", "Pin", "Delete"]
-    );
-}
-
-#[test]
-fn a_menus_entries_drop_rules_at_either_end_and_doubled() {
-    let queue = crate::Intents::default();
-    let parts = vec![
-        MenuPart::Separator,
-        MenuPart::Item(MenuItemProps {
-            label: "Reply".into(),
-            choose: Event::View(crate::component::Intent::new(&queue, "r", "choose")),
-            ..MenuItemProps::default()
-        }),
-        MenuPart::Separator,
-        MenuPart::Separator,
-        MenuPart::Item(MenuItemProps {
-            label: "Delete".into(),
-            destructive: true,
-            key: Some("Ctrl+Enter".into()),
-            choose: Event::View(crate::component::Intent::new(&queue, "d", "choose")),
-            ..MenuItemProps::default()
-        }),
-        MenuPart::Separator,
-    ];
-    let entries = menu_entries(parts);
-    let shown: Vec<Option<&str>> = entries.iter().map(|entry| entry.item().label()).collect();
-    assert_eq!(shown, [Some("Reply"), None, Some("Delete")]);
-    assert_eq!(
-        entries[2].item().shortcut(),
-        Some(&crate::platform::Shortcut::from("Ctrl+Enter")),
-        "the key the command declares shows at its row's end"
-    );
-}
-
-#[test]
-fn what_a_view_attached_reads_its_swipe_and_its_menu() {
-    let queue = crate::Intents::default();
-    let (attached, _) = message(&queue);
-    assert_eq!(
-        attached
-            .swipe
-            .trailing
-            .as_ref()
-            .map(|swipe| swipe.label.as_str()),
-        Some("Reply")
-    );
-    assert!(attached.swipe.leading.is_none());
-    assert_eq!(attached.menu.len(), 4);
-    assert!(attached.toolbar.is_empty());
-}
-
-#[test]
-fn picking_from_the_menus_emoji_bar_reports_the_emoji() {
-    let queue = crate::Intents::default();
-    let (attached, _) = message(&queue);
-    let entries = menu_entries(attached.menu);
-    let mut menu = crate::widget::ContextMenu::new();
-    let mut runs = Vec::new();
-    for entry in entries {
-        runs.push(entry.run_for_tests());
-        menu.push(entry.item().clone());
+        })];
+        let (_, offered) = message(&queue);
+        assert_eq!(
+            labels(&item_menu(placed, offered)),
+            ["Pin", "—", "Pin", "Delete"]
+        );
     }
-    menu.open_at([10.0, 10.0]);
-    menu.focus_item(0);
-    crate::testing::dispatch(
-        &mut menu,
-        &crate::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowRight),
-    );
-    crate::testing::dispatch(
-        &mut menu,
-        &crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
-    );
-    assert_eq!(menu.take_selection(), Some(0), "the bar's row was chosen");
-    if let Some(run) = &runs[0] {
-        run();
+
+    phase a_menus_entries_drop_rules_at_either_end_and_doubled;
+    {
+        let queue = crate::Intents::default();
+        let parts = vec![
+            MenuPart::Separator,
+            MenuPart::Item(MenuItemProps {
+                label: "Reply".into(),
+                choose: Event::View(crate::component::Intent::new(&queue, "r", "choose")),
+                ..MenuItemProps::default()
+            }),
+            MenuPart::Separator,
+            MenuPart::Separator,
+            MenuPart::Item(MenuItemProps {
+                label: "Delete".into(),
+                destructive: true,
+                key: Some("Ctrl+Enter".into()),
+                choose: Event::View(crate::component::Intent::new(&queue, "d", "choose")),
+                ..MenuItemProps::default()
+            }),
+            MenuPart::Separator,
+        ];
+        let entries = menu_entries(parts);
+        let shown: Vec<Option<&str>> = entries.iter().map(|entry| entry.item().label()).collect();
+        assert_eq!(shown, [Some("Reply"), None, Some("Delete")]);
+        assert_eq!(
+            entries[2].item().shortcut(),
+            Some(&crate::platform::Shortcut::from("Ctrl+Enter")),
+            "the key the command declares shows at its row's end"
+        );
     }
-    let fired = queue.take();
-    assert_eq!(fired.len(), 1);
-    assert_eq!(fired[0].event, "pick");
-    assert_eq!(fired[0].value, Some(Value::Text("🎉".into())));
-}
 
-#[test]
-fn a_run_of_grouped_commands_folds_into_one_row_that_opens_them() {
-    let queue = crate::Intents::default();
-    let grouped = |label: &str| {
-        MenuPart::Item(MenuItemProps {
-            label: label.into(),
-            group: Some("Due".into()),
-            choose: Event::View(crate::component::Intent::new(&queue, label, "choose")),
-            ..MenuItemProps::default()
-        })
-    };
-    let entries = menu_entries(vec![grouped("Today"), grouped("Tomorrow")]);
-    let shown: Vec<Option<&str>> = entries.iter().map(|entry| entry.item().label()).collect();
-    assert_eq!(shown, [Some("Due")], "one run of a group is one row");
-    let entries = menu_entries(vec![grouped("Today")]);
-    assert_eq!(
-        entries[0].item().label(),
-        Some("Today"),
-        "a group of one command stays the command"
-    );
-}
+    phase what_a_view_attached_reads_its_swipe_and_its_menu;
+    {
+        let queue = crate::Intents::default();
+        let (attached, _) = message(&queue);
+        assert_eq!(
+            attached
+                .swipe
+                .trailing
+                .as_ref()
+                .map(|swipe| swipe.label.as_str()),
+            Some("Reply")
+        );
+        assert!(attached.swipe.leading.is_none());
+        assert_eq!(attached.menu.len(), 4);
+        assert!(attached.toolbar.is_empty());
+    }
 
-#[test]
-fn a_command_the_view_runs_itself_is_not_added_again_by_its_name() {
-    let queue = crate::Intents::default();
-    let (_, offered) = message(&queue);
-    let own = |label: &str| {
-        MenuPart::Item(MenuItemProps {
-            label: label.into(),
-            choose: Event::View(crate::component::Intent::new(&queue, label, "choose")),
-            ..MenuItemProps::default()
-        })
-    };
-    let menu = item_menu(vec![own("Pin")], offered);
-    assert_eq!(labels(&menu), ["Pin", "—", "Delete"], "Pin stands once");
+    phase picking_from_the_menus_emoji_bar_reports_the_emoji;
+    {
+        let queue = crate::Intents::default();
+        let (attached, _) = message(&queue);
+        let entries = menu_entries(attached.menu);
+        let mut menu = crate::widget::ContextMenu::new();
+        let mut runs = Vec::new();
+        for entry in entries {
+            runs.push(entry.run_for_tests());
+            menu.push(entry.item().clone());
+        }
+        menu.open_at([10.0, 10.0]);
+        menu.focus_item(0);
+        crate::testing::dispatch(
+            &mut menu,
+            &crate::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowRight),
+        );
+        crate::testing::dispatch(
+            &mut menu,
+            &crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
+        );
+        assert_eq!(menu.take_selection(), Some(0), "the bar's row was chosen");
+        if let Some(run) = &runs[0] {
+            run();
+        }
+        let fired = queue.take();
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].event, "pick");
+        assert_eq!(fired[0].value, Some(Value::Text("🎉".into())));
+    }
+
+    phase a_run_of_grouped_commands_folds_into_one_row_that_opens_them;
+    {
+        let queue = crate::Intents::default();
+        let grouped = |label: &str| {
+            MenuPart::Item(MenuItemProps {
+                label: label.into(),
+                group: Some("Due".into()),
+                choose: Event::View(crate::component::Intent::new(&queue, label, "choose")),
+                ..MenuItemProps::default()
+            })
+        };
+        let entries = menu_entries(vec![grouped("Today"), grouped("Tomorrow")]);
+        let shown: Vec<Option<&str>> = entries.iter().map(|entry| entry.item().label()).collect();
+        assert_eq!(shown, [Some("Due")], "one run of a group is one row");
+        let entries = menu_entries(vec![grouped("Today")]);
+        assert_eq!(
+            entries[0].item().label(),
+            Some("Today"),
+            "a group of one command stays the command"
+        );
+    }
+
+    phase a_command_the_view_runs_itself_is_not_added_again_by_its_name;
+    {
+        let queue = crate::Intents::default();
+        let (_, offered) = message(&queue);
+        let own = |label: &str| {
+            MenuPart::Item(MenuItemProps {
+                label: label.into(),
+                choose: Event::View(crate::component::Intent::new(&queue, label, "choose")),
+                ..MenuItemProps::default()
+            })
+        };
+        let menu = item_menu(vec![own("Pin")], offered);
+        assert_eq!(labels(&menu), ["Pin", "—", "Delete"], "Pin stands once");
+    }
 }

@@ -784,71 +784,6 @@ mod tests {
     }
 
     #[test]
-    fn badge_paints_count_dot_and_text_variants() {
-        let mut zero = Badge::count(0);
-        assert_eq!(
-            color_fill_count(&mut zero),
-            0,
-            "a zero count paints nothing"
-        );
-
-        assert_eq!(Badge::count(100).display_text().as_deref(), Some("99+"));
-        assert_eq!(Badge::count(9_999).display_text().as_deref(), Some("99+"));
-        assert_eq!(Badge::count(99).display_text().as_deref(), Some("99"));
-
-        let mut dot = Badge::dot();
-        assert_eq!(color_fill_count(&mut dot), 1, "a dot is one filled circle");
-
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        BadgeFace::new(Rect::new(0.0, 0.0, 72.0, 20.0), "Owner")
-            .style(ChipStyle::Tinted(Tone::Info))
-            .paint(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-        assert!(scene.encoding().draw_tags.contains(&DrawTag::COLOR));
-    }
-
-    #[test]
-    fn a_text_badge_is_as_wide_as_its_label_at_every_text_scale() {
-        for scale in [1.0, 2.0] {
-            let theme = Theme::dark().with_text_scale(scale);
-            let harness = crate::headless::FrameHarness::new_with_theme(
-                crate::State::new(),
-                Box::new(crate::widget::Row::new().push(Box::new(
-                    Badge::text("Maintainer").style(ChipStyle::Tinted(Tone::Success)),
-                ))),
-                (600, 200),
-                theme.clone(),
-            );
-            let rect = harness.inspection().root.children[0].rect;
-            let mut text = TextRenderer::new();
-            text.set_text_scale(scale);
-            let (label, line) =
-                text.measure_style("Maintainer", None, &theme.text(TextRole::Caption));
-            assert!(rect[2] > f64::from(label), "{scale}x: {rect:?}");
-            assert!(rect[3] >= f64::from(line), "{scale}x: {rect:?}");
-        }
-    }
-
-    #[test]
-    fn accessibility_reports_static_text_role_and_value() {
-        use crate::a11y::Role;
-        let b = Badge::count(3);
-        let node = Widget::accessibility(&b).expect("badge is not presentational");
-        assert_eq!(node.role, Role::StaticText);
-        assert_eq!(node.value.as_deref(), Some("3"));
-        assert!(!node.state.focusable, "a badge is not focusable");
-        assert_eq!(
-            Widget::accessibility(&Badge::count(250))
-                .unwrap()
-                .value
-                .as_deref(),
-            Some("99+")
-        );
-        assert_eq!(Widget::accessibility(&Badge::dot()).unwrap().value, None);
-    }
-
-    #[test]
     fn a_cached_badge_repaints_when_the_theme_changes() {
         let mut badge = Badge::count(3);
         let mut taffy = TaffyTree::<()>::new();
@@ -891,41 +826,112 @@ mod tests {
         }
     }
 
-    #[test]
-    fn dots_and_the_modified_mark_paint_in_their_ink() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let rect = Rect::new(0.0, 0.0, 20.0, 20.0);
-        let mut live = Scene::new();
-        BadgeFace::dot(rect).paint(&mut live, Affine::IDENTITY, &mut text, &theme);
-        let mut modified = Scene::new();
-        BadgeFace::modified(rect).paint(&mut modified, Affine::IDENTITY, &mut text, &theme);
-        assert!(!live.encoding().draw_tags.is_empty());
-        assert_ne!(live.encoding().draw_data, modified.encoding().draw_data);
-        assert_eq!(
-            Widget::accessibility(&Badge::modified())
-                .unwrap()
-                .value
-                .as_deref(),
-            Some("Modified")
-        );
-        let mut short = Scene::new();
-        let mut tall = Scene::new();
-        BadgeFace::new(Rect::new(0.0, 0.0, 60.0, BadgeFace::height(&theme)), "Beta").paint(
-            &mut short,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-        );
-        BadgeFace::new(
-            Rect::new(0.0, -20.0, 60.0, BadgeFace::height(&theme) + 20.0),
-            "Beta",
-        )
-        .paint(&mut tall, Affine::IDENTITY, &mut text, &theme);
-        assert_eq!(
-            short.encoding().resources.glyph_runs.len(),
-            tall.encoding().resources.glyph_runs.len()
-        );
+    tilo_test_env::scenario! {
+        /// The badge at rest: variants, width, accessibility, theme and ink.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_badge_paints_measures_and_announces_itself;
+
+        phase badge_paints_count_dot_and_text_variants;
+        {
+            let mut zero = Badge::count(0);
+            assert_eq!(
+                color_fill_count(&mut zero),
+                0,
+                "a zero count paints nothing"
+            );
+
+            assert_eq!(Badge::count(100).display_text().as_deref(), Some("99+"));
+            assert_eq!(Badge::count(9_999).display_text().as_deref(), Some("99+"));
+            assert_eq!(Badge::count(99).display_text().as_deref(), Some("99"));
+
+            let mut dot = Badge::dot();
+            assert_eq!(color_fill_count(&mut dot), 1, "a dot is one filled circle");
+
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            BadgeFace::new(Rect::new(0.0, 0.0, 72.0, 20.0), "Owner")
+                .style(ChipStyle::Tinted(Tone::Info))
+                .paint(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            assert!(scene.encoding().draw_tags.contains(&DrawTag::COLOR));
+        }
+
+        phase a_text_badge_is_as_wide_as_its_label_at_every_text_scale;
+        {
+            for scale in [1.0, 2.0] {
+                let theme = Theme::dark().with_text_scale(scale);
+                let harness = crate::headless::FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    Box::new(crate::widget::Row::new().push(Box::new(
+                        Badge::text("Maintainer").style(ChipStyle::Tinted(Tone::Success)),
+                    ))),
+                    (600, 200),
+                    theme.clone(),
+                );
+                let rect = harness.inspection().root.children[0].rect;
+                let mut text = TextRenderer::new();
+                text.set_text_scale(scale);
+                let (label, line) =
+                    text.measure_style("Maintainer", None, &theme.text(TextRole::Caption));
+                assert!(rect[2] > f64::from(label), "{scale}x: {rect:?}");
+                assert!(rect[3] >= f64::from(line), "{scale}x: {rect:?}");
+            }
+        }
+
+        phase accessibility_reports_static_text_role_and_value;
+        {
+            use crate::a11y::Role;
+            let b = Badge::count(3);
+            let node = Widget::accessibility(&b).expect("badge is not presentational");
+            assert_eq!(node.role, Role::StaticText);
+            assert_eq!(node.value.as_deref(), Some("3"));
+            assert!(!node.state.focusable, "a badge is not focusable");
+            assert_eq!(
+                Widget::accessibility(&Badge::count(250))
+                    .unwrap()
+                    .value
+                    .as_deref(),
+                Some("99+")
+            );
+            assert_eq!(Widget::accessibility(&Badge::dot()).unwrap().value, None);
+        }
+
+        phase dots_and_the_modified_mark_paint_in_their_ink;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let rect = Rect::new(0.0, 0.0, 20.0, 20.0);
+            let mut live = Scene::new();
+            BadgeFace::dot(rect).paint(&mut live, Affine::IDENTITY, &mut text, &theme);
+            let mut modified = Scene::new();
+            BadgeFace::modified(rect).paint(&mut modified, Affine::IDENTITY, &mut text, &theme);
+            assert!(!live.encoding().draw_tags.is_empty());
+            assert_ne!(live.encoding().draw_data, modified.encoding().draw_data);
+            assert_eq!(
+                Widget::accessibility(&Badge::modified())
+                    .unwrap()
+                    .value
+                    .as_deref(),
+                Some("Modified")
+            );
+            let mut short = Scene::new();
+            let mut tall = Scene::new();
+            BadgeFace::new(Rect::new(0.0, 0.0, 60.0, BadgeFace::height(&theme)), "Beta").paint(
+                &mut short,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+            );
+            BadgeFace::new(
+                Rect::new(0.0, -20.0, 60.0, BadgeFace::height(&theme) + 20.0),
+                "Beta",
+            )
+            .paint(&mut tall, Affine::IDENTITY, &mut text, &theme);
+            assert_eq!(
+                short.encoding().resources.glyph_runs.len(),
+                tall.encoding().resources.glyph_runs.len()
+            );
+        }
     }
 
     fn present(badge: &mut Badge, theme: &Theme) {

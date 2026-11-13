@@ -20,82 +20,6 @@ fn content_hits(content: &BannerContent<'_>, width: f64) -> (f64, BannerHit) {
     (height, hit)
 }
 
-#[test]
-fn kinds_pick_their_icon_and_ink() {
-    let theme = Theme::dark();
-    assert_eq!(
-        BannerKind::Error.color(&theme),
-        theme.tokens.colors.semantic.danger
-    );
-    assert_eq!(
-        BannerKind::Warning.color(&theme),
-        theme.tokens.colors.semantic.warning
-    );
-    assert_eq!(
-        BannerKind::Neutral.color(&theme),
-        theme.text_primary,
-        "a neutral notice has no hue"
-    );
-    assert_eq!(BannerKind::Success.default_icon(), Icon::Check);
-    assert_eq!(
-        Banner::info("Heads up").with_icon(Icon::Bell).icon(),
-        Icon::Bell
-    );
-    assert_eq!(Banner::info("Heads up").icon(), Icon::Info);
-}
-
-#[test]
-fn actions_sit_inside_the_box_and_wrap_under_the_message_when_narrow() {
-    let content = BannerContent::new(BannerKind::Error, "Couldn't update the forecast")
-        .with_message(Some("Check your connection and try again."))
-        .action("Try again")
-        .secondary_action("Details")
-        .dismissible(true);
-    let (wide_h, wide) = content_hits(&content, 900.0);
-    let action = wide.action.expect("the action is laid out");
-    let secondary = wide
-        .secondary_action
-        .expect("the second action is laid out");
-    let dismiss = wide.dismiss.expect("the dismiss control is laid out");
-    for r in [action, secondary, dismiss] {
-        assert!(
-            wide.rect.contains(r.origin()) && r.x1 <= wide.rect.x1 && r.y1 <= wide.rect.y1,
-            "{r:?} leaves the banner {:?}",
-            wide.rect
-        );
-    }
-    assert!(secondary.x1 < action.x0, "the main action is at the edge");
-    assert!(action.x1 < dismiss.x0, "dismiss stays trailing");
-    assert!(
-        (action.center().y - wide.rect.center().y).abs() < 1.0,
-        "beside the text the actions sit on the banner's centre line"
-    );
-
-    let (narrow_h, narrow) = content_hits(&content, 360.0);
-    let action = narrow.action.unwrap();
-    assert!(narrow_h > wide_h, "wrapped actions add a row");
-    assert!(
-        action.y0 > narrow.rect.center().y,
-        "a narrow banner puts its actions under the message"
-    );
-    assert!(action.y1 <= narrow.rect.y1, "and still inside its box");
-}
-
-#[test]
-fn height_grows_with_text_scale_and_long_messages() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let message = "Tilo found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
-    let short = BannerContent::new(BannerKind::Warning, "Your identity needs recovery");
-    let long = short.clone().with_message(Some(message));
-    let short_h = Banner::height(&short, 600.0, &mut text, &theme);
-    let long_h = Banner::height(&long, 600.0, &mut text, &theme);
-    assert!(long_h > short_h);
-    assert!(short_h >= f64::from(theme.tokens.metrics.panel_row_height));
-    let scaled = Banner::height(&long, 600.0, &mut text, &theme.clone().with_text_scale(2.0));
-    assert!(scaled > long_h);
-}
-
 fn driver(root: Box<dyn Widget>) -> FrameHarness {
     let mut driver = FrameHarness::new(State::new(), root, (640, 400));
     driver.relayout();
@@ -179,21 +103,6 @@ fn a_state_bound_banner_collapses_while_absent() {
     state.set(None);
     d.relayout();
     assert!((d.targets()["below"].y0 - empty_y).abs() < 0.5);
-}
-
-#[test]
-fn the_banner_is_a_live_region_by_severity() {
-    use crate::a11y::{Politeness, Role};
-    let err = Banner::error("Boom").with_message("details");
-    let node = Widget::accessibility(&err).expect("banner exposes a11y");
-    assert_eq!(node.role, Role::Group);
-    assert_eq!(node.name.as_deref(), Some("Boom"));
-    assert_eq!(node.live, Some(Politeness::Assertive));
-    let info = Banner::neutral("Private window");
-    assert_eq!(
-        Widget::accessibility(&info).unwrap().live,
-        Some(Politeness::Polite)
-    );
 }
 
 /// The first child of the harness's column, as it moves.
@@ -394,42 +303,6 @@ fn rebuild(d: &mut FrameHarness, banner: Option<Banner>) {
     children.push(Box::new(crate::widget::Text::new("Below").with_id("below")));
     d.root_mut::<Column>().set_children(children);
     d.relayout();
-}
-
-#[test]
-fn a_banner_its_view_builds_again_goes_on_from_the_one_it_replaces() {
-    let mut d = rooted(Column::new());
-    rebuild(&mut d, None);
-    let empty_y = d.targets()["below"].y0;
-    let frame = crate::motion::pin_frame();
-    rebuild(&mut d, Some(Banner::error("Sync failed")));
-    assert!(band(&d).is_some(), "a banner new to the view discloses");
-    assert!((d.targets()["below"].y0 - empty_y).abs() < 0.5);
-    rebuild(&mut d, Some(Banner::error("Sync failed")));
-    assert!(
-        band(&d).is_some(),
-        "built again mid-motion, it goes on opening"
-    );
-    assert!((d.targets()["below"].y0 - empty_y).abs() < 0.5);
-    drop(frame);
-
-    // A banner there from the first frame, built again at rest.
-    let mut d = rooted(
-        Column::new()
-            .push(Box::new(Banner::warning("Offline")))
-            .push(Box::new(crate::widget::Text::new("Below").with_id("below"))),
-    );
-    let shown_y = d.targets()["below"].y0;
-    let _frame = crate::motion::pin_frame();
-    rebuild(&mut d, Some(Banner::warning("Offline")));
-    assert!(band(&d).is_none(), "built again at rest, it stays at rest");
-    assert!(!d.root_widget().needs_animation_frame());
-    assert!((d.targets()["below"].y0 - shown_y).abs() < 0.5);
-    rebuild(&mut d, Some(Banner::warning("Offline, retrying")));
-    assert!(
-        band(&d).is_none() && !d.root_widget().needs_animation_frame(),
-        "a banner that says something new in the same place does not arrive again"
-    );
 }
 
 /// The column's offsets: how far its first child is drawn below its place.
@@ -669,52 +542,6 @@ fn a_banner_dropped_while_opening_leaves_from_where_it_is_drawn() {
     });
 }
 
-/// On touch a banner's action and its dismiss control are each a finger's target, inside the
-/// banner, which grows to hold them, and at a fractional display scale they stand on device
-/// pixels.
-#[test]
-fn on_touch_a_banners_controls_are_a_fingers_target_inside_it() {
-    use crate::interaction::InteractionEnvironment;
-    let root = Column::new().push(Box::new(
-        Banner::warning("Sync paused")
-            .with_message("Files sync again when you are online.")
-            .with_id("paused")
-            .with_action(Button::new("paused.retry", "Retry"))
-            .on_dismiss(|| {}),
-    ));
-    let mut d = driver(Box::new(root));
-    d.root_widget_mut()
-        .set_interaction_environment(InteractionEnvironment::TOUCH);
-    d.set_input_scale(1.5).expect("a scale");
-    d.relayout();
-    let finger = f64::from(InteractionEnvironment::TOUCH.minimum_target());
-    let targets = d.targets();
-    let banner = targets["paused"];
-    for control in ["paused.retry", "paused.dismiss"] {
-        let rect = targets[control];
-        assert!(
-            rect.height() >= finger - 0.5,
-            "{control} is {rect:?}, under a finger's {finger}"
-        );
-        assert!(
-            banner.contains(rect.origin()) && banner.contains(Point::new(rect.x1, rect.y1)),
-            "{control} {rect:?} stands inside the banner {banner:?}"
-        );
-        for (side, edge) in [
-            ("top", rect.y0),
-            ("left", rect.x0),
-            ("right", rect.x1),
-            ("bottom", rect.y1),
-        ] {
-            let device = edge * 1.5;
-            assert!(
-                (device - device.round()).abs() < 1e-3,
-                "{control}'s {side} edge {edge} is on a device pixel at 1.5x"
-            );
-        }
-    }
-}
-
 /// A banner whose dismiss the view bound to an action runs it once, through the banner's own
 /// control door, and goes away.
 #[test]
@@ -746,54 +573,6 @@ fn a_banner_whose_dismiss_is_bound_runs_the_action_it_names_once() {
     assert!(
         crate::widget::controls::take_control_invocation(&mut banner).is_none(),
         "the press is taken once"
-    );
-}
-
-/// A banner too narrow for its actions keeps one column: what it says, then the action under it
-/// as the words it is, starting where the text starts — no block across the banner, and the
-/// same control beside it again once the window is wide enough.
-#[test]
-fn a_narrow_banner_puts_its_action_under_its_text_in_the_text_column() {
-    let banner = || {
-        Banner::warning("Can't reach sam@rivera.example")
-            .with_message("Connection refused · Last fetched 10:41")
-            .with_id("trouble")
-            .with_action(Button::new("trouble.retry", "Try again"))
-    };
-    let mut narrow = FrameHarness::new(
-        State::new(),
-        Box::new(Column::new().push(Box::new(banner()))),
-        (360, 400),
-    );
-    narrow.relayout();
-    let targets = narrow.targets();
-    let box_ = targets["trouble"];
-    let retry = targets["trouble.retry"];
-    assert!(
-        !retry.is_zero_area(),
-        "the action is placed: {retry:?} in {box_:?}"
-    );
-    assert!(
-        retry.x0 - box_.x0 < 60.0,
-        "it starts where the text does, not at the trailing edge: {retry:?} in {box_:?}"
-    );
-    assert!(
-        retry.y0 >= box_.center().y,
-        "it stands under what the banner says: {retry:?} in {box_:?}"
-    );
-
-    let mut wide = FrameHarness::new(
-        State::new(),
-        Box::new(Column::new().push(Box::new(banner()))),
-        (900, 400),
-    );
-    wide.relayout();
-    let targets = wide.targets();
-    let box_ = targets["trouble"];
-    let retry = targets["trouble.retry"];
-    assert!(
-        box_.x1 - retry.x1 < 40.0,
-        "a wide banner keeps its action at the trailing edge: {retry:?} in {box_:?}"
     );
 }
 
@@ -933,57 +712,6 @@ fn a_banner_its_stack_gives_no_slot_places_its_controls_inside_it() {
     inside(&d, "at rest narrower");
 }
 
-/// The type the person chose — a face whose letterforms are told apart, and
-/// "Always distinguish similar letters" on — is the type the box the layout
-/// gives the banner and the controls it places there are both measured in: the
-/// action stands in the box the same type sized.
-#[test]
-fn a_themed_banner_measures_and_places_with_the_same_type() {
-    let mut theme = Theme::light().with_text_scale(1.5);
-    theme
-        .tokens
-        .typography
-        .set_face(crate::tokens::UiFace::Hyperlegible.name());
-    theme.tokens.typography.distinct_letters = true;
-    let notice = sync_failed().source("Illinois 1011 mail");
-    let state = crate::LocalState::new(Some(notice.clone()));
-    let banner = || {
-        Banner::from_state(&state)
-            .with_id("sync")
-            .with_action(Button::new("sync.retry", "Try again"))
-    };
-    let mut d = FrameHarness::for_root(
-        State::new(),
-        Column::new().push(Box::new(banner())),
-        (420, 400),
-        theme.clone(),
-    );
-    d.relayout();
-    let box_ = d.targets()["sync"];
-    let placed = d.targets()["sync.retry"];
-
-    // The same measurement, taken the way a caller outside the layout takes it: in the theme's
-    // own type.
-    let mut text = TextRenderer::with_font_catalog(&crate::font_catalog::fixture_catalog())
-        .expect("the fixture fonts load");
-    text.set_text_scale(theme.text_scale);
-    text.apply_typography(&theme.tokens.typography);
-    let content = BannerContent::new(notice.kind, &notice.title)
-        .with_message(notice.message.as_deref())
-        .with_source(notice.source.as_deref())
-        .action("Try again");
-    let height = Banner::height(&content, box_.width(), &mut text, &theme);
-    assert!(
-        (box_.height() - height).abs() <= 1.0,
-        "the box the layout gives it is the height its text takes: {:?} against {height}",
-        box_.height()
-    );
-    assert!(
-        !placed.is_zero_area() && box_.contains(placed.center()) && placed.y1 <= box_.y1 + 0.5,
-        "the action {placed:?} stands inside the box the same type measured {box_:?}"
-    );
-}
-
 /// A banner painted at `width`: its box, and the tops of the lines it paints, each once.
 fn lines_of(content: &BannerContent<'_>, width: f64) -> (Rect, Vec<f64>) {
     let theme = Theme::dark();
@@ -1009,61 +737,339 @@ fn lines_of(content: &BannerContent<'_>, width: f64) -> (Rect, Vec<f64>) {
     (rect, tops)
 }
 
-/// What sent a banner is a line of its own above the title, and a reader hears it with what the
-/// banner says; a banner that names no sender has no such line.
-#[test]
-fn a_banner_names_what_sent_it_above_the_title() {
-    let bare = BannerContent::new(BannerKind::Error, "Build failed")
-        .with_message(Some("The link check found 4 broken links."));
-    let sent = bare.clone().with_source(Some("Forgejo"));
-    let (bare_box, lines) = lines_of(&bare, 600.0);
-    let (sent_box, with_sender) = lines_of(&sent, 600.0);
-    assert_eq!(lines.len(), 2, "the title and its message: {lines:?}");
-    assert_eq!(
-        with_sender.len(),
-        3,
-        "the sender above them: {with_sender:?}"
-    );
-    assert!(
-        with_sender[0] < lines[0],
-        "the sender is the first line: {with_sender:?} against {lines:?}"
-    );
-    let caption = f64::from(Theme::dark().tokens.typography.size(TextRole::Caption));
-    assert!(
-        sent_box.height() >= bare_box.height() + caption,
-        "the sender takes a line of its own: {bare_box:?} -> {sent_box:?}"
-    );
-    assert!(
-        with_sender
-            .iter()
-            .all(|top| *top >= sent_box.y0 && top + caption <= sent_box.y1),
-        "every line stands inside the banner: {with_sender:?} in {sent_box:?}"
-    );
-    assert_eq!(
-        lines_of(&bare.with_source(Some("")), 600.0),
-        (bare_box, lines.clone()),
-        "a sender that names nothing shows no line"
-    );
+tilo_test_env::scenario! {
+    /// The banner: kinds, wrapping, height, live region, touch targets, placement, and arriving, leaving and being built again.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn a_banner_lays_out_its_parts_and_goes_on_from_the_one_it_replaces;
 
-    let announced = Banner::error("Build failed")
-        .with_message("The link check found 4 broken links.")
-        .with_source("Forgejo");
-    let node = Widget::accessibility(&announced).expect("banner exposes a11y");
-    assert_eq!(node.name.as_deref(), Some("Build failed"));
-    let description = node.description.unwrap_or_default();
-    assert!(
-        description.contains("Forgejo")
-            && description.contains("The link check found 4 broken links."),
-        "the reader hears who sent it and what it says: {description}"
-    );
-    let unnamed =
-        Banner::error("Build failed").with_message("The link check found 4 broken links.");
-    assert_eq!(
-        Widget::accessibility(&unnamed)
-            .unwrap()
-            .description
-            .as_deref(),
-        Some("The link check found 4 broken links."),
-        "a banner with no sender says only what it says"
-    );
+    phase kinds_pick_their_icon_and_ink;
+    {
+        let theme = Theme::dark();
+        assert_eq!(
+            BannerKind::Error.color(&theme),
+            theme.tokens.colors.semantic.danger
+        );
+        assert_eq!(
+            BannerKind::Warning.color(&theme),
+            theme.tokens.colors.semantic.warning
+        );
+        assert_eq!(
+            BannerKind::Neutral.color(&theme),
+            theme.text_primary,
+            "a neutral notice has no hue"
+        );
+        assert_eq!(BannerKind::Success.default_icon(), Icon::Check);
+        assert_eq!(
+            Banner::info("Heads up").with_icon(Icon::Bell).icon(),
+            Icon::Bell
+        );
+        assert_eq!(Banner::info("Heads up").icon(), Icon::Info);
+    }
+
+    phase actions_sit_inside_the_box_and_wrap_under_the_message_when_narrow;
+    {
+        let content = BannerContent::new(BannerKind::Error, "Couldn't update the forecast")
+            .with_message(Some("Check your connection and try again."))
+            .action("Try again")
+            .secondary_action("Details")
+            .dismissible(true);
+        let (wide_h, wide) = content_hits(&content, 900.0);
+        let action = wide.action.expect("the action is laid out");
+        let secondary = wide
+            .secondary_action
+            .expect("the second action is laid out");
+        let dismiss = wide.dismiss.expect("the dismiss control is laid out");
+        for r in [action, secondary, dismiss] {
+            assert!(
+                wide.rect.contains(r.origin()) && r.x1 <= wide.rect.x1 && r.y1 <= wide.rect.y1,
+                "{r:?} leaves the banner {:?}",
+                wide.rect
+            );
+        }
+        assert!(secondary.x1 < action.x0, "the main action is at the edge");
+        assert!(action.x1 < dismiss.x0, "dismiss stays trailing");
+        assert!(
+            (action.center().y - wide.rect.center().y).abs() < 1.0,
+            "beside the text the actions sit on the banner's centre line"
+        );
+
+        let (narrow_h, narrow) = content_hits(&content, 360.0);
+        let action = narrow.action.unwrap();
+        assert!(narrow_h > wide_h, "wrapped actions add a row");
+        assert!(
+            action.y0 > narrow.rect.center().y,
+            "a narrow banner puts its actions under the message"
+        );
+        assert!(action.y1 <= narrow.rect.y1, "and still inside its box");
+    }
+
+    phase height_grows_with_text_scale_and_long_messages;
+    {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let message = "Tilo found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
+        let short = BannerContent::new(BannerKind::Warning, "Your identity needs recovery");
+        let long = short.clone().with_message(Some(message));
+        let short_h = Banner::height(&short, 600.0, &mut text, &theme);
+        let long_h = Banner::height(&long, 600.0, &mut text, &theme);
+        assert!(long_h > short_h);
+        assert!(short_h >= f64::from(theme.tokens.metrics.panel_row_height));
+        let scaled = Banner::height(&long, 600.0, &mut text, &theme.clone().with_text_scale(2.0));
+        assert!(scaled > long_h);
+    }
+
+    phase the_banner_is_a_live_region_by_severity;
+    {
+        use crate::a11y::{Politeness, Role};
+        let err = Banner::error("Boom").with_message("details");
+        let node = Widget::accessibility(&err).expect("banner exposes a11y");
+        assert_eq!(node.role, Role::Group);
+        assert_eq!(node.name.as_deref(), Some("Boom"));
+        assert_eq!(node.live, Some(Politeness::Assertive));
+        let info = Banner::neutral("Private window");
+        assert_eq!(
+            Widget::accessibility(&info).unwrap().live,
+            Some(Politeness::Polite)
+        );
+    }
+
+    phase a_banner_its_view_builds_again_goes_on_from_the_one_it_replaces;
+    {
+        let mut d = rooted(Column::new());
+        rebuild(&mut d, None);
+        let empty_y = d.targets()["below"].y0;
+        let frame = crate::motion::pin_frame();
+        rebuild(&mut d, Some(Banner::error("Sync failed")));
+        assert!(band(&d).is_some(), "a banner new to the view discloses");
+        assert!((d.targets()["below"].y0 - empty_y).abs() < 0.5);
+        rebuild(&mut d, Some(Banner::error("Sync failed")));
+        assert!(
+            band(&d).is_some(),
+            "built again mid-motion, it goes on opening"
+        );
+        assert!((d.targets()["below"].y0 - empty_y).abs() < 0.5);
+        drop(frame);
+
+        // A banner there from the first frame, built again at rest.
+        let mut d = rooted(
+            Column::new()
+                .push(Box::new(Banner::warning("Offline")))
+                .push(Box::new(crate::widget::Text::new("Below").with_id("below"))),
+        );
+        let shown_y = d.targets()["below"].y0;
+        let _frame = crate::motion::pin_frame();
+        rebuild(&mut d, Some(Banner::warning("Offline")));
+        assert!(band(&d).is_none(), "built again at rest, it stays at rest");
+        assert!(!d.root_widget().needs_animation_frame());
+        assert!((d.targets()["below"].y0 - shown_y).abs() < 0.5);
+        rebuild(&mut d, Some(Banner::warning("Offline, retrying")));
+        assert!(
+            band(&d).is_none() && !d.root_widget().needs_animation_frame(),
+            "a banner that says something new in the same place does not arrive again"
+        );
+    }
+
+    phase on_touch_a_banners_controls_are_a_fingers_target_inside_it;
+    // On touch a banner's action and its dismiss control are each a finger's target, inside the
+    // banner, which grows to hold them, and at a fractional display scale they stand on device
+    // pixels.
+    {
+        use crate::interaction::InteractionEnvironment;
+        let root = Column::new().push(Box::new(
+            Banner::warning("Sync paused")
+                .with_message("Files sync again when you are online.")
+                .with_id("paused")
+                .with_action(Button::new("paused.retry", "Retry"))
+                .on_dismiss(|| {}),
+        ));
+        let mut d = driver(Box::new(root));
+        d.root_widget_mut()
+            .set_interaction_environment(InteractionEnvironment::TOUCH);
+        d.set_input_scale(1.5).expect("a scale");
+        d.relayout();
+        let finger = f64::from(InteractionEnvironment::TOUCH.minimum_target());
+        let targets = d.targets();
+        let banner = targets["paused"];
+        for control in ["paused.retry", "paused.dismiss"] {
+            let rect = targets[control];
+            assert!(
+                rect.height() >= finger - 0.5,
+                "{control} is {rect:?}, under a finger's {finger}"
+            );
+            assert!(
+                banner.contains(rect.origin()) && banner.contains(Point::new(rect.x1, rect.y1)),
+                "{control} {rect:?} stands inside the banner {banner:?}"
+            );
+            for (side, edge) in [
+                ("top", rect.y0),
+                ("left", rect.x0),
+                ("right", rect.x1),
+                ("bottom", rect.y1),
+            ] {
+                let device = edge * 1.5;
+                assert!(
+                    (device - device.round()).abs() < 1e-3,
+                    "{control}'s {side} edge {edge} is on a device pixel at 1.5x"
+                );
+            }
+        }
+    }
+
+    phase a_narrow_banner_puts_its_action_under_its_text_in_the_text_column;
+    // A banner too narrow for its actions keeps one column: what it says, then the action under it
+    // as the words it is, starting where the text starts — no block across the banner, and the
+    // same control beside it again once the window is wide enough.
+    {
+        let banner = || {
+            Banner::warning("Can't reach sam@rivera.example")
+                .with_message("Connection refused · Last fetched 10:41")
+                .with_id("trouble")
+                .with_action(Button::new("trouble.retry", "Try again"))
+        };
+        let mut narrow = FrameHarness::new(
+            State::new(),
+            Box::new(Column::new().push(Box::new(banner()))),
+            (360, 400),
+        );
+        narrow.relayout();
+        let targets = narrow.targets();
+        let box_ = targets["trouble"];
+        let retry = targets["trouble.retry"];
+        assert!(
+            !retry.is_zero_area(),
+            "the action is placed: {retry:?} in {box_:?}"
+        );
+        assert!(
+            retry.x0 - box_.x0 < 60.0,
+            "it starts where the text does, not at the trailing edge: {retry:?} in {box_:?}"
+        );
+        assert!(
+            retry.y0 >= box_.center().y,
+            "it stands under what the banner says: {retry:?} in {box_:?}"
+        );
+
+        let mut wide = FrameHarness::new(
+            State::new(),
+            Box::new(Column::new().push(Box::new(banner()))),
+            (900, 400),
+        );
+        wide.relayout();
+        let targets = wide.targets();
+        let box_ = targets["trouble"];
+        let retry = targets["trouble.retry"];
+        assert!(
+            box_.x1 - retry.x1 < 40.0,
+            "a wide banner keeps its action at the trailing edge: {retry:?} in {box_:?}"
+        );
+    }
+
+    phase a_themed_banner_measures_and_places_with_the_same_type;
+    // The type the person chose — a face whose letterforms are told apart, and
+    // "Always distinguish similar letters" on — is the type the box the layout
+    // gives the banner and the controls it places there are both measured in: the
+    // action stands in the box the same type sized.
+    {
+        let mut theme = Theme::light().with_text_scale(1.5);
+        theme
+            .tokens
+            .typography
+            .set_face(crate::tokens::UiFace::Hyperlegible.name());
+        theme.tokens.typography.distinct_letters = true;
+        let notice = sync_failed().source("Illinois 1011 mail");
+        let state = crate::LocalState::new(Some(notice.clone()));
+        let banner = || {
+            Banner::from_state(&state)
+                .with_id("sync")
+                .with_action(Button::new("sync.retry", "Try again"))
+        };
+        let mut d = FrameHarness::for_root(
+            State::new(),
+            Column::new().push(Box::new(banner())),
+            (420, 400),
+            theme.clone(),
+        );
+        d.relayout();
+        let box_ = d.targets()["sync"];
+        let placed = d.targets()["sync.retry"];
+
+        // The same measurement, taken the way a caller outside the layout takes it: in the theme's
+        // own type.
+        let mut text = TextRenderer::with_font_catalog(&crate::font_catalog::fixture_catalog())
+            .expect("the fixture fonts load");
+        text.set_text_scale(theme.text_scale);
+        text.apply_typography(&theme.tokens.typography);
+        let content = BannerContent::new(notice.kind, &notice.title)
+            .with_message(notice.message.as_deref())
+            .with_source(notice.source.as_deref())
+            .action("Try again");
+        let height = Banner::height(&content, box_.width(), &mut text, &theme);
+        assert!(
+            (box_.height() - height).abs() <= 1.0,
+            "the box the layout gives it is the height its text takes: {:?} against {height}",
+            box_.height()
+        );
+        assert!(
+            !placed.is_zero_area() && box_.contains(placed.center()) && placed.y1 <= box_.y1 + 0.5,
+            "the action {placed:?} stands inside the box the same type measured {box_:?}"
+        );
+    }
+
+    phase a_banner_names_what_sent_it_above_the_title;
+    // What sent a banner is a line of its own above the title, and a reader hears it with what the
+    // banner says; a banner that names no sender has no such line.
+    {
+        let bare = BannerContent::new(BannerKind::Error, "Build failed")
+            .with_message(Some("The link check found 4 broken links."));
+        let sent = bare.clone().with_source(Some("Forgejo"));
+        let (bare_box, lines) = lines_of(&bare, 600.0);
+        let (sent_box, with_sender) = lines_of(&sent, 600.0);
+        assert_eq!(lines.len(), 2, "the title and its message: {lines:?}");
+        assert_eq!(
+            with_sender.len(),
+            3,
+            "the sender above them: {with_sender:?}"
+        );
+        assert!(
+            with_sender[0] < lines[0],
+            "the sender is the first line: {with_sender:?} against {lines:?}"
+        );
+        let caption = f64::from(Theme::dark().tokens.typography.size(TextRole::Caption));
+        assert!(
+            sent_box.height() >= bare_box.height() + caption,
+            "the sender takes a line of its own: {bare_box:?} -> {sent_box:?}"
+        );
+        assert!(
+            with_sender
+                .iter()
+                .all(|top| *top >= sent_box.y0 && top + caption <= sent_box.y1),
+            "every line stands inside the banner: {with_sender:?} in {sent_box:?}"
+        );
+        assert_eq!(
+            lines_of(&bare.with_source(Some("")), 600.0),
+            (bare_box, lines.clone()),
+            "a sender that names nothing shows no line"
+        );
+
+        let announced = Banner::error("Build failed")
+            .with_message("The link check found 4 broken links.")
+            .with_source("Forgejo");
+        let node = Widget::accessibility(&announced).expect("banner exposes a11y");
+        assert_eq!(node.name.as_deref(), Some("Build failed"));
+        let description = node.description.unwrap_or_default();
+        assert!(
+            description.contains("Forgejo")
+                && description.contains("The link check found 4 broken links."),
+            "the reader hears who sent it and what it says: {description}"
+        );
+        let unnamed =
+            Banner::error("Build failed").with_message("The link check found 4 broken links.");
+        assert_eq!(
+            Widget::accessibility(&unnamed)
+                .unwrap()
+                .description
+                .as_deref(),
+            Some("The link check found 4 broken links."),
+            "a banner with no sender says only what it says"
+        );
+    }
 }

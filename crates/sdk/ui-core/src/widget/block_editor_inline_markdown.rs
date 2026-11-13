@@ -441,151 +441,157 @@ mod tests {
         (block.text().to_owned(), block.line.marks().to_vec())
     }
 
-    #[test]
-    fn markdown_read_shows_its_spans_as_formatting_and_its_code_as_written() {
-        let editor = BlockEditor::reading_markdown(
-            "It is **a note**, not *an address*: use `a**b**c`.\n\n- the ~~old~~ text",
-        );
-        let first = &editor.blocks[0].line;
-        assert_eq!(first.value(), "It is a note, not an address: use a**b**c.");
-        let marks: Vec<(Mark, &str)> = first
-            .marks()
-            .iter()
-            .map(|span| (span.mark.clone(), &first.value()[span.range.clone()]))
-            .collect();
-        assert_eq!(
-            marks,
-            [
-                (Mark::Bold, "a note"),
-                (Mark::Italic, "an address"),
-                (Mark::Code, "a**b**c")
-            ]
-        );
-        assert_eq!(editor.blocks[1].line.value(), "the old text");
-    }
+    tilo_test_env::scenario! {
+        /// Markdown read and typed inline, and the corrections beside it.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn inline_markdown_becomes_formatting;
 
-    #[test]
-    fn typed_markdown_becomes_formatting_when_it_closes() {
-        for (typed, text, marks) in [
-            ("*hi*", "hi", vec![MarkSpan::new(0..2, Mark::Italic)]),
-            ("_hi_", "hi", vec![MarkSpan::new(0..2, Mark::Italic)]),
-            ("**b**", "b", vec![MarkSpan::new(0..1, Mark::Bold)]),
-            ("__b__", "b", vec![MarkSpan::new(0..1, Mark::Bold)]),
-            ("`c`", "c", vec![MarkSpan::new(0..1, Mark::Code)]),
-            ("~~s~~", "s", vec![MarkSpan::new(0..1, Mark::Strikethrough)]),
-            ("a **b** c", "a b c", vec![MarkSpan::new(2..3, Mark::Bold)]),
-            (
-                "*one* and *two*",
-                "one and two",
-                vec![
-                    MarkSpan::new(0..3, Mark::Italic),
-                    MarkSpan::new(8..11, Mark::Italic),
-                ],
-            ),
-            ("snake_case_name", "snake_case_name", vec![]),
-            ("2 * 3 * 4", "2 * 3 * 4", vec![]),
-            ("**not closed*", "**not closed*", vec![]),
-        ] {
-            let (editor, _) = typed_into(Block::paragraph(""), typed);
-            assert_eq!(shown(&editor), (text.to_owned(), marks), "{typed:?}");
+        phase markdown_read_shows_its_spans_as_formatting_and_its_code_as_written;
+        {
+            let editor = BlockEditor::reading_markdown(
+                "It is **a note**, not *an address*: use `a**b**c`.\n\n- the ~~old~~ text",
+            );
+            let first = &editor.blocks[0].line;
+            assert_eq!(first.value(), "It is a note, not an address: use a**b**c.");
+            let marks: Vec<(Mark, &str)> = first
+                .marks()
+                .iter()
+                .map(|span| (span.mark.clone(), &first.value()[span.range.clone()]))
+                .collect();
             assert_eq!(
-                editor.blocks()[0].line.cursor_pos(),
-                text.len(),
-                "{typed:?}: the caret stays after what was typed"
+                marks,
+                [
+                    (Mark::Bold, "a note"),
+                    (Mark::Italic, "an address"),
+                    (Mark::Code, "a**b**c")
+                ]
+            );
+            assert_eq!(editor.blocks[1].line.value(), "the old text");
+        }
+
+        phase typed_markdown_becomes_formatting_when_it_closes;
+        {
+            for (typed, text, marks) in [
+                ("*hi*", "hi", vec![MarkSpan::new(0..2, Mark::Italic)]),
+                ("_hi_", "hi", vec![MarkSpan::new(0..2, Mark::Italic)]),
+                ("**b**", "b", vec![MarkSpan::new(0..1, Mark::Bold)]),
+                ("__b__", "b", vec![MarkSpan::new(0..1, Mark::Bold)]),
+                ("`c`", "c", vec![MarkSpan::new(0..1, Mark::Code)]),
+                ("~~s~~", "s", vec![MarkSpan::new(0..1, Mark::Strikethrough)]),
+                ("a **b** c", "a b c", vec![MarkSpan::new(2..3, Mark::Bold)]),
+                (
+                    "*one* and *two*",
+                    "one and two",
+                    vec![
+                        MarkSpan::new(0..3, Mark::Italic),
+                        MarkSpan::new(8..11, Mark::Italic),
+                    ],
+                ),
+                ("snake_case_name", "snake_case_name", vec![]),
+                ("2 * 3 * 4", "2 * 3 * 4", vec![]),
+                ("**not closed*", "**not closed*", vec![]),
+            ] {
+                let (editor, _) = typed_into(Block::paragraph(""), typed);
+                assert_eq!(shown(&editor), (text.to_owned(), marks), "{typed:?}");
+                assert_eq!(
+                    editor.blocks()[0].line.cursor_pos(),
+                    text.len(),
+                    "{typed:?}: the caret stays after what was typed"
+                );
+            }
+        }
+
+        phase markdown_formats_in_every_prose_block_and_never_in_code;
+        {
+            let (heading, _) = typed_into(Block::heading(2, "A "), "*taste*");
+            assert_eq!(
+                shown(&heading),
+                (
+                    "A taste".to_owned(),
+                    vec![MarkSpan::new(2..7, Mark::Italic)]
+                )
+            );
+
+            let (code, _) = typed_into(Block::code_block(None, ""), "**x** `y`");
+            assert_eq!(shown(&code), ("**x** `y`".to_owned(), vec![]));
+
+            let mut inline = Block::paragraph("a*b");
+            inline.line.set_marks(vec![MarkSpan::new(0..3, Mark::Code)]);
+            let (inline, _) = typed_into(inline, "*");
+            assert_eq!(
+                shown(&inline),
+                ("a*b*".to_owned(), vec![MarkSpan::new(0..4, Mark::Code)])
             );
         }
-    }
 
-    #[test]
-    fn markdown_formats_in_every_prose_block_and_never_in_code() {
-        let (heading, _) = typed_into(Block::heading(2, "A "), "*taste*");
-        assert_eq!(
-            shown(&heading),
-            (
-                "A taste".to_owned(),
-                vec![MarkSpan::new(2..7, Mark::Italic)]
-            )
-        );
+        phase only_a_typed_closing_delimiter_ends_a_mark_for_what_follows;
+        {
+            let mut bold = Block::paragraph("ab");
+            bold.line.set_marks(vec![MarkSpan::new(0..2, Mark::Bold)]);
+            let (bold, _) = typed_into(bold, "c");
+            assert_eq!(
+                shown(&bold),
+                ("abc".to_owned(), vec![MarkSpan::new(0..3, Mark::Bold)])
+            );
+            let (mut editor, mut doc) = typed_into(Block::paragraph(""), "**b**");
+            type_more(&mut editor, &mut doc, " c");
+            assert_eq!(
+                shown(&editor),
+                ("b c".to_owned(), vec![MarkSpan::new(0..1, Mark::Bold)])
+            );
+        }
 
-        let (code, _) = typed_into(Block::code_block(None, ""), "**x** `y`");
-        assert_eq!(shown(&code), ("**x** `y`".to_owned(), vec![]));
+        phase backspace_right_after_formatting_puts_the_markdown_back;
+        {
+            let (mut editor, mut doc) = typed_into(Block::paragraph("a "), "**b**");
+            press(&mut editor, &mut doc, Key::Named(NamedKey::Backspace));
+            assert_eq!(shown(&editor), ("a **b**".to_owned(), vec![]));
+            assert_eq!(editor.blocks()[0].line.cursor_pos(), "a **b**".len());
+            press(&mut editor, &mut doc, Key::Named(NamedKey::Backspace));
+            assert_eq!(shown(&editor), ("a **b*".to_owned(), vec![]));
 
-        let mut inline = Block::paragraph("a*b");
-        inline.line.set_marks(vec![MarkSpan::new(0..3, Mark::Code)]);
-        let (inline, _) = typed_into(inline, "*");
-        assert_eq!(
-            shown(&inline),
-            ("a*b*".to_owned(), vec![MarkSpan::new(0..4, Mark::Code)])
-        );
-    }
+            let (mut editor, mut doc) = typed_into(Block::paragraph(""), "*e*");
+            type_more(&mut editor, &mut doc, "x");
+            press(&mut editor, &mut doc, Key::Named(NamedKey::Backspace));
+            assert_eq!(
+                shown(&editor),
+                ("e".to_owned(), vec![MarkSpan::new(0..1, Mark::Italic)])
+            );
+        }
 
-    #[test]
-    fn only_a_typed_closing_delimiter_ends_a_mark_for_what_follows() {
-        let mut bold = Block::paragraph("ab");
-        bold.line.set_marks(vec![MarkSpan::new(0..2, Mark::Bold)]);
-        let (bold, _) = typed_into(bold, "c");
-        assert_eq!(
-            shown(&bold),
-            ("abc".to_owned(), vec![MarkSpan::new(0..3, Mark::Bold)])
-        );
-        let (mut editor, mut doc) = typed_into(Block::paragraph(""), "**b**");
-        type_more(&mut editor, &mut doc, " c");
-        assert_eq!(
-            shown(&editor),
-            ("b c".to_owned(), vec![MarkSpan::new(0..1, Mark::Bold)])
-        );
-    }
+        phase contractions_are_corrected_at_the_word_boundary_except_in_code;
+        {
+            let (editor, _) = typed_into(Block::paragraph(""), "it doesnt work");
+            assert_eq!(shown(&editor).0, "it doesn't work");
 
-    #[test]
-    fn backspace_right_after_formatting_puts_the_markdown_back() {
-        let (mut editor, mut doc) = typed_into(Block::paragraph("a "), "**b**");
-        press(&mut editor, &mut doc, Key::Named(NamedKey::Backspace));
-        assert_eq!(shown(&editor), ("a **b**".to_owned(), vec![]));
-        assert_eq!(editor.blocks()[0].line.cursor_pos(), "a **b**".len());
-        press(&mut editor, &mut doc, Key::Named(NamedKey::Backspace));
-        assert_eq!(shown(&editor), ("a **b*".to_owned(), vec![]));
+            let (editor, _) = typed_into(Block::paragraph(""), "I cant ");
+            assert_eq!(shown(&editor).0, "I can't ", "as a phone keyboard does");
 
-        let (mut editor, mut doc) = typed_into(Block::paragraph(""), "*e*");
-        type_more(&mut editor, &mut doc, "x");
-        press(&mut editor, &mut doc, Key::Named(NamedKey::Backspace));
-        assert_eq!(
-            shown(&editor),
-            ("e".to_owned(), vec![MarkSpan::new(0..1, Mark::Italic)])
-        );
-    }
+            let (editor, _) = typed_into(Block::code_block(None, ""), "it doesnt work");
+            assert_eq!(
+                shown(&editor).0,
+                "it doesnt work",
+                "code is never corrected"
+            );
 
-    #[test]
-    fn contractions_are_corrected_at_the_word_boundary_except_in_code() {
-        let (editor, _) = typed_into(Block::paragraph(""), "it doesnt work");
-        assert_eq!(shown(&editor).0, "it doesn't work");
+            let (editor, _) = typed_into(Block::paragraph(""), "`doesnt` ok");
+            assert_eq!(
+                shown(&editor),
+                (
+                    "doesnt ok".to_owned(),
+                    vec![MarkSpan::new(0..6, Mark::Code)]
+                ),
+                "inline code is never corrected"
+            );
 
-        let (editor, _) = typed_into(Block::paragraph(""), "I cant ");
-        assert_eq!(shown(&editor).0, "I can't ", "as a phone keyboard does");
-
-        let (editor, _) = typed_into(Block::code_block(None, ""), "it doesnt work");
-        assert_eq!(
-            shown(&editor).0,
-            "it doesnt work",
-            "code is never corrected"
-        );
-
-        let (editor, _) = typed_into(Block::paragraph(""), "`doesnt` ok");
-        assert_eq!(
-            shown(&editor),
-            (
-                "doesnt ok".to_owned(),
-                vec![MarkSpan::new(0..6, Mark::Code)]
-            ),
-            "inline code is never corrected"
-        );
-
-        let (mut editor, mut doc) = typed_into(Block::paragraph(""), "it doesnt ");
-        assert_eq!(shown(&editor).0, "it doesn't ");
-        press(&mut editor, &mut doc, Key::Named(NamedKey::Backspace));
-        assert_eq!(
-            shown(&editor).0,
-            "it doesnt",
-            "Backspace right after a correction reverts it"
-        );
+            let (mut editor, mut doc) = typed_into(Block::paragraph(""), "it doesnt ");
+            assert_eq!(shown(&editor).0, "it doesn't ");
+            press(&mut editor, &mut doc, Key::Named(NamedKey::Backspace));
+            assert_eq!(
+                shown(&editor).0,
+                "it doesnt",
+                "Backspace right after a correction reverts it"
+            );
+        }
     }
 }
