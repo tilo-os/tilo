@@ -540,17 +540,10 @@ mod tests;
 
 ui::reach_tests!(PhotosShell);
 
+// That every scenario shows an agent its actions is asked by the reach walk above, of each
+// scenario's drive before it invokes anything.
 #[cfg(test)]
 mod agent_disclosure_tests {
-    #[test]
-    fn every_scenario_shows_an_agent_its_actions() {
-        if let Err(failures) =
-            ui::framework::testing::check_agents_are_shown_every_action::<super::PhotosShell>()
-        {
-            panic!("{failures}");
-        }
-    }
-
     #[test]
     fn people_a_person_and_the_analysis_answer_their_reads() {
         use crate::actions::PhotosEffect;
