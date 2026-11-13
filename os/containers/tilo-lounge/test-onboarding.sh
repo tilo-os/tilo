@@ -68,8 +68,7 @@ bash "$tilo_sh/stack.sh" up --fresh || { echo 'FAIL: the stack did not come up' 
 role=$state/secrets/roles.json
 bash "$tilo_sh/stack.sh" status || true
 
-node "$driver" "$site_origin" "$relay_origin" "$out" "$tilo_bin" \
-  "$state/local-ca.pem" "$door_origin" "$role" \
+node "$driver" "$site_origin" "$relay_origin" "$out" "$tilo_bin" "$role" \
   || { echo 'FAIL: a stranger did not get from the wait list to a workspace of their own' >&2
        echo '--- the mails the door sent:' >&2; bash "$tilo_sh/stack.sh" mail >&2 || true
        exit 1; }

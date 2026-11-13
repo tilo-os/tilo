@@ -37,21 +37,20 @@
 // SITE is the web entry's origin (the site people visit), RELAY the workspace
 // host's, WORK the run's directory (the stack's state, the mail sink's files
 // and every page's screenshots and console live there), TILO_BIN the `tilo`
-// command an agent runs, SITE_CA the stack's certificate authority, DOOR the
-// front door's origin, and ROLES the roles file the deployment mounts: the
-// driver declares the operator an owner in it, as the deployment does.
+// command an agent runs, and ROLES the roles file the deployment mounts: the
+// driver declares the operator an owner in it, as the deployment does. The
+// stack is plain http on this machine, so no certificate stands between the
+// browsers, the agent's command and it.
 import {execFile, spawn} from 'node:child_process';
 import {chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync} from 'node:fs';
-import {isIP} from 'node:net';
-import {connect} from 'node:tls';
 import {join} from 'node:path';
 import {FIRST_RUN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, deskMetrics, machine} from './waits.mjs';
 
-const [site, relay, work, tiloBin, siteCa, door, rolesFile] = process.argv.slice(2);
-if (!site || !relay || !work || !tiloBin || !siteCa || !door || !rolesFile) {
-  console.error('usage: node onboarding.mjs SITE RELAY WORK TILO_BIN SITE_CA DOOR ROLES');
+const [site, relay, work, tiloBin, rolesFile] = process.argv.slice(2);
+if (!site || !relay || !work || !tiloBin || !rolesFile) {
+  console.error('usage: node onboarding.mjs SITE RELAY WORK TILO_BIN ROLES');
   process.exit(2);
 }
 // The mail sink the stack points the door at (`stack.sh mail` reads the same).
@@ -59,7 +58,7 @@ const mailDir = join(work, 'state', 'mail');
 const computer = join(work, 'computer');
 mkdirSync(mailDir, {recursive: true});
 const mark = clock();
-const report = {site, relay, door, at: new Date().toISOString(), steps: []};
+const report = {site, relay, at: new Date().toISOString(), steps: []};
 const browsers = [];
 const said = [];
 
@@ -69,7 +68,6 @@ const hostOrigin = new URL(relay).origin;
 const siteOrigin = new URL(site).origin;
 
 const browserArgs = [
-  '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
@@ -387,25 +385,12 @@ printf '{"mcpServers":{"%s":{"type":"stdio","command":"%s","args":[%s],"env":{}}
   "$name" "$command" "\${args%,}" > "$HOME/.claude.json"
 `);
 chmodSync(join(computer, 'bin', 'claude'), 0o755);
-const relayCertificate = () => new Promise((resolve, reject) => {
-  const hostname = new URL(relay).hostname;
-  // A relay on loopback is named by its address, which no ServerName may be:
-  // the certificate is taken as it comes, as the agent's command does there.
-  const socket = connect({host: hostname, port: Number(new URL(relay).port || 443),
-    ...(isIP(hostname) ? {} : {servername: hostname}), rejectUnauthorized: false}, () => {
-    const body = (socket.getPeerCertificate().raw ?? Buffer.alloc(0)).toString('base64').match(/.{1,64}/g)?.join('\n') ?? '';
-    socket.end();
-    resolve(`-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----\n`);
-  });
-  socket.on('error', reject);
-});
 const agentEnv = async () => ({
   PATH: `${join(computer, 'bin')}:${process.env.PATH}`,
   HOME: computer,
   XDG_STATE_HOME: join(computer, 'state'),
   XDG_CONFIG_HOME: join(computer, 'config'),
   CLAUDECODE: '1',
-  TILO_TEST_CA_FILE: `${siteCa}:${join(computer, 'relay.pem')}`,
 });
 const tilo = async (env, args) => new Promise(resolve => {
   execFile(tiloBin, args, {env, timeout: 180_000, maxBuffer: 1 << 20},
@@ -558,7 +543,7 @@ try {
   report.sent = await operator.tab.evaluate(`document.querySelector('.tilo-waiting-sent')?.textContent?.trim() ?? null`);
   const invitation = await waitForMail('the invitation mail', 2);
   report.invitationMail = {to: invitation.to, from: invitation.from, subject: invitation.subject};
-  const inviteLink = mailLink(invitation, 'invite') ?? (invitation.text.match(/https:\/\/\S+\/i\/[A-Za-z0-9_-]{16}#[A-Za-z0-9_-]{43}/) ?? [])[0];
+  const inviteLink = mailLink(invitation, 'invite') ?? (invitation.text.match(/https?:\/\/\S+\/i\/[A-Za-z0-9_-]{16}#[A-Za-z0-9_-]{43}/) ?? [])[0];
   if (!inviteLink) await fail(`the invitation mail carries no link: ${(invitation.text ?? '').slice(0, 400)}`);
   report.inviteLink = inviteLink.replace(/#.*/, '#…');
   await pressText(operator.tab, 'Close', '.tilo-waiting');
@@ -607,7 +592,6 @@ try {
   report.prompt = prompt;
   const setup = commandOf(prompt);
   if (!setup) await fail(`the prompt names no tilo login code: ${prompt}`);
-  writeFileSync(join(computer, 'relay.pem'), await relayCertificate().catch(error => fail(`the relay's certificate: ${error.message}`)));
   const env = await agentEnv();
   const login = await tilo(env, ['login', setup.code, '--site', setup.site ?? site]);
   report.login = login;
