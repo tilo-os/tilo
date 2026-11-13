@@ -77,10 +77,10 @@ pub trait MetaExt {
     /// resolve its records through them.
     fn register_schemas(&self);
 
-    /// The action a caller at the door names `published`: actions are published by their name,
-    /// as a native verb is, while the code of one runs under the id its declaration keeps (and
-    /// its words are keyed by it).
-    fn action_published_as(&self, published: &str) -> Option<&ActionMeta>;
+    /// The action a caller names `action`: the name the app publishes it under (`new_note`, as a
+    /// native verb is) or the id its declaration keeps (`qymo5lg2`), which is what a change of it
+    /// says in the record and what a window's control says it does.
+    fn action_published_as(&self, action: &str) -> Option<&ActionMeta>;
 
     /// The resource kind of the type `type_name`: `tl.<app>.<Type>`.
     fn kind_of(&self, type_name: &str) -> String;
@@ -347,10 +347,10 @@ impl MetaExt for Meta {
         }
     }
 
-    fn action_published_as(&self, published: &str) -> Option<&ActionMeta> {
-        self.actions
-            .iter()
-            .find(|action| action.name == published && !action.scenario)
+    fn action_published_as(&self, action: &str) -> Option<&ActionMeta> {
+        self.actions.iter().find(|declared| {
+            !declared.scenario && (declared.name == action || declared.id == action)
+        })
     }
 
     fn kind_of(&self, type_name: &str) -> String {

@@ -8,6 +8,7 @@
 
 use super::packages::{package, package_of};
 use super::{Window, content_nodes, find};
+use collaboration::{CollabEvent, CollabRequest};
 
 impl super::Session {
     /// The centre of the open note's body.
@@ -176,4 +177,122 @@ pub(super) struct ShownControl {
     name: String,
     /// Where it stands: its left and top edge, its width and its height.
     at: (f64, f64, f64, f64),
+}
+
+impl super::Session {
+    /// Invoke what `identity` says a window's control does, at the door the broker delivers to:
+    /// the kind of resource the action acts on and the id the app declares it by, which is what
+    /// the window publishes of the control ([`super::Session::controls`]).
+    pub(super) fn invoke_doing(
+        &mut self,
+        identity: &str,
+        arguments: &serde_json::Value,
+    ) -> ui::tilo_actions::InvocationUpdate {
+        let doing = ui::tilo_actions::ActionAddress::parse(identity)
+            .unwrap_or_else(|| panic!("{identity} names a resource and an action"));
+        let id = 1;
+        self.inbox()
+            .borrow_mut()
+            .push_back(CollabEvent::Invocation {
+                id,
+                invocation: ui::tilo_actions::InvocationId::new(),
+                resource: doing.resource,
+                action: doing.action,
+                argument: Some(format!(
+                    "{}{arguments}",
+                    ui::tilo_actions::ARGUMENTS_JSON_PREFIX
+                )),
+                actor: "ada".to_owned(),
+                context: None,
+            });
+        self.settle();
+        self.sent
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|request| match request {
+                CollabRequest::UpdateInvocation {
+                    id: answered,
+                    update,
+                } if *answered == id => Some(update.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the door answered nothing of {identity}"))
+    }
+
+    /// That the window publishes a control doing `identity`, which is what a caller names it by.
+    pub(super) fn offers_doing(&mut self, identity: &str) {
+        assert!(
+            self.controls()
+                .iter()
+                .any(|control| control.doing.as_deref() == Some(identity)),
+            "the window offers no control doing {identity}: {:?}",
+            self.controls()
+                .into_iter()
+                .map(|control| (control.doing, control.name))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// What a window's control of `ty` that runs the app's `action` says it does: the identity every
+/// caller names it by, whatever the window composes around it and whatever the person's language
+/// calls it.
+fn doing_identity(session: &super::Session, ty: &str, action: &str) -> String {
+    let (kind, declared) = session.doing(ty, action);
+    ui::tilo_actions::ActionAddress::new(kind, declared).encode()
+}
+
+/// A control of a window is invoked by what it does, at the door a tool or another app calls: the
+/// identity the window publishes is the app's own action, so what a person presses and what a
+/// caller names are one.
+#[test]
+fn a_new_note_is_invoked_at_the_door_by_what_its_control_does() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = super::Session::live_notes();
+    let new_note = doing_identity(&session, "Notebook", "new_note");
+    session.offers_doing(&new_note);
+    assert!(
+        session.titles().is_empty(),
+        "the notebook starts with no note"
+    );
+    let answered = session.invoke_doing(&new_note, &serde_json::json!({}));
+    assert!(
+        matches!(
+            answered,
+            ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+        ),
+        "the door ran what the control does: {answered:?}"
+    );
+    assert_eq!(
+        session.titles(),
+        ["Untitled".to_owned()],
+        "the note New note makes is in the notebook"
+    );
+}
+
+/// A control that takes an argument is invoked by what it does, with that argument: the Tasks
+/// window's New task, run at the door as another app's call or an agent's reaches it, makes the
+/// task it names.
+#[test]
+fn a_new_task_is_invoked_at_the_door_by_what_its_control_does_and_its_argument() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = super::Session::live_tasks();
+    let new_task = doing_identity(&session, "Tasks", "new_task");
+    session.offers_doing(&new_task);
+    let answered = session.invoke_doing(
+        &new_task,
+        &serde_json::json!({ "title": "Water the plants" }),
+    );
+    assert!(
+        matches!(
+            answered,
+            ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+        ),
+        "the door ran what the control does: {answered:?}"
+    );
+    assert!(
+        super::task_in_record(&session, "Water the plants", false),
+        "the task named by the argument is in the record"
+    );
 }

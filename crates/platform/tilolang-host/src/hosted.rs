@@ -278,6 +278,31 @@ impl Surface {
         }
         resources
     }
+
+    /// What an invocation of `address` runs, and the resources it resolves against: the first
+    /// resource carrying it among `resources`, or — where the address names no resource there —
+    /// among every resource the workspace holds, since what a window's control says it does names
+    /// a kind of resource rather than the record a window shows. `address` itself answers when
+    /// this app publishes nothing of it, so an action it does not offer is refused as it was.
+    fn naming(
+        &self,
+        resources: Vec<ResourceSpec>,
+        address: &ActionAddress,
+    ) -> (Vec<ResourceSpec>, ActionAddress) {
+        let named = |resources: &[ResourceSpec]| {
+            resources
+                .iter()
+                .find_map(|resource| carried(resource, address))
+        };
+        if let Some(named) = named(&resources) {
+            return (resources, named);
+        }
+        let every = self.resources(None);
+        match named(&every) {
+            Some(named) => (every, named),
+            None => (resources, address.clone()),
+        }
+    }
 }
 
 /// `spec` without its children: the resource itself, its actions and its views.
@@ -311,6 +336,27 @@ fn holds(spec: &ResourceSpec, address: &str) -> bool {
     spec.id.as_str() == address || spec.children.iter().any(|child| holds(child, address))
 }
 
+/// What `spec` publishes of `address`: the action under the name it is published by, on the
+/// resource that carries it. `address` names that resource by its published id, or — as a
+/// window's control says what it does — by the kind of resource it acts on; and the action by
+/// the name it is published under or the id its declaration keeps
+/// ([`tilo_actions::ActionType::declared`]), which no rename of a view and no other language
+/// changes. `None` when `spec` and what it holds offer nothing of it.
+fn carried(spec: &ResourceSpec, address: &ActionAddress) -> Option<ActionAddress> {
+    if spec.id.as_str() == address.resource || spec.kind == address.resource {
+        for action in &spec.actions {
+            if action.id == address.action || action.declared == address.action {
+                return Some(ActionAddress::new(spec.id.as_str(), action.id.clone()));
+            }
+        }
+    }
+    spec.children
+        .iter()
+        .find_map(|child| carried(child, address))
+}
+
+/// What the resources `resources` publish of `address` ([`carried`]), in reading order: the first
+/// one, which is what a press names, answers for all of them.
 /// The instance's hold on its surface: while the instance publishes, it is the instance's.
 struct Held(Rc<Surface>);
 
@@ -1657,11 +1703,15 @@ impl Hosted {
             .clone()
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
         let shown = self.shown();
-        let resources = surface.with_addressed(surface.resources(Some(&shown)), &address.resource);
+        // What `address` names as this app publishes it, whichever way a caller named it: the
+        // resource and the name a press runs, or — what a window's control says it does — the kind
+        // of resource and the id the app declares the action by.
+        let resources = surface.addressed(&shown, &address.resource);
+        let (resources, address) = surface.naming(resources, address);
         let by_person = invoker.kind == ActorKind::Person;
         let caller = caller_of(&invoker);
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
-        let encoded = encode(&resources, address, argument);
+        let encoded = encode(&resources, &address, argument);
         CALLER.with(|slot| *slot.borrow_mut() = None);
         let encoded =
             encoded.map_err(|error| Refused::new(door_code(&error), error.to_string()))?;
@@ -2573,8 +2623,11 @@ impl Applier {
         sync_record(&self.host, &self.record);
         let address = ActionAddress::new(change.resource.clone(), change.action.clone());
         // An agent asks of the resource it names, whatever a window shows: the workspace is not
-        // published for one change, and an applier shows nothing.
+        // published for one change, and an applier shows nothing. What it names by what a control
+        // does — a kind of resource and the id the app declares the action by — is found the same
+        // way the window finds it.
         let resources = self.surface.addressed(&[], &change.resource);
+        let (resources, address) = self.surface.naming(resources, &address);
         let caller = caller_of(&invoker);
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller));
         let encoded = tilo_actions::door::encode_json(&resources, &address, &change.arguments);

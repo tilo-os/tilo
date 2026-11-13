@@ -1191,19 +1191,20 @@ impl Host {
         self.inner.offered_reading(resource, &id)
     }
 
-    /// The action the door publishes as `published` on `resource`: one of the package whose
-    /// resource it is (`tl:<app>:<id>`, `tl:<app>`), by its name
+    /// The action the door publishes as `action` on `resource`: one of the package whose
+    /// resource it is (`tl:<app>:<id>`, `tl:<app>`), by the name the app publishes it under or
+    /// the id its declaration keeps
     /// ([`MetaExt::action_published_as`](crate::meta::MetaExt::action_published_as)).
     #[must_use]
     pub fn published_action(
         &self,
         resource: &str,
-        published: &str,
+        action: &str,
     ) -> Option<tilolang_runtime::meta::ActionMeta> {
         let app = crate::publish::app_of(resource)?;
         self.find_in_packages(|package| {
             (package.meta.app == app)
-                .then(|| package.meta.action_published_as(published).cloned())
+                .then(|| package.meta.action_published_as(action).cloned())
                 .flatten()
         })
     }
