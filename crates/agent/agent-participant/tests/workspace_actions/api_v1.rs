@@ -368,3 +368,81 @@ async fn a_key_works_through_the_api_on_a_relay_host() {
         "{gone}"
     );
 }
+
+/// A program holding a key of the person's own (a device of theirs, not a
+/// grant an API server keeps) reaches the host directly: the API served in
+/// process, the same routes and answers, with no API server between them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_key_its_program_holds_reaches_the_host_directly() {
+    let on_relay = api_on_relay(ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    // Ada comes to the relay once, as every person does.
+    approved_key(&on_relay, &ada, &page, "Visa backend").await;
+    let laptop = enrol(&ada, "Ada's script", DeviceCapabilities::member());
+    let file =
+        tilo_api::direct::KeyFile::new(&on_relay.relay, "Ada's script", &laptop.key, &laptop.cert);
+    let direct = tilo_api::direct::Direct::new(&file).unwrap();
+    let json = [("content-type".to_owned(), "application/json".to_owned())];
+
+    let (status, info) = json_of(direct.request("GET", "/v1", &[], b"").await).await;
+    assert_eq!(
+        (status, &info["key"]["scope"]),
+        (200, &json!("all")),
+        "{info}"
+    );
+    let new = json!({"name": "Made from a script"}).to_string();
+    let retried = [
+        json[0].clone(),
+        ("idempotency-key".to_owned(), "script-1".to_owned()),
+    ];
+    let (status, made) = json_of(
+        direct
+            .request("POST", "/v1/workspaces", &retried, new.as_bytes())
+            .await,
+    )
+    .await;
+    assert_eq!(status, 201, "{made}");
+    let (_, again) = json_of(
+        direct
+            .request("POST", "/v1/workspaces", &retried, new.as_bytes())
+            .await,
+    )
+    .await;
+    assert_eq!(again["id"], made["id"], "a retry makes no second workspace");
+    let workspace = made["id"].as_str().unwrap();
+    let (status, listed) = json_of(direct.request("GET", "/v1/workspaces", &[], b"").await).await;
+    assert_eq!(status, 200, "{listed}");
+    assert!(listed.to_string().contains(workspace), "{listed}");
+    let (status, opened) = json_of(
+        direct
+            .request(
+                "POST",
+                &format!("/v1/workspaces/{workspace}/resources/notes/actions/open"),
+                &json,
+                b"{}",
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "the host's app workers answer the key: {opened}"
+    );
+    let (status, apps) = json_of(
+        direct
+            .request(
+                "GET",
+                &format!("/v1/workspaces/{workspace}/resources"),
+                &[],
+                b"",
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(status, 200, "{apps}");
+    assert!(
+        apps["rows"].as_array().is_some_and(|rows| !rows.is_empty()),
+        "{apps}"
+    );
+}

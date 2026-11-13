@@ -131,23 +131,43 @@ impl GrantKey {
         let key = ed25519_dalek::SigningKey::from_bytes(&secret);
         let cert: DeviceCert = tilo_user_identity::canonical::from_canonical_bytes(cert)
             .map_err(|error| Refused(format!("a kept grant certificate: {error}")))?;
-        let scope = cert
-            .capabilities
-            .agent
-            .ok_or_else(|| Refused("a kept certificate is no grant".into()))?;
-        let server_key = cert.capabilities.server_key;
-        let browser_pages = cert.capabilities.browser_pages;
-        Self::new(
-            key,
-            cert.clone(),
-            scope,
-            server_key,
-            browser_pages,
-            cert.issued_at_ns,
-        )
+        let issued = cert.issued_at_ns;
+        Self::held(key, cert, issued)
     }
 
-    /// The key's secret bytes, for the store only.
+    /// A key its holder brings, with the certificate the person's root (or a
+    /// key of theirs) gave it: an agent's grant within its scope, or a device
+    /// of the person's own, which reaches all their workspaces as they do.
+    /// This is how the API is served in process, as the holder's own key
+    /// ([`crate::direct`]).
+    ///
+    /// # Errors
+    /// The certificate is not for this key, or does not hold at `now_ns`.
+    pub fn held(
+        key: ed25519_dalek::SigningKey,
+        cert: DeviceCert,
+        now_ns: u64,
+    ) -> Result<Self, Refused> {
+        if let Some(scope) = cert.capabilities.agent {
+            let (server_key, browser_pages) = (
+                cert.capabilities.server_key,
+                cert.capabilities.browser_pages,
+            );
+            return Self::new(key, cert, scope, server_key, browser_pages, now_ns);
+        }
+        if cert.device_public_key != key.verifying_key().to_bytes() {
+            return Err(Refused("the certificate is for another key".into()));
+        }
+        tilo_user_identity::verify_device_cert_at(&cert, now_ns)
+            .map_err(|error| Refused(format!("the certificate does not hold: {error}")))?;
+        Ok(Self {
+            key,
+            browser_pages: false,
+            cert,
+            scope: AgentScope::AllWorkspaces,
+        })
+    }
+
     #[must_use]
     pub fn secret(&self) -> [u8; 32] {
         self.key.to_bytes()

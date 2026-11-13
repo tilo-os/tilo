@@ -30,6 +30,7 @@
 
 pub mod account;
 pub mod content;
+pub mod direct;
 pub mod grant_key;
 pub mod keys;
 pub mod oauth;
