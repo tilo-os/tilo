@@ -7,10 +7,8 @@ use std::io::{self, Read};
 
 use sha2::{Digest, Sha256};
 
-/// Bytes per block.
 pub const BLOCK: usize = 4 * 1024 * 1024;
 
-/// A streaming `content_hash`.
 #[derive(Clone, Default)]
 pub struct ContentHasher {
     blocks: Vec<[u8; 32]>,
@@ -81,7 +79,6 @@ impl ContentHasher {
     }
 }
 
-/// `content_hash` of an in-memory buffer.
 pub fn content_hash(data: &[u8]) -> String {
     let mut hasher = ContentHasher::new();
     hasher.update(data);
@@ -132,11 +129,10 @@ impl<R: Read> Read for Verifying<R> {
 mod tests {
     use super::*;
 
-    /// Dropbox's published test vector is `milky-way-nasa.jpg` (9 711 423
-    /// bytes, three blocks) with content hash
-    /// `485291fa0ee50c016982abbfa943957bcd231aae0492ccbaa22c58e3997b35e0`.
-    /// These are the SHA-256 digests of its three 4 MiB blocks; combining
-    /// them must give the published hash.
+    /// Dropbox's published test vector is `milky-way-nasa.jpg` (9 711 423 bytes, three
+    /// blocks) with content hash
+    /// `485291fa0ee50c016982abbfa943957bcd231aae0492ccbaa22c58e3997b35e0`; these are the
+    /// SHA-256 digests of its three 4 MiB blocks.
     const MILKY_WAY_BLOCKS: [&str; 3] = [
         "2a846fa617c3361fc117e1c5c1e1838c336b6a5cef982c1a2d9bdf68f2f1992a",
         "c68469027410ea393eba6551b9fa1e26db775f00eae70a0c3c129a0011a39cf9",

@@ -1,10 +1,10 @@
 //! The Dropbox API v2 transport: RPC, content-upload, content-download and
-//! notification endpoints, credentials, the path-root header and the
-//! mapping of HTTP statuses to provider-neutral errors.
+//! notification endpoints, credentials, the path-root header and the mapping of HTTP
+//! statuses to provider-neutral errors.
 //!
-//! Route errors (HTTP 409) are handed back with their `error_summary` so each
-//! operation maps them itself: `path/conflict/file` is "already exists" for
-//! a create and "changed remotely" for a conditional replace.
+//! Route errors (HTTP 409) are handed back with their `error_summary` so each operation
+//! maps them itself: `path/conflict/file` is "already exists" for a create and "changed
+//! remotely" for a conditional replace.
 
 use std::fmt::Write as _;
 use std::ops::Range;
@@ -15,17 +15,13 @@ use cloud_source::{Credential, CredentialSource, Error, Result, http};
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use serde_json::Value;
 
-/// Largest JSON response read from an RPC endpoint.
 const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
 
 /// Where the three Dropbox API hosts are. Tests point all three at fakes.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Endpoints {
-    /// RPC endpoints (`https://api.dropboxapi.com`).
     pub api: String,
-    /// Content upload and download (`https://content.dropboxapi.com`).
     pub content: String,
-    /// Long-poll notifications (`https://notify.dropboxapi.com`).
     pub notify: String,
 }
 
@@ -39,7 +35,6 @@ impl Default for Endpoints {
     }
 }
 
-/// A failed call: a route error the caller interprets, or a mapped error.
 #[derive(Debug)]
 pub enum Failure {
     /// HTTP 409 with a structured error.
@@ -57,7 +52,6 @@ impl From<Error> for Failure {
 }
 
 impl Failure {
-    /// Whether `tag` is one of the route error's `error_summary` tags.
     pub fn has(&self, tag: &str) -> bool {
         match self {
             Self::Route { summary, .. } => summary.split('/').any(|t| t.trim() == tag),
@@ -65,7 +59,6 @@ impl Failure {
         }
     }
 
-    /// The outermost tag of a route error (`path` of `path/not_found/..`).
     pub fn first_tag(&self) -> Option<&str> {
         match self {
             Self::Route { summary, .. } => summary.split('/').next().map(str::trim),
@@ -73,8 +66,8 @@ impl Failure {
         }
     }
 
-    /// The provider-neutral error for route errors no operation-specific
-    /// mapping claimed.
+    /// The provider-neutral error for route errors no operation-specific mapping
+    /// claimed.
     pub fn into_error(self) -> Error {
         match self {
             Self::Error(error) => error,
@@ -108,16 +101,12 @@ impl Failure {
     }
 }
 
-/// A successful download: the streaming response and its metadata.
 pub struct Downloaded {
     pub response: Response,
-    /// The `Dropbox-API-Result` header.
     pub result: Value,
-    /// What the response said about its body.
     pub served: http::Served,
 }
 
-/// One account's transport. Cloning shares the connection pool.
 #[derive(Clone)]
 pub struct Api {
     http: Client,
@@ -199,7 +188,6 @@ impl Api {
         Ok(request)
     }
 
-    /// Map a response status; successes pass through.
     fn check(
         &self,
         sent: reqwest::Result<Response>,

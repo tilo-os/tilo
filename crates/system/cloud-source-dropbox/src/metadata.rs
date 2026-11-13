@@ -1,6 +1,5 @@
-//! Dropbox metadata (`FileMetadata`, `FolderMetadata`, `DeletedMetadata`)
-//! and the id/path bookkeeping that turns path-addressed entries into
-//! id-addressed items.
+//! Dropbox metadata (`FileMetadata`, `FolderMetadata`, `DeletedMetadata`) and the
+//! id/path bookkeeping that turns path-addressed entries into id-addressed items.
 
 use std::collections::{HashMap, HashSet};
 
@@ -87,7 +86,6 @@ impl Paths {
         self.by_path.get(path)
     }
 
-    /// Record that `id` lives at `path`.
     pub fn insert(&mut self, id: &ItemId, path: &str) {
         if let Some(old) = self.by_id.get(id).cloned()
             && old != path
@@ -110,7 +108,6 @@ impl Paths {
     /// `path`'s own first.
     pub fn remove_tree(&mut self, path: &str) -> Vec<ItemId> {
         if path.is_empty() {
-            // The account root is never deleted.
             return Vec::new();
         }
         let mut doomed: Vec<(String, ItemId)> = self
@@ -147,7 +144,6 @@ impl Paths {
         }
     }
 
-    /// Consume a vacated mark for `path`.
     pub fn take_vacated(&mut self, path: &str) -> bool {
         self.vacated.remove(path)
     }
