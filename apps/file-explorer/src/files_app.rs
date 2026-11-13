@@ -7237,6 +7237,8 @@ impl FilesState {
                 cmds.push(cmd);
             }
         }
+        // What a sent message is about: the files the menu acts on.
+        menu.set_about(self.shared_selection());
         menu.open_at([at.x as f32, at.y as f32]);
         layout_menu_widget(&mut menu);
         self.menus.push(MenuChange::Main(menu, cmds));
@@ -7626,68 +7628,37 @@ impl FilesState {
         spec
     }
 
-    /// If either menu is open, route a left-press to it. Returns true when the
-    /// press was consumed (item fired, submenu opened, or a menu dismissed).
-    fn route_menu_click(&mut self, chrome: &mut Chrome, p: Point) -> bool {
-        // The submenu takes priority while it is up.
-        if chrome.submenu.is_open() {
-            if let Some(idx) = chrome.submenu.item_at([p.x, p.y]) {
-                let cmd = chrome.submenu_commands.get(idx).cloned().flatten();
-                chrome.submenu.close();
-                chrome.context_menu.close();
-                if let Some(cmd) = cmd {
-                    self.apply_command(cmd);
-                }
-                return true;
-            }
-            // A click outside the submenu closes both menus.
-            chrome.submenu.close();
-            chrome.context_menu.close();
-            return true;
-        }
-        if !chrome.context_menu.is_open() {
-            return false;
-        }
-        if let Some(idx) = chrome.context_menu.item_at([p.x, p.y]) {
-            let cmd = chrome.menu_commands.get(idx).cloned().flatten();
-            if let Some(FileCommand::OpenTemplatesMenu | FileCommand::OpenShortcutsMenu) = cmd {
-                // Open the flyout to the right of the clicked row; keep the
-                // main menu open behind it.
-                let anchor = Point::new(chrome.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
-                if cmd == Some(FileCommand::OpenShortcutsMenu) {
-                    self.open_shortcuts_submenu(anchor);
-                } else {
-                    self.open_templates_submenu(anchor);
-                }
-                return true;
-            }
-            if cmd == Some(FileCommand::OpenWithMenu) {
-                let anchor = Point::new(chrome.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
-                self.open_open_with_submenu(anchor);
-                return true;
-            }
-            chrome.context_menu.close();
-            if let Some(cmd) = cmd {
-                self.apply_command(cmd);
-            }
-            return true;
-        }
-        // Click outside the open menu dismisses it.
-        chrome.context_menu.close();
-        true
-    }
-
-    /// Route keyboard input through a standalone context menu and translate
-    /// its selected row back into the app command bus. The menu is painted as
-    /// an overlay rather than installed in the taffy tree, so normal child
-    /// event propagation cannot reach it.
-    fn route_menu_keyboard(
+    /// Route the pointer and the keys through the open menu (its flyout while
+    /// that is up) and translate its chosen row back into the app command bus.
+    /// The menu is painted as an overlay rather than installed in the taffy
+    /// tree, so normal child event propagation cannot reach it. The menu runs
+    /// its own rows, presses and send row, so a row a press, a key or the
+    /// send-to box beside it takes is the same row.
+    fn route_menu_event(
         &mut self,
         chrome: &mut Chrome,
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let submenu = chrome.submenu.is_open();
+        if submenu
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            )
+            && !chrome
+                .submenu
+                .contains([self.last_cursor.x, self.last_cursor.y])
+        {
+            // A press outside the flyout closes both menus.
+            chrome.submenu.close();
+            chrome.context_menu.close();
+            return true;
+        }
         let mut menu_handled = false;
         let selected = {
             let menu = if submenu {
@@ -7715,24 +7686,23 @@ impl FilesState {
         } else {
             chrome.menu_commands.get(index).cloned().flatten()
         };
-        if command == Some(FileCommand::OpenTemplatesMenu) {
-            let rect = chrome.context_menu.get_rect();
-            self.open_templates_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
-        } else if command == Some(FileCommand::OpenShortcutsMenu) {
-            let rect = chrome.context_menu.get_rect();
-            self.open_shortcuts_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
-        } else if command == Some(FileCommand::OpenWithMenu) {
-            let rect = chrome.context_menu.get_rect();
-            let row = chrome
-                .context_menu
-                .item_rect(index)
-                .map_or(rect.y0 + 28.0, |row| row.y0);
-            self.open_open_with_submenu(Point::new(rect.x1 - 6.0, row));
-        } else {
-            chrome.submenu.close();
-            chrome.context_menu.close();
-            if let Some(command) = command {
-                self.apply_command(command);
+        // A flyout opens beside the row that opened it, the menu kept open.
+        let rect = chrome.context_menu.get_rect();
+        let row = chrome
+            .context_menu
+            .item_rect(index)
+            .map_or(rect.y0 + 28.0, |row| row.y0);
+        let beside = Point::new(rect.x1 - 6.0, row);
+        match command {
+            Some(FileCommand::OpenTemplatesMenu) => self.open_templates_submenu(beside),
+            Some(FileCommand::OpenShortcutsMenu) => self.open_shortcuts_submenu(beside),
+            Some(FileCommand::OpenWithMenu) => self.open_open_with_submenu(beside),
+            command => {
+                chrome.submenu.close();
+                chrome.context_menu.close();
+                if let Some(command) = command {
+                    self.apply_command(command);
+                }
             }
         }
         true
@@ -8171,35 +8141,27 @@ impl FilesState {
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        use winit::event::{ElementState, MouseButton, WindowEvent};
-        if !(chrome.context_menu.is_open() || chrome.submenu.is_open()) {
+        use winit::event::{MouseButton, WindowEvent};
+        if !(chrome.context_menu.is_open() || chrome.submenu.is_open())
+            || !matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::Ime(_)
+                    | WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::MouseInput {
+                        button: MouseButton::Left,
+                        ..
+                    }
+            )
+            || !self.route_menu_event(chrome, event, ctx)
+        {
             return false;
         }
-        match event {
-            WindowEvent::KeyboardInput { .. } => {
-                if self.route_menu_keyboard(chrome, event, ctx) {
-                    *ctx.handled = true;
-                    self.structure_dirty = true;
-                    let _ = self.drain_commands();
-                    return true;
-                }
-                false
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if self.route_menu_click(chrome, self.last_cursor) {
-                    *ctx.handled = true;
-                    self.structure_dirty = true;
-                    let _ = self.drain_commands();
-                    return true;
-                }
-                false
-            }
-            _ => false,
-        }
+        *ctx.handled = true;
+        self.structure_dirty = true;
+        let _ = self.drain_commands();
+        true
     }
 
     /// Right-click opens the context menu. First deliver the press to the

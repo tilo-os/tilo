@@ -286,7 +286,7 @@ impl ChatApp {
         let selection = menu.widget.take_selection();
         let selected = selection.and_then(|index| menu.items.get(index).copied());
         let target = menu.target.clone();
-        let still_open = menu.widget.is_showing();
+        let still_open = menu.widget.is_open();
         if still_open {
             self.menu = Some(menu);
         }

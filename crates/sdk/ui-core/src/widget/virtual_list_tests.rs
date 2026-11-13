@@ -1506,8 +1506,8 @@ where
 }
 
 /// A row's menu carries what the app says the row is about: the row that sends it opens the
-/// send-to box on that subject, in the menu's place. A list that names nothing for its rows
-/// opens the same menu with no subject.
+/// send-to box on that subject, beside the menu. A list that names nothing for its rows opens
+/// the same menu with no subject.
 #[test]
 fn a_rows_menu_carries_what_the_app_names_for_the_row() {
     use crate::shared_selection::{SharedSelection, set_send_host_available};
@@ -1526,8 +1526,8 @@ fn a_rows_menu_carries_what_the_app_names_for_the_row() {
         let send_at = menu.context_menu().items().len() - 1;
         menu.context_menu_mut().click_item(send_at);
         let menu = menu.context_menu();
-        assert!(!menu.is_open(), "the box takes the menu's place");
-        assert!(menu.send_to_alone_open(), "the box stands alone");
+        assert!(menu.is_open(), "the menu stays beside its box");
+        assert!(menu.send_to().is_open(), "the box opened");
         menu.send_to().subjects().to_vec()
     }
     let mut list = plain_rows(10)
@@ -1540,14 +1540,19 @@ fn a_rows_menu_carries_what_the_app_names_for_the_row() {
         subjects[0].anchor,
         SharedSelection::of_text("issue 3").anchor
     );
-    // With the menu gone, the box is what the list hands the keyboard and the
-    // pointer to: what the person types next lands in its message.
+    // The box is the open menu's: the list hands the keyboard and the
+    // pointer to it as to the menu, and what the person types next lands in
+    // its message.
+    let box_rect = list
+        .menus
+        .owned()
+        .expect("the list owns its menu")
+        .context_menu()
+        .send_to()
+        .rect();
     assert!(
-        list.send_to_alone_open(),
-        "the box stands where the menu did"
-    );
-    assert!(
-        list.modal_capture().is_some(),
+        list.modal_capture()
+            .is_some_and(|capture| capture.contains(box_rect.center())),
         "the box hears the pointer while it stands"
     );
     let (taffy, node) = lay_out(&mut list, 300.0);
@@ -1651,9 +1656,9 @@ fn a_right_click_opened_rows_menu_offers_to_send_after_the_release() {
     let send_at = menu.context_menu().items().len() - 1;
     menu.context_menu_mut().click_item(send_at);
     let menu = menu.context_menu();
-    assert!(!menu.is_open(), "the box takes the menu's place");
+    assert!(menu.is_open(), "the menu stays beside its box");
     assert!(
-        menu.send_to_alone_open(),
+        menu.send_to().is_focused(),
         "the box is what takes the typing"
     );
     assert_eq!(menu.send_to().subjects().len(), 1);

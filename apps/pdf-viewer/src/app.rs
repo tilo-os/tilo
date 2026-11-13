@@ -5330,7 +5330,7 @@ impl Widget for PdfApp {
                 .widget
                 .perform_semantic_action(target, action, state, path);
             let selected = menu.widget.take_selection().map(|_| menu.target.clone());
-            let still_open = menu.widget.is_showing();
+            let still_open = menu.widget.is_open();
             if let Some(target) = selected {
                 self.delete_target(&target, state);
                 self.context_menu = None;

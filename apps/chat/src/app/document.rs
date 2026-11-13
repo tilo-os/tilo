@@ -28,11 +28,20 @@ impl ChatApp {
             .iter()
             .filter(|row| row.direct && !self.recorded_channels.contains(row.id.as_str()))
             .map(|row| {
-                crate::resource::conversation_entry(
-                    &ui::tilo_resource::Id::from_raw(row.id.clone()),
-                    &row.name,
-                    &row.topic,
-                )
+                let id = ui::tilo_resource::Id::from_raw(row.id.clone());
+                // Who is in it, as its id names them: a box lists a direct
+                // conversation as the one other person or agent in it.
+                let people = crate::record::Chat::direct_participants(&id)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|participant| ui::tilo_resource::search_index::IndexPerson {
+                        name: String::new(),
+                        anchor: String::new(),
+                        identity: participant.id().to_owned(),
+                        agent: participant.is_agent(),
+                    })
+                    .collect();
+                crate::resource::conversation_entry(&id, &row.name, &row.topic).showing(people)
             })
             .collect()
     }

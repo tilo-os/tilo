@@ -5895,16 +5895,39 @@ impl Widget for TextInput {
             return;
         }
 
-        // An open menu owns the keyboard: arrows move through its rows and
-        // Enter runs the highlighted one, never editing the text beneath.
-        if self.context_menu.is_open() && matches!(event, WindowEvent::KeyboardInput { .. }) {
-            Widget::handle_event(&mut *self.context_menu, event, ctx);
+        // An open menu owns the keys and the pointer's presses, never editing
+        // the text beneath; the pointer's moves are the field's too.
+        if self.context_menu.is_open()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::Ime(_)
+                    | WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::MouseInput {
+                        button: MouseButton::Left,
+                        ..
+                    }
+            )
+        {
+            let mut taken = false;
+            Widget::handle_event(
+                &mut *self.context_menu,
+                event,
+                &mut crate::widget::EventCtx {
+                    handled: &mut taken,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
+            );
             if let Some(index) = self.context_menu.take_selection() {
                 self.dispatch_context_action(index);
             }
-            *ctx.handled = true;
-            self.notify_user_change(false);
-            return;
+            if taken || !matches!(event, WindowEvent::CursorMoved { .. }) {
+                *ctx.handled = true;
+                self.repaint = true;
+                self.notify_user_change(false);
+                return;
+            }
         }
 
         if self.touch_takes_wheel(event, ctx) {

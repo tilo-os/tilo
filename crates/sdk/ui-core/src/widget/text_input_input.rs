@@ -163,19 +163,6 @@ impl TextInput {
         node_id: NodeId,
         handled: &mut bool,
     ) {
-        // A left press while the menu is open is routed to it, never to caret placement.
-        if self.context_menu.is_open() {
-            if element_state == ElementState::Pressed {
-                let point = [self.last_mouse_pos.x, self.last_mouse_pos.y];
-                if let Some(idx) = self.context_menu.item_at(point) {
-                    self.dispatch_context_action(idx);
-                } else {
-                    self.context_menu.close();
-                }
-                *handled = true;
-            }
-            return;
-        }
         match element_state {
             // The tap the toolkit synthesises when a finger lifts: that
             // finger's own lift, which follows, presses once

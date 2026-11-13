@@ -603,3 +603,61 @@ fn word_boundaries_walk_starts_ends_and_snap() {
         assert_eq!(word_boundaries(s, 11), (6, 11)); // end → snap left
     }
 }
+
+/// The field's menu ends in "Send to…", and a click on it opens the send-to
+/// box beside the menu, which stays open: the field routes the pointer
+/// through the menu as it routes the keys, so the row a click takes is the
+/// row Enter takes.
+#[test]
+fn a_click_on_send_to_opens_the_box_beside_the_fields_menu() {
+    let _settled = crate::motion::testing::settled();
+    crate::shared_selection::set_send_host_available(true);
+    let mut ti = TextInput::local().with_initial_value("hello world");
+    ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+    ti.set_focus(true);
+    let mut doc = AutoCommit::new();
+    crate::widget::context_menu::note_input(&crate::synthetic_input::mouse_input(
+        ElementState::Pressed,
+        MouseButton::Right,
+    ));
+    assert!(right_click(&mut ti, &mut doc, 20.0, 20.0));
+    let send = ti.context_menu.items().len() - 1;
+    assert_eq!(
+        ti.context_menu.items()[send].label(),
+        Some(crate::i18n::widget_text("menu-send").as_str()),
+        "the field's menu ends in Send to…"
+    );
+    let row = ti
+        .context_menu
+        .item_rect(send)
+        .expect("the send row is drawn")
+        .center();
+    for event in [
+        cursor_moved(row.x, row.y),
+        crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Left),
+        crate::synthetic_input::mouse_input(ElementState::Released, MouseButton::Left),
+    ] {
+        drive(&mut ti, &mut doc, &event, mods(false, false));
+    }
+    crate::shared_selection::set_send_host_available(false);
+    assert!(ti.context_menu.is_open(), "the menu stays");
+    let box_ = ti.context_menu.send_to();
+    assert!(
+        box_.is_open() && box_.is_focused(),
+        "the box opened, typing"
+    );
+    assert_eq!(
+        box_.subjects()
+            .first()
+            .and_then(|about| about.anchor.excerpt.as_deref()),
+        Some("hello"),
+        "about the word the menu was opened on"
+    );
+    assert!(
+        box_.rect().x0 >= ti.context_menu.get_rect().x1,
+        "beside the menu: {:?} by {:?}",
+        box_.rect(),
+        ti.context_menu.get_rect()
+    );
+    assert_eq!(ti.value(), "hello world", "nothing beneath was edited");
+}

@@ -10,7 +10,7 @@
 //!
 //! Every context menu takes typing ([`crate::widget::ContextMenu`]): its send
 //! row carries a sentence its entries do not answer into the send-to box that
-//! takes the menu's place ([`crate::widget::SendToBox`]), where the person
+//! opens beside the menu ([`crate::widget::SendToBox`]), where the person
 //! names whom to send it to. The box queues the request ([`send_to`]), and the
 //! app runner hands it to the session with a typed reference
 //! ([`resolve_selection`]), which the session acts on as the person: it makes
@@ -863,13 +863,13 @@ mod tests {
         assert!(area.open_at(vec2_point(), false));
         assert_eq!(
             area.menu().shown_rows(),
-            &[0],
-            "nothing typed: the menu's own rows, and no row to ask"
+            &[0, 1, 2],
+            "nothing typed: the menu's own rows, a rule, and Send to…"
         );
         type_into(&mut area, "make this a heading");
         assert_eq!(
             area.menu().shown_rows(),
-            &[1],
+            &[2],
             "no entry answers it: only sending it"
         );
         crate::testing::dispatch(

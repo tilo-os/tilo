@@ -818,23 +818,22 @@ author-bot-linked = Mit { $person } auf Tilo verknüpft
 author-persona-suffix = { $name }, über { $service }
 
 # Das Eingabefeld eines Kontextmenüs: Tippen schränkt seine Einträge ein, und
-# seine Senden-Zeile übernimmt das Getippte in die Sendebox, die an seiner
-# Stelle steht.
+# seine Senden-Zeile übernimmt das Getippte in die Sendebox neben dem Menü.
 menu-query-placeholder = Tippen zum Filtern
-menu-query-placeholder-ask = Tippen zum Filtern oder Senden
 menu-query-name = Filtern oder senden
-# The row that carries the typed sentence into the send-to box.
-menu-send = Senden…
+# The last row of every context menu, which opens the send-to box; once
+# something is typed it names the sentence it carries.
+menu-send = Senden an…
 menu-ask-typed = Senden: { $text }
 
 # Die Sendebox: an wen eine Nachricht geht, worum es geht und ihre Worte. Sie
-# steht, wo das Menü stand, dessen Senden-Zeile sie geöffnet hat, und für eine
+# steht neben dem Menü, dessen Senden-Zeile sie geöffnet hat, und für eine
 # Meldung allein.
 send-to-name = Senden an
 # The same box opened to the one place reports go.
 send-to-report-name = Problem melden
 send-to-new-agent = Neuer Agent
-send-to-recipients-name = Empfänger
+send-to-recipients-name = Jemanden hinzufügen
 send-to-search-placeholder = Jemanden hinzufügen…
 send-to-no-results = Nichts gefunden
 send-to-add-subject = Betreff hinzufügen

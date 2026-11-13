@@ -3820,6 +3820,9 @@ impl NotesApp {
         }
         self.note_menu.set_text_scale(self.theme.text_scale);
         self.note_menu.set_viewport(Some(self.rect));
+        // What a sent message is about: the words selected in the note.
+        self.note_menu
+            .set_about(ui::presence::capability::PublishesPresence::shared_selection(&*self));
         self.note_menu.open_anchored(anchor, self.rect);
         self.note_menu_target = Some(page);
         self.self_dirty = true;

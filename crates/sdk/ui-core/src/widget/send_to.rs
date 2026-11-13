@@ -1,8 +1,8 @@
 //! The send-to box: where a context menu's sentence goes.
 //!
 //! The row that sends what a context menu is about ([`ContextMenu::set_about`])
-//! opens this box in the menu's place, with the sentence the person typed into
-//! it, so one field takes the typing. The box says whom the message goes to
+//! opens this box beside the menu, with the sentence the person typed into it,
+//! and the keyboard moves to the box. The box says whom the message goes to
 //! (the agent it makes by default, else an agent, a person or a conversation
 //! the host's one search finds), what it is about (the chips, starting with
 //! what the menu was opened on) and its words. Send hands one
@@ -343,14 +343,15 @@ impl SendToBox {
             // of it, rather than over it.
             (inside(beside.x0), beside.y1 + gap)
         } else {
-            // The window is too small even for that: it takes the roomier side
-            // and stays inside, over what it is about where it must.
-            let x = if viewport.x1 - trailing >= leading - viewport.x0 {
-                trailing
+            // The window is too small even for that: it stays inside, on the
+            // side where it covers the least of what it is about.
+            let (after, before) = (inside(trailing), inside(leading));
+            let x = if beside.x1 - after <= before + width - beside.x0 {
+                after
             } else {
-                leading
+                before
             };
-            (inside(x), top)
+            (x, top)
         };
         let rect = Rect::new(x, y, x + width, y + height);
         if self.rect != rect {
@@ -1128,10 +1129,9 @@ impl SendToBox {
             &caption,
         );
 
-        // The recipients' chips: each leads with the mark of what it is — the
-        // accent's sparkle for the agent a message makes, their own avatar in
-        // their colour for a person or an agent already here — and carries the
-        // × that takes it off the message.
+        // The recipients' chips: each leads with the mark of what it is
+        // ([`paint_recipient_mark`]) and carries the × that takes it off the
+        // message.
         for (index, chip) in self.layout.chips.iter().enumerate() {
             let armed = self.focused && self.focus == SendToFocus::Recipients && index == 0;
             let pill = RoundedRect::from_rect(*chip, radius.min(chip.height() / 2.0));
@@ -1157,21 +1157,11 @@ impl SendToBox {
             let mark = self.mark_size();
             let mark_rect =
                 Rect::from_center_size((chip.x0 + self.mark_lead(), chip.center().y), (mark, mark));
-            if recipient.kind == RecipientKind::NewAgent {
-                crate::icons::draw_icon(
-                    scene,
-                    transform,
-                    mark_rect,
-                    crate::icons::Icon::Sparkles,
-                    tokens.colors.intent.accent_ink,
-                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-                );
-            } else {
-                crate::widget::avatar::AvatarFace::new(&recipient.name, &recipient.id).paint(
-                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    mark_rect,
-                );
-            }
+            paint_recipient_mark(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                recipient,
+                mark_rect,
+            );
             let remove = self.layout.removes.get(index).copied().flatten();
             let text_x = chip.x0 + self.text_lead();
             let room = remove.map_or(chip.x1 - row * 0.2, |remove| remove.x0);
@@ -1239,7 +1229,8 @@ impl SendToBox {
             );
         }
 
-        // What the search found, the row the keyboard is on armed.
+        // What the search found, each led by the mark of what it is, the row
+        // the keyboard is on armed.
         for (index, row) in self.layout.rows.iter().enumerate() {
             if self.hovered == Some(index) {
                 scene.fill(
@@ -1250,16 +1241,23 @@ impl SendToBox {
                     &RoundedRect::from_rect(*row, radius.min(row.height() / 2.0)),
                 );
             }
-            let (name, detail) = self.rows.get(index).map_or(("", ""), |recipient| {
-                (
-                    recipient.name.as_str(),
-                    recipient.detail.as_deref().unwrap_or(""),
-                )
-            });
-            let text_x = row.x0 + inset;
+            let Some(recipient) = self.rows.get(index) else {
+                continue;
+            };
+            let (name, detail) = (
+                recipient.name.as_str(),
+                recipient.detail.as_deref().unwrap_or(""),
+            );
+            let mark = self.mark_size();
+            paint_recipient_mark(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                recipient,
+                Rect::from_center_size((row.x0 + self.mark_lead(), row.center().y), (mark, mark)),
+            );
+            let text_x = row.x0 + self.text_lead();
             let shown = text_renderer.elide_to_width_style(
                 name,
-                (row.width() - inset * 2.0).max(1.0) as f32,
+                (row.x1 - text_x - inset).max(1.0) as f32,
                 &style,
             );
             let (_, height) = text_renderer.measure_style(&shown, None, &style);
@@ -1466,27 +1464,43 @@ impl SendToBox {
             return None;
         }
         let mut position = 0usize;
-        let total = 4 + self.rows.len().min(MAX_ROWS) + self.subjects.len();
+        // The parts the keyboard reaches, in order: the field, what it found,
+        // the subject button while it stands, the message and Send.
+        let total = usize::from(!self.addressed)
+            + self.rows.len().min(MAX_ROWS)
+            + usize::from(self.layout.plus.width() > 0.0)
+            + 2;
         let mut action = |node: AccessNode| {
             position = position.saturating_add(1);
             node.with_position(position, total)
         };
-        let chips: Vec<String> = self.to.iter().map(chip_name).collect();
         let mut children = Vec::new();
-        children.push(action(
-            AccessNode::new(Role::TextInput)
-                .with_name(crate::i18n::I18nManager::lookup_plain(
-                    "send-to-recipients-name",
-                ))
-                .with_optional_value(Some(chips.join(", ")))
-                .with_action_target("send-to:recipients".to_owned())
-                .with_bounds(self.layout.search)
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.focused && self.focus == SendToFocus::Recipients,
-                    ..Default::default()
-                }),
-        ));
+        // Whom it goes to, each chip read where it stands, and the field that
+        // adds someone, named as it reads, holding what is typed into it.
+        for (index, recipient) in self.to.iter().enumerate() {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(chip_name(recipient))
+                    .with_description(recipient.kind.label().to_owned())
+                    .with_bounds(self.layout.chips.get(index).copied().unwrap_or(Rect::ZERO)),
+            );
+        }
+        if !self.addressed {
+            children.push(action(
+                AccessNode::new(Role::TextInput)
+                    .with_name(crate::i18n::I18nManager::lookup_plain(
+                        "send-to-recipients-name",
+                    ))
+                    .with_optional_value(Some(self.search.clone()))
+                    .with_action_target("send-to:recipients".to_owned())
+                    .with_bounds(self.layout.search)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.focused && self.focus == SendToFocus::Recipients,
+                        ..Default::default()
+                    }),
+            ));
+        }
         for (index, recipient) in self.rows.iter().take(MAX_ROWS).enumerate() {
             children.push(action(
                 AccessNode::new(Role::MenuItem)
@@ -1703,6 +1717,33 @@ fn subject_glyph(subject: &SharedSelection) -> crate::icons::Icon {
         .map_or(crate::icons::Icon::AppWindow, |app| {
             crate::icons::app_glyph(app, None)
         })
+}
+
+/// The mark a recipient leads with, on its chip and its row, so what it is
+/// reads at a glance: the accent's sparkle for the agent a message makes, an
+/// agent's own face, a person's avatar in their colour, and a conversation's
+/// or the report destination's glyph.
+fn paint_recipient_mark(ctx: &mut PaintCtx<'_>, recipient: &Recipient, rect: Rect) {
+    let face = crate::widget::avatar::AvatarFace::new(&recipient.name, &recipient.id);
+    match recipient.kind {
+        RecipientKind::NewAgent => {
+            let accent = ctx.theme.tokens.colors.intent.accent_ink;
+            crate::icons::draw_icon(
+                ctx.scene,
+                ctx.transform,
+                rect,
+                crate::icons::Icon::Sparkles,
+                accent,
+                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+        }
+        RecipientKind::Agent => face.agent().paint(ctx, rect),
+        RecipientKind::Person => face.paint(ctx, rect),
+        RecipientKind::Conversation => face
+            .glyph(crate::icons::Icon::MessageCircle)
+            .paint(ctx, rect),
+        RecipientKind::Feedback => face.glyph(crate::icons::Icon::Flag).paint(ctx, rect),
+    }
 }
 
 /// What a recipient's chip reads: its name, and for the new agent nobody named
