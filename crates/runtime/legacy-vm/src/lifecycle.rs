@@ -1,18 +1,12 @@
-//! When the VM runs, as data.
-//!
-//! The first launch wakes the VM: it is created from the guest image when it
-//! has no disk yet, booted when off, and restored when a snapshot exists.
-//! While apps run it stays up. Once nothing has run for the idle limit, the
-//! shares are detached and the VM is saved to disk (`virsh managedsave`); the
-//! next launch restores it. [`Lifecycle`] only decides; the supervisor carries
-//! out the [`Action`]s and reports back.
+//! When the VM runs, as data: a launch creates the disk, boots or restores, and an
+//! idle VM is saved to disk. [`Lifecycle`] only decides; the supervisor carries out
+//! the [`Action`]s and reports back.
 
 use libvirt_domain::DomainState;
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Phase {
-    /// No disk yet.
     NotCreated,
     /// Defined, powered off, no snapshot.
     Off,
@@ -27,19 +21,14 @@ pub enum Phase {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
-    /// Create the disk as an overlay of the guest image.
     CreateDisk,
-    /// Define (or redefine) the domain.
     Define,
     /// `virsh start`, which restores a managed save when there is one.
     Start,
-    /// Wait for the guest agent's hello.
     AwaitAgent,
-    /// Attach the granted shares and mount them in the guest.
     SyncShares,
     /// Unmount and detach every share: virtio-fs state cannot be saved.
     DetachShares,
-    /// `virsh managedsave`.
     Suspend,
 }
 
@@ -74,7 +63,6 @@ impl Lifecycle {
         self.phase
     }
 
-    /// Take the phase from what libvirt and the disk say.
     pub fn observe(
         &mut self,
         domain: DomainState,
@@ -131,7 +119,6 @@ impl Lifecycle {
         Ok(actions)
     }
 
-    /// The agent answered.
     pub fn agent_ready(&mut self) {
         if self.phase == Phase::Starting {
             self.phase = Phase::Running;
@@ -157,7 +144,6 @@ impl Lifecycle {
         Some(vec![Action::DetachShares, Action::Suspend])
     }
 
-    /// Suspend on request, whatever the idle time.
     pub fn suspend_now(&mut self) -> Option<Vec<Action>> {
         if !matches!(self.phase, Phase::Running | Phase::Starting) {
             return None;
@@ -167,7 +153,6 @@ impl Lifecycle {
         Some(vec![Action::DetachShares, Action::Suspend])
     }
 
-    /// The managed save finished.
     pub fn suspended(&mut self) {
         self.phase = Phase::Suspended;
     }
@@ -179,7 +164,6 @@ mod tests {
 
     #[test]
     fn the_vm_wakes_on_launch_and_sleeps_when_idle() {
-        // phase: a first launch creates, boots and shares
         {
             let mut life = Lifecycle::new(300);
             assert_eq!(
@@ -206,7 +190,6 @@ mod tests {
             assert_eq!(life.phase(), Phase::Running);
             assert_eq!(life.wake().unwrap(), [Action::SyncShares]);
         }
-        // phase: idle time accumulates only while nothing runs
         {
             let mut life = Lifecycle::new(300);
             life.observe(DomainState::Running, false, true).unwrap();
@@ -228,7 +211,6 @@ mod tests {
             assert_eq!(life.wake(), Err(LifecycleError::Busy));
             life.suspended();
         }
-        // phase: a launch restores the snapshot without redefining
         {
             let mut life = Lifecycle::new(300);
             assert_eq!(
@@ -245,7 +227,6 @@ mod tests {
             );
             assert_eq!(life.wake().unwrap()[0], Action::Define);
         }
-        // phase: states Tilo did not cause are never acted on
         {
             let mut life = Lifecycle::new(300);
             assert_eq!(

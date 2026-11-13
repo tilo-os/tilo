@@ -1,60 +1,9 @@
-//! Each VM in a jail of its own: its own uid, chroot, cgroup and network
-//! namespace, so a VM that escapes its guest lands in an unprivileged,
-//! empty jail.
-//!
-//! The service ([`super::service`]) runs unprivileged, as the uid that owns
-//! the host's workspace data. What needs privilege is one small helper,
-//! `tilo-hosted-jail`, that the service runs for three things:
-//!
-//! - **start**: set up the VM's network ([`super::network`]), then exec
-//!   Firecracker's `jailer`, which puts Firecracker in a chroot with only
-//!   `/dev/kvm`, `/dev/net/tun` and `/dev/urandom`, a cgroup bounding its
-//!   memory, CPU and processes, a mount namespace of its own, and finally
-//!   drops it to the VM's uid. The service names the relay the VM's
-//!   browser session joins through ([`Endpoint`]), which the helper gives
-//!   the VM's network as its one non-public destination. The
-//!   helper's process *becomes* Firecracker, so the service still waits on
-//!   its child.
-//! - **stop**: kill everything in the VM's cgroups (its uid is not the
-//!   service's, so the service cannot signal it).
-//! - **release**: once the VM is gone, give its files back to the service
-//!   and remove the jail.
-//!
-//! # Uids
-//!
-//! A host has a number of *slots* (its most VMs awake at once). Slot `n`
-//! runs its VM as uid `uid_base + 2n` and its network (`pasta`, and the
-//! user namespace owning the VM's network namespace) as `uid_base + 2n + 1`.
-//! A slot is taken when a VM wakes and freed when it sleeps; everything a
-//! slot's uids owned is handed back or removed on release, so the next VM
-//! in the slot inherits nothing.
-//!
-//! # What the jailed VM sees
-//!
-//! Three directories, bind-mounted into its chroot from descriptors the
-//! service opened (so the helper never follows a path the service names):
-//!
-//! | In the jail | On the host | |
-//! |---|---|---|
-//! | `/vm` | the VM's state (`disk.raw`, snapshot, config) | read-write, the VM's uid while it runs |
-//! | `/s` | its run directory (API and vsock sockets) | read-write, the VM's uid, group the service's |
-//! | `/guest` | the guest kernel and initramfs | read-only |
-//!
-//! Both read-write directories are set-group-id with the service's group,
-//! so the sockets and snapshot files Firecracker makes there are the
-//! service's to use. The service never enters the jail itself.
-//!
-//! # Privilege
-//!
-//! The helper runs as root for these steps (the jailer requires it: it
-//! makes device nodes, a chroot, a cgroup, then drops to the VM's uid). It
-//! is installed so only the service can run it — owned by root, group the
-//! service's, mode 0750, with `cap_setuid,cap_setgid+ep` so it can become
-//! root — and refuses any other caller. Its configuration is a root-owned
-//! file the service cannot change ([`JailConfig::load`]). Share servers
-//! ([`super::files`]) are not the helper's: they run unprivileged, each in
-//! namespaces of its own where the jails and the service's sockets are not
-//! there at all ([`hide_args`]).
+//! Each VM in a jail of its own: its own uid, chroot, cgroup and network namespace,
+//! so a VM that escapes its guest lands in an unprivileged, empty jail. The service
+//! runs unprivileged; a small helper, `tilo-hosted-jail`, runs as root to start the
+//! jailer, kill the VM's cgroups and release the jail. Slot `n` runs its VM as
+//! `uid_base + 2n` and its network as `uid_base + 2n + 1`, freed when the VM
+//! sleeps.
 
 use std::fs::File;
 use std::io;
@@ -69,8 +18,6 @@ use serde::{Deserialize, Serialize};
 use super::network::Endpoint;
 use super::size::VmSize;
 
-/// Where a host's jail configuration is, unless the service is told
-/// otherwise.
 pub const DEFAULT_CONFIG: &str = "/etc/tilo/hosted-jail.json";
 
 /// The VM's state directory, inside its jail.
@@ -105,7 +52,6 @@ pub struct JailConfig {
     pub chroot_base: PathBuf,
     /// The cgroup (under `/sys/fs/cgroup`) every VM's cgroup is made in.
     pub cgroup: String,
-    /// VMs get a network when present.
     #[serde(default)]
     pub network: Option<NetworkConfig>,
 }
@@ -146,7 +92,6 @@ impl JailConfig {
         Self::parse(&text)
     }
 
-    /// The configuration in `text`, checked for sense.
     pub fn parse(text: &str) -> Result<Self, String> {
         let config: Self =
             serde_json::from_str(text).map_err(|e| format!("the jail configuration: {e}"))?;
@@ -193,7 +138,6 @@ impl JailConfig {
         Ok(config)
     }
 
-    /// The host's extra blocked networks.
     pub fn blocked(&self) -> Result<Vec<(Ipv4Addr, u8)>, String> {
         self.network.as_ref().map_or(Ok(Vec::new()), |network| {
             network
@@ -214,7 +158,6 @@ impl JailConfig {
         self.vm_uid(slot).saturating_add(1)
     }
 
-    /// The jailer's id for the slot's VM.
     #[must_use]
     pub fn id(slot: u32) -> String {
         format!("vm-{slot}")
@@ -243,7 +186,6 @@ impl JailConfig {
     }
 }
 
-/// The service's side of the helper.
 #[derive(Clone, Debug)]
 pub struct Helper {
     pub exe: PathBuf,
@@ -318,12 +260,10 @@ impl Helper {
         command
     }
 
-    /// Kill the slot's VM and its network.
     pub fn stop(&self, slot: u32) -> io::Result<()> {
         run(self.command("stop", slot))
     }
 
-    /// Hand the slot's files back and remove its jail; the VM is gone.
     pub fn release(&self, slot: u32, dirs: &JailDirs<'_>) -> io::Result<()> {
         let mut command = self.command("release", slot);
         pass_dirs(&mut command, dirs);
@@ -373,8 +313,7 @@ fn pass_dirs(command: &mut Command, dirs: &JailDirs<'_>) {
     }
 }
 
-/// A host's jails as the service uses them: the helper, and which slots
-/// are free.
+/// A host's jails as the service uses them: the helper, and which slots are free.
 pub struct Jail {
     pub helper: Helper,
     free: std::sync::Mutex<Vec<u32>>,
@@ -404,12 +343,10 @@ impl Jail {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// A free slot, taken; `None` when every slot runs a VM.
     pub fn take(&self) -> Option<u32> {
         self.free().pop()
     }
 
-    /// `slot` is free again: its jail was released.
     pub fn give_back(&self, slot: u32) {
         let mut free = self.free();
         if !free.contains(&slot) {
@@ -425,7 +362,6 @@ impl Jail {
         free.len() != before
     }
 
-    /// The bandwidth each VM's network gets each way, when VMs have one.
     #[must_use]
     pub fn network_mbit(&self) -> Option<u32> {
         self.helper

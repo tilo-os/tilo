@@ -1,38 +1,10 @@
-//! Firecracker, the hypervisor of hosted VMs: its configuration, its API,
-//! and the snapshot files.
-//!
-//! # Snapshots
-//!
-//! Every VM runs with dirty-page tracking. Suspending writes a *diff*
-//! snapshot: only the pages written since the VM booted or was last
-//! restored. The first one after a cold boot is the whole state (a page the
-//! guest never wrote is zero), stored as a sparse file the size of the
-//! guest's RAM that takes only what the guest touched on disk. Each later
-//! diff is merged into that file ([`merge_diff`]) once Firecracker has
-//! exited, so the file is always the VM's complete memory.
-//!
-//! Restoring maps that file privately: the guest's pages are read from it
-//! only when touched, so a restored VM costs what it uses, not its size.
-//! The file must stay unchanged while the VM runs, and is only valid
-//! together with the disk as it was at the snapshot: so the state file is
-//! removed while the VM runs ([`SnapshotFiles::in_use`]) and only a
-//! completed suspend writes it back. A VM whose state file is missing boots
-//! cold from its disk.
-//!
-//! # Clones
-//!
-//! A workspace's first wake need not boot: it can start as a clone of a
-//! template ([`clone_vm`]), a VM of its size booted once from the guest image
-//! and snapshotted with the session's and Chromium's files already in its
-//! page cache. The clone's disk is a reflinked copy of the template's, and
-//! its memory file *is* the template's (a hard link), so every clone of a
-//! template maps the same file privately and the host keeps one copy of what
-//! none of them wrote. Its first suspend copies that file before merging
-//! into it ([`SnapshotFiles::complete`]), so a clone never writes the
-//! template, and the jail never hands a linked file to a VM's uid. The
-//! template holds no identity: a workspace's is handed to its session at the
-//! hand-off, and Firecracker's VM generation ID has each clone's kernel
-//! reseed its randomness when it is restored.
+//! Firecracker, the hypervisor of hosted VMs: its configuration, its API and the
+//! snapshot files. Every VM runs with dirty-page tracking, so a suspend writes a
+//! diff snapshot merged into a sparse memory file the size of the guest's RAM. A
+//! restore maps that file privately and needs it unchanged while the VM runs, so
+//! the state file is removed while it runs and only a completed suspend writes it
+//! back; a clone of a template links the template's memory file and copies it on
+//! its first suspend.
 
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -68,9 +40,8 @@ pub struct Machine {
     pub kernel: PathBuf,
     pub initramfs: Option<PathBuf>,
     pub cmdline: String,
-    /// A raw ext4 image every VM's disk starts as a copy of (reflinked where
-    /// the filesystem can), then grown to the VM's size. Without one, a
-    /// fresh disk is a blank ext4 filesystem.
+    /// A raw ext4 image every VM's disk starts as a copy of (reflinked where the filesystem can),
+    /// then grown to the VM's size. Without one, a fresh disk is a blank ext4 filesystem.
     pub base_disk: Option<PathBuf>,
 }
 
@@ -78,7 +49,6 @@ impl Machine {
     pub const DEFAULT_CMDLINE: &'static str = "console=ttyS0 reboot=k panic=1 quiet";
 }
 
-/// Where one VM's files are.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VmFiles {
     /// Durable: the meter and console log, and [`Self::vmm`].
@@ -165,7 +135,6 @@ impl VmFiles {
     }
 }
 
-/// A VM's snapshot on disk.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnapshotFiles {
     /// Device and vCPU state. Present only while the snapshot is valid.
@@ -179,7 +148,6 @@ pub struct SnapshotFiles {
 }
 
 impl SnapshotFiles {
-    /// Whether the VM can be restored from here.
     #[must_use]
     pub fn valid(&self) -> bool {
         self.state.is_file() && self.memory.is_file()
@@ -192,7 +160,6 @@ impl SnapshotFiles {
         remove_if_present(&self.state)
     }
 
-    /// A cold boot starts from nothing: no memory to merge into.
     pub fn discard(&self) -> io::Result<()> {
         for path in [&self.state, &self.memory, &self.new_state, &self.diff] {
             remove_if_present(path)?;
@@ -227,7 +194,6 @@ impl SnapshotFiles {
         std::fs::rename(&self.new_state, &self.state)
     }
 
-    /// Bytes the snapshot takes on disk.
     #[must_use]
     pub fn bytes_on_disk(&self) -> u64 {
         allocated(&self.state).saturating_add(allocated(&self.memory))
@@ -287,7 +253,6 @@ pub fn clone_vm(template: &VmFiles, files: &VmFiles) -> io::Result<()> {
     std::fs::rename(&partial, files.disk())
 }
 
-/// What a file takes on disk, holes not counted.
 #[must_use]
 pub fn allocated(path: &Path) -> u64 {
     use std::os::unix::fs::MetadataExt as _;
@@ -355,7 +320,6 @@ pub fn config_json(
     config.to_string()
 }
 
-/// `firecracker` booting from `config`.
 #[must_use]
 pub fn boot_argv(machine: &Machine, files: &VmFiles) -> Vec<String> {
     vec![
@@ -377,7 +341,6 @@ pub fn restore_argv(machine: &Machine, files: &VmFiles) -> Vec<String> {
     ]
 }
 
-/// One VM's Firecracker API.
 #[derive(Clone, Debug)]
 pub struct Api {
     socket: PathBuf,
@@ -442,12 +405,10 @@ impl Api {
         )
     }
 
-    /// Move the VM's balloon to `amount_mib`: the guest's usable memory
-    /// shrinks by that much, which the host gets back as its Firecracker
-    /// process gives the pages up. A VM whose Firecracker has no balloon
-    /// device answers with a client error, which
-    /// [`HostedVm::balloon`](super::vm::HostedVm::balloon) tells apart from a
-    /// host that failed.
+    /// Move the VM's balloon to `amount_mib`: the guest's usable memory shrinks by that much, which
+    /// the host gets back. A VM whose Firecracker has no balloon device answers with a client
+    /// error, which [`HostedVm::balloon`](super::vm::HostedVm::balloon) tells apart from a host
+    /// that failed.
     pub fn balloon(&self, amount_mib: u64) -> Result<(), FirecrackerError> {
         self.call("PATCH", "/balloon", &json!({ "amount_mib": amount_mib }))
     }
@@ -480,7 +441,6 @@ impl Api {
     }
 }
 
-/// The status and body of one HTTP/1.1 response.
 fn read_response(stream: &mut impl io::Read) -> io::Result<(u16, String)> {
     let mut head = Vec::new();
     let mut byte = [0_u8; 1];
@@ -638,7 +598,6 @@ mod tests {
             shared(&to.memory) && shared(&from.memory),
             "one memory file, mapped by both"
         );
-        // phase: its first suspend writes its own copy, never the template
         to.in_use().unwrap();
         let diff = std::fs::File::create(&to.diff).unwrap();
         diff.set_len(8192).unwrap();
@@ -706,7 +665,6 @@ mod tests {
                 "/h/vm/state/vmm/firecracker.json"
             ]
         );
-        // phase: jailed, Firecracker names everything inside its jail
         let jailed = VmFiles {
             jailed: true,
             ..files
@@ -725,7 +683,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let snapshot = files(dir.path()).snapshot();
         std::fs::create_dir_all(dir.path().join("state/vmm")).unwrap();
-        // phase: after a cold boot the first suspend writes the base itself
         {
             assert_eq!(snapshot.next_memory_target(), snapshot.memory);
             let base = std::fs::File::create(&snapshot.memory).unwrap();
@@ -737,7 +694,6 @@ mod tests {
             assert!(snapshot.valid());
             assert!(snapshot.bytes_on_disk() < 1 << 20, "holes are not stored");
         }
-        // phase: a restored VM's suspend writes a diff that is merged in
         {
             snapshot.in_use().unwrap();
             assert!(!snapshot.valid(), "a running VM's snapshot is stale");
@@ -763,7 +719,6 @@ mod tests {
             }
             assert_eq!(std::fs::read(&snapshot.state).unwrap(), b"state-2");
         }
-        // phase: a cold boot discards it all
         {
             snapshot.discard().unwrap();
             assert!(!snapshot.memory.exists() && !snapshot.state.exists());

@@ -221,8 +221,8 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
     }
 }
 
-/// Fetch the pinned guest image and say what a VM boots: the kernel's path and
-/// the root filesystem's path, one per line.
+/// Fetch the pinned guest image and say what a VM boots: the kernel's path and the root
+/// filesystem's path, one per line.
 fn fetch_guest(flags: &Flags) -> Result<ExitCode, String> {
     let images = flags.path("--images")?;
     let reference = guest::reference(flags.get("--ref")).map_err(|e| e.to_string())?;
@@ -274,15 +274,14 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
             idle_suspend: Duration::from_secs(idle.max(1)),
             self_exe: std::env::current_exe().map_err(|e| e.to_string())?,
             jail,
-            // The browser session in a VM joins its workspace through the
-            // relay, inside the host's network: the one address besides the
-            // internet a VM may reach.
+            // The browser session in a VM joins its workspace through the relay, inside the host's
+            // network: the one address besides the internet a VM may reach.
             relay: flags
                 .get("--relay-endpoint")
                 .map(legacy_vm::hosted::network::Endpoint::parse)
                 .transpose()?,
-            // New VMs are clones of a template of their size, kept beside
-            // them: only a jailed VM can be one.
+            // New VMs are clones of a template of their size, kept beside them: only a jailed VM
+            // can be one.
             templates: Some(flags.path("--state")?.join("templates")),
         },
     };
@@ -324,9 +323,6 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// What this host admits its VMs by, from the flags it was started with: the
-/// node's memory, what it keeps free, and what a VM is counted at until it is
-/// measured.
 fn memory_budget(flags: &Flags) -> Result<legacy_vm::hosted::memory::Budget, String> {
     let mib = |name: &str, default: u64| -> Result<u64, String> {
         flags.get(name).map_or(Ok(default), |mib| {
@@ -353,7 +349,6 @@ fn memory_budget(flags: &Flags) -> Result<legacy_vm::hosted::memory::Budget, Str
     })
 }
 
-/// The size `--size` names; small when it names none.
 fn vm_size(flags: &Flags) -> Result<legacy_vm::hosted::size::VmSize, String> {
     use legacy_vm::hosted::size::VmSize;
     flags.get("--size").map_or(Ok(VmSize::Small), |name| {
@@ -361,8 +356,8 @@ fn vm_size(flags: &Flags) -> Result<legacy_vm::hosted::size::VmSize, String> {
     })
 }
 
-/// The VM hosts as a Kubernetes `StatefulSet`: its replicas, read and set
-/// through the API server with the pod's service account.
+/// The VM hosts as a Kubernetes `StatefulSet`: its replicas, read and set through the API server
+/// with the pod's service account.
 struct StatefulSetScale {
     namespace: String,
     name: String,
@@ -409,8 +404,6 @@ impl legacy_vm::hosted::placement::Scale for StatefulSetScale {
             .and_then(serde_json::Value::as_u64)
             .and_then(|count| usize::try_from(count).ok())
             .ok_or_else(|| format!("no replicas in {scale}"))?;
-        // Each pod by name (`vm-host-0`), its Status at the service's own
-        // name for it.
         Ok((0..count)
             .map(|index| {
                 let (namespace, name, port) = (&self.namespace, &self.name, &self.port);
@@ -432,9 +425,8 @@ impl legacy_vm::hosted::placement::Scale for StatefulSetScale {
     }
 }
 
-/// Place VMs on the hosts the environment names: a `StatefulSet`'s, which
-/// it scales, or the named hosts of a stack that runs a known set of machines
-/// (`--hosts`), which it never starts.
+/// Place VMs on the hosts the environment names: a `StatefulSet`'s, which it scales, or the named
+/// hosts of a stack that runs a known set of machines, which it never starts.
 fn place(flags: &Flags) -> Result<ExitCode, String> {
     use legacy_vm::hosted::placement::{FixedHosts, Placer, Scale, read_load};
 
@@ -601,8 +593,6 @@ fn files_serve(flags: &Flags) -> Result<ExitCode, String> {
         let stream = match stream {
             Ok(stream) => stream,
             Err(error) if error.raw_os_error() == Some(libc::EINTR) => continue,
-            // No listener to serve: the VM is gone or the descriptor was
-            // never one.
             Err(error) => return Err(format!("accept: {error}")),
         };
         let shares = shares.clone();
