@@ -174,44 +174,46 @@ mod tests {
         assert!(members.contains("12"), "{members}");
     }
 
+    /// What the sites list and what the caller holds, one row each; the sheet shows no listing
+    /// for any of them. A failure names its row.
     #[test]
-    fn a_workspace_the_caller_holds_is_not_one_to_join() {
-        let store = Store::default();
-        *store.listed.borrow_mut() = vec![listed(entry(
-            "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71",
-            "Coffee",
-        ))];
-        let held = [Held {
-            workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
-            key: "slot-1".into(),
-            name: "Coffee".into(),
-        }];
-        let shown = store.view(&held);
-        assert!(
-            shown.listings.is_empty(),
-            "a site listing the caller's own workspace does not offer it to join"
-        );
-    }
-
-    #[test]
-    fn a_workspace_no_site_lists_is_left_to_the_callers_own_desk() {
-        let store = Store::default();
-        let held = [
-            Held {
-                workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
-                key: "slot-1".into(),
-                name: "Coffee".into(),
-            },
-            Held {
-                workspace: "0a8844c0-5d74-4b3c-8e3a-2d2ba52f0c11".into(),
-                key: "slot-2".into(),
-                name: "My notes".into(),
-            },
-        ];
-        let shown = store.view(&held);
-        assert!(
-            shown.listings.is_empty(),
-            "the sheet offers only what can be joined, never what the caller has"
-        );
+    fn the_sheet_offers_nothing_the_caller_already_holds() {
+        for (row, sites_list, held, why) in [
+            (
+                "a_workspace_the_caller_holds_is_not_one_to_join",
+                vec![listed(entry(
+                    "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71",
+                    "Coffee",
+                ))],
+                vec![Held {
+                    workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
+                    key: "slot-1".into(),
+                    name: "Coffee".into(),
+                }],
+                "a site listing the caller's own workspace does not offer it to join",
+            ),
+            (
+                "a_workspace_no_site_lists_is_left_to_the_callers_own_desk",
+                Vec::new(),
+                vec![
+                    Held {
+                        workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
+                        key: "slot-1".into(),
+                        name: "Coffee".into(),
+                    },
+                    Held {
+                        workspace: "0a8844c0-5d74-4b3c-8e3a-2d2ba52f0c11".into(),
+                        key: "slot-2".into(),
+                        name: "My notes".into(),
+                    },
+                ],
+                "the sheet offers only what can be joined, never what the caller has",
+            ),
+        ] {
+            let store = Store::default();
+            *store.listed.borrow_mut() = sites_list;
+            let shown = store.view(&held);
+            assert!(shown.listings.is_empty(), "{row}: {why}");
+        }
     }
 }
