@@ -333,8 +333,8 @@ const SERVER_MAX_STREAMS: u32 = 256;
 /// How much a session sends before its first acknowledgement: the window
 /// QUIC's slow start begins from. A page entering a workspace waits first
 /// for its replay and shared desktop (most of a megabyte), which took six
-/// round trips from QUIC's default window and takes two from this.
-const SERVER_INITIAL_WINDOW: u64 = 256 * 1024;
+/// round trips from QUIC's default window and takes one from this.
+const SERVER_INITIAL_WINDOW: u64 = 768 * 1024;
 
 impl Listener {
     pub fn bind(
