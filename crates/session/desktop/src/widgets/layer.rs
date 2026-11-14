@@ -38,7 +38,7 @@ use super::placement::{self, MARGIN};
 use super::sizing;
 use super::system_monitor::{self, Monitor, Reading, Service, Source};
 use super::team::{self, TeamMember};
-use super::{Context, WidgetBoard, Form, Slot};
+use super::{Context, Form, Slot, WidgetBoard};
 use crate::chrome::ChromeIntent;
 use crate::desktop_host::DesktopAsk;
 

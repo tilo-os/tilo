@@ -26,7 +26,6 @@ use super::{PlainOverview, close_tab, column, fill, grow, wake_deadline};
 use crate::about::AboutSheet;
 use crate::chrome::{ChromeIntent, TopBarPresence};
 use crate::control_hints::{ControlHints, HintFrame, HintsFeed};
-use crate::verbs::chrome_resource;
 use crate::display_identify::DisplayIdentify;
 use crate::emoji::EmojiLink;
 use crate::fullscreen_hint::FullscreenHint;
@@ -40,6 +39,7 @@ use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer
 use crate::strip_switcher::Command as StripCommand;
 use crate::super_peek::SuperPeek;
 use crate::topbar::{Placement, Reveals, TOPBAR_HEIGHT_PX, TopBarChrome};
+use crate::verbs::chrome_resource;
 use crate::window_flight::WindowFlight;
 use crate::window_switcher::{Switcher, SwitcherAsk};
 use crate::workspace_menu::{

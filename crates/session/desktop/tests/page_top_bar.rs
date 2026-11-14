@@ -79,7 +79,7 @@ impl ChromeSource for Page {
 
 /// The shell, the chrome over it, and what the page did with the bar's requests.
 struct Shell {
-    shell: FrameHarness,
+    frame_harness: FrameHarness,
     chrome: FrameHarness,
     page: Rc<Page>,
     /// The times the page was asked for the person's own card.
@@ -118,7 +118,7 @@ fn shell_at(viewport: (u32, u32)) -> Shell {
         ui::Theme::light(),
     );
     let mut shell = Shell {
-        shell,
+        frame_harness: shell,
         chrome,
         page,
         cards: 0,
@@ -140,7 +140,7 @@ impl Shell {
                 self.chrome.root_mut::<DesktopChrome>().apply_intent(intent);
             }
         }
-        self.shell.relayout();
+        self.frame_harness.relayout();
         self.chrome.relayout();
     }
 

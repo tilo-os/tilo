@@ -38,10 +38,10 @@ mod testing;
 use start_cards::{DisplayPad, EmptyWorkspace};
 
 use crate::chrome::{ChromeIntent, TopBarPresence};
-use crate::verbs::{self, OpenSearch, launchpad_resource, shell_resource};
 use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use crate::overview::OverviewHost;
 use crate::topbar::{BarSpace, Reveals};
+use crate::verbs::{self, OpenSearch, launchpad_resource, shell_resource};
 use crate::window_switcher::WindowSource;
 
 /// The next deadline a child widget reports, for the earliest of them.
