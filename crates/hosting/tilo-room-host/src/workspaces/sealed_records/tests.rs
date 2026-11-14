@@ -266,6 +266,13 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
 
 /// Every write of `record` the relay retains for `workspace_id`, in replay
 /// order: what a newcomer is sent.
+///
+/// Read once the workspace's store settled every write its owner took before
+/// the call ([`crate::workspace_records::WorkspaceRecords::retained_settled`]),
+/// as a newcomer's replay is captured in the owner's order. The node's own copy
+/// holds a write as soon as the node is handed it, before the store does: a
+/// read made beside the owner, the moment the node follows a write, can come
+/// before the store holds that write.
 async fn retained_writes(
     relay: &crate::workspaces::fixtures::TestHost,
     workspace_id: WorkspaceId,
@@ -273,7 +280,7 @@ async fn retained_writes(
 ) -> Vec<SignedOp> {
     relay
         .workspace_records()
-        .retained(workspace_id)
+        .retained_settled(workspace_id)
         .await
         .unwrap()
         .into_iter()
@@ -1364,9 +1371,16 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
         doc.put(ROOT, "offline", "two").unwrap();
     });
 
-    // The damage, and the repair, while that device is away.
+    // The damage, and the repair, while that device is away. The damage is
+    // done to the store's files, so it waits for the store to hold the
+    // member's writes the node already follows.
     let channel = neighbour_wire::app_document_channel(APP, RECORD);
     let root = state_root(&workspaces, &workspace, workspace_id).await;
+    relay
+        .workspace_records()
+        .retained_settled(workspace_id)
+        .await
+        .expect("the workspace's store settles");
     lose_the_records_base(&root, &channel, &governor);
     workspaces
         .refound_record(&workspace, APP, RECORD)
