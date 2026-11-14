@@ -969,8 +969,16 @@ fn redrawn(
 ) -> Option<((u32, u32, u32, u32), u32)> {
     let mut bounds: Option<(u32, u32, u32, u32)> = None;
     let mut count = 0;
+    let width = now.width.min(was.width);
     for y in 0..now.height.min(was.height) {
-        for x in 0..now.width.min(was.width) {
+        // A row the two frames hold byte for byte moved nowhere, and of two frames of a screen at
+        // rest that is every row: only a row that differs is read a pixel at a time.
+        if let (Some(here), Some(there)) = (row_of(now, y, width), row_of(was, y, width))
+            && here == there
+        {
+            continue;
+        }
+        for x in 0..width {
             let (Some(here), Some(there)) = (now.pixel(x, y), was.pixel(x, y)) else {
                 continue;
             };
@@ -991,6 +999,15 @@ fn redrawn(
         }
     }
     bounds.map(|bounds| (bounds, count))
+}
+
+/// The first `width` pixels of row `y` of `shot` as its bytes, when the frame holds them all.
+fn row_of(shot: &tilo_compositor::Screenshot, y: u32, width: u32) -> Option<&[u8]> {
+    let start = (y as usize)
+        .checked_mul(shot.width as usize)?
+        .checked_mul(4)?;
+    let end = start.checked_add((width as usize).checked_mul(4)?)?;
+    shot.rgba.get(start..end)
 }
 
 /// Step the session until `display` has drawn the same frame for a while, and return it: what the
@@ -1314,18 +1331,22 @@ pub(super) fn picture(shot: &tilo_compositor::Screenshot) -> Vec<f64> {
             let right = (column + 1) * shot.width / COLUMNS;
             let top = row * shot.height / ROWS;
             let bottom = (row + 1) * shot.height / ROWS;
-            let mut sum = 0.0;
-            let mut channels = 0.0;
+            // Summed as whole numbers over each row's own bytes: a cell holds at most a few
+            // million of them, which a float holds exactly, so the mean is the one a sum of floats
+            // gives.
+            let mut sum = 0_u64;
+            let mut channels = 0_u64;
             for y in top..bottom {
-                for x in left..right {
-                    let pixel = shot.pixel(x, y).expect("inside the image");
-                    for channel in &pixel[..3] {
-                        sum += f64::from(*channel);
-                        channels += 1.0;
-                    }
+                let bytes = row_of(shot, y, right).expect("inside the image");
+                let mut at = left as usize * 4;
+                while at < bytes.len() {
+                    sum +=
+                        u64::from(bytes[at]) + u64::from(bytes[at + 1]) + u64::from(bytes[at + 2]);
+                    channels += 3;
+                    at += 4;
                 }
             }
-            cells.push(sum / channels);
+            cells.push(sum as f64 / channels as f64);
         }
     }
     cells
@@ -1340,6 +1361,11 @@ pub(super) fn changed(
     let (width, height) = (after.width as usize, after.height as usize);
     let mut box_of: Option<(usize, usize, usize, usize)> = None;
     for y in 0..height {
+        // A row the two pictures hold byte for byte changed nowhere.
+        let bytes = y * width * 4..(y + 1) * width * 4;
+        if before.rgba[bytes.clone()] == after.rgba[bytes] {
+            continue;
+        }
         for x in 0..width {
             let at = (y * width + x) * 4;
             if before.rgba[at..at + 4] == after.rgba[at..at + 4] {
