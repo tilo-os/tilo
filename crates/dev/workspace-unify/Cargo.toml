@@ -2087,6 +2087,7 @@ doc = false
 "lru-slab-0_1_2" = { package = "lru-slab", version = "^0.1.2", default-features = false, features = [] }
 "lzma-rust2-0_23_0" = { package = "lzma-rust2", version = "^0.23.0", default-features = false, features = ["optimization", "sha2", "std", "xz"] }
 "mac-addr-0_3_0" = { package = "mac-addr", version = "^0.3.0", default-features = false, features = ["default", "std"] }
+"mail-builder-0_4_4" = { package = "mail-builder", version = "^0.4.4", default-features = false, features = ["default", "gethostname"] }
 "matchers-0_2_0" = { package = "matchers", version = "^0.2.0", default-features = false, features = [] }
 "maybe-owned-0_3_4" = { package = "maybe-owned", version = "^0.3.4", default-features = false, features = [] }
 "mcf-0_6_0" = { package = "mcf", version = "^0.6.0", default-features = false, features = ["alloc", "base64"] }

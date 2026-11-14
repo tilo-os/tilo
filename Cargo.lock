@@ -17194,6 +17194,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "web-time",
+ "workspace-hack",
 ]
 
 [[package]]
