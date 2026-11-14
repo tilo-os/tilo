@@ -32,8 +32,10 @@ use tilolang_tilo::runtime::Principal;
 
 use crate::platform::notice::Toolkit;
 
-/// Whether this build seeds the apps `--seed-apps` asks for: development builds only.
-pub const SEEDED_BY_THIS_BUILD: bool = cfg!(debug_assertions);
+/// Whether this build seeds the apps `--seed-apps` asks for: development builds only, the
+/// optimised one with the developer overrides (`dev-overrides`) included, so a session whose
+/// feel is measured on an optimised build shows the same scenario a debug one does.
+pub const SEEDED_BY_THIS_BUILD: bool = cfg!(any(debug_assertions, feature = "dev-overrides"));
 
 /// The tilolang apps a development session installs and seeds. Discussion is no app here: Tasks
 /// and Notes are made with it, so the comments on a task or a note are kept in that app's own

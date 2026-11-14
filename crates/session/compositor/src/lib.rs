@@ -546,6 +546,11 @@ impl Compositor {
         self.recorder.mark_testctl(took);
     }
 
+    /// The session's share of the turn after the frame, besides the control socket.
+    pub fn mark_after(&mut self, took: Duration) {
+        self.recorder.mark_after(took);
+    }
+
     /// The workspace in front changed: its frames are timed until the desk rests.
     pub fn workspace_switched(&mut self) {
         self.data.state.workspace_switched();
@@ -1994,6 +1999,9 @@ impl Compositor {
             self.data.state.mark_redraw_all();
         }
         let mut drew = false;
+        // The hosted surfaces' own frames (their layout and scene) are this tick's
+        // `hosts_us`: the session's desk is drawn here, before the submit.
+        let hosting = Instant::now();
         // The displays hold each frame for this long: a surface whose content only moves draws one
         // frame per one of these, so what the person sees runs at the screens' rate rather than at
         // the loop's.
@@ -2012,6 +2020,7 @@ impl Compositor {
                 drew |= host.prepare_frame();
             }
         }
+        self.recorder.add_hosts(hosting.elapsed());
         if drew {
             self.data.state.mark_redraw_all();
         }
