@@ -2822,6 +2822,12 @@ on = ["idle"]
 # captures are its outputs: `t outputs layout-check/390x844 --to DIR`. `t test layout-check` runs
 # every size, one size by name. The renders are the toolkit's own, so they run in the test
 # environment (the product's fonts, lavapipe) on x86_64, where the visual goldens are recorded.
+# A run narrows with its inputs, which are part of its key: `app` lays out one package of `apps/tl`
+# (`--input app=apps/tl/tasks`), `press` presses a control by its words before each window is read
+# (`--input press="Mark Buy oat milk and eggs done"`), and `dump=true` prints every frame laid out
+# rather than only those a finding came from. Strict's whole-tree verdict (an allow-list line that
+# no longer shows, a view no scenario reaches) is the run that names no app and no press; a
+# narrowed run still fails on a finding the allow-list does not name.
 [[check]]
 name = "layout-check/{size}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -2830,6 +2836,7 @@ env = { TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
 outputs = ["/target/layout-check/{size}/**"]
 timeout_secs = 1800
+dispatch_inputs = { app = "", press = "", dump = "false" }
 [check.matrix]
 size = ["320x568", "390x844", "1280x800"]
 

@@ -402,6 +402,23 @@ the check's verdict: a finding the allow-list
 allow-list line whose finding no longer shows or a view no scenario reaches. The job's log
 (`t log layout-check/390x844`) lists every finding with its app, view, node and source line.
 
+A run takes inputs, which are part of its key and show in its result
+(`layout-check/390x844 [app=apps/tl/chat]`): `app` lays out one package of `apps/tl` instead of
+every one, `press` presses a control by the words it carries before each window is read, and
+`dump=true` prints every frame the size lays out rather than only the frames a finding came from.
+
+```bash
+t test layout-check/390x844 --input app=apps/tl/tasks
+t test layout-check/390x844 --input app=apps/tl/tasks --input press="Mark Buy oat milk and eggs done"
+t test layout-check/390x844 --input app=apps/tl/tasks \
+    --input press="Mark Buy oat milk and eggs done" --input dump=true
+```
+
+A narrowed run still fails on a finding the allow-list does not name, but it does not judge
+allow-list lines or views it never laid out: strict's whole-tree verdict is the run that names no
+app and no press. A key or a staged view state has no input yet: use the CLI's `--key` and `--state` flags over the
+apps you are looking at.
+
 Each size's run keeps its outputs, which `t outputs` fetches:
 
 ```bash
@@ -412,14 +429,16 @@ That writes `~/layout-shots/target/layout-check/390x844/`, which holds `report.t
 job's log prints: every finding with its app, view, node and source line, the allow-list lines
 that no longer show and the views no layout reached, then the counts), `dump.txt` (the toolkit's
 inspection of the layouts at that size a finding was read from: each widget's box, clip and
-semantics; `tilolang layout-check --dump 390x844` over the apps you are looking at prints every
-frame instead) and one PNG per window per theme (`<app>-<view>-<theme>.png`, light and dark; about
-nine hundred for the tl apps), as each scenario leaves the window. `t outputs` starts the run for
-this state if none ran, so the shot is always of the code as it stands here.
+semantics; `dump=true` writes every frame instead) and one PNG per window per theme
+(`<app>-<view>-<theme>.png`, light and dark; about nine hundred for the tl apps), as each scenario
+leaves the window. `t outputs` starts the run for this state if none ran, so the shot is always of
+the code as it stands here; a run with inputs is fetched by its id, which `t test --detach`
+prints:
 
-The check lays the apps out as their scenarios leave them, with no input of its own: a layout
-reached by a press, a key or a staged view state is the CLI's `--press`, `--key` and `--state`
-flags, which `t test` cannot pass to a check.
+```bash
+t test layout-check/390x844 --input app=apps/tl/tasks --detach
+t outputs layout-check/390x844 --run <run> --to ~/layout-shots
+```
 
 ## Screenshots of every app
 
