@@ -4251,12 +4251,12 @@ impl Widget for MailApp {
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        #[cfg(any(target_arch = "wasm32", test))]
+        #[cfg(any(target_arch = "wasm32", test, not(feature = "live")))]
         let host_listing = self
             .host_mail
             .as_ref()
             .and_then(host_mail::HostMail::next_listing_at);
-        #[cfg(not(any(target_arch = "wasm32", test)))]
+        #[cfg(not(any(target_arch = "wasm32", test, not(feature = "live"))))]
         let host_listing = None;
         // Worker and native-picker completions are not animation. Keep their
         // deadline fixed until sync consumes a tick, even with reduced motion.
