@@ -22,11 +22,8 @@ use tilo_session::Session;
 
 use crate::common::{Repl, on_screen, until};
 
-/// The menu of the window's own actions, as the shell's bar carries it.
-const WINDOW_ACTIONS: &str = "Window actions";
-
-/// The pill at the trailing end of a strip's window bar: the window's own width, focus and pin
-/// commands.
+/// The pill at the trailing end of a window's bar: the window's own actions, width, focus and
+/// pin commands. The shell names it for what it opens, on every style's window bar.
 const WINDOW_MENU: &str = "This window";
 
 /// The session with the shell as the whole screen and the seeded apps: the framed canvas is in
@@ -357,12 +354,12 @@ fn every_shells_window_bar_lists_the_notes_actions_and_runs_one() {
         );
 
         // The window's own actions, in the bar's one list: the menu named for the window in the
-        // Desktop's top bar (`action_bar` with its subject), the bar's own actions menu in the
-        // two canvas frames' windows. The window in front is the note just placed.
+        // Desktop's top bar (`action_bar` with its subject), the window's own menu at the end of
+        // its bar in the two canvas frames. The window in front is the note just placed.
         if preset == "Desktop" {
             press_shown(&mut session, &name);
         } else {
-            press_shown(&mut session, WINDOW_ACTIONS);
+            press_shown(&mut session, WINDOW_MENU);
         }
         until(
             &mut session,
