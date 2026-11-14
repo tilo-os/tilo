@@ -83,7 +83,9 @@ fn a_picker_that_cannot_open_is_told_in_plain_words() {
     let said = format!("Couldn't open a folder. {reason}");
     tilo_test_env::wait_until(format!("Code to say {said:?}"), || {
         app.settle();
-        shows(&mut app, &said)
+        app.harness()
+            .window_bar_notice(1280.0)
+            .is_some_and(|notice| notice.text == said)
     });
     assert!(!shows(&mut app, "File picker unavailable"));
 }
