@@ -362,9 +362,9 @@ async def card() -> dict[str, object]:
         try:
             aws = agent.workspace(workspace)
             listing = await aws.ls("browser")
-            open_windows = [str(row.path) for row in listing.rows if "@" in str(row.path)]
-            check(open_windows, f"the workspace's Browser window is open ({open_windows})")
-            page = f"browser@{open_windows[0].split('/', 1)[0].split('@', 1)[1]}/page#read-page"
+            open_rows = [str(row.path) for row in listing.rows]
+            check(open_rows, f"the workspace's Browser window is open ({open_rows})")
+            page = "browser/page#read-page"
             began = time.perf_counter()
             answer = await outcome(aws.do(page))
             seconds = time.perf_counter() - began

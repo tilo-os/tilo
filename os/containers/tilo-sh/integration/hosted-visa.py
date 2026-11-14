@@ -236,14 +236,16 @@ class PagePerson:
 
 
 class Page:
-    """One Browser window of the workspace, by the provider its open answered."""
+    """The workspace's Browser window, as an agent addresses it: the app's
+    name finds its window, the one the workspace runs. `record` is the record
+    the open made, which a second open answers again."""
 
-    def __init__(self, workspace: object, provider: str) -> None:
+    def __init__(self, workspace: object, record: str) -> None:
         self.workspace = workspace
-        self.provider = provider
+        self.record = record
 
     def path(self, action: str) -> str:
-        return f"browser@{self.provider}/page#{action}"
+        return f"browser/page#{action}"
 
     async def do(self, action: str, **args: object) -> object:
         return await self.workspace.do(self.path(action), **args)  # type: ignore[attr-defined]
@@ -355,7 +357,7 @@ async def open_browser(workspace: object) -> tuple[Page, float]:
     opened = await outcome(workspace.do("browser#open"))  # type: ignore[attr-defined]
     live = time.perf_counter() - began
     say("   opened", str(opened)[:200])
-    windows: list[str] = []
+    rows: list[str] = []
     refused = ""
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
@@ -365,13 +367,22 @@ async def open_browser(workspace: object) -> tuple[Page, float]:
             refused = str(error)
             await asyncio.sleep(1)
             continue
-        windows = [str(row.path) for row in listing.rows if "@" in str(row.path)]
-        if windows:
+        # The listing an agent reads: what the running window offers.
+        rows = [str(row.path) for row in listing.rows]
+        if rows:
             break
         await asyncio.sleep(0.2)
-    check(windows, f"the workspace's Browser window is live ({windows}; last refusal: {refused})")
-    provider = windows[0].split("/", 1)[0].split("@", 1)[1]
-    return Page(workspace, provider), live
+    if not rows:
+        try:
+            apps = await workspace.ls()  # type: ignore[attr-defined]
+            say("   the workspace's apps", "; ".join(f"{row.path} {row.state}" for row in apps.rows))
+        except (Refused, ProtocolError) as error:
+            say("   the workspace's apps were not listed", str(error))
+    check(rows, f"the workspace's Browser window is live ({rows}; last refusal: {refused})")
+    say("   listed", ", ".join(rows)[:200])
+    record = str(opened.get("record") or "") if isinstance(opened, dict) else ""
+    check(record, f"the open names the record its window is on ({opened})")
+    return Page(workspace, record), live
 
 
 async def fill(page: Page) -> str:
@@ -428,14 +439,14 @@ async def open_phase(report: dict[str, object]) -> int:
     again, _ = await open_browser(aws)
     attached = time.perf_counter() - attached_began
     report["attach_seconds"] = round(attached, 2)
-    check(again.provider == page.provider, f"a second open attaches to the same window ({attached:.2f} s)")
-    report["window"] = page.provider
+    check(again.record == page.record, f"a second open attaches to the same window ({attached:.2f} s)")
+    report["window"] = page.record
     with open(os.path.join(OUT, "open.json"), "w") as opened:
         json.dump(
             {
                 "workspace": workspace.id,
                 "key": minted.token,
-                "window": page.provider,
+                "window": page.record,
             },
             opened,
         )
@@ -579,7 +590,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         rws = reviewer.workspace(workspace)
         listing = await rws.ls("browser")
         check(
-            any("@" in str(row.path) for row in listing.rows),
+            bool(listing.rows),
             "the reviewer's listing names the hosted Browser window their desk shows",
         )
         history = await rws.do("browser#history", last=50)

@@ -473,6 +473,8 @@ if [[ $hosted == 1 ]]; then
         | grep -iE 'browser|environment|hosted|placed|peer session|refus|enrol|way in|device' | tail -80 >&2 || true
       echo '--- the relay said, to its end:' >&2
       bash "$here/stack.sh" logs relay 2>/dev/null | tail -60 >&2 || true
+      echo '--- the API server said, to its end:' >&2
+      bash "$here/stack.sh" logs api 2>/dev/null | tail -60 >&2 || true
       echo '--- the member said, to its end:' >&2
       sudo -n podman logs --tail 60 tilo-sh-vm-host-0 2>&1 | grep -v 'net_report' >&2 || true
       echo '--- what the guest was shown of the workspace:' >&2
