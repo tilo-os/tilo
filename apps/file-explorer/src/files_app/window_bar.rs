@@ -125,6 +125,7 @@ impl FilesState {
                 anchor: None,
                 edited: false,
                 view_only: false,
+                section: false,
             }),
             actions,
             ..WindowToolbar::default()

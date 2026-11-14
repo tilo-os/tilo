@@ -65,25 +65,28 @@ impl TasksWindow {
         let open = self.nav.open.with(Option::clone);
         let place = self.nav.place.with(|place| *place);
         let chosen = Place::ALL.iter().position(|each| *each == place);
+        let (label, section) = self.location(open.as_ref(), place, &self.nav.filter());
         let choices = Place::ALL
             .iter()
             .map(|each| Choice::new(each.title(), &show(*each)));
         WindowBar::new(self.dispatcher.clone())
             .under(&self.link)
-            .label(self.location(open.as_ref(), place, &self.nav.filter()))
+            .label(label)
+            .section(section)
             .views(tr("tasks-views"), chosen.unwrap_or_default(), choices)
     }
 
     /// Where the window is: the open issue as it reads in a reference, the
     /// open project by its name, else the place, narrowed by the filter when
-    /// one is chosen.
-    fn location(&self, open: Option<&Id>, place: Place, filter: &Filter) -> String {
+    /// one is chosen; and whether that is a place of the tracker rather than something in it, which
+    /// leaves the window named "Tasks".
+    fn location(&self, open: Option<&Id>, place: Place, filter: &Filter) -> (String, bool) {
         if let Some(area) = self.nav.area() {
             let name = self
                 .tracker
                 .with(|tracker| tracker.area(&area).map(|area| area.name.clone()));
             if let Some(name) = name {
-                return name;
+                return (name, false);
             }
         }
         if let Some(id) = open {
@@ -94,10 +97,10 @@ impl TasksWindow {
                     .map(|issue| format!("{} {}", reference(issue.number), issue.title))
             });
             if let Some(shown) = shown {
-                return shown;
+                return (shown, false);
             }
         }
-        match filter {
+        let label = match filter {
             Filter::All => place.title(),
             filter => crate::locales::CATALOG.t_args(
                 "tasks-location-filtered",
@@ -106,7 +109,8 @@ impl TasksWindow {
                     ("filter", filter.title().into()),
                 ],
             ),
-        }
+        };
+        (label, true)
     }
 
     fn declare(&mut self) {

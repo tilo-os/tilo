@@ -760,3 +760,53 @@ fn tab_walks_the_focused_windows_bar_and_app_and_enter_on_the_agent_opens_its_ru
         "Enter on the agent opened History for its run"
     );
 }
+
+/// A bar that names a part of its app ("Issues", "Presets") says where the window is, and the
+/// window goes on being called by its app: a person looks for Tasks, not Issues. A window it named
+/// by an open item before comes back to its app's name, too.
+#[test]
+fn a_window_whose_bar_names_a_part_of_its_app_is_called_by_its_app() {
+    let (surface, handle) = crate::surface::tests::desk_with(1, Box::new(WithHistory));
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1600, 800),
+        ui::Theme::dark(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let (front, _) = shown_tabs(&frame)[0];
+    let declare = |label: &str, section: bool| {
+        handle.declare_bar(
+            front,
+            44,
+            Some(WindowToolbar {
+                location: Some(ui::window_toolbar::ToolbarLocation {
+                    label: label.to_owned(),
+                    section,
+                    ..ui::window_toolbar::ToolbarLocation::default()
+                }),
+                ..WindowToolbar::default()
+            }),
+        );
+    };
+    let title = |handle: &crate::surface::DesktopHandle| {
+        handle.read(|tree| tree.tab(front).map(|tab| tab.title.clone()))
+    };
+    declare("TSK-4 Walk the launch", false);
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    assert_eq!(title(&handle).as_deref(), Some("TSK-4 Walk the launch"));
+    declare("Issues", true);
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    assert_eq!(title(&handle).as_deref(), Some("App0"), "called by its app");
+    assert_eq!(
+        handle.window_name(front),
+        None,
+        "a part of the app names no window"
+    );
+}

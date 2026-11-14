@@ -418,21 +418,29 @@ impl DesktopSurface {
     }
 
     /// Name each window by what it shows: the bar's location label, a note's title or a folder's
-    /// path. A window's name is what it shows, so it is written into the tab — the bar, the
+    /// path. A label that names a part of the app ([`ui::window_toolbar::ToolbarLocation::section`])
+    /// leaves the window named by its app. A window's name is what it shows, so it is written into the tab — the bar, the
     /// overview and search all read the tab's name — and the window's own title only stands where
     /// its app names nothing. Returns whether that changed.
     fn publish_window_names(&mut self) -> bool {
         let mut names = std::collections::BTreeMap::new();
+        // The windows whose bar names a part of their app ("Issues", "Presets"): where the window
+        // is, not what it shows, so the window goes by its app's name.
+        let mut sections = std::collections::BTreeSet::new();
         for group in self.rows.values().flat_map(|row| row.groups.iter()) {
             for tab in group.tabs() {
-                let name = self
+                let Some(location) = self
                     .window_slots
                     .toolbar(tab.id)
                     .and_then(|toolbar| toolbar.location.as_ref())
-                    .map(|location| location.label.trim())
-                    .filter(|label| !label.is_empty());
-                if let Some(name) = name {
-                    names.insert(tab.id, name.to_owned());
+                else {
+                    continue;
+                };
+                let label = location.label.trim();
+                if location.section {
+                    sections.insert(tab.id);
+                } else if !label.is_empty() {
+                    names.insert(tab.id, label.to_owned());
                 }
             }
         }
@@ -457,6 +465,10 @@ impl DesktopSurface {
                 let before = tab.title.clone();
                 if let Some(name) = names.get(&tab.id) {
                     changed |= tab.set_window_title(name);
+                } else if sections.contains(&tab.id)
+                    && let Some(app) = app_name_of(tab)
+                {
+                    changed |= tab.set_window_title(&app);
                 } else if named_before
                     .get(&tab.id)
                     .is_some_and(|name| tab.title == *name)

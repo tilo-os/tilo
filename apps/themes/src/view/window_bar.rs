@@ -56,6 +56,9 @@ impl StudioWindow {
             .over(&self.shell)
             .place(label.map(|label| ToolbarLocation {
                 label,
+                // "Presets" is the studio's own list: the window goes on being Theme Studio until
+                // a theme is open, which then names it.
+                section: editing.is_none(),
                 ..ToolbarLocation::default()
             }))
             .effect(&ThemesEffect::Import)

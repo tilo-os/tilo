@@ -395,6 +395,7 @@ impl BrowserWidget {
             anchor: None,
             edited: false,
             view_only: false,
+            section: false,
         }
     }
 
