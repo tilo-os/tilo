@@ -115,7 +115,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             node: Some(node.clone()),
             chain: vec![node],
             levels: std::mem::take(levels),
-            revision: here.revision.clone(),
+            revision: here.revision,
         }))
     }
 }

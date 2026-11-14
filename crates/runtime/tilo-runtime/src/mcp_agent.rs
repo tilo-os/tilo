@@ -384,7 +384,15 @@ fn bound_key(id: &str) -> Option<String> {
         .filter(|key| !key.is_empty() && !key.chars().any(char::is_control))
 }
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "split out of this module, it reads this module's names"
+)]
 mod mcp_agent_node;
+#[allow(
+    clippy::wildcard_imports,
+    reason = "split out of this module, it reads this module's names"
+)]
 mod mcp_agent_paths;
 
 use mcp_agent_node::{Level, Node, level_of};

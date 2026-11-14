@@ -1142,15 +1142,13 @@ impl FileAttributionV1 {
     /// desktop id. `None` when the actor names no writer this format has.
     #[must_use]
     pub fn writer(&self) -> Option<(AttributedWriter, &str)> {
-        let (kind, id) = if let Some(id) = self.actor.strip_prefix("agent:") {
-            (AttributedWriter::Agent, id)
-        } else if let Some(id) = self.actor.strip_prefix("app:") {
-            (AttributedWriter::App, id)
-        } else if let Some(id) = self.actor.strip_prefix("program:") {
-            (AttributedWriter::Program, id)
-        } else {
-            return None;
-        };
+        let (kind, id) = [
+            ("agent:", AttributedWriter::Agent),
+            ("app:", AttributedWriter::App),
+            ("program:", AttributedWriter::Program),
+        ]
+        .into_iter()
+        .find_map(|(prefix, kind)| self.actor.strip_prefix(prefix).map(|id| (kind, id)))?;
         (!id.trim().is_empty()).then_some((kind, id))
     }
 

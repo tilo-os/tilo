@@ -47,7 +47,7 @@ pub fn said(text: &str, surface: Surface) -> String {
     let mut written = String::with_capacity(text.len());
     let mut rest = text;
     while let Some((at, mention)) = next_mention(rest) {
-        written.push_str(&rest[..at]);
+        written.push_str(rest.get(..at).unwrap_or_default());
         written.push_str(&render(mention.call, mention.arg.as_deref(), surface));
         rest = rest
             .get(at.saturating_add(mention.len)..)
@@ -132,13 +132,11 @@ const WORKSPACE: &str = "…";
 
 /// A route of this API, as [`render`] writes one, and the call it is.
 fn rest_mention(text: &str) -> Option<Mention> {
-    let (method, rest) = if let Some(rest) = text.strip_prefix("GET ") {
-        ("GET", rest)
-    } else if let Some(rest) = text.strip_prefix("POST ") {
-        ("POST", rest)
-    } else {
-        return None;
-    };
+    let (method, rest) = ["GET", "POST"].into_iter().find_map(|method| {
+        text.strip_prefix(method)
+            .and_then(|rest| rest.strip_prefix(' '))
+            .map(|rest| (method, rest))
+    })?;
     let rest = rest.strip_prefix("/v1/workspaces/")?;
     let rest = rest
         .strip_prefix(WORKSPACE)
