@@ -352,7 +352,7 @@ tilo_test_env::scenario! {
     {
         let prepared = prepare(
             "<body bgcolor=\"#fafafa\" onload=\"alert(1)\" style=\"margin:0\">\
-    <p>Fish &amp; chips &lt;3 <b>bold <i>both</b> slanted</i></p></body>",
+<p>Fish &amp; chips &lt;3 <b>bold <i>both</b> slanted</i></p></body>",
             &policy(false, false),
         );
         let document = &prepared.document;
@@ -639,7 +639,7 @@ tilo_test_env::scenario! {
     {
         let links = links(
             "<a href=\"https://b.example\">b</a><a href=\"mailto:a@example.com\">a</a>\
-    <a href=\"https://b.example\">again</a><a href=\"#top\">top</a><a href=\"//c.example/x\">c</a>",
+<a href=\"https://b.example\">again</a><a href=\"#top\">top</a><a href=\"//c.example/x\">c</a>",
         );
         assert_eq!(
             links,
@@ -656,8 +656,8 @@ tilo_test_env::scenario! {
     phase plain_text_names_its_links;
     {
         let text = "See https://harvest.example/112/elm-street. Or www.harvest.example/swaps, \
-    (details at https://x.example/a_(b)) and write to ana@studio-lima.example!\n\
-    Not links: a@b, http://, www.x, sam@localhost.";
+(details at https://x.example/a_(b)) and write to ana@studio-lima.example!\n\
+Not links: a@b, http://, www.x, sam@localhost.";
         let found: Vec<String> = text_links(text).into_iter().map(|(_, url)| url).collect();
         assert_eq!(
             found,
@@ -712,7 +712,7 @@ tilo_test_env::scenario! {
     {
         assert_end_mark_first(
             "<html style=\"display:none\"><head><style>html::after{display:none;content:none}</style>\
-    </head><body><p>Hi</p></body></html>",
+</head><body><p>Hi</p></body></html>",
             "html::after{display:none;content:none}",
         );
     }
@@ -721,7 +721,7 @@ tilo_test_env::scenario! {
     {
         assert_end_mark_first(
             "<style>* { display:none }*::after{display:none!important;content:none!important}\
-    @layer{html::after{display:none!important}}</style><p>Hi</p>",
+@layer{html::after{display:none!important}}</style><p>Hi</p>",
             "* { display:none }*::after{display:none!important;content:none!important}",
         );
     }

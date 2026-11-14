@@ -445,10 +445,10 @@ mod tests {
         {
             let shown = text(
                 "<head><title>t</title><style>p{}</style></head><body>\
-                 <script>alert(1)</script><p>Hello</p>\
-                 <div style=\"display: none\">preheader <div>nested</div> junk</div>\
-                 <p hidden>secret</p><!-- note --><p>World</p>\
-                 <img src=\"https://tracker.example/p.gif\"><img src=x alt=\"Logo\"></body>",
+             <script>alert(1)</script><p>Hello</p>\
+             <div style=\"display: none\">preheader <div>nested</div> junk</div>\
+             <p hidden>secret</p><!-- note --><p>World</p>\
+             <img src=\"https://tracker.example/p.gif\"><img src=x alt=\"Logo\"></body>",
             );
             assert_eq!(shown, "Hello\n\nWorld\n\nLogo");
             assert!(!shown.contains("tracker"));
@@ -480,9 +480,9 @@ mod tests {
         {
             let runs = render(
                 "<a href=\"https://example.com/x?a=1&amp;b=2\">site</a> \
-                 <a href=\"JavaScript:alert(1)\">bad</a> \
-                 <a href=\"file:///etc/passwd\">file</a> \
-                 <a href=\"mailto:me@example.com\">mail</a>",
+             <a href=\"JavaScript:alert(1)\">bad</a> \
+             <a href=\"file:///etc/passwd\">file</a> \
+             <a href=\"mailto:me@example.com\">mail</a>",
             );
             let link = |label: &str| {
                 runs.iter()

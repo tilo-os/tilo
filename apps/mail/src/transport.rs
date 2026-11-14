@@ -437,11 +437,11 @@ mod tests {
                 // reader drew its header once per copy. A stable id keyed on the
                 // Message-ID must collapse them to one.
                 let raw = b"From: Ada <ada@x.example>\r\n\
-        To: you@example.test\r\n\
-        Subject: Re: Launch\r\n\
-        Message-ID: <thread-42@x.example>\r\n\
-        \r\n\
-        Body of the message.\r\n";
+    To: you@example.test\r\n\
+    Subject: Re: Launch\r\n\
+    Message-ID: <thread-42@x.example>\r\n\
+    \r\n\
+    Body of the message.\r\n";
                 let a = parse_eml(raw, 1000, Folder::Inbox).unwrap();
                 let b = parse_eml(raw, 2000, Folder::Inbox).unwrap();
                 assert_eq!(a.id, b.id, "same Message-ID → same local id across fetches");
@@ -458,12 +458,12 @@ mod tests {
 
             {
                 let raw = b"From: Ada <ada@x.example>\r\n\
-        To: you@example.test\r\n\
-        Subject: Re: Launch\r\n\
-        Message-ID: <thread-reply@x.example>\r\n\
-        In-Reply-To: <thread-root@x.example>\r\n\
-        \r\n\
-        Reply body.\r\n";
+    To: you@example.test\r\n\
+    Subject: Re: Launch\r\n\
+    Message-ID: <thread-reply@x.example>\r\n\
+    In-Reply-To: <thread-root@x.example>\r\n\
+    \r\n\
+    Reply body.\r\n";
                 let message = parse_eml(raw, 1000, Folder::Inbox).expect("valid message");
                 assert_eq!(
                     message.rfc_message_id.as_deref(),
@@ -477,13 +477,13 @@ mod tests {
 
             {
                 let raw = b"From: Ada <ada@x.example>\r\n\
-        To: you@example.test\r\n\
-        Subject: Re: Launch\r\n\
-        Message-ID: <thread-latest@x.example>\r\n\
-        References: <thread-root@x.example> <thread-middle@x.example>\r\n\
-        In-Reply-To: <thread-middle@x.example>\r\n\
-        \r\n\
-        Latest reply.\r\n";
+    To: you@example.test\r\n\
+    Subject: Re: Launch\r\n\
+    Message-ID: <thread-latest@x.example>\r\n\
+    References: <thread-root@x.example> <thread-middle@x.example>\r\n\
+    In-Reply-To: <thread-middle@x.example>\r\n\
+    \r\n\
+    Latest reply.\r\n";
                 let message = parse_eml(raw, 1000, Folder::Inbox).expect("valid message");
                 assert_eq!(
                     message.in_reply_to.as_deref(),
@@ -505,11 +505,11 @@ mod tests {
         {
             {
                 let raw = b"From: a@x.example\r\n\
-        Subject: Rich\r\n\
-        Message-ID: <html-1@x.example>\r\n\
-        Content-Type: text/html; charset=utf-8\r\n\
-        \r\n\
-        <html><body><h1>Hi</h1><p>Rich <b>content</b>.</p></body></html>\r\n";
+    Subject: Rich\r\n\
+    Message-ID: <html-1@x.example>\r\n\
+    Content-Type: text/html; charset=utf-8\r\n\
+    \r\n\
+    <html><body><h1>Hi</h1><p>Rich <b>content</b>.</p></body></html>\r\n";
                 let msg = parse_eml(raw, 1000, Folder::Inbox).unwrap();
                 assert!(msg.html_body.is_some(), "an HTML mail keeps its html part");
                 assert!(msg.html_body.as_deref().unwrap().contains("<h1>"));
@@ -518,21 +518,21 @@ mod tests {
 
             {
                 let raw = b"From: A <a@x.example>\r\n\
-        To: b@y.example\r\n\
-        Subject: With file\r\n\
-        MIME-Version: 1.0\r\n\
-        Content-Type: multipart/mixed; boundary=\"BOUND\"\r\n\
-        \r\n\
-        --BOUND\r\n\
-        Content-Type: text/plain\r\n\
-        \r\n\
-        See attached.\r\n\
-        --BOUND\r\n\
-        Content-Type: application/pdf\r\n\
-        Content-Disposition: attachment; filename=\"spec.pdf\"\r\n\
-        \r\n\
-        %PDF-1.4 real body\r\n\
-        --BOUND--\r\n";
+    To: b@y.example\r\n\
+    Subject: With file\r\n\
+    MIME-Version: 1.0\r\n\
+    Content-Type: multipart/mixed; boundary=\"BOUND\"\r\n\
+    \r\n\
+    --BOUND\r\n\
+    Content-Type: text/plain\r\n\
+    \r\n\
+    See attached.\r\n\
+    --BOUND\r\n\
+    Content-Type: application/pdf\r\n\
+    Content-Disposition: attachment; filename=\"spec.pdf\"\r\n\
+    \r\n\
+    %PDF-1.4 real body\r\n\
+    --BOUND--\r\n";
                 let msg = parse_eml(raw, 42, Folder::Inbox).unwrap();
                 let att = &msg.attachments[0];
                 assert!(
@@ -545,21 +545,21 @@ mod tests {
 
             {
                 let raw = b"From: A <a@x.example>\r\n\
-        To: b@y.example\r\n\
-        Subject: With file\r\n\
-        MIME-Version: 1.0\r\n\
-        Content-Type: multipart/mixed; boundary=\"BOUND\"\r\n\
-        \r\n\
-        --BOUND\r\n\
-        Content-Type: text/plain\r\n\
-        \r\n\
-        See attached.\r\n\
-        --BOUND\r\n\
-        Content-Type: application/pdf\r\n\
-        Content-Disposition: attachment; filename=\"spec.pdf\"\r\n\
-        \r\n\
-        %PDF-1.4 fake\r\n\
-        --BOUND--\r\n";
+    To: b@y.example\r\n\
+    Subject: With file\r\n\
+    MIME-Version: 1.0\r\n\
+    Content-Type: multipart/mixed; boundary=\"BOUND\"\r\n\
+    \r\n\
+    --BOUND\r\n\
+    Content-Type: text/plain\r\n\
+    \r\n\
+    See attached.\r\n\
+    --BOUND\r\n\
+    Content-Type: application/pdf\r\n\
+    Content-Disposition: attachment; filename=\"spec.pdf\"\r\n\
+    \r\n\
+    %PDF-1.4 fake\r\n\
+    --BOUND--\r\n";
                 let msg = parse_eml(raw, 42, Folder::Inbox).unwrap();
                 assert_eq!(msg.attachments.len(), 1);
                 assert_eq!(msg.attachments[0].filename, "spec.pdf");
@@ -574,11 +574,11 @@ mod tests {
                 // A real fetched blob: the \Seen/\Flagged state comes from IMAP FLAGS,
                 // and with no INTERNALDATE the timestamp falls back to the Date header.
                 let raw = b"From: A <a@x.example>\r\n\
-        To: b@y.example\r\n\
-        Subject: Fetched\r\n\
-        Date: Thu, 01 Jan 1970 00:30:00 +0000\r\n\
-        \r\n\
-        Hello from the server.\r\n";
+    To: b@y.example\r\n\
+    Subject: Fetched\r\n\
+    Date: Thu, 01 Jan 1970 00:30:00 +0000\r\n\
+    \r\n\
+    Hello from the server.\r\n";
                 let msg = parse_fetched(raw, Folder::Inbox, true, true, None, 999).unwrap();
                 assert!(msg.read, "\\Seen maps to read");
                 assert!(msg.starred, "\\Flagged maps to starred");
