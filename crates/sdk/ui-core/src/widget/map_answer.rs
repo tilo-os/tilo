@@ -97,7 +97,15 @@ impl Map {
         if self.pan.is_some() || self.edge_drag.is_some() || self.free_press.is_some() {
             return;
         }
-        let Some(area) = self.answer.as_deref().and_then(|key| self.area_of(key)) else {
+        let Some(key) = self.answer.as_deref() else {
+            return;
+        };
+        // A view that has said no height yet (a turn before its words) stands at its most for
+        // now: the camera waits for what it says rather than going to its foot.
+        if self.unsaid.borrow().contains(key) {
+            return;
+        }
+        let Some(area) = self.area_of(key) else {
             return;
         };
         let margin = ARRIVAL_MARGIN / self.camera.zoom.max(f64::EPSILON);

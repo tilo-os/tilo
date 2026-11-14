@@ -364,6 +364,10 @@ pub struct Map {
     placed: Rc<RefCell<HashMap<String, crate::motion::Placed>>>,
     /// Where the region laid each pin out last, by key, written by its own solve.
     laid: Rc<RefCell<HashMap<String, Rect>>>,
+    /// The pins that hug what they hold but whose view said no height of its own at the last
+    /// solve (a turn before its words arrive), by key: laid out at their most, which is not yet
+    /// how tall they are, so the camera does not follow them there.
+    unsaid: Rc<RefCell<std::collections::HashSet<String>>>,
     /// Where each pin stands on the canvas, in the order of `pins`, as the region reads it at each
     /// solve: a pin moved in place ([`Described::set_props`]) is laid out where it stands now,
     /// though the region was built while it stood elsewhere.
@@ -502,6 +506,7 @@ impl Map {
             key_pan: f64::from(crate::tokens::Metrics::BASE.wheel_line),
             placed: Rc::default(),
             laid: Rc::default(),
+            unsaid: Rc::default(),
             standing: Rc::default(),
             reveal: None,
             glide: None,
@@ -940,6 +945,7 @@ impl Map {
         let moving = Rc::clone(&self.placed);
         let motion = self.motion;
         let laid: Rc<RefCell<HashMap<String, Rect>>> = Rc::clone(&self.laid);
+        let unsaid = Rc::clone(&self.unsaid);
         let mut region = Manual::new(move |cx| -> Result<Size<f32>, WidgetLayoutError> {
             let available = cx.available();
             // The tallest a hugging place stands: the viewport, less the room a place that
@@ -956,6 +962,7 @@ impl Map {
             let mut moving = moving.borrow_mut();
             let places = places.borrow();
             let mut out: HashMap<String, Rect> = HashMap::with_capacity(places.len());
+            let mut silent = std::collections::HashSet::new();
             for index in 0..cx.len() {
                 let Some(place) = places.get(index) else {
                     continue;
@@ -993,6 +1000,12 @@ impl Map {
                     // A view that says no height of its own (a list that scrolls is as tall as
                     // the room it is given) fills its most: it cannot hug what it holds.
                     let says = natural - place.band >= LEAST_NATURAL * camera.zoom;
+                    if place.hug
+                        && !says
+                        && let Some(key) = keys.get(index)
+                    {
+                        silent.insert(key.clone());
+                    }
                     if place.hug && says {
                         natural.min(most)
                     } else {
@@ -1015,6 +1028,7 @@ impl Map {
                 cx.place(index, rect)?;
             }
             *laid.borrow_mut() = out;
+            *unsaid.borrow_mut() = silent;
             // The region is its viewport: a canvas does not grow with what it holds.
             Ok(Size {
                 width: available.width.max(0.0),

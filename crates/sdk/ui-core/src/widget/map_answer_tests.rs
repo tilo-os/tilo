@@ -143,6 +143,27 @@ fn a_growing_answer_is_kept_in_view_until_the_person_pans() {
     assert_eq!(map.camera().origin, Point::new(-500.0, -500.0));
 }
 
+/// A turn whose view has said no height yet (its words not arrived) stands at its most for now:
+/// the camera shows its top, and does not go to the foot of a room it will not fill.
+#[test]
+fn an_answer_that_said_no_height_yet_is_not_followed_to_its_foot() {
+    let _frame = crate::motion::pin_frame();
+    let old = pointed((100.0, 500.0));
+    let mut map = Map::new().pin(
+        "turn",
+        grown(100.0, 500.0, 400.0, 480.0),
+        Box::new(crate::widget::Spacer::new()),
+    );
+    drop(old);
+    lay_out(&mut map);
+    lay_out(&mut map);
+    assert!(
+        map.camera().origin.y < 100.0,
+        "the camera showed its top, not its most: {:?}",
+        map.camera()
+    );
+}
+
 /// After the person's turn stands in view, the agent puts a place far off-screen: the camera does
 /// not chase it and push the turn out. One it can show with the turn still in view, it shows.
 #[test]
