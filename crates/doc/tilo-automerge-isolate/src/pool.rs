@@ -483,6 +483,15 @@ fn spawn_with(
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
                 return Err(io::Error::last_os_error());
             }
+            // An ending sent to the caller's whole process group (a session
+            // stopping) must not end the worker before its caller: the caller
+            // still applies input while it shuts down, and a dead worker
+            // refuses all of it. The worker ends with its caller instead.
+            for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+                if libc::signal(signal, libc::SIG_IGN) == libc::SIG_ERR {
+                    return Err(io::Error::last_os_error());
+                }
+            }
             Ok(())
         });
     }
@@ -625,6 +634,23 @@ mod tests {
             tilo_test_env::wait_until("the signalled worker to exit", || worker.exited());
             *(pool.slots[0]).lock_recover() = Some(worker);
             assert!(pool.load(&doc.save()).is_ok());
+        }
+
+        phase a_worker_outlives_an_ending_sent_to_its_callers_group;
+        {
+            let worker = Worker::spawn(&limits()).unwrap();
+            let pid = libc::pid_t::try_from(worker.child.id()).unwrap();
+            for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+                // SAFETY: signalling our own child.
+                unsafe { libc::kill(pid, signal) };
+            }
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "k", 1).unwrap();
+            doc.commit();
+            assert!(matches!(
+                worker.call(Request::Load { incoming: &doc.save() }.encode(), STARTUP),
+                Ok(Reply::Loaded(_))
+            ));
         }
 
         phase isolate_load_avoids_a_full_rebuild_on_the_next_change;
