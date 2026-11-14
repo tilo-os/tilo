@@ -1011,7 +1011,7 @@ mod tests {
         let host = FakeHost::new(|_, _| {
             (
                 200,
-                json!({"workspaces": [{"room": "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0", "name": "Lounge",
+                json!({"workspaces": [{"workspace": "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0", "name": "Lounge",
                     "defaultRole": "editor", "door": "lounge/"}]}),
             )
         });
