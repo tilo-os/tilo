@@ -16,9 +16,11 @@ Scenarios:
   stop        initialize, tools/list, `tilo_devices`, `tilo_ls`; then E2E_READY is written
               and `tilo_ls` asked once a second until the connection ends (or E2E_WAIT_S)
   work        initialize, tools/list, `tilo_devices`, `tilo_ls`, Notes opened with
-              `notes#open`, a link opened with `notes#open-link` (a step a device asks
-              about), a note titled E2E_TITLE made with `notes#new-note` once
-              E2E_GO exists, found again with `tilo_find`
+              `notes#open`; then E2E_ASKING is written and the command E2E_COMMAND run with
+              `terminal#run` (a step that asks first, which a device puts to its person
+              unless they let their other devices' agents act without asking), waited on
+              for E2E_ASKED_S; then E2E_READY is written, a note titled E2E_TITLE made with
+              `notes#new-note` once E2E_GO exists, found again with `tilo_find`
   refused     initialize, then what follows the answer
   browser     initialize, tools/list, `tilo_ls`; with E2E_NAVIGATE=1 the Browser that is open
               sent to E2E_URL; the page's form read with `browser/page#read-page-forms`; then
@@ -250,10 +252,16 @@ def work(client: Client, out: dict) -> None:
     out["open_notes"] = do(client, "notes#open", None, 60)
     out["notes_listing"] = until(client, "tilo_ls", {"path": "notes"},
                                  lambda text: "#new-note" in text, 30)
-    # A step that reaches outside the app, which a device asks its person about unless they let
-    # their other devices' agents act without asking.
-    out["open_link"] = client.tool("tilo_do", {"path": "notes#open-link",
-                                               "args": {"url": "https://tilo.so/"}})
+    # A step that asks first: a command run in Terminal (which starts first if it is not
+    # running), put to the device's person unless they let their other devices' agents act
+    # without asking. The call waits while the person is asked. The harness is told the agent
+    # came this far first, so that a sheet up from now on is about this step.
+    asking = os.environ.get("E2E_ASKING")
+    if asking:
+        touch(os.path.expandvars(asking))
+    out["run_command"] = do(client, "terminal#run",
+                            {"command": os.environ.get("E2E_COMMAND", "echo e2e-remote")},
+                            float(os.environ.get("E2E_ASKED_S", "120")))
     go = os.path.expandvars(os.environ["E2E_GO"])
     touch(os.path.expandvars(os.environ["E2E_READY"]))
     deadline = time.monotonic() + WAIT_S
