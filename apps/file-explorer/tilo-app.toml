@@ -72,7 +72,7 @@ open-uri = "via-host"
 collab = "optional@27"
 tilo-fs = "optional@27"
 tools = "optional@27"
-shell-ui = "optional@32"
+shell-ui   = "optional@33"
 
 [entrypoint]
 bin             = "bin/file-explorer"
