@@ -1184,6 +1184,60 @@ impl std::fmt::Display for ParticipantId {
     }
 }
 
+/// The longest name of a device kept with an invoker, in characters.
+const MAX_DEVICE_NAME_CHARS: usize = 64;
+
+/// Another of its person's devices that an agent works from: the device the
+/// agent door that admitted the agent's connection verified it came from, by
+/// the certificate the person's root signed for it.
+///
+/// It says where the agent runs, and grants nothing: who the agent is and
+/// what it may do is [`ActionInvoker::acting`] and the admission behind it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct InvokerDevice {
+    /// The device's public key, in lowercase hex.
+    pub id: String,
+    /// What the device's certificate calls it ("Studio laptop"); empty when
+    /// it gives the device no name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+}
+
+impl InvokerDevice {
+    /// The device of the key `key`, called `label` by the certificate a door
+    /// verified for it.
+    #[must_use]
+    pub fn certified(key: [u8; 32], label: &str) -> Self {
+        Self {
+            id: hex::encode(key),
+            name: label
+                .trim()
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(MAX_DEVICE_NAME_CHARS)
+                .collect(),
+        }
+    }
+
+    /// The start of the device's key: what tells two devices of one name
+    /// apart, and what names a device whose certificate names none.
+    #[must_use]
+    pub fn short_id(&self) -> &str {
+        self.id.get(..8).unwrap_or(&self.id)
+    }
+
+    /// The device as a person reads it: its name, or the start of its key
+    /// when it has none.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        if self.name.is_empty() {
+            self.short_id()
+        } else {
+            &self.name
+        }
+    }
+}
+
 /// The invoker of one action: the authenticated acting tree, and optionally
 /// the participant whose view the invocation resolves against.
 ///
@@ -1203,6 +1257,13 @@ pub struct ActionInvoker {
     /// names it by. Never taken from the request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The other device of its person's an agent works from, when it came to
+    /// this host through its agent door. Set only by the host that admitted
+    /// the connection, from the device certificate the door verified, and
+    /// never taken from a request. `None` for an actor on the host's own
+    /// device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<InvokerDevice>,
 }
 
 impl ActionInvoker {
@@ -1214,6 +1275,7 @@ impl ActionInvoker {
             participant: None,
             appearance: None,
             name: None,
+            device: None,
         }
     }
 
@@ -1258,6 +1320,16 @@ impl ActionInvoker {
         self
     }
 
+    /// The other device of its person's the agent works from
+    /// ([`Self::device`]), as the door that admitted its connection verified
+    /// it; `None` clears one, so an invoker copied from a caller's context
+    /// never keeps a device no door checked.
+    #[must_use]
+    pub fn from_device(mut self, device: Option<InvokerDevice>) -> Self {
+        self.device = device;
+        self
+    }
+
     /// The same invoker, for `person`. A person acting for themselves
     /// records nobody.
     #[must_use]
@@ -1288,9 +1360,9 @@ impl ActionInvoker {
     /// The invoker an application worker may act on for one delivered
     /// invocation. `actor` is the key of the actor the host authenticated and
     /// put on the delivery; `context` is the host-built provenance of the same
-    /// delivery. The participant and the person it acts for are kept only
-    /// when the context names this exact actor, or an automation acting for
-    /// exactly that actor. A context the host did not rewrite for this actor
+    /// delivery. The participant, the person it acts for and the device it
+    /// works from are kept only when the context names this exact actor, or an
+    /// automation acting for exactly that actor. A context the host did not rewrite for this actor
     /// therefore never routes to anybody's view.
     pub fn delivered(actor: &str, context: Option<&ActionContext>) -> Self {
         let invoker = context.and_then(|context| context.invoker.as_ref());
@@ -1394,6 +1466,10 @@ mod tests {
     use crate::entry::{EditOp, FieldEdit, PathStep, Scalar};
     use crate::key::ActionKey;
 
+    fn laptop() -> InvokerDevice {
+        InvokerDevice::certified([0x5c; 32], "  Studio\u{7} laptop ")
+    }
+
     fn starred() -> Described {
         Described::new(Did::Edit(FieldEdit {
             ty: "snippet".into(),
@@ -1444,6 +1520,48 @@ mod tests {
                 ActionInvoker::delivered("person:b", Some(&context)).appearance,
                 None
             );
+        }
+
+        phase a_device_is_named_by_its_certificate_or_the_start_of_its_key;
+        {
+            let laptop = laptop();
+            assert_eq!(laptop.id, "5c".repeat(32));
+            assert_eq!(
+                laptop.name, "Studio laptop",
+                "trimmed, no control characters"
+            );
+            assert_eq!(laptop.short_id(), "5c5c5c5c");
+            assert_eq!(laptop.label(), "Studio laptop");
+            let unnamed = InvokerDevice::certified([0x40; 32], " ");
+            assert_eq!(unnamed.label(), "40404040");
+            let long = InvokerDevice::certified([1; 32], &"x".repeat(200));
+            assert_eq!(long.name.chars().count(), MAX_DEVICE_NAME_CHARS);
+        }
+
+        phase the_host_rewriting_the_invoker_drops_a_device_the_caller_put_there;
+        {
+            let smuggled = ActionContext::default().with_invoker(
+                ActionInvoker::agent("mallory").from_device(Some(laptop())),
+            );
+            let hosted = smuggled.with_host_actor(&crate::Acting::agent("mallory"), None);
+            assert_eq!(hosted.invoker.unwrap().device, None);
+        }
+
+        phase a_delivered_invoker_keeps_the_device_only_for_the_named_actor;
+        {
+            let context = ActionContext::default().with_invoker(
+                ActionInvoker::agent("task-7").from_device(Some(laptop())),
+            );
+            assert_eq!(
+                ActionInvoker::delivered("agent:task-7", Some(&context)).device,
+                Some(laptop())
+            );
+            assert_eq!(
+                ActionInvoker::delivered("agent:task-8", Some(&context)).device,
+                None,
+                "another actor is not on that device because a context names it"
+            );
+            assert_eq!(ActionInvoker::delivered("agent:task-7", None).device, None);
         }
 
         phase invoker_round_trips_and_is_enriched_from_ambient;
@@ -1577,6 +1695,22 @@ mod tests {
             let plain = ActionContext::default().with_invoker(ActionInvoker::person("person:ada"));
             let json = serde_json::to_string(&plain.invoker).unwrap();
             assert!(!json.contains("appearance"), "{json}");
+        }
+
+        phase the_device_an_agent_works_from_round_trips_through_the_change_message;
+        {
+            let entry = ActionContext::default().with_invoker(
+                ActionInvoker::agent("task-7")
+                    .acting_for("person:ada")
+                    .from_device(Some(laptop())),
+            );
+            let read = ActionContext::from_change_message(&entry.change_message().unwrap()).unwrap();
+            assert_eq!(read, entry);
+            assert_eq!(read.invoker.unwrap().device, Some(laptop()));
+            // An actor on the host's own device says nothing of a device.
+            let local = ActionContext::default().with_invoker(ActionInvoker::agent("task-8"));
+            let json = serde_json::to_string(&local.invoker).unwrap();
+            assert!(!json.contains("device"), "{json}");
         }
 
         phase a_cause_survives_the_change_message;

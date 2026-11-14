@@ -39,6 +39,8 @@ mod acceptance;
 mod action_plane;
 #[path = "agent_control.rs"]
 mod agent_control;
+#[path = "agent_door_room.rs"]
+mod agent_door_room;
 #[path = "agent_environments.rs"]
 mod agent_environments;
 #[path = "agent_story.rs"]
@@ -137,6 +139,8 @@ mod join;
 mod launch;
 #[path = "layout_view.rs"]
 mod layout_view;
+#[path = "live_relay_bound.rs"]
+mod live_relay_bound;
 #[path = "live_revocation.rs"]
 mod live_revocation;
 #[path = "lockdown_live.rs"]
@@ -261,6 +265,8 @@ mod window_bar_actions;
 mod window_menu;
 #[path = "window_menu_probe.rs"]
 mod window_menu_probe;
+#[path = "window_share_live.rs"]
+mod window_share_live;
 #[path = "window_switcher.rs"]
 mod window_switcher;
 #[path = "workspace_agents.rs"]

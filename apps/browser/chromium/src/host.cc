@@ -25,6 +25,7 @@
 #include "devtools_bridge.h"
 #include "extension_tabs.h"
 #include "page_clipboard.h"
+#include "http_auth.h"
 #include "text_composition_script.h"
 #if defined(OS_MAC)
 #include "credentials_mac.h"
@@ -72,6 +73,9 @@ constexpr size_t kMaxAudioPackets = 16;
 // The widest picture the page op paints, matching the app's own bound: a
 // wider request is a malformed command, never a larger answer.
 constexpr int CAPTURE_MAX_WIDTH = 1600;
+// The most files one answer to a page's file chooser names: what a person
+// picks at once, with room to spare, and far inside one command.
+constexpr size_t MAX_CHOOSER_PATHS = 4096;
 // The longest accessible name and role words a find matches, matching the
 // app's own bounds: a longer one is a malformed command, never a wider match.
 constexpr size_t MAX_FIND_NAME = 512;
@@ -291,6 +295,30 @@ bool private_mode=false;
 // else that would leave the document is refused.
 bool sealed_documents=false;
 bool SealedDocumentUrl(const std::string& url) { return url.rfind("data:",0)==0 || url=="about:blank"; }
+// What the host creates every tab's browser with. It is never loaded: the
+// host refuses it as the engine asks (Client::OnBeforeBrowse), before any
+// document. Its one effect is that the engine starts the tab's renderer for
+// it, on the empty document every frame begins with. A tab therefore holds no
+// page until its first address, its session history is the engine's initial
+// entry alone, and the first navigation replaces that entry as it commits:
+// the first page is the history's first entry from its first script on
+// (history.length is 1, and nothing is behind it for the page or the person),
+// with nothing taken out of the history afterwards.
+//
+// The renderer has to be there before the first address, because it answers
+// the DevTools commands a first navigation waits for (the document-start
+// scripts), and the engine starts a new tab's renderer only for a navigation.
+// An address that needs no request (about:blank) cannot be refused, since the
+// engine asks about none; this one names an empty document and needs no
+// network either.
+constexpr char kTabStart[]="data:,";
+// The address of the document a tab shows. A tab that has loaded no page
+// shows the empty document its frame began with, whose address is
+// about:blank, though the engine names none for it.
+std::string ShownUrl(CefRefPtr<CefBrowser> browser) {
+  auto url=browser->GetMainFrame()->GetURL().ToString();
+  return url.empty()?"about:blank":url;
+}
 std::string service_session_id;
 bool service_session_consumed=false;
 // Extension management over Chromium's DevTools pipe (see devtools_bridge.h).
@@ -362,8 +390,16 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     output->SendAudio(CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString(),packet);
   }
   CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
-  // Whether this window holds what its page sends (departures.h).
-  bool HoldsPage() const { return holds_; }
+  // How long this window holds what its page sends before the engine ends
+  // the hold itself, and 0 for a window that holds nothing (departures.h).
+  int64_t HoldWaitMs() const { return holds_?hold_wait_ms_.load():0; }
+  // What this tab's record is told of something its page was held from
+  // sending: that it waits for the person, or how that ended (departures.h).
+  void NoteHold(const tilo::HoldNote& note) {
+    if(!page_automation_) return;
+    if(note.began) page_automation_->HoldBegan(note.action,note.method,note.origin,note.file);
+    else page_automation_->HoldEnded(note.action,note.actor,note.method,note.origin,note.file,note.page);
+  }
   // A window an agent operates (holds_): a request the page makes of its own
   // that leaves with data is paused here, and answered by the app. A
   // navigation is held where Chromium starts it (HoldsNavigation), and every
@@ -373,7 +409,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!holds_ || navigation || !departures || transfer_owner_ || closing) return nullptr;
     if(!tilo::LeavesWithData(request->GetMethod().ToString()) ||
        !tilo::WebAddress(request->GetURL().ToString())) return nullptr;
-    return new tilo::HoldResourceHandler(id_,departures);
+    return new tilo::HoldResourceHandler(id_,departures,hold_wait_ms_);
   }
   // The page asks to go somewhere: a form leaving waits for the person, as a
   // request of the page's own does. Anything else goes as it always has.
@@ -388,7 +424,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     tilo::Departure departure;
     departure.tab=id_;departure.kind="submit";
     departure.method=method;departure.origin=tilo::Origin(url);
-    departure.frame=frame;departure.request=request;
+    departure.frame=frame;departure.request=request;departure.wait_ms=hold_wait_ms_;
     departures->Hold(std::move(departure));
     return true;
   }
@@ -456,12 +492,170 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     // so nothing else would settle it.
     if(unload && !accept && navigation_dispatched_ && !navigation_started_) RefuseNavigation("The page asked to stay");
   }
-  bool OnFileDialog(CefRefPtr<CefBrowser>,FileDialogMode mode,const CefString& title,const CefString&,const std::vector<CefString>&,const std::vector<CefString>& extensions,const std::vector<CefString>&,CefRefPtr<CefFileDialogCallback> callback) override {
+  // A server or a proxy asks for a user name and a password (http_auth.h):
+  // the embedder's to ask the person, where it asked for them (`http_auth`).
+  // Chromium asks here on its IO thread and holds the request; who is asked,
+  // and whether anybody is, is decided on the UI thread, where the tab knows
+  // what it shows. The embedder is told of each as an `http_auth` with a
+  // positive id and who asks, and answers with `http_auth_reply`: the
+  // credentials, or none to cancel, which shows the server's own page. One
+  // question is open at a time, and none outlives its document, its tab, an
+  // embedder that stopped answering, or the wait; `http_auth_closed` says
+  // each time the request no longer waits. Nothing but that reply answers
+  // it: no page action reaches it, and no event or log carries a password.
+  bool GetAuthCredentials(CefRefPtr<CefBrowser>,const CefString& origin_url,bool proxy,const CefString& host,int port,const CefString& realm,const CefString& scheme,CefRefPtr<CefAuthCallback> callback) override {
+    CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self,std::string url,bool proxy,std::string host,int port,std::string realm,std::string scheme,CefRefPtr<CefAuthCallback> callback){
+      self->AskAuth(url,proxy,host,port,realm,scheme,callback);
+    },CefRefPtr<Client>(this),origin_url.ToString(),proxy,host.ToString(),port,realm.ToString(),scheme.ToString(),callback));
+    return true;
+  }
+  bool AsksAuth() const { return http_auth_ && browser_ && !transfer_owner_ && !native_closing_ && !closing; }
+  void AskAuth(const std::string& url,bool proxy,const std::string& host,int port,const std::string& realm_text,const std::string& scheme_text,CefRefPtr<CefAuthCallback> callback) {
+    tilo::AuthRequest request;CefURLParts parts;
+    if(url.size()<=8192 && CefParseURL(url,parts)) {
+      request.scheme=CefString(&parts.scheme).ToString();request.host=CefString(&parts.host).ToString();
+      const auto named=CefString(&parts.port).ToString();
+      // A port that is no number names no server: nobody is asked.
+      request.port=named.empty()?0:(named.size()<=5 && std::all_of(named.begin(),named.end(),[](unsigned char c){return std::isdigit(c);}))?std::atoi(named.c_str()):-1;
+    }
+    const auto asker=tilo::AuthAsker(request,proxy,host,port);
+    // A tab that never asked for them, and anything a page loads from
+    // another origin, is cancelled at once: nobody is shown a question.
+    if(!AsksAuth() || !tilo::AuthMayAsk(url,asker,proxy,auth_navigating_,tilo::Origin(committed_url_))) { callback->Cancel();return; }
+    const auto realm=tilo::AuthRealm(realm_text),scheme=tilo::AuthScheme(scheme_text);
+    const auto question=tilo::AuthQuestion(asker,proxy,realm,scheme);
+    // Another request waiting on the question already asked is answered
+    // with it: the person is asked once.
+    if(!auth_callbacks_.empty() && question==auth_question_) {
+      if(auth_callbacks_.size()<kMaxAuthWaiting) { auth_callbacks_.push_back(callback);auth_requests_.push_back(url); } else callback->Cancel();
+      return;
+    }
+    // So is one whose challenge came back only after the person answered:
+    // it was on its way to the same question, and is answered as that was
+    // instead of asking again, and saying the answer just given was refused.
+    if(auth_answer_.Reaches(question,url)) {
+      if(auth_answer_.declined) callback->Cancel(); else callback->Continue(auth_answer_.username,auth_answer_.password);
+      return;
+    }
+    // One tab, one question: a newer one supersedes an unanswered one.
+    CancelAuth();
+    auth_id_=auth_id_%2147483647+1;auth_callbacks_.push_back(callback);auth_requests_.push_back(url);auth_asker_=asker;auth_question_=question;
+    auto d=CefDictionaryValue::Create();d->SetInt("id",auth_id_);d->SetString("asker",asker);d->SetBool("proxy",proxy);
+    d->SetString("realm",realm);d->SetString("scheme",scheme);
+    // The credentials given last for this very question were not accepted:
+    // a request that was given them is challenged again. They are not kept
+    // past that.
+    d->SetBool("retry",auth_answer_.Holds(question) && !auth_answer_.declined);
+    auth_answer_.Forget();
+    Event("http_auth",d);
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self,int id){ if(!self->auth_callbacks_.empty() && self->auth_id_==id) self->CancelAuth(); },CefRefPtr<Client>(this),auth_id_),tilo::kAuthWaitMs);
+  }
+  // The requests that waited on the open question, which no longer do.
+  std::vector<CefRefPtr<CefAuthCallback>> TakeAuth() {
+    std::vector<CefRefPtr<CefAuthCallback>> waiting;waiting.swap(auth_callbacks_);auth_requests_.clear();
+    if(!waiting.empty()) {auto d=CefDictionaryValue::Create();d->SetInt("id",auth_id_);Event("http_auth_closed",d);}
+    return waiting;
+  }
+  void CancelAuth() { for(const auto& callback:TakeAuth()) callback->Cancel(); }
+  // The embedder's answer: for the question still open, naming the asker it
+  // was asked by, so credentials never answer a question other than the one
+  // the person was shown. Anything else is no answer and sends nothing.
+  void AnswerAuth(CefRefPtr<CefDictionaryValue> d) {
+    if(auth_callbacks_.empty() || d->GetInt("id")!=auth_id_ || d->GetString("asker").ToString()!=auth_asker_) return;
+    // The answer is kept for the requests still on their way to this
+    // question (http_auth.h, AuthAnswer): they are answered the same way.
+    const bool declined=!d->HasKey("username");
+    auth_answer_.Keep(auth_question_,declined?std::string():d->GetString("username").ToString(),
+      declined?std::string():d->GetString("password").ToString(),declined,auth_requests_);
+    if(declined) { CancelAuth();return; }
+    const auto username=d->GetString("username"),password=d->GetString("password");
+    for(const auto& callback:TakeAuth()) callback->Continue(username,password);
+  }
+  // A file chooser a person opened is the embedder's to show where it asked
+  // for them (`file_choosers`): it is told of each as a `file_chooser` with
+  // a positive id, shows the desktop's own picker, and answers with
+  // `file_chooser_reply`, the paths the person picked or none. The page then
+  // runs what any picker's answer runs. One is open at a time, and none
+  // outlives its document, its tab, an embedder that stopped answering, or
+  // the wait below; `file_chooser_closed` says each time the page no longer
+  // waits. Nothing but that reply answers it: no page action reaches it.
+  bool AsksFileChoosers() const { return file_choosers_ && !transfer_owner_ && !native_closing_ && !closing; }
+  // Whether the click or key the page heard last was a person's own, sent by
+  // the embedder, and not a page action's. A page opens its chooser on the
+  // activation its last input gave it, and often only once the action that
+  // clicked has answered, so whose input came last is what says whose
+  // chooser this is: one an action's click opened is never a person's,
+  // however late it comes.
+  bool PersonActedLast() const { return activated_ && (!action_input_ || *activated_>*action_input_); }
+  void ActionInput() { action_input_=std::chrono::steady_clock::now(); }
+  // What the page's input accepts, as the page wrote it and as Chromium
+  // resolved it: MIME types ("image/*") and file extensions (".png"), each
+  // once, bounded in number and in length.
+  static CefRefPtr<CefListValue> AcceptedTypes(const std::vector<CefString>& filters,const std::vector<CefString>& extensions) {
+    auto accept=CefListValue::Create();std::set<std::string> seen;
+    const auto add=[&](std::string type) {
+      const auto first=type.find_first_not_of(" \t"),last=type.find_last_not_of(" \t");
+      if(first==std::string::npos) return;
+      type=type.substr(first,last-first+1);
+      const bool extension=type.size()>1 && type.front()=='.' && type.find('/')==std::string::npos;
+      const bool mime=type.front()!='.' && type.find('/')!=std::string::npos;
+      const bool plain=std::all_of(type.begin(),type.end(),[](unsigned char c){return c>0x20 && c<0x7f;});
+      if((!extension && !mime) || !plain || type.size()>kMaxAcceptedType || seen.size()>=kMaxAcceptedTypes || !seen.insert(type).second) return;
+      accept->SetString(accept->GetSize(),type);
+    };
+    for(const auto& filter:filters) add(filter.ToString());
+    for(const auto& group:extensions) {
+      const auto all=group.ToString();
+      for(size_t from=0;from<=all.size();) {
+        const auto to=std::min(all.find(';',from),all.size());
+        add(all.substr(from,to-from));from=to+1;
+      }
+    }
+    return accept;
+  }
+  void AskFileChooser(FileDialogMode mode,const CefString& title,const std::vector<CefString>& filters,const std::vector<CefString>& extensions,CefRefPtr<CefFileDialogCallback> callback) {
+    // One page, one chooser: a newer one supersedes an unanswered one.
+    CancelFileChooser();
+    chooser_id_=chooser_id_%2147483647+1;chooser_callback_=callback;chooser_multiple_=mode==FILE_DIALOG_OPEN_MULTIPLE;
+    auto d=CefDictionaryValue::Create();d->SetInt("id",chooser_id_);
+    d->SetString("mode",mode==FILE_DIALOG_OPEN_MULTIPLE?"open_multiple":mode==FILE_DIALOG_OPEN_FOLDER?"open_folder":"open");
+    d->SetString("title",tilo::BoundedText(title.ToString(),kMaxChooserTitle));
+    d->SetList("accept",AcceptedTypes(filters,extensions));
+    Event("file_chooser",d);
+    // A picker nobody answers must not hold the page's file work open for
+    // good, so the hold ends on its own as well.
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self,int id){ if(self->chooser_callback_ && self->chooser_id_==id) self->CancelFileChooser(); },CefRefPtr<Client>(this),chooser_id_),kFileChooserWaitMs);
+  }
+  void CloseFileChooser() {
+    if(!chooser_callback_) return;
+    chooser_callback_=nullptr;auto d=CefDictionaryValue::Create();d->SetInt("id",chooser_id_);Event("file_chooser_closed",d);
+  }
+  void CancelFileChooser() {
+    if(!chooser_callback_) return;
+    auto callback=chooser_callback_;CloseFileChooser();callback->Cancel();
+  }
+  // The embedder's answer: exactly these paths, never more than one where the
+  // page asked for one file or one folder, and none to cancel.
+  void AnswerFileChooser(int id,CefRefPtr<CefListValue> paths) {
+    if(!chooser_callback_ || id!=chooser_id_) return;
+    auto callback=chooser_callback_;const bool multiple=chooser_multiple_;CloseFileChooser();
+    std::vector<CefString> files;
+    for(size_t i=0;paths && i<paths->GetSize();++i) files.push_back(paths->GetString(i));
+    if(files.empty() || (!multiple && files.size()>1)) callback->Cancel();
+    else callback->Continue(files);
+  }
+  bool OnFileDialog(CefRefPtr<CefBrowser>,FileDialogMode mode,const CefString& title,const CefString&,const std::vector<CefString>& filters,const std::vector<CefString>& extensions,const std::vector<CefString>&,CefRefPtr<CefFileDialogCallback> callback) override {
     Event("file_dialog");
     // An agent's page action cannot drive a native panel, so while it is
-    // driving the chooser is held for fill-page-files instead. A person's
-    // own click keeps the platform panel where the host has one.
+    // driving the chooser is held for fill-page-files instead.
     if(page_automation_ && page_automation_->HoldFileDialog(callback)) return true;
+    // A person's own click is held for the embedder that answers them. A
+    // chooser that comes while a page action runs, or on a page action's
+    // click or key, is not a person's, so no action of an agent's puts a
+    // picker in front of the person; and a chooser to save into is not a
+    // page's upload.
+    if(AsksFileChoosers() && mode!=FILE_DIALOG_SAVE && PersonActedLast() && !(page_automation_ && page_automation_->Busy())) { AskFileChooser(mode,title,filters,extensions,callback);return true; }
+    // Otherwise the platform panel, where the host has one.
 #if defined(OS_MAC)
     return ShowHostFileDialog(mode,title,extensions,callback);
 #else
@@ -620,14 +814,17 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void OnRenderProcessTerminated(CefRefPtr<CefBrowser>,TerminationStatus,int,const CefString&) override {
     InvalidateCredentials();
+    // The page that asked for files is gone.
+    CancelFileChooser();
+    CancelAuth();
     fullscreen_.ResetForRendererTermination();
     // Publish the lifecycle invalidation before terminal outcomes: a consumer
     // may admit recovery immediately after observing its owned completion.
     Event("renderer_terminated");
     // The page action that was running has no document left to answer from.
     if(page_automation_)page_automation_->RendererGone();
-    if(navigation_owner_)NavigationOutcome(*navigation_owner_,browser_->GetMainFrame()->GetURL(),"Renderer terminated");
-    for(const auto& command:pending_navigation_)if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),browser_->GetMainFrame()->GetURL(),"Renderer terminated");
+    if(navigation_owner_)NavigationOutcome(*navigation_owner_,ShownUrl(browser_),"Renderer terminated");
+    for(const auto& command:pending_navigation_)if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),ShownUrl(browser_),"Renderer terminated");
     pending_navigation_.clear();navigation_owner_.reset();navigation_dispatched_=false;navigation_started_=false;navigation_busy_=false;navigation_aborting_=false;bootstrap_settled_=true;
   }
   void OnFrameCreated(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame) override { SendFilters(frame);SendScripts(frame); }
@@ -791,7 +988,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     paint_snapshot_->Attach();
     document_size_=new tilo::DocumentSize(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     document_size_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("ime_composition",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("js_dialogs",true);d->SetBool("selection_text",true);d->SetBool("page_clipboard",page_clipboard && !sealed_documents);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("ime_composition",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("js_dialogs",true);d->SetBool("file_choosers",true);d->SetBool("http_auth",true);d->SetBool("selection_text",true);d->SetBool("page_events",true);d->SetBool("page_clipboard",page_clipboard && !sealed_documents);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     if(extension_tabs)extension_tabs->Introduce(id_);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
@@ -813,6 +1010,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     navigation_history_=nullptr;
     if(geolocation_)geolocation_->Detach();
     geolocation_=nullptr;
+    CancelFileChooser();
+    CancelAuth();
     if(page_automation_)page_automation_->Detach();
     page_automation_=nullptr;
     if(agent_log_)agent_log_->Detach();
@@ -836,7 +1035,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     composition_scripts_=nullptr;
     if(service_session_import_)service_session_import_->Detach();service_session_import_=nullptr;
     browser_=nullptr;
-    if(departures) departures->Closed(id_);
+    if(departures) departures->Gone(id_);
     download_owners.Destroy(id_);
     // Its popups go with it: nothing is left for them to answer.
     std::vector<CefRefPtr<Client>> popups;
@@ -846,6 +1045,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(closing && clients.empty())CefQuitMessageLoop();
   }
   bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool user_gesture,bool redirect) override {
+    // The load a tab was created with goes no further (kTabStart): refused
+    // here it commits nothing, and nothing has loaded to say so of.
+    if(!opener_ && !tab_start_refused_ && frame->IsMain() && request->GetURL()==kTabStart) { tab_start_refused_=true;main_navigation_finished_=true;return true; }
     // What a person allows is issued again from the answer (departures.h): a
     // redirect of a request already let go is not held a second time.
     if(!redirect && HoldsNavigation(frame,request)) return true;
@@ -858,7 +1060,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(frame->IsMain() && user_gesture && !redirect) OpenTab(request->GetURL(),false);
       return true;
     }
-    if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();if(agent_log_ && !redirect)agent_log_->MainNavigation(request->GetURL().ToString(),user_gesture);InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
+    if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();CancelFileChooser();CancelAuth();auth_navigating_=request->GetURL().ToString();if(agent_log_ && !redirect)agent_log_->MainNavigation(request->GetURL().ToString(),user_gesture);InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
   }
   bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool user_gesture,const CefPopupFeatures& features,CefWindowInfo& window,CefRefPtr<CefClient>& client,CefBrowserSettings& settings,CefRefPtr<CefDictionaryValue>&,bool*) override {
     if(sealed_documents && !user_gesture) return true;
@@ -922,26 +1124,35 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     auto loaded=CefDictionaryValue::Create();loaded->SetString("url",uri);loaded->SetInt("status",status);Event("loaded",loaded);
   }
   void OnLoadingStateChange(CefRefPtr<CefBrowser> browser,bool loading,bool back,bool forward) override {
-    auto d=CefDictionaryValue::Create();d->SetBool("back",back && !tilo::OnlyBootstrapBehind(browser));d->SetBool("forward",forward);Event("history",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("back",back);d->SetBool("forward",forward);Event("history",d);
     if(extension_tabs) {auto change=CefDictionaryValue::Create();change->SetString("status",loading?"loading":"complete");extension_tabs->Updated(id_,change);}
     if(loading) { navigation_busy_=true; main_navigation_finished_=false; failed_main_navigation_.reset(); return; }
     // OnLoadEnd excludes same-document history; overall loading settles it.
-    CompleteMainNavigation(browser->GetMainFrame()->GetURL().ToString(),0);
+    CompleteMainNavigation(ShownUrl(browser),0);
     // A sign-in out of sight ends once its page loaded.
-    if(extension_panel_ && extension_tabs)extension_tabs->SignInLoaded(id_,browser->GetMainFrame()->GetURL().ToString());
+    if(extension_panel_ && extension_tabs)extension_tabs->SignInLoaded(id_,ShownUrl(browser));
     // Not at OnLoadEnd: the browser still counts as loading there, and an
     // action's reply waiting on the load would say it is still loading.
     if(page_automation_)page_automation_->NavigationFinished();
     if(!navigation_dispatched_ || navigation_started_ || navigation_aborting_) {
-      const auto uri=browser->GetMainFrame()->GetURL().ToString();
+      const auto uri=ShownUrl(browser);
       if(navigation_owner_) NavigationOutcome(*navigation_owner_,uri,navigation_error_);
       navigation_owner_.reset();navigation_dispatched_=false;navigation_started_=false;navigation_busy_=false;navigation_aborting_=false;bootstrap_settled_=true;navigation_urls_.clear();navigation_error_.reset();
       ScheduleNavigation();
     }
   }
-  void OnLoadStart(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,TransitionType) override {
+  void OnLoadStart(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,TransitionType) override {
     if(!frame->IsMain()) return;
-    tilo::ForgetBootstrap(browser);
+    // A new document: what the page before it was held from sending has no
+    // page to leave from any more. Each such hold ends, and the tab's record
+    // names the page it was held on.
+    if(departures) departures->Gone(id_,committed_url_);
+    committed_url_=frame->GetURL().ToString();
+    // The document is here: nothing is on its way, and what its sign-in was
+    // given is no longer what a new question would be a second try of.
+    auth_navigating_.clear();auth_answer_.Forget();
+    // A new document: no script context a page action kept is one of its own.
+    if(page_automation_) page_automation_->DocumentCommitted();
     // A new document has no field focused yet.
     {auto field=CefDictionaryValue::Create();field->SetBool("editable",false);PublishTextField(field);}
     // A document in a new renderer has a widget of its own, which Chromium
@@ -963,7 +1174,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(service_session_import_)service_session_import_->Loaded(frame,status);
   }
   void OnLoadError(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,ErrorCode code,const CefString& text,const CefString& url) override {
-    if(frame->IsMain()) { failed_main_navigation_=url.ToString(); InvalidateCredentials(); }
+    if(frame->IsMain()) { failed_main_navigation_=url.ToString(); InvalidateCredentials(); if(tilo::AuthWithoutFragment(url.ToString())==tilo::AuthWithoutFragment(auth_navigating_)) auth_navigating_.clear(); }
     if(!frame->IsMain()) return;
     if(navigation_owner_ && navigation_started_ && navigation_urls_.count(url.ToString())) navigation_error_=text.ToString();
     if(code!=ERR_ABORTED) {auto d=CefDictionaryValue::Create();d->SetString("url",url);d->SetString("message",text);Event("error",d);}
@@ -984,23 +1195,34 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
           if(!self->browser_ || !self->visible_ || !self->stale_paint_recovery_pending_)return;
           TraceGeometry("stale-geometry-reassert",self->id_);
           auto host=self->browser_->GetHost();
-          host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
+          self->whole_next_=true;host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
         },CefRefPtr<Client>(this)));
       }
       return;
     }
     if(type==PET_VIEW) {
       stale_paint_recovery_pending_=false;
-      // The paint's one copy: straight into the packet the output sends, which
-      // the tab keeps to composite a popup over and to send again.
-      auto packet=tilo::FramePacket(static_cast<uint32_t>(id_),width,height,static_cast<const char*>(buffer),size);if(packet.empty()) return;
-      frame_=std::make_shared<const std::string>(std::move(packet));pixel_width_=width;pixel_height_=height;if(document_size_)document_size_->Painted();
       // What Chromium repainted, in the frame's pixels.
       std::vector<tilo::DamageRect> damage;
       for(const auto& rect:dirty) {
         const int64_t x0=std::max(0,rect.x),y0=std::max(0,rect.y),x1=int64_t(rect.x)+rect.width,y1=int64_t(rect.y)+rect.height;
         if(x1>x0 && y1>y0) damage.push_back({uint32_t(x0),uint32_t(y0),uint32_t(x1-x0),uint32_t(y1-y0)});
       }
+      // The engine draws an unchanged page again at times and calls it a
+      // repaint of the whole view: four seconds after a document loaded into
+      // the frame its tab began with, as a tab's first page does, when it
+      // stops holding what was painted before. A paint that would go whole
+      // and is the frame the tab has, pixel for pixel, is not sent again,
+      // unless the app is owed a frame. Only such a paint is compared, and a
+      // page that did change differs early.
+      if(frame_ && !whole_next_ && pixel_width_==width && pixel_height_==height && !(popup_visible_ && !popup_.empty()) && tilo::ClipDamage(damage,width,height).empty()) {
+        const size_t offset=tilo::FramePixelOffset(static_cast<uint32_t>(id_));
+        if(frame_->size()==offset+size && std::memcmp(frame_->data()+offset,buffer,size)==0) return;
+      }
+      // The paint's one copy: straight into the packet the output sends, which
+      // the tab keeps to composite a popup over and to send again.
+      auto packet=tilo::FramePacket(static_cast<uint32_t>(id_),width,height,static_cast<const char*>(buffer),size);if(packet.empty()) return;
+      frame_=std::make_shared<const std::string>(std::move(packet));pixel_width_=width;pixel_height_=height;if(document_size_)document_size_->Painted();
       EmitFrame(&damage);return;
     }
     popup_.assign(static_cast<const char*>(buffer),size);popup_width_=width;popup_height_=height;
@@ -1160,26 +1382,26 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     std::string op=scoped?command->GetString("command").ToString():command->GetString("op").ToString();
     auto frame=browser_->GetMainFrame();
     if(op=="navigate") {navigation_target_=command->GetString("url");CefURLParts parts;if(CefParseURL(navigation_target_,parts))navigation_target_=CefString(&parts.spec).ToString();TraceGeometry("navigate-load-url",id_);frame->LoadURL(command->GetString("url"));}
-    else if(op=="back" && browser_->CanGoBack() && !tilo::OnlyBootstrapBehind(browser_))browser_->GoBack();
+    else if(op=="back" && browser_->CanGoBack())browser_->GoBack();
     else if(op=="forward" && browser_->CanGoForward())browser_->GoForward();
     else if(op=="reload")browser_->Reload();
     else if(op=="site_action" && SiteCommand(command)) {}
     else if(op=="history_entry" && navigation_history_->Navigate(scoped?command->GetInt("history_request_id"):command->GetInt("request_id"),command->GetInt("id"),[self=CefRefPtr<Client>(this),owner=navigation_owner_]{if(owner && self->navigation_owner_==owner)self->RefuseNavigation("History navigation was refused");})) {}
-    else { if(navigation_owner_)NavigationOutcome(*navigation_owner_,frame->GetURL(),"Navigation is unavailable");navigation_owner_.reset();navigation_dispatched_=false;navigation_busy_=false;ScheduleNavigation(); }
+    else { if(navigation_owner_)NavigationOutcome(*navigation_owner_,ShownUrl(browser_),"Navigation is unavailable");navigation_owner_.reset();navigation_dispatched_=false;navigation_busy_=false;ScheduleNavigation(); }
   }
   bool DeferNavigation(CefRefPtr<CefDictionaryValue> command) {
-    if(pending_navigation_.size()>=256) {if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),browser_->GetMainFrame()->GetURL(),"Navigation queue exhausted");else {StringEvent("error","message","Document-start navigation queue exhausted");CloseHost();}return true;}
+    if(pending_navigation_.size()>=256) {if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),ShownUrl(browser_),"Navigation queue exhausted");else {StringEvent("error","message","Document-start navigation queue exhausted");CloseHost();}return true;}
     TraceGeometry("navigation-queued",id_);pending_navigation_.push_back(command->Copy(false));
     // An explicit replacement stops the old lifecycle; its remaining callbacks
     // finish without owning the newly queued operation.
     if(bootstrap_settled_ && navigation_busy_) {
-      if(navigation_owner_)NavigationOutcome(*navigation_owner_,browser_->GetMainFrame()->GetURL(),"Navigation was superseded");
+      if(navigation_owner_)NavigationOutcome(*navigation_owner_,ShownUrl(browser_),"Navigation was superseded");
       navigation_owner_.reset();AbortNavigation();
     }
     ScheduleNavigation();return true;
   }
   void RefuseNavigation(const std::string& error) {
-    if(navigation_owner_)NavigationOutcome(*navigation_owner_,browser_->GetMainFrame()->GetURL(),error);
+    if(navigation_owner_)NavigationOutcome(*navigation_owner_,ShownUrl(browser_),error);
     navigation_owner_.reset();navigation_dispatched_=false;navigation_started_=false;navigation_busy_=false;ScheduleNavigation();
   }
   void AbortNavigation() {
@@ -1230,7 +1452,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(!visible_) CancelMenu();
       host->WasHidden(!visible_);host->SetFocus(visible_);page_focused_=visible_;
       if(visible_) {
-        host->Invalidate(PET_VIEW);
+        // Shown, or said to be shown again: the app is sent the frame.
+        whole_next_=true;host->Invalidate(PET_VIEW);
         // A background load may have completed without an eligible handshake.
         if(!was_visible && !credential_identity_) OfferCredentialContext(browser_->GetMainFrame());
       } else {frame_.reset();popup_.clear();whole_next_=true;}
@@ -1243,9 +1466,23 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(!js_dialogs_ && dialog_callback_) AnswerDialog(dialog_id_,dialog_unload_,CefString());
     }
     else if(op=="js_dialog_reply") AnswerDialog(d->GetInt("id"),d->GetBool("accept"),d->HasKey("text")?d->GetString("text"):CefString());
+    else if(op=="file_choosers") {
+      file_choosers_=d->GetBool("enabled");
+      // An embedder that stops answering lets the open chooser go.
+      if(!file_choosers_) CancelFileChooser();
+    }
+    else if(op=="file_chooser_reply") AnswerFileChooser(d->GetInt("id"),d->GetList("paths"));
+    else if(op=="http_auth") {
+      http_auth_=d->GetBool("enabled");
+      // An embedder that stops answering lets the open question go, and
+      // the answer it gave last with it.
+      if(!http_auth_) { CancelAuth();auth_answer_.Forget(); }
+    }
+    else if(op=="http_auth_reply") AnswerAuth(d);
     // A window opened for an agent holds what its page sends: the app is
-    // told once, and answers each held request by its id.
-    else if(op=="hold_departures") holds_=true;
+    // told once, and answers each held request by its id. A hold nobody
+    // answers ends after `wait_ms`, when the app names a time of its own.
+    else if(op=="hold_departures") {holds_=true;if(d->GetType("wait_ms")==VTYPE_INT)hold_wait_ms_=d->GetInt("wait_ms");}
     else if(op=="context_action") {
       // Choosing an item is the person's own act, as a click is: a copy
       // from the menu reaches the clipboard.
@@ -1281,9 +1518,11 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       // Whatever an agent reads or does next, its logs start here.
       const auto action=d->GetString("action").ToString();
       if(action=="console" || action=="network") agent_log_->Request(d);
+      // The tab's own record of what was done in it reads nothing of the page.
+      else if(action=="ledger") page_automation_->Ledger(d);
       else { agent_log_->Activate();page_automation_->Request(d); }
     }
-    else if(op=="page_cancel") {if(page_automation_)page_automation_->Cancel();}
+    else if(op=="page_cancel") {if(page_automation_)page_automation_->Cancel(d->HasKey("request_id")?d->GetInt("request_id"):0);}
     else if(op=="paint_capture") paint_snapshot_->Capture(d);
     else if(op=="paint_resource") paint_snapshot_->Resource(d);
     else if(op=="document_size") document_size_->Enable(d->GetBool("enabled"));
@@ -1305,9 +1544,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="forward") browser_->GoForward();
     else if(op=="reload") browser_->Reload();
     else if(op=="stop") {
-      for(const auto& command:pending_navigation_)if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),frame->GetURL(),"Navigation was stopped");
+      for(const auto& command:pending_navigation_)if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),ShownUrl(browser_),"Navigation was stopped");
       pending_navigation_.clear();
-      if(navigation_owner_)NavigationOutcome(*navigation_owner_,frame->GetURL(),"Navigation was stopped");
+      if(navigation_owner_)NavigationOutcome(*navigation_owner_,ShownUrl(browser_),"Navigation was stopped");
       navigation_owner_.reset();AbortNavigation();
     }
     else if(op=="exit_fullscreen") host->ExitFullscreen(true);
@@ -1372,7 +1611,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       const auto effect=geometry_.ResizePhysical(w,h,scale);
       TraceGeometry("resize-applied",id_,w,h,scale);
       stale_paint_recovery_pending_=false;
-      if(effect==tilo::ResizeEffect::Repaint) { host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);return; }
+      // The same size again: the app is sent the frame again, changed or not.
+      if(effect==tilo::ResizeEffect::Repaint) { whole_next_=true;host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);return; }
       popup_.clear();frame_.reset();whole_next_=true;host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);ProbeTextFieldSoon();
     } else if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
       CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/geometry_.scale());event.y=static_cast<int>(Number(d,"y")/geometry_.scale());event.modifiers=mouse_modifiers_|key_modifiers_;
@@ -1432,7 +1672,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       host->ShowDevTools(window,new DevToolsClient,CefBrowserSettings(),CefPoint());
     } else if(op=="clear_data") {
       host->GetRequestContext()->GetCookieManager(nullptr)->DeleteCookies("","",nullptr);
-      host->GetRequestContext()->ClearHttpCache(nullptr);host->GetRequestContext()->ClearHttpAuthCredentials(nullptr);
+      host->GetRequestContext()->ClearHttpCache(nullptr);host->GetRequestContext()->ClearHttpAuthCredentials(nullptr);auth_answer_.Forget();
     } else if(op=="filter_rules") {
       const auto rules=d->GetString("rules").ToString();
       const bool enabled=d->GetType("enabled")==VTYPE_NULL ? request_filter->Snapshot()->enabled : d->GetBool("enabled");
@@ -1619,6 +1859,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // Page actions deliver input exactly as a person's pointer and keyboard do.
   // Coordinates arrive in CSS pixels; CEF's view space is zoomed DIPs.
   void PageClick(double x,double y) {
+    ActionInput();
     if(!browser_)return;auto host=browser_->GetHost();const double zoom=std::pow(1.2,host->GetZoomLevel());
     CefMouseEvent event;event.x=static_cast<int>(std::lround(x*zoom));event.y=static_cast<int>(std::lround(y*zoom));event.modifiers=key_modifiers_;
     // The move and the click reach the page on separate turns: a point inside a
@@ -1657,10 +1898,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     event.x=static_cast<int>(std::lround(Number(step,"x")*zoom));event.y=static_cast<int>(std::lround(Number(step,"y")*zoom));
     event.modifiers=mouse_modifiers_|key_modifiers_;
     if(dragging_) { DragPointer(kind,event);if(kind=="up")mouse_modifiers_&=~button;return; }
-    host->SendMouseMoveEvent(event,false);
+    // A step where the pointer already is (the end of a drawn path the page
+    // heard arrive there) presses or lets go without moving it there again.
+    if(!step->GetBool("still")) host->SendMouseMoveEvent(event,false);
     // The page may have begun a drag on this very move: carry it to where the
     // hand went, so the element under the pointer hears the drag over it.
     if(dragging_) {host->DragTargetDragOver(event,kPageDragOps);return;}
+    if(press) ActionInput();
     if(press) host->SendMouseClickEvent(event,right?MBT_RIGHT:MBT_LEFT,!down,1);
     if(kind=="up")mouse_modifiers_&=~button;
   }
@@ -1716,6 +1960,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void PageKey(CefRefPtr<CefDictionaryValue> key) {
     // A key of a fill's own typing arrives marked: it names its character, not
     // a key to press.
+    ActionInput();
     if(key->HasKey("typed")) { TypedKey(key);return; }
     if(!browser_)return;const int held=key_modifiers_;
     // Keys reach only a focused view; the page's own focused element is kept.
@@ -1753,7 +1998,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // This tab as extensions are told of it.
   tilo::ExtensionTab ExtensionState() const {
     tilo::ExtensionTab tab;tab.tab=id_;
-    if(browser_) {tab.browser=tab.id=browser_->GetIdentifier();tab.url=browser_->GetMainFrame()->GetURL().ToString();tab.loading=browser_->IsLoading();tab.zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());}
+    if(browser_) {tab.browser=tab.id=browser_->GetIdentifier();tab.url=ShownUrl(browser_);tab.loading=browser_->IsLoading();tab.zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());}
     tab.title=title_;tab.favicon=favicon_;tab.width=geometry_.logical_width();tab.height=geometry_.logical_height();
     tab.panel=extension_panel_;tab.opener=panel_opener_;return tab;
   }
@@ -1786,6 +2031,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!download_owners.Detach(id_)){Event("close_blocked");return;}
     InvalidateCredentials();
     CancelMenu();
+    // Said while the tab still speaks: its embedder stops waiting on a picker.
+    CancelFileChooser();
+    CancelAuth();
     transfer_owner_=true;visible_=false;auto host=browser_->GetHost();host->WasHidden(true);host->SetFocus(false);
     capabilities_->Close();frame_.reset();popup_.clear();whole_next_=true;Event("tab_detached");PublishDownloadRuntime();
   }
@@ -2071,6 +2319,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // The extension whose side panel this tab shows, if it shows one.
   std::string side_panel_;
   std::optional<std::chrono::steady_clock::time_point> activated_;
+  // When a page action last clicked or pressed a key: the page's activation
+  // since then is the action's, until a person's own input.
+  std::optional<std::chrono::steady_clock::time_point> action_input_;
   // The paste a key is waiting on the system clipboard for, and the keys
   // pressed since (KeyCommand).
   int paste_prime_=0;std::deque<CefRefPtr<CefDictionaryValue>> held_keys_;bool shares_clipboard_=false;
@@ -2093,6 +2344,11 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   bool credential_generation_exhausted_=false;
   std::string credential_committed_origin_;
   bool main_navigation_finished_=false;
+  // The host has refused the load it created this tab with (kTabStart).
+  bool tab_start_refused_=false;
+  // bootstrap_settled_: the load the browser began with is over. A popup
+  // begins with the page its opener gave it; a tab the host opened, with the
+  // load the host refuses.
   bool bootstrap_settled_=false,navigation_busy_=true,navigation_dispatched_=false,navigation_started_=false,navigation_aborting_=false;
   std::string navigation_target_;
   std::optional<int> navigation_owner_;
@@ -2129,10 +2385,31 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // The page's open question, if any, and whether the embedder answers them.
   static constexpr size_t kMaxDialogText=16*1024;
   CefRefPtr<CefJSDialogCallback> dialog_callback_;int dialog_id_=0;bool dialog_unload_=false,js_dialogs_=false;
+  // The file chooser a person opened, if any, and whether the embedder
+  // answers them. A person looks for a file for as long as it takes, so the
+  // wait is theirs, not an action's: long enough that nobody choosing meets
+  // it, and an end all the same for a picker that never answers.
+  static constexpr size_t kMaxChooserTitle=256,kMaxAcceptedTypes=256,kMaxAcceptedType=128;
+  static constexpr int64_t kFileChooserWaitMs=10*60*1000;
+  CefRefPtr<CefFileDialogCallback> chooser_callback_;int chooser_id_=0;bool chooser_multiple_=false,file_choosers_=false;
+  // The sign-in a server asked for, if any (http_auth.h): the requests that
+  // wait on it, who asks, the question it is, and whether the embedder
+  // answers them. Then the address the tab is on its way to, and the
+  // question credentials were last given for.
+  static constexpr size_t kMaxAuthWaiting=64;
+  std::vector<CefRefPtr<CefAuthCallback>> auth_callbacks_;int auth_id_=0;bool http_auth_=false;
+  std::string auth_asker_,auth_question_,auth_navigating_;
+  // The addresses of the requests waiting on the open question, and how the
+  // question asked last was answered (http_auth.h, AuthAnswer).
+  std::vector<std::string> auth_requests_;tilo::AuthAnswer auth_answer_;
   // A window opened for an agent holds what its page sends (departures.h):
   // changed by the app on the UI thread, and read where Chromium asks about a
   // request, on its IO thread.
   std::atomic<bool> holds_{false};
+  std::atomic<int64_t> hold_wait_ms_{tilo::kHoldWaitMs};
+  // The address of the document the main frame shows: the page a hold of
+  // this tab was held on, said of it once the tab shows another.
+  std::string committed_url_;
   // The extensions' items in the open menu, by command from kFirstMenuOffer,
   // and where it opened.
   static constexpr int kFirstMenuOffer=27000;static constexpr size_t kMaxMenuOffers=200;
@@ -2167,7 +2444,7 @@ void CreateTab(int id) {
   // A sealed document runs no script, whatever the document says.
   if(sealed_documents) settings.javascript=STATE_DISABLED;
   TraceGeometry("create-begin",id);
-  if(!CefBrowserHost::CreateBrowserSync(window,client,"about:blank",settings,nullptr,shared_context)) {clients.erase(id);CloseHost();}
+  if(!CefBrowserHost::CreateBrowserSync(window,client,kTabStart,settings,nullptr,shared_context)) {clients.erase(id);CloseHost();}
   TraceGeometry("create-return",id);
 }
 void Dispatch(CefRefPtr<CefDictionaryValue> d) {
@@ -2219,9 +2496,16 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
       found->second->browser_->GetHost()->StartDownload(d->GetString("url"));
     return;
   }
-  if(op=="download_decision") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"));return; }
+  // Who answered what a window held for the person, as the app says: an
+  // actor by the name its page actions carry, and the reason when nobody
+  // did, `expired` when the app dropped it at its own deadline and `full`
+  // when it turned it away at once. An app that says neither answers as the
+  // person at the window. The tab's record keeps it.
+  const auto answerer=[&]{return d->GetType("actor")==VTYPE_STRING?d->GetString("actor").ToString():std::string();};
+  const auto reason=[&]{return d->GetType("reason")==VTYPE_STRING?d->GetString("reason").ToString():std::string();};
+  if(op=="download_decision") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"),answerer(),reason());return; }
   // The app answered a request the page held: it leaves now, or not at all.
-  if(op=="hold_answer") { if(departures) departures->Answer(d->GetInt("id"),d->GetBool("allow")); return; }
+  if(op=="hold_answer") { if(departures) departures->Answer(d->GetInt("id"),d->GetBool("allow"),answerer(),reason()); return; }
   if(op=="download_cancel") { downloads->CancelDownload(d->GetInt("id"));return; }
   if(op=="download_cancel_all") {downloads->CancelAll();return;}
   if(op=="download_retry") {auto found=clients.find(id);if(found!=clients.end() && found->second->accepts_downloads())downloads->Retry(d->GetInt("id"),found->second->browser_);return;}
@@ -2273,6 +2557,13 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     // The Rust application owns browser onboarding; Chromium's first-run UI
     // cannot be completed in an offscreen embedding and can stall Linux init.
     if(process_type.empty()) command_line->AppendSwitch("no-first-run");
+    // A server's sign-in is this host's to hold for its embedder
+    // (GetAuthCredentials, http_auth.h), and never Chromium's to ask:
+    // Chromium's own prompt is a window of its own, on the desktop of
+    // whoever runs the host, while the page behind it stays blank. This is
+    // the one place every start of the host passes; RunHost ends a host the
+    // switch is not in effect for.
+    if(process_type.empty() && !command_line->HasSwitch(tilo::kHoldSignInsSwitch)) command_line->AppendSwitch(tilo::kHoldSignInsSwitch);
     // Chromium serves the Extensions domain on the pipe the host created;
     // `unsafe-extension-debugging` is what enables its loadUnpacked.
     if(process_type.empty() && devtools_write>=0) {
@@ -2348,8 +2639,10 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     }
     ApplyPrivacyDefaults(shared_context);
     StartExtensionTabs();
+    // A hold is set down in the record of the tab whose page it stopped.
+    const tilo::NoteHold note_hold=[](int tab,const tilo::HoldNote& note){auto found=clients.find(tab);if(found!=clients.end())found->second->NoteHold(note);};
     departures=std::make_shared<tilo::Departures>(
-      [](const std::string& name,CefRefPtr<CefDictionaryValue> fields){::Event(name,fields);});
+      [](const std::string& name,CefRefPtr<CefDictionaryValue> fields){::Event(name,fields);},note_hold);
     downloads=new tilo::Downloads(
       downloads_directory,
       [](const std::string& name,CefRefPtr<CefDictionaryValue> fields){::Event(name,fields);},
@@ -2359,7 +2652,7 @@ class App final : public CefApp,public CefBrowserProcessHandler {
       [](int id,bool busy){download_owners.SetBusy(id,busy);PublishDownloadRuntime();},
       [](int id){DownloadOwnerIdle(id);},
       []{PublishDownloadRuntime();},
-      [](int id){auto found=clients.find(id);return found!=clients.end() && found->second->HoldsPage();});
+      [](int id){auto found=clients.find(id);return found!=clients.end()?found->second->HoldWaitMs():int64_t{0};},note_hold);
     CreateTab(1);PublishDownloadRuntime();if(clients.empty()) CefQuitMessageLoop();
   }
  private: IMPLEMENT_REFCOUNTING(App);
@@ -2506,10 +2799,44 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     return (scheme=="https" || scheme=="http") && !CefString(&parts.host).empty();
   }
   if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
-  if(op=="permission_decision" || op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
+  // Who answered what a window held, when the app says: an actor by the name
+  // a page action carries, and why.
+  auto answered=[&]{return (!d->HasKey("actor") || (type("actor",VTYPE_STRING) && !d->GetString("actor").empty() && d->GetString("actor").length()<=64)) &&
+    (!d->HasKey("reason") || (type("reason",VTYPE_STRING) && d->GetString("reason").length()<=32));};
+  if(op=="permission_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
+  if(op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL) && answered();
   if(op=="js_dialogs") return type("enabled",VTYPE_BOOL);
-  if(op=="hold_departures") return no_payload();
-  if(op=="hold_answer") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
+  if(op=="file_choosers") return type("enabled",VTYPE_BOOL);
+  if(op=="file_chooser_reply") {
+    if(!type("id",VTYPE_INT) || d->GetInt("id")<=0 || !type("paths",VTYPE_LIST))return false;
+    auto paths=d->GetList("paths");
+    if(paths->GetSize()>MAX_CHOOSER_PATHS)return false;
+    for(size_t i=0;i<paths->GetSize();++i) {
+      if(paths->GetType(i)!=VTYPE_STRING)return false;
+      const auto path=paths->GetString(i).ToString();
+      // The app answers with what its picker gave it; the engine insists
+      // each is absolute, so none is resolved against its own working folder.
+      if(path.empty() || path.size()>4096 || path.front()!='/')return false;
+    }
+    return true;
+  }
+  // How long a hold may wait for its answer, when the app says.
+  if(op=="hold_departures") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    return std::all_of(keys.begin(),keys.end(),[](const CefString& key){return key=="op" || key=="tab" || key=="wait_ms";}) &&
+      (!d->HasKey("wait_ms") || (type("wait_ms",VTYPE_INT) && d->GetInt("wait_ms")>=tilo::kMinHoldWaitMs && d->GetInt("wait_ms")<=tilo::kMaxHoldWaitMs));
+  }
+  if(op=="hold_answer") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL) && answered();
+  if(op=="http_auth") return type("enabled",VTYPE_BOOL);
+  // The answer to a sign-in: the asker it was shown, and both credentials or
+  // neither, which cancels.
+  if(op=="http_auth_reply") {
+    if(!type("id",VTYPE_INT) || d->GetInt("id")<=0 || !type("asker",VTYPE_STRING)) return false;
+    const auto asker=d->GetString("asker").ToString();
+    if(asker.empty() || asker.size()>tilo::kMaxAuthAsker || d->HasKey("username")!=d->HasKey("password")) return false;
+    return !d->HasKey("username") || (type("username",VTYPE_STRING) && type("password",VTYPE_STRING) &&
+      d->GetString("username").ToString().size()<=tilo::kMaxAuthCredential && d->GetString("password").ToString().size()<=tilo::kMaxAuthCredential);
+  }
   if(op=="js_dialog_reply") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("accept",VTYPE_BOOL) && (!d->HasKey("text") || (type("text",VTYPE_STRING) && d->GetString("text").ToString().size()<=64*1024));
   if(op=="context_action") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("command",VTYPE_INT) && d->GetInt("command")>=0;
   if(op=="find") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("text",VTYPE_STRING) && d->GetString("text").length()<=4096 && type("forward",VTYPE_BOOL) && type("next",VTYPE_BOOL);
@@ -2599,10 +2926,12 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="fill_files" && action!="press" && action!="submit" &&
        action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" &&
        action!="reader" && action!="pointer" && action!="hover" && action!="drag" && action!="path" &&
-       action!="scroll" && action!="pointer_rest" && action!="capture" && action!="find")return false;
+       action!="scroll" && action!="pointer_rest" && action!="capture" && action!="find" &&
+       action!="ledger" && action!="fields" && action!="forms" && action!="fill_form" && action!="search")return false;
     const bool elementless=action=="find" || action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
       action=="console" || action=="network" || action=="reader" || action=="pointer" || action=="hover" ||
-      action=="drag" || action=="path" || action=="scroll" || action=="pointer_rest" || action=="capture";
+      action=="drag" || action=="path" || action=="scroll" || action=="pointer_rest" || action=="capture" ||
+      action=="ledger" || action=="fields" || action=="forms" || action=="fill_form" || action=="search";
     if(action=="pointer") {
       if(!type("steps",VTYPE_LIST) || !type("button",VTYPE_STRING))return false;
       const auto button=d->GetString("button").ToString();
@@ -2643,12 +2972,41 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     }
     if(action=="settle" && (!type("quiet_ms",VTYPE_INT) || !type("timeout_ms",VTYPE_INT) || d->GetInt("quiet_ms")<50 ||
        d->GetInt("timeout_ms")<d->GetInt("quiet_ms") || d->GetInt("timeout_ms")>20000))return false;
-    if((action=="console" || action=="network") && (!number("since") || Number(d,"since")<0))return false;
+    if((action=="console" || action=="network" || action=="ledger") && (!number("since") || Number(d,"since")<0))return false;
+    // Who asks, when the caller says: a name the tab keeps each actor's own
+    // read baseline under and sets its actions down by.
+    if(d->HasKey("actor") && (!type("actor",VTYPE_STRING) || d->GetString("actor").empty() || d->GetString("actor").length()>64))return false;
     // A picture is painted at most as wide as the app asks and no wider
     // than the engine's own bound; a wider one is refused, not cut.
     if(action=="capture" && d->HasKey("max_width") &&
        (!type("max_width",VTYPE_INT) || d->GetInt("max_width")<1 || d->GetInt("max_width")>CAPTURE_MAX_WIDTH))return false;
     if(action=="fill" && (!type("text",VTYPE_STRING) || d->GetString("text").length()>65536))return false;
+    // A read of the outline may read on from a line an earlier read or a
+    // search named; a search says the words it looks for.
+    if(d->HasKey("from") && (action!="outline" || !type("from",VTYPE_INT) || d->GetInt("from")<1 || d->GetInt("from")>1000000))return false;
+    if(action=="search" && (!type("text",VTYPE_STRING) || d->GetString("text").empty() || d->GetString("text").length()>200))return false;
+    // A find or a search may be asked to look in the frames the page shows.
+    if(d->HasKey("frames") && (!type("frames",VTYPE_BOOL) || (action!="find" && action!="search")))return false;
+    // A form's answers: the form by the id or signature its read gave, each
+    // answer under the name the form asks it by, as text, a number, yes or
+    // no, or the chosen ones of several, and whether to send it and how.
+    if(action=="fill_form") {
+      if(!type("form",VTYPE_STRING) || d->GetString("form").empty() || d->GetString("form").length()>64 || !type("answers",VTYPE_DICTIONARY))return false;
+      auto answers=d->GetDictionary("answers");CefDictionaryValue::KeyList names;answers->GetKeys(names);
+      if(names.size()>200)return false;
+      for(const auto& name:names) {
+        if(name.empty() || name.length()>200)return false;
+        const auto kind=answers->GetType(name);
+        if(kind==VTYPE_STRING) { if(answers->GetString(name).length()>65536)return false; }
+        else if(kind==VTYPE_LIST) {
+          auto chosen=answers->GetList(name);
+          if(chosen->GetSize()>64)return false;
+          for(size_t i=0;i<chosen->GetSize();++i)if(chosen->GetType(i)!=VTYPE_STRING || chosen->GetString(i).length()>1024)return false;
+        } else if(kind!=VTYPE_BOOL && kind!=VTYPE_INT && kind!=VTYPE_DOUBLE)return false;
+      }
+      if(d->HasKey("submit") && !type("submit",VTYPE_BOOL) &&
+         !(type("submit",VTYPE_STRING) && !d->GetString("submit").empty() && d->GetString("submit").length()<=200))return false;
+    }
     if(action=="select") {
       if(!type("values",VTYPE_LIST))return false;auto values=d->GetList("values");
       if(!values->GetSize() || values->GetSize()>64)return false;
@@ -2743,7 +3101,13 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   }
   // An agent stops a page action it no longer waits for: the tab is freed
   // rather than held by a request whose caller is gone.
-  if(op=="page_cancel") {CefDictionaryValue::KeyList keys;d->GetKeys(keys);return no_payload();}
+  if(op=="page_cancel") {
+    // The request a caller gives up on, when it names one: several actors'
+    // actions may be in one tab, and a cancel must not stop another's.
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id")return false;
+    return !d->HasKey("request_id") || (type("request_id",VTYPE_INT) && d->GetInt("request_id")>0);
+  }
   if(op=="popups") return type("enabled",VTYPE_BOOL);
   if(op=="page_clipboard") return no_payload();
   if(op=="clipboard_contents") {
@@ -3020,6 +3384,12 @@ int RunHost(int argc,char** argv) {
   CefString(&settings.browser_subprocess_path)=(contents/"Frameworks/Browser Engine Helper.app/Contents/MacOS/Browser Engine Helper").string();
 #endif
   if(!CefInitialize(CefMainArgs(argc,argv),settings,MakeHostApp(),nullptr)) return CefGetExitCode();
+  // No host runs with Chromium's own sign-in prompt in reach (http_auth.h):
+  // every challenge is this host's to hold or to cancel.
+  if(!CefCommandLine::GetGlobalCommandLine()->HasSwitch(tilo::kHoldSignInsSwitch)) {
+    std::cerr<<"Chromium would ask for sign-ins in a window of its own; the host does not run\n";
+    CefShutdown();return 2;
+  }
 #if defined(OS_MAC)
   // Saved passwords live in the login keychain only for an engine with a team
   // identity: an item one ad hoc build saved would make every rebuild ask the

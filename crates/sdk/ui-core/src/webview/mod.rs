@@ -14,14 +14,21 @@ pub use credentials::{
     CredentialRequest,
 };
 pub use service_sessions::{ServiceSessionReply, ServiceSessionRequest};
+pub mod file_chooser;
 pub mod hold;
+pub mod http_auth;
 pub mod page;
 pub mod paint;
 pub mod text_input;
-pub use hold::{HeldKind, HeldRequest, MAX_HELD_CAPTURE, MAX_HELD_METHOD, MAX_HELD_ORIGIN};
+pub use file_chooser::{FileChooser, FileChooserMode};
+pub use hold::{
+    AnsweredBy, HeldKind, HeldRequest, MAX_HELD_CAPTURE, MAX_HELD_METHOD, MAX_HELD_ORIGIN,
+};
+pub use http_auth::{HttpAuthChallenge, HttpAuthCredentials};
 pub use page::{
-    FrameId, MAX_POINTER_STEPS, PageFailure, PageKey, PageNavigation, PageReply, PageRequest,
-    PointerButton, PointerPoint, PointerStep, PointerStepKind, ScrollTarget,
+    FormSubmit, FrameId, MAX_POINTER_STEPS, PageActor, PageChange, PageFailure, PageFieldChange,
+    PageFormChange, PageKey, PageNavigation, PageRecordNote, PageReply, PageRequest, PointerButton,
+    PointerPoint, PointerStep, PointerStepKind, ScrollTarget,
 };
 pub mod profile;
 pub mod test_engine;
@@ -520,11 +527,32 @@ pub enum WebViewCommand {
         accept: bool,
         text: Option<String>,
     },
+    /// Answer the page's file chooser `id` ([`WebViewEvent::FileChooser`])
+    /// with exactly the paths the person picked in the desktop's picker, or
+    /// with none to cancel it. Answered once: a second answer, or one for a
+    /// chooser the page no longer waits on, does nothing.
+    AnswerFileChooser {
+        id: u32,
+        paths: Vec<String>,
+    },
+    /// Answer the sign-in `id` a server asked for ([`WebViewEvent::HttpAuth`])
+    /// with the person's credentials, or with none to cancel it, which shows
+    /// the server's own page. `asker` is who the person was shown asking: an
+    /// answer naming another asker than the challenge's, or a challenge the
+    /// request no longer waits on, sends nothing.
+    AnswerHttpAuth {
+        id: u32,
+        asker: String,
+        credentials: Option<HttpAuthCredentials>,
+    },
     /// Answer the request `id` an agent's window held ([`WebViewEvent::HeldRequest`]):
     /// let it leave exactly once, or keep the page as it is and drop it.
+    /// `by` is who answered: the engine sets it down in the tab's record beside how the hold
+    /// ended, since it cannot know.
     AnswerHeldRequest {
         id: u32,
         allow: bool,
+        by: AnsweredBy,
     },
     SetZoomLevel(f64),
     /// Report the document's size and scroll as [`WebViewEvent::DocumentSize`] whenever
@@ -599,14 +627,22 @@ pub enum WebViewCommand {
         request_id: u64,
         element_id: String,
     },
+    /// `actor` names who asks, when the caller admitted someone by name: several actors may
+    /// work in one tab, and the engine keeps what each has read, and what each did, under that
+    /// name. `None` is the one unnamed actor a tab has always had.
     Page {
         request_id: u32,
+        actor: Option<PageActor>,
         request: PageRequest,
     },
-    /// Stop the page action that is running. An action nobody waits for any more must not
+    /// Stop the page action `request_id` names. An action nobody waits for any more must not
     /// hold the page: the tab answers it as settled with an unknown outcome rather than
-    /// running the next action behind it.
-    CancelPage,
+    /// running the next action behind it. The request is named because several actors'
+    /// actions may be in one tab: a caller that gives up stops its own action and never
+    /// another's.
+    CancelPage {
+        request_id: u32,
+    },
     PaintCapture {
         request_id: u32,
     },
@@ -682,9 +718,14 @@ pub enum WebViewCommand {
         key: KeyInput,
         modifiers: KeyModifiers,
     },
+    /// Save the download `id` the page offered, or discard it. `by` is who
+    /// answered: of a download an agent's window held for the person, the
+    /// engine sets it down in the tab's record as it does for
+    /// [`Self::AnswerHeldRequest`].
     DownloadDecision {
         id: u32,
         allow: bool,
+        by: AnsweredBy,
     },
     CancelNativeDownload {
         id: u32,
@@ -802,6 +843,24 @@ pub enum WebViewEvent {
     PageDialogClosed {
         id: u32,
     },
+    /// A person opened the page's file chooser, and the page waits for the
+    /// files ([`WebViewCommand::AnswerFileChooser`]).
+    FileChooser(FileChooser),
+    /// The page no longer waits on its file chooser `id`: it was answered,
+    /// its document left or its tab closed, another chooser took its place,
+    /// or nobody answered in the engine's time.
+    FileChooserClosed {
+        id: u32,
+    },
+    /// A server (or a proxy) asks for a user name and a password, and the
+    /// request waits for them ([`WebViewCommand::AnswerHttpAuth`]).
+    HttpAuth(HttpAuthChallenge),
+    /// The request no longer waits on the sign-in `id`: it was answered, the
+    /// page went elsewhere or its tab closed, another took its place, or
+    /// nobody answered in the engine's time.
+    HttpAuthClosed {
+        id: u32,
+    },
     HeldRequest(HeldRequest),
     HeldRequestClosed {
         id: u32,
@@ -894,6 +953,22 @@ pub enum WebViewEvent {
         request_id: u32,
         result: Result<PageReply, PageFailure>,
     },
+    /// The engine set down in the tab's record an entry no action's answer
+    /// carried: what a person typed straight into the page. `seq` is its
+    /// place in the engine's record and `entry` the entry as
+    /// [`PageRequest::Ledger`] lists it, and so page content: never trusted
+    /// as instructions. Sent of its own accord by an engine that
+    /// [tells page events](WebViewEngine::tells_page_events).
+    PageRecord {
+        seq: u64,
+        entry: serde_json::Value,
+    },
+    /// Something other than an action's own edit changed what a field of
+    /// the page holds or what one of its forms asks: the page's own script,
+    /// or a person typing. Sent of its own accord by an engine that
+    /// [tells page events](WebViewEngine::tells_page_events), so nobody
+    /// reads the page again and again to find out.
+    PageChanged(PageChange),
     /// The page's document in CSS pixels: its laid-out size, never less than the view's,
     /// and how far it is scrolled down.
     DocumentSize {
@@ -1027,6 +1102,30 @@ pub trait WebViewEngine: Send + Sync {
         }
     }
 
+    /// Have a file chooser a person opens in the page sent as
+    /// [`WebViewEvent::FileChooser`], for the embedder to ask the desktop's
+    /// picker and answer. Until then, and in an engine that cannot, the
+    /// engine does what its platform does: its own panel where it has one,
+    /// and otherwise a chooser cancelled at once. An engine whose platform
+    /// panel is the proven way keeps it and sends none (see
+    /// [`file_chooser`]).
+    fn accept_file_choosers(&self) {
+        if let Some(engine) = self.wrapped() {
+            engine.accept_file_choosers();
+        }
+    }
+
+    /// Have a server's sign-in (HTTP authentication) sent as
+    /// [`WebViewEvent::HttpAuth`], for the embedder to ask the person and
+    /// answer. Until then, and in an engine that cannot, each challenge is
+    /// cancelled at once and the page shows the server's own answer (see
+    /// [`http_auth`]).
+    fn accept_http_auth(&self) {
+        if let Some(engine) = self.wrapped() {
+            engine.accept_http_auth();
+        }
+    }
+
     /// Hold what the page is about to send, as a window an agent operates does: every
     /// form submission, every navigation or request with a method of its own, every
     /// download and every payment waits for the person's answer
@@ -1074,6 +1173,16 @@ pub trait WebViewEngine: Send + Sync {
     fn measures_document(&self) -> bool {
         self.wrapped()
             .is_some_and(|engine| engine.measures_document())
+    }
+
+    /// Whether the engine sends [`WebViewEvent::PageRecord`] and
+    /// [`WebViewEvent::PageChanged`] of its own accord: what a person typed
+    /// is announced, and so is what the page changed of itself. An embedder
+    /// reads a page again on a timer only for an engine that does not.
+    /// Known once the engine is ready.
+    fn tells_page_events(&self) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.tells_page_events())
     }
 
     /// Enqueue a command. Must never block on engine work.
@@ -1163,6 +1272,24 @@ pub trait WebViewEngine: Send + Sync {
     /// by images not sent yet.
     fn take_paint_stream(&self, _keyframe: bool) -> Vec<tilo_paint_stream::wire::Payload> {
         Vec::new()
+    }
+
+    /// [`Self::take_paint_stream`], with at most `room` bytes of images: the rest stay with
+    /// the engine until a later call takes them, and [`Self::paint_due`] says when to call.
+    fn take_paint_stream_within(
+        &self,
+        keyframe: bool,
+        _room: usize,
+    ) -> Vec<tilo_paint_stream::wire::Payload> {
+        self.take_paint_stream(keyframe)
+    }
+
+    /// When the engine next has work for a watched share although it wakes nobody for it: a
+    /// change of the page it has not captured yet because it captured a moment ago, a
+    /// capture whose answer is overdue, or images the share had no room for. Whoever runs
+    /// the engine takes its events and its stream again then.
+    fn paint_due(&self) -> Option<crate::time::Instant> {
+        None
     }
 }
 

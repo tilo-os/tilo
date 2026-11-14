@@ -15,6 +15,8 @@ pub mod add_item_work;
 pub mod attached_view;
 #[path = "block_editor_gestures.rs"]
 pub mod block_editor_gestures;
+#[path = "by_app.rs"]
+pub mod by_app;
 #[path = "chain_list.rs"]
 pub mod chain_list;
 #[path = "child_records.rs"]

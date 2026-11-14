@@ -194,6 +194,11 @@ target_include_directories(tilo-credential-commands-test PRIVATE src)
 target_compile_options(tilo-credential-commands-test PRIVATE -UNDEBUG)
 add_test(NAME credential-commands COMMAND tilo-credential-commands-test)
 
+add_executable(tilo-http-auth-test tests/http_auth_test.cc)
+target_include_directories(tilo-http-auth-test PRIVATE src)
+target_compile_options(tilo-http-auth-test PRIVATE -UNDEBUG)
+add_test(NAME http-auth COMMAND tilo-http-auth-test)
+
 add_executable(tilo-action-counts-test tests/action_counts_test.cc)
 target_include_directories(tilo-action-counts-test PRIVATE src)
 target_compile_options(tilo-action-counts-test PRIVATE -UNDEBUG)

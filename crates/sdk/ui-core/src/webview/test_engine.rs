@@ -28,6 +28,9 @@ struct Inner {
     commands: Vec<WebViewCommand>,
     media_element: Option<MediaElementInfo>,
     page_replies: std::collections::VecDeque<Result<PageReply, PageFailure>>,
+    /// What the page holds for a kind of read, by the read's action name:
+    /// answered whenever no queued reply answers that read first.
+    page_data: std::collections::HashMap<&'static str, serde_json::Value>,
     next_download: u64,
     downloads: std::collections::HashMap<String, String>,
     visibility: Vec<bool>,
@@ -36,11 +39,16 @@ struct Inner {
     /// What a capture answers with; a test page's own pixels until one sets others.
     page_capture: Option<Vec<u8>>,
     measures_document: bool,
+    page_events: bool,
     selection: String,
     new_tabs: Vec<(String, bool)>,
     accepts_popups: bool,
     popups: Vec<super::Popup>,
     accepts_page_dialogs: bool,
+    /// Whether it was asked for the page's file choosers.
+    accepts_file_choosers: bool,
+    /// Whether it was asked for the sign-ins servers ask for.
+    accepts_http_auth: bool,
     adopted: std::collections::HashMap<u32, Arc<TestEngine>>,
     created: Vec<Arc<TestEngine>>,
     holds_frames: bool,
@@ -135,6 +143,16 @@ impl TestEngine {
     /// Whether it was asked for the page's own questions.
     pub fn accepts_page_dialogs(&self) -> bool {
         self.lock_inner().accepts_page_dialogs
+    }
+
+    /// Whether it was asked for the file choosers a person opens.
+    pub fn accepts_file_choosers(&self) -> bool {
+        self.lock_inner().accepts_file_choosers
+    }
+
+    /// Whether it was asked for the sign-ins servers ask for.
+    pub fn accepts_http_auth(&self) -> bool {
+        self.lock_inner().accepts_http_auth
     }
 
     /// The tabs it created, oldest first.
@@ -232,6 +250,30 @@ impl TestEngine {
         self.lock_inner().events.push(event);
     }
 
+    /// Say, as a ready host does, whether this engine sends
+    /// [`WebViewEvent::PageRecord`] and [`WebViewEvent::PageChanged`] of its
+    /// own accord. It says it does not until a test sets it.
+    pub fn set_page_events(&self, tells: bool) {
+        self.lock_inner().page_events = tells;
+    }
+
+    /// A person typed straight into the page: the engine set `entry` down at
+    /// the place `seq` of its record and says so, as no action's answer
+    /// carries it. Delivered on the next drain.
+    pub fn emit_page_record(&self, seq: u64, mut entry: serde_json::Value) {
+        if let Some(fields) = entry.as_object_mut() {
+            fields.insert("seq".into(), seq.into());
+        }
+        self.push_event(WebViewEvent::PageRecord { seq, entry });
+    }
+
+    /// The page changed a field or a form of itself, or a person typed into
+    /// one: the engine says which, and never what a field holds. Delivered
+    /// on the next drain.
+    pub fn emit_page_changed(&self, change: super::PageChange) {
+        self.push_event(WebViewEvent::PageChanged(change));
+    }
+
     /// Answer every later page capture with these pixels (a PNG), as a real engine paints
     /// the page it shows.
     pub fn set_page_capture(&self, image: impl Into<Vec<u8>>) {
@@ -241,6 +283,15 @@ impl TestEngine {
     /// Queue the answer to the next page request.
     pub fn push_page_reply(&self, reply: Result<PageReply, PageFailure>) {
         self.lock_inner().page_replies.push_back(reply);
+    }
+
+    /// Answer every later page read of the kind `action` names
+    /// ([`PageRequest::action`]: `fields`, `forms`, `ledger`) with `data`,
+    /// as a page that holds this state answers however often it is read,
+    /// until a test sets another. A reply queued with
+    /// [`Self::push_page_reply`] still answers first.
+    pub fn set_page_data(&self, action: &'static str, data: serde_json::Value) {
+        self.lock_inner().page_data.insert(action, data);
     }
 
     fn page_reply_locked(
@@ -258,14 +309,47 @@ impl TestEngine {
             )
             .then(|| format!("- document \"{url} — test page\"")),
             data: match request {
+                // What a test said the page holds for this kind of read.
+                _ if inner.page_data.contains_key(request.action()) => {
+                    inner.page_data.get(request.action()).cloned()
+                }
                 PageRequest::Console { .. } | PageRequest::Network { .. } => {
                     Some(serde_json::json!({"entries": [], "next": 0, "dropped": 0}))
                 }
+                // A tab nothing has operated yet has an empty record, and a
+                // test page has no fields.
+                PageRequest::Ledger { since } => Some(serde_json::json!({
+                    "entries": [], "next": since, "more": false, "dropped": 0, "waiting": 0,
+                })),
+                PageRequest::Fields { .. } => Some(serde_json::json!({"fields": []})),
+                // A test page holds no words to find and asks nothing.
+                PageRequest::Search { .. } => Some(serde_json::json!({"matches": [], "total": 0})),
+                PageRequest::Forms { .. } => Some(serde_json::json!({"forms": []})),
+                PageRequest::FillForm { form, .. } => Some(serde_json::json!({
+                    "form": form, "signature": "", "results": [], "set": [],
+                    "submitted": false, "now_asks": [], "unanswered": [],
+                })),
                 PageRequest::At { x, y, .. } => {
                     Some(serde_json::json!({"x": x, "y": y, "element": null}))
                 }
-                PageRequest::Settle { .. } => {
-                    Some(serde_json::json!({"settled": true, "waited_ms": 0}))
+                // A wait without words finds the page quiet; one with words
+                // finds it saying what was waited for, and no longer saying
+                // what was waited to be gone.
+                PageRequest::Settle {
+                    text: None,
+                    gone: None,
+                    ..
+                } => Some(serde_json::json!({"settled": true, "waited_ms": 0})),
+                PageRequest::Settle { text, gone, .. } => {
+                    let mut data = serde_json::json!({"timed_out": false, "waited_ms": 0});
+                    if text.is_some() {
+                        data["appeared"] = true.into();
+                        data["line"] = 1.into();
+                    }
+                    if gone.is_some() {
+                        data["gone"] = true.into();
+                    }
+                    Some(data)
                 }
                 PageRequest::Find {
                     role, name, nth, ..
@@ -296,12 +380,14 @@ impl TestEngine {
                     | PageRequest::Fill { .. }
                     | PageRequest::Select { .. }
                     | PageRequest::Submit { .. }
+                    | PageRequest::FillForm { .. }
             ) {
                 PageNavigation::Possible
             } else {
                 PageNavigation::None
             },
             loading: false,
+            record: super::PageRecordNote::default(),
         })
     }
 
@@ -478,6 +564,10 @@ impl WebViewEngine for TestEngine {
         self.lock_inner().measures_document
     }
 
+    fn tells_page_events(&self) -> bool {
+        self.lock_inner().page_events
+    }
+
     fn supports_composition(&self) -> bool {
         self.lock_inner().composition
     }
@@ -506,6 +596,14 @@ impl WebViewEngine for TestEngine {
 
     fn accept_page_dialogs(&self) {
         self.lock_inner().accepts_page_dialogs = true;
+    }
+
+    fn accept_file_choosers(&self) {
+        self.lock_inner().accepts_file_choosers = true;
+    }
+
+    fn accept_http_auth(&self) {
+        self.lock_inner().accepts_http_auth = true;
     }
 
     fn take_popups(&self) -> Vec<super::Popup> {
@@ -687,6 +785,8 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::Find { .. }
             | WebViewCommand::ContextMenuAction { .. }
             | WebViewCommand::AnswerPageDialog { .. }
+            | WebViewCommand::AnswerFileChooser { .. }
+            | WebViewCommand::AnswerHttpAuth { .. }
             | WebViewCommand::AnswerHeldRequest { .. }
             | WebViewCommand::StopFinding
             | WebViewCommand::SetZoomLevel(_)
@@ -701,7 +801,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ImeFinish
             // The test engine runs a page action as it arrives, so there is never one
             // left to stop.
-            | WebViewCommand::CancelPage => {}
+            | WebViewCommand::CancelPage { .. } => {}
             WebViewCommand::CopySelection { request_id } => {
                 let text = inner.selection.clone();
                 inner
@@ -720,6 +820,7 @@ impl WebViewEngine for TestEngine {
             WebViewCommand::Page {
                 request_id,
                 request,
+                ..
             } => {
                 let result = Self::page_reply_locked(&mut inner, &request);
                 inner

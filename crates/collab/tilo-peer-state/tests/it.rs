@@ -28,6 +28,10 @@ mod direct_lost_history;
 mod direct_two_devices;
 #[path = "offers.rs"]
 mod offers;
+#[path = "personal_link_admission.rs"]
+mod personal_link_admission;
+#[path = "personal_three_devices.rs"]
+mod personal_three_devices;
 #[path = "personal_two_devices.rs"]
 mod personal_two_devices;
 #[path = "renewed_enrollment.rs"]

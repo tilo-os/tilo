@@ -283,11 +283,14 @@ impl Session {
         let notes = options.launches.notes();
         // The workspaces' layouts, which hold the desk itself: what every member shows, and what a
         // change of it is written into.
-        let desktops = Rc::new(crate::shared_desktop::SharedDesktops::new(
-            std::sync::Arc::clone(&notes),
-            options.wake.clone(),
-            options.person.clone(),
-        ));
+        let desktops = Rc::new(
+            crate::shared_desktop::SharedDesktops::new(
+                std::sync::Arc::clone(&notes),
+                options.wake.clone(),
+                options.person.clone(),
+            )
+            .hosting(crate::apps::runs_on_its_device),
+        );
         let activity = crate::activity::Activity::new(
             options.state.as_deref(),
             options.person.clone(),
@@ -807,6 +810,12 @@ impl Session {
             hosted_browser,
         );
         handle.set_peer_picture_wake(Some(options.wake.handle()));
+        // A window's menu offers its share with the workspace as these shares read it, and asks
+        // them for it.
+        handle.reads_workspace_shares(crate::window_share::reading_for_menus(
+            &window_shares,
+            sync.as_ref(),
+        ));
         // The emoji picker is the chrome's; the session holds its picks,
         // writes them into the focused field and keeps its recents.
         let emoji = crate::emoji::Emoji::mount();
@@ -1468,6 +1477,10 @@ impl Session {
             Rc::clone(&clipboard) as Rc<dyn crate::platform::clipboard::Clipboard>
         );
         let landings = Rc::new(crate::landing::Landings::new(options.wake.handle()));
+        // A share's write into a workspace's governance answers through the same landings.
+        window_shares
+            .borrow_mut()
+            .answer_through(Rc::clone(&landings));
         let inviting = crate::invite::Invite::new(
             Rc::new(crate::platform::invite::DeskWorkspace {
                 landings: Rc::clone(&landings),
@@ -2492,6 +2505,7 @@ impl Session {
             self.follow_app_asks();
             self.shared.follow_gestures();
             self.shared.follow_tab_menus();
+            self.shared.follow_window_share_asks();
             self.follow_window_moves();
             self.shared.follow_branches();
             let locked = self.compositor.locked();

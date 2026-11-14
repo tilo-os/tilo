@@ -8,13 +8,20 @@
 
 use ui::tilo_resource::{self, Effect};
 use ui::webview::{
-    FrameId, KeyModifiers, PageKey, PageRequest, PointerButton, PointerPoint, PointerStep,
-    PointerStepKind, ScrollTarget,
+    FormSubmit, FrameId, KeyModifiers, PageKey, PageRequest, PointerButton, PointerPoint,
+    PointerStep, PointerStepKind, ScrollTarget,
 };
 
 /// How long a settle waits for the page to go quiet, and at most, by default.
 const PAGE_SETTLE_QUIET_MS: u32 = 500;
 const PAGE_SETTLE_TIMEOUT_MS: u32 = 10_000;
+
+/// The words a wait was given, and none when it was given a blank: a caller
+/// that fills in every argument it may give waits as one that left it out.
+fn page_words(words: Option<String>) -> Option<String> {
+    words.filter(|words| !words.trim().is_empty())
+}
+
 const PAGE_DRAG_STEPS: u32 = 8;
 
 /// One `kind=move x=10 y=10 element=d1e4` step of a pointer gesture; nothing
@@ -304,10 +311,36 @@ pub enum BrowserEffect {
     ClearHistory,
     /// Clear site data
     ///
-    /// Cookies and site storage on this device will be cleared. You may be signed out of websites.
+    /// Cookies and site storage on this device will be cleared, and the forms remembered of sites forgotten. You may be signed out of websites.
     #[effect(row, returns, destructive)]
     #[effect(label = "browser-site-clear-data")]
     RequestSiteDataClear,
+    /// Read this site's remembered forms
+    ///
+    /// Lists the forms remembered of the site in front: each form's name and
+    /// signature, the pages it was read on, what it asks and when it was
+    /// last read. Only what a form asks is remembered, never an answer.
+    #[effect(
+        row,
+        returns,
+        kind = "read",
+        untrusted,
+        keywords = "remembered form, site memory"
+    )]
+    ReadRememberedForms,
+    /// Read all remembered forms
+    ///
+    /// Lists the forms remembered of every site, by site: each form's name
+    /// and signature, the pages it was read on, what it asks and when it was
+    /// last read. Only what a form asks is remembered, never an answer.
+    #[effect(
+        row,
+        returns,
+        kind = "read",
+        untrusted,
+        keywords = "remembered form, site memory"
+    )]
+    ReadAllRememberedForms,
     /// Pause history in this window
     #[effect(row, returns)]
     #[effect(label = "browser-menu-pause-history")]
@@ -325,6 +358,32 @@ pub enum BrowserEffect {
     #[effect(row, job, returns)]
     #[effect(label = "browser-menu-reader-view")]
     ReaderView,
+    /// Review page
+    ///
+    /// Shows the person at this window what the page's forms hold now and
+    /// who set each answer: an agent by its name, a person typing, or the
+    /// page itself, and what was done in the tab, in order. Show current
+    /// page closes it.
+    #[effect(
+        row,
+        returns,
+        idempotent,
+        keywords = "review form, check answers, who filled"
+    )]
+    ReviewPage,
+    /// Show field on the page
+    ///
+    /// Shows the page again with the field in view: what choosing a row of
+    /// the page's review does.
+    #[effect(row, job, cancellable, returns, untrusted)]
+    ShowPageField {
+        #[param("Element ref of the field, such as d1e5")]
+        element: String,
+        #[param(
+            "Frame id from the outline, such as 3: the field is then one of that frame's own document"
+        )]
+        frame: Option<String>,
+    },
     /// Download address
     #[effect(row, returns)]
     StartDownload {
@@ -429,7 +488,9 @@ pub enum BrowserEffect {
     /// Read page content
     ///
     /// Answers with the page's outline: its elements and their refs. A frame
-    /// carries the id that addresses its own document.
+    /// carries the id that addresses its own document. A long page is read
+    /// in parts: a read that stops short says so, with the line to read on
+    /// from, and lines keep their numbers while the page does not change.
     #[effect(
         row,
         job,
@@ -441,7 +502,11 @@ pub enum BrowserEffect {
     )]
     ReadPage {
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Line of the outline to start at, from 1: the line a read that stopped short named, or the line of a find-page-text match (default 1, the top)"
+        )]
+        from: Option<u32>,
+        #[param(
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -470,7 +535,7 @@ pub enum BrowserEffect {
         #[param("How wide the picture may be, in pixels (default and most 1600)")]
         max_width: Option<u32>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the element is then read in that frame's own document. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the element is then read in that frame's own document. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -489,14 +554,15 @@ pub enum BrowserEffect {
     )]
     ReadPageChanges {
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
     /// Element at a page point
     ///
     /// Answers with what a click at the point would hit, through overlays
-    /// and banners, and the interactive element holding it.
+    /// and banners, and the interactive element holding it. Over a frame it
+    /// answers with the frame's own element and says which frame it is in.
     #[effect(
         row,
         job,
@@ -512,14 +578,26 @@ pub enum BrowserEffect {
         #[param("Viewport y in CSS pixels from the page's top edge")]
         y: f64,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Leave this out: a point is the page's own, and over a frame the answer names the frame's element, its frame and a ref that acts there. A point read that names a frame is refused"
         )]
         frame: Option<String>,
     },
     /// Wait for the page to settle
     ///
     /// Answers once the document has loaded and stopped changing for a
-    /// quiet period, or the longest wait passed.
+    /// quiet period, or the longest wait passed. A page that shows
+    /// "Loading..." while it waits for a server changes nothing meanwhile,
+    /// so it counts as settled before what it loads is there. When you know
+    /// words the page will say once it is done, give them as `text`; when
+    /// you know words it shows only while it works, give them as `gone`.
+    /// The wait then ends when a read of the page says `text` and no longer
+    /// says `gone`, or at the longest wait, and the answer says which:
+    /// `appeared` and `gone` are true or false, `timed_out` says whether the
+    /// wait ran out, and the outline line that says the words comes with
+    /// its number. A wait that ran out is an answer, not a failure. Words
+    /// inside a frame are waited for with that frame named. A page that goes
+    /// on to another document while the wait runs is waited on there, for
+    /// what is left of the time.
     #[effect(
         row,
         job,
@@ -530,12 +608,22 @@ pub enum BrowserEffect {
         untrusted
     )]
     WaitPageSettled {
-        #[param("How long the page must stay unchanged, milliseconds (default 500)")]
+        #[param(
+            "How long the page must stay unchanged, milliseconds (default 500); not used when text or gone is given"
+        )]
         quiet_ms: Option<u32>,
         #[param("Longest wait, milliseconds (default 10000, at most 20000)")]
         timeout_ms: Option<u32>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Words the page must say for the wait to end, as a read of the page prints them, in any letter case: 1 to 200 characters of one outline line"
+        )]
+        text: Option<String>,
+        #[param(
+            "Words the page must no longer say for the wait to end, such as Loading: 1 to 200 characters of one outline line"
+        )]
+        gone: Option<String>,
+        #[param(
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -577,6 +665,73 @@ pub enum BrowserEffect {
         )]
         since: Option<u64>,
     },
+    /// Who did what on the page
+    ///
+    /// The tab's record of the actions that operated its page, in the order
+    /// they ran: who asked, what was done, the element it acted on by role
+    /// and name, the text it wrote or the options it chose, and how it
+    /// ended. A filled secret is never in it, and reading the page takes no
+    /// place in it. It also says how many actions wait their turn.
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
+    ReadPageRecord {
+        #[param(
+            "Only actions after this place in the record: the `next` of the previous answer (default 0)"
+        )]
+        since: Option<u64>,
+    },
+    /// Page fields and who set them
+    ///
+    /// Every field of the page with what it holds now and who set it: an
+    /// action and who asked for it, a person typing into the page, or the
+    /// page's own script, and whether the field changed after it was set. A
+    /// secret is listed by its length, never its text. Nothing is sent to
+    /// the page.
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
+    ReadPageFields {
+        #[param(
+            "Frame id from the outline, such as 3: the fields are then read from that frame's own document"
+        )]
+        frame: Option<String>,
+    },
+    /// Page forms and what they ask
+    ///
+    /// Each form of the page as the questions it asks: its id and signature,
+    /// every question by name with its kind, the answers it offers, whether
+    /// it is required and what it holds now, and the buttons that send the
+    /// form. A form's id or signature and its questions' names are what
+    /// `fill-page-form` takes. The signature names the same form on a later
+    /// visit, and stops naming it once the form asks something else.
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
+    ReadPageForms {
+        #[param(
+            "Frame id from the outline, such as 3: the forms are then read from that frame's own document"
+        )]
+        frame: Option<String>,
+    },
     /// Find a page element by what it says
     ///
     /// Answers with the ref of the element a stable description names, read
@@ -586,7 +741,10 @@ pub enum BrowserEffect {
     /// exactly, then in any letter case, then by a part of it; `role` narrows
     /// it to one kind of element. Several equal matches are refused and
     /// listed, naming their numbers, and a description the page does not hold
-    /// names the nearest it has, rather than guessing.
+    /// names the nearest it has, rather than guessing. With no frame named,
+    /// a description the page itself has no match for is looked for in the
+    /// frames the page shows, and the answer says the frame of what it
+    /// found: the ref acts there.
     #[effect(
         row,
         job,
@@ -604,9 +762,45 @@ pub enum BrowserEffect {
         #[param("Number among equal matches, from 1 (the first)")]
         nth: Option<u32>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the element is then found in that frame's own document"
+            "Frame id from the outline, such as 3: the element is then found in that frame's own document alone"
         )]
         frame: Option<String>,
+        #[param(
+            "Look in the frames the page shows as well as in the page itself (default false: they are looked in only when the page itself has no match). A match in a frame says which frame, and matches are counted across the documents looked in"
+        )]
+        frames: Option<bool>,
+    },
+    /// Find words on the page
+    ///
+    /// Answers with the outline lines that hold the words, in any letter
+    /// case, each with its line number and the text around the match. A line
+    /// number is what `read-page` takes as `from`, so a long page is read
+    /// from where the words are instead of from its top. It reads what the
+    /// outline reads: a secret's value is found by neither. Controls and
+    /// headings are found by `find-page-element`. With no frame named, words
+    /// the page itself does not say are looked for in the frames the page
+    /// shows; a match there says its frame, and its line is read on from
+    /// with that frame.
+    #[effect(
+        row,
+        job,
+        cancellable,
+        returns,
+        idempotent,
+        audience = "agents",
+        untrusted
+    )]
+    FindPageText {
+        #[param("Words to find, as the page writes them: 1 to 200 characters")]
+        text: String,
+        #[param(
+            "Frame id from the outline, such as 3: the words are then found in that frame's own document alone"
+        )]
+        frame: Option<String>,
+        #[param(
+            "Look in the frames the page shows as well as in the page itself (default false: they are looked in only when the page itself does not say the words). A match in a frame says which frame"
+        )]
+        frames: Option<bool>,
     },
     /// Click page element
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
@@ -614,7 +808,7 @@ pub enum BrowserEffect {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -676,7 +870,7 @@ pub enum BrowserEffect {
         #[param("Text that replaces the field's contents")]
         text: String,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -694,7 +888,7 @@ pub enum BrowserEffect {
         )]
         text: String,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -706,7 +900,7 @@ pub enum BrowserEffect {
         #[param("Option values or visible labels to choose")]
         values: Vec<String>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -725,7 +919,7 @@ pub enum BrowserEffect {
         #[param("Absolute paths of the files to choose, in order")]
         paths: Vec<String>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -740,7 +934,7 @@ pub enum BrowserEffect {
         #[param("Element ref to focus first; otherwise the focused element")]
         element: Option<String>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -756,9 +950,68 @@ pub enum BrowserEffect {
         #[param("Allow sending the form to another site than the page's own (default false)")]
         cross_origin: Option<bool>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
+    },
+    /// Answer page form
+    ///
+    /// Places a form's answers by the names it asks under, in the form's own
+    /// order, and says for each whether it was placed. An answer that makes
+    /// the form ask something new is said. The form is sent only when asked,
+    /// when every answer was placed and nothing required is empty. What it
+    /// cannot place is refused for that field alone, with the ref the field's
+    /// own action takes: a secret goes through `fill-page-secret`, a file
+    /// through `fill-page-files`. A form that sends its data to another site
+    /// than the page's own is refused unless `cross_origin` allows it.
+    #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    FillPageForm {
+        #[param("The form's id from read-page-forms, such as form1, or its signature")]
+        form: String,
+        #[param(
+            "Answers by the names the form asks under: each a text, a number, true or false, or a list of texts where several are chosen. Never a secret: a password or card field is refused here and takes fill-page-secret"
+        )]
+        answers: serde_json::Map<String, serde_json::Value>,
+        #[param("Send the form with its first submit button once it is answered (default false)")]
+        submit: Option<bool>,
+        #[param(
+            "Send the form with the submit button of this label, as read-page-forms lists it, instead of the first"
+        )]
+        submit_button: Option<String>,
+        #[param("Allow sending the form to another site than the page's own (default false)")]
+        cross_origin: Option<bool>,
+        #[param(
+            "Frame id from the outline, such as 3: the form is then one of that frame's own document, as read-page-forms with the same frame read it"
+        )]
+        frame: Option<String>,
+    },
+    /// Answer a form of the page
+    ///
+    /// What a form's own action on the page runs: the form of this signature
+    /// answered through the parameters the page publishes for its questions,
+    /// as `fill-page-form` answers it, with the same report for each answer.
+    /// Nothing is sent. A page that no longer holds a form of this signature
+    /// refuses it as changed, and nothing is placed.
+    #[effect(row, job, cancellable, returns, untrusted)]
+    AnswerForm {
+        #[param(flatten)]
+        run: crate::page_forms::FormAnswers,
+    },
+    /// Send a form of the page
+    ///
+    /// What a form's own send action on the page runs: the form of this
+    /// signature sent as it is answered now. It is not sent while a required
+    /// question is empty or an answer is invalid, and the answer says which.
+    /// A page that no longer holds a form of this signature refuses it as
+    /// changed.
+    #[effect(row, job, cancellable, returns, untrusted)]
+    SendForm {
+        #[param("The form's signature, as read-page-forms gives it")]
+        form: String,
+        #[param("The label of the button that sends it; its first button when absent")]
+        button: Option<String>,
+        #[param("Allow sending the form to another site than the page's own (default false)")]
+        cross_origin: Option<bool>,
     },
     /// Answer the page's question
     ///
@@ -779,6 +1032,34 @@ pub enum BrowserEffect {
     DismissPageDialog {
         #[param("The question's id")]
         dialog: u32,
+    },
+    /// Sign in to the site that asks
+    ///
+    /// What the sign-in prompt's Sign in button does: the site or proxy the
+    /// row names asked for a user name and a password before it answers,
+    /// and the request waits until it is answered. Both go only to the one
+    /// the row names; the password is a secret kept out of logs and
+    /// history.
+    #[effect(row, returns)]
+    AnswerPageSignIn {
+        #[param("The sign-in's id")]
+        sign_in: u32,
+        #[param("User name for the site that asks")]
+        username: String,
+        #[param(
+            secret,
+            "Password for the site that asks; kept out of logs and history"
+        )]
+        password: String,
+    },
+    /// Cancel the site's sign-in
+    ///
+    /// What the sign-in prompt's Cancel button does: nothing is sent, and
+    /// the page shows the server's own answer.
+    #[effect(row, returns)]
+    CancelPageSignIn {
+        #[param("The sign-in's id")]
+        sign_in: u32,
     },
     /// Answer the site's permission request
     ///
@@ -840,7 +1121,7 @@ pub enum BrowserEffect {
         #[param("Element ref to bring into view, such as d1e5")]
         into_view: Option<String>,
         #[param(
-            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
+            "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
         )]
         frame: Option<String>,
     },
@@ -985,9 +1266,16 @@ impl BrowserEffect {
             Self::ForgetVisit { url } => BrowserOperation::ForgetVisit { url },
             Self::ClearHistory => BrowserOperation::ClearHistory,
             Self::RequestSiteDataClear => BrowserOperation::RequestWebsiteDataClear,
+            Self::ReadRememberedForms => BrowserOperation::RememberedForms { all: false },
+            Self::ReadAllRememberedForms => BrowserOperation::RememberedForms { all: true },
             Self::TogglePause => BrowserOperation::ToggleHistoryPause,
             Self::PictureInPicture => BrowserOperation::TogglePictureInPicture,
             Self::ReaderView => BrowserOperation::ToggleReaderView,
+            Self::ReviewPage => BrowserOperation::ReviewPage,
+            Self::ShowPageField { element, frame } => BrowserOperation::ShowPageField {
+                element,
+                frame: page_frame(frame),
+            },
             Self::StartDownload { url } => BrowserOperation::StartDownload { url },
             Self::CancelDownload { id } => BrowserOperation::CancelDownload { id },
             Self::RetryDownload { id } => BrowserOperation::RetryDownload { id },
@@ -1010,10 +1298,23 @@ impl BrowserEffect {
                 accept: false,
                 text: None,
             },
+            Self::AnswerPageSignIn {
+                sign_in,
+                username,
+                password,
+            } => BrowserOperation::AnswerPageSignIn {
+                sign_in,
+                credentials: Some(ui::webview::HttpAuthCredentials::new(username, password)),
+            },
+            Self::CancelPageSignIn { sign_in } => BrowserOperation::AnswerPageSignIn {
+                sign_in,
+                credentials: None,
+            },
             Self::AnswerPermission { request, allow } => {
                 BrowserOperation::AnswerPermission { request, allow }
             }
-            Self::ReadPage { frame } => page(PageRequest::Outline {
+            Self::ReadPage { from, frame } => page(PageRequest::Outline {
+                from,
                 frame: page_frame(frame),
             }),
             Self::CapturePage {
@@ -1036,10 +1337,14 @@ impl BrowserEffect {
             Self::WaitPageSettled {
                 quiet_ms,
                 timeout_ms,
+                text,
+                gone,
                 frame,
             } => page(PageRequest::Settle {
                 quiet_ms: quiet_ms.unwrap_or(PAGE_SETTLE_QUIET_MS),
                 timeout_ms: timeout_ms.unwrap_or(PAGE_SETTLE_TIMEOUT_MS),
+                text: page_words(text),
+                gone: page_words(gone),
                 frame: page_frame(frame),
             }),
             Self::ReadPageConsole { since } => page(PageRequest::Console {
@@ -1048,16 +1353,79 @@ impl BrowserEffect {
             Self::ReadPageNetwork { since } => page(PageRequest::Network {
                 since: since.unwrap_or(0),
             }),
+            Self::ReadPageRecord { since } => page(PageRequest::Ledger {
+                since: since.unwrap_or(0),
+            }),
+            Self::ReadPageFields { frame } => page(PageRequest::Fields {
+                frame: page_frame(frame),
+            }),
+            Self::ReadPageForms { frame } => page(PageRequest::Forms {
+                frame: page_frame(frame),
+            }),
+            Self::FindPageText {
+                text,
+                frame,
+                frames,
+            } => page(PageRequest::Search {
+                text,
+                frame: page_frame(frame),
+                frames: frames.unwrap_or(false),
+            }),
+            Self::FillPageForm {
+                form,
+                answers,
+                submit,
+                submit_button,
+                cross_origin,
+                frame,
+            } => {
+                let button = submit_button.filter(|label| !label.trim().is_empty());
+                page(PageRequest::FillForm {
+                    form,
+                    answers,
+                    submit: match (button, submit) {
+                        // Naming the button that sends the form while saying
+                        // not to send it asks for two things. Neither is
+                        // guessed: a button of no name is refused before it
+                        // reaches the page.
+                        (Some(_), Some(false)) => FormSubmit::Button(String::new()),
+                        (Some(label), _) => FormSubmit::Button(label),
+                        (None, Some(true)) => FormSubmit::First,
+                        (None, _) => FormSubmit::No,
+                    },
+                    cross_origin: cross_origin.unwrap_or(false),
+                    frame: page_frame(frame),
+                })
+            }
+            Self::AnswerForm { run } => BrowserOperation::Form(crate::page_forms::FormRun {
+                form: run.form,
+                answers: run.answers,
+                send: None,
+            }),
+            Self::SendForm {
+                form,
+                button,
+                cross_origin,
+            } => BrowserOperation::Form(crate::page_forms::FormRun {
+                form,
+                answers: serde_json::Map::new(),
+                send: Some(crate::page_forms::FormSend {
+                    button: button.filter(|label| !label.trim().is_empty()),
+                    cross_origin: cross_origin.unwrap_or(false),
+                }),
+            }),
             Self::FindPageElement {
                 role,
                 name,
                 nth,
                 frame,
+                frames,
             } => page(PageRequest::Find {
                 role: role.filter(|role| !role.trim().is_empty()),
                 name: name.filter(|name| !name.trim().is_empty()),
                 nth,
                 frame: page_frame(frame),
+                frames: frames.unwrap_or(false),
             }),
             Self::ClickPage { element, frame } => page(PageRequest::Click {
                 element,
@@ -1262,8 +1630,19 @@ pub enum BrowserOperation {
     },
     ClearHistory,
     RequestWebsiteDataClear,
+    /// Read the forms remembered of the site in front, or of every site.
+    RememberedForms {
+        all: bool,
+    },
     TogglePictureInPicture,
     ToggleReaderView,
+    /// Show the review of the page: what its forms hold and who set it.
+    ReviewPage,
+    /// Show the page again with the field `element` in view.
+    ShowPageField {
+        element: String,
+        frame: Option<FrameId>,
+    },
     ToggleHistoryPause,
     StartDownload {
         url: String,
@@ -1294,12 +1673,21 @@ pub enum BrowserOperation {
         id: String,
     },
     Page(PageRequest),
+    /// Answer or send one of the page's forms, as the form's own action
+    /// on the page does.
+    Form(crate::page_forms::FormRun),
     /// Answer the page's question `dialog`: OK, Leave or Reload when `accept`,
     /// else Cancel, with a prompt's `text`.
     AnswerPageDialog {
         dialog: u32,
         accept: bool,
         text: Option<String>,
+    },
+    /// Answer the sign-in `sign_in` a site asked for with `credentials`, or
+    /// cancel it with none. The credentials print as nothing.
+    AnswerPageSignIn {
+        sign_in: u32,
+        credentials: Option<ui::webview::HttpAuthCredentials>,
     },
     /// Answer the site's permission request `request`: allow it when `allow`,
     /// else deny it.

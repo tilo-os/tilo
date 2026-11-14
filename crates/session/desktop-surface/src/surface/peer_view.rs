@@ -24,9 +24,15 @@
 //!   [`NeighbourMsg::RemoteInput`] the owner replays.
 //!
 //! The tile ([`PeerView`]) binds that state to widgets the toolkit already has:
-//! the framework's arriving card while no picture is here, and the image
-//! widget once one is. It decides nothing: a person's click and keystroke ask
+//! the framework's arriving card while nothing of the window is here, the
+//! image widget once a picture is, and the page view once a page's whole frame
+//! is. It decides nothing: a person's click and keystroke ask
 //! the same actions anything else driving the tile asks.
+//!
+//! A tab whose window runs on another device never stands empty. While no share stands in it, and
+//! once the share in it ended, it shows the toolkit's notice saying where the window runs and why
+//! it is not here ([`Elsewhere`], [`WhyEnded`]). Every word the tile says, its actions' names and
+//! refusals included, is the catalogue's, resolved when it is read.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -49,12 +55,15 @@ use ui::kurbo::{Point, Rect};
 use ui::taffy::{Dimension, NodeId, Position, Size, Style, TaffyTree};
 use ui::time::{Duration, Instant};
 use ui::widget::{
-    AppKind, AppModel, AppWidget, EventCtx, IconDescriptor, Image, ImageFit, MediaAspect,
-    MediaGrid, ModelPath, TaffyTreeExt, TileContent, TileHost, Widget,
+    AppKind, AppModel, AppWidget, EmptyState, EventCtx, IconDescriptor, Image, ImageFit,
+    MediaAspect, MediaGrid, ModelPath, TaffyTreeExt, TileContent, TileHost, Widget,
 };
 use ui::{TextRenderer, Theme};
 
-use crate::page_view::PageStream;
+use super::elsewhere;
+pub use super::elsewhere::Elsewhere;
+use crate::i18n::{t, t_args};
+use crate::page_view::{PageStream, PageView};
 use tilo_actions::{
     ActionOutput, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
     ResourcePresentation, ResourceSpec,
@@ -129,9 +138,38 @@ pub enum Standing {
     Pictured,
     /// The share ended, and why.
     Ended {
-        /// Why the share ended, in the words a person reads.
-        why: String,
+        /// Why the share ended.
+        why: WhyEnded,
     },
+}
+
+/// Why a shared window's tile ended. The tile keeps the reason and not a sentence, so whoever
+/// reads it later reads it in their language now, whatever language it ended in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhyEnded {
+    /// The tab it stood in is no longer on the desk, or shows something else.
+    TabGone,
+    /// This device left the workspace the window is shared with.
+    LeftWorkspace,
+    /// The device sharing the window stopped.
+    SenderStopped,
+    /// The sender started the stream over at another size or in another codec.
+    Restarted,
+    /// This device let the window go.
+    LetGo,
+}
+
+impl WhyEnded {
+    /// The catalogue's words for the reason, as the rest of the sentence after "Ended:".
+    const fn key(self) -> &'static str {
+        match self {
+            Self::TabGone => "peer-window-ended-tab-gone",
+            Self::LeftWorkspace => "peer-window-ended-left-workspace",
+            Self::SenderStopped => "peer-window-ended-sender-stopped",
+            Self::Restarted => "peer-window-ended-restarted",
+            Self::LetGo => "peer-window-ended-let-go",
+        }
+    }
 }
 
 /// A surface another device announced it streams, and what this desktop knows of it beyond the
@@ -494,17 +532,14 @@ impl PeerSurface {
         ResourceSpec::new(self.resource_id(), KIND, self.title.to_string())
             .with_presentation(ResourcePresentation {
                 detail: Some(bounded(
-                    &format!("{}'s window", self.sharer),
+                    &t_args("peer-window-of", &[("name", (&*self.sharer).into())]),
                     ResourcePresentation::MAX_DETAIL_BYTES,
                 )),
-                badge: Some(
-                    if self.writable {
-                        "Can type"
-                    } else {
-                        "View only"
-                    }
-                    .to_string(),
-                ),
+                badge: Some(t(if self.writable {
+                    "peer-window-can-type"
+                } else {
+                    "peer-window-view-only"
+                })),
                 preview: Some(bounded(
                     &self.standing_line(),
                     ResourcePresentation::MAX_PREVIEW_BYTES,
@@ -525,15 +560,14 @@ impl PeerSurface {
         format!("{KIND}:{}", self.surface)
     }
 
-    /// A sentence for the resource's preview: how the stream stands.
+    /// A sentence for the resource's preview: how the stream stands, in the language of the
+    /// person reading it.
     fn standing_line(&self) -> String {
         match &self.standing {
-            Standing::Started if self.awaiting_keyframe => {
-                "A frame went missing; waiting for the sender's keyframe".to_string()
-            }
-            Standing::Started => "Waiting for its first picture".to_string(),
-            Standing::Pictured => "Live".to_string(),
-            Standing::Ended { why } => format!("Ended: {why}"),
+            Standing::Started if self.awaiting_keyframe => t("peer-window-picture-lost"),
+            Standing::Started => t("peer-window-first-picture"),
+            Standing::Pictured => t("peer-window-live"),
+            Standing::Ended { why } => t_args("peer-window-ended", &[("why", t(why.key()).into())]),
         }
     }
 
@@ -719,7 +753,7 @@ impl PeerSurface {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ActionOutput, String> {
         if self.ended {
-            return Err("This window's share has ended".into());
+            return Err(t("peer-window-refused-ended"));
         }
         match action {
             PeerAction::PointerMotion => {
@@ -730,16 +764,14 @@ impl PeerSurface {
             PeerAction::PointerButton => {
                 let button = whole(arguments, "button")?;
                 let pressed = flag(arguments, "pressed")?;
-                let button = u32::try_from(button)
-                    .map_err(|_| "`button` is not a pointer button".to_string())?;
+                let button = u32::try_from(button).map_err(|_| t("peer-window-refused-button"))?;
                 self.send(&InputEvent::PointerButton { button, pressed })
             }
             PeerAction::Key => {
                 let keysym = whole(arguments, "keysym")?;
                 let pressed = flag(arguments, "pressed")?;
                 let modifiers = whole(arguments, "modifiers").unwrap_or(0);
-                let keysym =
-                    u32::try_from(keysym).map_err(|_| "`keysym` is not a key code".to_string())?;
+                let keysym = u32::try_from(keysym).map_err(|_| t("peer-window-refused-key"))?;
                 let modifiers = u32::try_from(modifiers).unwrap_or(0);
                 self.send(&InputEvent::Key {
                     keysym,
@@ -757,7 +789,7 @@ impl PeerSurface {
                     .get("text")
                     .and_then(serde_json::Value::as_str)
                     .filter(|text| !text.is_empty())
-                    .ok_or_else(|| "`text` is no text".to_string())?;
+                    .ok_or_else(|| t("peer-window-refused-text"))?;
                 self.send(&InputEvent::Text {
                     text: text.to_owned(),
                 })
@@ -767,7 +799,7 @@ impl PeerSurface {
                 Ok(ActionOutput::default())
             }
             PeerAction::End => {
-                self.end("this device let the window go");
+                self.end(WhyEnded::LetGo);
                 Ok(ActionOutput::default())
             }
         }
@@ -776,7 +808,7 @@ impl PeerSurface {
     /// Ship one input event to the sender, through the share's own rule.
     fn send(&mut self, event: &InputEvent) -> Result<ActionOutput, String> {
         if !self.gate.accept_remote_input(self.local_peer, self.surface) {
-            return Err("This window is shared for watching only".into());
+            return Err(t("peer-window-refused-view-only"));
         }
         let encoded = postcard::to_allocvec(event).map_err(|error| error.to_string())?;
         self.outgoing.push(NeighbourMsg::RemoteInput {
@@ -787,15 +819,14 @@ impl PeerSurface {
         Ok(ActionOutput::default())
     }
 
-    /// End the tile's share: nothing is decoded after this, and what the tile publishes says why.
-    pub fn end(&mut self, why: &str) {
+    /// End the tile's share: nothing is decoded after this, and what the tile publishes and shows
+    /// says why.
+    pub fn end(&mut self, why: WhyEnded) {
         if self.ended {
             return;
         }
         self.ended = true;
-        self.standing = Standing::Ended {
-            why: why.to_owned(),
-        };
+        self.standing = Standing::Ended { why };
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -804,22 +835,41 @@ impl PeerSurface {
         std::mem::take(&mut self.outgoing)
     }
 
-    /// What stands in the tile's place: the newest picture as the image widget takes it, or -
-    /// before one is here - the framework's arriving card naming the device the window comes from.
+    /// What stands in the tile's place: the window's page or its newest picture, or - before
+    /// either is here - the framework's arriving card naming the device the window comes from.
+    /// A share that ended follows the window no longer, so its tile shows no picture of it: it
+    /// says where the window runs and why the share ended, in the toolkit's notice.
     fn content(&self) -> Box<dyn Widget> {
-        if let Some(page) = &self.page {
+        if self.ended {
+            return Box::new(
+                EmptyState::new(elsewhere::title(&self.app_id, &self.sharer))
+                    .with_message(self.standing_line()),
+            );
+        }
+        let alt = t_args(
+            "peer-window-name",
+            &[
+                ("window", (&*self.title).into()),
+                ("device", (&*self.sharer).into()),
+            ],
+        );
+        if let Some(page) = &self.page
+            && page.borrow().frame().is_some()
+        {
             // The page is drawn here, not decoded: the display list its publisher sends is what
             // this toolkit's own Vello and text stack draws, the same code the page's own window
             // draws it with.
-            return PageStream::view(page, format!("{} on {}", self.title, self.sharer));
+            return Box::new(PageView::new(Rc::clone(page), alt));
         }
         match &self.picture {
             Some(picture) => Box::new(
                 Image::from_rgba(Arc::clone(&picture.rgba), picture.width, picture.height)
                     .filling()
                     .with_fit(ImageFit::Contain)
-                    .with_alt(format!("{} on {}", self.title, self.sharer)),
+                    .with_alt(alt),
             ),
+            // A page of which no whole frame came waits as a picture does: in the shape its
+            // device announced, under that device's name.
             None => Box::new(MediaGrid::arriving(
                 1,
                 self.aspect(),
@@ -871,17 +921,18 @@ fn bounded(text: &str, max: usize) -> String {
 }
 
 /// The argument-encoding operation of one effect action.
+/// What the action is called and what it asks for are the catalogue's, by `words` : the message
+/// naming it, and that message's `-hint` .
 fn operation(
     id: &'static str,
-    label: &'static str,
-    placeholder: &'static str,
+    words: &str,
     type_id: &'static str,
     params: Vec<ActionParam>,
 ) -> ActionSpec {
     ActionSpec::typed_operation(
         id,
-        label,
-        placeholder,
+        t(words),
+        t(&format!("{words}-hint")),
         OperationKind::Effect,
         type_id,
         params,
@@ -896,15 +947,19 @@ fn operation(
     )
 }
 
+/// One argument of an action, described in the catalogue's words under `words` .
+fn param(name: &'static str, kind: ParamType, words: &str) -> ActionParam {
+    ActionParam::required_owned(name, kind, t(words))
+}
+
 fn motion_action() -> ActionSpec {
     operation(
         POINTER_MOTION,
-        "Move the pointer",
-        "Where the pointer goes",
+        "peer-window-action-pointer-motion",
         POINTER_MOTION_OPERATION,
         vec![
-            ActionParam::required("x", ParamType::Number, "x in the window's pixels"),
-            ActionParam::required("y", ParamType::Number, "y in the window's pixels"),
+            param("x", ParamType::Number, "peer-window-param-x"),
+            param("y", ParamType::Number, "peer-window-param-y"),
         ],
     )
 }
@@ -912,12 +967,11 @@ fn motion_action() -> ActionSpec {
 fn button_action() -> ActionSpec {
     operation(
         POINTER_BUTTON,
-        "Press a pointer button",
-        "Which button",
+        "peer-window-action-pointer-button",
         POINTER_BUTTON_OPERATION,
         vec![
-            ActionParam::required("button", ParamType::Integer, "evdev button code"),
-            ActionParam::required("pressed", ParamType::Boolean, "down or up"),
+            param("button", ParamType::Integer, "peer-window-param-button"),
+            param("pressed", ParamType::Boolean, "peer-window-param-pressed"),
         ],
     )
 }
@@ -925,13 +979,16 @@ fn button_action() -> ActionSpec {
 fn key_action() -> ActionSpec {
     operation(
         KEY,
-        "Press a key",
-        "Which key",
+        "peer-window-action-key",
         KEY_OPERATION,
         vec![
-            ActionParam::required("keysym", ParamType::Integer, "evdev key code"),
-            ActionParam::required("pressed", ParamType::Boolean, "down or up"),
-            ActionParam::required("modifiers", ParamType::Integer, "held modifiers"),
+            param("keysym", ParamType::Integer, "peer-window-param-keysym"),
+            param("pressed", ParamType::Boolean, "peer-window-param-pressed"),
+            param(
+                "modifiers",
+                ParamType::Integer,
+                "peer-window-param-modifiers",
+            ),
         ],
     )
 }
@@ -939,12 +996,11 @@ fn key_action() -> ActionSpec {
 fn scroll_action() -> ActionSpec {
     operation(
         SCROLL,
-        "Scroll",
-        "How far",
+        "peer-window-action-scroll",
         SCROLL_OPERATION,
         vec![
-            ActionParam::required("dx", ParamType::Number, "across, in the window's pixels"),
-            ActionParam::required("dy", ParamType::Number, "down, in the window's pixels"),
+            param("dx", ParamType::Number, "peer-window-param-dx"),
+            param("dy", ParamType::Number, "peer-window-param-dy"),
         ],
     )
 }
@@ -952,35 +1008,28 @@ fn scroll_action() -> ActionSpec {
 fn text_action() -> ActionSpec {
     operation(
         TEXT,
-        "Type text",
-        "What to type",
+        "peer-window-action-text",
         TEXT_OPERATION,
-        vec![ActionParam::required(
-            "text",
-            ParamType::Text,
-            "what goes in the focused field",
-        )],
+        vec![param("text", ParamType::Text, "peer-window-param-text")],
     )
 }
 
 fn keyframe_action() -> ActionSpec {
     operation(
         KEYFRAME,
-        "Ask for a keyframe",
-        "Ask the sender",
+        "peer-window-action-keyframe",
         KEYFRAME_OPERATION,
         Vec::new(),
     )
 }
 
 fn end_action() -> ActionSpec {
-    operation(
-        END,
-        "Let the window go",
-        "Stop showing it",
-        END_OPERATION,
-        Vec::new(),
-    )
+    operation(END, "peer-window-action-end", END_OPERATION, Vec::new())
+}
+
+/// The refusal of an argument that is not what its action takes, naming the argument.
+fn refused(words: &str, name: &str) -> String {
+    t_args(words, &[("argument", name.into())])
 }
 
 fn number(
@@ -990,7 +1039,7 @@ fn number(
     arguments
         .get(name)
         .and_then(serde_json::Value::as_f64)
-        .ok_or_else(|| format!("`{name}` is not a number"))
+        .ok_or_else(|| refused("peer-window-refused-number", name))
 }
 
 fn whole(
@@ -1000,7 +1049,7 @@ fn whole(
     arguments
         .get(name)
         .and_then(serde_json::Value::as_i64)
-        .ok_or_else(|| format!("`{name}` is not a whole number"))
+        .ok_or_else(|| refused("peer-window-refused-whole", name))
 }
 
 fn flag(
@@ -1010,7 +1059,7 @@ fn flag(
     arguments
         .get(name)
         .and_then(serde_json::Value::as_bool)
-        .ok_or_else(|| format!("`{name}` is not true or false"))
+        .ok_or_else(|| refused("peer-window-refused-flag", name))
 }
 
 /// The shared surfaces this desktop shows, by tab, and which tab each stream's units go to.
@@ -1024,6 +1073,12 @@ pub struct PeerSurfaces {
     built: HashMap<TabId, u64>,
     /// Where a picture that comes out late wakes the host.
     wake: Option<PictureWake>,
+    /// Why each window that runs on another device is not shown in its tab, as the host's
+    /// session last read it: what the tab says while no share stands in it.
+    elsewhere: HashMap<TabId, Elsewhere>,
+    /// The catalogue's revision the tiles were last built under: what a tile says is resolved
+    /// when it is built, so a change of language builds them again.
+    spoken: Option<u64>,
 }
 
 impl PeerSurfaces {
@@ -1151,9 +1206,52 @@ impl PeerSurfaces {
         )))))
     }
 
-    /// End the share of `surface` : its tile goes, so the tab shows what this desktop holds for it
-    /// again. The tab it stood in, when it stood in one.
-    pub fn end(&mut self, peer: PeerId, surface: SurfaceId, why: &str) -> Option<TabId> {
+    /// The host's session read why each window that runs on another device is not shown in its
+    /// tab. A tab `standings` leaves out is one nobody said anything of. The tabs whose notice
+    /// says something else now.
+    pub fn set_elsewhere(
+        &mut self,
+        standings: impl IntoIterator<Item = (TabId, Elsewhere)>,
+    ) -> Vec<TabId> {
+        let read: HashMap<TabId, Elsewhere> = standings.into_iter().collect();
+        let mut changed: Vec<TabId> = read
+            .iter()
+            .filter(|(tab, standing)| self.elsewhere.get(tab) != Some(standing))
+            .map(|(tab, _)| *tab)
+            .chain(
+                self.elsewhere
+                    .keys()
+                    .filter(|tab| !read.contains_key(tab))
+                    .copied(),
+            )
+            .collect();
+        changed.sort_unstable();
+        self.elsewhere = read;
+        changed
+    }
+
+    /// Why the window in `tab` is not shown there, as the host's session last read it.
+    #[must_use]
+    pub fn elsewhere(&self, tab: TabId) -> Elsewhere {
+        self.elsewhere.get(&tab).cloned().unwrap_or_default()
+    }
+
+    /// What `tab` shows of a window that runs on another device while no share stands in it: the
+    /// toolkit's notice saying where it runs and why it is not here. `None` for any other tab.
+    #[must_use]
+    pub fn stand_in(&self, tab: &Tab) -> Option<TileHost> {
+        elsewhere::notice(tab, &self.elsewhere(tab.id)).map(TileHost::new)
+    }
+
+    /// Whether the person reads another language than the tiles were last built in.
+    fn respoken(&mut self) -> bool {
+        let now = ui::i18n::I18nManager::revision();
+        self.spoken.replace(now).is_some_and(|built| built != now)
+    }
+
+    /// End the share of `surface` : its tile goes, so the tab says again where its window runs.
+    /// The tab it stood in, when it stood in one.
+    pub fn end(&mut self, peer: PeerId, surface: SurfaceId, why: WhyEnded) -> Option<TabId> {
         let tab = self.streams.remove(&(peer, surface))?;
         if let Some(tile) = self.tiles.remove(&tab) {
             tile.borrow_mut().end(why);
@@ -1471,8 +1569,10 @@ impl ResourceOperations for PeerView {
     }
 }
 
-/// What a host's [`TileSource`](crate::TileSource) answers with while a peer streams into a tab:
-/// the share's own tile there, and everything else from the host.
+/// What a host's [`TileSource`](crate::TileSource) answers with for a window that runs on another
+/// device: the share's own tile while a peer streams into its tab, and until then the notice
+/// saying where the window runs and why it is not here. The host has nothing to draw for such a
+/// window, so it is not asked; everything else is the host's.
 pub struct PeerTiles {
     inner: Box<dyn crate::TileSource>,
     peers: Rc<RefCell<PeerSurfaces>>,
@@ -1488,8 +1588,11 @@ impl PeerTiles {
 
 impl crate::TileSource for PeerTiles {
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
-        let shared = self.peers.borrow().tile_host(tab.id);
-        if let Some(host) = shared {
+        let elsewhere = {
+            let peers = self.peers.borrow();
+            peers.tile_host(tab.id).or_else(|| peers.stand_in(tab))
+        };
+        if let Some(host) = elsewhere {
             return host;
         }
         self.inner.tile(workspace, tab)
@@ -1579,9 +1682,33 @@ impl super::DesktopHandle {
         peers.borrow_mut().push_page(peer, surface, payload)
     }
 
+    /// The host's session read why each window that runs on another device is not shown in its
+    /// tab: not shared, shared and still on its way, or on a device that is away or left. Each
+    /// tab says so from its next pass on; a tab `standings` leaves out says only where its window
+    /// runs.
+    pub fn set_elsewhere(&self, standings: Vec<(TabId, Elsewhere)>) {
+        let peers = Rc::clone(&self.shared.borrow().peers);
+        let changed = peers.borrow_mut().set_elsewhere(standings);
+        for tab in changed {
+            self.rebuild(tab);
+        }
+    }
+
+    /// Why the window in `tab` is not shown there, as the host's session last read it.
+    #[must_use]
+    pub fn elsewhere(&self, tab: TabId) -> Elsewhere {
+        let peers = Rc::clone(&self.shared.borrow().peers);
+        peers.borrow().elsewhere(tab)
+    }
+
     /// The share of `surface` ended, and why: its tile goes,
-    /// and the tab shows what this desktop holds for it again.
-    pub fn end_peer_surface(&self, peer: PeerId, surface: SurfaceId, why: &str) -> Option<TabId> {
+    /// and the tab says again where its window runs.
+    pub fn end_peer_surface(
+        &self,
+        peer: PeerId,
+        surface: SurfaceId,
+        why: WhyEnded,
+    ) -> Option<TabId> {
         let peers = Rc::clone(&self.shared.borrow().peers);
         let tab = peers.borrow_mut().end(peer, surface, why);
         if let Some(tab) = tab {
@@ -1602,6 +1729,14 @@ impl super::DesktopHandle {
     pub fn peer_surface_read(&self, tab: TabId) -> Option<PeerRead> {
         let peers = Rc::clone(&self.shared.borrow().peers);
         peers.borrow().read(tab)
+    }
+
+    /// What the tile showing `peer`'s shared `surface` publishes now, whichever tab it stands in.
+    /// `None` for a stream this desktop shows nowhere.
+    pub fn peer_stream_read(&self, peer: PeerId, surface: SurfaceId) -> Option<PeerRead> {
+        let peers = Rc::clone(&self.shared.borrow().peers);
+        let peers = peers.borrow();
+        peers.read(peers.tab_of(peer, surface)?)
     }
 
     /// Wake `wake` when a pushed picture comes out, so a window that stopped changing still shows
@@ -1646,13 +1781,26 @@ impl super::DesktopSurface {
     /// that arrived lands in it. Whether anything changed.
     pub(super) fn follow_peer_streams(&self) -> bool {
         let peers = Rc::clone(&self.shared.borrow().peers);
-        let (collected, changed) = {
+        let (collected, mut changed, respoken) = {
             let mut peers = peers.borrow_mut();
             let collected = peers.collect_pictures();
             let changed = peers.take_changed_tabs();
-            (collected, changed)
+            (collected, changed, peers.respoken())
         };
         let mut shared = self.shared.borrow_mut();
+        if respoken {
+            // The person reads another language now: what each of these tabs says was resolved
+            // when its tile was built, so each is built again.
+            changed.extend(
+                shared
+                    .tree
+                    .workspaces
+                    .iter()
+                    .flat_map(workspace_tabs)
+                    .filter(|tab| matches!(tab.tile, ModelTile::HostedWindow { .. }))
+                    .map(|tab| tab.id),
+            );
+        }
         for tab in &changed {
             if !shared.rebuild.contains(tab) {
                 shared.rebuild.push(*tab);

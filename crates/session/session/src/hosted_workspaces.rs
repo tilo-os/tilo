@@ -9,6 +9,9 @@
 //! session opened with its own certificate and key, the way the person's
 //! other devices enter a workspace on its host; the session is kept and
 //! reused for every workspace on that host, and opened again once it ended.
+//! It is a session beside the one this device's engine keeps with the same
+//! host: it runs on this session's own endpoint and holds no keys, since the
+//! device is one endpoint and one member of each workspace's key group.
 //!
 //! A workspace this device hosts itself, or one founded on its own desk
 //! (whose host is a desktop, which runs no workers), is decided here.
@@ -39,8 +42,9 @@ pub(crate) struct HostedWorkspaces(Arc<Inner>);
 
 struct Inner {
     engine: Arc<Engine>,
-    /// The endpoint this device runs under its key, once bound: every host is dialled from it.
-    endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
+    /// Where the endpoint this device runs under its key lands once bound: every host is dialled
+    /// from it. `None` for a session that binds none.
+    endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
     runtime: tokio::runtime::Handle,
     /// Each host's session, by the host's device key.
     hosts: Mutex<HashMap<[u8; 32], Arc<Host>>>,
@@ -66,9 +70,14 @@ impl HostedWorkspaces {
     /// The hosts of `engine`'s workspaces, reached from this device's `endpoint` on `runtime`;
     /// `None` for a session that holds no workspaces. The session's own runtime reaches them: this
     /// is built where the session starts, which is no task of any runtime's.
+    ///
+    /// `endpoint` is where this session's own endpoint lands once it bound, and `None` for a
+    /// session that binds none: this device's key names one endpoint, and one bound beside it for
+    /// a host's session took this device's place at its relay, so the person's other devices
+    /// reached nothing of it there once they started, or came back, after it.
     pub(crate) fn service(
         engine: Option<&Arc<Engine>>,
-        endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
+        endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
         runtime: tokio::runtime::Handle,
     ) -> Option<Self> {
         Some(Self(Arc::new(Inner {
@@ -122,7 +131,7 @@ impl HostedWorkspaces {
             &identity.device_cert.device_label,
             tilo_session_client::Lent {
                 keys: self.0.engine.keys().get(),
-                endpoint: self.0.endpoint.get().cloned(),
+                endpoint: self.0.endpoint.clone(),
             },
         );
         let host = Arc::new(Host {

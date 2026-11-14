@@ -33,6 +33,11 @@ test-cached-table-write = Write a cell, or clear it with no text
 test-cached-table-drop-row = Remove a row
 test-cached-table-rename = Rename the table
 
+## crates/sdk/tilo-resource/tests/by_app.rs
+test-visits = Visits
+test-visits-note = Note a visit
+test-visits-star = Star a page
+
 ## crates/sdk/tilo-resource/tests/data_enum.rs
 test-card = Card
 test-card-draw-rect = Draw a box `width` units wide

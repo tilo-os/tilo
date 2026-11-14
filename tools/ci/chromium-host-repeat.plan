@@ -1,0 +1,4 @@
+# What `t test chromium-host-repeat --force` runs: tools/ci/chromium-host-repeat.sh says how a
+# plan reads. Change it for the failure at hand; what is committed is an example.
+burn 8
+20 extension_tabs.py ExtensionTabs.test_an_extension_asks_for_more_access_and_the_person_decides

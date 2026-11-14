@@ -56,6 +56,18 @@ use tilo_user_identity::{DeviceCert, IdentityPaths};
 /// carries it.
 pub type Invitation = String;
 
+/// The log filter the sessions of this process's devices start under, when a test asked for more
+/// than the fixture's own `info`. Each test runs in a process of its own, so the filter is that
+/// test's.
+static SESSION_LOG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Start every session this test starts from here on under the log filter `filter`, a `RUST_LOG`:
+/// what a test asks for before it makes its devices, when a step that fails has to say what a
+/// session only says below `info`.
+pub fn log_sessions_at(filter: &str) {
+    let _ = SESSION_LOG.set(filter.to_owned());
+}
+
 /// How long a device is given to hold the workspace it joined and to show it in front: the join is
 /// the product's own, which gives it [`tilo_session::sync::JOIN_PATIENCE`] before the person is told
 /// it did not happen, and the suite's hang bound after that.
@@ -961,9 +973,11 @@ impl Person {
             )
             .expect("the boot settles which device this is")
         };
+        // The source's first boot on this build records its machine, and it is that machine
+        // from then on: a disk may be copied more than once.
         assert!(matches!(
             boot(&source.identity(), &source_machine),
-            Settled::Recorded
+            Settled::Recorded | Settled::Same
         ));
 
         let home = tempfile::tempdir().expect("a directory for the copy");
@@ -1299,12 +1313,16 @@ impl Device {
             .env(tilo_secrets::SECRETS_DIR_ENV, root.join("secrets"))
             .env(FILE_SECRETS_ENV, "1")
             // The session says at info why a join did not land, and its direct links say at debug
-            // what they carried: what a failed step reads.
+            // what they carried: what a failed step reads. A test that needs more of it asked
+            // first ([`log_sessions_at`]).
             .env(
                 "RUST_LOG",
-                "info,tilo_peer_state::direct=debug,tilo_peer_state::join_transport=debug,\
-                 tilo_session::shared_desktop=debug,tilo_network_actor::native_ingress=debug,\
-                 tilo_peer_state::owner::publication=debug,tilo_session_client::custody=debug",
+                SESSION_LOG.get().map_or(
+                    "info,tilo_peer_state::direct=debug,tilo_peer_state::join_transport=debug,\
+                     tilo_session::shared_desktop=debug,tilo_network_actor::native_ingress=debug,\
+                     tilo_peer_state::owner::publication=debug,tilo_session_client::custody=debug",
+                    String::as_str,
+                ),
             )
             .env("TILO_APP_STDERR_DIR", &logs)
             // The tests of this process mount the trees this device's session serves, so the

@@ -518,6 +518,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # process renders.
             port = self.server.server_port
             frame = f'<iframe src="/inner"></iframe><iframe src="http://localhost:{port}/outer"></iframe>' if self.path == '/framed' else ''
+            # A page of many frames, as a long form of embedded fields is:
+            # as many of its own site as its address says but one, and one
+            # of another site.
+            if self.path.startswith('/crowd/'):
+                near = int(self.path.rsplit('/', 1)[1]) - 1
+                frame = ''.join(f'<iframe src="/part/{part}"></iframe>' for part in range(near))
+                frame += f'<iframe src="http://localhost:{port}/part/far"></iframe>'
             body = f'<!doctype html><html{lang}><title>page {self.path}</title><body>page{frame}</body></html>'.encode()
         if self.path.startswith('/tracker/'):
             kind, body = 'text/javascript', b'window.tracked = true;'
@@ -913,7 +920,35 @@ class ExtensionTabs(unittest.TestCase):
         return event
 
     def click_panel(self, host, tab):
-        self.click(host, tab, 50, 50)
+        """The person's one click in the popup `tab`, whose page says what it
+        hears of the pointer (`heard:`, permit/popup.js). The engine takes no
+        click on a page it has not drawn yet: such a click lands nowhere, and
+        a popup says it is ready before it is drawn. So after the click the
+        pointer moves on to places it was not at before, and the page hears
+        of both in the order they were made: once it has seen the pointer at
+        one of them and counted no click, that click is gone for good, and is
+        made again. A click the page heard is never made twice."""
+        heard = lambda e: e['event'] == 'title' and e.get('tab') == tab and e['title'].startswith('heard:')
+        counted = max((json.loads(e['title'][len('heard:'):])['clicks'] for e in host.seen if heard(e)), default=0)
+        places = ((x, y) for y in range(60, 190, 2) for x in range(60, 350, 2))
+        deadline = time.monotonic() + HANG_BOUND
+        while True:
+            after = len(host.seen)
+            self.click(host, tab, 50, 50)
+            moved = []
+            while True:
+                # A move is nothing the page acts on, so the pointer is moved
+                # on for as long as the page has not said where it is.
+                moved.append(next(places))
+                host.send(op='mouse_move', tab=tab, x=moved[-1][0], y=moved[-1][1])
+                host.settle(0.1)
+                said = [json.loads(e['title'][len('heard:'):]) for e in host.seen[after:] if heard(e)]
+                if any(each['clicks'] > counted for each in said):
+                    return
+                if any(tuple(each['at']) in moved for each in said):
+                    break
+                self.assertLess(time.monotonic(), deadline, f'the popup in tab {tab} never said where the pointer is')
+            self.assertLess(time.monotonic(), deadline, f'the popup in tab {tab} never heard a click')
 
     def click(self, host, tab, x, y):
         """The person's click at (`x`, `y`) of the tab."""
@@ -1534,6 +1569,19 @@ class ExtensionTabs(unittest.TestCase):
             'missing': True,
             'moved': True,
         })
+
+    def test_every_frame_of_a_page_that_asks_at_once_is_reached_by_its_id(self):
+        # The frames of a page each ask their worker for a script as they
+        # start, a dozen and more at once, as a password manager's do on a
+        # form of embedded fields. Each is found by the id its message came
+        # with and runs the script itself: none is told it is not there.
+        host, ids = self.start('crowd', access={'crowd': (['scripting'], ['http://127.0.0.1/*', 'http://localhost/*'])})
+        frames = 16
+        page = f'/crowd/{frames}'
+        host.navigate(self.url + page)
+        ran = json.loads(self.title(host, 1, 'crowd:')[len('crowd:'):])
+        parts = [f'/part/{part}' for part in range(frames - 1)] + ['/part/far']
+        self.assertEqual(ran, {path: path for path in [page, *parts]})
 
     def test_a_worker_reaches_its_panel_in_the_page_and_frames_by_their_documents(self):
         host, ids = self.start('clipper', access={'clipper': (['scripting'], ['http://127.0.0.1/*', 'http://localhost/*'])})

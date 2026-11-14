@@ -188,10 +188,12 @@ where
         SectionOp::Publish(id, label) => SectionOut::Published(Box::new(
             tilo_resource::publish::<T>(id, label, &kind.settings::<T>().get()),
         )),
-        SectionOp::Decode(action) => SectionOut::Decoded(Box::new(
-            tilo_actions::decode_json::<T::Action>(&action.payload)
-                .map_err(|error| refused(&error))?,
-        )),
+        SectionOp::Decode(action) => {
+            let decoded = tilo_actions::decode_json::<T::Action>(&action.payload)
+                .map_err(|error| refused(&error))?;
+            super::record::not_by_app::<T>(&decoded).map_err(|error| refused(&error))?;
+            SectionOut::Decoded(Box::new(decoded))
+        }
         SectionOp::Stored => {
             SectionOut::Value(tilo_resource::Model::to_json(&kind.settings::<T>().get()))
         }

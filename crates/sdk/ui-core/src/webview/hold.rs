@@ -2,8 +2,13 @@
 //! the engine holds every departure before it happens: a form submission however it was
 //! triggered, a navigation or request with a method of its own, a download, and what a
 //! payment flow sends. An engine that holds nothing never reports one.
+//!
+//! The engine sets down in the tab's record that something was held and how that ended. It
+//! cannot know who answered, so the answer says ([`AnsweredBy`]).
 
 use std::sync::Arc;
+
+use super::PageActor;
 
 /// Upper bound on the method one held request may name.
 pub const MAX_HELD_METHOD: usize = 16;
@@ -54,6 +59,57 @@ impl HeldKind {
             Self::Download => "download from",
             Self::Payment => "take a payment to",
         }
+    }
+}
+
+/// Who answered something a window held for the person: what the engine sets
+/// down in the tab's record beside how the hold ended, so a reviewer reads
+/// who let a submission leave and who kept the page as it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum AnsweredBy {
+    /// The person at the window: the answer was theirs, and no actor's.
+    #[default]
+    Person,
+    /// An actor the action door admitted the answer for, by the name the tab
+    /// keeps that actor's page actions under.
+    Actor(PageActor),
+    /// Nobody: the window dropped what it held at its own deadline.
+    Nobody,
+    /// Nobody: the window turned it away at once, because as many requests
+    /// as it asks the person about already wait.
+    TooMany,
+}
+
+impl AnsweredBy {
+    /// Who answers when the action door admitted the answer for `actor`: an
+    /// answer nobody is named for is the person's at the window.
+    pub fn admitted(actor: Option<PageActor>) -> Self {
+        actor.map_or(Self::Person, Self::Actor)
+    }
+
+    /// The name the record sets the answer down under; none for the person
+    /// at the window and for nobody.
+    pub const fn actor(&self) -> Option<&PageActor> {
+        match self {
+            Self::Actor(actor) => Some(actor),
+            Self::Person | Self::Nobody | Self::TooMany => None,
+        }
+    }
+
+    /// Why nobody answered, as the engine is told it: `expired` for what the
+    /// window dropped at its deadline, `full` for what it turned away at
+    /// once. Nothing for an answer somebody gave.
+    pub const fn reason(&self) -> Option<&'static str> {
+        match self {
+            Self::Nobody => Some("expired"),
+            Self::TooMany => Some("full"),
+            Self::Person | Self::Actor(_) => None,
+        }
+    }
+
+    /// Whether nobody answered.
+    pub const fn expired(&self) -> bool {
+        matches!(self, Self::Nobody)
     }
 }
 
@@ -138,5 +194,28 @@ mod tests {
             Some(HeldKind::Payment)
         );
         assert_eq!(HeldKind::parse("something else"), None);
+    }
+
+    #[test]
+    fn an_answer_names_the_actor_it_was_admitted_for_and_nobody_for_the_person() {
+        let rev = PageActor::named("agent:rev").expect("a named actor");
+        let by = AnsweredBy::admitted(Some(rev.clone()));
+        assert_eq!(by, AnsweredBy::Actor(rev.clone()));
+        assert_eq!((by.actor(), by.expired()), (Some(&rev), false));
+        let person = AnsweredBy::admitted(None);
+        assert_eq!(person, AnsweredBy::Person);
+        assert_eq!((person.actor(), person.expired()), (None, false));
+        assert_eq!(
+            (AnsweredBy::Nobody.actor(), AnsweredBy::Nobody.expired()),
+            (None, true),
+            "what nobody answered names nobody"
+        );
+        assert_eq!(
+            (AnsweredBy::Nobody.reason(), AnsweredBy::TooMany.reason()),
+            (Some("expired"), Some("full")),
+            "and says why nobody did"
+        );
+        assert_eq!((person.reason(), by.reason()), (None, None));
+        assert_eq!(AnsweredBy::TooMany.actor(), None);
     }
 }

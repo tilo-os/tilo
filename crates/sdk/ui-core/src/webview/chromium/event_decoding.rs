@@ -324,7 +324,13 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .as_str()
                     .is_some_and(|body| body.len() <= 1024 * 1024)
         }
-        "context_closed" | "permission_closed" | "js_dialog_closed" => valid_id(value),
+        "context_closed"
+        | "permission_closed"
+        | "js_dialog_closed"
+        | "file_chooser_closed"
+        | "http_auth_closed" => valid_id(value),
+        "http_auth" => super::http_auth::decode(value).is_some(),
+        "file_chooser" => super::file_chooser::decode(value).is_some(),
         "js_dialog" => decode_page_dialog(value).is_some(),
         "context_menu" => valid_context_menu(value),
         "find_result" => {
@@ -385,6 +391,7 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
                 && value.get("selection_text").is_none_or(Value::is_boolean)
                 && value.get("page_clipboard").is_none_or(Value::is_boolean)
                 && value.get("sealed_documents").is_none_or(Value::is_boolean)
+                && value.get("page_events").is_none_or(Value::is_boolean)
         }
         "tab_ready" => {
             value
@@ -397,6 +404,7 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .get("native_edit_history")
                     .is_none_or(Value::is_boolean)
                 && value.get("document_size").is_none_or(Value::is_boolean)
+                && value.get("page_events").is_none_or(Value::is_boolean)
         }
         "clipboard" | "clipboard_read" => page_clipboard::decode(value).is_some(),
         "selection_text" => {
@@ -475,6 +483,8 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
         "history" => value["back"].is_boolean() && value["forward"].is_boolean(),
         "text_field" | "ime_composition_bounds" => text_field::valid_event(event, value),
         "page_result" | "text_input_result" => crate::webview::page::decode_result(value).is_some(),
+        "page_record" => crate::webview::page::decode_record_event(value).is_some(),
+        "page_changed" => crate::webview::page::decode_changed_event(value).is_some(),
         "paint_snapshot" | "paint_resource" => {
             value["request_id"]
                 .as_u64()

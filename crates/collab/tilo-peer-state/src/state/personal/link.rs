@@ -9,11 +9,21 @@
 //! device that presents anything else is refused the link.
 //!
 //! Each side opens one unidirectional stream of length-prefixed postcard
-//! [`NeighbourMsg`] frames. It first carries what the other may lack: this
-//! device's certificate, the revocations its identity signed, and a snapshot
-//! of every document it holds. Then it carries every write this device
-//! publishes while the link lasts. Whoever holds a document can hand over its
-//! whole state, so a device added later catches up from any of its siblings.
+//! [`NeighbourMsg`] frames. It first carries who this device is: its
+//! certificate and the revocations its identity signed. Nothing of the
+//! person's documents follows until the store holds a certificate that makes
+//! the other device one of theirs — one it held already, or the one that
+//! device shows on this link. Then it carries a snapshot of every document
+//! this device holds, and every write it publishes while the link lasts and
+//! the other stays one of the person's devices. Whoever holds a document can
+//! hand over its whole state, so a device added later catches up from any of
+//! its siblings.
+//!
+//! The store's own record of the person's devices travels the same way, to a
+//! device the store already holds a certificate of and to no other: it is
+//! published again whenever the certificates this device holds move, so a
+//! device learns of the person's other devices from whichever of them it
+//! meets.
 
 // Nothing compiled for the web dials the person's own store yet: the page's
 // session opens its links with its own wiring.
@@ -26,7 +36,7 @@ use super::PeerPersonal;
 use crate::NeighbourMsg;
 use crate::frames::{OUTGOING, bump};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::frames::{REFUSED, read_message, send_all};
+use crate::frames::{REFUSED, from_device, read_message, send_all, write_message};
 use collab_types::signer::DeviceSigner;
 #[cfg(not(target_arch = "wasm32"))]
 use iroh::endpoint::Connection;
@@ -180,7 +190,28 @@ impl PersonalSync {
         if changed {
             self.published(self.0.store.read(super::PersonalStore::hello));
         }
+        self.publish_devices();
         Ok(changed)
+    }
+
+    /// Send the record of the person's devices to every open link whose
+    /// device is one of them, when the certificates this device holds moved
+    /// since it last was: what a sibling that never met those devices learns
+    /// of them from.
+    fn publish_devices(&self) {
+        let update = self
+            .0
+            .store
+            .write(|store| store.take_devices_update(self.0.key.as_ref(), tilo_clock::wall()));
+        match update {
+            Ok(Some(message)) => {
+                self.published(message);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, "the record of the person's devices was not published");
+            }
+        }
     }
 
     fn published(&self, message: NeighbourMsg) -> NeighbourMsg {
@@ -225,29 +256,84 @@ impl PersonalSync {
     #[cfg(not(target_arch = "wasm32"))]
     async fn run(&self, connection: &Connection) -> Result<(), String> {
         let remote = *connection.remote_id().as_bytes();
-        // Subscribe before taking the catch-up, so a write published in
-        // between is sent after it rather than lost.
+        // What this device holds of the person's devices is in their record
+        // before the catch-up is taken from it.
+        self.publish_devices();
+        // Subscribe before anything is taken from the store, so a write
+        // published in between is sent after it rather than lost.
         let live = self.0.outgoing.subscribe();
-        let catch_up = self.catch_up(remote)?;
+        let changes = self.0.changed.subscribe();
         let send = connection
             .open_uni()
             .await
             .map_err(|error| error.to_string())?;
         let receiving = self.receive_all(remote, connection);
-        let sending = send_all(send, remote, catch_up, live);
+        let sending = self.send_to(send, remote, live, changes);
         tokio::select! {
             result = receiving => result,
             result = sending => result,
         }
     }
 
-    /// What the other device may lack: this device's certificate, the
-    /// revocations its identity signed, what was refused of its own writes,
-    /// and a snapshot of every document it holds.
-    fn catch_up(&self, remote: [u8; 32]) -> Result<Vec<NeighbourMsg>, String> {
+    /// Say who this device is, and nothing of the person's documents until
+    /// the store holds a certificate that makes `remote` one of their
+    /// devices: one it held when the link started, or the one `remote` shows
+    /// on it. Its catch-up follows then, on this link, and after it every
+    /// write published while it stays one of them.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn send_to<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        mut send: W,
+        remote: [u8; 32],
+        mut live: broadcast::Receiver<NeighbourMsg>,
+        mut changes: watch::Receiver<u64>,
+    ) -> Result<(), String> {
+        let hands = |message: &NeighbourMsg| {
+            self.0
+                .store
+                .read(|store| store.hands(message, &remote, tilo_clock::wall()))
+        };
+        let greeting = self.0.store.read(|store| store.greeting(&remote));
+        for message in &greeting {
+            write_message(&mut send, message).await?;
+        }
+        let documents = loop {
+            if let Some(documents) = self.documents_for(remote)? {
+                break documents;
+            }
+            tokio::select! {
+                moved = changes.changed() => {
+                    if moved.is_err() {
+                        return Ok(());
+                    }
+                }
+                message = live.recv() => match message {
+                    // A write published before the catch-up is in the
+                    // catch-up, when there is one: a device not yet one of
+                    // the person's is sent neither.
+                    Ok(message)
+                        if matches!(message, NeighbourMsg::AppDocument { .. })
+                            || from_device(&message, remote)
+                            || !hands(&message) => {}
+                    Ok(message) => write_message(&mut send, &message).await?,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        return Err("the link fell behind the device's changes".into());
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
+                },
+            }
+        };
+        send_all(send, remote, documents, live, hands).await
+    }
+
+    /// A snapshot of every document this device holds, for `remote` to catch
+    /// up from, once the store holds a certificate that makes it one of the
+    /// person's devices now; `None` until then.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn documents_for(&self, remote: [u8; 32]) -> Result<Option<Vec<NeighbourMsg>>, String> {
         self.0
             .store
-            .write(|store| store.catch_up(self.0.key.as_ref(), remote, tilo_clock::wall()))
+            .write(|store| store.documents_for(self.0.key.as_ref(), &remote, tilo_clock::wall()))
     }
 
     /// Admit every frame `remote` sends until its stream ends. A document the
@@ -271,6 +357,9 @@ impl PersonalSync {
             if self.publish_refusals() {
                 self.0.changed.send_modify(bump);
             }
+            // A device this one just met, or learned of, is one its other
+            // siblings may lack: their record is sent with it.
+            self.publish_devices();
             match admitted {
                 Ok(outcome) => {
                     if outcome.changed || outcome.metadata_changed {
@@ -311,6 +400,10 @@ fn admitted_frame(message: &NeighbourMsg) -> Option<AdmittedFrame> {
     else {
         return None;
     };
+    // The record of the person's devices is the store's own: no app has it.
+    if super::PersonalStore::is_devices_record(app_id, record_id) {
+        return None;
+    }
     Some(AdmittedFrame {
         app: app_id.clone(),
         record: record_id.clone(),

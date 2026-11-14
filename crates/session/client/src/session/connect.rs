@@ -55,8 +55,11 @@ pub(super) struct Dial {
     delegation: Option<Vec<u8>>,
     /// The endpoint this device already runs under its key, when it lends
     /// it: the session dials from there instead of binding one of its own.
+    /// It is lent as where it lands once bound, since a session may be opened
+    /// before it is: a dial made before then binds nothing in its place and
+    /// is made again.
     #[cfg(not(target_arch = "wasm32"))]
-    lent: Option<iroh::Endpoint>,
+    lent: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
 }
 
 impl Dial {
@@ -75,9 +78,10 @@ impl Dial {
         }
     }
 
-    /// Dial from `endpoint`, the one this device already runs under its key.
+    /// Dial from `endpoint`, the one this device already runs under its key,
+    /// once it is bound.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn lend(&mut self, endpoint: iroh::Endpoint) {
+    pub(super) fn lend(&mut self, endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>) {
         self.lent = Some(endpoint);
     }
 
@@ -175,13 +179,21 @@ async fn connect_entering(
     dial: &mut Dial,
 ) -> Result<RelayClient, LinkError> {
     let host = &config.host;
+    // A lent endpoint that is not bound yet is waited for: the dial fails as
+    // one to make again, and no endpoint is bound under the device's key in
+    // its place, which would take the device's place at its relay.
+    #[cfg(not(target_arch = "wasm32"))]
+    if dial.dialer.is_none()
+        && let Some(lent) = &dial.lent
+    {
+        let endpoint = lent.get().cloned().ok_or_else(|| {
+            LinkError::Unavailable("this device's endpoint is not bound yet".into())
+        })?;
+        dial.dialer = Some(Arc::new(Dialer::from_endpoint(host.clone(), endpoint)));
+    }
     let dialer = dial
         .dialer
         .get_or_insert_with(|| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(endpoint) = dial.lent.clone() {
-                return Arc::new(Dialer::from_endpoint(host.clone(), endpoint));
-            }
             Arc::new(Dialer::new(
                 host.clone(),
                 Some(signer.endpoint_secret().unwrap_or(dial.key)),

@@ -1378,11 +1378,14 @@ fn poisoned_tab_state_never_panics_or_poisons_routes() {
 
 #[test]
 fn page_requests_are_encoded_bounded_and_always_answered() {
-    use crate::webview::{PageFailure, PageKey, PageNavigation, PageReply, PageRequest};
+    use crate::webview::{
+        PageActor, PageFailure, PageKey, PageNavigation, PageRecordNote, PageReply, PageRequest,
+    };
     // phase: page_requests_encode_to_the_host_page_op
     {
         let command = WebViewCommand::Page {
             request_id: 4,
+            actor: None,
             request: PageRequest::Fill {
                 element: "d2e7".into(),
                 text: "ada@example.test".into(),
@@ -1400,10 +1403,15 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
         for invalid in [
             WebViewCommand::Page {
                 request_id: 0,
-                request: PageRequest::Outline { frame: None },
+                actor: None,
+                request: PageRequest::Outline {
+                    from: None,
+                    frame: None,
+                },
             },
             WebViewCommand::Page {
                 request_id: 5,
+                actor: None,
                 request: PageRequest::Click {
                     element: "button[type=submit]".into(),
                     frame: None,
@@ -1411,12 +1419,156 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
             },
             WebViewCommand::Page {
                 request_id: 6,
+                actor: None,
                 request: PageRequest::Press {
                     element: None,
                     key: PageKey {
                         key: "NotAKey".into(),
                         modifiers: crate::webview::KeyModifiers::default(),
                     },
+                    frame: None,
+                },
+            },
+        ] {
+            assert!(!command_within_limits(&invalid), "{invalid:?}");
+        }
+    }
+    // phase: a_request_says_who_asks_and_a_cancel_names_its_request
+    {
+        // Several actors may work in one tab: the host is told who asks, and
+        // a caller that gives up stops its own request, never another's.
+        let named = WebViewCommand::Page {
+            request_id: 7,
+            actor: PageActor::named("agent:ada"),
+            request: PageRequest::Ledger { since: 3 },
+        };
+        assert!(command_within_limits(&named));
+        assert_eq!(
+            encode_command(named),
+            Some(
+                json!({"op":"page","request_id":7,"action":"ledger","since":3,"actor":"agent:ada"})
+            )
+        );
+        let review = WebViewCommand::Page {
+            request_id: 8,
+            actor: None,
+            request: PageRequest::Fields { frame: None },
+        };
+        assert!(command_within_limits(&review));
+        assert_eq!(
+            encode_command(review),
+            Some(json!({"op":"page","request_id":8,"action":"fields"}))
+        );
+        let cancel = WebViewCommand::CancelPage { request_id: 7 };
+        assert!(command_within_limits(&cancel));
+        assert_eq!(
+            encode_command(cancel),
+            Some(json!({"op":"page_cancel","request_id":7}))
+        );
+        assert!(
+            !command_within_limits(&WebViewCommand::CancelPage { request_id: 0 }),
+            "a cancel that names no request stops nothing"
+        );
+    }
+    // phase: reading_on_searching_and_forms_encode_to_the_host_page_op
+    {
+        use crate::webview::FormSubmit;
+        let read_on = WebViewCommand::Page {
+            request_id: 9,
+            actor: None,
+            request: PageRequest::Outline {
+                from: Some(1240),
+                frame: None,
+            },
+        };
+        assert!(command_within_limits(&read_on));
+        assert_eq!(
+            encode_command(read_on),
+            Some(json!({"op":"page","request_id":9,"action":"outline","from":1240}))
+        );
+        let search = WebViewCommand::Page {
+            request_id: 10,
+            actor: None,
+            request: PageRequest::Search {
+                text: "within 30 days".into(),
+                frame: None,
+                frames: false,
+            },
+        };
+        assert!(command_within_limits(&search));
+        assert_eq!(
+            encode_command(search),
+            Some(json!({"op":"page","request_id":10,"action":"search","text":"within 30 days"}))
+        );
+        let forms = WebViewCommand::Page {
+            request_id: 11,
+            actor: None,
+            request: PageRequest::Forms { frame: None },
+        };
+        assert_eq!(
+            encode_command(forms),
+            Some(json!({"op":"page","request_id":11,"action":"forms"}))
+        );
+        // A form's answers reach the host as the object they are, and the
+        // way it is sent as a boolean or as the button's label.
+        let answers = json!({"Arrival": "2027-02-03", "Guests": 2, "Languages": ["English"],
+            "Newsletter": false});
+        let fill = |request_id, submit| WebViewCommand::Page {
+            request_id,
+            actor: PageActor::named("agent:ada"),
+            request: PageRequest::FillForm {
+                form: "form1".into(),
+                answers: answers.as_object().unwrap().clone(),
+                submit,
+                cross_origin: false,
+                frame: None,
+            },
+        };
+        let first = fill(12, FormSubmit::First);
+        assert!(command_within_limits(&first));
+        assert_eq!(
+            encode_command(first),
+            Some(
+                json!({"op":"page","request_id":12,"action":"fill_form","form":"form1",
+                "answers":answers,"submit":true,"cross_origin":false,"actor":"agent:ada"})
+            )
+        );
+        assert_eq!(
+            encode_command(fill(13, FormSubmit::Button("Send application".into()))).unwrap()["submit"],
+            json!("Send application")
+        );
+        assert!(
+            encode_command(fill(14, FormSubmit::No))
+                .unwrap()
+                .get("submit")
+                .is_none()
+        );
+        for invalid in [
+            WebViewCommand::Page {
+                request_id: 15,
+                actor: None,
+                request: PageRequest::Outline {
+                    from: Some(0),
+                    frame: None,
+                },
+            },
+            WebViewCommand::Page {
+                request_id: 16,
+                actor: None,
+                request: PageRequest::Search {
+                    text: String::new(),
+                    frame: None,
+                    frames: false,
+                },
+            },
+            WebViewCommand::Page {
+                request_id: 17,
+                actor: None,
+                request: PageRequest::FillForm {
+                    form: "form1".into(),
+                    answers: json!({"Arrival": {"day": 3}}).as_object().unwrap().clone(),
+                    submit: FormSubmit::No,
+                    cross_origin: false,
                     frame: None,
                 },
             },
@@ -1441,9 +1593,24 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
                     image: None,
                     navigation: PageNavigation::Started,
                     loading: true,
+                    record: PageRecordNote::default(),
                 }),
             })
         );
+        // What the tab's other actors did travels with the answer.
+        let told = json!({"event":"page_result","tab":2,"request_id":9,"ok":true,
+            "url":"https://shop.test/cart","message":"Clicked","outline":null,
+            "navigation":"possible","navigated":false,"loading":false,"seq":2,
+            "others":[{"seq":1,"actor":"ben","action":"fill","ok":true}]});
+        assert!(validate_event(&told).is_ok());
+        let Some(WebViewEvent::PageResult {
+            result: Ok(reply), ..
+        }) = decode_event(&told)
+        else {
+            panic!("an answer that tells of the others is an answer");
+        };
+        assert_eq!(reply.record.seq, Some(2));
+        assert_eq!(reply.record.others.len(), 1);
         let malformed = json!({"event":"page_result","request_id":9,"ok":true,"message":"x"});
         assert!(validate_event(&malformed).is_err());
     }
@@ -1452,7 +1619,11 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
         let unavailable = UnavailableEngine::new("missing runtime".into());
         unavailable.send(WebViewCommand::Page {
             request_id: 3,
-            request: PageRequest::Outline { frame: None },
+            actor: None,
+            request: PageRequest::Outline {
+                from: None,
+                frame: None,
+            },
         });
         assert_eq!(
             unavailable.drain_events(),
@@ -1465,6 +1636,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
         let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
         engine.send(WebViewCommand::Page {
             request_id: 8,
+            actor: None,
             request: PageRequest::Submit {
                 element: "not a ref".into(),
                 cross_origin: false,
@@ -2008,6 +2180,77 @@ fn private_text_input_receipts_route_only_to_the_original_tab_without_public_eve
         one.poll(),
         Some(Err(super::super::text_input::Failure::Unknown))
     ));
+}
+
+/// A host says per tab whether it tells page events of its own accord, and
+/// what it then tells reaches the tab it is of, decoded: what a person
+/// typed as the entry the host set down, what the page changed of itself as
+/// which forms and fields. One that is malformed is refused whole.
+#[test]
+fn page_events_are_advertised_per_tab_and_reach_the_tab_they_are_of() {
+    let first = Arc::new(Shared::default());
+    let second = Arc::new(Shared::default());
+    let routes = Arc::new(Mutex::new(HashMap::from([
+        (1, Arc::downgrade(&first)),
+        (2, Arc::downgrade(&second)),
+    ])));
+    let downloads = Mutex::default();
+    let (ready, _receiver) = sync_channel(1);
+    let route = |event: Value| route_native_event(&event, &routes, &downloads, &ready);
+    assert!(!first.page_events.load(Ordering::Acquire));
+    route(json!({"event":"ready","cef_version":"152","chromium_version":"152","page_events":true}))
+        .unwrap();
+    assert!(first.page_events.load(Ordering::Acquire));
+    // An older host's tab says nothing of it, and a flag is a boolean.
+    route(json!({"event":"tab_ready","tab":2})).unwrap();
+    assert!(!second.page_events.load(Ordering::Acquire));
+    assert!(route(json!({"event":"tab_ready","tab":2,"page_events":"true"})).is_err());
+    assert!(!second.page_events.load(Ordering::Acquire));
+    route(json!({"event":"tab_ready","tab":2,"page_events":true})).unwrap();
+    assert!(second.page_events.load(Ordering::Acquire));
+    first.events.lock().unwrap().clear();
+    second.events.lock().unwrap().clear();
+
+    route(
+        json!({"event":"page_record","tab":2,"seq":3.0,"entry":{"seq":3.0,"actor":"",
+        "how":"input","ok":true,"secret":true,"target":{"role":"textbox","name":"Password"},
+        "message":"Direct input into textbox \"Password\"","url":"https://shop.test/"}}),
+    )
+    .unwrap();
+    route(json!({"event":"page_changed","tab":2,"document":4,
+        "forms":[{"form":"form1","signature":"0badc0de","offers":"5f1c2a9b"}],
+        "fields":[{"element":"d4e2","role":"textbox","name":"Arrival","how":"page"}]}))
+    .unwrap();
+    assert!(
+        first.events.lock().unwrap().is_empty(),
+        "another tab's page"
+    );
+    let told: Vec<WebViewEvent> = second.events.lock().unwrap().drain(..).collect();
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert!(matches!(
+        &told[0],
+        WebViewEvent::PageRecord { seq: 3, entry }
+            if entry["seq"] == 3 && entry["secret"] == true && entry.get("text").is_none()
+    ));
+    assert!(matches!(
+        &told[1],
+        WebViewEvent::PageChanged(change)
+            if change.document == 4
+                && change.frame.is_none()
+                && change.forms[0].signature.as_deref() == Some("0badc0de")
+                && change.fields[0].element == "d4e2"
+                && !change.fields[0].typed
+    ));
+
+    for malformed in [
+        json!({"event":"page_record","tab":2,"seq":0,"entry":{"how":"input"}}),
+        json!({"event":"page_record","tab":2,"seq":4,"entry":"typed"}),
+        json!({"event":"page_changed","tab":2,"document":4,"fields":[{"element":"d4e2","how":"value"}]}),
+        json!({"event":"page_changed","tab":2,"forms":[]}),
+    ] {
+        assert!(route(malformed.clone()).is_err(), "{malformed}");
+    }
+    assert!(second.events.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -2624,5 +2867,73 @@ fn owned_navigation_cancel_refusal_wakes_without_holding_command_order() {
     assert!(
         !root.exists(),
         "cancellation failure must reap its owned helper"
+    );
+}
+
+/// The engine sets down in the tab's record who answered what a window held,
+/// and only the window knows: the answer carries it. The person's answer
+/// says nothing more than it always did, so a host that knows no answerer
+/// reads it as before.
+#[test]
+fn an_answer_to_what_a_window_held_says_who_answered() {
+    use crate::webview::{AnsweredBy, PageActor};
+    let rev = || AnsweredBy::Actor(PageActor::named("agent:rev").expect("a named actor"));
+    assert_eq!(
+        encode_command(WebViewCommand::AnswerHeldRequest {
+            id: 3,
+            allow: true,
+            by: AnsweredBy::Person,
+        }),
+        Some(json!({"op":"hold_answer","id":3,"allow":true}))
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::AnswerHeldRequest {
+            id: 3,
+            allow: false,
+            by: rev(),
+        }),
+        Some(json!({"op":"hold_answer","id":3,"allow":false,"actor":"agent:rev"}))
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::AnswerHeldRequest {
+            id: 3,
+            allow: false,
+            by: AnsweredBy::Nobody,
+        }),
+        Some(json!({"op":"hold_answer","id":3,"allow":false,"reason":"expired"}))
+    );
+    let turned_away = WebViewCommand::AnswerHeldRequest {
+        id: 3,
+        allow: false,
+        by: AnsweredBy::TooMany,
+    };
+    assert_eq!(
+        encode_command(turned_away),
+        Some(json!({"op":"hold_answer","id":3,"allow":false,"reason":"full"}))
+    );
+    // A download a window held is answered by the download's own decision.
+    assert_eq!(
+        encode_command(WebViewCommand::DownloadDecision {
+            id: 9,
+            allow: true,
+            by: AnsweredBy::Person,
+        }),
+        Some(json!({"op":"download_decision","id":9,"allow":true}))
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::DownloadDecision {
+            id: 9,
+            allow: false,
+            by: rev(),
+        }),
+        Some(json!({"op":"download_decision","id":9,"allow":false,"actor":"agent:rev"}))
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::DownloadDecision {
+            id: 9,
+            allow: false,
+            by: AnsweredBy::Nobody,
+        }),
+        Some(json!({"op":"download_decision","id":9,"allow":false,"reason":"expired"}))
     );
 }

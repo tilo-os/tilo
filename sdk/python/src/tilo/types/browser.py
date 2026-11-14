@@ -19,20 +19,43 @@ from tilo import Resource, Run
 
 __all__ = [
     "Bookmark",
+    "RememberedForm",
+    "RememberedQuestion",
     "Settings",
     "Added",
     "ImportedVisit",
     "Visit",
+    "Answer",
+    "PageAction",
+    "Tab",
     "AddressProfile",
     "Application",
     "PersonalBookmarks",
     "BrowsingHistory",
+    "PageRecord",
     "AddressBook",
 ]
 
 class Bookmark(TypedDict):
     url: str
     title: str
+
+class RememberedForm(TypedDict):
+    signature: str
+    label: str
+    pages: list[str]
+    questions: list[RememberedQuestion]
+    submit: list[str]
+    follows: str
+    grew_from: str
+    seen: int
+
+class RememberedQuestion(TypedDict):
+    name: str
+    kind: str
+    choices: list[str]
+    required: bool
+    fallback: str
 
 class Settings(TypedDict):
     adblock_enabled: bool
@@ -55,6 +78,40 @@ class Visit(TypedDict):
     last: int
     count: int
 
+class Answer(TypedDict):
+    name: str
+    value: str
+
+class PageAction(TypedDict):
+    seq: int
+    time_ms: int
+    actor: str
+    device: str
+    device_name: str
+    device_unknown: bool
+    how: str
+    action: str
+    ok: bool
+    code: str
+    message: str
+    url: str
+    to_url: str
+    navigation: str
+    frame: str
+    role: str
+    name: str
+    nth: int
+    secret: bool
+    text: str | None
+    values: list[str] | None
+    answers: list[Answer]
+
+class Tab(TypedDict):
+    last: int
+    dropped: int
+    at: int
+    device: str
+
 class AddressProfile(TypedDict):
     id: str
     label: str
@@ -69,13 +126,17 @@ class AddressProfile(TypedDict):
 
 class Application(Resource):
     """Browser — `browser.application`."""
-    __surface__ = "so.tilo.browser@b99f0cb69ffd791f"
+    __surface__ = "so.tilo.browser@118ee95647821b37"
     bookmarks: list[Bookmark]
     preferences: Settings
     @property
     def site_exceptions(self) -> list[str]:
         """Read only."""
         return self.fields["site_exceptions"]
+    @property
+    def site_forms(self) -> dict[str, RememberedForm]:
+        """Read only."""
+        return self.fields["site_forms"]
 
     def add_bookmark(self,
         *,
@@ -101,10 +162,37 @@ class Application(Resource):
         """Runs the app's action."""
         return self.action("set-site-protection", origin=origin, enabled=enabled)
 
+    def remember_forms(self,
+        *,
+        origin: str,
+        page: str,
+        forms: list[RememberedForm],
+        whole: bool,
+        at: int,
+    ) -> Run | None:
+        """Runs the app's action."""
+        return self.action("remember-forms", origin=origin, page=page, forms=forms, whole=whole, at=at)
+
+    def forget_form(self,
+        *,
+        origin: str,
+        signature: str,
+    ) -> Run | None:
+        """Runs the app's action."""
+        return self.action("forget-form", origin=origin, signature=signature)
+
+    def forget_site_forms(self, *, origin: str) -> Run | None:
+        """Runs the app's action."""
+        return self.action("forget-site-forms", origin=origin)
+
+    def forget_all_forms(self) -> Run | None:
+        """Runs the app's action."""
+        return self.action("forget-all-forms")
+
 
 class PersonalBookmarks(Resource):
     """Personal bookmarks — `browser.personal-bookmarks`."""
-    __surface__ = "so.tilo.browser@b99f0cb69ffd791f"
+    __surface__ = "so.tilo.browser@118ee95647821b37"
     @property
     def added(self) -> dict[str, Added]:
         """Read only."""
@@ -157,7 +245,7 @@ class PersonalBookmarks(Resource):
 
 class BrowsingHistory(Resource):
     """Browsing history — `browser.browsing-history`."""
-    __surface__ = "so.tilo.browser@b99f0cb69ffd791f"
+    __surface__ = "so.tilo.browser@118ee95647821b37"
     @property
     def visits(self) -> dict[str, Visit]:
         """Read only."""
@@ -205,9 +293,22 @@ class BrowsingHistory(Resource):
         return self.action("clear-history")
 
 
+class PageRecord(Resource):
+    """Page record — `browser.page-record`."""
+    __surface__ = "so.tilo.browser@118ee95647821b37"
+    @property
+    def actions(self) -> dict[str, PageAction]:
+        """Read only."""
+        return self.fields["actions"]
+    @property
+    def tabs(self) -> dict[str, Tab]:
+        """Read only."""
+        return self.fields["tabs"]
+
+
 class AddressBook(Resource):
     """Address book — `browser.address-book`."""
-    __surface__ = "so.tilo.browser@b99f0cb69ffd791f"
+    __surface__ = "so.tilo.browser@118ee95647821b37"
     enabled: bool
     profiles: list[AddressProfile]
 

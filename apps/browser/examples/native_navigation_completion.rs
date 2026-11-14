@@ -208,6 +208,8 @@ fn history_roundtrip(
         &BrowserEffect::WaitPageSettled {
             quiet_ms: Some(100),
             timeout_ms: Some(2000),
+            text: None,
+            gone: None,
             frame: None,
         },
     )?;
@@ -216,7 +218,13 @@ fn history_roundtrip(
         &before.checked_add(1).ok_or("history count overflow")?,
         "full navigation visit count",
     )?;
-    let page = invoke(app, &BrowserEffect::ReadPage { frame: None })?;
+    let page = invoke(
+        app,
+        &BrowserEffect::ReadPage {
+            from: None,
+            frame: None,
+        },
+    )?;
     let outline = page
         .value
         .as_ref()

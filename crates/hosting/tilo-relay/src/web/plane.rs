@@ -316,10 +316,8 @@ impl Plane {
         let relay = self.relay.clone();
         let handler = tilo_live::native::handler(move |session: tilo_live::native::Session| {
             let relay = relay.clone();
-            async move {
-                let peer = Peer(session.remote());
-                relay.serve_session(session, peer).await;
-            }
+            // A session this plane admitted may open what an admitted session opens.
+            async move { tilo_live::native::serve_on(&relay, session).await }
         });
         (tilo_live::native::ALPN.to_vec(), Box::new(handler))
     }

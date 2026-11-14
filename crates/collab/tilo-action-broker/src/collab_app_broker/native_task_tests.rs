@@ -581,6 +581,7 @@ impl Fixture {
                 turn: None,
                 question: None,
                 delegation: None,
+                origin: None,
             });
         }
         self.state.refresh_native_task_delivery();

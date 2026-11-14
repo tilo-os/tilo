@@ -129,11 +129,21 @@ pub struct ChromeOverlays {
     pub ws_settings: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// One viewer of one window this device shares: a device that asked to see it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ActiveExposure {
     pub peer: u64,
+    /// The tab the window stands in on this device's desk.
     pub surface: u64,
     pub can_control: bool,
+    /// Whether anything of the window goes out to the devices showing it now, as its share's
+    /// reading says (`streaming`). While nothing does, the viewer asked to see the window and
+    /// sees nothing: the bar says it waits, and never that it watches or is in control.
+    pub streaming: bool,
+    /// What the workspace calls the viewer: another person by the name they go by, the person's
+    /// own other device by what that device calls itself. Empty when nothing names it: the bar
+    /// then says so in words, and a handle or a key is never a name.
+    pub name: String,
 }
 /// Whether the top bar holds its strip of the screen or shows over the windows. The person chooses
 /// between the first and the other two (`desktop_controls.hide_top_bar`); the host moves between

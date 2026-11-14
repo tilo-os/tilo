@@ -9,7 +9,9 @@ mod extension_notification;
 mod extension_omnibox;
 mod extension_permissions;
 mod extension_sign_in;
+mod file_chooser;
 mod frame_memory;
+mod http_auth;
 mod menus;
 mod page_clipboard;
 mod protocol;
@@ -70,12 +72,21 @@ struct Shared {
     dialogs_can: AtomicBool,
     dialogs_asked: AtomicBool,
     dialogs_told: AtomicBool,
+    choosers_can: AtomicBool,
+    choosers_asked: AtomicBool,
+    choosers_told: AtomicBool,
+    auth_can: AtomicBool,
+    auth_asked: AtomicBool,
+    auth_told: AtomicBool,
     holds_asked: AtomicBool,
     holds_told: AtomicBool,
     clipboard: page_clipboard::Sharing,
     popups: Mutex<VecDeque<super::Popup>>,
     unadopted: Mutex<HashMap<u32, Arc<Shared>>>,
     selection_text: AtomicBool,
+    /// The host sends `page_record` and `page_changed` of its own accord
+    /// (`page_events`).
+    page_events: AtomicBool,
     text_input: Mutex<super::text_input::Transactions>,
     native_edit_history: AtomicBool,
     guarded_edit_history: AtomicBool,
@@ -579,6 +590,7 @@ impl UnavailableEngine {
                 text_field: Mutex::default(),
                 document_size: DocumentSizeReports::default(),
                 selection_text: AtomicBool::new(false),
+                page_events: AtomicBool::new(false),
                 open_tabs: Mutex::default(),
                 popups_can: AtomicBool::default(),
                 popups_asked: AtomicBool::default(),
@@ -586,6 +598,12 @@ impl UnavailableEngine {
                 dialogs_can: AtomicBool::default(),
                 dialogs_asked: AtomicBool::default(),
                 dialogs_told: AtomicBool::default(),
+                choosers_can: AtomicBool::default(),
+                choosers_asked: AtomicBool::default(),
+                choosers_told: AtomicBool::default(),
+                auth_can: AtomicBool::default(),
+                auth_asked: AtomicBool::default(),
+                auth_told: AtomicBool::default(),
                 holds_asked: AtomicBool::default(),
                 holds_told: AtomicBool::default(),
                 clipboard: page_clipboard::Sharing::default(),
@@ -1427,6 +1445,10 @@ impl WebViewEngine for ChromiumEngine {
         self.shared.document_size.can.load(Ordering::Acquire)
     }
 
+    fn tells_page_events(&self) -> bool {
+        self.shared.page_events.load(Ordering::Acquire)
+    }
+
     fn supports_guarded_edit_history(&self) -> bool {
         self.supports_text_input() && self.shared.guarded_edit_history.load(Ordering::Acquire)
     }
@@ -1535,6 +1557,19 @@ impl WebViewEngine for ChromiumEngine {
     fn accept_page_dialogs(&self) {
         self.shared.dialogs_asked.store(true, Ordering::Release);
         self.tell_dialogs();
+    }
+
+    fn accept_file_choosers(&self) {
+        if !file_chooser::EMBEDDER_ANSWERS {
+            return;
+        }
+        self.shared.choosers_asked.store(true, Ordering::Release);
+        self.tell_file_choosers();
+    }
+
+    fn accept_http_auth(&self) {
+        self.shared.auth_asked.store(true, Ordering::Release);
+        self.tell_http_auth();
     }
 
     fn hold_departures(&self) {
@@ -1708,6 +1743,8 @@ impl WebViewEngine for ChromiumEngine {
         self.tell_document_size();
         self.tell_popups();
         self.tell_dialogs();
+        self.tell_file_choosers();
+        self.tell_http_auth();
         self.tell_clipboard();
         self.shared
             .events
@@ -1833,8 +1870,20 @@ fn route_native_event(
                 value["js_dialogs"].as_bool() == Some(true),
                 Ordering::Release,
             );
+            shared.choosers_can.store(
+                value["file_choosers"].as_bool() == Some(true),
+                Ordering::Release,
+            );
+            shared.auth_can.store(
+                value["http_auth"].as_bool() == Some(true),
+                Ordering::Release,
+            );
             shared.selection_text.store(
                 value["selection_text"].as_bool() == Some(true),
+                Ordering::Release,
+            );
+            shared.page_events.store(
+                value["page_events"].as_bool() == Some(true),
                 Ordering::Release,
             );
             (shared.clipboard.can).store(value["page_clipboard"] == true, Ordering::Release);
@@ -2058,9 +2107,16 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                     .as_ref()
                     .is_none_or(|text| text.len() <= super::MAX_PAGE_DIALOG_ANSWER)
         }
+        WebViewCommand::AnswerFileChooser { id, paths } => {
+            *id > 0 && i32::try_from(*id).is_ok() && super::file_chooser::answers(paths)
+        }
+        WebViewCommand::AnswerHttpAuth { .. } => http_auth::within_limits(command),
         WebViewCommand::SetZoomLevel(level) => level.is_finite() && (-5.0..=9.0).contains(level),
+        // A cancel names the page request it stops, by the id that request
+        // was sent under.
         WebViewCommand::RequestNavigationHistory { request_id, .. }
-        | WebViewCommand::PaintCapture { request_id } => {
+        | WebViewCommand::PaintCapture { request_id }
+        | WebViewCommand::CancelPage { request_id } => {
             *request_id > 0 && i32::try_from(*request_id).is_ok()
         }
         WebViewCommand::NavigateToHistoryEntry { request_id, id } => {
@@ -2073,6 +2129,8 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         WebViewCommand::Page {
             request_id,
             request,
+            // An actor is bounded by how it is made ([`super::PageActor`]).
+            actor: _,
         } => *request_id > 0 && i32::try_from(*request_id).is_ok() && request.valid(),
         WebViewCommand::PaintResource { request_id, url } => {
             *request_id > 0
@@ -2325,6 +2383,11 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "js_dialog_closed" => WebViewEvent::PageDialogClosed {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
         },
+        "file_chooser" => WebViewEvent::FileChooser(file_chooser::decode(value)?),
+        "file_chooser_closed" => WebViewEvent::FileChooserClosed {
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
+        },
+        "http_auth" | "http_auth_closed" => http_auth::event(value)?,
         "held" => WebViewEvent::HeldRequest(super::hold::HeldRequest {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
             kind: super::hold::HeldKind::parse(value["kind"].as_str()?)?,
@@ -2436,6 +2499,11 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             let (request_id, result) = super::page::decode_result(value)?;
             WebViewEvent::PageResult { request_id, result }
         }
+        "page_record" => {
+            let (seq, entry) = super::page::decode_record_event(value)?;
+            WebViewEvent::PageRecord { seq, entry }
+        }
+        "page_changed" => WebViewEvent::PageChanged(super::page::decode_changed_event(value)?),
         "clipboard" | "clipboard_read" => page_clipboard::decode(value)?,
         "selection_text" => WebViewEvent::SelectionText {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
@@ -2504,6 +2572,21 @@ fn decode_base64_bounded(input: &str, limit: usize) -> Option<Vec<u8>> {
         .decode(input)
         .ok()?;
     (output.len() <= limit).then_some(output)
+}
+
+/// `wire`, the answer to something a window held for the person, saying who
+/// answered: an actor by the name its page actions carry, and the `reason`
+/// when nobody did (`expired`, or `full` for what the window turned away at
+/// once). The person at the window is said by neither, which is also how a
+/// host that names no answerer is read.
+fn answered_by(mut wire: Value, by: &super::hold::AnsweredBy) -> Value {
+    if let Some(actor) = by.actor() {
+        wire["actor"] = actor.as_str().into();
+    }
+    if let Some(reason) = by.reason() {
+        wire["reason"] = reason.into();
+    }
+    wire
 }
 
 fn encode_command(command: WebViewCommand) -> Option<Value> {
@@ -2675,8 +2758,8 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::PermissionDismissed { id } => {
             json!({"op":"permission_decision","id":id,"allow":false,"dismiss":true})
         }
-        WebViewCommand::DownloadDecision { id, allow } => {
-            json!({"op":"download_decision","id":id,"allow":allow})
+        WebViewCommand::DownloadDecision { id, allow, by } => {
+            answered_by(json!({"op":"download_decision","id":id,"allow":allow}), &by)
         }
         WebViewCommand::Find {
             id,
@@ -2691,8 +2774,12 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             Some(text) => json!({"op":"js_dialog_reply","id":id,"accept":accept,"text":text}),
             None => json!({"op":"js_dialog_reply","id":id,"accept":accept}),
         },
-        WebViewCommand::AnswerHeldRequest { id, allow } => {
-            json!({"op":"hold_answer","id":id,"allow":allow})
+        WebViewCommand::AnswerFileChooser { id, paths } => {
+            json!({"op":"file_chooser_reply","id":id,"paths":paths})
+        }
+        command @ WebViewCommand::AnswerHttpAuth { .. } => http_auth::encode(&command)?,
+        WebViewCommand::AnswerHeldRequest { id, allow, by } => {
+            answered_by(json!({"op":"hold_answer","id":id,"allow":allow}), &by)
         }
         WebViewCommand::StopFinding => json!({"op":"stop_find"}),
         WebViewCommand::SetZoomLevel(level) => json!({"op":"zoom","level":level}),
@@ -2713,9 +2800,12 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         }
         WebViewCommand::Page {
             request_id,
+            actor,
             request,
-        } => super::page::encode_request(request_id, &request),
-        WebViewCommand::CancelPage => json!({ "op": "page_cancel" }),
+        } => super::page::encode_request(request_id, actor.as_ref(), &request),
+        WebViewCommand::CancelPage { request_id } => {
+            json!({ "op": "page_cancel", "request_id": request_id })
+        }
         WebViewCommand::PaintCapture { request_id } => json!({
             "op": "paint_capture",
             "request_id": request_id,
@@ -2744,7 +2834,11 @@ use event_decoding::{
 #[cfg(test)]
 mod extension_tests;
 #[cfg(test)]
+mod file_chooser_tests;
+#[cfg(test)]
 mod frame_tests;
+#[cfg(test)]
+mod http_auth_tests;
 #[cfg(test)]
 mod popup_tests;
 #[cfg(test)]

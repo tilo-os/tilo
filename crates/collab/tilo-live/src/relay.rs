@@ -29,10 +29,31 @@ pub use crate::carrier::{HANDSHAKE_BUDGET, SETUP_BUDGET};
 use crate::plane::{Next, next};
 use crate::voice;
 
-/// Sessions still being admitted at once. An admitted session is bounded by
-/// the authority that admitted it (one per participation of a member
-/// device), never by a count here, so a call has no participant limit.
+/// Sessions still being admitted at once: what a relay holds for peers it has
+/// not judged yet, each for no longer than its preface, its denial and its
+/// setup may take. One more is closed as busy ([`carrier::CLOSE_BUSY`]) with
+/// nothing of it read, which is no answer about its grant, and is judged when
+/// it asks again. An admitted session is bounded by the authority that
+/// admitted it (one per participation of a member device), never by a count
+/// here, so a call has no participant limit.
+///
+/// These places are for endpoints a roster names, and for every endpoint of
+/// an authority that cannot tell ([`RelayAuthority::stranger`]). Anyone who
+/// reaches a relay can open sessions and say nothing, and each is held for
+/// as long as a preface may take: endpoints no roster names wait in places of
+/// their own ([`MAX_ADMITTING_STRANGERS`]), so they cannot keep a workspace's
+/// devices out, and no endpoint holds more than [`MAX_ADMITTING_OF_ONE`].
 pub const MAX_ADMITTING: usize = 16;
+/// Sessions of endpoints no roster names that are still being admitted at
+/// once. They are judged like any other, by their grant: a page that dials
+/// under a key its device signed for, and a device a workspace took in a
+/// moment ago, come in through these. Whoever holds them all holds none of
+/// [`MAX_ADMITTING`].
+pub const MAX_ADMITTING_STRANGERS: usize = 4;
+/// Sessions of one endpoint still being admitted at once: a device asks for
+/// the plane of each workspace one relay carries for it, so it may hold a
+/// few, and never enough to take every place.
+pub const MAX_ADMITTING_OF_ONE: usize = 4;
 pub const MAX_AUTHORIZATION_BYTES: usize = carrier::MAX_GRANT_BYTES;
 /// The one track a voice broadcast carries.
 pub const VOICE_TRACK: &str = "audio";
@@ -165,6 +186,22 @@ pub type Admission<'a> = std::pin::Pin<
 /// refused on that state, never refused because it was busy.
 pub trait RelayAuthority: Send + Sync {
     fn admit<'a>(&'a self, peer: Peer, proof: &'a [u8]) -> Admission<'a>;
+
+    /// Whether `peer` is an endpoint none of the rosters this authority
+    /// admits from names now: told from the key its handshake proved alone,
+    /// before anything of its session is read.
+    ///
+    /// It decides nothing about who is admitted, which stays
+    /// [`Self::admit`]'s word for every session. It decides where a session
+    /// waits while it is admitted: a stranger's in
+    /// [`MAX_ADMITTING_STRANGERS`], so that endpoints nobody knows cannot hold
+    /// the places a workspace's own devices are admitted through. The default
+    /// knows no roster and calls nobody a stranger: every session of such an
+    /// authority shares [`MAX_ADMITTING`].
+    fn stranger(&self, peer: Peer) -> bool {
+        let _ = peer;
+        false
+    }
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -175,6 +212,7 @@ pub struct Denied;
 struct Counters {
     accepted: AtomicU64,
     rejected: AtomicU64,
+    busy: AtomicU64,
     expired: AtomicU64,
     active: AtomicU64,
     lapsed: AtomicU64,
@@ -186,6 +224,10 @@ struct Counters {
 
 /// Content-free lifecycle counters. These are not packet or audio-quality
 /// measurements, and never expose the proof or participant namespace.
+/// `rejected` counts sessions that were judged and not admitted, or that sent
+/// no usable preface; `busy` counts the ones closed unread because the places
+/// of their kind in admission were taken, or their endpoint held as many as
+/// one may ([`MAX_ADMITTING`]), which is nobody's refusal.
 /// `lapsed` counts publications closed because a subscriber observed their
 /// publisher authority lapse. `forwarded` and `dropped` count
 /// objects and bundles the relay copied or refused. The two maxima
@@ -194,6 +236,7 @@ struct Counters {
 pub struct CounterSnapshot {
     pub accepted: u64,
     pub rejected: u64,
+    pub busy: u64,
     pub expired: u64,
     pub active: u64,
     pub lapsed: u64,
@@ -233,12 +276,84 @@ impl Drop for Publication {
     }
 }
 
+/// The sessions a relay is admitting now: how many places are left of each
+/// kind, and how many each endpoint holds.
+struct Admitting {
+    /// Places for endpoints a roster names, and for every endpoint of an
+    /// authority that cannot tell.
+    named: Arc<tokio::sync::Semaphore>,
+    /// Places for endpoints no roster names.
+    strangers: Arc<tokio::sync::Semaphore>,
+    /// The places each endpoint holds now.
+    held: Arc<Mutex<BTreeMap<[u8; 32], usize>>>,
+}
+
+/// One session's place in admission, given back when it is dropped.
+struct Place {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    held: Arc<Mutex<BTreeMap<[u8; 32], usize>>>,
+    endpoint: [u8; 32],
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(places) = held.get_mut(&self.endpoint) {
+            *places = places.saturating_sub(1);
+            if *places == 0 {
+                held.remove(&self.endpoint);
+            }
+        }
+    }
+}
+
+impl Admitting {
+    fn new() -> Self {
+        Self {
+            named: Arc::new(tokio::sync::Semaphore::new(MAX_ADMITTING)),
+            strangers: Arc::new(tokio::sync::Semaphore::new(MAX_ADMITTING_STRANGERS)),
+            held: Arc::default(),
+        }
+    }
+
+    /// A place for one more session of `peer`, a `stranger` or not: `None`
+    /// when its endpoint holds as many as one may, or the places of its kind
+    /// are taken.
+    fn place(&self, peer: Peer, stranger: bool) -> Option<Place> {
+        let Peer(endpoint) = peer;
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let of_one = held.get(&endpoint).copied().unwrap_or(0);
+        if of_one >= MAX_ADMITTING_OF_ONE {
+            return None;
+        }
+        let places = if stranger {
+            &self.strangers
+        } else {
+            &self.named
+        };
+        let permit = Arc::clone(places).try_acquire_owned().ok()?;
+        held.insert(endpoint, of_one.saturating_add(1));
+        drop(held);
+        Some(Place {
+            _permit: permit,
+            held: Arc::clone(&self.held),
+            endpoint,
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct Relay {
     authority: Arc<dyn RelayAuthority>,
     origin: moq_net::origin::Producer,
     counters: Arc<Counters>,
-    admitting: Arc<tokio::sync::Semaphore>,
+    admitting: Arc<Admitting>,
     publications: Publications,
     _origin: Arc<carrier::OriginTask>,
 }
@@ -302,7 +417,7 @@ impl Relay {
             authority,
             origin,
             counters: Arc::default(),
-            admitting: Arc::new(tokio::sync::Semaphore::new(MAX_ADMITTING)),
+            admitting: Arc::new(Admitting::new()),
             publications: Arc::default(),
             _origin: Arc::new(task),
         }
@@ -323,6 +438,7 @@ impl Relay {
         CounterSnapshot {
             accepted: load(&c.accepted),
             rejected: load(&c.rejected),
+            busy: load(&c.busy),
             expired: load(&c.expired),
             active: load(&c.active),
             lapsed: load(&c.lapsed),
@@ -341,12 +457,32 @@ impl Relay {
     /// `peer` is who the transport proved is asking; the authority sees it
     /// beside the preface's own proof.
     pub async fn serve_session<S: carrier::Carrier>(&self, transport: S, peer: Peer) {
-        let Ok(admitting) = self.admitting.clone().try_acquire_owned() else {
-            self.counters.rejected.fetch_add(1, Ordering::Relaxed);
-            carrier::close(&transport, carrier::CLOSE_DENIED, "relay busy");
+        self.serve_session_then(transport, peer, || {}).await;
+    }
+
+    /// Serve one session as [`Self::serve_session`] does, and run `admitted`
+    /// once the authority admitted it, before the session is told: where its
+    /// carrier allows it the streams an admitted session opens
+    /// ([`crate::native::serve_on`]), which a session nobody judged is not
+    /// allowed.
+    pub async fn serve_session_then<S: carrier::Carrier>(
+        &self,
+        transport: S,
+        peer: Peer,
+        admitted: impl FnOnce() + Send,
+    ) {
+        // Which places the session waits in is told from the key its
+        // handshake proved, before anything of it is read.
+        let stranger = self.authority.stranger(peer);
+        let Some(admitting) = self.admitting.place(peer, stranger) else {
+            // Nothing of the session was read and its peer was not judged: the
+            // close says busy and never refused, so a member that arrived in a
+            // burst asks again, and who is refused stays the authority's word.
+            self.counters.busy.fetch_add(1, Ordering::Relaxed);
+            carrier::close(&transport, carrier::CLOSE_BUSY, "relay busy");
             return;
         };
-        let accepted = carrier::accept(transport, |proof| async move {
+        let admit = |proof: Vec<u8>| async move {
             let mut scopes = self.scopes(peer, &proof).await?;
             let mut server = moq_net::Server::new();
             if let Some(ingress) = &scopes.ingress {
@@ -365,8 +501,8 @@ impl Relay {
                 scopes.view = Some(view);
             }
             Some((server, scopes))
-        })
-        .await;
+        };
+        let accepted = carrier::accept(transport, admit, admitted).await;
         drop(admitting);
         let Ok((accepted, scopes)) = accepted else {
             self.counters.rejected.fetch_add(1, Ordering::Relaxed);

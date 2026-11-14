@@ -288,6 +288,14 @@ impl FloatingSurfaceServiceClient {
         Ok(())
     }
 
+    /// How many more bytes of messages the connection queues before it refuses one: what the
+    /// shell has not read yet counts against it. Who sends much (a shared page) sends what
+    /// fits and the rest once the shell has read on.
+    #[must_use]
+    pub fn room(&self) -> usize {
+        MAX_OUTGOING_QUEUE_BYTES.saturating_sub(self.outgoing_bytes)
+    }
+
     /// Queue and flush one client message.
     ///
     /// # Errors
@@ -409,6 +417,11 @@ impl FloatingSurfaceServiceClient {
 
     pub fn send(&mut self, _message: &FloatingSurfaceClientMessage) -> Result<(), String> {
         Err("floating-surface service is unavailable on this platform".into())
+    }
+
+    #[must_use]
+    pub fn room(&self) -> usize {
+        0
     }
 
     pub fn pump(&mut self) -> Result<Vec<FloatingSurfaceHostMessage>, String> {

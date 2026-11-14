@@ -40,6 +40,12 @@ struct Notes {
     /// read: while it is above zero the app's top level comes in two pages,
     /// and asking for the second finds the revision changed.
     moves: Arc<Mutex<u32>>,
+    /// How many times the app answers that its directory cannot be read now, as while
+    /// another actor's action is being applied. `u32::MAX` never can.
+    cannot_list: Arc<Mutex<u32>>,
+    /// How many times the app's top level lists nothing though it says the page is whole,
+    /// as for an instant while its view is rebuilt.
+    lists_less: Arc<Mutex<u32>>,
     /// Rows a search's page holds, when set: more come in a second page.
     search_page: Arc<Mutex<Option<usize>>>,
     /// How many times the app's directory moves on between a search's
@@ -87,6 +93,9 @@ struct Notes {
     /// Whether this host puts a note's deletion to the person before it runs,
     /// as a workspace whose grants ask does.
     asks: Arc<Mutex<bool>>,
+    /// Whether the notebook follows a link for an agent, as the live Notes does: `open-link`,
+    /// its one action whose id begins with `open`.
+    links: Arc<Mutex<bool>>,
 }
 
 /// What a workspace answers about its installed apps.
@@ -118,6 +127,8 @@ impl Notes {
             publication: "2a4120d7-2f63-4578-aed8-11cb91ed3628",
             invoked: Arc::default(),
             moves: Arc::default(),
+            cannot_list: Arc::default(),
+            lists_less: Arc::default(),
             search_page: Arc::default(),
             search_moves: Arc::default(),
             asked: Arc::default(),
@@ -139,7 +150,14 @@ impl Notes {
                 kind: "person".into(),
             }]))),
             asks: Arc::default(),
+            links: Arc::default(),
         }
+    }
+
+    /// The same Notes, its notebook following a link as the live one does (`open-link`).
+    fn following_links(self) -> Self {
+        *self.links.lock().unwrap() = true;
+        self
     }
 
     /// The same host, putting a note's deletion to the person first.
@@ -524,6 +542,16 @@ impl Notes {
                 false,
             ),
         ]);
+        if *self.links.lock().unwrap() {
+            rows.push(self.row(
+                NOTEBOOK,
+                NOTEBOOK,
+                "notes.notebook",
+                "Notebook",
+                Some(("open-link", "Open link", vec![text("url", true)], Effect)),
+                false,
+            ));
+        }
         for (page, _, label) in &notes {
             rows.push(self.row(NOTEBOOK, page, "notes.page", label, None, true));
         }
@@ -712,6 +740,16 @@ impl Notes {
         if provider != WORKSPACE && !running {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
+        let cannot_list = *self.cannot_list.lock().unwrap();
+        if provider != WORKSPACE && query.target.is_none() && cannot_list > 0 {
+            if cannot_list != u32::MAX {
+                *self.cannot_list.lock().unwrap() = cannot_list.saturating_sub(1);
+            }
+            return Pending::ready(Ok(CataloguePage {
+                budget_exhausted: true,
+                ..CataloguePage::default()
+            }));
+        }
         let mut rows = if provider == UNPUBLISHED {
             Vec::new()
         } else {
@@ -739,6 +777,15 @@ impl Notes {
             });
         } else if query.needle.is_empty() {
             let parent = query.parent_resource.clone().unwrap_or_default();
+            let less = *self.lists_less.lock().unwrap();
+            if provider != WORKSPACE && parent.is_empty() && less > 0 {
+                *self.lists_less.lock().unwrap() = less.saturating_sub(1);
+                return Pending::ready(Ok(CataloguePage {
+                    revision: "v1".into(),
+                    exhausted: true,
+                    ..CataloguePage::default()
+                }));
+            }
             rows.retain(|row| row.parent_resource == parent);
             let moves = *self.moves.lock().unwrap();
             if provider != WORKSPACE && parent.is_empty() && moves > 0 {
@@ -2931,6 +2978,11 @@ async fn answer<H: ActionHost + Send + Sync + 'static>(
     );
     (structured, result["isError"].as_bool().unwrap_or_default())
 }
+
+#[path = "mcp_agent_flux_tests.rs"]
+mod flux;
+#[path = "mcp_agent_open_tests.rs"]
+mod opening;
 #[path = "mcp_status_tests.rs"]
 mod status;
 

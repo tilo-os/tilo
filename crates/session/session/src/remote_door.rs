@@ -9,6 +9,11 @@
 //! ([`tilo_runtime::remote_door::PersonalDevices`]); a connection from anyone
 //! else is refused before the person is asked.
 //!
+//! A connection the door admits takes one of the agent door's places as it arrives, and waits
+//! in it for the session's pass ([`crate::agent_door::Room`]): no more wait than the door
+//! serves, and one there is no place for is refused here, where the dialer would otherwise be
+//! told the door opened.
+//!
 //! The person may let such agents in without being asked here — on a box
 //! nobody sits at — with this device's `agent_door` setting
 //! ([`settings_store::agent_door`]), which is off unless they turn it on. With
@@ -26,7 +31,6 @@
 //! [`tilo_runtime::remote_door::DEVICES_TOOL`].
 
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tilo_lock::MutexRecover as _;
@@ -35,15 +39,18 @@ use tilo_runtime::remote_door::{
 };
 use tilo_service::Wake;
 
+use crate::agent_door::{PeerRefusal, Place, Room};
+
 /// What the session's agent door hears from the person's other devices, and how it reaches theirs.
 pub(crate) struct Remote {
-    /// Connections the door opened, waiting for the agent door's pass.
-    arrivals: Mutex<Vec<Arrival>>,
+    /// Connections the door opened, each waiting for the agent door's pass in the place it took
+    /// there: as many as that door has places free, and no more.
+    arrivals: Mutex<Vec<(Arrival, Place)>>,
     /// Wakes the session's loop when one arrives.
     wake: Wake,
-    /// Whether the session's agent door takes what arrives: a session that serves no door refuses
-    /// them at once.
-    serving: AtomicBool,
+    /// The room of the session's agent door, once it takes what arrives: a session that serves no
+    /// door refuses them at once.
+    room: OnceLock<Room>,
     /// The person's other devices' doors, once this device's endpoint has bound and its store is
     /// open.
     doors: OnceLock<Arc<Doors>>,
@@ -57,7 +64,7 @@ impl Remote {
         Arc::new(Self {
             arrivals: Mutex::default(),
             wake,
-            serving: AtomicBool::new(false),
+            room: OnceLock::new(),
             doors: OnceLock::new(),
             list: Mutex::default(),
         })
@@ -85,9 +92,11 @@ impl Remote {
         let _ = self.doors.set(Arc::new(doors));
     }
 
-    /// The agent door serves what arrives from now on.
-    pub(crate) fn serve(&self) {
-        self.serving.store(true, Ordering::Relaxed);
+    /// The agent door serves what arrives from now on, each in a place of `room`.
+    pub(crate) fn serve(&self, room: Room) {
+        if self.room.set(room).is_err() {
+            tracing::warn!("agent door: another device's connections are served already");
+        }
     }
 
     /// Answer `list` to the person's keys that dial the door to read where their workspaces are.
@@ -95,8 +104,8 @@ impl Remote {
         *self.list.lock_recover() = Some(list);
     }
 
-    /// Every connection that arrived since the last pass.
-    pub(crate) fn take(&self) -> Vec<Arrival> {
+    /// Every connection that arrived since the last pass, with the place it is served in.
+    pub(crate) fn take(&self) -> Vec<(Arrival, Place)> {
         std::mem::take(&mut *self.arrivals.lock_recover())
     }
 
@@ -129,10 +138,19 @@ impl Remote {
 
 impl Arrivals for Remote {
     fn arrive(&self, arrival: Arrival) -> Result<(), String> {
-        if !self.serving.load(Ordering::Relaxed) {
+        let Some(room) = self.room.get() else {
             return Err("this desktop serves no agents now".into());
-        }
-        self.arrivals.lock_recover().push(arrival);
+        };
+        // Its device is the person's, or the door would not have handed it over: it is told
+        // what a program of this login is, and before its dialer hears that the door opened.
+        let Some(place) = room.take() else {
+            tracing::info!(
+                device = %arrival.origin.name(),
+                "agent door: another device's connection is refused: the door has no place free"
+            );
+            return Err(PeerRefusal::Busy.message().to_owned());
+        };
+        self.arrivals.lock_recover().push((arrival, place));
         (self.wake)();
         Ok(())
     }

@@ -116,6 +116,7 @@ pub(super) const APPS: &[FleetApp] = &[
         resource_types: &[
             ("browser.address-book", "Address book"),
             ("browser.browsing-history", "Browsing history"),
+            ("browser.page-record", "Page record"),
             ("browser.personal-bookmarks", "Personal bookmarks"),
         ],
         actions: &[],

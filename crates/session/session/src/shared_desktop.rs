@@ -31,7 +31,7 @@ use automerge::transaction::Transactable as _;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, OpenedBy};
 use tilo_desktop_model::person_view::{self, PersonView};
 use tilo_desktop_model::shared_record::{self, device};
-use tilo_desktop_model::{Layout, Workspace, WorkspaceId, peer_salt_of};
+use tilo_desktop_model::{Layout, TileContent, Workspace, WorkspaceId, peer_salt_of};
 use ui::permissions::MemberId;
 use ui::state::UndoLog;
 
@@ -252,6 +252,9 @@ struct Save {
     own: u64,
     notes: Vec<(u64, String)>,
     sealed: Sealing,
+    /// Whether a window of an app runs only on the device that opened it, as the app says
+    /// ([`SharedDesktops::hosting`]).
+    runs_here: Option<fn(&str) -> bool>,
     /// The arranging action this write makes, where the desk changed because of one.
     acted: Option<Acted>,
 }
@@ -277,6 +280,7 @@ impl Save {
             own: _,
             notes,
             sealed,
+            runs_here,
             acted,
         } = self;
         let here = windows_of(&workspace);
@@ -303,7 +307,8 @@ impl Save {
         // member's, and another of their devices writing at the same instant must not number the
         // same change.
         candidate.set_actor(actor(engine, person));
-        let mine = |id: u64| peer_salt_of(id) == local;
+        let (laid_out, elsewhere) = written_here(laid_out, engine, local, runs_here);
+        let mine = |id: u64| peer_salt_of(id) == local && !elsewhere.contains(&id);
         let by_tab: BTreeMap<u64, String> = notes.into_iter().collect();
         let records = |id: u64| by_tab.get(&id).cloned();
         let writer = |retained: &'static dyn Fn(u64) -> bool| device::Writer {
@@ -418,6 +423,9 @@ pub(crate) struct SharedDesktops {
     person: RefCell<Option<String>>,
     /// Every record of every workspace this device reads and writes.
     held: RefCell<HashMap<Key, Held>>,
+    /// Whether a window of an app runs only on the device that opened it, as the app says: a
+    /// session that knows its apps' declarations says so ([`Self::hosting`]).
+    runs_here: Option<fn(&str) -> bool>,
     /// Why each workspace's layout was last left unwritten on a look, said once each time it
     /// changes: what a change that never reached the workspace reads back.
     unwritten: RefCell<HashMap<WorkspaceId, &'static str>>,
@@ -437,6 +445,15 @@ impl SharedDesktops {
             person: RefCell::new(Some(person)),
             ..Self::default()
         }
+    }
+
+    /// These records, of a session that hosts the windows that run only on this device:
+    /// `runs_here` says whether a window of an app is one, as the app declares. Each is written
+    /// into its workspace's layout as this device's window, which no other device opens.
+    #[must_use]
+    pub(crate) fn hosting(mut self, runs_here: fn(&str) -> bool) -> Self {
+        self.runs_here = Some(runs_here);
+        self
     }
 
     /// What this device holds of `key`, changed by `edit`.
@@ -948,6 +965,7 @@ impl SharedDesktops {
                 own,
                 notes,
                 sealed,
+                runs_here: self.runs_here,
                 acted,
             },
         );
@@ -1835,6 +1853,86 @@ fn laid_into(
     laid_out
 }
 
+/// `desk`, this device's desk, as it publishes it into the workspace's layout. A window it minted
+/// (under `local`) whose app says it runs only on the device that opened it is written as this
+/// device's window, `host` being its key and what its certificate calls it: the others hold it as
+/// that, and open no instance of the app for it.
+fn hosted_here(
+    desk: Workspace,
+    host: (&str, &str),
+    local: u16,
+    runs_here: Option<fn(&str) -> bool>,
+) -> Workspace {
+    let bound = bound_apps(&desk, local, runs_here);
+    device::published(
+        desk,
+        &device::Host {
+            device: host.0,
+            name: host.1,
+            runs_here: &|app| bound.contains(app),
+        },
+        &|id| peer_salt_of(id) == local,
+    )
+}
+
+/// The desk `laid_out` as this device writes it into the workspace's layout ([`hosted_here`]),
+/// and the tabs of it that stand for a window running on another device. Such a window is that
+/// device's to add to the record, whoever minted the tab it stands in here: the tab this desk
+/// pictures a shared window in, beside its own view of that window, is this desk's alone.
+fn written_here(
+    laid_out: Workspace,
+    engine: &Engine,
+    local: u16,
+    runs_here: Option<fn(&str) -> bool>,
+) -> (Workspace, BTreeSet<u64>) {
+    let certificate = &engine.identity().device_cert;
+    let device = hex::encode(certificate.device_public_key);
+    let laid_out = hosted_here(
+        laid_out,
+        (&device, &certificate.device_label),
+        local,
+        runs_here,
+    );
+    let elsewhere = laid_out
+        .tabs()
+        .filter(|tab| {
+            matches!(
+                &tab.tile,
+                TileContent::HostedWindow { host, .. } if !host.eq_ignore_ascii_case(&device)
+            )
+        })
+        .map(|tab| tab.id)
+        .collect();
+    (laid_out, elsewhere)
+}
+
+/// The apps among the windows of `desk` this device minted (under `local`) whose windows run only
+/// on the device that opened them, each asked of `runs_here` once: what an app declares is read
+/// from its package.
+fn bound_apps(
+    desk: &Workspace,
+    local: u16,
+    runs_here: Option<fn(&str) -> bool>,
+) -> BTreeSet<String> {
+    let Some(runs_here) = runs_here else {
+        return BTreeSet::new();
+    };
+    let apps: BTreeSet<&str> = desk
+        .tabs()
+        .filter(|tab| peer_salt_of(tab.id) == local)
+        .filter_map(|tab| match &tab.tile {
+            TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
+                Some(app_id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    apps.into_iter()
+        .filter(|app| runs_here(app))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Whether `key`'s record waits for its channel keys to reach this device.
 fn keys_awaited(engine: &Engine, key: &Key) -> bool {
     let (workspace_id, _) = key;
@@ -1868,7 +1966,6 @@ fn view_written(
     view.write(doc)?;
     Ok(step)
 }
-
 /// The view to write into `key`'s record now, if any: what a look writes only once it rests, and
 /// never while a write of it is under way or before this device has read the record. A view that
 /// did not change is not written again.

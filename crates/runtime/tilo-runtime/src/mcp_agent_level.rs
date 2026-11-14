@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use super::{
     ActionHost, CatalogueLimits, CatalogueQuery, CatalogueRow, DEFAULT_WAIT_MS, LEVEL_PAGES, Level,
-    McpServer, PAGE_ROWS, level_of, restart_pause,
+    McpServer, PAGE_ROWS, cannot_be_read_now, level_of, restart_pause,
 };
 
 /// The rows a [`Level`] was read from, where each of its pages after the
@@ -71,6 +71,14 @@ impl Level {
         }
         Some((mark, met.len()))
     }
+}
+
+/// Why a read of a level's pages gave no level.
+enum Unread {
+    /// The app's directory moved on between pages.
+    MovedOn,
+    /// The app cannot read its directory right now ([`cannot_be_read_now`]).
+    CannotNow,
 }
 
 /// A cursor `tilo_ls` issues: how many entries the listing is past, and,
@@ -174,7 +182,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// Up to [`LEVEL_PAGES`] pages of the directory under `parent`, from
     /// the start or on from where `from` stopped, starting again from the
-    /// first page while the directory moves on between pages.
+    /// first page while the directory moves on between pages or the app
+    /// cannot read it.
     pub(super) async fn read_level(
         &self,
         provider: &str,
@@ -186,7 +195,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // invocation refreshed it), what was read belongs to the old revision
         // and the read starts again from the first page at the new one, for
         // as long as an action is waited for, pausing longer each time a
-        // directory that keeps changing is read again.
+        // directory that keeps changing is read again. An app that cannot
+        // read its directory right now, as while another actor's action is
+        // being applied, is read again the same way: that is not a level
+        // with nothing in it, and once the wait is over the caller is told
+        // the app cannot list, never that it lacks what was named.
         let deadline = tokio::time::Instant::now()
             .checked_add(std::time::Duration::from_millis(DEFAULT_WAIT_MS));
         let mut from = from.unwrap_or_default();
@@ -202,24 +215,41 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 tokio::time::sleep_until(until).await;
             }
             reads = reads.saturating_add(1);
-            if let Some(read) = self.read_level_once(provider, parent, from).await? {
-                return Ok(Some(read));
-            }
+            let unread = match self.read_pages(provider, parent, from).await? {
+                Ok(read) => return Ok(Some(read)),
+                Err(unread) => unread,
+            };
             if deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
-                return Ok(None);
+                return match unread {
+                    Unread::MovedOn => Ok(None),
+                    Unread::CannotNow => {
+                        Err("the app cannot list what it has right now; try again".into())
+                    }
+                };
             }
             from = Level::default();
         }
     }
 
     /// [`Self::read_level`] without starting again: `None` when the
-    /// directory moved on between pages.
+    /// directory moved on between pages, or cannot be read right now.
     pub(super) async fn read_level_once(
         &self,
         provider: &str,
         parent: &str,
         from: Level,
     ) -> Result<Option<Level>, String> {
+        Ok(self.read_pages(provider, parent, from).await?.ok())
+    }
+
+    /// The pages [`Self::read_level_once`] reads, saying why they gave no
+    /// level when they gave none.
+    async fn read_pages(
+        &self,
+        provider: &str,
+        parent: &str,
+        from: Level,
+    ) -> Result<Result<Level, Unread>, String> {
         let LevelPages {
             mut rows,
             mut marks,
@@ -254,7 +284,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 })
                 .await?;
             if asked.stale_cursor {
-                return Ok(None);
+                return Ok(Err(Unread::MovedOn));
+            }
+            if cannot_be_read_now(&asked) {
+                return Ok(Err(Unread::CannotNow));
             }
             rows.extend(asked.rows);
             read_at.clone_from(&asked.revision);
@@ -275,6 +308,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let mut read = level_of(&rows, parent);
         read.revision = read_at;
         read.pages = std::sync::Arc::new(LevelPages { rows, marks, rest });
-        Ok(Some(read))
+        Ok(Ok(read))
     }
 }

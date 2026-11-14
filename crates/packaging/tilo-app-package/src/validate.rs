@@ -1685,6 +1685,7 @@ mode = "off"
                 splash_budget_ms: 400,
                 runtime: None,
                 origins: Vec::new(),
+                window: crate::manifest::WindowKind::default(),
             });
             m.continuity.required.clear();
             assert_eq!(

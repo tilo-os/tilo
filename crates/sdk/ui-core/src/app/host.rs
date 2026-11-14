@@ -1179,6 +1179,11 @@ mod prepared_runner_tests;
 mod secret_capture_tests;
 
 #[cfg(test)]
+#[cfg(unix)]
+#[path = "page_share_tests.rs"]
+mod page_share_tests;
+
+#[cfg(test)]
 #[path = "card_grid_host_tests.rs"]
 mod card_grid_host_tests;
 

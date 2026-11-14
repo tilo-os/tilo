@@ -1570,6 +1570,7 @@ impl<P: Chained> RecordDoor for ChainState<P> {
         }
         let action: P::Action =
             tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
+        super::record::not_by_app::<P>(&action)?;
         self.apply_as(&action, invoker, &mut None)
             .map(drop)
             .map_err(|error| error.to_string())
@@ -1596,6 +1597,7 @@ impl<P: Chained> RecordDoor for ChainState<P> {
         }
         let action: P::Action =
             tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
+        super::record::not_by_app::<P>(&action)?;
         // One that waits for its part creates its items once it is written.
         let resources = self
             .apply_as(&action, invoker, &mut None)

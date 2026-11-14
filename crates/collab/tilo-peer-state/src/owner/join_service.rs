@@ -152,6 +152,12 @@ impl WorkspaceTxn for OwnerWorkspace<'_> {
             decide(&governed)?
         };
         let changes = self.peer.workspace_changes_since(&before);
+        // A workspace this device hosts itself has no host that hands the admission on: the
+        // members linked to this device hear it from this device's own commit, as they hear its
+        // record writes ([`super::NativeKeptHereObserver`]). A member that was never told of a
+        // device takes no commit that brings it into the workspace's key group, and reads
+        // nothing sealed under the keys that follow.
+        let admitted = changes.clone();
         self.record.join_ledger = answered;
         self.record.generation = generation;
         if !changes.is_empty() {
@@ -189,6 +195,9 @@ impl WorkspaceTxn for OwnerWorkspace<'_> {
             .publish(self.workspace, &self.replica, self.record.clone(), None)
             .map_err(JoinError::new)?;
         self.staged = false;
+        self.owner
+            .0
+            .governance_kept_here(self.workspace, self.record.hosted_here(), admitted);
         Ok(())
     }
 }

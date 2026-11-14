@@ -152,6 +152,23 @@ class TabInspector final : public CefDevToolsMessageObserver {
   // The execution contexts `Runtime.enable` reports, collected meanwhile.
   void Collect(bool on) { collecting_ = on; if (on) contexts_.clear(); }
   const std::vector<CefRefPtr<CefDictionaryValue>>& contexts() const { return contexts_; }
+  // One collection at a time. Collecting empties what was collected, and
+  // whoever collects turns the reporting off when done: a second collection
+  // begun meanwhile would take the first one's contexts away, and lose its
+  // own when the first ends. `Reserve` is true for the caller that collects
+  // now; any other is kept as `start`, and run, in the order they came, when
+  // the one before it is done (`Free`).
+  bool Reserve(std::function<void()> start) {
+    if (!reserved_) { reserved_ = true; return true; }
+    waiting_.push_back(std::move(start));
+    return false;
+  }
+  void Free() {
+    if (waiting_.empty()) { reserved_ = false; return; }
+    auto next = std::move(waiting_.front());
+    waiting_.pop_front();
+    CefPostTask(TID_UI, base::BindOnce([](std::function<void()> next) { next(); }, std::move(next)));
+  }
   void Detach() {
     registration_ = nullptr;
     browser_ = nullptr;
@@ -208,6 +225,8 @@ class TabInspector final : public CefDevToolsMessageObserver {
   std::map<int, Done> pending_;
   bool collecting_ = false;
   std::vector<CefRefPtr<CefDictionaryValue>> contexts_;
+  bool reserved_ = false;
+  std::deque<std::function<void()>> waiting_;
   Listener listener_;
   IMPLEMENT_REFCOUNTING(TabInspector);
 };
@@ -2238,7 +2257,19 @@ class ExtensionTabs {
   // The tab's page as its inspector reports it: every frame's execution
   // contexts, the page's own and each extension world's. With `keep`, the
   // inspector is already reporting for someone else and is left reporting.
-  void Contexts(CefRefPtr<TabInspector> inspector, bool keep, ContextsDone then, int look = 0) {
+  void Contexts(CefRefPtr<TabInspector> inspector, bool keep, ContextsDone then) {
+    // Several ask at once: the frames of a page each send their worker a
+    // message as they start, and the script it runs in answer to each reads
+    // the page's contexts. Each reads them in its turn (TabInspector::Reserve).
+    std::weak_ptr<bool> alive = alive_;
+    if (!inspector->Reserve([this, alive, inspector, keep, then] {
+          if (alive.expired()) { inspector->Free(); return; }
+          Collect(inspector, keep, then, 0);
+        })) return;
+    Collect(inspector, keep, std::move(then), 0);
+  }
+  // One look at the contexts, by the caller whose turn it is.
+  void Collect(CefRefPtr<TabInspector> inspector, bool keep, ContextsDone then, int look) {
     inspector->Collect(true);
     inspector->Call("Runtime.enable", nullptr, [this, inspector, keep, then, look](bool, CefRefPtr<CefDictionaryValue>) {
       std::weak_ptr<bool> alive = alive_;
@@ -2252,15 +2283,18 @@ class ExtensionTabs {
   // whose reports are still on their way.
   void ContextsLook(CefRefPtr<TabInspector> inspector, bool keep, const ContextsDone& then, int look) {
     if (inspector->contexts().empty() && look < kContextLooks) {
-      if (keep) { Contexts(inspector, keep, then, look + 1); return; }
+      if (keep) { Collect(inspector, keep, then, look + 1); return; }
       inspector->Call("Runtime.disable", nullptr, [this, inspector, keep, then, look](bool, CefRefPtr<CefDictionaryValue>) {
-        Contexts(inspector, keep, then, look + 1);
+        Collect(inspector, keep, then, look + 1);
       });
       return;
     }
     inspector->Collect(false);
     if (!keep) inspector->Call("Runtime.disable", nullptr, [](bool, CefRefPtr<CefDictionaryValue>) {});
-    then(inspector->contexts());
+    // Its own copy: the next one's collection empties the inspector's.
+    const auto found = inspector->contexts();
+    inspector->Free();
+    then(found);
   }
   // The extension's isolated world in the tab's main frame, where its
   // content scripts run: 0 when it has none there. `then` runs with the

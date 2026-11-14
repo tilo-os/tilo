@@ -17,8 +17,9 @@ use std::time::{Duration, Instant};
 
 use tilo_desktop_model::{IdMinter, Tab, TabId, TileContent as ModelTile, Workspace};
 use tilo_desktop_surface::{
-    DesktopHandle, DesktopSurface, NeighbourMsg, PeerId, PeerOutcome, PeerRead, PeerStreamStart,
-    PeerSurface, PeerSurfaces, Standing, SurfaceId, TileSource, seed_tree,
+    DesktopHandle, DesktopSurface, Elsewhere, NeighbourMsg, PeerAction, PeerId, PeerOutcome,
+    PeerRead, PeerStreamStart, PeerSurface, PeerSurfaces, Standing, SurfaceId, TileSource,
+    WhyEnded, seed_tree,
 };
 use tilo_window_share::streaming::InputEvent;
 use ui::headless::FrameHarness;
@@ -66,13 +67,43 @@ fn peer_tab(minter: &mut IdMinter) -> Tab {
     }
 }
 
+/// A host with nothing to draw for a window that runs on another device, as the native desk's own
+/// tile source has: it answers with the place of a window still to come, which paints nothing.
+struct NothingToDraw;
+
+impl TileSource for NothingToDraw {
+    fn tile(&mut self, _workspace: &Workspace, _tab: &Tab) -> TileHost {
+        TileHost::new(TileContent::Arriving)
+    }
+}
+
 /// A desktop showing one window another device shares, in the toolkit's own frame pipeline.
 fn shell() -> (FrameHarness, DesktopHandle, TabId) {
     let mut minter = IdMinter::new(7);
     let tab = peer_tab(&mut minter);
+    desk_showing(minter, tab, Box::new(HostTiles))
+}
+
+/// A desktop whose one window runs on the device the desk calls `device` , over a host that has
+/// nothing to draw for it.
+fn desk_of_device(device: &str) -> (FrameHarness, DesktopHandle, TabId) {
+    let mut minter = IdMinter::new(7);
+    let mut tab = peer_tab(&mut minter);
+    if let ModelTile::HostedWindow { host_label, .. } = &mut tab.tile {
+        device.clone_into(host_label);
+    }
+    desk_showing(minter, tab, Box::new(NothingToDraw))
+}
+
+/// A desktop showing `tab` over `tiles` , in the toolkit's own frame pipeline.
+fn desk_showing(
+    mut minter: IdMinter,
+    tab: Tab,
+    tiles: Box<dyn TileSource>,
+) -> (FrameHarness, DesktopHandle, TabId) {
     let tab_id = tab.id;
     let tree = seed_tree(&mut minter, "Office", vec![tab]);
-    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(HostTiles));
+    let (surface, handle) = DesktopSurface::new(tree, 7, tiles);
     handle.set_viewport_width(1200.0);
     let mut driver = FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
@@ -226,6 +257,69 @@ fn a_received_stream_is_pictured_in_its_tile() {
         resource.presentation.as_ref().unwrap().preview.as_deref(),
         Some("Live")
     );
+    let texts = ui::a11y::texts(driver.root_widget());
+    assert!(
+        texts.iter().any(|text| text == "Writer on Laptop"),
+        "the picture is named by the window it shows and the device it runs on: {texts:?}"
+    );
+}
+
+/// What the tile publishes of itself is read in the language of the person reading it: whose
+/// window it shows, whether this device may type into it, and how its stream stands. None of it
+/// is a sentence built in code.
+#[test]
+fn a_tile_says_whose_window_it_is_and_how_it_stands_in_the_readers_language() {
+    let mut minter = IdMinter::new(7);
+    let tab = peer_tab(&mut minter);
+    let tab_id = tab.id;
+    let tree = seed_tree(&mut minter, "Desk", vec![tab]);
+    let mut peers = PeerSurfaces::default();
+    let tab = peers
+        .start(&tree, &stream_start(tab_id, false))
+        .expect("the peer's window has a tab");
+    let tile = Rc::clone(peers.tile(tab).expect("the share has a tile"));
+    let said = || {
+        let presentation = tile
+            .borrow()
+            .resource()
+            .presentation
+            .expect("the tile says what it shows");
+        [
+            presentation.detail,
+            presentation.badge,
+            presentation.preview,
+        ]
+        .map(Option::unwrap_or_default)
+    };
+    let in_german = || {
+        ui::i18n::I18nManager::set_locale("de-DE");
+        let german = said();
+        ui::i18n::I18nManager::set_locale("en-US");
+        german
+    };
+
+    assert_eq!(
+        said(),
+        [
+            "Laptop's window",
+            "View only",
+            "Waiting for its first picture"
+        ]
+    );
+    assert_eq!(
+        in_german(),
+        [
+            "Fenster von Laptop",
+            "Nur ansehen",
+            "Wartet auf das erste Bild"
+        ]
+    );
+
+    // A share that ended says why, to each reader in their own language: it keeps the reason, not
+    // the sentence it was in when it ended.
+    tile.borrow_mut().end(WhyEnded::SenderStopped);
+    assert_eq!(said()[2], "Ended: the sender stopped sharing it");
+    assert_eq!(in_german()[2], "Beendet: der Absender teilt es nicht mehr");
 }
 
 #[test]
@@ -389,7 +483,7 @@ fn ending_the_share_removes_the_tile_s_resource() {
     );
 
     assert_eq!(
-        handle.end_peer_surface(SHARER, SURFACE, "the sender stopped sharing"),
+        handle.end_peer_surface(SHARER, SURFACE, WhyEnded::SenderStopped),
         Some(tab)
     );
     driver.relayout();
@@ -400,5 +494,419 @@ fn ending_the_share_removes_the_tile_s_resource() {
     assert!(
         handle.peer_surface_read(tab).is_none(),
         "the tab is the desktop's own window again"
+    );
+}
+
+/// What the desk's tab says of a window that is not shown in it: the notice's title, and the
+/// sentence under it, as a reader who cannot see the desk and a tool listing it read them.
+fn notice(driver: &FrameHarness) -> Option<(String, String)> {
+    driver.a11y_nodes().into_iter().find_map(|(_, node)| {
+        let title = node.label()?;
+        (title.contains(" runs on ") || title.contains(" läuft auf ")).then(|| {
+            (
+                title.to_owned(),
+                node.description().unwrap_or_default().to_owned(),
+            )
+        })
+    })
+}
+
+/// The notice `driver` 's desk shows once `handle` was told the window in `tab` stands as
+/// `standing` .
+fn notice_for(
+    driver: &mut FrameHarness,
+    handle: &DesktopHandle,
+    tab: TabId,
+    standing: &Elsewhere,
+) -> Option<(String, String)> {
+    handle.set_elsewhere(vec![(tab, standing.clone())]);
+    driver.relayout();
+    driver.relayout();
+    assert_eq!(
+        &handle.elsewhere(tab),
+        standing,
+        "the desk keeps what it was told"
+    );
+    notice(driver)
+}
+
+/// A notice's title and the sentence under it.
+fn words(title: &str, why: &str) -> (String, String) {
+    (title.to_owned(), why.to_owned())
+}
+
+/// A window that runs on another device and is not shown here never leaves its tab empty. Its
+/// host has nothing to draw for it, so the tab says where the window runs, and under that why it
+/// is not here, as the session read it: not shared, shared and still on its way, on a device
+/// nothing is heard of, or on a device the workspace no longer admits. A desk nobody told says
+/// only where it runs.
+#[test]
+fn a_window_on_another_device_says_where_it_runs_and_why_it_is_not_here() {
+    let (mut driver, handle, tab) = desk_of_device("Laptop");
+    assert_eq!(
+        notice(&driver),
+        Some(words("Writer runs on Laptop", "")),
+        "a desk nobody told says where the window runs, and no more"
+    );
+    let waits_for_keys = "Waiting for this workspace's keys to reach this device";
+    for (standing, why) in [
+        (
+            Elsewhere::NotShared,
+            "It is not shared with this workspace right now",
+        ),
+        (
+            Elsewhere::Awaited {
+                waiting_for: String::new(),
+            },
+            "Waiting for Laptop to send it",
+        ),
+        (
+            Elsewhere::Awaited {
+                waiting_for: waits_for_keys.to_owned(),
+            },
+            waits_for_keys,
+        ),
+        (
+            Elsewhere::Away,
+            "Laptop is not connected to this workspace right now",
+        ),
+        (Elsewhere::Left, "Laptop is no longer in this workspace"),
+    ] {
+        assert_eq!(
+            notice_for(&mut driver, &handle, tab, &standing),
+            Some(words("Writer runs on Laptop", why))
+        );
+    }
+    // A tab the session says nothing of any more says only where its window runs again.
+    handle.set_elsewhere(Vec::new());
+    driver.relayout();
+    assert_eq!(notice(&driver), Some(words("Writer runs on Laptop", "")));
+}
+
+/// A device nothing names is another device of the workspace: the tab never shows its key, nor
+/// a blank where its name would be.
+#[test]
+fn a_device_nothing_names_is_another_device_of_the_workspace_and_never_its_key() {
+    let key = "ab".repeat(32);
+    for label in ["", "  ", key.as_str()] {
+        let (mut driver, handle, tab) = desk_of_device(label);
+        let title = "Writer runs on another device of this workspace";
+        for (standing, why) in [
+            (
+                Elsewhere::NotShared,
+                "It is not shared with this workspace right now",
+            ),
+            (
+                Elsewhere::Awaited {
+                    waiting_for: String::new(),
+                },
+                "Waiting for its device to send it",
+            ),
+            (
+                Elsewhere::Away,
+                "Its device is not connected to this workspace right now",
+            ),
+            (Elsewhere::Left, "Its device is no longer in this workspace"),
+        ] {
+            assert_eq!(
+                notice_for(&mut driver, &handle, tab, &standing),
+                Some(words(title, why)),
+                "a device labelled {label:?}"
+            );
+        }
+        for (_, node) in driver.a11y_nodes() {
+            for said in [node.label(), node.description(), node.value()] {
+                assert!(
+                    !said.unwrap_or_default().contains(&key),
+                    "the desk shows a device's key: {said:?}"
+                );
+            }
+        }
+    }
+}
+
+/// The tab reads in the language of the person reading it now: a notice built in one language is
+/// built again when they choose another.
+#[test]
+fn a_window_on_another_device_is_said_in_the_language_the_person_reads_now() {
+    let (mut driver, handle, tab) = desk_of_device("Laptop");
+    assert_eq!(
+        notice_for(&mut driver, &handle, tab, &Elsewhere::NotShared),
+        Some(words(
+            "Writer runs on Laptop",
+            "It is not shared with this workspace right now"
+        ))
+    );
+    ui::i18n::I18nManager::set_locale("de-DE");
+    driver.relayout();
+    driver.relayout();
+    let german = notice(&driver);
+    ui::i18n::I18nManager::set_locale("en-US");
+    driver.relayout();
+    driver.relayout();
+    assert_eq!(
+        german,
+        Some(words(
+            "Writer läuft auf Laptop",
+            "Es wird gerade nicht mit diesem Arbeitsbereich geteilt"
+        ))
+    );
+    assert_eq!(
+        notice(&driver),
+        Some(words(
+            "Writer runs on Laptop",
+            "It is not shared with this workspace right now"
+        ))
+    );
+}
+
+/// A share takes the tab from the notice, and gives it back when its sender stops: starting, the
+/// tile shows the window arriving and no notice; going out, the window's picture; ended by its
+/// sender, the notice again, saying what the session reads of the window now.
+#[test]
+fn a_share_takes_the_tab_from_the_notice_and_gives_it_back_when_its_sender_stops() {
+    let (mut driver, handle, tab) = desk_of_device("Laptop");
+    let not_shared = Some(words(
+        "Writer runs on Laptop",
+        "It is not shared with this workspace right now",
+    ));
+    assert_eq!(
+        notice_for(&mut driver, &handle, tab, &Elsewhere::NotShared),
+        not_shared
+    );
+
+    // Starting: the stream is announced and nothing of the window is here.
+    assert_eq!(
+        handle.show_peer_surface(&stream_start(tab, true)),
+        Some(tab)
+    );
+    driver.relayout();
+    assert_eq!(
+        handle.peer_surface_read(tab).map(|read| read.standing),
+        Some(Standing::Started)
+    );
+    assert_eq!(
+        notice(&driver),
+        None,
+        "a share that started shows the window arriving, not where it runs"
+    );
+    assert!(
+        published(&driver, SURFACE).is_some(),
+        "the arriving window's tile is the share's"
+    );
+
+    // Going out: its picture is in the tile.
+    for (index, unit) in keyframes(1).into_iter().enumerate() {
+        let seq = u64::try_from(index).unwrap_or(0).saturating_add(1);
+        handle.peer_surface_picture(SHARER, SURFACE, seq, &unit);
+    }
+    assert_eq!(
+        settle(&mut driver, &handle, tab).standing,
+        Standing::Pictured
+    );
+    driver.relayout();
+    assert_eq!(notice(&driver), None, "a pictured window shows its picture");
+    assert!(
+        ui::a11y::texts(driver.root_widget())
+            .iter()
+            .any(|text| text == "Writer on Laptop"),
+        "the picture is named by its window and device"
+    );
+
+    // Ended by its sender: the tab is not left with nothing in it.
+    assert_eq!(
+        handle.end_peer_surface(SHARER, SURFACE, WhyEnded::SenderStopped),
+        Some(tab)
+    );
+    driver.relayout();
+    driver.relayout();
+    assert_eq!(notice(&driver), not_shared);
+    assert!(published(&driver, SURFACE).is_none());
+}
+
+/// A window this device let go is still shared by its device, so its tab does not say it is not
+/// shared: it says the share ended here and why, in the language read now, shows no picture that
+/// no longer follows the window, and refuses what is asked of it in that language too.
+#[test]
+fn a_window_this_device_let_go_says_so_and_refuses_in_the_language_read_now() {
+    let (mut driver, handle, tab) = desk_of_device("Laptop");
+    handle.set_elsewhere(vec![(tab, Elsewhere::NotShared)]);
+    handle.show_peer_surface(&stream_start(tab, true));
+    for (index, unit) in keyframes(1).into_iter().enumerate() {
+        let seq = u64::try_from(index).unwrap_or(0).saturating_add(1);
+        handle.peer_surface_picture(SHARER, SURFACE, seq, &unit);
+    }
+    assert_eq!(
+        settle(&mut driver, &handle, tab).standing,
+        Standing::Pictured
+    );
+    let id = format!("desktop.peer-surface:{SURFACE}");
+    driver
+        .invoke_published(&id, "end", &serde_json::Map::new())
+        .expect("the tile lets the window go");
+    driver.relayout();
+    driver.relayout();
+    assert_eq!(
+        handle.peer_surface_read(tab).map(|read| read.standing),
+        Some(Standing::Ended {
+            why: WhyEnded::LetGo
+        })
+    );
+    assert_eq!(
+        notice(&driver),
+        Some(words(
+            "Writer runs on Laptop",
+            "Ended: this device let the window go"
+        ))
+    );
+    assert!(
+        !ui::a11y::texts(driver.root_widget())
+            .iter()
+            .any(|text| text == "Writer on Laptop"),
+        "an ended share shows no picture of the window"
+    );
+    let motion = serde_json::Map::from_iter([
+        ("x".to_string(), serde_json::Value::from(1.0)),
+        ("y".to_string(), serde_json::Value::from(1.0)),
+    ]);
+    let refusal = |driver: &mut FrameHarness| {
+        let refused = driver
+            .invoke_published(&id, "pointer-motion", &motion)
+            .expect_err("an ended share takes no pointer");
+        format!("{refused:?}")
+    };
+    let english = refusal(&mut driver);
+    assert!(
+        english.contains("This window's share has ended"),
+        "{english}"
+    );
+
+    ui::i18n::I18nManager::set_locale("de-DE");
+    driver.relayout();
+    driver.relayout();
+    let german = (notice(&driver), refusal(&mut driver));
+    ui::i18n::I18nManager::set_locale("en-US");
+    assert_eq!(
+        german.0,
+        Some(words(
+            "Writer läuft auf Laptop",
+            "Beendet: dieses Gerät hat das Fenster losgelassen"
+        ))
+    );
+    assert!(
+        german.1.contains("Dieses Fenster wird nicht mehr geteilt"),
+        "{}",
+        german.1
+    );
+}
+
+/// What can be done to another device's window is listed, and refused, in the language of the
+/// person reading it: no action's name, no word of what it asks for and no refusal is a sentence
+/// written in code.
+#[test]
+fn a_tiles_actions_are_named_and_refused_in_the_readers_language() {
+    let mut minter = IdMinter::new(7);
+    let tab = peer_tab(&mut minter);
+    let tab_id = tab.id;
+    let tree = seed_tree(&mut minter, "Desk", vec![tab]);
+    let mut peers = PeerSurfaces::default();
+    let tab = peers
+        .start(&tree, &stream_start(tab_id, false))
+        .expect("the peer's window has a tab");
+    let tile = Rc::clone(peers.tile(tab).expect("the share has a tile"));
+    let in_german = |read: &dyn Fn() -> Vec<String>| {
+        ui::i18n::I18nManager::set_locale("de-DE");
+        let german = read();
+        ui::i18n::I18nManager::set_locale("en-US");
+        german
+    };
+
+    let names = || -> Vec<String> {
+        tile.borrow()
+            .resource()
+            .actions
+            .iter()
+            .map(|action| action.label.clone())
+            .collect()
+    };
+    assert_eq!(
+        names(),
+        [
+            "Move the pointer",
+            "Press a pointer button",
+            "Press a key",
+            "Scroll",
+            "Type text",
+            "Ask for the whole picture again",
+            "Let the window go",
+        ]
+    );
+    assert_eq!(
+        in_german(&names),
+        [
+            "Zeiger bewegen",
+            "Zeigertaste drücken",
+            "Taste drücken",
+            "Scrollen",
+            "Text eingeben",
+            "Das ganze Bild erneut anfordern",
+            "Das Fenster loslassen",
+        ]
+    );
+    // What the first of them asks for, and what each thing it is told means.
+    let asks = || -> Vec<String> {
+        let resource = tile.borrow().resource();
+        let motion = resource.actions.first().expect("the tile's first action");
+        motion
+            .params()
+            .iter()
+            .map(|param| param.description.to_string())
+            .collect()
+    };
+    assert_eq!(
+        asks(),
+        [
+            "How far across the window, in its own pixels",
+            "How far down the window, in its own pixels",
+        ]
+    );
+    assert_eq!(
+        in_german(&asks),
+        [
+            "Wie weit quer über das Fenster, in dessen eigenen Pixeln",
+            "Wie weit das Fenster hinunter, in dessen eigenen Pixeln",
+        ]
+    );
+
+    let motion = serde_json::Map::from_iter([
+        ("x".to_string(), serde_json::Value::from(1.0)),
+        ("y".to_string(), serde_json::Value::from(1.0)),
+    ]);
+    let nothing = serde_json::Map::new();
+    let refused = |action: PeerAction, arguments: &serde_json::Map<String, serde_json::Value>| {
+        tile.borrow_mut()
+            .act(action, arguments)
+            .expect_err("the tile refuses it")
+    };
+    // A window shared for watching, an argument that is not what the action takes, and a share
+    // that ended.
+    let watching_only = || vec![refused(PeerAction::PointerMotion, &motion)];
+    assert_eq!(watching_only(), ["This window is shared for watching only"]);
+    assert_eq!(
+        in_german(&watching_only),
+        ["Dieses Fenster ist nur zum Ansehen geteilt"]
+    );
+    let not_a_number = || vec![refused(PeerAction::PointerMotion, &nothing)];
+    assert_eq!(not_a_number(), ["“x” is not a number"]);
+    assert_eq!(in_german(&not_a_number), ["„x“ ist keine Zahl"]);
+    let no_text = || vec![refused(PeerAction::Text, &nothing)];
+    assert_eq!(no_text(), ["There is no text to type"]);
+    assert_eq!(in_german(&no_text), ["Es gibt keinen Text einzugeben"]);
+    tile.borrow_mut().end(WhyEnded::SenderStopped);
+    let ended = || vec![refused(PeerAction::PointerMotion, &motion)];
+    assert_eq!(ended(), ["This window's share has ended"]);
+    assert_eq!(
+        in_german(&ended),
+        ["Dieses Fenster wird nicht mehr geteilt"]
     );
 }

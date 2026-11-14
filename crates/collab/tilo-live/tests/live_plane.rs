@@ -21,8 +21,9 @@
     reason = "each test is one workspace session end to end"
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -33,10 +34,10 @@ use tilo_live::frame::PlaneKeys;
 use tilo_live::grant;
 use tilo_live::live::{self, Namespace, Track};
 use tilo_live::native;
-use tilo_live::plane::{self, Heard, Join, Plane, PlaneError};
+use tilo_live::plane::{self, Heard, Join, MAX_HEARD, Plane, PlaneError};
 use tilo_live::relay::{
-    Admission, AuthorizationStatus, Denied, Direction, Peer, Relay, RelayAuthority,
-    SessionAuthorization,
+    Admission, AuthorizationStatus, Denied, Direction, MAX_ADMITTING, MAX_ADMITTING_OF_ONE,
+    MAX_ADMITTING_STRANGERS, Peer, Relay, RelayAuthority, SessionAuthorization,
 };
 use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
@@ -83,6 +84,11 @@ struct Authority {
     epoch: u64,
     mates: Arc<Mutex<BTreeMap<[u8; 32], Vec<u8>>>>,
     changed: tokio::sync::watch::Sender<u64>,
+    /// How many sessions the relay asked this authority to admit.
+    asked: AtomicUsize,
+    /// What a session waits for before it is judged, in an authority that holds them
+    /// ([`Self::holding`]): one permit lets one session through.
+    held: Option<tokio::sync::Semaphore>,
 }
 
 impl Authority {
@@ -91,7 +97,36 @@ impl Authority {
             epoch: 1,
             mates: Arc::default(),
             changed: tokio::sync::watch::channel(0).0,
+            asked: AtomicUsize::new(0),
+            held: None,
         })
+    }
+
+    /// An authority that holds every session asking to be admitted until the test lets it through
+    /// ([`Self::let_through`]): a workspace whose governance another task is changing, which an
+    /// admission waits for. A session it holds is one the relay is still admitting.
+    fn holding() -> Arc<Self> {
+        Arc::new(Self {
+            epoch: 1,
+            mates: Arc::default(),
+            changed: tokio::sync::watch::channel(0).0,
+            asked: AtomicUsize::new(0),
+            held: Some(tokio::sync::Semaphore::new(0)),
+        })
+    }
+
+    /// How many sessions the relay asked this authority to admit so far: a session the relay had
+    /// no room for is not among them.
+    fn asked(&self) -> usize {
+        self.asked.load(Ordering::SeqCst)
+    }
+
+    /// Judge `sessions` of the sessions held in admission, or the next ones to ask.
+    fn let_through(&self, sessions: usize) {
+        self.held
+            .as_ref()
+            .expect("an authority that holds its sessions")
+            .add_permits(sessions);
     }
 
     fn admit_device(&self, device: [u8; 32]) -> Vec<u8> {
@@ -119,7 +154,20 @@ impl Authority {
 
 impl RelayAuthority for Authority {
     fn admit<'a>(&'a self, peer: Peer, proof: &'a [u8]) -> Admission<'a> {
-        Box::pin(std::future::ready(self.decide(peer, proof)))
+        Box::pin(async move {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            if let Some(held) = &self.held {
+                held.acquire().await.map_err(|_| Denied)?.forget();
+            }
+            self.decide(peer, proof)
+        })
+    }
+
+    /// An endpoint the workspace's roster does not name, as a session's authority tells it from
+    /// the rosters it holds.
+    fn stranger(&self, peer: Peer) -> bool {
+        let Peer(endpoint) = peer;
+        !self.mates.lock().unwrap().contains_key(&endpoint)
     }
 }
 
@@ -225,10 +273,7 @@ fn serve(relay: &Relay, endpoint: &Endpoint) -> iroh::protocol::Router {
             native::ALPN,
             native::handler(move |session: native::Session| {
                 let relay = relay.clone();
-                async move {
-                    let peer = Peer(session.remote());
-                    relay.serve_session(session, peer).await;
-                }
+                async move { native::serve_on(&relay, session).await }
             }),
         )
         .spawn()
@@ -275,8 +320,7 @@ fn serve_cuttable(
                         .lock()
                         .unwrap()
                         .insert(session.remote(), session.connection().clone());
-                    let peer = Peer(session.remote());
-                    relay.serve_session(session, peer).await;
+                    native::serve_on(&relay, session).await;
                 }
             }),
         )
@@ -1390,4 +1434,722 @@ async fn a_device_on_its_own_media_keys_publishes_to_the_members_and_opens_nothi
         Ok(()),
         "it keeps publishing what it was handed"
     );
+}
+
+/// One device of the workspace: its endpoint, its key and the certificate the workspace holds of
+/// it.
+#[derive(Clone)]
+struct Member {
+    endpoint: Endpoint,
+    key: [u8; 32],
+    certificate: Vec<u8>,
+}
+
+/// `count` devices the workspace admitted, each on an endpoint of its own.
+async fn members(authority: &Authority, count: usize) -> Vec<Member> {
+    let mut members = Vec::new();
+    for _ in 0..count {
+        let endpoint = endpoint().await;
+        let key = *endpoint.id().as_bytes();
+        let certificate = authority.admit_device(key);
+        members.push(Member {
+            endpoint,
+            key,
+            certificate,
+        });
+    }
+    members
+}
+
+/// `member` asks the relay at `relay` for the workspace's plane, and gives it `within`.
+async fn ask(
+    member: Member,
+    relay: EndpointAddr,
+    roster: Roster,
+    keys: ContentKeys,
+    within: Duration,
+) -> Result<Plane, PlaneError> {
+    Plane::join_within(
+        Arc::new(native::Iroh::new(member.endpoint, relay)),
+        &grant_for(&member.certificate),
+        join(member.key, roster, keys),
+        within,
+    )
+    .await
+}
+
+/// How many sessions `relay` admitted so far.
+fn admitted(relay: &Relay) -> usize {
+    usize::try_from(relay.counters().accepted).unwrap()
+}
+
+/// `count` devices the workspace does not hold, each on an endpoint of its own.
+async fn strangers(count: usize) -> Vec<Member> {
+    let mut strangers = Vec::new();
+    for _ in 0..count {
+        let endpoint = endpoint().await;
+        strangers.push(Member {
+            key: *endpoint.id().as_bytes(),
+            endpoint,
+            certificate: b"cert-not-on-the-roster".to_vec(),
+        });
+    }
+    strangers
+}
+
+/// The relay takes [`MAX_ADMITTING`] sessions of the workspace's devices through admission at
+/// once. One more is closed as busy with nothing of it read: the relay asks its authority nothing
+/// about it, so busy is no answer about a grant and never reads as a refusal. Devices the
+/// workspace does not hold wait in places of their own, and one more of those is told busy the
+/// same way, whoever it is. Once one of the sixteen is through, the next that asks is taken, and
+/// a device the workspace does not hold is refused as soon as the relay has room to judge it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relay_admitting_as_many_sessions_as_it_takes_tells_the_next_it_is_busy() {
+    let authority = Authority::holding();
+    let relay_endpoint = endpoint().await;
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let at = addr(&relay_endpoint);
+    let keys = keys();
+    let all = members(&authority, MAX_ADMITTING + 2).await;
+    let (first, rest) = all.split_at(MAX_ADMITTING);
+    let (seventeenth, eighteenth) = (&rest[0], &rest[1]);
+    // Every plane reads the two devices this test listens to at its end.
+    let roster = Roster::new([first[0].key, seventeenth.key]);
+    // Devices the workspace does not hold: as many as wait in the strangers' places, and one more.
+    let unknown = strangers(MAX_ADMITTING_STRANGERS + 1).await;
+    let (waiting, stranger) = unknown.split_at(MAX_ADMITTING_STRANGERS);
+    let stranger = &stranger[0];
+    // No wait of the test's own ends a dial: what a device is told is the relay's answer.
+    let long = tilo_test_env::hang_bound();
+    let asks = |member: &Member| {
+        ask(
+            member.clone(),
+            at.clone(),
+            roster.clone(),
+            keys.clone(),
+            long,
+        )
+    };
+
+    // Sixteen devices dial at once. The relay takes each into admission, where its authority
+    // holds it: none is admitted yet, and none was turned back.
+    let admitting: Vec<_> = first
+        .iter()
+        .map(|member| tokio::spawn(asks(member)))
+        .collect();
+    wait_until("sixteen sessions are in admission", || {
+        authority.asked() == MAX_ADMITTING
+    });
+    assert_eq!(relay.counters().busy, 0);
+
+    // One more is told the relay is busy, and the relay asked its authority nothing about it.
+    assert_eq!(
+        asks(seventeenth).await.err(),
+        Some(PlaneError::Busy),
+        "a member that arrives while sixteen are in admission is told the relay is busy"
+    );
+    assert_eq!(
+        authority.asked(),
+        MAX_ADMITTING,
+        "the relay asks its authority nothing about a session it has no room for"
+    );
+    let counters = relay.counters();
+    assert_eq!(
+        (counters.busy, counters.rejected, counters.accepted),
+        (1, 0, 0),
+        "a session closed as busy is counted as that, and as nobody's refusal"
+    );
+    // Devices the workspace does not hold are taken into places of their own, though every place
+    // of the workspace's devices is taken: they hold none of those, and are judged like anyone.
+    let unjudged: Vec<_> = waiting
+        .iter()
+        .map(|stranger| tokio::spawn(asks(stranger)))
+        .collect();
+    wait_until("the strangers are in admission beside the sixteen", || {
+        authority.asked() == MAX_ADMITTING + MAX_ADMITTING_STRANGERS
+    });
+    // One more of them is told busy: busy says nothing about who asked.
+    assert_eq!(
+        asks(stranger).await.err(),
+        Some(PlaneError::Busy),
+        "a busy relay judges nobody, a device it would refuse included"
+    );
+    assert_eq!(authority.asked(), MAX_ADMITTING + MAX_ADMITTING_STRANGERS);
+    assert_eq!(
+        asks(seventeenth).await.err(),
+        Some(PlaneError::Busy),
+        "the strangers' places are no room for a member, as a member's are none for a stranger"
+    );
+
+    // One of the sixteen gets through its admission: the next that asks is taken, which makes
+    // sixteen in admission again, so the one after it is told busy.
+    authority.let_through(1);
+    wait_until("one of the sixteen is through its admission", || {
+        admitted(&relay) == 1
+    });
+    let next = tokio::spawn(asks(seventeenth));
+    wait_until("the seventeenth is taken into admission", || {
+        authority.asked() == MAX_ADMITTING + MAX_ADMITTING_STRANGERS + 1
+    });
+    assert_eq!(
+        asks(eighteenth).await.err(),
+        Some(PlaneError::Busy),
+        "the relay is at its bound again"
+    );
+
+    // Everyone the relay took into admission is judged: the members are let in, and so is the
+    // member that was told busy, when it asks again; the strangers are refused.
+    authority.let_through(4096);
+    let mut planes = Vec::new();
+    for joining in admitting {
+        planes.push(
+            joining
+                .await
+                .unwrap()
+                .expect("a member the relay took into admission is admitted"),
+        );
+    }
+    planes.push(
+        next.await
+            .unwrap()
+            .expect("the member told busy is admitted when it asks again"),
+    );
+    planes.push(
+        asks(eighteenth)
+            .await
+            .expect("the second member told busy is admitted when it asks again"),
+    );
+    wait_until("every member is in the plane", || {
+        admitted(&relay) == MAX_ADMITTING + 2
+    });
+    for judged in unjudged {
+        assert_eq!(
+            judged.await.unwrap().err(),
+            Some(PlaneError::Denied),
+            "a device the workspace does not hold is refused once it is judged"
+        );
+    }
+    // The device the workspace does not hold that was told busy is refused now that the relay
+    // judges it: being told busy before changed nothing about who is let in.
+    assert_eq!(
+        asks(stranger).await.err(),
+        Some(PlaneError::Denied),
+        "a device the workspace does not hold is refused once the relay has room to judge it"
+    );
+    wait_until("the refusals are counted", || {
+        usize::try_from(relay.counters().rejected).unwrap() == MAX_ADMITTING_STRANGERS + 1
+    });
+    let counters = relay.counters();
+    assert_eq!(
+        (counters.busy, admitted(&relay)),
+        (4, MAX_ADMITTING + 2),
+        "four sessions were told busy, and every member is in"
+    );
+
+    // The member that was told busy first is in the plane like any other: what it says reaches
+    // the first device.
+    let mut sequence = 1;
+    wait_until("the member told busy is heard", || {
+        planes[MAX_ADMITTING]
+            .publish(Track::Presence, sequence, b"in=after-busy")
+            .unwrap();
+        sequence = sequence.saturating_add(1);
+        heard(&planes[0], Track::Presence)
+            .iter()
+            .any(|object| object.body == b"in=after-busy" && object.sender == seventeenth.key)
+    });
+}
+
+/// A relay that goes away while it admits a session was not reached: the device reads neither a
+/// refusal nor a busy relay, and asks whichever device relays the workspace then.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relay_that_goes_away_while_it_admits_a_session_was_not_reached() {
+    let authority = Authority::holding();
+    let relay_endpoint = endpoint().await;
+    let relay = Relay::new(authority.clone());
+    let router = serve(&relay, &relay_endpoint);
+    let member = members(&authority, 1).await.remove(0);
+    let joining = tokio::spawn(ask(
+        member,
+        addr(&relay_endpoint),
+        authority.roster(),
+        keys(),
+        tilo_test_env::hang_bound(),
+    ));
+    wait_until("the session is in admission", || authority.asked() == 1);
+    router.shutdown().await.unwrap();
+    assert_eq!(
+        joining.await.unwrap().err(),
+        Some(PlaneError::Unavailable),
+        "a relay that went away mid-admission was not reached"
+    );
+    assert_eq!(relay.counters().busy, 0);
+}
+
+/// A plane whose carrier went away dials its relay again. A relay that is admitting as many
+/// sessions as it takes just then judged nobody, so the plane is not over: it keeps asking,
+/// waiting longer each time, and is carried again once the relay has room.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plane_that_dials_a_busy_relay_again_keeps_asking_until_it_is_carried() {
+    let authority = Authority::holding();
+    let relay_endpoint = endpoint().await;
+    let relay = Relay::new(authority.clone());
+    let carriers = Carriers::default();
+    let _router = serve_cuttable(&relay, &relay_endpoint, &carriers);
+    let at = addr(&relay_endpoint);
+    let keys = keys();
+    let all = members(&authority, MAX_ADMITTING + 1).await;
+    let long = tilo_test_env::hang_bound();
+    let (stayed, others) = all.split_first().unwrap();
+    // Every plane reads the two devices this test listens to at its end.
+    let roster = Roster::new([stayed.key, others[0].key]);
+
+    // One device is in the plane.
+    authority.let_through(1);
+    let plane = ask(
+        stayed.clone(),
+        at.clone(),
+        roster.clone(),
+        keys.clone(),
+        long,
+    )
+    .await
+    .unwrap();
+    wait_until("the device is in the plane", || admitted(&relay) == 1);
+
+    // Sixteen more arrive at once and are in admission when its carrier goes away, as when a
+    // workspace's devices all come back together.
+    let admitting: Vec<_> = others
+        .iter()
+        .map(|member| {
+            tokio::spawn(ask(
+                member.clone(),
+                at.clone(),
+                roster.clone(),
+                keys.clone(),
+                long,
+            ))
+        })
+        .collect();
+    wait_until("sixteen sessions are in admission", || {
+        authority.asked() == MAX_ADMITTING + 1
+    });
+    carriers.cut(stayed.key);
+    wait_until("the plane dialled the busy relay again, twice", || {
+        relay.counters().busy >= 2
+    });
+    assert!(
+        !plane.ended(),
+        "a plane outlasts a relay that had no room for it when it dialled again"
+    );
+    assert_eq!(
+        (authority.asked(), relay.counters().rejected),
+        (MAX_ADMITTING + 1, 0),
+        "the relay judged nobody while it was busy"
+    );
+
+    // The relay has room again: the sixteen are let in, and the plane's next dial is taken.
+    authority.let_through(4096);
+    let mut planes = Vec::new();
+    for joining in admitting {
+        planes.push(joining.await.unwrap().unwrap());
+    }
+    wait_until("the plane is carried again", || {
+        admitted(&relay) == MAX_ADMITTING + 2
+    });
+    assert!(
+        !plane.ended(),
+        "the plane that is carried again is the one that lost its carrier"
+    );
+    let mut sequence = 1;
+    wait_until("the plane says on the carrier it dialled", || {
+        plane
+            .publish(Track::Presence, sequence, b"desk=back")
+            .unwrap();
+        sequence = sequence.saturating_add(1);
+        heard(&planes[0], Track::Presence)
+            .iter()
+            .any(|object| object.body == b"desk=back" && object.sender == stayed.key)
+    });
+}
+
+/// `member` asks the relay at `relay` for the workspace's plane until it is in: a relay that is
+/// admitting as many sessions as it takes judged nobody, and is asked again, as a session asks it.
+async fn ask_until_in(
+    member: Member,
+    relay: EndpointAddr,
+    roster: Roster,
+    keys: ContentKeys,
+) -> Plane {
+    let mut wait = Duration::from_millis(20);
+    loop {
+        let asked = ask(
+            member.clone(),
+            relay.clone(),
+            roster.clone(),
+            keys.clone(),
+            tilo_test_env::hang_bound(),
+        )
+        .await;
+        match asked {
+            Ok(plane) => return plane,
+            Err(PlaneError::Busy) => {
+                tokio::time::sleep(wait).await;
+                wait = wait.saturating_mul(2).min(Duration::from_millis(500));
+            }
+            Err(error) => panic!("a member was not taken into the plane: {error}"),
+        }
+    }
+}
+
+/// The devices `plane` heard say something on their presence track since it was last asked,
+/// added to `heard`.
+fn hears(plane: &Plane, heard: &mut BTreeSet<[u8; 32]>) {
+    while let Some(object) = plane.try_recv() {
+        if object.track == Track::Presence && !object.body.is_empty() {
+            heard.insert(object.sender);
+        }
+    }
+}
+
+/// Have every plane of `planes` say where it is, again and again, until `done` says of what each
+/// of them heard that it is enough: who each plane heard, in the planes' order. `sequence`
+/// numbers what they say, across every call for the same planes. A wait past the suite's bound
+/// fails with how many devices each heard and how many it says it does not hear.
+async fn said_until(
+    what: &str,
+    planes: &[Plane],
+    sequence: &mut u32,
+    mut done: impl FnMut(&[BTreeSet<[u8; 32]>]) -> bool,
+) -> Vec<BTreeSet<[u8; 32]>> {
+    let deadline = tilo_test_env::hang_deadline();
+    let mut heard = vec![BTreeSet::new(); planes.len()];
+    let mut said: Option<std::time::Instant> = None;
+    loop {
+        if said.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) {
+            // A track's objects are numbered upwards for as long as its plane lives.
+            *sequence = sequence.saturating_add(1);
+            for plane in planes {
+                plane.publish(Track::Presence, *sequence, b"here").unwrap();
+            }
+            said = Some(std::time::Instant::now());
+        }
+        for (plane, heard) in planes.iter().zip(heard.iter_mut()) {
+            hears(plane, heard);
+        }
+        if done(&heard) {
+            return heard;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: each plane heard {:?} devices and says of the rest {:?}",
+            heard.iter().map(BTreeSet::len).collect::<Vec<_>>(),
+            planes.iter().map(Plane::unheard).collect::<Vec<_>>(),
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// `devices` devices of one workspace in its plane through one relay, every one asking at once
+/// as the devices of a workspace do when its host comes back: the relay, which must outlive the
+/// planes, the devices and their planes.
+async fn a_plane_of(
+    devices: usize,
+) -> (
+    (Relay, iroh::protocol::Router, Arc<Authority>),
+    Vec<Member>,
+    Vec<Plane>,
+) {
+    let authority = Authority::new();
+    let relay_endpoint = endpoint().await;
+    let relay = Relay::new(authority.clone());
+    let serving = serve(&relay, &relay_endpoint);
+    let at = addr(&relay_endpoint);
+    let keys = keys();
+    let all = members(&authority, devices).await;
+    let roster = authority.roster();
+    let joining: Vec<_> = all
+        .iter()
+        .map(|member| {
+            tokio::spawn(ask_until_in(
+                member.clone(),
+                at.clone(),
+                roster.clone(),
+                keys.clone(),
+            ))
+        })
+        .collect();
+    let mut planes = Vec::new();
+    for joining in joining {
+        planes.push(joining.await.unwrap());
+    }
+    ((relay, serving, authority), all, planes)
+}
+
+/// As many devices as one plane reads, and the one that reads them: every one of them hears
+/// every other, through a relay their endpoints reach with the few streams a connection is
+/// allowed before its session is admitted. Sixteen streams a connection, which is what the
+/// carrier's transport allowed before, let a device hear four others and left the rest unread
+/// without a word.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_device_of_a_full_plane_hears_every_other() {
+    let devices = MAX_HEARD + 1;
+    let (_relay, members, planes) = a_plane_of(devices).await;
+    let mut sequence = 0;
+    let heard = said_until(
+        "every device hears every other",
+        &planes,
+        &mut sequence,
+        |heard| heard.iter().all(|heard| heard.len() == devices - 1),
+    )
+    .await;
+    for (index, (member, heard)) in members.iter().zip(&heard).enumerate() {
+        let others: BTreeSet<[u8; 32]> = members
+            .iter()
+            .map(|other| other.key)
+            .filter(|key| *key != member.key)
+            .collect();
+        assert_eq!(heard, &others, "device {index} hears exactly the others");
+    }
+    for (index, plane) in planes.iter().enumerate() {
+        assert_eq!(
+            plane.unheard(),
+            0,
+            "device {index} reads every device that is in the plane"
+        );
+    }
+}
+
+/// A plane reads [`MAX_HEARD`] devices at once. With more of them in the workspace, each device
+/// hears that many and says how many it does not hear and that they are beyond what it reads:
+/// nobody is absent without a word. Once devices go, the ones that were beyond are read in their
+/// place, and nothing is left unheard.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_beyond_what_a_plane_reads_is_counted_and_read_once_there_is_room() {
+    let beyond = 3;
+    let devices = MAX_HEARD + 1 + beyond;
+    let (_relay, members, mut planes) = a_plane_of(devices).await;
+    let told = Arc::new(AtomicUsize::new(0));
+    let counting = told.clone();
+    planes[0].set_unheard_changed(Arc::new(move || {
+        counting.fetch_add(1, Ordering::SeqCst);
+    }));
+    let mut sequence = 0;
+    let heard = said_until(
+        "every device hears as many as it reads and counts the rest",
+        &planes,
+        &mut sequence,
+        |heard| {
+            heard.iter().all(|heard| heard.len() == MAX_HEARD)
+                && planes.iter().all(|plane| plane.unheard() == beyond)
+        },
+    )
+    .await;
+    for (index, heard) in heard.iter().enumerate() {
+        assert_eq!(
+            heard.len(),
+            MAX_HEARD,
+            "device {index} hears as many devices as a plane reads, and no more"
+        );
+    }
+
+    // As many devices as were beyond leave. Whoever read them reads the ones it did not hear in
+    // their place, and whoever did not hear them has nobody left that it does not hear.
+    planes.truncate(devices - beyond);
+    let stayed: BTreeSet<[u8; 32]> = members[..devices - beyond]
+        .iter()
+        .map(|member| member.key)
+        .collect();
+    said_until(
+        "every device that stayed hears every other, and counts nobody as unheard",
+        &planes,
+        &mut sequence,
+        |heard| {
+            heard.iter().zip(&members).all(|(heard, member)| {
+                stayed
+                    .iter()
+                    .filter(|key| **key != member.key)
+                    .all(|key| heard.contains(key))
+            }) && planes.iter().all(|plane| plane.unheard() == 0)
+        },
+    )
+    .await;
+    assert!(
+        told.load(Ordering::SeqCst) >= 2,
+        "a plane tells whoever reads it when the devices it does not hear change"
+    );
+}
+
+/// Anyone who reaches a relay can open its protocol and say nothing, and the relay holds each
+/// such session in admission for as long as a preface may take. Endpoints the workspace's roster
+/// does not name hold only the strangers' places that way: sixteen of them at once take four, the
+/// rest are told busy, and every device of the workspace that asks meanwhile is taken in at once,
+/// sixteen at a time as before. The relay judged nobody but the members.
+#[tokio::test(flavor = "multi_thread")]
+async fn endpoints_no_roster_names_cannot_keep_a_workspaces_devices_out() {
+    let authority = Authority::new();
+    let relay_endpoint = endpoint().await;
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let at = addr(&relay_endpoint);
+    let keys = keys();
+    let all = members(&authority, MAX_ADMITTING).await;
+    let roster = authority.roster();
+
+    // Sixteen endpoints nobody knows open the plane's protocol and say nothing.
+    let silent = strangers(MAX_ADMITTING).await;
+    let mut holding = Vec::new();
+    for stranger in &silent {
+        holding.push(
+            stranger
+                .endpoint
+                .connect(at.clone(), native::ALPN)
+                .await
+                .expect("anyone reaches the relay's endpoint"),
+        );
+    }
+    wait_until("the strangers past their places are told busy", || {
+        usize::try_from(relay.counters().busy).unwrap() == MAX_ADMITTING - MAX_ADMITTING_STRANGERS
+    });
+    assert_eq!(
+        authority.asked(),
+        0,
+        "a session that says nothing is nobody the authority is asked about"
+    );
+
+    // Every device of the workspace asks at once, one ask each: none is told busy.
+    let joining: Vec<_> = all
+        .iter()
+        .map(|member| {
+            tokio::spawn(ask(
+                member.clone(),
+                at.clone(),
+                roster.clone(),
+                keys.clone(),
+                tilo_test_env::hang_bound(),
+            ))
+        })
+        .collect();
+    let mut planes = Vec::new();
+    for (index, joining) in joining.into_iter().enumerate() {
+        planes.push(joining.await.unwrap().unwrap_or_else(|error| {
+            panic!("member {index} was kept out by endpoints nobody knows: {error}")
+        }));
+    }
+    wait_until("every member is in the plane", || {
+        admitted(&relay) == MAX_ADMITTING
+    });
+    assert_eq!(
+        authority.asked(),
+        MAX_ADMITTING,
+        "the relay judged the members and nobody else"
+    );
+    assert_eq!(
+        usize::try_from(relay.counters().busy).unwrap(),
+        MAX_ADMITTING - MAX_ADMITTING_STRANGERS,
+        "no member was told busy"
+    );
+    assert!(
+        planes.iter().all(|plane| !plane.ended()),
+        "every member's plane is carried"
+    );
+    assert_eq!(
+        holding.len(),
+        MAX_ADMITTING,
+        "the endpoints nobody knows kept their sessions open all along"
+    );
+}
+
+/// One endpoint holds at most [`MAX_ADMITTING_OF_ONE`] places in admission, however many
+/// sessions it opens: a device of the workspace that opens sixteen at once has four taken and the
+/// rest told busy, the other devices are taken into the places it could not hold, and the relay
+/// is at its bound only once they fill them.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_endpoint_holds_few_places_however_many_sessions_it_opens() {
+    let authority = Authority::holding();
+    let relay_endpoint = endpoint().await;
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let at = addr(&relay_endpoint);
+    let keys = keys();
+    let rest = MAX_ADMITTING - MAX_ADMITTING_OF_ONE;
+    let all = members(&authority, 1 + rest + 1).await;
+    let (one, others) = all.split_first().unwrap();
+    let (others, last) = others.split_at(rest);
+    let roster = Roster::new([one.key]);
+    let long = tilo_test_env::hang_bound();
+    let asks = |member: &Member| {
+        ask(
+            member.clone(),
+            at.clone(),
+            roster.clone(),
+            keys.clone(),
+            long,
+        )
+    };
+
+    // One device opens sixteen sessions at once. Four are taken into admission, where the
+    // authority holds them; the others are told busy.
+    let opened: Vec<_> = (0..MAX_ADMITTING)
+        .map(|_| tokio::spawn(asks(one)))
+        .collect();
+    wait_until(
+        "the device's sessions past its places are told busy",
+        || {
+            usize::try_from(relay.counters().busy).unwrap() == rest
+                && authority.asked() == MAX_ADMITTING_OF_ONE
+                && opened
+                    .iter()
+                    .filter(|session| session.is_finished())
+                    .count()
+                    == rest
+        },
+    );
+    let mut told_busy = 0;
+    let mut waiting = Vec::new();
+    for session in opened {
+        if session.is_finished() {
+            assert_eq!(session.await.unwrap().err(), Some(PlaneError::Busy));
+            told_busy += 1;
+        } else {
+            waiting.push(session);
+        }
+    }
+    assert_eq!(
+        (told_busy, waiting.len()),
+        (rest, MAX_ADMITTING_OF_ONE),
+        "one endpoint holds four places, and its further sessions are told busy"
+    );
+
+    // The other devices of the workspace are taken into the places it could not hold.
+    let admitting: Vec<_> = others
+        .iter()
+        .map(|member| tokio::spawn(asks(member)))
+        .collect();
+    wait_until("the other devices are in admission", || {
+        authority.asked() == MAX_ADMITTING
+    });
+    assert_eq!(
+        usize::try_from(relay.counters().busy).unwrap(),
+        rest,
+        "no other device was told busy"
+    );
+    // Only now is the relay at its bound.
+    assert_eq!(
+        asks(&last[0]).await.err(),
+        Some(PlaneError::Busy),
+        "sixteen sessions of the workspace's devices are in admission"
+    );
+
+    authority.let_through(4096);
+    for session in waiting.into_iter().chain(admitting) {
+        session
+            .await
+            .unwrap()
+            .expect("a session the relay took into admission is admitted");
+    }
+    asks(&last[0])
+        .await
+        .expect("the device told busy is admitted when it asks again");
 }

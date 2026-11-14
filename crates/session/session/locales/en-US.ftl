@@ -113,6 +113,10 @@ refusal-reason-other = the reason is not known
 # change stays on this device.
 desk-not-shared-app = Shared desk
 desk-not-shared-title = { $workspace } did not take your window arrangement
+# The same of a workspace nobody named, and of one this device left before the notice came: there
+# is no name to say.
+desk-not-shared-title-unnamed = A workspace with no name did not take your window arrangement
+desk-not-shared-title-gone = A workspace this device is no longer in did not take your window arrangement
 desk-not-shared-body = It stays on this device: { $reason }.
 
 # A collaborator's device speaks another Tilo protocol version: the two work

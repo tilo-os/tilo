@@ -21,7 +21,45 @@ topbar-sharing-count = { $viewers } { $viewers ->
         [one] sieht
        *[other] sehen
     } zu
+# Jemand wollte ein geteiltes Fenster sehen, und nichts davon ist bisher hinausgegangen: Er wartet
+# und sieht erst zu oder steuert, wenn etwas hinausgegangen ist.
+topbar-sharing-agent-waiting = Agent wartet: { $name }
+topbar-sharing-agent-waiting-control = Agent wartet, darf steuern: { $name }
+topbar-sharing-person-waiting = Wartet: { $name }
+topbar-sharing-person-waiting-control = Wartet, darf steuern: { $name }
+topbar-sharing-session-waiting = Wartet: { $name }
+topbar-sharing-session-waiting-control = Wartet, darf steuern: { $name }
+topbar-sharing-count-waiting = { $waiting } { $waiting ->
+        [one] wartet
+       *[other] warten
+    }
+topbar-sharing-count-waiting-control = { $waiting } { $waiting ->
+        [one] wartet
+       *[other] warten
+    }, { $controllers } { $controllers ->
+        [one] darf
+       *[other] dürfen
+    } steuern
+topbar-sharing-count-mixed = { $viewers } { $viewers ->
+        [one] sieht
+       *[other] sehen
+    } zu, { $waiting } { $waiting ->
+        [one] wartet
+       *[other] warten
+    }
+topbar-sharing-count-mixed-controlling = { $viewers } { $viewers ->
+        [one] sieht
+       *[other] sehen
+    } zu, { $controllers } { $controllers ->
+        [one] steuert
+       *[other] steuern
+    }, { $waiting } { $waiting ->
+        [one] wartet
+       *[other] warten
+    }
 topbar-sharing-unknown-window = ein Fenster
+# Wer ein geteiltes Fenster sieht, wenn nichts ihn benennt, nach „Sieht zu:“ oder „Steuert:“.
+topbar-sharing-unnamed-viewer = ein anderes Gerät
 topbar-sharing-window-in-workspace = { $window } in { $workspace }
 topbar-watching-count = +{ $count } { $count ->
         [one] schaut zu
@@ -49,12 +87,19 @@ topbar-bell-silenced = { $unread ->
 topbar-show-people = Alle hier
 topbar-viewer-can-control = kann { $targets } steuern
 topbar-viewer-view-only = sieht nur { $targets }
-topbar-viewer-entry = { $name } ({ $kind ->
-        [agent] Agent
-        [person] Person
-       *[session] unbekannte Sitzung
-    }): { $access }
+topbar-viewer-waiting = wartet auf { $targets }
+topbar-viewer-waiting-control = wartet auf { $targets }, Steuern erlaubt
+# Wer ein geteiltes Fenster sieht, wie ein Screenreader es sagt: was der Arbeitsbereich über ihn
+# sagt, der Name aus der oberen Leiste, wenn nur der bekannt ist, und ohne Namen eben das.
+topbar-viewer-entry = { $kind ->
+        [agent] { $name } (Agent)
+        [person] { $name } (Person)
+        [unnamed] ein Gerät ohne Namen
+       *[named] { $name }
+    }: { $access }
 topbar-people-visible = Bildschirm sichtbar für { $viewers }. Zeigen, wer hier ist
+topbar-people-waiting = Noch nichts gesendet an { $viewers }. Zeigen, wer hier ist
+topbar-people-visible-and-waiting = Bildschirm sichtbar für { $viewers }. Noch nichts gesendet an { $waiting }. Zeigen, wer hier ist
 topbar-capture-privacy = Datenschutzeinstellungen für aktive Aufnahme
 topbar-control = Steuerelement der oberen Leiste
 topbar-invite = Einladen
@@ -1063,17 +1108,37 @@ session-displays-set = Bildschirme anordnen
 session-clipboard = Zwischenablage
 
 session-window-share = Geteilte Fenster
-session-window-share-share = Ein Fenster mit dem Raum teilen
-session-window-share-param-window = Das Fenster, nach der Kennung, die seine App erfassen darf
+session-window-share-share = Ein Fenster mit dem Arbeitsbereich teilen
+session-window-share-param-window = Das Fenster, nach der Kennung, die seine App erfassen darf; weglassen für das Fenster, das der Tab zeigt
 session-window-share-param-tab = Der Tab, in dem das Fenster auf diesem Gerät gezeigt wird
-session-window-share-param-app = Die App, zu der das Fenster gehört
+session-window-share-param-app = Die App, zu der das Fenster gehört; weglassen für die App des Fensters, das der Tab zeigt
 session-window-share-param-workspace = Der Arbeitsbereich, in dem es geteilt wird
+session-window-share-param-share-workspace = Der Arbeitsbereich, in dem es geteilt wird; weglassen für den, in dem der Tab steht
 session-window-share-stop = Das Teilen des Fensters beenden
-session-window-share-allow-input = Den Raum das Fenster bedienen lassen
+session-window-share-allow-input = Den Arbeitsbereich das Fenster bedienen lassen
 session-window-share-param-on = Ob sie es bedienen dürfen; weglassen zum Umschalten
 session-window-share-watch = Ein Fenster zeigen, das ein anderes Mitglied teilt
 session-window-share-unwatch = Es nicht mehr zeigen
 session-window-share-workspace-left = Dieser Rechner ist nicht mehr im Arbeitsbereich
+session-window-share-live-keys = Wartet darauf, dass die Schlüssel dieses Arbeitsbereichs dieses Gerät erreichen
+session-window-share-live-keyless = Dieses Gerät hat keine Schlüssel dieses Arbeitsbereichs
+session-window-share-live-unread = Dieses Gerät kann nicht lesen, wer in diesem Arbeitsbereich ist
+session-window-share-live-no-relay = Kein Gerät in diesem Arbeitsbereich überträgt seine Anrufe und geteilten Fenster
+session-window-share-live-unreached = Wartet auf die Verbindung zu { $device }, dem Gerät, das die Anrufe und geteilten Fenster dieses Arbeitsbereichs überträgt
+session-window-share-live-busy = { $device }, das Gerät, das die Anrufe und geteilten Fenster dieses Arbeitsbereichs überträgt, nimmt gerade so viele Geräte auf, wie es auf einmal kann; dieses Gerät fragt gleich noch einmal
+session-window-share-live-refused = { $device } hat dieses Gerät nicht zu den Anrufen und geteilten Fenstern dieses Arbeitsbereichs zugelassen
+session-window-share-live-absent = Dieser Rechner nimmt an den Anrufen und geteilten Fenstern dieses Arbeitsbereichs nicht teil
+session-window-share-live-lent = Dieses Gerät kann in diesem Arbeitsbereich eigene Fenster teilen und nicht öffnen, was andere teilen
+session-window-share-live-unheard-bound = { $count ->
+        [one] Ein weiteres Gerät ist in den Anrufen und geteilten Fenstern dieses Arbeitsbereichs und wird hier nicht gehört: Dieses Gerät hört { $bound } andere gleichzeitig
+       *[other] { $count } weitere Geräte sind in den Anrufen und geteilten Fenstern dieses Arbeitsbereichs und werden hier nicht gehört: Dieses Gerät hört { $bound } andere gleichzeitig
+    }
+session-window-share-first-page = Wartet auf die Seite des Fensters von dem Gerät, auf dem es läuft
+session-window-share-first-picture = Wartet auf das erste Bild des Fensters
+session-window-share-page-unsent = Wartet darauf, dass die Seite des Fensters an die Geräte geht, die es zeigen
+session-window-share-page-withheld = Die App des Fensters wurde nach dessen Seite gefragt und hat sie nicht übergeben
+session-window-share-page-overdue = Das Gerät, auf dem das Fenster läuft, wurde nach dessen Seite gefragt und hat sie nicht gesendet
+session-window-share-page-too-large = Die Seite des Fensters ist zu groß, um sie an die Geräte zu senden, die es zeigen
 
 ## The on-screen readout for the hardware keys.
 desktop-actions-osd = Bildschirmanzeige
@@ -1152,7 +1217,82 @@ window-menu-new-group = In ein neues Fenster verschieben
 window-menu-close = Schließen
 window-menu-close-window = Dieses Fenster schließen
 window-menu-stop-desktop-control = Die Steuerung des Desktops beenden
+# Ein Fenster mit seinem Arbeitsbereich zu teilen zeigt sein Livebild in seinem Tab auf den anderen
+# Geräten des Arbeitsbereichs. „In Kanal teilen…“ aus dem Toolkit stellt das Fenster dagegen in
+# einen Kanal: Die beiden Zeilen stehen beieinander, also nennt jede, wohin das Fenster geht.
+window-menu-share-with-workspace = Mit dem Arbeitsbereich teilen
+window-menu-stop-sharing-with-workspace = Teilen mit dem Arbeitsbereich beenden
+window-menu-stop-sharing-watched = Teilen mit dem Arbeitsbereich beenden ({ $viewers } { $viewers ->
+        [one] sieht zu
+       *[other] sehen zu
+    })
+window-menu-stop-sharing-waiting = Teilen mit dem Arbeitsbereich beenden ({ $viewers } { $viewers ->
+        [one] wartet
+       *[other] warten
+    })
 window-menu-someone-elses = { $name }s Fenster
+# Ein Fenster, das ein anderes Gerät teilt, wie der Tab es sagt, der es zeigt: wie der Tab heißt,
+# wessen Fenster es ist, ob dieses Gerät hineinschreiben darf und wie es um seine Bilder steht.
+peer-window-name = { $window } auf { $device }
+peer-window-of = Fenster von { $name }
+peer-window-can-type = Eingabe erlaubt
+peer-window-view-only = Nur ansehen
+peer-window-first-picture = Wartet auf das erste Bild
+peer-window-picture-lost = Ein Teil des Bildes ging verloren, und das nächste ganze ist noch nicht angekommen
+peer-window-live = Live
+peer-window-ended = Beendet: { $why }
+# Warum es endete, als Rest des Satzes nach „Beendet:“.
+peer-window-ended-tab-gone = das Fenster wird hier nicht mehr gezeigt
+peer-window-ended-left-workspace = dieses Gerät hat den Arbeitsbereich verlassen
+peer-window-ended-sender-stopped = der Absender teilt es nicht mehr
+peer-window-ended-restarted = sein Bild hat die Größe geändert
+peer-window-ended-let-go = dieses Gerät hat das Fenster losgelassen
+# Derselbe Tab, solange nichts vom Fenster darin gezeigt wird: wessen App das Fenster gehört und
+# auf welchem Gerät es läuft, und darunter, warum es nicht hier ist. Ein Gerät, das nichts benennt,
+# ist ein anderes Gerät des Arbeitsbereichs, nie sein Schlüssel.
+peer-window-elsewhere = { $app } läuft auf { $device }
+peer-window-elsewhere-unnamed = { $app } läuft auf einem anderen Gerät dieses Arbeitsbereichs
+peer-window-not-shared = Es wird gerade nicht mit diesem Arbeitsbereich geteilt
+peer-window-awaited = Wartet darauf, dass { $device } es sendet
+peer-window-awaited-unnamed = Wartet darauf, dass sein Gerät es sendet
+peer-window-host-away = { $device } ist gerade nicht mit diesem Arbeitsbereich verbunden
+peer-window-host-away-unnamed = Sein Gerät ist gerade nicht mit diesem Arbeitsbereich verbunden
+peer-window-host-left = { $device } gehört nicht mehr zu diesem Arbeitsbereich
+peer-window-host-left-unnamed = Sein Gerät gehört nicht mehr zu diesem Arbeitsbereich
+# Was sich vom Tab aus mit dem Fenster tun lässt, wie seine Aktionen aufgelistet werden: wie jede
+# heißt, wonach sie fragt und was jede Angabe bedeutet.
+peer-window-action-pointer-motion = Zeiger bewegen
+peer-window-action-pointer-motion-hint = Wohin der Zeiger geht
+peer-window-action-pointer-button = Zeigertaste drücken
+peer-window-action-pointer-button-hint = Welche Taste
+peer-window-action-key = Taste drücken
+peer-window-action-key-hint = Welche Taste
+peer-window-action-scroll = Scrollen
+peer-window-action-scroll-hint = Wie weit
+peer-window-action-text = Text eingeben
+peer-window-action-text-hint = Was eingegeben wird
+peer-window-action-keyframe = Das ganze Bild erneut anfordern
+peer-window-action-keyframe-hint = Das Gerät fragen, das es sendet
+peer-window-action-end = Das Fenster loslassen
+peer-window-action-end-hint = Es nicht mehr zeigen
+peer-window-param-x = Wie weit quer über das Fenster, in dessen eigenen Pixeln
+peer-window-param-y = Wie weit das Fenster hinunter, in dessen eigenen Pixeln
+peer-window-param-button = Die Taste, nach ihrer Nummer
+peer-window-param-pressed = Ob sie gedrückt oder wieder losgelassen wird
+peer-window-param-keysym = Die Taste, nach ihrer Nummer
+peer-window-param-modifiers = Die dabei gehaltenen Zusatztasten
+peer-window-param-dx = Wie weit zur Seite gescrollt wird, in Pixeln des Fensters
+peer-window-param-dy = Wie weit nach unten gescrollt wird, in Pixeln des Fensters
+peer-window-param-text = Was in das fokussierte Feld kommt
+# Warum der Tab eine davon nicht ausführt.
+peer-window-refused-ended = Dieses Fenster wird nicht mehr geteilt
+peer-window-refused-view-only = Dieses Fenster ist nur zum Ansehen geteilt
+peer-window-refused-number = „{ $argument }“ ist keine Zahl
+peer-window-refused-whole = „{ $argument }“ ist keine ganze Zahl
+peer-window-refused-flag = „{ $argument }“ ist weder wahr noch falsch
+peer-window-refused-button = Das ist keine Zeigertaste
+peer-window-refused-key = Das ist keine Taste
+peer-window-refused-text = Es gibt keinen Text einzugeben
 # The shell's widgets: what each is called, and what its controls do.
 shell-widget-music = Musik
 shell-widget-team = Menschen hier

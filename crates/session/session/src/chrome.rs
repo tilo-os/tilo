@@ -564,6 +564,10 @@ impl ChromeSource for SessionChrome {
             facts.number(exposure.surface);
             facts.number(exposure.peer);
             facts.when(exposure.can_control);
+            // A viewer waits until something of the window goes out: the bar says it watches then.
+            facts.when(exposure.streaming);
+            // What names a viewer may be heard after it started watching: the bar says it then.
+            facts.words(&exposure.name);
         }
         facts.number(self.tray.as_ref().map_or(0, |tray| tray.revision()));
         // A fullscreen window on a display makes that display's bar step aside.

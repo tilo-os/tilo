@@ -109,8 +109,29 @@ pub enum AdmissionError {
     Invalid,
     #[error("admission denied")]
     Denied,
+    /// The host is admitting as many sessions as it takes at once and read
+    /// nothing of this one ([`crate::preface::CLOSE_BUSY`]): it judged nobody,
+    /// so this is no answer about the grant, and asking again is the remedy.
+    #[error("the host is admitting as many sessions as it takes at once")]
+    Busy,
     #[error("carrier unavailable")]
     Unavailable,
+}
+
+/// What a session that failed under its admission says of it: the code the
+/// host closed it with, when it did within [`crate::preface::DENIED_REPORT`].
+/// A refusal and a busy host are told apart by that code alone, and anything
+/// else, a session that merely went away included, is a host that was not
+/// reached.
+async fn lost<S: Carrier>(session: &S) -> AdmissionError {
+    match n0_future::time::timeout(crate::preface::DENIED_REPORT, closed(session)).await {
+        Ok(error) => match error.session_error().map(|(code, _)| code) {
+            Some(crate::preface::CLOSE_DENIED) => AdmissionError::Denied,
+            Some(crate::preface::CLOSE_BUSY) => AdmissionError::Busy,
+            _ => AdmissionError::Unavailable,
+        },
+        Err(_) => AdmissionError::Unavailable,
+    }
 }
 
 /// Client side of an admitted session's control stream.
@@ -132,17 +153,20 @@ impl<S: Carrier> Admitted<S> {
 ///
 /// # Errors
 ///
-/// Returns [`AdmissionError::Denied`] when the host refuses the grant and
+/// Returns [`AdmissionError::Denied`] when the host refuses the grant,
+/// [`AdmissionError::Busy`] when the host took nothing of the session because
+/// it is admitting as many as it takes at once, and
 /// [`AdmissionError::Unavailable`] when the session fails first.
 pub async fn present<S: Carrier>(session: &S, grant: &[u8]) -> Result<Admitted<S>, AdmissionError> {
     let preface = crate::preface::preface(grant).ok_or(AdmissionError::Invalid)?;
-    let mut session = session.clone();
-    let (mut send, mut recv) = session
-        .open_bi()
-        .await
-        .map_err(|_| AdmissionError::Unavailable)?;
+    let mut opening = session.clone();
+    // A busy host closes the session before it reads anything, so its close
+    // may arrive under any step here: each asks the session why it failed.
+    let Ok((mut send, mut recv)) = opening.open_bi().await else {
+        return Err(lost(session).await);
+    };
     if !write_all(&mut send, &preface).await {
-        return Err(AdmissionError::Unavailable);
+        return Err(lost(session).await);
     }
     let mut status = [0u8; 1];
     if read_exact(&mut recv, &mut status).await {
@@ -154,15 +178,7 @@ pub async fn present<S: Carrier>(session: &S, grant: &[u8]) -> Result<Admitted<S
     }
     // The refusal byte is lost when the host closed the session under it: the
     // close code then carries the refusal.
-    match n0_future::time::timeout(crate::preface::DENIED_REPORT, closed(&session)).await {
-        Ok(error)
-            if error.session_error().map(|(code, _)| code)
-                == Some(crate::preface::CLOSE_DENIED) =>
-        {
-            Err(AdmissionError::Denied)
-        }
-        _ => Err(AdmissionError::Unavailable),
-    }
+    Err(lost(session).await)
 }
 
 /// An admitted `MoQ` session. Dropping it closes the session.

@@ -5,6 +5,10 @@ browser-set-site-protection = { $enabled ->
     [true] Turned tracker protection on for { $origin }
    *[false] Turned tracker protection off for { $origin }
 }
+browser-remember-forms = Remembered the forms of { $origin }
+browser-forget-form = Forgot a form of { $origin }
+browser-forget-site-forms = Forgot the forms of { $origin }
+browser-forget-all-forms = Forgot all remembered forms
 browser-browser-bookmarks = Changed the bookmarks
 browser-bookmark-title = Renamed the bookmark { $item }
 browser-settings-adblock-enabled = { $new ->
@@ -22,6 +26,9 @@ browser-settings-homepage = Changed the homepage
 browser-visit = Visited { $url }
 browser-forget = Forgot { $url }
 browser-clear-history = Cleared the browsing history
+
+## History: what operated a tab's page
+browser-set-down = Set down what was done on a page
 
 ## History: the person's address book
 browser-address-book-enabled = { $new ->
@@ -206,6 +213,27 @@ browser-page-dialog-unsaved = Changes you made may not be saved.
 browser-page-dialog-leave = Leave
 browser-page-dialog-reload = Reload
 
+## A page's file chooser, shown by the system's own picker
+browser-file-chooser-file = Choose a file
+browser-file-chooser-files = Choose files
+browser-file-chooser-folder = Choose a folder
+browser-file-chooser-choose = Choose
+browser-file-chooser-accepted = Accepted files
+
+## A server's sign-in (HTTP authentication): who asks is the origin the
+## credentials go to; the realm is the server's own text
+browser-page-sign-in-title = Sign in to { $site }
+browser-page-sign-in-title-long = Sign in to this site
+browser-page-sign-in-title-proxy = Sign in to the proxy { $site }
+browser-page-sign-in-title-proxy-long = Sign in to the proxy
+browser-page-sign-in-asks = { $asker } asks for a user name and password.
+browser-page-sign-in-asks-proxy = The proxy { $asker } asks for a user name and password.
+browser-page-sign-in-realm = In its own words: “{ $realm }”.
+browser-page-sign-in-clear = This connection is not private: the password can be read on its way.
+browser-page-sign-in-retry = That user name or password was not accepted.
+browser-page-sign-in-too-long = That user name or password is too long.
+browser-page-sign-in-submit = Sign in
+
 ## The saved addresses the browser fills forms from
 browser-autofill-offline = Address autofill is unavailable here: this window browses without your sign-ins.
 browser-autofill-enable = Turn on address autofill
@@ -251,6 +279,72 @@ browser-library-bookmarks-empty-hint = Select the star in the address bar to kee
 browser-library-extensions-empty = No extensions installed
 browser-library-remove-bookmark = Remove bookmark { $title }
 browser-library-forget-visit = Remove { $title } from history
+
+## The page's review: its forms, who set each answer, and what was done
+browser-review-open = Review page
+browser-review-title = Review
+browser-review-done = Done
+browser-review-empty = No forms on this page
+browser-review-unreadable = Couldn’t read this page
+browser-review-unreadable-hint = Reload the page and try again.
+browser-review-form-untitled = Form
+browser-review-form-other = Other fields
+browser-review-form-in-frame = In frame { $name }
+browser-review-question-unnamed = Unnamed field
+browser-review-no-answer = No answer
+browser-review-yes = Yes
+browser-review-no = No
+browser-review-secret-set = Set
+browser-review-secret-not-set = Not set
+browser-review-set-by = Set by { $name }
+browser-review-set-by-you = Set by you
+browser-review-set-typed = Typed into the page
+browser-review-set-by-page = Set by the page
+browser-review-set-by-no-one = No one set this
+browser-review-changed = Changed since it was set
+browser-review-required = Required
+browser-review-invalid = Not valid
+browser-review-record = Done in this tab
+browser-review-earlier = { $count ->
+    [one] { $count } earlier action is not shown
+   *[other] { $count } earlier actions are not shown
+}
+browser-review-by = By { $name }
+browser-review-by-you = By you
+browser-review-actor-on-device = { $name } on { $device }
+browser-review-actor-device-unknown = { $name }, device not known
+browser-review-failed = Failed
+browser-review-did-click = Clicked { $target }
+browser-review-did-fill = Filled { $target }
+browser-review-did-select = Chose in { $target }
+browser-review-did-files = Attached files to { $target }
+browser-review-did-press = Pressed a key in { $target }
+browser-review-did-key = Pressed a key
+browser-review-did-hover = Pointed at { $target }
+browser-review-did-drag = Dragged { $target }
+browser-review-did-pointer = Used the pointer
+browser-review-did-submit = Sent the form
+browser-review-did-scroll = Scrolled the page
+browser-review-did-reader = Switched reader view
+browser-review-did-form = { $count ->
+    [one] Answered { $count } question
+   *[other] Answered { $count } questions
+}
+browser-review-did-other = Acted on the page
+browser-review-did-type = Typed into { $target }
+browser-review-did-type-page = Typed into the page
+browser-review-by-typing = Direct input
+browser-review-wrote-secret = Set, not shown
+browser-review-held-submit = Submission held for you: { $what }
+browser-review-held-request = Request held for you: { $what }
+browser-review-held-download = Download held for you: { $what }
+browser-review-held-other = Held for you: { $what }
+browser-review-hold-allowed-by = Let leave by { $name }
+browser-review-hold-allowed-by-you = Let leave by you
+browser-review-hold-kept = Kept as it is
+browser-review-hold-dropped = Dropped, nobody answered
+browser-review-hold-too-many = Dropped, too many were waiting
+browser-review-hold-gone = Dropped, the page went away
 
 ## Downloads: the list in the Library and its progress
 browser-downloads-empty = No downloads yet
@@ -318,7 +412,18 @@ browser-site-block-permissions = Block permissions
 browser-site-block-note = Blocks camera, microphone, location and notifications. Reload the page to end sessions already running.
 browser-site-ask-again = Ask again
 browser-site-clear-data = Clear site data
-browser-site-clear-note = Clears this site’s storage and cookies, including cookies shared with its subdomains. Reload the page to reset data it still holds.
+browser-site-clear-note = Clears this site’s storage, cookies and remembered forms, including cookies shared with its subdomains. Reload the page to reset data it still holds.
+browser-site-forms = Remembered forms
+browser-site-forms-none = No forms remembered for this site
+browser-site-forms-note = The questions each form asks. Answers are not kept.
+browser-site-forms-forget = Forget this site’s forms
+browser-site-form-untitled = Form
+browser-site-form-questions = { $count ->
+    [one] { $count } question
+   *[other] { $count } questions
+}
+browser-site-form-forget = Forget
+browser-site-form-forget-name = Forget { $form }
 browser-site-protection-off-settings = Protection is off in Settings
 browser-site-protection-off = Protection is off for this site
 browser-site-protection-on = Protection is on for this site
@@ -418,6 +523,8 @@ browser-resource-personal-bookmarks = Personal bookmarks
 browser-resource-bookmark-navigation = Bookmark navigation
 browser-library-already-clear = The library filter is already clear
 browser-action-needs-page = Open a web page first
+browser-action-private-no-forms = A private window remembers no forms
+browser-action-form-changed = This form asks something else since its action was made; the page reads its forms again by itself and publishes the action of the form as it is now. If none appears, read them (read-page-forms)
 browser-action-no-previous-page = No previous page
 browser-action-no-next-page = No next page
 browser-action-page-idle = Page is idle
@@ -528,6 +635,19 @@ browser-effect-import-personal-bookmarks = Import bookmarks
 browser-effect-remove-personal-bookmark = Remove bookmark
 browser-effect-remove-personal-imported-node = Remove imported bookmark
 browser-effect-show-personal-bookmark-folder = Open bookmark folder
+browser-effect-read-page-record = Who did what on the page
+browser-effect-read-page-fields = Page fields and who set them
+browser-effect-read-page-forms = Page forms and what they ask
+browser-effect-find-page-text = Find words on the page
+browser-effect-fill-page-form = Answer page form
+browser-effect-answer-form = Answer a form of the page
+browser-effect-send-form = Send a form of the page
+browser-effect-answer-page-sign-in = Sign in to the site that asks
+browser-effect-cancel-page-sign-in = Cancel the site’s sign-in
+browser-effect-review-page = Review page
+browser-effect-show-page-field = Show field on the page
+browser-effect-read-remembered-forms = Read this site’s remembered forms
+browser-effect-read-all-remembered-forms = Read all remembered forms
 browser-browsing-history = Browsing history
 browser-browsing-history-visit = Record a visit
 browser-browsing-history-import-history-bundle = Import history
@@ -543,6 +663,13 @@ browser-application = Browser
 browser-application-add-bookmark = Bookmark a page
 browser-application-remove-bookmark = Remove a bookmark
 browser-application-set-site-protection = Tracker protection
+browser-application-remember-forms = Remember the forms a page asks
+browser-application-forget-form = Forget a remembered form
+browser-application-forget-site-forms = Forget a site’s remembered forms
+browser-application-forget-all-forms = Forget all remembered forms
+browser-application-forget-this-site-forms = Forget this site’s remembered forms
+browser-page-record = Page record
+browser-page-record-set-down = Set down a page action
 
 ## What the app is called in a window and in the launcher
 browser-app-title = Browser
