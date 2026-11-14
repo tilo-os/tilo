@@ -130,7 +130,13 @@ impl Peer {
             name: device.workspace_id().to_string(),
             role: None,
         }];
-        match device.personal_list().await {
+        match device
+            .personal_list(
+                &tilo_relay_session::workspaces::WorkspaceLabels::new(),
+                None,
+            )
+            .await
+        {
             Ok(personal) => {
                 for entry in personal.workspaces {
                     let Some(workspace) = WorkspaceId::parse(&entry.workspace) else {

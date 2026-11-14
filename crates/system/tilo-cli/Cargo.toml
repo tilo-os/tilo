@@ -94,6 +94,8 @@ futures-util.workspace = true
 iroh.workspace = true
 iroh-blobs.workspace = true
 tracing.workspace = true
+# The person's workspace list, as the peer asks for the folders it keeps.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 # A workspace's name as a folder name, composed as macOS and Linux read it back.
 unicode-normalization = "0.1.25"
 
