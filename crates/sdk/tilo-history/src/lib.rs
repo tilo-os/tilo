@@ -137,12 +137,13 @@ impl Catalogue {
         self.bundle.has_message(key)
     }
 
-    /// Adds `source`'s messages. A message an earlier source already holds keeps that one, so
-    /// a translation added before its source language wins over it.
+    /// Adds `source`'s messages. A message an earlier source held is replaced, so a translation
+    /// added after its source language wins over it, and a later build's words over the
+    /// earlier build's.
     pub fn add(&mut self, source: &str) {
         let resource =
             FluentResource::try_new(source.to_owned()).unwrap_or_else(|(resource, _)| resource);
-        let _ = self.bundle.add_resource(resource);
+        self.bundle.add_resource_overriding(resource);
     }
 }
 

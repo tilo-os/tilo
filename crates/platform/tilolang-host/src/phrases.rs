@@ -189,9 +189,9 @@ impl Phrases {
             .unwrap_or_else(|| id.to_owned())
     }
 
-    /// Takes in a package's catalogues, `(locale, Fluent text)` (i18n.md): the one in these
-    /// phrases' language first, then the source language's, so a translation wins and a message
-    /// it lacks reads in the source language.
+    /// Takes in a package's catalogues, `(locale, Fluent text)` (i18n.md): the source language's,
+    /// then the one in these phrases' language over it, so a translation wins and a message it
+    /// lacks reads in the source language. A later build's words replace its earlier build's.
     pub fn add_package(&self, catalogues: &[(String, String)]) {
         self.take_in(catalogues);
         self.packages.borrow_mut().push(catalogues.to_vec());
@@ -203,10 +203,10 @@ impl Phrases {
         let translation =
             tilo_paths::matching(&locale, catalogues.iter().map(|(tag, _)| tag.as_str()))
                 .and_then(|position| catalogues.get(position));
-        if let Some((_, text)) = translation {
+        if let Some((_, text)) = catalogues.iter().find(|(locale, _)| locale == SOURCE.0) {
             catalogue.add(text);
         }
-        if let Some((_, text)) = catalogues.iter().find(|(locale, _)| locale == SOURCE.0) {
+        if let Some((_, text)) = translation {
             catalogue.add(text);
         }
     }
@@ -270,6 +270,13 @@ mod tests {
                 "d-gone",
                 "no catalogue: the key, as a phrase is"
             );
+            // A later build of the package: what it says replaces what the earlier build said.
+            german.add_package(&[
+                ("en-US".to_owned(), "d-new = Add a note\nd-pin = Pin it\n".to_owned()),
+                ("de-DE".to_owned(), "d-new = Notiz anlegen\n".to_owned()),
+            ]);
+            assert_eq!(german.say("d-new", &[]), "Notiz anlegen");
+            assert_eq!(german.say("d-pin", &[]), "Pin it");
         }
 
         phase a_windows_phrases_are_in_the_language_its_package_ships;
