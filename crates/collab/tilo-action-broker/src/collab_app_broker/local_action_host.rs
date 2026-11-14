@@ -747,80 +747,23 @@ mod tests {
         )
     }
 
-    tilo_test_env::scenario! {
-        fn workspace_requests_reach_the_live_dispatcher_and_registered_services;
-
-        phase workspace_requests_leave_descriptor_resolution_to_the_live_dispatcher;
-        {
-            let provider = workspace_provider("workspace");
-            assert!(certified_provider(&provider));
-            let (allowed, blocked) = workspace_targets();
-            for address in allowed {
-                assert!(certified_target(&provider, &address), "{address:?}");
-            }
-            for address in blocked {
-                assert!(!certified_target(&provider, &address), "{address:?}");
-            }
-            assert!(!certified_provider("untrusted"));
-            assert!(!certified_target(
-                "untrusted",
-                &ActionAddress::new("app.so.tilo.notes", "open")
-            ));
-            assert!(certified_target("42", &ActionAddress::new("note", "edit")));
+    #[test]
+    fn workspace_requests_leave_descriptor_resolution_to_the_live_dispatcher() {
+        let provider = workspace_provider("workspace");
+        assert!(certified_provider(&provider));
+        let (allowed, blocked) = workspace_targets();
+        for address in allowed {
+            assert!(certified_target(&provider, &address), "{address:?}");
         }
-
-        phase workspace_page_keeps_registered_service_actions_and_resource_rows;
-        {
-            let provider = workspace_provider("workspace");
-            let (allowed, blocked) = workspace_targets();
-            let mut rows: Vec<_> = allowed
-                .iter()
-                .chain(&blocked)
-                .cloned()
-                .map(|address| row(&provider, address))
-                .collect();
-            let mut resource_only = row(&provider, ActionAddress::new("shortcuts", "list"));
-            resource_only.action = None;
-            rows.push(resource_only);
-            rows.push(row("42", ActionAddress::new("note", "edit")));
-            rows.push(row("untrusted", ActionAddress::new("note", "edit")));
-            let providers = [provider.as_str(), "42", "untrusted"]
-                .into_iter()
-                .map(|provider| CatalogueProvider {
-                    provider: provider.into(),
-                    app_id: "test-app".into(),
-                    workspace: "workspace".into(),
-                    record_id: String::new(),
-                    browsable: true,
-                })
-                .collect();
-            let page = certified_page(CataloguePage {
-                revision: "revision".into(),
-                rows,
-                providers,
-                next_cursor: vec![1],
-                ..CataloguePage::default()
-            });
-            assert_eq!(page.rows.len(), allowed.len() + 2);
-            assert!(page.rows[allowed.len()].action.is_none());
-            assert_eq!(
-                page.rows[..allowed.len()]
-                    .iter()
-                    .map(|row| row.action.as_ref().unwrap().address.clone())
-                    .collect::<Vec<_>>(),
-                allowed
-            );
-            assert_eq!(page.rows.last().unwrap().provider, "42");
-            assert_eq!(
-                page.providers
-                    .iter()
-                    .map(|p| p.provider.as_str())
-                    .collect::<Vec<_>>(),
-                [provider.as_str(), "42"]
-            );
-            assert_eq!(page.revision, "revision");
-            assert_eq!(page.next_cursor, [1]);
+        for address in blocked {
+            assert!(!certified_target(&provider, &address), "{address:?}");
         }
+        assert!(!certified_provider("untrusted"));
+        assert!(!certified_target(
+            "untrusted",
+            &ActionAddress::new("app.so.tilo.notes", "open")
+        ));
+        assert!(certified_target("42", &ActionAddress::new("note", "edit")));
     }
 
     fn row(provider: &str, address: ActionAddress) -> CatalogueRow {
@@ -845,5 +788,58 @@ mod tests {
                 view: None,
             },
         )
+    }
+
+    #[test]
+    fn workspace_page_keeps_registered_service_actions_and_resource_rows() {
+        let provider = workspace_provider("workspace");
+        let (allowed, blocked) = workspace_targets();
+        let mut rows: Vec<_> = allowed
+            .iter()
+            .chain(&blocked)
+            .cloned()
+            .map(|address| row(&provider, address))
+            .collect();
+        let mut resource_only = row(&provider, ActionAddress::new("shortcuts", "list"));
+        resource_only.action = None;
+        rows.push(resource_only);
+        rows.push(row("42", ActionAddress::new("note", "edit")));
+        rows.push(row("untrusted", ActionAddress::new("note", "edit")));
+        let providers = [provider.as_str(), "42", "untrusted"]
+            .into_iter()
+            .map(|provider| CatalogueProvider {
+                provider: provider.into(),
+                app_id: "test-app".into(),
+                workspace: "workspace".into(),
+                record_id: String::new(),
+                browsable: true,
+            })
+            .collect();
+        let page = certified_page(CataloguePage {
+            revision: "revision".into(),
+            rows,
+            providers,
+            next_cursor: vec![1],
+            ..CataloguePage::default()
+        });
+        assert_eq!(page.rows.len(), allowed.len() + 2);
+        assert!(page.rows[allowed.len()].action.is_none());
+        assert_eq!(
+            page.rows[..allowed.len()]
+                .iter()
+                .map(|row| row.action.as_ref().unwrap().address.clone())
+                .collect::<Vec<_>>(),
+            allowed
+        );
+        assert_eq!(page.rows.last().unwrap().provider, "42");
+        assert_eq!(
+            page.providers
+                .iter()
+                .map(|p| p.provider.as_str())
+                .collect::<Vec<_>>(),
+            [provider.as_str(), "42"]
+        );
+        assert_eq!(page.revision, "revision");
+        assert_eq!(page.next_cursor, [1]);
     }
 }

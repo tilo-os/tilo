@@ -323,54 +323,6 @@ tilo_test_env::scenario! {
         assert_eq!(service.since.load(Ordering::Acquire), 0);
     }
 
-    phase every_piece_of_changes_is_authorized_and_a_revocation_while_editing_fails_closed;
-    {
-        let service = Service::new(true, CHANGES_FIRST_BYTES + 10);
-        let mut channel = Channel::new(&service);
-        let first = channel.open(None).unwrap();
-        channel.take(&first);
-        // A collaborator keeps editing; each edit is read as changes.
-        for revision in 2..5 {
-            service.edit(revision);
-            let changes = channel.open_changes([revision - 1; 32]).unwrap();
-            assert!(matches!(changes, Reply::Changes { .. }));
-            channel.take(&changes);
-        }
-        service.edit(5);
-        let changes = channel.open_changes([4; 32]).unwrap();
-        let Reply::Changes {
-            capture,
-            bytes,
-            token,
-            ..
-        } = &changes
-        else {
-            panic!("changes in more than one piece");
-        };
-        assert_eq!(bytes.len(), CHANGES_FIRST_BYTES);
-        service.readable.store(false, Ordering::Release);
-        assert!(
-            channel
-                .slot
-                .next(*capture, u32::try_from(bytes.len()).unwrap(), *token)
-                .is_err(),
-            "the next piece re-checks the reader's permission"
-        );
-        // The reader cannot acknowledge an unread capture into a base, and its
-        // next read is refused like an Open.
-        assert_eq!(
-            channel.slot.acknowledge(*capture, *token),
-            Ok(Reply::Cancelled)
-        );
-        service.edit(6);
-        assert!(channel.open_changes([4; 32]).is_err());
-        assert!(channel.open(Some([4; 32])).is_err());
-        // Ended custody refuses as well, even where the owner would answer.
-        service.readable.store(true, Ordering::Release);
-        channel.custody.store(false, Ordering::Release);
-        assert!(channel.open_changes([4; 32]).is_err());
-    }
-
     phase a_pending_checkpoint_is_unavailable_never_changes;
     {
         let service = Service::new(true, 3);
@@ -409,6 +361,54 @@ tilo_test_env::scenario! {
     }
 }
 
+#[test]
+fn every_piece_of_changes_is_authorized_and_a_revocation_while_editing_fails_closed() {
+    let service = Service::new(true, CHANGES_FIRST_BYTES + 10);
+    let mut channel = Channel::new(&service);
+    let first = channel.open(None).unwrap();
+    channel.take(&first);
+    // A collaborator keeps editing; each edit is read as changes.
+    for revision in 2..5 {
+        service.edit(revision);
+        let changes = channel.open_changes([revision - 1; 32]).unwrap();
+        assert!(matches!(changes, Reply::Changes { .. }));
+        channel.take(&changes);
+    }
+    service.edit(5);
+    let changes = channel.open_changes([4; 32]).unwrap();
+    let Reply::Changes {
+        capture,
+        bytes,
+        token,
+        ..
+    } = &changes
+    else {
+        panic!("changes in more than one piece");
+    };
+    assert_eq!(bytes.len(), CHANGES_FIRST_BYTES);
+    service.readable.store(false, Ordering::Release);
+    assert!(
+        channel
+            .slot
+            .next(*capture, u32::try_from(bytes.len()).unwrap(), *token)
+            .is_err(),
+        "the next piece re-checks the reader's permission"
+    );
+    // The reader cannot acknowledge an unread capture into a base, and its
+    // next read is refused like an Open.
+    assert_eq!(
+        channel.slot.acknowledge(*capture, *token),
+        Ok(Reply::Cancelled)
+    );
+    service.edit(6);
+    assert!(channel.open_changes([4; 32]).is_err());
+    assert!(channel.open(Some([4; 32])).is_err());
+    // Ended custody refuses as well, even where the owner would answer.
+    service.readable.store(true, Ordering::Release);
+    channel.custody.store(false, Ordering::Release);
+    assert!(channel.open_changes([4; 32]).is_err());
+}
+
 /// Run `test` on a local set, as the broker runs its channels.
 fn on_the_broker(test: impl std::future::Future<Output = ()>) {
     tokio::runtime::Builder::new_current_thread()
@@ -425,54 +425,54 @@ async fn settle() {
     }
 }
 
+#[test]
+fn reads_beyond_the_budget_wait_their_turn_and_all_complete_in_order() {
+    use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
+    on_the_broker(async {
+        // Room for one capture at a time: every other read must wait.
+        let budget = Arc::new(Budget::with_total(MAX_DOCUMENT_BYTES));
+        let service = Service::new(false, 3);
+        let mut channels: Vec<Channel> = (0..6)
+            .map(|_| Channel::sharing(&service, &budget))
+            .collect();
+        let mut firsts = Vec::new();
+        for channel in &mut channels {
+            firsts.push(channel.open(None).unwrap());
+            settle().await;
+        }
+        assert!(matches!(firsts[0], Reply::Chunk { .. }));
+        assert!(
+            firsts[1..].iter().all(|reply| *reply == Reply::Busy),
+            "the rest wait, refused by nothing: {firsts:?}"
+        );
+        let mut first = firsts.remove(0);
+        for turn in 0..channels.len() {
+            assert_eq!(channels[turn].take(&first), vec![1; 3]);
+            settle().await;
+            for later in channels.iter_mut().skip(turn + 2) {
+                assert_eq!(
+                    later.open(None).unwrap(),
+                    Reply::Busy,
+                    "a later read does not overtake an earlier one"
+                );
+            }
+            if let Some(next) = channels.get_mut(turn + 1) {
+                first = next.open(None).unwrap();
+                assert!(
+                    matches!(first, Reply::Chunk { .. }),
+                    "read {} is served once read {turn} is done: {first:?}",
+                    turn + 1
+                );
+            }
+        }
+        drop(channels);
+        settle().await;
+        assert_eq!(budget.used(), 0);
+    });
+}
+
 tilo_test_env::scenario! {
     fn reads_wait_their_turn_within_the_capture_budget;
-
-    phase reads_beyond_the_budget_wait_their_turn_and_all_complete_in_order;
-    {
-        use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
-        on_the_broker(async {
-            // Room for one capture at a time: every other read must wait.
-            let budget = Arc::new(Budget::with_total(MAX_DOCUMENT_BYTES));
-            let service = Service::new(false, 3);
-            let mut channels: Vec<Channel> = (0..6)
-                .map(|_| Channel::sharing(&service, &budget))
-                .collect();
-            let mut firsts = Vec::new();
-            for channel in &mut channels {
-                firsts.push(channel.open(None).unwrap());
-                settle().await;
-            }
-            assert!(matches!(firsts[0], Reply::Chunk { .. }));
-            assert!(
-                firsts[1..].iter().all(|reply| *reply == Reply::Busy),
-                "the rest wait, refused by nothing: {firsts:?}"
-            );
-            let mut first = firsts.remove(0);
-            for turn in 0..channels.len() {
-                assert_eq!(channels[turn].take(&first), vec![1; 3]);
-                settle().await;
-                for later in channels.iter_mut().skip(turn + 2) {
-                    assert_eq!(
-                        later.open(None).unwrap(),
-                        Reply::Busy,
-                        "a later read does not overtake an earlier one"
-                    );
-                }
-                if let Some(next) = channels.get_mut(turn + 1) {
-                    first = next.open(None).unwrap();
-                    assert!(
-                        matches!(first, Reply::Chunk { .. }),
-                        "read {} is served once read {turn} is done: {first:?}",
-                        turn + 1
-                    );
-                }
-            }
-            drop(channels);
-            settle().await;
-            assert_eq!(budget.used(), 0);
-        });
-    }
 
     phase a_read_larger_than_the_whole_budget_completes;
     {

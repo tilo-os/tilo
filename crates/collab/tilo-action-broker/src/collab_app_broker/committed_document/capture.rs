@@ -343,49 +343,6 @@ mod tests {
             assert_eq!(budget.used(), 0);
         }
 
-        phase committed_capture_expiry_is_terminal_and_keeps_quota_until_owner_drops;
-        {
-            let budget = Arc::new(Budget::default());
-            let second = budget.try_reserve().unwrap();
-            let mut capture = Capture::new(
-                Box::new(Bytes(vec![7; CHUNK_BYTES + 1])),
-                budget.try_reserve().unwrap(),
-                1,
-                [7; 32],
-            )
-            .unwrap();
-            let runtime_collab::committed_document::Reply::Chunk { token, .. } =
-                capture.chunk(0, [0; 16]).unwrap()
-            else {
-                panic!("chunk")
-            };
-            assert!(
-                !capture.acknowledges([0; 16]),
-                "the first request token cannot cancel a returned reply"
-            );
-            assert!(
-                capture.chunk(CHUNK_BYTES as u32, [0; 16]).is_err(),
-                "pipelined guesses cannot consume the next body"
-            );
-            assert!(
-                capture
-                    .check_deadline(tilo_clock::now() + std::time::Duration::from_secs(6))
-                    .is_err()
-            );
-            assert!(
-                capture.chunk(CHUNK_BYTES as u32, token).is_err(),
-                "current token cannot revive an expired capture"
-            );
-            assert_eq!(
-                budget.used(),
-                MAX_DOCUMENT_BYTES + CHUNK_BYTES + 1,
-                "expiry cannot free bytes while an unread response owner remains"
-            );
-            drop(capture);
-            assert_eq!(budget.used(), MAX_DOCUMENT_BYTES);
-            drop(second);
-        }
-
         phase a_capture_waiting_to_be_read_holds_its_body_not_the_largest_body;
         {
             let budget = Arc::new(Budget::default());
@@ -522,6 +479,48 @@ mod tests {
             drop(capture);
             assert_eq!(budget.used(), 0);
         }
+    }
+    #[test]
+    fn committed_capture_expiry_is_terminal_and_keeps_quota_until_owner_drops() {
+        let budget = Arc::new(Budget::default());
+        let second = budget.try_reserve().unwrap();
+        let mut capture = Capture::new(
+            Box::new(Bytes(vec![7; CHUNK_BYTES + 1])),
+            budget.try_reserve().unwrap(),
+            1,
+            [7; 32],
+        )
+        .unwrap();
+        let runtime_collab::committed_document::Reply::Chunk { token, .. } =
+            capture.chunk(0, [0; 16]).unwrap()
+        else {
+            panic!("chunk")
+        };
+        assert!(
+            !capture.acknowledges([0; 16]),
+            "the first request token cannot cancel a returned reply"
+        );
+        assert!(
+            capture.chunk(CHUNK_BYTES as u32, [0; 16]).is_err(),
+            "pipelined guesses cannot consume the next body"
+        );
+        assert!(
+            capture
+                .check_deadline(tilo_clock::now() + std::time::Duration::from_secs(6))
+                .is_err()
+        );
+        assert!(
+            capture.chunk(CHUNK_BYTES as u32, token).is_err(),
+            "current token cannot revive an expired capture"
+        );
+        assert_eq!(
+            budget.used(),
+            MAX_DOCUMENT_BYTES + CHUNK_BYTES + 1,
+            "expiry cannot free bytes while an unread response owner remains"
+        );
+        drop(capture);
+        assert_eq!(budget.used(), MAX_DOCUMENT_BYTES);
+        drop(second);
     }
     #[tokio::test(flavor = "current_thread")]
     async fn reads_beyond_the_budget_wait_and_all_complete_in_order() {
