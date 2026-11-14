@@ -20,8 +20,9 @@
 //! * [`wrapped`]: one framed, password-wrapped ciphertext artifact kind
 //!   (a fresh content key under a password, the content under that key),
 //!   with the migration password policy every such artifact shares.
-//! * [`compat`]: the fixed KDF, AES-CBC and AES-CTR of other applications'
-//!   on-disk formats (Chromium `OSCrypt`, rclone obscure) that Tilo imports.
+//! * [`compat`]: the fixed KDFs, AES-CBC, Triple-DES-CBC and AES-CTR of other
+//!   applications' on-disk formats (Chromium `OSCrypt`, rclone obscure, NSS
+//!   saved logins) that Tilo imports.
 //!
 //! Every operation takes a [`Label`] from one closed registry, so each
 //! ciphertext is bound to a single purpose. Secret key types zeroize on

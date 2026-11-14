@@ -38,6 +38,9 @@ rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+# Thunderbird's saved passwords (NSS: key4.db, logins.json), read so they move
+# to the person's vault; the one reviewed home of that cryptography.
+tilo-seal = { path = "../../system/tilo-seal" }
 tempfile.workspace = true
 tilo-net = { workspace = true, features = ["blocking"] }
 # The stored RRULE spelling and the time-zone names a calendar keeps.

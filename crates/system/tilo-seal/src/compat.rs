@@ -7,6 +7,12 @@
 //!   constant key, with a random 16-byte IV before the ciphertext and
 //!   URL-safe base64 around both. Rclone documents it as obfuscation, not
 //!   secure custody; the caller reseals the plaintext in Tilo's own storage.
+//! - NSS (Thunderbird's and Firefox's saved logins, `key4.db` and
+//!   `logins.json`) keeps a key under PBES2: the SHA-1 of a global salt and
+//!   the primary password, stretched with `PBKDF2-HMAC-SHA256`, then
+//!   AES-256-CBC. That key decrypts each login with Triple-DES-CBC (older
+//!   profiles) or AES-256-CBC, PKCS#7 padded. The caller parses the format's
+//!   DER around these and reseals what it reads in Tilo's own vault.
 
 use cbc::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
 use ctr::cipher::StreamCipher;
@@ -72,6 +78,145 @@ pub fn chromium_oscrypt_plaintext(
     Ok(plaintext)
 }
 
+/// Largest NSS ciphertext this decoder accepts: a key or one saved login.
+pub const MAX_NSS_CIPHERTEXT: usize = 64 * 1024;
+/// Most `PBKDF2` iterations an NSS entry may ask for (NSS writes 10 000).
+pub const MAX_NSS_ITERATIONS: u32 = 1_000_000;
+
+/// The block cipher an NSS saved login is encrypted with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NssCipher {
+    /// `des-ede3-cbc` (1.2.840.113549.3.7): a 24-byte key, an 8-byte IV.
+    TripleDesCbc,
+    /// `aes256-CBC` (2.16.840.1.101.3.4.1.42): a 32-byte key, a 16-byte IV.
+    Aes256Cbc,
+}
+
+/// The AES-256 key an NSS PBES2 entry is encrypted under: `PBKDF2-HMAC-SHA256`
+/// of the SHA-1 of `global_salt` and `password` (the primary password; empty
+/// when the person set none), over `entry_salt`.
+fn nss_pbes2_key(
+    global_salt: &[u8],
+    password: &[u8],
+    entry_salt: &[u8],
+    iterations: u32,
+) -> Result<Zeroizing<[u8; 32]>> {
+    use sha1::Digest as _;
+    if iterations == 0 || iterations > MAX_NSS_ITERATIONS {
+        return Err(Error::Malformed("nss iterations"));
+    }
+    let mut hasher = Sha1::new();
+    hasher.update(global_salt);
+    hasher.update(password);
+    let stretched = Zeroizing::new(hasher.finalize());
+    let mut key = Zeroizing::new([0_u8; 32]);
+    pbkdf2::pbkdf2_hmac::<sha2::Sha256>(&stretched, entry_salt, iterations, key.as_mut_slice());
+    Ok(key)
+}
+
+/// Decrypt an NSS PBES2 entry (`key4.db`'s password check and its private
+/// key): `iv` is the whole 16-byte IV (NSS stores 14 bytes after a DER
+/// `04 0e` header the caller puts back).
+///
+/// # Errors
+/// [`Error::Malformed`] for an oversized or misaligned ciphertext, an IV of
+/// another length, iterations out of bounds, or padding that does not check
+/// (a wrong primary password).
+pub fn nss_pbes2_plaintext(
+    global_salt: &[u8],
+    password: &[u8],
+    entry_salt: &[u8],
+    iterations: u32,
+    iv: &[u8],
+    ciphertext: &[u8],
+) -> Result<Zeroizing<Vec<u8>>> {
+    let key = nss_pbes2_key(global_salt, password, entry_salt, iterations)?;
+    nss_cbc_plaintext(NssCipher::Aes256Cbc, key.as_slice(), iv, ciphertext)
+}
+
+/// Decrypt one NSS CBC ciphertext with `key`, PKCS#7 padded.
+///
+/// # Errors
+/// [`Error::Malformed`] for an empty, oversized or misaligned ciphertext or
+/// bad padding, [`Error::InvalidKey`] for a key or IV of the wrong length.
+pub fn nss_cbc_plaintext(
+    cipher: NssCipher,
+    key: &[u8],
+    iv: &[u8],
+    ciphertext: &[u8],
+) -> Result<Zeroizing<Vec<u8>>> {
+    let block = match cipher {
+        NssCipher::TripleDesCbc => 8,
+        NssCipher::Aes256Cbc => 16,
+    };
+    if ciphertext.is_empty()
+        || ciphertext.len() > MAX_NSS_CIPHERTEXT
+        || !ciphertext.len().is_multiple_of(block)
+    {
+        return Err(Error::Malformed("nss ciphertext length"));
+    }
+    let mut plaintext = Zeroizing::new(ciphertext.to_vec());
+    let length = match cipher {
+        NssCipher::TripleDesCbc => {
+            let key = key.get(..24).ok_or(Error::InvalidKey)?;
+            cbc::Decryptor::<des::TdesEde3>::new_from_slices(key, iv)
+                .map_err(|_| Error::InvalidKey)?
+                .decrypt_padded::<Pkcs7>(plaintext.as_mut_slice())
+                .map_err(|_| Error::Malformed("nss padding"))?
+                .len()
+        }
+        NssCipher::Aes256Cbc => cbc::Decryptor::<aes::Aes256>::new_from_slices(key, iv)
+            .map_err(|_| Error::InvalidKey)?
+            .decrypt_padded::<Pkcs7>(plaintext.as_mut_slice())
+            .map_err(|_| Error::Malformed("nss padding"))?
+            .len(),
+    };
+    plaintext.truncate(length);
+    Ok(plaintext)
+}
+
+/// Encrypt `plaintext` as an NSS PBES2 entry: what writes a sample profile
+/// for tests and proofs, never Tilo's own custody.
+///
+/// # Errors
+/// As [`nss_pbes2_plaintext`].
+pub fn nss_pbes2_ciphertext(
+    global_salt: &[u8],
+    password: &[u8],
+    entry_salt: &[u8],
+    iterations: u32,
+    iv: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
+    let key = nss_pbes2_key(global_salt, password, entry_salt, iterations)?;
+    nss_cbc_ciphertext(NssCipher::Aes256Cbc, key.as_slice(), iv, plaintext)
+}
+
+/// Encrypt `plaintext` as NSS does one saved login: what writes a sample
+/// profile for tests and proofs, never Tilo's own custody.
+///
+/// # Errors
+/// [`Error::InvalidKey`] for a key or IV of the wrong length.
+pub fn nss_cbc_ciphertext(
+    cipher: NssCipher,
+    key: &[u8],
+    iv: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
+    use cbc::cipher::BlockModeEncrypt as _;
+    Ok(match cipher {
+        NssCipher::TripleDesCbc => {
+            let key = key.get(..24).ok_or(Error::InvalidKey)?;
+            cbc::Encryptor::<des::TdesEde3>::new_from_slices(key, iv)
+                .map_err(|_| Error::InvalidKey)?
+                .encrypt_padded_vec::<Pkcs7>(plaintext)
+        }
+        NssCipher::Aes256Cbc => cbc::Encryptor::<aes::Aes256>::new_from_slices(key, iv)
+            .map_err(|_| Error::InvalidKey)?
+            .encrypt_padded_vec::<Pkcs7>(plaintext),
+    })
+}
+
 /// Decode the plaintext of an rclone `obscure` password.
 ///
 /// The ciphertext is unauthenticated by design; the caller treats the result
@@ -118,6 +263,8 @@ mod tests {
     /// b'saltysalt', 1, 16)`, then external AES-128-CBC with sixteen spaces
     /// as the IV. Schema 24 prefixes the UTF-8 host's SHA-256; schema 23 does
     /// not. The plaintext is a synthetic test value.
+    const NSS_KEY_VECTOR: &str = "c7b1bc993ce39982060cbccad7fcd870e6cdaa14ba59bc98610484677a2a8794";
+
     const CHROMIUM_V11: &str = "ee96ec8095b1bf04a8f9fa1c5a7d45308ea6eb722925cccd5f79ba1ba5f754d71a47efde835ff2fd5375a1c507ea6a313def214c97d1c7f3a16e8eb9119fbd19";
 
     #[test]
@@ -159,6 +306,45 @@ mod tests {
             chromium_oscrypt_plaintext(&key, &ciphertext).err(),
             Some(Error::Malformed("chromium padding"))
         );
+    }
+
+    /// NSS's PBES2 entry round-trips, refuses a wrong primary password, and
+    /// a login's two ciphers decrypt what they encrypted.
+    #[test]
+    fn nss_entries_and_logins_round_trip() {
+        let iv = [7_u8; 16];
+        let sealed =
+            nss_pbes2_ciphertext(b"salt", b"", b"entry", 10_000, &iv, b"password-check").unwrap();
+        assert_eq!(
+            nss_pbes2_plaintext(b"salt", b"", b"entry", 10_000, &iv, &sealed)
+                .unwrap()
+                .as_slice(),
+            b"password-check"
+        );
+        assert!(nss_pbes2_plaintext(b"salt", b"wrong", b"entry", 10_000, &iv, &sealed).is_err());
+        assert!(nss_pbes2_plaintext(b"salt", b"", b"entry", 0, &iv, &sealed).is_err());
+        let key = [9_u8; 32];
+        for (cipher, iv) in [
+            (NssCipher::TripleDesCbc, &[3_u8; 8][..]),
+            (NssCipher::Aes256Cbc, &[3_u8; 16][..]),
+        ] {
+            let login = nss_cbc_ciphertext(cipher, &key, iv, b"hunter2").unwrap();
+            assert_eq!(
+                nss_cbc_plaintext(cipher, &key, iv, &login)
+                    .unwrap()
+                    .as_slice(),
+                b"hunter2"
+            );
+        }
+    }
+
+    /// The key of an NSS PBES2 entry matches one derived independently with
+    /// `hashlib.pbkdf2_hmac('sha256', sha1(b'global' + b'').digest(),
+    /// b'entry-salt', 1000, 32)`.
+    #[test]
+    fn the_nss_key_matches_an_independent_derivation() {
+        let key = nss_pbes2_key(b"global", b"", b"entry-salt", 1000).unwrap();
+        assert_eq!(hex::encode(*key), NSS_KEY_VECTOR);
     }
 
     #[test]

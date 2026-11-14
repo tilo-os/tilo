@@ -40,6 +40,9 @@ sha2.workspace = true
 # Oakley group, AES-128-CBC and PKCS#7, as the specification fixes them.
 aes = { version = "0.9", features = ["zeroize"] }
 cbc = { version = "0.2", features = ["alloc", "zeroize"] }
+# NSS's (Thunderbird's, Firefox's) saved logins: Triple-DES-CBC in older
+# profiles, beside the AES-256-CBC of newer ones.
+des = "0.9"
 num-bigint = "0.4"
 getrandom.workspace = true
 hex.workspace = true

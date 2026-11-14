@@ -26,12 +26,14 @@ pub mod contacts;
 pub mod events;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
+pub mod logins;
 pub mod mail;
 pub mod mbox;
 pub mod personal_data;
 
 pub use contacts::contacts;
 pub use events::events;
+pub use logins::{LoginsError, SavedLogin, password_for, saved_logins};
 pub use mail::{StoredMessage, messages};
 pub use mbox::{MboxMessages, MessageTooLarge};
 

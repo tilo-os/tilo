@@ -2,7 +2,8 @@
 //!
 //! It is written the way Thunderbird lays a profile out: `profiles.ini`, a
 //! profile directory with `prefs.js`, mbox mail under `ImapMail/<host>`, an
-//! `SQLite` address book and an `SQLite` local calendar under `calendar-data`.
+//! `SQLite` address book, an `SQLite` local calendar under `calendar-data`, and
+//! the accounts' saved passwords in `logins.json` under the key `key4.db` keeps.
 
 use std::path::Path;
 
@@ -10,11 +11,22 @@ pub const WORK_EMAIL: &str = "ada@example.com";
 pub const HOME_EMAIL: &str = "ada.home@example.org";
 pub const WORK_HOST: &str = "imap.example.com";
 pub const HOME_HOST: &str = "imap.example.org";
+/// The password Thunderbird saved for the work account's servers.
+pub const WORK_PASSWORD: &str = "work-fixture-password";
+/// The password Thunderbird saved for the home account's servers.
+pub const HOME_PASSWORD: &str = "home-fixture-password";
+/// The file the work Inbox's invoice carries.
+pub const INVOICE_FILE: &str = "invoice-2026-01.pdf";
+/// What that file holds.
+pub const INVOICE_BYTES: &[u8] =
+    b"%PDF-1.4\n% Sample invoice 2026-01: 1 analytical engine, 1 200 GBP\n%%EOF\n";
 
 /// Write one two-account profile below `home`:
 ///
 /// - `ada@example.com` "Work" and `ada.home@example.org` "Home", both IMAP,
-///   each with an Inbox and Sent folder (3 and 1 messages, and 2 and 1);
+///   each with an Inbox and Sent folder (3 and 1 messages, and 2 and 1), the
+///   work Inbox's invoice an HTML message with a PDF attached;
+/// - the passwords Thunderbird saved for both accounts' servers;
 /// - one address book with two contacts;
 /// - one local calendar with two events.
 ///
@@ -58,13 +70,7 @@ pub fn write_sample_profile(home: &Path) {
                 "0000",
                 "Can you review the draft on Thursday?\r\n",
             ),
-            message(
-                "work-3",
-                WORK_EMAIL,
-                "Invoice",
-                "0005",
-                "The invoice is attached.\r\n",
-            ),
+            invoice(),
         ]
         .concat(),
     );
@@ -130,6 +136,24 @@ pub fn write_sample_profile(home: &Path) {
         )
         .expect("write address book cards");
     drop(connection);
+
+    write_logins(
+        &profile,
+        &[
+            (format!("imap://{WORK_HOST}"), WORK_EMAIL, WORK_PASSWORD),
+            (
+                "smtp://smtp.example.com".to_owned(),
+                WORK_EMAIL,
+                WORK_PASSWORD,
+            ),
+            (format!("imap://{HOME_HOST}"), HOME_EMAIL, HOME_PASSWORD),
+            (
+                "smtp://smtp.example.org".to_owned(),
+                HOME_EMAIL,
+                HOME_PASSWORD,
+            ),
+        ],
+    );
 
     let calendar = profile.join("calendar-data");
     std::fs::create_dir_all(&calendar).expect("create calendar directory");
@@ -216,4 +240,189 @@ fn message(id: &str, to: &str, subject: &str, status: &str, body: &str) -> Strin
     format!(
         "From - Mon Jan 05 09:00:00 2026\r\nFrom: Ada Lovelace <{to}>\r\nTo: Ada Lovelace <{to}>\r\nSubject: {subject}\r\nDate: Mon, 05 Jan 2026 09:00:00 +0000\r\nMessage-ID: <{id}@example.test>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nX-Mozilla-Status: {status}\r\nX-Mozilla-Status2: 00000000\r\n\r\n{body}"
     )
+}
+
+/// The work Inbox's invoice: text and HTML alternatives and a PDF attached,
+/// as a mail program sends one.
+fn invoice() -> String {
+    use base64::Engine as _;
+    let attachment = base64::engine::general_purpose::STANDARD.encode(INVOICE_BYTES);
+    format!(
+        "From - Mon Jan 05 09:00:00 2026\r\nFrom: Ada Lovelace <{WORK_EMAIL}>\r\nTo: Ada Lovelace <{WORK_EMAIL}>\r\nSubject: Invoice\r\nDate: Mon, 05 Jan 2026 09:00:00 +0000\r\nMessage-ID: <work-3@example.test>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"outer\"\r\nX-Mozilla-Status: 0005\r\nX-Mozilla-Status2: 00000000\r\n\r\n--outer\r\nContent-Type: multipart/alternative; boundary=\"inner\"\r\n\r\n--inner\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nThe invoice is attached.\r\nTotal: 1 200 GBP\r\n--inner\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><body><p>The invoice is <b>attached</b>.</p><table><tr><td>Total</td><td><strong>1 200 GBP</strong></td></tr></table></body></html>\r\n--inner--\r\n--outer\r\nContent-Type: application/pdf; name=\"{INVOICE_FILE}\"\r\nContent-Disposition: attachment; filename=\"{INVOICE_FILE}\"\r\nContent-Transfer-Encoding: base64\r\n\r\n{attachment}\r\n--outer--\r\n"
+    )
+}
+
+/// `logins.json` holding `logins` (origin, user name, password) under a key
+/// `key4.db` keeps with no primary password, as Thunderbird writes them.
+#[expect(
+    clippy::expect_used,
+    reason = "a fixture that cannot write its files panics with the path"
+)]
+fn write_logins(profile: &Path, logins: &[(String, &str, &str)]) {
+    use base64::Engine as _;
+    use tilo_seal::compat::{NssCipher, nss_cbc_ciphertext, nss_pbes2_ciphertext};
+    let global_salt = [0x11_u8; 20];
+    let key = [0x5a_u8; 24];
+    let entry = |plaintext: &[u8], salt: u8| {
+        let entry_salt = [salt; 32];
+        let iv = [0x04, 0x0e, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3];
+        let ciphertext =
+            nss_pbes2_ciphertext(&global_salt, b"", &entry_salt, 10_000, &iv, plaintext)
+                .expect("seal a key4 entry");
+        let hmac_sha256 = der(
+            0x30,
+            &der(0x06, &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x02, 0x09]),
+        );
+        let pbkdf2 = der(
+            0x30,
+            &[
+                der(
+                    0x06,
+                    &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x05, 0x0c],
+                ),
+                der(
+                    0x30,
+                    &[
+                        der(0x04, &entry_salt),
+                        der(0x02, &[0x27, 0x10]),
+                        der(0x02, &[0x20]),
+                        hmac_sha256,
+                    ]
+                    .concat(),
+                ),
+            ]
+            .concat(),
+        );
+        let cipher = der(
+            0x30,
+            &[
+                der(
+                    0x06,
+                    &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x01, 0x2a],
+                ),
+                der(0x04, iv.get(2..).unwrap_or_default()),
+            ]
+            .concat(),
+        );
+        der(
+            0x30,
+            &[
+                der(
+                    0x30,
+                    &[
+                        der(
+                            0x06,
+                            &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x05, 0x0d],
+                        ),
+                        der(0x30, &[pbkdf2, cipher].concat()),
+                    ]
+                    .concat(),
+                ),
+                der(0x04, &ciphertext),
+            ]
+            .concat(),
+        )
+    };
+    write_key4(profile, &global_salt, &key, &entry);
+    let field = |plaintext: &str| {
+        let iv = [7_u8; 8];
+        let ciphertext =
+            nss_cbc_ciphertext(NssCipher::TripleDesCbc, &key, &iv, plaintext.as_bytes())
+                .expect("seal a login");
+        base64::engine::general_purpose::STANDARD.encode(der(
+            0x30,
+            &[
+                der(0x04, &super::logins::LOGINS_KEY_ID),
+                der(
+                    0x30,
+                    &[
+                        der(0x06, &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x03, 0x07]),
+                        der(0x04, &iv),
+                    ]
+                    .concat(),
+                ),
+                der(0x04, &ciphertext),
+            ]
+            .concat(),
+        ))
+    };
+    let entries: Vec<serde_json::Value> = logins
+        .iter()
+        .enumerate()
+        .map(|(index, (origin, username, password))| {
+            serde_json::json!({
+                "id": index.saturating_add(1),
+                "hostname": origin,
+                "httpRealm": origin,
+                "formSubmitURL": null,
+                "usernameField": "",
+                "passwordField": "",
+                "encryptedUsername": field(username),
+                "encryptedPassword": field(password),
+                "encType": 1,
+                "timesUsed": 1,
+            })
+        })
+        .collect();
+    std::fs::write(
+        profile.join("logins.json"),
+        serde_json::to_vec(
+            &serde_json::json!({"nextId": logins.len().saturating_add(1), "logins": entries}),
+        )
+        .expect("encode logins.json"),
+    )
+    .expect("write logins.json");
+}
+
+/// `key4.db` keeping `key` under the password check, with no primary
+/// password; `entry` seals one of its PBES2 entries.
+#[expect(
+    clippy::expect_used,
+    reason = "a fixture that cannot write its files panics with the path"
+)]
+fn write_key4(
+    profile: &Path,
+    global_salt: &[u8; 20],
+    key: &[u8; 24],
+    entry: &dyn Fn(&[u8], u8) -> Vec<u8>,
+) {
+    let connection = rusqlite::Connection::open(profile.join("key4.db")).expect("create key4.db");
+    connection
+        .execute_batch(
+            "CREATE TABLE metaData (id PRIMARY KEY UNIQUE ON CONFLICT REPLACE, item1, item2);
+             CREATE TABLE nssPrivate (id PRIMARY KEY UNIQUE ON CONFLICT ABORT, a11, a102);",
+        )
+        .expect("create key4.db tables");
+    connection
+        .execute(
+            "INSERT INTO metaData VALUES ('password', ?1, ?2)",
+            rusqlite::params![global_salt.to_vec(), entry(b"password-check\x02\x02", 1)],
+        )
+        .expect("write the password check");
+    connection
+        .execute(
+            "INSERT INTO nssPrivate VALUES (1, ?1, ?2)",
+            rusqlite::params![entry(key, 2), super::logins::LOGINS_KEY_ID.to_vec()],
+        )
+        .expect("write the logins key");
+    drop(connection);
+}
+
+/// One DER element.
+fn der(tag: u8, content: &[u8]) -> Vec<u8> {
+    let length = content.len();
+    let mut out = vec![tag];
+    if length < 0x80 {
+        out.push(u8::try_from(length).unwrap_or_default());
+    } else {
+        let digits: Vec<u8> = length
+            .to_be_bytes()
+            .into_iter()
+            .skip_while(|byte| *byte == 0)
+            .collect();
+        out.push(0x80 | u8::try_from(digits.len()).unwrap_or_default());
+        out.extend(digits);
+    }
+    out.extend_from_slice(content);
+    out
 }

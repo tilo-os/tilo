@@ -9835,6 +9835,7 @@ dependencies = [
  "tilo-net",
  "tilo-process",
  "tilo-recurrence",
+ "tilo-seal",
  "tilo-test-env",
  "url",
  "uuid",
@@ -16886,6 +16887,7 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 name = "tasks"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "runtime-dylib",
  "serde_json",
  "tasks",
@@ -18248,6 +18250,7 @@ dependencies = [
 name = "tilo-cli"
 version = "0.1.0"
 dependencies = [
+ "accounts",
  "anyhow",
  "base64 0.22.1",
  "blake3",
@@ -21465,6 +21468,7 @@ dependencies = [
  "cbc",
  "chacha20poly1305 0.11.0",
  "ctr 0.10.1",
+ "des",
  "getrandom 0.4.3",
  "hex",
  "hkdf 0.13.0",
