@@ -405,3 +405,64 @@ impl Joined {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::RecordCreation;
+
+    /// What apps may create on a runtime started with `--dev` or without it:
+    /// one app installed with two kinds, one installed with none.
+    fn creation(dev: bool) -> RecordCreation {
+        RecordCreation {
+            declared_kinds: Box::new(|app| match app {
+                "dev.tilo.declared" => Some(vec![
+                    "dev.tilo.note".to_owned(),
+                    "dev.tilo.sheet".to_owned(),
+                ]),
+                "dev.tilo.declares-none" => Some(Vec::new()),
+                _ => None,
+            }),
+            dev,
+        }
+    }
+
+    /// The rule a write to a new record is held to, with the kinds it lets
+    /// through beside the ones it refuses.
+    #[test]
+    fn a_new_record_is_allowed_only_in_a_kind_its_app_declares() {
+        for (dev, app, kind, allowed) in [
+            // An installed app: each kind it declares, whole, and no other.
+            (false, "dev.tilo.declared", "dev.tilo.note", true),
+            (false, "dev.tilo.declared", "dev.tilo.sheet", true),
+            (false, "dev.tilo.declared", "dev.tilo.other", false),
+            (false, "dev.tilo.declared", "", false),
+            (false, "dev.tilo.declared", "dev.tilo", false),
+            (false, "dev.tilo.declared", "dev.tilo.note.draft", false),
+            (false, "dev.tilo.declared", "dev.tilo.Note", false),
+            (
+                false,
+                "dev.tilo.declared",
+                "dev.tilo.note,dev.tilo.sheet",
+                false,
+            ),
+            // `--dev` widens nothing for an app that is installed.
+            (true, "dev.tilo.declared", "dev.tilo.note", true),
+            (true, "dev.tilo.declared", "dev.tilo.other", false),
+            // Installed and declaring no kind: it creates nothing, in dev too.
+            (false, "dev.tilo.declares-none", "dev.tilo.note", false),
+            (true, "dev.tilo.declares-none", "dev.tilo.note", false),
+            (true, "dev.tilo.declares-none", "", false),
+            // Not installed: nothing, unless it is a build under development,
+            // which is trusted with the kind it names.
+            (false, "dev.tilo.not-installed", "dev.tilo.note", false),
+            (true, "dev.tilo.not-installed", "dev.tilo.note", true),
+            (true, "dev.tilo.not-installed", "dev.tilo.other", true),
+        ] {
+            assert_eq!(
+                creation(dev).allows(app, kind),
+                allowed,
+                "dev {dev}: {app} creating `{kind}`"
+            );
+        }
+    }
+}
