@@ -177,97 +177,38 @@ impl CertifiedJoinIdentity {
     }
 }
 
-/// Version tag of a task agent's join presentation.
-pub const TASK_AGENT_JOIN_PREFIX: &[u8] = b"tilo-collab-task-agent-join-v1\0";
+/// Version tag of an agent's join presentation.
+pub const AGENT_JOIN_PREFIX: &[u8] = b"tilo-collab-agent-join-v1\0";
 
-/// A task agent's join: the asking device's certificate (JSON, as in
-/// [`CertifiedJoinIdentity`]), the task delegation that device signed
-/// (`tilo_workspace_join::task_delegation::TaskDelegation::encode`), and the
-/// task key's signature over the workspace's join bytes, which proves the agent
-/// holds the key the delegation names.
+/// An agent's join: the certifying device's certificate (JSON, as in
+/// [`CertifiedJoinIdentity`]), the agent certificate that device signed
+/// (`tilo_workspace_join::agent_cert::AgentCert::encode`), and the agent
+/// key's signature over the workspace's join bytes, which proves the agent
+/// holds the key the certificate names.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskAgentJoinIdentity {
+pub struct AgentJoinIdentity {
     pub workspace_id: String,
     pub device_certificate: Vec<u8>,
-    pub delegation: Vec<u8>,
+    pub certificate: Vec<u8>,
     pub proof: Vec<u8>,
 }
 
-impl TaskAgentJoinIdentity {
-    /// Encode with [`TASK_AGENT_JOIN_PREFIX`].
+impl AgentJoinIdentity {
+    /// Encode with [`AGENT_JOIN_PREFIX`].
     pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
-        let mut bytes = TASK_AGENT_JOIN_PREFIX.to_vec();
+        let mut bytes = AGENT_JOIN_PREFIX.to_vec();
         bytes.extend_from_slice(&postcard::to_stdvec(self)?);
         Ok(bytes)
     }
 
-    /// Decode a task agent's presentation. `Ok(None)` means the bytes are
-    /// not one.
+    /// Decode an agent's presentation. `Ok(None)` means the bytes are not
+    /// one.
     pub fn decode(bytes: &[u8]) -> Result<Option<Self>, postcard::Error> {
-        let Some(encoded) = bytes.strip_prefix(TASK_AGENT_JOIN_PREFIX) else {
+        let Some(encoded) = bytes.strip_prefix(AGENT_JOIN_PREFIX) else {
             return Ok(None);
         };
         postcard::from_bytes(encoded).map(Some)
-    }
-}
-
-/// What the desktop hands a task agent it launches for one task: the key it
-/// minted for the task, and what the agent presents to join with it.
-#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TaskAgentCredentials {
-    pub workspace_id: String,
-    /// The asking device's certificate, JSON.
-    pub device_certificate: Vec<u8>,
-    /// The encoded task delegation.
-    pub delegation: Vec<u8>,
-    /// The task key's secret bytes.
-    pub agent_key: [u8; 32],
-}
-
-impl std::fmt::Debug for TaskAgentCredentials {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TaskAgentCredentials")
-            .field("workspace_id", &self.workspace_id)
-            .field("agent_key", &"<redacted>")
-            .finish_non_exhaustive()
-    }
-}
-
-impl Drop for TaskAgentCredentials {
-    fn drop(&mut self) {
-        zeroize::Zeroize::zeroize(&mut self.agent_key);
-    }
-}
-
-impl TaskAgentCredentials {
-    /// The file name these credentials are left under for `agent_id`.
-    #[must_use]
-    pub fn file_name(agent_id: &str) -> String {
-        format!("{agent_id}.credentials")
-    }
-
-    /// Encode for the file the agent reads.
-    pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
-        postcard::to_stdvec(self)
-    }
-
-    /// Decode [`Self::encode`] output.
-    pub fn decode(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        postcard::from_bytes(bytes)
-    }
-
-    /// The presentation the agent joins with, given the task key's
-    /// signature `proof` over the workspace's join bytes.
-    pub fn presentation(&self, proof: [u8; 64]) -> Result<Vec<u8>, postcard::Error> {
-        TaskAgentJoinIdentity {
-            workspace_id: self.workspace_id.clone(),
-            device_certificate: self.device_certificate.clone(),
-            delegation: self.delegation.clone(),
-            proof: proof.to_vec(),
-        }
-        .encode()
     }
 }
 

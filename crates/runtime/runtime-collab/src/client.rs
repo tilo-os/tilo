@@ -277,8 +277,8 @@ impl CollabClient {
     }
 
     /// Join a channel, presenting `identity` (an encoded
-    /// [`crate::CertifiedJoinIdentity`], or a task agent's
-    /// [`crate::TaskAgentJoinIdentity`]).
+    /// [`crate::CertifiedJoinIdentity`], or an agent's
+    /// [`crate::AgentJoinIdentity`]).
     ///
     /// # Errors
     ///

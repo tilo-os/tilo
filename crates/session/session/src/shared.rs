@@ -467,7 +467,12 @@ impl Shared {
         if !self.boot_join.borrow().waiting()
             && let Some(door) = self.agent_door.borrow_mut().as_mut()
         {
-            door.follow(&self.handle, &self.person);
+            let feed = self.workspace_settings_feed();
+            door.follow(
+                &self.handle,
+                &self.person,
+                &|workspace: &str, client: &str| feed.mcp_agent(workspace, client),
+            );
         }
         self.tell_agent_bindings_lost();
         self.asker.follow();

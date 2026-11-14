@@ -15,6 +15,7 @@ fn make(name: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
         id: None,
         model: None,
         colour: None,
+        mcp_client: None,
     })
 }
 
@@ -27,6 +28,7 @@ fn restore(id: &str, keeper: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
         id: Some(id.to_owned()),
         model: None,
         colour: None,
+        mcp_client: None,
     })
 }
 
@@ -147,6 +149,7 @@ fn an_agent_is_made_in_the_colour_its_keeper_picks() {
                 id: None,
                 model: None,
                 colour: Some(4),
+                mcp_client: None,
             }),
         )
         .unwrap();
@@ -158,6 +161,7 @@ fn an_agent_is_made_in_the_colour_its_keeper_picks() {
             id: None,
             model: None,
             colour: Some(u8::try_from(collab_types::presence::PRESENCE_LEN).unwrap()),
+            mcp_client: None,
         }),
     );
     let refused = beyond.unwrap_err();
@@ -562,6 +566,7 @@ const GOLDEN: &str = r#"{
       "colour": 2,
       "keeper": "ada",
       "model": "anthropic/sonnet",
+      "mcp_client": null,
       "bound": [
         {
           "node": "workspace:ws/app:so.tilo.notes",
@@ -592,6 +597,7 @@ fn golden_state() -> WorkspaceAgents {
                 id: Some("claude".to_owned()),
                 model: Some("anthropic/sonnet".to_owned()),
                 colour: Some(2),
+                mcp_client: None,
             }),
         )
         .unwrap();

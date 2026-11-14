@@ -1,23 +1,25 @@
-//! Task agents: made when a person asks, under a task delegation their
-//! device signed, with no membership row. The broker admits the agent's join
-//! by the delegation's chain and asks again on every revalidation.
+//! Certified agents: a member the workspace's record of its agents names,
+//! joining under an agent certificate their person's device signed. The broker
+//! admits the agent's join by the certificate's chain and the record, and asks
+//! again on every revalidation.
 
 use super::*;
-use tilo_peer_state::join::task_delegation::TaskDelegation;
+use tilo_peer_state::join::agent_cert::AgentCert;
 
 const HOUR_NS: u64 = 3600 * 1_000_000_000;
-/// The task the person asks a task agent to do.
+/// The session the agent works in.
 const TASK_ISSUE: &str = "tasks.tracker/issues/whats-left";
+const AGENT: &str = "claude-code";
 
 fn now_ns() -> u64 {
     tilo_clock::try_unix_now_ns().unwrap()
 }
 
-/// What a person's device makes when they ask: a key for the task and a
-/// delegation of it, signed by `device`.
+/// What a person's device makes for an agent session: a key and a
+/// certificate of it, signed by `device`.
 struct Minted {
     agent_key: SigningKey,
-    delegation: TaskDelegation,
+    delegation: AgentCert,
     device: tilo_user_identity::DeviceCert,
 }
 
@@ -30,11 +32,11 @@ fn mint(
     let mut seed = [7_u8; 32];
     seed[0] = u8::try_from(issued % 251).unwrap();
     let agent_key = SigningKey::from_bytes(&seed);
-    let delegation = TaskDelegation::sign(
+    let delegation = AgentCert::sign(
         device_key,
         device.user_public_key,
         agent_key.verifying_key().to_bytes(),
-        TASK_ISSUE,
+        (AGENT, TASK_ISSUE),
         workspace_id(),
         issued,
         expires,
@@ -50,10 +52,10 @@ fn mint(
 impl Minted {
     fn presentation(&self) -> Vec<u8> {
         let workspace = workspace_id().to_string();
-        runtime_collab::TaskAgentJoinIdentity {
+        runtime_collab::AgentJoinIdentity {
             workspace_id: workspace.clone(),
             device_certificate: serde_json::to_vec(&self.device).unwrap(),
-            delegation: self.delegation.encode(),
+            certificate: self.delegation.encode(),
             proof: self
                 .agent_key
                 .sign(&runtime_identity::collaboration_join_signing_bytes(
@@ -68,9 +70,10 @@ impl Minted {
 }
 
 impl Fixture {
-    /// The person asks: the issue and its run, assigned to the task agent
-    /// and carrying its delegation, as `tasks.tracker#ask-agent` makes it.
+    /// The workspace lists the agent, kept by the person, and its session's
+    /// run goes, carrying its certificate.
     fn ask(&self, minted: &Minted) {
+        self.list_agent(minted);
         self.native.runs.lock().unwrap().push(TrackerRun {
             issue: TASK_ISSUE.into(),
             title: "What's left for the release?".into(),
@@ -112,9 +115,24 @@ impl Fixture {
             self.state.trusted_devices.as_deref().map(Vec::as_slice),
             self.state.certificate_authority.get().map(Arc::as_ref),
         )?;
-        let task = admitted.task.as_deref().ok_or("no task delegation")?;
-        self.state.task_goes(&route.cluster_id, task)?;
+        let cert = admitted
+            .agent_cert
+            .as_deref()
+            .ok_or("no agent certificate")?;
+        self.state.agent_listed(&route.cluster_id, cert)?;
+        self.state.session_still_goes(&route.cluster_id, cert)?;
         Ok(admitted)
+    }
+
+    fn list_agent(&self, minted: &Minted) {
+        let mut listed = self.native.listed.lock().unwrap();
+        if listed.is_empty() {
+            listed.push(crate::services::ListedAgent {
+                id: AGENT.into(),
+                name: "Claude Code".into(),
+                keeper: hex::encode(minted.device.user_public_key),
+            });
+        }
     }
 
     fn task_channel(&self, peer: u64, minted: &Minted) -> runtime_collab::ChannelHandle {
@@ -210,49 +228,61 @@ async fn report_progress(
     .await
 }
 
-/// Asking makes a task and a fresh agent for it: nobody admitted an agent,
-/// yet its run reaches it and it reports on it.
+/// A certified agent the workspace lists is a member: its session's run
+/// reaches it and it reports on it, as itself, for its person.
 #[tokio::test(flavor = "current_thread")]
-async fn a_task_asked_with_no_agent_member_runs() {
+async fn a_certified_agent_is_a_member_and_works_in_its_session() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
             let now = now_ns();
             let minted = mint(&f.native.key, &f.native.certificate, now - 1, now + HOUR_NS);
-            assert!(
-                WorkspaceAuthority::snapshot(&*f.native).unwrap().workspaces[0]
-                    .agent_members_at(now / 1_000_000_000)
-                    .iter()
-                    .all(|(agent, _)| *agent != minted.delegation.agent_id),
-                "the task agent is no member"
-            );
             f.ask(&minted);
             let agent = f.task_channel(300, &minted);
             let run = delivered(&agent).await;
             assert_eq!(run.task_id, TASK_ISSUE);
             report_progress(&agent, &run).await.unwrap();
-            // It acts for the asking person, as the least of them and the
-            // agent cap, on its task alone.
+            let admitted = f.task_join(&minted).unwrap();
             let current = f
                 .state
                 .revalidate_admission(
                     &CrdtRoute::record("so.tilo.agent", workspace_id().to_string(), "main"),
-                    &f.task_join(&minted).unwrap(),
+                    &admitted,
                 )
                 .unwrap();
-            assert_eq!(
-                current.agent_id.as_deref(),
-                Some(minted.delegation.agent_id.as_str())
-            );
+            assert_eq!(current.agent_id.as_deref(), Some(AGENT));
             assert!(current.role <= CapRole::Editor);
             assert_eq!(current.broker_actor().issue(), Some(TASK_ISSUE));
+            let route = CrdtRoute::record("so.tilo.agent", workspace_id().to_string(), "main");
+            let roster = f.state.native_membership_roster(&route, &admitted).unwrap();
+            let me = roster.iter().find(|row| row.is_self).unwrap();
+            assert_eq!(me.id, collab_types::MemberId::agent(AGENT));
+            assert_eq!(me.name, "Claude Code");
+            drop(f);
+        })
+        .await;
+}
+
+/// An agent the workspace's record does not list is no member, whatever its
+/// certificate says.
+#[tokio::test(flavor = "current_thread")]
+async fn an_agent_the_workspace_does_not_list_is_refused() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            let now = now_ns();
+            let minted = mint(&f.native.key, &f.native.certificate, now - 1, now + HOUR_NS);
+            f.ask(&minted);
+            f.native.listed.lock().unwrap().clear();
+            let refused = f.task_join(&minted).unwrap_err();
+            assert!(refused.contains("lists no agent"), "{refused}");
             drop(f);
         })
         .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn an_expired_task_delegation_is_refused() {
+async fn an_expired_agent_certificate_is_refused() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
@@ -272,7 +302,7 @@ async fn an_expired_task_delegation_is_refused() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_delegation_signed_by_an_uncertified_device_is_refused() {
+async fn a_certificate_signed_by_an_uncertified_device_is_refused() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
@@ -289,13 +319,13 @@ async fn a_delegation_signed_by_an_uncertified_device_is_refused() {
             f.ask(&minted);
             assert!(
                 f.task_join(&minted).is_err(),
-                "an unlisted device delegates nothing"
+                "an unlisted device certifies nothing"
             );
             // A listed device's certificate, with another key's signature.
             let mut forged = mint(&stranger_key, &f.native.certificate, now - 1, now + HOUR_NS);
             forged.delegation.device_public_key = f.native.certificate.device_public_key;
             let refused = f.task_join(&forged).unwrap_err();
-            assert!(refused.contains("task delegation refused"), "{refused}");
+            assert!(refused.contains("agent certificate refused"), "{refused}");
             // The run's check refuses it too, whoever reads it.
             let mut run = f.native.runs.lock().unwrap()[0].clone();
             run.delegation = Some(Ok(forged.delegation.encode()));
@@ -311,7 +341,7 @@ async fn a_delegation_signed_by_an_uncertified_device_is_refused() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_finished_or_cancelled_task_ends_its_agent() {
+async fn a_finished_or_cancelled_session_ends_its_agent() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
@@ -331,11 +361,11 @@ async fn a_finished_or_cancelled_task_ends_its_agent() {
         .await;
 }
 
-/// A task agent's own finish ends its task, and the agent still hears how
-/// its last steps ended and tells its host; it never joins again, and a run
-/// its person stopped cuts it off as before.
+/// An agent's own finish ends its session, and the agent still hears how its
+/// last steps ended and tells its host; it never joins again, and a run its
+/// person stopped cuts it off as before.
 #[tokio::test(flavor = "current_thread")]
-async fn a_task_agent_hears_its_own_finish() {
+async fn an_agent_hears_its_own_finish() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
@@ -366,7 +396,7 @@ async fn a_task_agent_hears_its_own_finish() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn revoking_the_device_cuts_its_task_agents() {
+async fn revoking_the_device_cuts_its_agents() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
@@ -395,7 +425,7 @@ async fn revoking_the_device_cuts_its_task_agents() {
             });
             assert!(
                 report_progress(&agent, &run).await.is_err(),
-                "a revoked device's task agent reports nothing more"
+                "a revoked device's agent reports nothing more"
             );
             assert!(f.task_join(&minted).is_err());
             let current = f.native.runs.lock().unwrap()[0].clone();
@@ -409,8 +439,8 @@ async fn revoking_the_device_cuts_its_task_agents() {
         .await;
 }
 
-/// Collaborators stay as they were: a member agent's run reaches it under its
-/// membership, with no delegation on the run.
+/// A member agent's run reaches it under its membership, with no
+/// certificate on the run.
 #[tokio::test(flavor = "current_thread")]
 async fn a_collaborator_still_works() {
     tokio::task::LocalSet::new()
@@ -420,11 +450,6 @@ async fn a_collaborator_still_works() {
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
             report_progress(&agent, &run).await.unwrap();
-            // A collaborator's id is never a task agent's, and a task agent's
-            // is never admitted as a collaborator.
-            assert!(
-                tilo_peer_state::workspace_membership::valid_agent_id("task-0123456789ab").is_err()
-            );
             drop(f);
         })
         .await;

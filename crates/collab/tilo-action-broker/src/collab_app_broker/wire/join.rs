@@ -26,14 +26,12 @@ impl AppConnection {
         let route = CrdtRoute::from_channel_key(&channel_id);
         // Decoded first, so the match scrutinizes a plain value: the join
         // presentations each hold a `Drop`, which must not live past the arm.
-        let task_presentation =
-            runtime_collab::TaskAgentJoinIdentity::decode(&identity).map_err(|error| {
-                BrokerError::failed(format!(
-                    "task agent join presentation is malformed: {error}"
-                ))
+        let agent_presentation =
+            runtime_collab::AgentJoinIdentity::decode(&identity).map_err(|error| {
+                BrokerError::failed(format!("agent join presentation is malformed: {error}"))
             })?;
-        let mut verified_identity = match task_presentation {
-            Some(presentation) => super::verify_task_agent_join(
+        let mut verified_identity = match agent_presentation {
+            Some(presentation) => super::verify_agent_join(
                 &route,
                 &presentation,
                 state.membership.as_ref(),
@@ -173,8 +171,8 @@ impl AppConnection {
                 "host worker cannot delegate an agent identity".into(),
             ));
         }
-        // A task agent joins only as itself: its verified task delegation is
-        // its certification, and a person's handle would name it otherwise.
+        // A certified agent joins only as itself: a person's handle would name
+        // it otherwise.
         super::task_agents::joins_as(&verified_identity, if person { "person" } else { "agent" })
             .map_err(BrokerError::failed)?;
         match member {
@@ -186,11 +184,11 @@ impl AppConnection {
                     verified_identity.display_handle = Some(announced);
                 }
             }
-            Some(MemberId::Agent(participant_handle)) if verified_identity.task.is_some() => {
-                // A task agent's run keeps it: it acts on its delegated task
-                // alone, and the tracker says the task still goes.
+            Some(MemberId::Agent(participant_handle)) if verified_identity.agent_cert.is_some() => {
+                // A certified agent acts in its session alone, while the
+                // workspace lists it and its session goes.
                 state
-                    .admit_task_join(&route.cluster_id, &participant_handle, &verified_identity)
+                    .admit_agent_join(&route.cluster_id, &participant_handle, &verified_identity)
                     .map_err(BrokerError::failed)?;
             }
             Some(MemberId::Agent(participant_handle)) => {

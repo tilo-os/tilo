@@ -1,10 +1,9 @@
-//! A workspace's agents: who works in it, each as one item of the workspace's own
+//! A workspace's agents: each agent member is one item of the workspace's own
 //! record of agents, kept by Chat.
 //!
-//! An agent is not a member: members stay people. An agent is a record every app of
-//! the workspace opens, so its name, colour and model read the same in the settings
-//! that list it, in the chat it answers in, and in the presence its work leaves.
-//! Its actor is `agent:<item id>`.
+//! The item is the agent's member row. Every app of the workspace opens it, so its
+//! name, colour and model read the same in the settings that list it, in the chat it
+//! answers in, and in the presence its work leaves. Its actor is `agent:<item id>`.
 //!
 //! The record is Chat's ([`OWNER`]): its actions are decided against Chat's
 //! committed surface by the workspace's grants. An editor names, bounds and retires
@@ -141,6 +140,9 @@ pub struct Agent {
     /// The model it plans with as `provider/model`; `None` follows the keeper's
     /// default.
     pub model: Option<String>,
+    /// The MCP client it connects as (`Claude Code`); `None` for an agent its
+    /// keeper's device runs.
+    pub mcp_client: Option<String>,
     /// What it may do, narrowed from its keeper's grants; empty follows the default.
     pub bound: Vec<Bound>,
     /// The most its keeper lets it spend in a day, in millionths of the currency;
@@ -290,6 +292,8 @@ impl WorkspaceAgents {
         model: Option<String>,
         #[param("Its colour: a slot of the presence palette; none for one derived from its id")]
         colour: Option<u8>,
+        #[param("The MCP client it connects as; none for an agent its keeper's device runs")]
+        mcp_client: Option<String>,
     ) -> Result<(), Refusal> {
         if self.agents.len() >= MAX_AGENTS {
             return Err(Refusal::new(format!(
@@ -314,12 +318,20 @@ impl WorkspaceAgents {
         };
         let model = chosen_model(model)?;
         let colour = colour_slot(colour)?;
+        let mcp_client = match mcp_client.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(client) => {
+                check_name(client)?;
+                Some(client.to_owned())
+            }
+        };
         self.agents.push(Agent {
             id: Atom(id),
             name,
             colour,
             keeper,
             model,
+            mcp_client,
             bound: Vec::new(),
             spend_limit_micros: None,
             spent: None,

@@ -206,17 +206,6 @@ pub fn user_color(user_id: &str) -> (u8, u8, u8) {
     identity_rgb(PresenceHue::of_identity(user_id))
 }
 
-/// What every task agent's id starts with: a task agent is minted for a run of one, never a
-/// member the workspace's governance admits.
-pub const TASK_AGENT_PREFIX: &str = "task-";
-
-/// Whether `agent` names a task agent, minted for a run, rather than a member: its id
-/// tells one run of it from the next, so the agent it works as is the one its admission names.
-#[must_use]
-pub fn is_task_agent(agent: &str) -> bool {
-    agent.starts_with(TASK_AGENT_PREFIX)
-}
-
 /// The MCP client an agent is, by the name it goes by: a run is named for its client and a number
 /// of the person's runs ("Claude Code #3"), a grant or a live face for the client itself. A name
 /// that only ends in a number ("Cursor 2") keeps it: only a run's `#<digits>` names a number.

@@ -163,8 +163,8 @@ pub struct Join {
     /// The channel key: the app, workspace and, for a record, the record.
     pub channel: String,
     /// The join presentation as the endpoint encoded it: a device's
-    /// certified presentation ([`CertifiedJoinIdentity`]), or a task agent's
-    /// ([`crate::TaskAgentJoinIdentity`]), which the host admits as it reads
+    /// certified presentation ([`CertifiedJoinIdentity`]), or an agent's
+    /// ([`crate::AgentJoinIdentity`]), which the host admits as it reads
     /// them.
     pub identity: Vec<u8>,
     /// The workspace agent the person delegated to this device; `None` for the

@@ -610,8 +610,9 @@ impl Loop {
     }
 
     /// Take the connections waiting, ask the person about each, and settle those they answered: the
-    /// agent becomes a member of the workspace in front, and the client is served as that agent.
-    pub(crate) fn follow(&mut self, handle: &DesktopHandle, person: &str) {
+    /// person's agent member for the client (`members` finds or adds it), and the client is served
+    /// as that agent.
+    pub(crate) fn follow(&mut self, handle: &DesktopHandle, person: &str, members: &Members<'_>) {
         self.accept();
         self.accept_remote();
         self.environments.follow(handle, person);
@@ -620,12 +621,12 @@ impl Loop {
         }
         while let Ok(request) = self.asked.try_recv() {
             if request.key.is_some() {
-                self.admit_by_key(handle, request, person);
+                self.admit_by_key(handle, request, person, members);
             } else {
-                self.request(handle, request, person);
+                self.request(handle, request, person, members);
             }
         }
-        self.settle_waiting(person);
+        self.settle_waiting(person, members);
     }
 
     /// Accept every waiting connection, each on its own thread.
@@ -705,7 +706,13 @@ impl Loop {
 
     /// Ask the person about `request` , unless what they answered before already says it, and keep
     /// it waiting for their answer.
-    fn request(&mut self, handle: &DesktopHandle, request: Request, person: &str) {
+    fn request(
+        &mut self,
+        handle: &DesktopHandle,
+        request: Request,
+        person: &str,
+        members: &Members<'_>,
+    ) {
         let Request {
             facts,
             as_person,
@@ -761,14 +768,12 @@ impl Loop {
         if let Some(agent) = ahead {
             let (agent, shown) = self.agent_of(&agent, &facts);
             tracing::info!(client = %facts.client, pid = facts.pid, %agent, %workspace, "agent door: what the person said ahead of time admits this client");
-            self.seats
-                .admitted(seat, &agent, &shown, (workspace.as_str(), name.as_str()));
-            let _ = decide.send(Consent::Admit {
-                workspace,
-                agent,
-                person: person.to_owned(),
-                name: shown,
-            });
+            let consent = as_member(members, &facts, (&workspace, person), shown.clone());
+            if matches!(consent, Consent::Admit { .. }) {
+                self.seats
+                    .admitted(seat, &agent, &shown, (workspace.as_str(), name.as_str()));
+            }
+            let _ = decide.send(consent);
             return;
         }
         let agent = remembered.unwrap_or_else(|| facts.proposed());
@@ -843,7 +848,7 @@ impl Loop {
 
     /// Settle the questions the person answered — or whose client left — and let the admitted
     /// agents in.
-    fn settle_waiting(&mut self, person: &str) {
+    fn settle_waiting(&mut self, person: &str, members: &Members<'_>) {
         let mut still = Vec::with_capacity(self.waiting.len());
         for mut waiting in std::mem::take(&mut self.waiting) {
             if waiting.decide.is_closed() {
@@ -862,7 +867,7 @@ impl Loop {
                 Poll::Pending => still.push(waiting),
                 Poll::Ready(answer) => {
                     waiting.asked = None;
-                    let consent = self.settle(&waiting, answer, person);
+                    let consent = self.settle(&waiting, answer, person, members);
                     let _ = waiting.decide.send(consent);
                 }
             }
@@ -872,7 +877,13 @@ impl Loop {
 
     /// What the person's answer means for `waiting` : admitted as the agent it proposed, or refused
     /// with the reason.
-    fn settle(&mut self, waiting: &Waiting, answer: Option<Answer>, person: &str) -> Consent {
+    fn settle(
+        &mut self,
+        waiting: &Waiting,
+        answer: Option<Answer>,
+        person: &str,
+        members: &Members<'_>,
+    ) -> Consent {
         let Some(choice) = answer.and_then(|answer| answer.choice) else {
             return Consent::Refuse(word("agent-door-declined"));
         };
@@ -896,6 +907,15 @@ impl Loop {
                 person: person.to_owned(),
             };
         }
+        let consent = as_member(
+            members,
+            &waiting.facts,
+            (&waiting.workspace, person),
+            waiting.shown.clone(),
+        );
+        if !matches!(consent, Consent::Admit { .. }) {
+            return consent;
+        }
         self.seats.admitted(
             waiting.seat,
             &waiting.proposed,
@@ -916,12 +936,7 @@ impl Loop {
                 }
             }
         }
-        Consent::Admit {
-            workspace: waiting.workspace.clone(),
-            agent: waiting.proposed.clone(),
-            person: person.to_owned(),
-            name: waiting.shown.clone(),
-        }
+        consent
     }
 
     /// Take back the answers that let `agent` in: a client whose answer this was is asked again
@@ -974,6 +989,32 @@ impl Loop {
                 );
             }
         });
+    }
+}
+
+/// How the session finds or adds the person's agent member for an MCP client in a workspace: by
+/// workspace id and client name, answering the agent's id.
+pub(crate) type Members<'a> = dyn Fn(&str, &str) -> Result<String, String> + 'a;
+
+/// Admit the client `facts` describes, in `workspace` for `person`, as the person's agent member
+/// for its client, shown as `name`; refused where that member cannot be found or added.
+fn as_member(
+    members: &Members<'_>,
+    facts: &Facts,
+    (workspace, person): (&str, &str),
+    name: String,
+) -> Consent {
+    match members(workspace, &facts.client) {
+        Ok(agent) => Consent::Admit {
+            workspace: workspace.to_owned(),
+            agent,
+            person: person.to_owned(),
+            name,
+        },
+        Err(reason) => {
+            tracing::warn!(client = %facts.client, %workspace, %reason, "agent door: the client's agent member is not added");
+            Consent::Refuse(reason)
+        }
     }
 }
 
@@ -2507,7 +2548,7 @@ fn serve_admitted(
     // The agent the person admitted, which works in a run of its own: its workspace, its person
     // and the agent it is seated as, from the answer to the host the connection is then served
     // through.
-    let agent: Arc<std::sync::Mutex<Option<(String, String, String)>>> = Arc::default();
+    let agent: Arc<std::sync::Mutex<Option<[String; 4]>>> = Arc::default();
     let starting = Arc::clone(&agent);
     let seat = seats.joining(facts.entrance.door());
     // An agent from another of the person's own devices, which the door toward them let through:
@@ -2526,16 +2567,17 @@ fn serve_admitted(
         || {
             let host = Host::new(Some(Arc::clone(&broker)), Arc::clone(session))
                 .with_session_actions(session.actions());
-            let Some((workspace, person, seated)) = starting.lock_recover().take() else {
+            let Some([workspace, person, member, name]) = starting.lock_recover().take() else {
                 return Ok(host);
             };
             let host = host.seated(seats, seat, wake);
             // The run is named as the desk shows its agent: what its history is listed under and
             // what its questions to the person call it.
-            let seated = seats.shown(seat).unwrap_or(seated);
+            let seated = seats.shown(seat).unwrap_or(name);
             let admitted = crate::door_runs::Admitted {
                 workspace: &workspace,
                 person: &person,
+                agent: &member,
                 seated: &seated,
             };
             // Every admitted agent's connection works in a run of its own: one that cannot start
@@ -2568,11 +2610,16 @@ fn serve_admitted(
             if let Consent::Admit {
                 workspace,
                 person,
-                agent: seated,
-                ..
+                agent: member,
+                name,
             } = &consent
             {
-                *agent.lock_recover() = Some((workspace.clone(), person.clone(), seated.clone()));
+                *agent.lock_recover() = Some([
+                    workspace.clone(),
+                    person.clone(),
+                    member.clone(),
+                    name.clone(),
+                ]);
             }
             if let Consent::Admit { .. } = &consent
                 && let Some(stream) = &seat_stream

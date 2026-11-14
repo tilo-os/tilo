@@ -57,6 +57,8 @@ struct Native {
     asks_on_host: std::sync::atomic::AtomicBool,
     /// What the person answered a run "always" for, kept beside it.
     host_answers: Mutex<Vec<tilo_action_policy::Grant>>,
+    /// The agents the workspace's record of its agents names.
+    listed: Mutex<Vec<crate::services::ListedAgent>>,
 }
 
 /// The issue the fixture's agent runs.
@@ -67,6 +69,10 @@ fn workspace_id() -> tilo_desktop_model::WorkspaceId {
     tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap()
 }
 impl crate::services::AgentRoster for Native {
+    fn listed(&self, _: &str) -> Vec<crate::services::ListedAgent> {
+        self.listed.lock().unwrap().clone()
+    }
+
     fn keeper(&self, workspace: &str, agent: &str) -> Option<String> {
         let mut kept = None;
         self.with_tree(&mut |tree| {
@@ -81,7 +87,12 @@ impl crate::services::AgentRoster for Native {
             }
         })
         .ok()?;
-        kept
+        kept.or_else(|| {
+            self.listed(workspace)
+                .into_iter()
+                .find(|listed| listed.id == agent)
+                .map(|listed| listed.keeper)
+        })
     }
 }
 
@@ -402,6 +413,7 @@ impl Fixture {
             opening: std::sync::atomic::AtomicBool::new(false),
             asks_on_host: std::sync::atomic::AtomicBool::new(false),
             host_answers: Mutex::new(Vec::new()),
+            listed: Mutex::new(Vec::new()),
         });
         let membership = OwnerCommitRequest {
             workspace: workspace_id().to_string(),

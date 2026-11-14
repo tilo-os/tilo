@@ -1,4 +1,4 @@
-//! The desktop's agent door, served as a task agent in its run
+//! The desktop's agent door, served as a certified agent in its run
 //! ([`super::TaskRunHost`]): an admitted connection takes an application's
 //! action and a host step only as the run admits them, and loses both once
 //! its person stops the run.
@@ -12,7 +12,7 @@ use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
     ActionHost as _, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
-use tilo_peer_state::join::task_delegation::TaskDelegation;
+use tilo_peer_state::join::agent_cert::AgentCert;
 
 const HOUR_NS: u64 = 3600 * 1_000_000_000;
 /// The issue the door's connection works in.
@@ -77,11 +77,11 @@ impl crate::services::HostStepServices for Desktop {
 }
 
 /// The door's connection, as the desktop makes it when the person admits a
-/// client: a task agent minted for the issue, delegated by the person's
-/// own (not foreign) device, the one at the desktop.
+/// client: an agent member, certified for the session by the person's own
+/// (not foreign) device, the one at the desktop.
 pub(super) struct DoorAgent {
     key: SigningKey,
-    delegation: TaskDelegation,
+    delegation: AgentCert,
     device: tilo_user_identity::DeviceCert,
 }
 
@@ -90,11 +90,11 @@ fn door_agent(f: &Fixture) -> DoorAgent {
     let key = SigningKey::from_bytes(&[57; 32]);
     let (device_key, device) = f.second_device();
     assert!(!device.capabilities.foreign);
-    let delegation = TaskDelegation::sign(
+    let delegation = AgentCert::sign(
         &device_key,
         device.user_public_key,
         key.verifying_key().to_bytes(),
-        DOOR_ISSUE,
+        ("claude-code", DOOR_ISSUE),
         workspace_id(),
         now.saturating_sub(1),
         now.saturating_add(HOUR_NS),
@@ -110,10 +110,10 @@ fn door_agent(f: &Fixture) -> DoorAgent {
 impl DoorAgent {
     pub(super) fn presentation(&self) -> Vec<u8> {
         let workspace = workspace_id().to_string();
-        runtime_collab::TaskAgentJoinIdentity {
+        runtime_collab::AgentJoinIdentity {
             workspace_id: workspace.clone(),
             device_certificate: serde_json::to_vec(&self.device).unwrap(),
-            delegation: self.delegation.encode(),
+            certificate: self.delegation.encode(),
             proof: self
                 .key
                 .sign(&runtime_identity::collaboration_join_signing_bytes(
@@ -127,10 +127,19 @@ impl DoorAgent {
     }
 }
 
-/// The person admitted the client: Tasks holds the issue, assigned to the
-/// door's task agent, with its run going and carrying its delegation.
+/// The person admitted the client: the workspace lists its agent, and the
+/// session's run goes, carrying its certificate.
 pub(super) fn admit(f: &Fixture) -> DoorAgent {
     let agent = door_agent(f);
+    f.native
+        .listed
+        .lock()
+        .unwrap()
+        .push(crate::services::ListedAgent {
+            id: agent.delegation.agent_id.clone(),
+            name: "Claude Code".into(),
+            keeper: hex::encode(agent.device.user_public_key),
+        });
     f.native.runs.lock().unwrap().push(TrackerRun {
         issue: DOOR_ISSUE.into(),
         title: "claude-code in this session".into(),

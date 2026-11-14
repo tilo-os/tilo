@@ -182,11 +182,16 @@ impl KeptAgents {
 }
 
 impl crate::services::AgentRoster for KeptAgents {
-    fn keeper(&self, workspace: &str, agent: &str) -> Option<String> {
+    fn listed(&self, workspace: &str) -> Vec<crate::services::ListedAgent> {
         self.kept
             .iter()
-            .find(|(held, named, _)| held == workspace && named == agent)
-            .map(|(_, _, keeper)| keeper.clone())
+            .filter(|(held, _, _)| held == workspace)
+            .map(|(_, agent, keeper)| crate::services::ListedAgent {
+                id: agent.clone(),
+                name: agent.clone(),
+                keeper: keeper.clone(),
+            })
+            .collect()
     }
 }
 
@@ -196,6 +201,10 @@ impl crate::services::AgentRoster for KeptAgents {
 struct TreeAgents(crate::test_support::WorkspaceTreeHandle);
 
 impl crate::services::AgentRoster for TreeAgents {
+    fn listed(&self, _: &str) -> Vec<crate::services::ListedAgent> {
+        Vec::new()
+    }
+
     fn keeper(&self, workspace: &str, agent: &str) -> Option<String> {
         let held = {
             let tree = self.0.read();

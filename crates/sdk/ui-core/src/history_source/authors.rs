@@ -409,14 +409,9 @@ impl AuthorDirectory {
         } else {
             let principal = hex::encode(actor.as_bytes());
             let author = self.resolve(&principal);
-            // Software is painted as presence paints it: by the one rule, from what it is — and
-            // clear of the colour of the person it acted for. A run's own task agent is named by
-            // the agent its admission named, never by the run, so its changes wear one colour
-            // however often it comes; any other agent's principal is its identity already.
-            let agent = match invoker.name.as_deref() {
-                Some(name) if is_run_agent(&actor) => name,
-                _ => actor.as_str(),
-            };
+            // Software is painted as presence paints it: by the one rule, from its identity, and
+            // clear of the colour of the person it acted for.
+            let agent = actor.as_str();
             let author = if software {
                 let painted = self.color_overrides.get(agent).copied();
                 author.with_rgb(painted.unwrap_or_else(|| {
@@ -652,13 +647,6 @@ pub fn agent_principal_name(principal: &str) -> Option<String> {
     })
 }
 
-/// Whether `principal` names a run's own task agent (`agent:task-…`) rather than an agent the
-/// workspace knows: the ones whose id is minted for a run, so only the agent their admission
-/// named tells one run of them from the next.
-fn is_run_agent(principal: &str) -> bool {
-    collab_types::presence::is_task_agent(principal.strip_prefix("agent:").unwrap_or(principal))
-}
-
 /// `name` with the localized agent kind label, as every agent is shown in
 /// history, presence and activity.
 pub fn agent_display_label(name: &str) -> String {
@@ -706,26 +694,26 @@ mod tests {
         fn an_identity_wears_one_colour_wherever_it_is_shown;
 
         phase an_agents_change_wears_the_agents_presence_colour;
-        // An agent's change is painted in the colour presence paints that agent in — the agent its
-        // admission named, never the run that carried it — and never in its person's.
+        // An agent's change is painted in the colour presence paints that agent in, from its
+        // member id, never in its person's.
         {
-            let of = |run: &str, name: &str| {
-                let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::of_key(run))
-                    .acting_for("ada")
-                    .named(Some(name.into()));
+            let of = |name: &str| {
+                let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::of_key(
+                    "agent:claude-code",
+                ))
+                .acting_for("ada")
+                .named(Some(name.into()));
                 let entry = tilo_actions::ActionContext::default().with_invoker(invoker);
                 AuthorDirectory::new().resolve_entry("00", Some(&entry))
             };
-            let first = of("agent:task-947ea551c632", "agent:helper@box#1");
-            assert_eq!(first.name, "agent:helper@box#1");
+            let first = of("Claude Code #1");
+            assert_eq!(first.name, "Claude Code #1");
             assert_eq!(
                 first.rgb(),
-                crate::presence::participant_color("agent:helper@box#1", true, Some("ada"))
+                crate::presence::participant_color("agent:claude-code", true, Some("ada"))
             );
-            // The agent's second run is another principal, and one colour with its first.
-            let second = of("agent:task-58d1f0aa7711", "agent:helper@box#2");
+            let second = of("Claude Code #2");
             assert_eq!(second.rgb(), first.rgb(), "one agent, one colour");
-            // And it is not the colour of the person it acted for.
             assert_ne!(first.rgb(), crate::presence::user_color("ada"));
         }
 

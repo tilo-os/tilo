@@ -4,10 +4,10 @@
 //! of a conversation it takes part in ([`crate::conversations`]), or — for a client the person
 //! admitted at the agent door — the run that admission starts. Each admitted connection (a
 //! program of this login, one inside an environment, an agent from another of the person's
-//! devices) works in a run of its own: the desktop mints a task agent for it, its device signs
-//! the task delegation, and the run is held here, beside the conversations' turns, for exactly
-//! as long as the connection lasts. The connection then joins the broker as that task agent and
-//! acts through its run ([`tilo_action_broker::collab_app_broker::TaskRunHost`]): each action is
+//! devices) is a session of the person's agent member for that client, and works in a run of its
+//! own: the desktop mints a key for it, its device signs the agent certificate, and the run is
+//! held here, beside the conversations' turns, for exactly as long as the connection lasts. The
+//! connection then joins the broker as that agent and acts through its run ([`tilo_action_broker::collab_app_broker::TaskRunHost`]): each action is
 //! the run's, decided by the person's live grants capped at what an agent may do, and its
 //! history is the run's.
 //!
@@ -26,7 +26,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_broker_core::services::TrackerRun;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::WorkspaceId;
-use tilo_peer_state::join::task_delegation::{MAX_TASK_DELEGATION_NS, TaskDelegation};
+use tilo_peer_state::join::agent_cert::{AgentCert, MAX_AGENT_CERT_NS};
 
 /// The address every door connection's run is named under: no record holds it.
 pub(crate) const DOOR_RUNS: &str = tilo_broker_core::services::DOOR_RUN_PREFIX;
@@ -76,7 +76,7 @@ impl DoorRuns {
             .map(|going| (going.run.clone(), going.answers.clone()))
     }
 
-    /// The name of the run in `workspace` whose task agent is `agent`, while it goes, when that
+    /// The name of the run in `workspace` whose agent is `agent`, while it goes, when that
     /// agent came in from another of the person's own devices; `None` for any other run.
     pub(crate) fn own_device_run(&self, workspace: &str, agent: &str) -> Option<String> {
         self.held
@@ -193,28 +193,29 @@ impl Drop for Held {
     }
 }
 
-/// A door connection's run as this device mints it: the run the broker reads, and the task
-/// agent's presentation the connection joins with.
+/// A door connection's run as this device mints it: the run the broker reads, and the agent's
+/// presentation the connection joins with.
 pub(crate) struct Minted {
     pub(crate) run: TrackerRun,
     pub(crate) presentation: Vec<u8>,
 }
 
 /// What a run is minted for: the workspace the connection works in, the person who admitted it
-/// (whom the agent acts for), and the agent it is seated as (`claude-code@host#2`), the name its
-/// run, and so its history, is listed under.
+/// (whom the agent acts for), the agent member it is a session of, and the name its seat shows
+/// (`Claude Code #2`), which its run, and so its history, is listed under.
 pub(crate) struct Admitted<'a> {
     pub(crate) workspace: &'a str,
     pub(crate) person: &'a str,
+    pub(crate) agent: &'a str,
     pub(crate) seated: &'a str,
 }
 
-/// Mint the run of one admitted connection: a task agent of its own (`agent_key`), delegated by
-/// this device (`device`, certified as `certificate`) for a day at most from `now_ns`, on an issue
-/// no other connection shares.
+/// Mint the run of one admitted connection: a key of its own (`agent_key`), certified as the
+/// admitted agent by this device (`device`, certified as `certificate`) for a day at most from
+/// `now_ns`, in a session no other connection shares.
 ///
 /// # Errors
-/// The device's certificate is another person's, or the delegation does not sign.
+/// The device's certificate is another person's, or the agent certificate does not sign.
 pub(crate) fn mint(
     (device, certificate): (&SigningKey, &tilo_user_identity::DeviceCert),
     agent_key: &SigningKey,
@@ -226,20 +227,20 @@ pub(crate) fn mint(
         return Err("this device's identity is not the person's who admitted the agent".into());
     }
     let issue = format!("{DOOR_RUNS}{}", uuid::Uuid::new_v4().simple());
-    let delegation = TaskDelegation::sign(
+    let delegation = AgentCert::sign(
         device,
         certificate.user_public_key,
         agent_key.verifying_key().to_bytes(),
-        issue.clone(),
+        (admitted.agent, issue.clone()),
         WorkspaceId::parse(admitted.workspace).ok_or("the admission names no workspace")?,
         now_ns,
-        now_ns.saturating_add(MAX_TASK_DELEGATION_NS),
+        now_ns.saturating_add(MAX_AGENT_CERT_NS),
     )
-    .map_err(|error| format!("the agent's delegation does not sign: {error}"))?;
-    let presentation = runtime_collab::TaskAgentJoinIdentity {
+    .map_err(|error| format!("the agent certificate does not sign: {error}"))?;
+    let presentation = runtime_collab::AgentJoinIdentity {
         workspace_id: admitted.workspace.to_owned(),
         device_certificate: serde_json::to_vec(certificate).map_err(|error| error.to_string())?,
-        delegation: delegation.encode(),
+        certificate: delegation.encode(),
         proof: agent_key
             .sign(&runtime_identity::collaboration_join_signing_bytes(
                 admitted.workspace,
@@ -272,7 +273,7 @@ pub(crate) fn mint(
     Ok(Minted { run, presentation })
 }
 
-/// A key no other task agent holds.
+/// A key no other agent session holds.
 ///
 /// # Errors
 /// The system has no randomness to give.
@@ -322,23 +323,27 @@ mod tests {
         tilo_broker_core::person_id_for_root(cert.user_public_key)
     }
 
-    /// The run a connection is minted is a task agent's of its own, delegated by this device for
-    /// the person who admitted it, and its presentation is what the broker's run host joins: the
-    /// same delegation, proven by the agent's own key, in that workspace.
+    /// Each connection's run is a session of its own of the admitted agent member, certified by
+    /// this device for the person who admitted it, and its presentation is what the broker's run
+    /// host joins: the same certificate, proven by the session's own key, in that workspace.
     #[test]
-    fn a_connections_run_is_a_task_agent_of_its_own_delegated_by_this_device() {
+    fn a_connections_run_is_a_session_of_the_agent_certified_by_this_device() {
         let (key, cert) = device();
         let person = person(&cert);
         let admitted = Admitted {
             workspace: WORKSPACE,
             person: &person,
+            agent: "claude-code",
             seated: "claude-code@box#1",
         };
         let first = mint((&key, &cert), &agent_key().unwrap(), &admitted, 1_000).unwrap();
         let second = mint((&key, &cert), &agent_key().unwrap(), &admitted, 1_000).unwrap();
         assert_ne!(first.run.issue, second.run.issue, "a run of its own");
-        assert_ne!(first.run.agent, second.run.agent, "a task agent of its own");
-        assert!(first.run.agent.starts_with("task-"), "{}", first.run.agent);
+        assert_eq!(
+            first.run.agent, "claude-code",
+            "a session of the agent member"
+        );
+        assert_eq!(second.run.agent, "claude-code");
         assert!(
             tilo_broker_core::services::is_door_run(&first.run.issue),
             "the broker keeps its invocations as the run's: {}",
@@ -354,19 +359,19 @@ mod tests {
             "acting for the person who admitted it"
         );
         assert!(first.run.active && first.run.turn.is_none());
-        let joined = runtime_collab::TaskAgentJoinIdentity::decode(&first.presentation)
+        let joined = runtime_collab::AgentJoinIdentity::decode(&first.presentation)
             .unwrap()
-            .expect("a task agent's presentation");
+            .expect("an agent's presentation");
         assert_eq!(joined.workspace_id, WORKSPACE);
         assert_eq!(
             first.run.delegation(),
-            Ok(Some(joined.delegation.as_slice())),
-            "the run carries the delegation the connection joins with"
+            Ok(Some(joined.certificate.as_slice())),
+            "the run carries the certificate the connection joins with"
         );
-        let delegation = TaskDelegation::decode(&joined.delegation).unwrap();
-        assert_eq!(delegation.agent_id, first.run.agent);
-        assert_eq!(delegation.work_group, first.run.issue);
-        assert_eq!(delegation.device_public_key, cert.device_public_key);
+        let certified = AgentCert::decode(&joined.certificate).unwrap();
+        assert_eq!(certified.agent_id, first.run.agent);
+        assert_eq!(certified.session, first.run.issue);
+        assert_eq!(certified.device_public_key, cert.device_public_key);
     }
 
     /// A device whose identity is not the admitting person's mints nobody a run.
@@ -376,6 +381,7 @@ mod tests {
         let admitted = Admitted {
             workspace: WORKSPACE,
             person: "someone-else",
+            agent: "claude-code",
             seated: "claude-code@box#1",
         };
         assert!(mint((&key, &cert), &agent_key().unwrap(), &admitted, 1_000).is_err());
@@ -389,6 +395,7 @@ mod tests {
         let admitted = Admitted {
             workspace: WORKSPACE,
             person: &person,
+            agent: "claude-code",
             seated: "claude-code@box#1",
         };
         let minted = mint((&key, &cert), &agent_key().unwrap(), &admitted, 1_000).unwrap();
@@ -421,8 +428,8 @@ mod tests {
         );
     }
 
-    /// The run of an agent from another of the person's devices is known as one by its task
-    /// agent, in its workspace alone, for as long as it goes.
+    /// The run of an agent from another of the person's devices is known as one by its agent, in
+    /// its workspace alone, for as long as it goes.
     #[test]
     fn a_run_from_another_device_is_known_by_its_agent_while_it_goes() {
         let (key, cert) = device();
@@ -430,6 +437,7 @@ mod tests {
         let admitted = Admitted {
             workspace: WORKSPACE,
             person: &person,
+            agent: "claude-code",
             seated: "claude-code@laptop#1",
         };
         let minted = mint((&key, &cert), &agent_key().unwrap(), &admitted, 1_000).unwrap();
@@ -440,7 +448,7 @@ mod tests {
             Some("claude-code@laptop#1")
         );
         assert_eq!(runs.own_device_run("another", &minted.run.agent), None);
-        assert_eq!(runs.own_device_run(WORKSPACE, "task-someone-else"), None);
+        assert_eq!(runs.own_device_run(WORKSPACE, "someone-else"), None);
         drop(held);
         assert_eq!(runs.own_device_run(WORKSPACE, &minted.run.agent), None);
     }

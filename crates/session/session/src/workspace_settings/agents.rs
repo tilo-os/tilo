@@ -525,6 +525,7 @@ impl Agents {
                 id: Some(agent.clone()),
                 model,
                 colour: None,
+                mcp_client: None,
             }));
             if let Err(refusal) = made {
                 // The tab still lists the agent from its grants until Chat's
@@ -581,7 +582,7 @@ impl Agents {
         &self,
         workspace: Option<&Workspace>,
         person: &UserId,
-        name: &str,
+        (name, mcp_client): (&str, Option<&str>),
         model: &str,
         colour: Option<u8>,
     ) -> Result<String, String> {
@@ -598,9 +599,27 @@ impl Agents {
                 id: Some(id.clone()),
                 model: (!model.is_empty()).then(|| model.to_owned()),
                 colour,
+                mcp_client: mcp_client.map(str::to_owned),
             }))
             .map_err(|error| error.to_string())?;
         Ok(id)
+    }
+
+    /// The active agent `person` keeps in `workspace` for the MCP client `client`.
+    pub(crate) fn of_client(
+        &self,
+        workspace: Option<&Workspace>,
+        person: &UserId,
+        client: &str,
+    ) -> Option<String> {
+        let record = self.record(workspace, person)?;
+        let state = record.get();
+        state
+            .active()
+            .find(|agent| {
+                same_person(&agent.keeper, person) && agent.mcp_client.as_deref() == Some(client)
+            })
+            .map(|agent| agent.id.0.clone())
     }
 
     /// Retire the agent `agent`: it takes no new work, and what it did stays

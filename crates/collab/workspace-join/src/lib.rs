@@ -16,6 +16,7 @@
 //! are read in the layout their version names ([`previous`] and
 //! `room_layout`), never written.
 
+pub mod agent_cert;
 pub mod delegation;
 pub mod invitations;
 /// The invitation and join layouts a build wrote before the grants stopped
@@ -26,7 +27,6 @@ pub mod previous;
 mod room_layout;
 /// A link that carries an invitation's place and key, not its kilobytes.
 pub mod sealed;
-pub mod task_delegation;
 mod workspace_text;
 
 use std::collections::BTreeMap;

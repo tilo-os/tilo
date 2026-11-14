@@ -651,6 +651,37 @@ impl Feeding<'_> {
         model: &str,
         colour: Option<u8>,
     ) -> Result<String, String> {
+        let workspace = self.workspace(workspace_id)?;
+        self.tabs
+            .agents
+            .create(Some(&workspace), self.person, (name, None), model, colour)
+    }
+
+    /// The person's agent for the MCP client `client` in the workspace `workspace_id` names:
+    /// the one the workspace's record lists, else a new one. A client the person approved is one
+    /// agent member, whichever connection it comes in on.
+    ///
+    /// # Errors
+    /// The workspace is not open here, or Chat's grants refuse the record.
+    pub(crate) fn mcp_agent(&self, workspace_id: &str, client: &str) -> Result<String, String> {
+        let workspace = self.workspace(Some(workspace_id))?;
+        if let Some(id) = self
+            .tabs
+            .agents
+            .of_client(Some(&workspace), self.person, client)
+        {
+            return Ok(id);
+        }
+        self.tabs.agents.create(
+            Some(&workspace),
+            self.person,
+            (client, Some(client)),
+            "",
+            None,
+        )
+    }
+
+    fn workspace(&self, workspace_id: Option<&str>) -> Result<Workspace, String> {
         let tree = self.handle.read(Clone::clone);
         let at = match workspace_id {
             Some(id) => tree
@@ -662,12 +693,9 @@ impl Feeding<'_> {
                 .iter()
                 .position(|held| held.id() == tree.active),
         };
-        let Some(workspace) = at.and_then(|at| tree.workspaces.get(at)) else {
-            return Err(t("workspace-settings-agents-unavailable"));
-        };
-        self.tabs
-            .agents
-            .create(Some(workspace), self.person, name, model, colour)
+        at.and_then(|at| tree.workspaces.get(at))
+            .cloned()
+            .ok_or_else(|| t("workspace-settings-agents-unavailable"))
     }
 }
 

@@ -43,19 +43,19 @@ pub(crate) struct Kept {
 /// as the pass read their records.
 #[derive(Default)]
 pub(crate) struct Roster {
-    keepers: Mutex<BTreeMap<(String, String), String>>,
+    listed: Mutex<BTreeMap<String, Vec<tilo_broker_core::services::ListedAgent>>>,
     /// What each agent may spend today and has, by workspace and agent: what a run of its is
     /// admitted with.
     spend: Mutex<BTreeMap<(String, String), runtime_collab::TaskRunSpend>>,
 }
 
 impl tilo_broker_core::services::AgentRoster for Roster {
-    fn keeper(&self, workspace: &str, agent: &str) -> Option<String> {
-        self.keepers
+    fn listed(&self, workspace: &str) -> Vec<tilo_broker_core::services::ListedAgent> {
+        self.listed
             .lock()
-            .ok()?
-            .get(&(workspace.to_owned(), agent.to_owned()))
-            .cloned()
+            .ok()
+            .and_then(|listed| listed.get(workspace).cloned())
+            .unwrap_or_default()
     }
 
     fn spend(&self, workspace: &str, agent: &str) -> Option<runtime_collab::TaskRunSpend> {
@@ -117,7 +117,7 @@ impl Agents {
     /// and answer the agents kept here: this device runs those.
     pub(crate) fn feed(&self, person: &str, workspaces: &[(String, WorkspacePolicy)]) -> Vec<Kept> {
         let day = ui::clock::today().to_string();
-        let mut keepers = BTreeMap::new();
+        let mut listed: BTreeMap<String, Vec<_>> = BTreeMap::new();
         let mut spend = BTreeMap::new();
         let mut kept = Vec::new();
         for (workspace, policy) in workspaces {
@@ -126,9 +126,12 @@ impl Agents {
             };
             let state = record.get();
             for agent in state.active() {
-                keepers.insert(
-                    (workspace.clone(), agent.id.0.clone()),
-                    agent.keeper.clone(),
+                listed.entry(workspace.clone()).or_default().push(
+                    tilo_broker_core::services::ListedAgent {
+                        id: agent.id.0.clone(),
+                        name: agent.name.clone(),
+                        keeper: agent.keeper.clone(),
+                    },
                 );
                 spend.insert(
                     (workspace.clone(), agent.id.0.clone()),
@@ -138,7 +141,8 @@ impl Agents {
                         spent_micros: agent.spent_on(&day),
                     },
                 );
-                if same_person(&agent.keeper, person) {
+                // An MCP agent connects on its own; the keeper's device runs every other one.
+                if agent.mcp_client.is_none() && same_person(&agent.keeper, person) {
                     kept.push(Kept {
                         workspace: workspace.clone(),
                         id: agent.id.0.clone(),
@@ -148,8 +152,8 @@ impl Agents {
                 }
             }
         }
-        if let Ok(mut held) = self.roster.keepers.lock() {
-            *held = keepers;
+        if let Ok(mut held) = self.roster.listed.lock() {
+            *held = listed;
         }
         if let Ok(mut held) = self.roster.spend.lock() {
             *held = spend;
@@ -200,7 +204,7 @@ impl Agents {
         let state = record.get();
         state
             .active()
-            .find(|agent| same_person(&agent.keeper, person))
+            .find(|agent| agent.mcp_client.is_none() && same_person(&agent.keeper, person))
             .map(|agent| (agent.id.0.clone(), agent.name.clone()))
     }
 

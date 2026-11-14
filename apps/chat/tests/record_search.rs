@@ -122,6 +122,7 @@ fn an_agent_is_found_from_the_workspace_record() {
                 id: None,
                 model: None,
                 colour: None,
+                mcp_client: None,
             }),
         )
         .expect("an agent is made");

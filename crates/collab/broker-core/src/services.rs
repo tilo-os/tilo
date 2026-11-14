@@ -15,8 +15,8 @@ mod workspace_nodes;
 
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use task_execution::{
-    AgentRoster, DOOR_RUN_PREFIX, NativeTaskActionRequirement, NativeTaskBinding, Preview,
-    PreviewSide, TRACKER_APP, TRACKER_ISSUE_PREFIX, TRACKER_RECORD, TRACKER_RESOURCE,
+    AgentRoster, DOOR_RUN_PREFIX, ListedAgent, NativeTaskActionRequirement, NativeTaskBinding,
+    Preview, PreviewSide, TRACKER_APP, TRACKER_ISSUE_PREFIX, TRACKER_RECORD, TRACKER_RESOURCE,
     TrackerAnswer, TrackerDirection, TrackerQuestion, TrackerRun, TrackerRuns,
     confirmation_preview, is_conversation_turn, is_door_run, is_tracker_issue, issue_answer_id,
     issue_answer_scope, issue_answers,

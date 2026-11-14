@@ -125,13 +125,13 @@ impl std::fmt::Debug for TaskRunHost {
 }
 
 impl AppBrokerState {
-    /// Join `presentation`, a task agent's (the device's certificate, the
-    /// task delegation it signed and the task key's proof), and take its
-    /// run: the going run of its issue the tracker holds for it.
+    /// Join `presentation`, an agent's (the device's certificate, the agent
+    /// certificate it signed and the agent key's proof), and take its run:
+    /// the going run of its session the tracker holds for it.
     pub fn task_run_host(self: &Arc<Self>, presentation: &[u8]) -> Result<TaskRunHost, String> {
-        let decoded = runtime_collab::TaskAgentJoinIdentity::decode(presentation)
-            .map_err(|error| format!("the task agent's presentation is malformed: {error}"))?
-            .ok_or("the agent door joins only as a task agent")?;
+        let decoded = runtime_collab::AgentJoinIdentity::decode(presentation)
+            .map_err(|error| format!("the agent's presentation is malformed: {error}"))?
+            .ok_or("the agent door joins only as a certified agent")?;
         let workspace = decoded.workspace_id;
         let route = CrdtRoute::record(TASK_AGENT_APP, workspace.clone(), "");
         let admitted = super::verify_join_identity(
@@ -141,9 +141,12 @@ impl AppBrokerState {
             self.trusted_devices.as_deref().map(Vec::as_slice),
             self.certificate_authority.get().map(Arc::as_ref),
         )?;
-        let task = admitted.task.as_deref().ok_or("task delegation missing")?;
-        let agent = task.agent_id.clone();
-        self.admit_task_join(&workspace, &agent, &admitted)?;
+        let cert = admitted
+            .agent_cert
+            .as_deref()
+            .ok_or("agent certificate missing")?;
+        let agent = cert.agent_id.clone();
+        self.admit_agent_join(&workspace, &agent, &admitted)?;
         let peer = self.next_peer_id();
         let (tx, mut rx) = mpsc::unbounded_channel();
         self.task_subscribers
@@ -187,9 +190,9 @@ impl AppBrokerState {
         (run_id, lease, task_id): (u64, &str, &str),
     ) -> Result<TaskRunHost, String> {
         let agent = admitted
-            .task
+            .agent_cert
             .as_deref()
-            .map(|task| task.agent_id.clone())
+            .map(|cert| cert.agent_id.clone())
             .or_else(|| admitted.agent_id.clone())
             .ok_or("a task's steps are its agent's")?;
         let run = RunRef {
@@ -322,13 +325,13 @@ impl TaskRunHost {
     /// Whether the run still goes: its issue holds it going, for this
     /// agent. The connection's authority ends with it.
     pub fn still_goes(&self) -> Result<(), String> {
-        let task = self
+        let cert = self
             .0
             .admitted
-            .task
+            .agent_cert
             .as_deref()
-            .ok_or("task delegation missing")?;
-        self.0.state.task_goes(self.workspace(), task)
+            .ok_or("agent certificate missing")?;
+        self.0.state.session_still_goes(self.workspace(), cert)
     }
 
     /// The run as the broker holds it for this connection, with its lease

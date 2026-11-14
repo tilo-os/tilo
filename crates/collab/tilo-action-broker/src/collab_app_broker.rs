@@ -267,17 +267,15 @@ pub(crate) struct AdmittedJoinIdentity {
     /// MCP client): it carries the delegation a device gives its agents,
     /// not grants the workspace holds for it.
     session_delegated: bool,
-    /// The task delegation a task agent joined under, verified: the asking
-    /// device's chain to its person, for one task in this workspace. Every
-    /// revalidation verifies it again and asks whether its task still goes.
-    task: Option<Box<TaskDelegation>>,
+    /// The agent certificate an agent joined under, verified: a device's
+    /// chain to its person, for one session in this workspace. Every
+    /// revalidation verifies it again and asks whether its session still goes.
+    agent_cert: Option<Box<AgentCert>>,
 }
 
-use tilo_peer_state::join::task_delegation::TaskDelegation;
+use tilo_peer_state::join::agent_cert::AgentCert;
 mod task_agents;
-use task_agents::{
-    admit_kept_agent, admit_task_delegation, verify_task_agent_join, verify_task_delegation,
-};
+use task_agents::{admit_agent_cert, admit_kept_agent, verify_agent_cert, verify_agent_join};
 
 /// The node of opening the application `app` in `workspace`: launching it is
 /// an action of the app itself.
@@ -374,9 +372,9 @@ impl AdmittedJoinIdentity {
                 } else {
                     actor
                 };
-                // A task agent works on its task alone.
-                match &self.task {
-                    Some(task) => actor.working_on(task.work_group.clone()),
+                // A certified agent works in its session alone.
+                match &self.agent_cert {
+                    Some(cert) => actor.working_on(cert.session.clone()),
                     None => actor,
                 }
             }
@@ -528,7 +526,7 @@ fn admit_verified_join_at(
             display_handle: None,
             agent_id: None,
             session_delegated: false,
-            task: None,
+            agent_cert: None,
         });
     }
     let workspace = workspace
@@ -548,7 +546,7 @@ fn admit_verified_join_at(
         display_handle: None,
         agent_id: None,
         session_delegated: false,
-        task: None,
+        agent_cert: None,
     })
 }
 
@@ -626,16 +624,10 @@ fn verify_join_identity(
     trusted_devices: Option<&[[u8; 32]]>,
     authority: Option<&dyn super::certificate_authority::CertificateAuthority>,
 ) -> Result<AdmittedJoinIdentity, String> {
-    if let Some(presentation) = runtime_collab::TaskAgentJoinIdentity::decode(identity_bytes)
-        .map_err(|error| format!("task agent join presentation is malformed: {error}"))?
+    if let Some(presentation) = runtime_collab::AgentJoinIdentity::decode(identity_bytes)
+        .map_err(|error| format!("agent join presentation is malformed: {error}"))?
     {
-        return verify_task_agent_join(
-            route,
-            &presentation,
-            membership,
-            trusted_devices,
-            authority,
-        );
+        return verify_agent_join(route, &presentation, membership, trusted_devices, authority);
     }
     admit_join_presentation(
         route,
@@ -6650,22 +6642,22 @@ impl AppBrokerState {
                 current
                     .worker_registration
                     .clone_from(&admitted.worker_registration);
-                if let Some(task) = &admitted.task {
+                if let Some(agent_cert) = &admitted.agent_cert {
                     // The chain again, now: the device still certified and in
-                    // the workspace's device list (checked above), the delegation
-                    // inside its window, its task still going.
+                    // the workspace's device list (checked above), the agent
+                    // certificate inside its window.
                     let cert = admitted
                         .certificate
                         .as_ref()
-                        .ok_or("task agent session lost its device certificate")?;
-                    verify_task_delegation(
-                        task,
+                        .ok_or("agent session lost its device certificate")?;
+                    verify_agent_cert(
+                        agent_cert,
                         cert,
                         collab_types::WorkspaceId::parse(&route.cluster_id)
-                            .ok_or("the task's workspace is not a workspace id")?,
+                            .ok_or("the agent's workspace is not a workspace id")?,
                         now,
                     )?;
-                    admit_task_delegation(&mut current, (**task).clone());
+                    admit_agent_cert(&mut current, (**agent_cert).clone());
                 } else if let Some(agent_id) = &admitted.agent_id {
                     let roster = agents.ok_or("this host reads no workspace's agents")?;
                     admit_kept_agent(roster, &route.cluster_id, &mut current, agent_id).map_err(
@@ -6678,9 +6670,11 @@ impl AppBrokerState {
             })
             .and_then(std::convert::identity)
             .and_then(|current| {
-                if let Some(task) = &current.task {
-                    // Its own finish ends the task, and it still hears it.
-                    self.task_heard(&route.cluster_id, task)?;
+                if let Some(cert) = &current.agent_cert {
+                    // The workspace still lists it, and its own finish ends
+                    // the session, which still hears it.
+                    self.agent_listed(&route.cluster_id, cert)?;
+                    self.session_still_heard(&route.cluster_id, cert)?;
                 }
                 Ok(current)
             })
@@ -7282,15 +7276,14 @@ impl AppBrokerState {
             .ok_or("native context has no membership authority")?
             .decide_in_workspace(&route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("native context workspace is unavailable")?;
-                let mut agents: Vec<(String, Option<String>)> = workspace
+                let agents: Vec<(String, String, Option<String>)> = workspace
                     .agent_members_at(now)
                     .into_iter()
                     .map(|(agent, _)| {
                         let keeper = workspace.agent_keeper(&agent).map(str::to_owned);
-                        (agent, keeper)
+                        (agent.clone(), agent, keeper)
                     })
                     .collect();
-                agents.sort_by(|left, right| left.0.cmp(&right.0));
                 let mut people: Vec<(String, tilo_action_policy::Role)> = workspace
                     .roster()
                     .into_iter()
@@ -7325,6 +7318,20 @@ impl AppBrokerState {
                     .collect::<Vec<_>>();
                 Ok::<_, &str>((agents, people))
             })??;
+        let mut agents = agents;
+        // The agents the workspace's record of its agents names are members too.
+        for listed in self
+            .services
+            .agents
+            .as_deref()
+            .map(|roster| roster.listed(&route.cluster_id))
+            .unwrap_or_default()
+        {
+            if !agents.iter().any(|(agent, _, _)| *agent == listed.id) {
+                agents.push((listed.id, listed.name, Some(listed.keeper)));
+            }
+        }
+        agents.sort_by(|left, right| left.0.cmp(&right.0));
         let self_id = Self::member_id(admitted);
         let self_name = admitted
             .display_handle
@@ -7340,13 +7347,13 @@ impl AppBrokerState {
                 members.push(row);
             }
         }
-        for (agent, keeper) in agents {
+        for (agent, name, keeper) in agents {
             tilo_peer_state::workspace_membership::valid_agent_id(&agent)
                 .map_err(|_| "native context contains a noncanonical agent identity")?;
             let keeper = keeper.map(collab_types::PersonId::new);
             let row = collab_types::Member::of_software(
-                collab_types::MemberId::agent(agent.clone()),
-                agent,
+                collab_types::MemberId::agent(agent),
+                name,
                 keeper.as_ref(),
             );
             if row.id == self_id {
@@ -7363,7 +7370,6 @@ impl AppBrokerState {
         });
         me.name = self_name;
         members.push(me.claiming_self());
-        members.extend(task_agents::self_row(admitted));
         if members.iter().filter(|row| row.is_self).count() != 1 {
             return Err("native context has no exact authenticated self member".into());
         }
@@ -7387,13 +7393,15 @@ impl AppBrokerState {
         {
             return None;
         }
-        // A task agent's row comes only from its own verified, revalidated
-        // task delegation ([`Self::native_membership_roster`]): that is its
-        // certification, beside a member's membership.
-        if let Some(agent) = actor
-            .strip_prefix("agent:")
-            .filter(|agent| tilo_peer_state::join::task_delegation::is_task_agent(agent))
-        {
+        // An agent the workspace's record of its agents names.
+        if let Some(agent) = actor.strip_prefix("agent:").filter(|agent| {
+            self.services.agents.as_deref().is_some_and(|roster| {
+                roster
+                    .listed(workspace)
+                    .iter()
+                    .any(|listed| listed.id == *agent)
+            })
+        }) {
             return Some(ui::collaboration::CertifiedAgentIdentity {
                 participant_id: actor.to_owned(),
                 agent_key: agent.to_owned(),
@@ -11880,7 +11888,7 @@ pub mod tests {
                         role: CapRole::Editor,
                         agent_id: None,
                         session_delegated: false,
-                        task: None,
+                        agent_cert: None,
                     }
                 }),
                 record_kind: None,
@@ -15231,7 +15239,7 @@ mod host_worker_capacity_tests {
             role: CapRole::Owner,
             agent_id: None,
             session_delegated: false,
-            task: None,
+            agent_cert: None,
         }
     }
     fn retained(state: &AppBrokerState) -> usize {

@@ -561,11 +561,6 @@ pub fn valid_agent_id(agent: &str) -> Result<(), String> {
     {
         return Err("invalid canonical workspace agent identifier".into());
     }
-    // A task agent is made for one task under a device's delegation and is
-    // never a member: its id is never admitted as one.
-    if crate::join::task_delegation::is_task_agent(agent) {
-        return Err("a task agent's id is never a member's".into());
-    }
     Ok(())
 }
 

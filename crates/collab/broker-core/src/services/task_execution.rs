@@ -487,19 +487,19 @@ pub struct TrackerRun {
     /// conversation it takes part in. Every op the run makes carries it; a
     /// run whose causing message the receiver does not hold yet waits for it.
     pub turn: Option<tilo_action_policy::turn::Turn>,
-    /// The delegation the asking device signed for a task agent's run, encoded, or why what the
-    /// run carries is none; `None` for a collaborator's run. Read through [`Self::delegation`].
+    /// The agent certificate of a door agent's run, encoded, or why what the run carries is
+    /// none; `None` for a collaborator's run. Read through [`Self::delegation`].
     pub delegation: Option<Result<Vec<u8>, String>>,
 }
 
 impl TrackerRun {
-    /// The run's task delegation, encoded; `None` for a collaborator's run.
+    /// The run's agent certificate, encoded; `None` for a collaborator's run.
     pub fn delegation(&self) -> Result<Option<&[u8]>, String> {
         match &self.delegation {
             None => Ok(None),
             Some(Ok(encoded)) => Ok(Some(encoded)),
             Some(Err(error)) => Err(format!(
-                "the run's task delegation does not decode: {error}"
+                "the run's agent certificate does not decode: {error}"
             )),
         }
     }
@@ -526,10 +526,26 @@ impl TrackerRun {
 /// The agents a workspace keeps, as its own record of them names them
 /// (`chat.agent`): an agent works here because the record names a keeper for
 /// it, and that keeper is the person whose session its device joins on.
+/// One agent member as the workspace's record of its agents names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedAgent {
+    pub id: String,
+    pub name: String,
+    /// The person who added it.
+    pub keeper: String,
+}
+
 pub trait AgentRoster: Send + Sync {
     /// The person who keeps `agent` in `workspace`, while the workspace's
     /// record names it active there; `None` for an agent it does not name.
-    fn keeper(&self, workspace: &str, agent: &str) -> Option<String>;
+    fn keeper(&self, workspace: &str, agent: &str) -> Option<String> {
+        self.listed(workspace)
+            .into_iter()
+            .find(|listed| listed.id == agent)
+            .map(|listed| listed.keeper)
+    }
+    /// The active agents the workspace's record names: its agent members.
+    fn listed(&self, workspace: &str) -> Vec<ListedAgent>;
     /// What `agent` may spend on the day its keeper counts: the limit its
     /// keeper set and what it spent of it. `None` where this host reads no
     /// such record, and then the agent works unmetered.

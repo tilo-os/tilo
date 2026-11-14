@@ -87,11 +87,11 @@ can't draw over or answer. The app's own pixels never decide consent.
 
 The session signs every change as its actor. The person's changes are signed with this
 device's key, which their identity certified ([security architecture](../security/architecture.md) §3).
-A task agent's changes are signed with the key the session mints for that task,
-under a delegation the device key signs (`task_agents.rs`, `task_delegation.rs`),
+An agent's changes are signed with the key the session mints for that agent session,
+under an agent certificate the device key signs (`task_agents.rs`, `agent_cert.rs`),
 so history names the agent and on whose behalf it acted (`ActionInvoker`).
 Authorship verification (§7.2 there) is therefore unchanged for other devices;
-the only change is that no key is ever in an app process. A task agent's key
+the only change is that no key is ever in an app process. An agent's key
 stays in the session too, and the agent reaches it through its door like any
 other caller.
 

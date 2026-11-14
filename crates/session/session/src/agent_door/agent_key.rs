@@ -100,6 +100,7 @@ impl super::Loop {
         handle: &DesktopHandle,
         request: super::Request,
         person: &str,
+        members: &super::Members<'_>,
     ) {
         let super::Request {
             facts,
@@ -132,14 +133,12 @@ impl super::Loop {
             };
         let (agent, shown) = self.agent_of(&agent, &facts);
         tracing::info!(client = %facts.client, pid = facts.pid, %agent, %workspace, "agent door: the person's agent key admits this client");
-        self.seats
-            .admitted(seat, &agent, &shown, (workspace.as_str(), name.as_str()));
-        let _ = decide.send(super::Consent::Admit {
-            workspace,
-            agent,
-            person: person.to_owned(),
-            name: shown,
-        });
+        let consent = super::as_member(members, &facts, (&workspace, person), shown.clone());
+        if matches!(consent, super::Consent::Admit { .. }) {
+            self.seats
+                .admitted(seat, &agent, &shown, (workspace.as_str(), name.as_str()));
+        }
+        let _ = decide.send(consent);
     }
 }
 

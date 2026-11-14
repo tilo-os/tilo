@@ -170,6 +170,41 @@ fn a_control_connection_is_refused_even_from_an_admitted_agent() {
     program.end();
 }
 
+/// A client the person admits is their agent member for that client: the workspace lists it, so a
+/// person's search finds it like any member, and its next connection is the same agent.
+#[test]
+fn an_admitted_client_is_an_agent_member_people_find() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("agent.sock");
+    let (mut session, questions) = session(root.path(), &socket);
+    let program = Program::connect(&socket);
+    let served = admit(&mut session, &questions, &program);
+    assert!(served.pointer("/result/serverInfo").is_some(), "{served}");
+    session
+        .invoke(
+            "desktop:chrome",
+            "workspace-settings",
+            &serde_json::Map::new(),
+        )
+        .expect("open workspace settings");
+    session.step(Duration::from_millis(1)).expect("step");
+    press(&mut session, "show-tab", json!({"tab": "agents"}));
+    // The workspace lists it as the person's agent, as its Agents tab shows the record.
+    let listed = crate::common::wait_for(&mut session, "the agent to be listed", |session| {
+        session
+            .workspace_settings()?
+            .settings()
+            .agents
+            .agents
+            .into_iter()
+            .find(|agent| agent.name == "Claude Code")
+    });
+    assert_eq!(listed.key, "claude-code");
+    assert!(listed.mine, "kept by the person who admitted it");
+    program.end();
+}
+
 /// Ask for a seat on the control protocol and read the refusal: it names the protocol as served to
 /// a program inside an app this session started, and to nothing else.
 #[track_caller]
