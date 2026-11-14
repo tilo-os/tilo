@@ -1041,12 +1041,10 @@ fn a_person_writing_in_a_title_is_seen_there() {
     app.harness()
         .click_at(row[0] + row[2] / 2.0, row[1] + row[3] / 2.0);
     settle(&mut app);
-    // Where Bo's window keys the title: the task and the field it is bound to.
-    let target = task
-        .strip_prefix("tl:so.tilo.lang.tasks:")
-        .expect("a tasks resource");
+    // Where Bo's window keys the title: the task, by the id the app publishes it under, and the
+    // field it is bound to.
     let key = ui::presence::PresenceKey::Widget {
-        path: ["tilolang", target, title_field().as_str()]
+        path: ["tilolang", task.as_str(), title_field().as_str()]
             .map(|segment| ui::presence::PathSegment::Field(segment.to_owned()))
             .to_vec(),
     };
