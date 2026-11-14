@@ -24,6 +24,7 @@ use crate::effects::BrowserEffect;
 use crate::resource::BrowserShell;
 
 mod many_actors;
+mod one_name;
 
 type App = TestApp<BrowserShell>;
 
