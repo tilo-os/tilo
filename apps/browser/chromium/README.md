@@ -1058,6 +1058,18 @@ pages painting nothing yet answering page actions, and the paint stream's
 python3 apps/browser/chromium/tests/agent_host.py target/chromium/tilo-chromium-host
 ```
 
+What a shared window hands over — a real page, captured as Browser captures it
+(drawn from its pixels, a display list only while a session shares the window
+with someone watching), drawn by the web view and put whole into the share's
+outbox within seconds of being asked, for a share that starts on a loaded page
+and for one that starts before the page loaded, with what the page's fields
+hold (the toolkit's `page-share-probe` example plays the session's ask):
+
+```sh
+cargo build -p tilo-ui --example page-share-probe
+python3 apps/browser/chromium/tests/page_share.py target/chromium/tilo-chromium-host target/debug/examples/page-share-probe
+```
+
 ## Native blocking
 
 A request-context handler checks HTTP(S) resources, including dedicated-worker

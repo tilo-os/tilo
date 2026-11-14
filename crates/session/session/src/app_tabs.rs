@@ -278,6 +278,39 @@ impl AppTabs {
         Ok(())
     }
 
+    /// The app's end of a connection for a window of `app` in `workspace` that the launcher made
+    /// before the app started, as every app's first window is connected: the process at the other
+    /// end is the app's own, so the connection names no tab, and what the window asks about itself
+    /// is answered for the app's window on the desk. It is served as every admitted connection is;
+    /// only the kernel's word for who is at the other end, which a test's own process cannot stand
+    /// in for, is left out.
+    ///
+    /// # Errors
+    /// The pair of sockets cannot be made, or no thread serves the connection.
+    #[cfg(test)]
+    pub(crate) fn launched_window(
+        &self,
+        app: &str,
+        workspace: &str,
+    ) -> std::io::Result<UnixStream> {
+        let (theirs, ours) = UnixStream::pair()?;
+        let writer = ours.try_clone()?;
+        let connection = self.socket.next.fetch_add(1, Ordering::Relaxed);
+        let window = Window {
+            connection,
+            app: app.to_owned(),
+            workspace: workspace.to_owned(),
+            launch: std::process::id(),
+            instance: None,
+            network_allowed: false,
+        };
+        let (requests, wake) = (self.socket.requests.clone(), Arc::clone(&self.socket.wake));
+        std::thread::Builder::new()
+            .name(format!("tilo-shell-ui-{connection}"))
+            .spawn(move || serve_window(window, BufReader::new(ours), writer, &requests, &wake))?;
+        Ok(theirs)
+    }
+
     /// Answer what the apps asked since the last pass: each ask is a desk command, so the desk is
     /// read and changed on this thread alone.
     pub(crate) fn follow(
@@ -1497,6 +1530,55 @@ fn serve_connection(
     // The launch the window belongs to: an app runs one process per window tree, and a window that
     // connects from below it names that tree.
     let launch = launches.launch_of(pid).unwrap_or(pid);
+    serve_window(
+        Window {
+            connection,
+            app,
+            workspace,
+            launch,
+            instance,
+            network_allowed: handshake.network_status_allowed,
+        },
+        reader,
+        writer,
+        requests,
+        wake,
+    );
+}
+
+/// A window whose connection this session admitted: the app the launcher vouched for, the
+/// workspace its launch runs it in, the launch it belongs to and, for a window the session
+/// connected itself, the tab it takes.
+struct Window {
+    connection: u64,
+    app: String,
+    workspace: String,
+    launch: u32,
+    instance: Option<u64>,
+    network_allowed: bool,
+}
+
+/// Serve an admitted window's connection until it ends: every frame it writes becomes an ask the
+/// session answers on its pass.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the per-connection worker owns its handles and outlives the session's pass"
+)]
+fn serve_window(
+    window: Window,
+    mut reader: BufReader<UnixStream>,
+    writer: UnixStream,
+    requests: &mpsc::Sender<Request>,
+    wake: &tilo_service::Wake,
+) {
+    let Window {
+        connection,
+        app,
+        workspace,
+        launch,
+        instance,
+        network_allowed,
+    } = window;
     let reply = Arc::new(Mutex::new(writer));
     // From here the window is told the appearance of the desk it stands on,
     // and it is told once more whenever that changes.
@@ -1508,9 +1590,7 @@ fn serve_connection(
             instance,
             connection,
             reply: Arc::clone(&reply),
-            ask: Ask::Connected {
-                network_allowed: handshake.network_status_allowed,
-            },
+            ask: Ask::Connected { network_allowed },
         })
         .is_err()
     {
