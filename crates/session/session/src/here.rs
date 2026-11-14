@@ -162,7 +162,8 @@ fn away(here: &tilo_desktop_model::Present) -> bool {
     here.availability.dims()
 }
 
-/// What window `tab` of `workspace` is called, when the workspace shows it.
+/// What window `tab` of `workspace` is called, by the one rule every surface names a window by,
+/// when the workspace shows it.
 fn tab_title(workspace: &tilo_desktop_model::Workspace, tab: u64) -> String {
     workspace
         .strips
@@ -170,6 +171,6 @@ fn tab_title(workspace: &tilo_desktop_model::Workspace, tab: u64) -> String {
         .flat_map(|strip| &strip.window_groups)
         .flat_map(|group| &group.tabs)
         .find(|candidate| candidate.id == tab)
-        .map(|candidate| candidate.title.trim().to_owned())
+        .map(crate::app_names::tab_name)
         .unwrap_or_default()
 }

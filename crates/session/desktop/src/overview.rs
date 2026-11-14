@@ -891,8 +891,8 @@ mod workspace_tests {
             assert_eq!(group.tabs.len(), 2);
             assert_eq!(
                 group.active_title(),
-                "References — Browser",
-                "a window named by a place still says the app it is a place in"
+                "References",
+                "a stand-in window is the title it carries"
             );
             assert_eq!(group.width_permille, WindowWidth::Wide.permille());
             let apps: Vec<_> = card.apps().iter().map(|app| app.kind).collect();

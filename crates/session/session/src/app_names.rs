@@ -72,9 +72,23 @@ fn entry_name(desktop_id: Option<&str>) -> Option<String> {
 /// and the app it shows ("Groceries — Notes"). A window with no title of its own is the app alone,
 /// and a title that is already the app's name — however it spells it, an id or a slug included —
 /// is not said twice.
-#[cfg(target_os = "linux")]
 pub(crate) fn window_name(app_id: &str, title: &str) -> String {
     tilo_desktop_search::names::window_name_of(app_id, &app_name(app_id), title)
+}
+
+/// What the window of `tab` is called, by the one rule every surface names a window by: its title
+/// and the app it shows, the app's name alone where the title only names the app under another
+/// spelling (`chat` is `Chat`), and the title itself for a stand-in that runs no app.
+pub(crate) fn tab_name(tab: &tilo_desktop_model::Tab) -> String {
+    match &tab.tile {
+        tilo_desktop_model::TileContent::Foreign { app_id, .. }
+        | tilo_desktop_model::TileContent::LocalApp { app_id, .. }
+        | tilo_desktop_model::TileContent::HostedWindow { app_id, .. } => {
+            window_name(app_id, &tab.title)
+        }
+        tilo_desktop_model::TileContent::AppPlaceholder { .. }
+        | tilo_desktop_model::TileContent::Stub { .. } => tab.title.clone(),
+    }
 }
 
 /// The app's name as this device's app lists last read it: the installed package's name in the

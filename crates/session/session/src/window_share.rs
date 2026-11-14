@@ -2360,7 +2360,7 @@ fn tab_title(tree: &Layout, tab: TabId) -> (String, String) {
                 TileContent::HostedWindow { host_label, .. } => host_label.clone(),
                 _ => String::new(),
             };
-            (shown.title.clone(), sharer)
+            (crate::app_names::tab_name(shown), sharer)
         })
         .unwrap_or_default()
 }

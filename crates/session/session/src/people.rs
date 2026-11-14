@@ -1106,9 +1106,9 @@ impl Panel {
         // on the same record is called here, by the one rule every surface names a window by.
         let titled: BTreeMap<String, String> = crate::sync::layout::bindings_of(&tree, &windows)
             .into_iter()
-            .filter_map(|(tab, app, digest)| {
-                let title = tree.tab(tab)?.title.trim().to_owned();
-                (!title.is_empty()).then(|| (digest, crate::app_names::window_name(&app, &title)))
+            .filter_map(|(tab, _app, digest)| {
+                let title = crate::app_names::tab_name(tree.tab(tab)?);
+                (!title.trim().is_empty()).then_some((digest, title))
             })
             .collect();
         // Each person's screen, its windows named with what they show where this desk holds that
