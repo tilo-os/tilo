@@ -27306,6 +27306,7 @@ dependencies = [
  "log",
  "lru 0.16.3",
  "lzma-rust2",
+ "mail-builder",
  "memchr",
  "miniz_oxide",
  "mio",

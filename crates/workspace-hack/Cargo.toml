@@ -135,6 +135,7 @@ litemap = { version = "0.8", default-features = false, features = ["serde"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 lru = { version = "0.16" }
 lzma-rust2 = { version = "0.23", default-features = false, features = ["optimization", "std", "xz"] }
+mail-builder = { version = "0.4" }
 memchr = { version = "2" }
 miniz_oxide = { version = "0.8", features = ["simd"] }
 mio = { version = "1", features = ["net", "os-ext"] }
@@ -387,6 +388,7 @@ litemap = { version = "0.8", default-features = false, features = ["serde"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 lru = { version = "0.16" }
 lzma-rust2 = { version = "0.23", default-features = false, features = ["optimization", "std", "xz"] }
+mail-builder = { version = "0.4" }
 memchr = { version = "2" }
 miniz_oxide = { version = "0.8", features = ["simd"] }
 mio = { version = "1", features = ["net", "os-ext"] }
