@@ -13,6 +13,11 @@ de = "Aufgaben"
 x86_64 = "v3"
 aarch64 = "aarch64"
 
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+# The issues a migration leaves in the app's own data area (`src/import_inbox.rs`).
+optional = ["app-files"]
+
 [resources]
 kinds = ["tasks.tracker", "tilo.rich-text"]
 
