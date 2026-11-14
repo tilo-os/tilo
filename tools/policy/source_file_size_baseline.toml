@@ -15,7 +15,7 @@
 "apps/file-explorer/src/files_app.rs" = 8500
 "apps/file-explorer/src/files_app/tests.rs" = 6000
 "apps/imager/src/app.rs" = 5500
-"apps/imager/src/setup/destination/installer_app.rs" = 6500
+"apps/imager/src/setup/destination/installer_app.rs" = 4000
 "apps/imager/src/setup/import_view.rs" = 5000
 "apps/imager/src/setup/journey/mod.rs" = 12000
 "apps/imager/src/setup/journey/prepared_media.rs" = 4000
