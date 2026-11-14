@@ -224,7 +224,7 @@ mod tests {
         let mut fleet = Fleet::default();
         fleet.adopt(device("b", "Server", false, 1));
         fleet.adopt(device("c", "Laptop", false, 2));
-        fleet.adopt(device("a", "Desk", true, 3));
+        fleet.adopt(device("a", "Tower", true, 3));
         fleet.adopt(device("b", "Server", false, 4));
         let order: Vec<_> = fleet.devices().iter().map(|d| d.key.as_str()).collect();
         assert_eq!(order, ["a", "c", "b"]);

@@ -633,8 +633,8 @@ mod tests {
         let lan = "192.168.1.0/24";
         let office = "10.0.0.0/24";
         let target = device(
-            "desk",
-            "Desk",
+            "tower",
+            "Tower",
             vec![
                 route(1, true, Some(lan)),
                 route(2, false, Some("172.16.0.0/24")),
@@ -653,15 +653,15 @@ mod tests {
         // This device is on the LAN: it wakes the target itself.
         let local_routes = here.presence.wake_routes.clone();
         assert_eq!(
-            plan_wake(&all, &id("laptop"), &local_routes, &id("desk"), |_| true),
+            plan_wake(&all, &id("laptop"), &local_routes, &id("tower"), |_| true),
             Ok(WakePlan {
-                target: id("desk"),
+                target: id("tower"),
                 waker: id("laptop"),
                 subnet: subnet(lan),
             })
         );
         assert_eq!(
-            magic_packets_for(&all, &local_routes, &id("desk")),
+            magic_packets_for(&all, &local_routes, &id("tower")),
             vec![([0x52, 0x54, 0, 0, 0, 1], subnet(lan))],
             "only the interface that wakes on a magic packet is sent to"
         );
@@ -669,24 +669,24 @@ mod tests {
         // Away from home, an awake sibling on the LAN does it.
         let away = elsewhere.presence.wake_routes.clone();
         assert_eq!(
-            plan_wake(&all, &id("phone"), &away, &id("desk"), |device| device
+            plan_wake(&all, &id("phone"), &away, &id("tower"), |device| device
                 == &id("server")),
             Ok(WakePlan {
-                target: id("desk"),
+                target: id("tower"),
                 waker: id("server"),
                 subnet: subnet(lan),
             })
         );
-        assert!(magic_packets_for(&all, &away, &id("desk")).is_empty());
+        assert!(magic_packets_for(&all, &away, &id("tower")).is_empty());
 
         // Nobody awake there: the refusal names the subnet.
-        let refusal = plan_wake(&all, &id("phone"), &away, &id("desk"), |_| false).unwrap_err();
+        let refusal = plan_wake(&all, &id("phone"), &away, &id("tower"), |_| false).unwrap_err();
         assert_eq!(refusal.to_string(), "no awake device on 192.168.1.0/24");
 
         // The target itself never counts as its own waker.
         let only_target = fabric(vec![target, elsewhere]);
         assert_eq!(
-            plan_wake(&only_target, &id("phone"), &away, &id("desk"), |_| true),
+            plan_wake(&only_target, &id("phone"), &away, &id("tower"), |_| true),
             Err(WakeRefusal::NoAwakeSibling(vec![subnet(lan)]))
         );
 
@@ -726,8 +726,8 @@ mod tests {
             Err(WakeRefusal::LocalDevice)
         );
         assert_eq!(
-            resolve_device(&all, "desk"),
-            Ok(id("desk")),
+            resolve_device(&all, "tower"),
+            Ok(id("tower")),
             "a device id resolves as itself"
         );
         assert_eq!(resolve_device(&all, " server "), Ok(id("server")));
@@ -765,7 +765,7 @@ mod tests {
     fn the_waker_reports_a_rejoin_or_gives_up() {
         let start = Instant::now();
         let mut waker = Waker::default();
-        assert!(waker.started(id("desk"), Some(id("phone")), start));
+        assert!(waker.started(id("tower"), Some(id("phone")), start));
         let nonce = waker
             .poll(start)
             .first()
@@ -779,7 +779,7 @@ mod tests {
             "probes are paced"
         );
         assert!(
-            waker.answered(&id("desk"), [8; 16]).is_none(),
+            waker.answered(&id("tower"), [8; 16]).is_none(),
             "a stale nonce"
         );
         assert!(
@@ -787,9 +787,9 @@ mod tests {
             "another device"
         );
         assert_eq!(
-            waker.answered(&id("desk"), nonce),
+            waker.answered(&id("tower"), nonce),
             Some(WatchStep::Finished {
-                target: id("desk"),
+                target: id("tower"),
                 requester: Some(id("phone")),
                 outcome: WakeOutcome::Rejoined,
             })
@@ -808,12 +808,12 @@ mod tests {
             }]
         );
 
-        assert!(waker.started(id("desk"), None, start));
+        assert!(waker.started(id("tower"), None, start));
         let _ = waker.poll(start);
         assert_eq!(
             waker.poll(start + WAKE_REJOIN_TIMEOUT),
             vec![WatchStep::Finished {
-                target: id("desk"),
+                target: id("tower"),
                 requester: None,
                 outcome: WakeOutcome::NotRejoined,
             }]
@@ -824,28 +824,28 @@ mod tests {
     fn a_wake_asked_of_another_device_is_settled_by_its_report() {
         let now = Instant::now();
         let mut waker = Waker::default();
-        waker.asked(id("desk"), id("server"), now);
+        waker.asked(id("tower"), id("server"), now);
         assert!(
             !waker.reported(
                 &id("phone"),
-                &id("desk"),
+                &id("tower"),
                 WakeOutcome::Rejoined,
-                "Desk".into()
+                "Tower".into()
             ),
             "a report from a device that was not asked settles nothing"
         );
         assert!(waker.reported(
             &id("server"),
-            &id("desk"),
+            &id("tower"),
             WakeOutcome::NotOnTargetLan,
-            "Desk".into()
+            "Tower".into()
         ));
         let told = waker.outcomes();
         assert_eq!(told.len(), 2);
         assert_eq!(
             told.last()
                 .map(|event| (event.label.as_str(), event.outcome)),
-            Some(("Desk", WakeOutcome::NotOnTargetLan))
+            Some(("Tower", WakeOutcome::NotOnTargetLan))
         );
 
         // A waker that never reports is given up on.

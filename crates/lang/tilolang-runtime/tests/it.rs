@@ -17,8 +17,6 @@ mod authority;
 mod boundaries;
 #[path = "counter.rs"]
 mod counter;
-#[path = "desk_styles.rs"]
-mod desk_styles;
 #[path = "e2e_abi.rs"]
 mod e2e_abi;
 #[path = "e2e_apps.rs"]
@@ -81,6 +79,8 @@ mod reaches;
 mod rich_text;
 #[path = "runs.rs"]
 mod runs;
+#[path = "styles.rs"]
+mod styles;
 #[path = "sync.rs"]
 mod sync;
 #[path = "text.rs"]

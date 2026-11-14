@@ -1067,7 +1067,7 @@ mod tests {
         let selection = ui::LocalState::new("0".to_owned());
         let mut canvas = RoomCanvas::new(
             ui::LocalState::new(points()),
-            ["Desk", "Shelf", "Bookcase", "Kitchen"]
+            ["Tower", "Shelf", "Bookcase", "Kitchen"]
                 .map(str::to_owned)
                 .to_vec(),
             ui::LocalState::new(RoomGesture::default()),

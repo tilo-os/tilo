@@ -134,7 +134,7 @@ impl Authority {
     }
 
     /// Publish again what is published in `workspace`, from its policy as the
-    /// desk holds it now: what the person's authority there became. A
+    /// shell holds it now: what the person's authority there became. A
     /// projection whose policy did not change is not written.
     ///
     /// # Errors

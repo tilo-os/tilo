@@ -709,7 +709,7 @@ fn an_edge_drag_sets_the_width_and_the_strip_keeps_it() {
 /// carries none of its own: installing the kept tree lays this device's changes in this shell's
 /// range, not in "nobody's".
 #[test]
-fn a_tree_kept_beside_the_state_file_installs_in_this_desks_range() {
+fn a_tree_kept_beside_the_state_file_installs_in_this_shells_range() {
     let (_surface, handle) = desktop(1);
     let minted = handle.read(Clone::clone);
     assert_eq!(minted.salt, 7, "the shell mints in the device's range");

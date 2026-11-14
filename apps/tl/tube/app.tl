@@ -1146,8 +1146,8 @@ scenario "search results" -> YouTube {
     yt.channels.insert(
         Channel(
             key: "UCrepair",
-            name: "Phone Repair Desk",
-            handle: "@repairdesk",
+            name: "Phone Repair Shop",
+            handle: "@repairshop",
             subscribers: 31000,
             found_for: "phone reviews",
         ),

@@ -354,7 +354,7 @@ fn cs_layer(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // The keyer runs on the source picture, before anything is graded onto
-    // it: that is the order a keyer sits in on a real desk, and it is why
+    // it: that is the order a keyer sits in on a real shell, and it is why
     // grading a keyed clip afterwards cannot re-open the matte.
     cov = cov * key_cover(col);
     col = despill(col);

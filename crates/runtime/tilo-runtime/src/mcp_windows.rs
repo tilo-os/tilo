@@ -1,5 +1,5 @@
 //! `tilo mcp`'s agent in its workspace: each record it makes or changes opens
-//! as a window on the workspace's desk, as a window of the person's naming
+//! as a window on the workspace's shell, as a window of the person's naming
 //! the run, so everyone in the workspace sees what it did as they see a
 //! colleague's work, and following the agent brings that window forward.
 //! Reads open nothing, and a record already open keeps its one window.
@@ -27,7 +27,7 @@ use crate::mcp::ActedRecord;
 const OPENING: tilo_clock::time::Duration = tilo_clock::time::Duration::from_secs(5);
 
 /// The windows of the records an agent makes or changes, opened on the
-/// workspace's desk as it changes each.
+/// workspace's shell as it changes each.
 pub struct AgentWindows {
     /// The host the agent acts through, which opens the windows.
     actions: SessionActions,
@@ -68,7 +68,7 @@ impl AgentWindows {
         }
     }
 
-    /// Open `focus` as a window on the workspace's desk, asked of the host
+    /// Open `focus` as a window on the workspace's shell, asked of the host
     /// the agent acts through ([`open_request`]); the host leaves a record a
     /// window already shows where the people put it.
     async fn open(&self, focus: &LiveRecord, run: Option<tilo_actions::WorkGroup>) {

@@ -409,7 +409,7 @@ impl Shared {
 
     /// What the shell holds where the person works: the windows of the shown strip, and the tabs
     /// of the focused one.
-    fn peek_shell(&self) -> tilo_sheets::shortcut_guide::PeekDesk {
+    fn peek_shell(&self) -> tilo_sheets::shortcut_guide::PeekShell {
         self.handle
             .read(|tree| {
                 let strip_id = tree.active_strip_id()?;
@@ -422,7 +422,7 @@ impl Shared {
                     .active_group_for(strip_id)
                     .and_then(|id| strip.window_groups.iter().find(|group| group.id == id))
                     .map_or(0, |group| group.tabs.len());
-                Some(tilo_sheets::shortcut_guide::PeekDesk {
+                Some(tilo_sheets::shortcut_guide::PeekShell {
                     windows: strip.window_groups.len(),
                     tabs,
                 })

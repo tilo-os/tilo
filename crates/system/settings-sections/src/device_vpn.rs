@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn the_choices_change_only_through_their_actions() {
         let mut vpn = Replica::<DeviceVpnPrefs>::new();
-        vpn.apply(DeviceVpnPrefs::ROUTE_THROUGH.with(("desk".to_owned(), true)))
+        vpn.apply(DeviceVpnPrefs::ROUTE_THROUGH.with(("tower".to_owned(), true)))
             .unwrap();
         vpn.apply(DeviceVpnPrefs::SET_KILL_SWITCH.with(true))
             .unwrap();
@@ -150,7 +150,7 @@ mod tests {
         let through = vpn.state().unwrap().through.unwrap();
         assert_eq!(through.device, "laptop");
         assert!(through.kill_switch, "how it routes is kept");
-        vpn.apply(DeviceVpnPrefs::ROUTE_THROUGH.with(("desk".to_owned(), false)))
+        vpn.apply(DeviceVpnPrefs::ROUTE_THROUGH.with(("tower".to_owned(), false)))
             .unwrap();
         assert!(vpn.state().unwrap().through.is_some());
         vpn.apply(DeviceVpnPrefs::ROUTE_THROUGH.with(("laptop".to_owned(), false)))

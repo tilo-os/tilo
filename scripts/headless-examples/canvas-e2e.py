@@ -10,7 +10,7 @@ process groups and all.
 
 What it drives, as a person does:
 
-  style    the desk shows the canvas: the bar's style menu, then Frames, pressed where they are
+  style    the shell shows the canvas: the bar's style menu, then Frames, pressed where they are
            drawn
   windows  Board and Chat open onto the canvas and take free space on it, and the canvas pans
            to the one that arrives past its edge: a window a person just opened stands whole on
@@ -63,7 +63,7 @@ TL_APPS = ["shell", "board"]
 # lands, the agent answers it there, and Tasks is installed and closed — an ask must not open
 # its window.
 NATIVE_APPS = "chat tasks agent"
-# The style whose desk is the canvas, and the canvas' own entry, by the names the desk's
+# The style whose shell is the canvas, and the canvas' own entry, by the names the shell's
 # controls answer to.
 CANVAS = "Frames"
 CANVAS_ENTRY = "Find something, or ask"
@@ -162,10 +162,10 @@ def build_tl_apps(state: Path, out: Path, build: bool) -> list[Path]:
     return tapps
 
 
-# --- the desk --------------------------------------------------------------------------------
+# --- the shell --------------------------------------------------------------------------------
 
 def control_rect(session: CanvasSession, name: str, deadline: float = 30.0) -> list[float]:
-    """Where the desk draws the control `name` now, once it stands still across two frames: a
+    """Where the shell draws the control `name` now, once it stands still across two frames: a
     press aimed at a place a control has left misses it."""
     def standing():
         first = next((t.get("rect") for t in session.targets() if t.get("name") == name), None)
@@ -186,7 +186,7 @@ def press(session: CanvasSession, name: str) -> dict:
 
 
 def show_canvas(session: CanvasSession) -> dict:
-    """Show the desk as the canvas: the bar's style menu, then Frames, as a person switches."""
+    """Show the shell as the canvas: the bar's style menu, then Frames, as a person switches."""
     menu = next((t["name"] for t in session.targets()
                  if str(t.get("name", "")).startswith("Showing ")), None)
     if menu is None:
@@ -205,8 +205,8 @@ def show_canvas(session: CanvasSession) -> dict:
 # --- windows and places ----------------------------------------------------------------------
 
 def canvas_places(session: CanvasSession) -> dict[str, dict]:
-    """Where each window group of the desk stands on its workspace's canvas, by group: the
-    arrangement's own rows, as the desk publishes them (`arrangement.places` of each workspace,
+    """Where each window group of the shell stands on its workspace's canvas, by group: the
+    arrangement's own rows, as the shell publishes them (`arrangement.places` of each workspace,
     a place being where its top-leading corner is and how wide and tall it stands there)."""
     tree = session.state_dump().get("workspace_tree") or {}
     places: dict[str, dict] = {}
@@ -235,7 +235,7 @@ def placed_rows(session: CanvasSession) -> list[dict]:
 
 
 def chat_windows(session: CanvasSession) -> list[dict]:
-    """The windows of Chat the desk stands: a conversation is one of them."""
+    """The windows of Chat the shell stands: a conversation is one of them."""
     return [row for row in session.windows() if row.get("app_id") == "so.tilo.chat"]
 
 
@@ -437,7 +437,7 @@ def pan_carries_windows(session: CanvasSession) -> dict:
 def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
     """The canvas end to end, in a fresh session:
 
-    1. the desk shows the canvas: the person switches the bar's style to Frames, and the
+    1. the shell shows the canvas: the person switches the bar's style to Frames, and the
        canvas' entry stands on it;
     2. Board and Chat open onto it, each stands at its own place on the canvas, none over
        another, and each presents a frame; Chat lands past the output's edge and stands whole on

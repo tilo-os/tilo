@@ -30,7 +30,7 @@ unit tests and found only by starting a session by hand:
            program as they started it (`--admit-repl`, as naming it on the sheet would): the REPL
            reaches the four apps, reads the record the notes app's window shows, writes a note
            there by the names the app declares (`notes.new_note(notes.notebook)`), and changes
-           the desk, whose published state says so.
+           the shell, whose published state says so.
            Catches the door handing a task an installed tilolang app's surface instead of its
            package: its actions were named by their stored ids and its root by nothing.
            Catches the door not forwarding record changes (fixed in 71382cec3d7): before the
@@ -44,7 +44,7 @@ unit tests and found only by starting a session by hand:
   ask      handing an agent work from search sends the person's request to the agent they keep —
            a new one when they keep none — through the session's one send
            (`session:send-to#send`, the action a window's box, text typed on the canvas and an
-           agent all run): the desk's search is typed into with the request, and its row "Send to
+           agent all run): the shell's search is typed into with the request, and its row "Send to
            …" is chosen. The session then starts that agent, it asks the model, and its answer
            lands in the person's conversation with it, where Chat shows it. The model is
            TestOnlyFixedReplyModel below: a loopback OpenAI-compatible endpoint inside this script
@@ -114,8 +114,8 @@ from replay_model import OpenAiReplay  # noqa: E402
 # conversations an agent works in and the agents a workspace keeps.
 TL_APPS = ["notes", "tasks", "mail", "chat"]
 NATIVE = "agent tasks chat"
-# The provider the session publishes its own actions under, the desk's among them
-# (tilo_actions::remote::SESSION_ACTIONS_PROVIDER), and the resource the desk publishes, whose
+# The provider the session publishes its own actions under, the shell's among them
+# (tilo_actions::remote::SESSION_ACTIONS_PROVIDER), and the resource the shell publishes, whose
 # `search` verb opens search on what was typed (tilo_desktop::verbs::SHELL_RESOURCE) and
 # whose rows are children of its open search (SEARCH_RESOURCE).
 SESSION_PROVIDER = "so.tilo.session"
@@ -526,8 +526,8 @@ def check_open(session: Session) -> dict:
 
 
 def canvas_places(session: Session) -> dict[str, dict]:
-    """Where each window group of the desk stands on its workspace's canvas, by group: the
-    arrangement's own rows, as the desk publishes them (`arrangement.places` of each workspace,
+    """Where each window group of the shell stands on its workspace's canvas, by group: the
+    arrangement's own rows, as the shell publishes them (`arrangement.places` of each workspace,
     a place being where its top-leading corner is and how wide and tall it stands there)."""
     tree = session.state_dump().get("workspace_tree") or {}
     places: dict[str, dict] = {}
@@ -547,10 +547,10 @@ def screen_frame(path: Path) -> tuple[int, int]:
 
 def check_canvas(session: Session) -> dict:
     """Every window the four apps opened stands on the canvas the arrangement publishes, and the
-    window in front — the one the desk shows — is drawn inside the screen's frame.
+    window in front — the one the shell shows — is drawn inside the screen's frame.
 
     Catches an opening placed off the canvas (where the person would go looking for it and find
-    nothing) and a desk that draws the window it points at off screen. Where windows land
+    nothing) and a shell that draws the window it points at off screen. Where windows land
     depends on the order the four concurrent opens arrive in: on integration 70ba3301da0 the
     shell drew them at y = -484 and y = 788 on a 752 px high frame."""
     shot = session.out / "canvas.png"
@@ -572,7 +572,7 @@ def check_canvas(session: Session) -> dict:
         on_canvas[app_id(name)] = place
     if missing:
         raise Failed(f"not placed on the canvas: {missing}")
-    # The window in front: the tab the active strip and group hold, which the desk draws.
+    # The window in front: the tab the active strip and group hold, which the shell draws.
     front = [w for w in session.windows() if w.get("active") and w.get("window") is not None]
     if not front:
         raise Failed(f"no window is in front: {sorted(windows)}")
@@ -593,13 +593,13 @@ def check_canvas(session: Session) -> dict:
 
 
 def check_repl(session: Session, out: Path) -> dict:
-    """The door's REPL reaches the four apps, reads one's record, and changes the desk the
-    session publishes, which the desk draws.
+    """The door's REPL reaches the four apps, reads one's record, and changes the shell the
+    session publishes, which the shell draws.
 
     The record it reads is the notes app's notebook, and the actions it lists are the app's
     own. It writes a note there by the names the app declares (`notes.new_note(notes.notebook)`,
-    as the app's own source says it), and reads it back. It changes the desk as it may:
-    `session.overview` flips a surface of the desk, read back from the state dump the desk
+    as the app's own source says it), and reads it back. It changes the shell as it may:
+    `session.overview` flips a surface of the shell, read back from the state dump the shell
     publishes."""
     repl = Repl(session, out)
     try:
@@ -628,11 +628,11 @@ def check_repl(session: Session, out: Path) -> dict:
         if after != before + 1:
             raise Failed(f"notes.new_note(notes.notebook) wrote no note ({before} then {after}): "
                          f"{written!r}")
-        desk = repl("ls session")
-        if "session" not in desk:
-            raise Failed(f"the session's own actions are not listed: {desk[:600]!r}")
-        # A change of the desk, as the person typing it: the overview's surface goes down and
-        # up again, and the desk's own published state says so each time.
+        shell = repl("ls session")
+        if "session" not in shell:
+            raise Failed(f"the session's own actions are not listed: {shell[:600]!r}")
+        # A change of the shell, as the person typing it: the overview's surface goes down and
+        # up again, and the shell's own published state says so each time.
         def overview() -> bool:
             return bool(session.state_dump()["chrome"]["overlays"]["overview"])
 
@@ -640,7 +640,7 @@ def check_repl(session: Session, out: Path) -> dict:
             answer = repl(f"session.overview(open: .some({str(wanted).lower()}))")
             if "ok" not in answer:
                 raise Failed(f"session.overview(open: .some({str(wanted).lower()})) failed: {answer!r}")
-            wait_for(f"the overview {'up' if wanted else 'down'} in the desk's state",
+            wait_for(f"the overview {'up' if wanted else 'down'} in the shell's state",
                      lambda: overview() == wanted)
         # The workspace admitted every change the apps and the REPL made: a change the sealed
         # channel refuses (the first, unnamed change of a tilolang app's record) is dropped
@@ -666,20 +666,20 @@ def check_ask(session: Session, model: TestOnlyFixedReplyModel) -> dict:
     answers it: it asks the model, and its answer lands in the person's conversation with it, where
     Chat shows it."""
     session.provision(model)
-    # What the person does: the desk's own search, with the request typed into it.
-    desk = wait_for("the desk's search", lambda: next((
+    # What the person does: the shell's own search, with the request typed into it.
+    shell = wait_for("the shell's search", lambda: next((
         a for a in session.actions("search")
         if a.get("resource") == SHELL_RESOURCE and a.get("operation") == "search"), None),
         lambda: [{"resource": a.get("resource"), "operation": a.get("operation")}
                  for a in session.actions("search")])
-    session.invoke(desk["provider"], desk["id"], {"query": REQUEST})
+    session.invoke(shell["provider"], shell["id"], {"query": REQUEST})
 
     def shown_rows() -> list[dict]:
-        """The rows the open search shows, in the desk's order."""
+        """The rows the open search shows, in the shell's order."""
         return session.control_json("raw", json.dumps({"op": "search_rows"}))["answer"]["rows"]
 
     def agent_row() -> dict | None:
-        """The row handing what was typed to the person's agent, at the place the desk gives it
+        """The row handing what was typed to the person's agent, at the place the shell gives it
         (`verbs::search_row_id`)."""
         for at, row in enumerate(shown_rows()):
             title = row.get("title") or ""

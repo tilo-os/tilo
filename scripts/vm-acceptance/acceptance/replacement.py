@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 # The component a replacement swaps in: the session, whose layer carries the
-# compositor, the desk and the desktop's surface apps.
+# compositor, the shell and the desktop's surface apps.
 SESSION = "tilo-session"
 
 

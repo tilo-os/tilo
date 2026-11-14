@@ -54,7 +54,7 @@ no VM uses it (`tilo-vm guide concepts`, "Branch"). libvirt, WHPX and UTM.
 Then `vm branch` boots each branch once beside `box`, which takes a few
 minutes. A branch's new device identity is a new device to every workspace it
 holds, and a workspace takes a new device in only through its host: `box`
-hosts the desk and every workspace it made. A branch first started while
+hosts the shell and every workspace it made. A branch first started while
 `box` is off shows its windows "waiting for box to take this device in", and
 one whose `box` was removed waits for good; its secrets, settings and
 workspace list come along with the disk either way. So `vm branch` boots

@@ -302,7 +302,7 @@ fn the_table_hands_every_shortcut_to_the_shell_or_the_session() {
                 assert!(taken, "{action:?} keeps its own chord");
                 assert_eq!(asks, [DesktopAsk::ReportProblem], "{action:?}");
             }
-            (_, ShortcutHome::Desk) => {
+            (_, ShortcutHome::Shell) => {
                 assert!(taken, "{action:?} is the shell's");
                 assert!(asks.is_empty(), "{action:?} is not the session's: {asks:?}");
             }

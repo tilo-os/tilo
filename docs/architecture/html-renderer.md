@@ -98,7 +98,7 @@ bundle's numbers come next.
 
 ## Next
 
-- Give the remaining widgets their own `html`, starting with what the desk
+- Give the remaining widgets their own `html`, starting with what the shell
   and Chat use, and lower the baseline as each lands.
 - Buttons and list rows: their faces as HTML (label, icon, state) rather
   than a picture.

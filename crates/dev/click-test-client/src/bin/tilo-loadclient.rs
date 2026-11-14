@@ -377,7 +377,7 @@ usage: tilo-loadclient [--seconds S] [--windows N] [--fullscreen]
                 // A fullscreen window takes the display's size, so it pins none of its own.
                 window.set_fullscreen(None);
             } else {
-                // The size it asks for, not a range: a desk gives a window that pins its size a tab
+                // The size it asks for, not a range: a shell gives a window that pins its size a tab
                 // of that size instead of half the display.
                 window.set_max_size(Some(options.size));
             }

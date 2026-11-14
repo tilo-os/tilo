@@ -13,7 +13,7 @@ agent take there, with the person's answering device held by the check
      `click-page`), then reads it back — the key operates web pages, so the
      person is asked nothing and Browser runs every one of them; a person
      invited into the workspace, in their own browser, sees that page on their
-     desk and sees it change as the agent fills one more field: what the
+     shell and sees it change as the agent fills one more field: what the
      person approving a submit is looking at;
   c. `capture-page` answers a picture of the filled form, saved as a PNG;
   d. the person refuses one submission: the window holds it, the call ends
@@ -45,7 +45,7 @@ HOSTED_VISA_ROOT, through the host HOSTED_VISA_RELAY names as
 `KEY@HOST:PORT`; HOSTED_VISA_UNSCOPED_KEY is a key of the same person that may
 not operate web pages in Browser. HOSTED_VISA_SITE and HOSTED_VISA_SITE_RELAY
 are the site and the relay a person enters through, for the person who watches
-the page on their desk (integration/person.mjs).
+the page on their shell (integration/person.mjs).
 
 Prints one JSON line with the timings and what it asserted.
 """
@@ -76,15 +76,15 @@ UNSCOPED_KEY = os.environ.get("HOSTED_VISA_UNSCOPED_KEY", "")
 PERSON_ROOT = os.environ.get("HOSTED_VISA_ROOT", "")
 HOST = os.environ.get("HOSTED_VISA_RELAY", "")
 # The person in their own browser, watching the hosted Browser's page on their
-# desk: the site they arrive at, the relay it enters through, and the window
-# they watch, by the name the desk gives the app that hosts it.
+# shell: the site they arrive at, the relay it enters through, and the window
+# they watch, by the name the shell gives the app that hosts it.
 SITE = os.environ.get("HOSTED_VISA_SITE", "")
 SITE_RELAY = os.environ.get("HOSTED_VISA_SITE_RELAY", "")
-DESK_EMAIL = "desk-person@example.invalid"
-# The tile on their desk, by the name the desk gives it: the hosted window is
-# the workspace's Browser, and a desk that names it by the page it shows names
+SHELL_EMAIL = "shell-person@example.invalid"
+# The tile on their shell, by the name the shell gives it: the hosted window is
+# the workspace's Browser, and a shell that names it by the page it shows names
 # it by the page's title.
-DESK_WINDOW = "browser|visa"
+SHELL_WINDOW = "browser|visa"
 PERSON_PAGE = Path(__file__).with_name("person.mjs")
 # The person's own page, where it stays open on the site (person.mjs
 # --answer): the questions of the submissions are answered on its sheet, and
@@ -111,8 +111,8 @@ DECLARATION = "I declare that the information above is true"
 SUBMIT = "Submit application"
 RECEIPT = "Application received"
 
-# The desks this run opened, stopped whichever way the run ends.
-DESKS: list[Desk] = []
+# The shells this run opened, stopped whichever way the run ends.
+SHELLS: list[Shell] = []
 
 
 def say(step: str, detail: str = "") -> None:
@@ -265,9 +265,9 @@ class Page:
         return str((await self.read()).get("title") or "")
 
 
-class Desk:
+class Shell:
     """A person in their own browser watching the hosted Browser's page on
-    their desk (integration/person.mjs --page).
+    their shell (integration/person.mjs --page).
 
     The window is another device's, so what the person sees of it is the page
     the session in the VM publishes: the check asks this person to keep a
@@ -278,17 +278,17 @@ class Desk:
 
     def __init__(self, link: str) -> None:
         check(bool(SITE and SITE_RELAY), "the check names the site and the relay a person enters through")
-        self.lines = Path(OUT) / "desk.jsonl"
-        self.log = Path(OUT) / "desk.log"
+        self.lines = Path(OUT) / "shell.jsonl"
+        self.log = Path(OUT) / "shell.log"
         self.out = open(self.lines, "w")
         self.err = open(self.log, "w")
         self.seen = 0
         self.ran = subprocess.Popen(
-            ["node", str(PERSON_PAGE), SITE, SITE_RELAY, str(Path(OUT) / "desk"),
-             "--follow", link, "--page", DESK_WINDOW, "--changes", "8"],
+            ["node", str(PERSON_PAGE), SITE, SITE_RELAY, str(Path(OUT) / "shell"),
+             "--follow", link, "--page", SHELL_WINDOW, "--changes", "8"],
             stdout=self.out, stderr=self.err,
         )
-        DESKS.append(self)
+        SHELLS.append(self)
 
     def said(self) -> list[dict]:
         try:
@@ -306,15 +306,15 @@ class Desk:
         return events
 
     def wait(self, kind: str, within: float = 180) -> dict:
-        """The next `kind` the person's desk says (`desk`, or each `change` in
+        """The next `kind` the person's shell says (`shell`, or each `change` in
         turn), waited for `within` seconds."""
         deadline = time.monotonic() + within
         while time.monotonic() < deadline:
             events = self.said()
-            if kind == "desk":
+            if kind == "shell":
                 for event in events:
-                    if "desk" in event:
-                        return event["desk"]
+                    if "shell" in event:
+                        return event["shell"]
             else:
                 changes = [event["change"] for event in events if "change" in event]
                 if len(changes) > self.seen:
@@ -323,13 +323,13 @@ class Desk:
             if self.ran.poll() not in (None, 0):
                 raise AssertionError(f"the person's browser ended ({self.ran.returncode}): {self.log.read_text()[-2000:]}")
             time.sleep(0.2)
-        raise AssertionError(f"the person's desk said no {kind} in {within:.0f} s (see {self.log})")
+        raise AssertionError(f"the person's shell said no {kind} in {within:.0f} s (see {self.log})")
 
     def stop(self) -> None:
         """Their browser goes, as one a person closes does: the watcher is
         told to finish, and is stopped only if it does not."""
         try:
-            (Path(OUT) / "desk" / "stop").write_text("")
+            (Path(OUT) / "shell" / "stop").write_text("")
         except OSError:
             pass
         try:
@@ -489,27 +489,27 @@ async def fill_phase(report: dict[str, object]) -> int:
         await person.asked_nothing()
         report["questions_while_filling"] = person.answered()
 
-        say("b2. a person invited into the workspace sees the agent's page on their desk")
-        desk = Desk((await aws.members.invite(role="editor", email=DESK_EMAIL)).link)
-        on_desk = await asyncio.to_thread(desk.wait, "desk", 240)
+        say("b2. a person invited into the workspace sees the agent's page on their shell")
+        shell = Shell((await aws.members.invite(role="editor", email=SHELL_EMAIL)).link)
+        on_shell = await asyncio.to_thread(shell.wait, "shell", 240)
         check(
-            on_desk.get("content", 0) >= 0.02,
-            f"the hosted Browser's page is drawn on the person's desk, not a card waiting for one ({on_desk})",
+            on_shell.get("content", 0) >= 0.02,
+            f"the hosted Browser's page is drawn on the person's shell, not a card waiting for one ({on_shell})",
         )
-        report["desk"] = on_desk
-        say("   drawn", f"the page was on their desk in {on_desk.get('drawnMs')} ms, {on_desk.get('content')} of it its content")
+        report["shell"] = on_shell
+        say("   drawn", f"the page was on their shell in {on_shell.get('drawnMs')} ms, {on_shell.get('content')} of it its content")
         # The agent fills a field while they watch: what the person approving
         # the submit sees happen on the page before they are asked about it.
         element = await page.find("textbox", "Given names")
         await outcome(page.do("fill-page", element=element, text=f"{FILLED['Given names']} Wilhelmine"))
-        seen = await asyncio.to_thread(desk.wait, "change", 60)
-        check(int(seen.get("moved", 0)) > 150, f"the agent's fill reached the person's desk ({seen})")
-        say("   seen", f"the fill changed {seen['moved']} pixels of the page on their desk, {seen['ms']} ms after the change before")
-        report["desk_fill"] = seen
+        seen = await asyncio.to_thread(shell.wait, "change", 60)
+        check(int(seen.get("moved", 0)) > 150, f"the agent's fill reached the person's shell ({seen})")
+        say("   seen", f"the fill changed {seen['moved']} pixels of the page on their shell, {seen['ms']} ms after the change before")
+        report["shell_fill"] = seen
         # What the rest of the flow asserts, back in its field.
         element = await page.find("textbox", "Given names")
         await outcome(page.do("fill-page", element=element, text=FILLED["Given names"]))
-        await asyncio.to_thread(desk.wait, "change", 60)
+        await asyncio.to_thread(shell.wait, "change", 60)
 
         say("c. the agent captures the filled form")
         captured = await outcome(page.do("capture-page"))
@@ -559,12 +559,12 @@ async def fill_phase(report: dict[str, object]) -> int:
         check("TV-" in json.dumps(receipt), f"the page shows the reference it made ({json.dumps(receipt)[:300]})")
         report["receipt"] = True
         # The page the person allowed the submission of shows its receipt,
-        # and so does the page on their desk.
-        seen = await asyncio.to_thread(desk.wait, "change", 60)
-        check(int(seen.get("moved", 0)) > 500, f"the receipt reached the person's desk ({seen})")
-        say("   seen", f"the receipt changed {seen['moved']} pixels of the page on their desk")
-        report["desk_receipt"] = seen
-        desk.stop()
+        # and so does the page on their shell.
+        seen = await asyncio.to_thread(shell.wait, "change", 60)
+        check(int(seen.get("moved", 0)) > 500, f"the receipt reached the person's shell ({seen})")
+        say("   seen", f"the receipt changed {seen['moved']} pixels of the page on their shell")
+        report["shell_receipt"] = seen
+        shell.stop()
 
         say("f. a click on the submit button is held, and the person is asked once")
         submit = await fill(page)
@@ -591,7 +591,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         listing = await rws.ls("browser")
         check(
             bool(listing.rows),
-            "the reviewer's listing names the hosted Browser window their desk shows",
+            "the reviewer's listing names the hosted Browser window their shell shows",
         )
         history = await rws.do("browser#history", last=50)
         write_json("reviewer-history.json", history)
@@ -684,9 +684,9 @@ async def main() -> int:
                 status = await fill_phase(report)
     finally:
         # The person's browser goes with the run, whichever way it ends: a
-        # desk left open would sit in the stack for the next step.
-        for desk in DESKS:
-            desk.stop()
+        # shell left open would sit in the stack for the next step.
+        for shell in SHELLS:
+            shell.stop()
     write_json("report.json", report)
     print(json.dumps(report), flush=True)
     return status

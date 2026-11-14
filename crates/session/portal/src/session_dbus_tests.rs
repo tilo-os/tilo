@@ -37,7 +37,7 @@ impl CaptureStreams for Streams {
                 kind: SourceKind::Output,
                 id: "DP-1".into(),
                 app_id: None,
-                label: "Desk".into(),
+                label: "Tower".into(),
             },
             CaptureSource {
                 kind: SourceKind::Window,

@@ -32,7 +32,7 @@ pub struct Workspace {
     pub id: String,
     /// What the person granted apps in this workspace.
     pub grants: LaunchGrants,
-    /// The workspace's policy as the desk holds it, or `None` when the session
+    /// The workspace's policy as the shell holds it, or `None` when the session
     /// holds none for it: what the person at this device may do in the app
     /// ([`crate::authority`]).
     pub policy: Option<WorkspacePolicy>,

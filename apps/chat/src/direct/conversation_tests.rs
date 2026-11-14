@@ -238,7 +238,7 @@ fn a_box_send_reaches_the_conversation_the_two_already_have() {
             chat.active_channel,
             conversation.to_string(),
             "the window that sent it goes on showing what it showed: the \
-             conversation opens as a window of the desk"
+             conversation opens as a window of the shell"
         );
     });
 
@@ -335,7 +335,7 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
             chat.active_channel,
             conversation.to_string(),
             "the window that sent it goes on showing what it showed: the \
-             conversation opens as a window of the desk, floated where the \
+             conversation opens as a window of the shell, floated where the \
              box stood"
         );
     });
@@ -389,7 +389,7 @@ fn a_send_by_name_reaches_the_member_called_that() {
     );
 }
 
-/// The window a box's send floats over the desk opens on the item the send answered, as a
+/// The window a box's send floats over the shell opens on the item the send answered, as a
 /// window launched to reveal it does: a conversation with an agent is one by its id, listed in
 /// the sidebar or not, so the window shows the message that was sent instead of the first channel.
 #[test]
@@ -438,7 +438,7 @@ fn the_conversation_a_send_answers_opens_in_a_window() {
 }
 
 /// A send made in a box answers the conversation it landed in as the item
-/// that names it: the desk opens the window on it where the box stood, so the
+/// that names it: the shell opens the window on it where the box stood, so the
 /// message and the conversation it reached are one gesture there. The window
 /// that sent goes on showing what it showed.
 #[test]
@@ -470,7 +470,7 @@ fn a_box_send_answers_the_conversation_it_landed_in() {
     assert_eq!(
         value["anchor"],
         crate::effects::item_row_id("channels", conversation.as_str()),
-        "the send names the conversation as an item of the chat, so the desk opens it"
+        "the send names the conversation as an item of the chat, so the shell opens it"
     );
 }
 

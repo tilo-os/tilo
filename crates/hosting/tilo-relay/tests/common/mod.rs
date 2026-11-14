@@ -263,7 +263,7 @@ pub async fn client_endpoint() -> Endpoint {
 }
 
 /// An endpoint whose key is the device's own, as a device dials with: relays on, as a page and a
-/// desk dial a host they were handed a link to (`tilo-relay-client`'s `Host::bind` reaches the
+/// shell dial a host they were handed a link to (`tilo-relay-client`'s `Host::bind` reaches the
 /// host through the relay it names). Its relay is this machine's loopback one
 /// ([`test_relay::loopback`]), so a link's relay URL is one this machine answers on.
 pub async fn device_endpoint(device: &TestDevice) -> Endpoint {

@@ -234,7 +234,7 @@ impl Records {
     }
 
     /// The records of the other workspaces, each saying where it lives, in
-    /// the order a person reads them: first those of a workspace this desk
+    /// the order a person reads them: first those of a workspace this shell
     /// shows, by name, then those whose workspace it cannot name. They stand
     /// in this order while nothing is typed, and what the person brought
     /// here before rises above them.

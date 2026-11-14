@@ -664,7 +664,7 @@ impl IndexedContent {
 
     /// The recipient `indexed` names, when it names one a message can go to: an
     /// agent the workspace keeps, a person, or a conversation. A person
-    /// sitting at this desk is no recipient of their own message.
+    /// sitting at this session is no recipient of their own message.
     fn recipient(&self, indexed: &IndexedEntry) -> Option<ui::floating_surface::Recipient> {
         use ui::floating_surface::{Recipient, RecipientKind};
         let entry = &indexed.entry;

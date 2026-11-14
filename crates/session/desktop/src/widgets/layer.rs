@@ -2,7 +2,7 @@
 //! each is in ([`WidgetBoard`]) and paints it there.
 //! Widget content is what the session already holds: the people in this workspace come from the
 //! tree the shell shows, the date from the clock. Nothing is polled: the layer reads the tree it is
-//! mounted over, and the person's choices ([`DeskWidgetPrefs`]) arrive from the settings document
+//! mounted over, and the person's choices ([`WidgetsPrefs`]) arrive from the settings document
 //! the session watches.
 
 #![allow(
@@ -19,7 +19,6 @@ use tilo_desktop_surface::notifications::{
     CLEAR_UNDO_WINDOW, Notification, NotificationIconKind, NotificationSeverity,
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopNotifications, NotificationOutcome};
-use ui::desk_widgets::{DeskWidgetPrefs, ShowMode, WidgetId, WidgetPrefs};
 use ui::motion::{Ambient, Presence, Zoom};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -27,6 +26,7 @@ use ui::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::tokens::{EffectiveMotion, MotionSource};
 use ui::widget::{AppModel, EventCtx, ModelPath, TaffyTreeExt as _, Widget};
+use ui::widgets::{ShowMode, WidgetId, WidgetPrefs, WidgetsPrefs};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size, Vec2};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -111,12 +111,12 @@ pub struct WidgetLayer {
     /// What the shell asks of the host (a person's row opens who they are).
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// The person's choices as this layer has them.
-    prefs: DeskWidgetPrefs,
+    prefs: WidgetsPrefs,
     /// The same choices as the session reads them from the settings document: the document is
     /// watched there, and read once a change.
-    changes: std::sync::Arc<std::sync::Mutex<DeskWidgetPrefs>>,
+    changes: std::sync::Arc<std::sync::Mutex<WidgetsPrefs>>,
     /// What this layer last laid out from.
-    laid_from: DeskWidgetPrefs,
+    laid_from: WidgetsPrefs,
     /// Write a choice back to the settings document. A test keeps its own.
     persist: bool,
     board: WidgetBoard,
@@ -189,7 +189,7 @@ struct Painted {
     people: Vec<String>,
     reading: Reading,
     playing: Option<NowPlaying>,
-    prefs: DeskWidgetPrefs,
+    prefs: WidgetsPrefs,
 }
 
 impl WidgetLayer {
@@ -205,7 +205,7 @@ impl WidgetLayer {
         handle: DesktopHandle,
         user: String,
         asks: Rc<RefCell<Vec<DesktopAsk>>>,
-        changes: std::sync::Arc<std::sync::Mutex<DeskWidgetPrefs>>,
+        changes: std::sync::Arc<std::sync::Mutex<WidgetsPrefs>>,
     ) -> Self {
         let prefs = shared(&changes).clone();
         Self {
@@ -289,7 +289,7 @@ impl WidgetLayer {
     /// The same layer showing `prefs` , keeping what it is asked in memory: for a shell that stands
     /// on its own.
     #[must_use]
-    pub fn with_prefs(mut self, prefs: DeskWidgetPrefs) -> Self {
+    pub fn with_prefs(mut self, prefs: WidgetsPrefs) -> Self {
         *shared(&self.changes) = prefs.clone();
         self.laid_from = prefs.clone();
         self.prefs = prefs;
@@ -319,7 +319,7 @@ impl WidgetLayer {
 
     /// The choices in force.
     #[must_use]
-    pub fn prefs(&self) -> DeskWidgetPrefs {
+    pub fn prefs(&self) -> WidgetsPrefs {
         self.prefs.clone()
     }
 
@@ -855,9 +855,9 @@ impl WidgetLayer {
     /// Put `prefs` in force for `id` , in the settings document too.
     fn store(&mut self, id: WidgetId, prefs: WidgetPrefs) {
         if self.persist
-            && let Err(error) = ui::desk_widgets::prefs_key(id).set(prefs.clone())
+            && let Err(error) = ui::widgets::prefs_key(id).set(prefs.clone())
         {
-            tracing::warn!(target: "tilo::shell", %error, "shell widget choice not saved");
+            tracing::warn!(target: "tilo::shell", %error, "widget choice not saved");
         }
         *self.prefs.get_mut(id) = prefs;
         *shared(&self.changes) = self.prefs.clone();
@@ -1611,9 +1611,7 @@ impl Widget for WidgetLayer {
 }
 
 /// The choices the session keeps in step with the settings document.
-fn shared(
-    changes: &std::sync::Mutex<DeskWidgetPrefs>,
-) -> std::sync::MutexGuard<'_, DeskWidgetPrefs> {
+fn shared(changes: &std::sync::Mutex<WidgetsPrefs>) -> std::sync::MutexGuard<'_, WidgetsPrefs> {
     changes
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1667,7 +1665,7 @@ mod tests {
     struct Rig {
         widgets: WidgetLayer,
         asks: Rc<RefCell<Vec<DesktopAsk>>>,
-        changes: std::sync::Arc<std::sync::Mutex<DeskWidgetPrefs>>,
+        changes: std::sync::Arc<std::sync::Mutex<WidgetsPrefs>>,
         /// The shell's open card as the session's keys see it, which asks it to fold.
         fold: super::super::Fold,
         /// Whether the overview is over the shell.
@@ -1681,13 +1679,13 @@ mod tests {
     /// A shell with `people` in its workspace, the calendar added, and the layer laid out over a
     /// 1600×900 display.
     fn rig(people: &[(&str, &str)]) -> Rig {
-        let mut prefs = DeskWidgetPrefs::default();
+        let mut prefs = WidgetsPrefs::default();
         prefs.get_mut(WidgetId::Calendar).enabled = true;
         rig_with(people, prefs, Box::new(Service::default()))
     }
 
     /// A shell as `rig` with the choices `prefs` hold, the monitor's readings coming from `source` .
-    fn rig_with(people: &[(&str, &str)], prefs: DeskWidgetPrefs, source: Box<dyn Source>) -> Rig {
+    fn rig_with(people: &[(&str, &str)], prefs: WidgetsPrefs, source: Box<dyn Source>) -> Rig {
         let mut minter = IdMinter::new(7);
         let mut tree = seed_tree(&mut minter, "Shell", Vec::new());
         if let Some(workspace) = tree.workspaces.first_mut() {
@@ -1700,7 +1698,7 @@ mod tests {
 
     /// The layer of the tests over `handle` , with the shell's choices `prefs` and the monitor's
     /// readings from `source` .
-    fn rig_over(handle: DesktopHandle, prefs: DeskWidgetPrefs, source: Box<dyn Source>) -> Rig {
+    fn rig_over(handle: DesktopHandle, prefs: WidgetsPrefs, source: Box<dyn Source>) -> Rig {
         let asks = Rc::new(RefCell::new(Vec::new()));
         let changes = std::sync::Arc::new(std::sync::Mutex::new(prefs.clone()));
         let fold = super::super::Fold::default();
@@ -1738,7 +1736,7 @@ mod tests {
             (1600, 900),
         );
         frame.relayout();
-        let mut prefs = DeskWidgetPrefs::default();
+        let mut prefs = WidgetsPrefs::default();
         prefs.get_mut(WidgetId::Calendar).enabled = true;
         let rig = rig_over(handle, prefs, Box::new(Service::default()));
         (rig, frame)
@@ -2399,7 +2397,7 @@ mod tests {
     fn the_monitor_shows_the_machines_readings_only_while_it_is_up() {
         let source = Fake::default();
         let probes = source.clone();
-        let mut prefs = DeskWidgetPrefs::default();
+        let mut prefs = WidgetsPrefs::default();
         prefs.get_mut(WidgetId::Calendar).enabled = true;
         let mut monitor = prefs.get_mut(WidgetId::SystemMonitor).clone();
         monitor.enabled = true;
@@ -2568,7 +2566,7 @@ mod tests {
         let mut minter = IdMinter::new(7);
         let tree = seed_tree(&mut minter, "Shell", Vec::new());
         let handle = DesktopSurface::new(tree, 7, Box::new(Tiles)).1;
-        let mut prefs = DeskWidgetPrefs::default();
+        let mut prefs = WidgetsPrefs::default();
         prefs.get_mut(WidgetId::Calendar).enabled = true;
         let changes = std::sync::Arc::new(std::sync::Mutex::new(prefs.clone()));
         let widgets = WidgetLayer::new(

@@ -897,8 +897,8 @@ mod tests {
             );
         }
 
-        phase a_window_takes_the_tab_the_desk_made_for_it_as_its_instance;
-        // A window the session starts takes the tab the desk made for it, and that
+        phase a_window_takes_the_tab_the_shell_made_for_it_as_its_instance;
+        // A window the session starts takes the tab the shell made for it, and that
         // tab is the instance it is known by, which its request names.
         {
             const APP: &str = "so.tilo.window-door-tab";

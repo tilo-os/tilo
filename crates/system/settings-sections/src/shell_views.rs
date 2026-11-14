@@ -18,7 +18,7 @@ pub const SWAPPABLE: &[&str] = &[
     "switcher",
     "overview",
     "strips",
-    "desk-widgets",
+    "shell-widgets",
     "notifications",
     "people",
     "emoji",

@@ -247,7 +247,7 @@ code{font:14px monospace;background:#eee}
 td,th{border:1px solid #999;padding:2px 8px} th{background:#0a3d62;color:#fff}
 td.sum{text-align:right}
 </style>
-<h1>The harbour at dawn</h1><p class="note">By the night desk</p>
+<h1>The harbour at dawn</h1><p class="note">By the night shell</p>
 <p>The harbour kept its own hours, and <a href="/more">the people who worked it</a> had long
 since stopped arguing with the tide. The fee was <span class="old">12 crowns</span> 9 crowns,
 <em>paid at the gate</em>, and <strong>nobody</strong> waited for a receipt longer than it takes

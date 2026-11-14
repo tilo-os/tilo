@@ -130,7 +130,7 @@ for this image, the API server and the web entry (`os/containers/tilo-sh`'s
 `stack.sh`), from what the checks beside it built, and every flow runs at the
 same time against that one site, relay and workspace, each as people of its own in
 headless Chromium: the page booting, two people chatting and calling, the
-desk's menus and gestures, an invitation, a shared link, a setup through an
+shell's menus and gestures, an invitation, a shared link, a setup through an
 agent and its resumes, the startup identity approving a server key and the
 visa run beside it, fresh visitors' entry into the Lounge, the wait list of a
 door that takes people by invitation, a stranger's onboarding on a tilo.sh of
@@ -157,6 +157,6 @@ run. Every wait in the page drivers is a
 number of steps of `TILO_STEP_SECONDS` (5 s by default; `test-e2e.sh` sets
 20 s for a node that draws every page in software), so a hang fails within its
 few steps and names its step. That every app the page offers opens from the
-search on the next frame is an in-process test of the desk's search
+search on the next frame is an in-process test of the shell's search
 (`crates/session/desktop-surface/tests/every_web_app_opens_from_search.rs`),
 not a browser's walk.

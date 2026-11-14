@@ -3,7 +3,7 @@
 The canvas is one 2D surface the person works on directly. There are no windows and no fixed
 applications on it: what stands there is content, the views of resources (an inbox, a note, a
 list of tasks, a channel's last messages, an answer), placed by the person or by their agent.
-Its one gesture is **point somewhere and say what you want there.** It is the desk style
+Its one gesture is **point somewhere and say what you want there.** It is the style
 `so.tilo.shell:frames` (`apps/tl/shell/canvas.tl`) of the tilolang shell (shell.md §6, §8).
 
 ## 1. Pointing
@@ -63,9 +63,9 @@ A place on the canvas is a resource's view, drawn as itself:
 
 The agent acts through the same published actions the person's gestures and the REPL run:
 placing, moving, resizing and closing content (`shell:layout`), finding resources, every
-app's actions on its resources, and the desk style itself. It changes how the canvas works by
+app's actions on its resources, and the style itself. It changes how the canvas works by
 writing the person's own style package (shell.md §6, "Make it mine"): its views are tilolang the
-agent edits, checks and installs, and the desk switches to it. Every step is attributed and
+agent edits, checks and installs, and the shell switches to it. Every step is attributed and
 undoable.
 
 ## 5. Looks and scale
@@ -115,7 +115,7 @@ is shown to anyone.
   only app-shaped views gets content views for them (a notes list, a task list for a set of
   tasks).
 - **The canvas is the whole screen.** In this style there is no dock and no desktop chrome: the
-  bar keeps only what a person needs on any screen (the time, notices, the person). The desk
+  bar keeps only what a person needs on any screen (the time, notices, the person). The shell
   style is chosen in the style menu and Settings, not in a control that is always visible.
 - **Free space invites writing.** The pointer over free space is a text cursor. An empty canvas
   says once, quietly, at its centre: "Click anywhere and say what you want". Gone after the first

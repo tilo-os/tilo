@@ -186,7 +186,7 @@ const EXCHANGES: usize = 8;
 #[derive(Default)]
 pub struct Staging {
     pub scenario: Option<String>,
-    /// The layer a package with more than one root shows (`Desk`, `Layout`).
+    /// The layer a package with more than one root shows (`Shell`, `Layout`).
     pub root: Option<String>,
     pub record: Option<ui::automerge::AutoCommit>,
     /// Whether what the app's units run is counted ([`tilolang_tilo::runtime::cost`]).
@@ -199,7 +199,7 @@ pub struct Staging {
 impl Staged {
     /// The app `app` of `packages` with `scenario` staged, its window laid out at `viewport`, showing
     /// the layer `root` names rather than the package's first root: a package with more than one root
-    /// (the shell's `Desk` beside its `Layout`) shows each, and each is laid out as a person sees
+    /// (the shell's `Shell` beside its `Layout`) shows each, and each is laid out as a person sees
     /// it.
     pub fn over(
         app: &str,
@@ -276,7 +276,7 @@ impl Staged {
         {
             host.runtime().record_costs(true);
         }
-        // The package's own root resources — every layer it has (the shell's `Desk` beside its
+        // The package's own root resources — every layer it has (the shell's `Shell` beside its
         // layout) and a person's record kept beside them (`root shell: Shell`) — are made and
         // its migrations run, as the live session does when it loads the package: a scenario that
         // seeds another layer than the one laid out, or seeds a root through a migration, shows
@@ -407,7 +407,7 @@ impl Staged {
         &self.harness
     }
 
-    /// The places the staged desk holds, as the shell's own layout has them: each the app it
+    /// The places the staged shell holds, as the shell's own layout has them: each the app it
     /// shows and the record it shows.
     #[cfg(test)]
     pub fn places(&self) -> Vec<PlaceShown> {
@@ -872,7 +872,7 @@ fn commit(
     action: &tilolang_tilo::action::DynAction,
 ) -> Result<(), String> {
     use ui::tilo_actions::{ActionContext, ActionInvoker, apply_local_with_context};
-    // A resource its origin derives — the shell's desk and layout, a session's desk — lives in
+    // A resource its origin derives — the shell's own record and layout, a session's record — lives in
     // the store's unsaved layer and is never the workspace record's to have, so its steps stay
     // there: what the store holds of it, the window is laid out with.
     let Some(action) = only_the_record(action, host) else {

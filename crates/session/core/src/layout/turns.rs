@@ -290,11 +290,11 @@ impl Layout {
     /// forward when it stands already.
     ///
     /// # Errors
-    /// The turn stands nowhere on the desk, or no conversation is known for it.
+    /// The turn stands nowhere in the layout, or no conversation is known for it.
     pub fn open_conversation_of(&mut self, asked: &str, turn: &str) -> Result<Option<u64>, String> {
         let place = self
             .place_of(turn.trim())
-            .ok_or_else(|| format!("the answer {turn} stands nowhere on the desk"))?;
+            .ok_or_else(|| format!("the answer {turn} stands nowhere in the layout"))?;
         // The turn's own key names it to `open_place`, which then stands its conversation beside
         // the turn rather than in the room the turn keeps for its answer.
         let (key, conversation) = self

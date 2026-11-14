@@ -94,7 +94,7 @@ pub struct Continue {
     /// workspace holds it, since rows of two workspaces otherwise read
     /// alike.
     home: String,
-    /// The name the desk gives each workspace, by workspace: what a place
+    /// The name the shell gives each workspace, by workspace: what a place
     /// elsewhere says.
     names: Vec<(String, String)>,
     /// Now, in Unix seconds: how long ago the person was somewhere.
@@ -128,7 +128,7 @@ impl Continue {
     }
 
     /// The places of every workspace of `recent`, each naming the workspace
-    /// it is in where that is not `home` ("in Lounge"), which the desk
+    /// it is in where that is not `home` ("in Lounge"), which the shell
     /// gives as `(workspace, name)` pairs.
     pub fn everywhere(
         recent: &RecentPlaces,

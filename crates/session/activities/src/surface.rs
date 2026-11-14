@@ -1,4 +1,4 @@
-//! The layer's surface: the activity cards over the desk, their controls,
+//! The layer's surface: the activity cards over the shell, their controls,
 //! dragging one loose, and the group assistive technology reads.
 //!
 //! The surface shows the cards the session publishes ([`Link`]) and puts what

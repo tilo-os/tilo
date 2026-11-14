@@ -176,7 +176,7 @@ class AppCopyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
-            catalogue = "desk-open = Open\n"
+            catalogue = "shell-open = Open\n"
             self.crate(root, "crates/session/desktop-surface",
                        {"en-US": catalogue, "de-DE": catalogue}, "")
             (root / "crates/session/desktop-surface/Cargo.toml").write_text(
@@ -186,10 +186,10 @@ class AppCopyTests(unittest.TestCase):
             (desktop / "Cargo.toml").write_text('[package]\nname = "tilo-desktop"\n')
             (desktop / "src/lib.rs").write_text(
                 "pub use tilo_desktop_surface::{activity, i18n};\n")
-            (desktop / "src/view.rs").write_text('fn bar() { t("desk-absent"); }\n')
+            (desktop / "src/view.rs").write_text('fn bar() { t("shell-absent"); }\n')
             self.assertEqual(copy.missing_copy(root), [
-                "crates/session/desktop/src/view.rs:1: de-DE lacks desk-absent",
-                "crates/session/desktop/src/view.rs:1: en-US lacks desk-absent",
+                "crates/session/desktop/src/view.rs:1: de-DE lacks shell-absent",
+                "crates/session/desktop/src/view.rs:1: en-US lacks shell-absent",
             ])
 
     def test_the_desktop_surface_checks_the_activity_keys_a_match_picks(self):

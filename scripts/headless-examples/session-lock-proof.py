@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """The session's lock, end to end, in a headless session of its own.
 
-One desk locks, refuses a password that is not the person's, and comes back
+One shell locks, refuses a password that is not the person's, and comes back
 when the person's own is typed — every step read off the session itself, never
 from the thing that asked for it:
 
-  lock    the desk's own lock action locks the session, and the lock screen the
+  lock    the shell's own lock action locks the session, and the lock screen the
           session starts for it puts its own frame on the displays
   wrong   a password that is not the person's is checked and refused: the
-          screen stays locked and keeps covering the desk
-  unlock  the person's own password lifts it: the desk is back, and the screen
+          screen stays locked and keeps covering the shell
+  unlock  the person's own password lifts it: the shell is back, and the screen
           that covered it is gone
 
 The password check is a stand-in: a container has neither the installed
@@ -66,7 +66,7 @@ def runtime_directory(state: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(runtime)
 
 
-class Desk:
+class Shell:
     """A headless session on a scratch home of its own, driven at its socket."""
 
     def __init__(self) -> None:
@@ -76,7 +76,7 @@ class Desk:
         for path in (self.home, self.identity):
             path.mkdir(parents=True, exist_ok=True)
         self.identity.chmod(0o700)
-        # The desk's state is this scratch directory, as a launcher's state is
+        # The shell's state is this scratch directory, as a launcher's state is
         # a session's: the runtime directory it answers in comes from there.
         self.runtime = runtime_directory(self.dir)
         self.runtime.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -97,7 +97,7 @@ class Desk:
             "HOME": str(self.home),
             "TILO_TEST_CONTROL": str(self.socket),
             "TILO_UNLOCK_HELPER": str(self.helper),
-            # The identity this desk opens with is this scratch directory's,
+            # The identity this shell opens with is this scratch directory's,
             # never the machine's: the shared tree is refused a throwaway.
             "TILO_IDENTITY_ROOT": str(self.identity),
             "XDG_RUNTIME_DIR": str(self.runtime),
@@ -171,7 +171,7 @@ class Desk:
         return self.attempts.read_text().splitlines()
 
     def lock_action(self) -> dict | None:
-        """The session's own lock action, as the desk publishes it."""
+        """The session's own lock action, as the shell publishes it."""
         rows = (self.call({"op": "actions_enumerate", "query": "lock"}).get("answer")
                 or {}).get("actions") or []
         return next((row for row in rows
@@ -193,58 +193,58 @@ def main() -> int:
         print(f"FAIL: no session binary at {SHELL}", file=sys.stderr)
         return 1
 
-    desk = Desk()
+    shell = Shell()
     try:
-        # A development desk opens on first-use setup; the throwaway identity a
-        # development session opens its desk with instead is minted here, so
-        # this one starts on the desk whose lock the proof locks.
-        print("\n[0] a desk of its own")
-        desk.start()
-        minted = desk.call({"op": "provision_test_identity"})
-        check("a development desk mints its throwaway identity",
+        # A development shell opens on first-use setup; the throwaway identity a
+        # development session opens its shell with instead is minted here, so
+        # this one starts on the shell whose lock the proof locks.
+        print("\n[0] a shell of its own")
+        shell.start()
+        minted = shell.call({"op": "provision_test_identity"})
+        check("a development shell mints its throwaway identity",
               bool((minted.get("answer") or {}).get("created")), json.dumps(minted)[:120])
-        desk.stop()
-        desk.start()
-        check("the desk answers, with no lock on it", not desk.locked())
-        check("and no lock screen covers it", not desk.screen_drawn())
+        shell.stop()
+        shell.start()
+        check("the shell answers, with no lock on it", not shell.locked())
+        check("and no lock screen covers it", not shell.screen_drawn())
 
-        print("\n[1] the desk locks itself, and its lock screen stands over it")
-        lock = desk.lock_action()
-        check("the desk publishes its own lock action", lock is not None)
-        desk.call({"op": "actions_invoke",
+        print("\n[1] the shell locks itself, and its lock screen stands over it")
+        lock = shell.lock_action()
+        check("the shell publishes its own lock action", lock is not None)
+        shell.call({"op": "actions_invoke",
                    "provider": (lock or {}).get("provider", ""),
                    "id": (lock or {}).get("id", "")})
-        check("the session is locked", until(desk.locked))
-        # What a person sees: not the desk's last frame, but the lock screen's
+        check("the session is locked", until(shell.locked))
+        # What a person sees: not the shell's last frame, but the lock screen's
         # own, on every display. Read off the compositor, which only says so
         # once the lock client attached and committed a buffer.
-        check("the lock screen's own frame is on the displays", until(desk.screen_drawn))
+        check("the lock screen's own frame is on the displays", until(shell.screen_drawn))
 
         print("\n[2] another password is refused, and the screen stays shut")
-        desk.call({"op": "type", "text": WRONG})
-        desk.call({"op": "key", "key": "Enter"})
-        check("the session asks the helper", until(lambda: len(desk.asked()) >= 1),
-              f"{len(desk.asked())} attempt(s)")
-        check("the helper was handed what was typed", desk.asked()[:1] == [WRONG],
-              ", ".join(desk.asked())[:80])
-        check("the session stays locked", desk.locked())
-        check("and the lock screen still covers the desk", desk.screen_drawn())
+        shell.call({"op": "type", "text": WRONG})
+        shell.call({"op": "key", "key": "Enter"})
+        check("the session asks the helper", until(lambda: len(shell.asked()) >= 1),
+              f"{len(shell.asked())} attempt(s)")
+        check("the helper was handed what was typed", shell.asked()[:1] == [WRONG],
+              ", ".join(shell.asked())[:80])
+        check("the session stays locked", shell.locked())
+        check("and the lock screen still covers the shell", shell.screen_drawn())
 
-        print("\n[3] the person's own password brings the desk back")
-        desk.call({"op": "type", "text": PASSWORD})
-        desk.call({"op": "key", "key": "Enter"})
-        check("the session unlocks", until(lambda: not desk.locked()))
-        check("with the password that was typed", desk.asked()[1:2] == [PASSWORD],
-              ", ".join(desk.asked())[:80])
-        check("the lock screen is gone", until(lambda: not desk.screen_drawn()))
-        state = desk.call({"op": "state_dump"}).get("state") or {}
+        print("\n[3] the person's own password brings the shell back")
+        shell.call({"op": "type", "text": PASSWORD})
+        shell.call({"op": "key", "key": "Enter"})
+        check("the session unlocks", until(lambda: not shell.locked()))
+        check("with the password that was typed", shell.asked()[1:2] == [PASSWORD],
+              ", ".join(shell.asked())[:80])
+        check("the lock screen is gone", until(lambda: not shell.screen_drawn()))
+        state = shell.call({"op": "state_dump"}).get("state") or {}
         workspaces = (state.get("workspace_tree") or {}).get("workspaces") or []
-        check("the desk behind it is readable again", bool(workspaces),
+        check("the shell behind it is readable again", bool(workspaces),
               ", ".join(str(workspace.get("name", "")) for workspace in workspaces))
     finally:
-        desk.stop()
-        shutil.rmtree(desk.runtime, ignore_errors=True)
-        shutil.rmtree(desk.dir, ignore_errors=True)
+        shell.stop()
+        shutil.rmtree(shell.runtime, ignore_errors=True)
+        shutil.rmtree(shell.dir, ignore_errors=True)
 
     print()
     if failures:

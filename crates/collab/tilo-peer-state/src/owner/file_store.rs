@@ -59,7 +59,7 @@ pub fn owner_file_of(state: &Path) -> PathBuf {
 /// What a host that keeps state derived from the record does around each
 /// publication of it.
 pub trait FileHost: std::any::Any + Send + Sync {
-    /// Whether the host's desk holds `workspace`.
+    /// Whether the host's shell holds `workspace`.
     fn shows(&self, _workspace: WorkspaceId) -> bool {
         false
     }

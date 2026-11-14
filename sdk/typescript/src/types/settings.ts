@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings@8d8766b1b5ed5a7c";
+export const SURFACE = "so.tilo.settings@ee82969e4c06ecce";
 
 /** One of "none", "grayscale", "inverted", "grayscale_inverted". */
 export type ColorFilter = "none" | "grayscale" | "inverted" | "grayscale_inverted";
@@ -481,17 +481,17 @@ export function power(ws: tilo.Workspace, path: string): Power {
   return resourceProxy(ws, path, SURFACE) as unknown as Power;
 }
 
-/** Desk widgets — `settings.desk_widgets`. */
-export interface DeskWidgets extends tilo.Resource {
+/** Widgets — `settings.widgets`. */
+export interface Widgets extends tilo.Resource {
   music: WidgetPrefs;
   team: WidgetPrefs;
   calendar: WidgetPrefs;
   system_monitor: WidgetPrefs;
 }
 
-/** The `settings.desk_widgets` kind at `path`. */
-export function deskWidgets(ws: tilo.Workspace, path: string): DeskWidgets {
-  return resourceProxy(ws, path, SURFACE) as unknown as DeskWidgets;
+/** The `settings.widgets` kind at `path`. */
+export function widgets(ws: tilo.Workspace, path: string): Widgets {
+  return resourceProxy(ws, path, SURFACE) as unknown as Widgets;
 }
 
 /** Search history — `settings.search_history`. */

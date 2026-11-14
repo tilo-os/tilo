@@ -6,7 +6,7 @@
 //! for text a file held: the rows that switch sources off were asked on the frame, a frame after
 //! the rest, and the page drew that frame only when its clock turned the minute. The frame that
 //! typed now asks the one source that holds the frame's state, and every other source answers on a
-//! worker, whose answer wakes the desk.
+//! worker, whose answer wakes the shell.
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -140,9 +140,9 @@ fn row(provider: &str, id: &str, title: &str) -> Hit {
     }
 }
 
-/// A desk with Mail and Notes, a window, a command, a records source held until the returned
+/// A shell with Mail and Notes, a window, a command, a records source held until the returned
 /// sender says so, and a files source that fails.
-fn desk() -> (DesktopSearch, Sender<()>) {
+fn shell() -> (DesktopSearch, Sender<()>) {
     let (release, held) = channel();
     let mut data = super::tests::data();
     data.applications.push(AppEntry {
@@ -176,7 +176,7 @@ fn titles(search: &DesktopSearch) -> Vec<String> {
         .collect()
 }
 
-/// Draw frames, as the desk's wakes ask for them, until `done` holds; how many it took.
+/// Draw frames, as the shell's wakes ask for them, until `done` holds; how many it took.
 fn frames_until(search: &mut DesktopSearch, done: impl Fn(&DesktopSearch) -> bool) -> usize {
     let now = ui::time::now();
     let deadline = now.checked_add(Duration::from_secs(10)).unwrap_or(now);
@@ -199,10 +199,10 @@ tilo_test_env::scenario! {
 
     phase the_frame_that_types_leaves_no_source_to_a_later_frame;
     // The only source asked on the frame is the apps' own content, and the frame that typed asks
-    // it: after that frame the search owes the desk no frame of its own, so a host that draws only
+    // it: after that frame the search owes the shell no frame of its own, so a host that draws only
     // when woken (the page) shows every row as its worker's answer wakes it.
     {
-        let (mut search, release) = desk();
+        let (mut search, release) = shell();
         frames_until(&mut search, |search| !search.results().is_empty());
         search.set_query("mail");
         search.refresh();
@@ -215,7 +215,7 @@ tilo_test_env::scenario! {
 
     phase apps_windows_and_commands_show_while_a_slow_source_is_out;
     {
-        let (mut search, release) = desk();
+        let (mut search, release) = shell();
         frames_until(&mut search, |search| !search.results().is_empty());
         search.set_query("mail");
         search.refresh();
@@ -258,7 +258,7 @@ tilo_test_env::scenario! {
 
     phase a_slow_sources_rows_join_the_ones_shown;
     {
-        let (mut search, release) = desk();
+        let (mut search, release) = shell();
         frames_until(&mut search, |search| !search.results().is_empty());
         search.set_query("net 30");
         search.refresh();
@@ -280,7 +280,7 @@ tilo_test_env::scenario! {
     // says nothing matched once every source is done, rather than searching for ever or showing
     // the failure.
     {
-        let (mut search, release) = desk();
+        let (mut search, release) = shell();
         drop(release);
         frames_until(&mut search, |search| !search.results().is_empty());
         search.set_query("xqzvwk");

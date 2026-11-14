@@ -1,10 +1,10 @@
-//! The person's desk widgets: which ones they keep, when each shows itself, where on each display
+//! The person's widgets: which ones they keep, when each shows itself, where on each display
 //! it rests and how wide its card is. Settings → Appearance edits the choices; the compositor reads
-//! them through [`DeskWidgetPrefs::from_document`], and the desk writes back where a widget was
+//! them through [`WidgetsPrefs::from_document`], and the shell writes back where a widget was
 //! dropped, its width after a resize, and its removal.
 //!
 //! ```json
-//! "desk_widgets": {
+//! "widgets": {
 //!   "music": {
 //!     "enabled": true, "show": "pause", "always_on_strips": [],
 //!     "places": [{ "display": "edid:Dell|U2720Q|CN0", "x": 1.0, "y": 0.4 }],
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Key;
 
-pub const SECTION: &str = "desk_widgets";
+pub const SECTION: &str = "widgets";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WidgetId {
@@ -50,7 +50,7 @@ impl WidgetId {
         }
     }
 
-    /// Whether a person who never chose has this widget on their desk.
+    /// Whether a person who never chose has this widget on their shell.
     /// Music and the people here come only when there is something to show;
     /// a calendar or the machine's load is there all the time, so the
     /// person adds those themselves.
@@ -160,7 +160,7 @@ pub struct Place {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(remote = "Self")]
 pub struct WidgetPrefs {
-    /// Whether the person keeps this widget on their desk.
+    /// Whether the person keeps this widget on their shell.
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// When the widget shows itself.
@@ -279,14 +279,14 @@ pub const fn prefs_key(id: WidgetId) -> &'static Key<WidgetPrefs> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct DeskWidgetPrefs {
+pub struct WidgetsPrefs {
     pub music: WidgetPrefs,
     pub team: WidgetPrefs,
     pub calendar: WidgetPrefs,
     pub system_monitor: WidgetPrefs,
 }
 
-impl Default for DeskWidgetPrefs {
+impl Default for WidgetsPrefs {
     fn default() -> Self {
         Self {
             music: WidgetPrefs::default_for(WidgetId::Music),
@@ -297,7 +297,7 @@ impl Default for DeskWidgetPrefs {
     }
 }
 
-impl DeskWidgetPrefs {
+impl WidgetsPrefs {
     #[must_use]
     pub fn from_document(document: &serde_json::Map<String, serde_json::Value>) -> Self {
         Self {
@@ -333,17 +333,17 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn desk_widget_preferences_read_default_and_round_trip;
+        fn shell_widget_preferences_read_default_and_round_trip;
 
         phase unset_and_partial_choices_read_as_their_defaults;
         {
             let document = serde_json::json!({
-                "desk_widgets": {
+                "widgets": {
                     "team": { "show": "ask", "places": [{ "display": "edid:A|B|1", "x": 0.0, "y": 0.5 }] },
                     "music": { "show": "never-heard-of-it" }
                 }
             });
-            let prefs = DeskWidgetPrefs::from_document(document.as_object().unwrap());
+            let prefs = WidgetsPrefs::from_document(document.as_object().unwrap());
             assert_eq!(prefs.music, WidgetPrefs::default_for(WidgetId::Music));
             assert_eq!(prefs.team.show, ShowMode::Ask);
             assert_eq!(
@@ -352,25 +352,25 @@ mod tests {
             );
             assert!(prefs.team.enabled, "kept unless turned off");
             assert_eq!(
-                DeskWidgetPrefs::from_document(&serde_json::Map::new()),
-                DeskWidgetPrefs::default()
+                WidgetsPrefs::from_document(&serde_json::Map::new()),
+                WidgetsPrefs::default()
             );
         }
 
-        phase the_calendar_and_system_monitor_are_desk_widgets_the_person_adds;
+        phase the_calendar_and_system_monitor_are_shell_widgets_the_person_adds;
         {
-            let prefs = DeskWidgetPrefs::default();
+            let prefs = WidgetsPrefs::default();
             assert!(prefs.music.enabled && prefs.team.enabled);
             assert!(!prefs.calendar.enabled, "added by the person");
             assert!(!prefs.system_monitor.enabled, "added by the person");
             assert_eq!(prefs.system_monitor.show, ShowMode::Ask);
             let document = serde_json::json!({
-                "desk_widgets": {
+                "widgets": {
                     "calendar": { "enabled": true, "show": "always", "width": 420.0 },
                     "system_monitor": { "enabled": true }
                 }
             });
-            let prefs = DeskWidgetPrefs::from_document(document.as_object().unwrap());
+            let prefs = WidgetsPrefs::from_document(document.as_object().unwrap());
             assert!(prefs.calendar.enabled);
             assert_eq!(prefs.calendar.show, ShowMode::Always);
             assert_eq!(prefs.calendar.width, Some(420.0));
@@ -399,7 +399,7 @@ mod tests {
                 PeopleOverlayPrefs::default()
             );
             let document = serde_json::json!({
-                "desk_widgets": { "people_overlay": { "pinned": true, "edge": "bottom_left" } }
+                "widgets": { "people_overlay": { "pinned": true, "edge": "bottom_left" } }
             });
             let prefs = PEOPLE_OVERLAY.from_document(document.as_object().unwrap());
             assert!(prefs.pinned);

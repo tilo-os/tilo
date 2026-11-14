@@ -52,14 +52,14 @@ from ci import suites as path_suites
 # tilo-app-package/tests/{app_manifests,verify_attest} and tilo-doc-codecs/tests/{convergence,office_roundtrip}.
 # These catch repository contracts outside a changed crate's dependency edges.
 ALWAYS_PACKAGES = {"collab-types", "tilo-app-package", "tilo-doc", "tilo-doc-codecs"}
-# The desk, and the crates the session composes it from. A change to any of them
+# The shell, and the crates the session composes it from. A change to any of them
 # reaches tilo-session, so the desktop gate keys on the session: whatever the
-# change, if it can alter the desk and the session's whole test suite is not
-# scheduled anyway, the desk's own integration tests run instead — a window
-# becomes a tab of the strip, an app opens where the desk puts it, the owner's
+# change, if it can alter the shell and the session's whole test suite is not
+# scheduled anyway, the shell's own integration tests run instead — a window
+# becomes a tab of the strip, an app opens where the shell puts it, the owner's
 # door answers. When the suite is scheduled they come with it and the gate adds
 # nothing.
-DESK_PACKAGES = (
+SHELL_PACKAGES = (
     "crates/session/desktop",
     "crates/session/desktop-model",
     "crates/session/desktop-policy",
@@ -68,7 +68,7 @@ DESK_PACKAGES = (
 )
 DESKTOP_GATE_PACKAGE = "tilo-session"
 DESKTOP_GATE_MANIFEST = "crates/session/session/Cargo.toml"
-# The desk's integration tests, by the file each is written in. They are modules
+# The shell's integration tests, by the file each is written in. They are modules
 # of the package's one test binary (`tests/it.rs` includes each file), so the
 # gate names that binary once and picks the modules out by the name each test
 # gained from it.
@@ -77,11 +77,11 @@ DESKTOP_GATE_BINARY = "it"
 
 
 def desktop_gate(root: Path) -> dict[tuple[str, str], path_suites.ReaderScope]:
-    """The desk's integration tests, refused when the tree lacks what they name.
+    """The shell's integration tests, refused when the tree lacks what they name.
 
     The gate keys on a package name, so a renamed or deleted crate would be in
     no plan's selection: it would select nothing and run nothing, silently. A
-    test target that went away fails a job only once the gate fires, and a desk
+    test target that went away fails a job only once the gate fires, and a shell
     crate the session no longer depends on takes the gate's reason with it. All
     three fail here instead, where every plan is computed.
     """
@@ -102,10 +102,10 @@ def desktop_gate(root: Path) -> dict[tuple[str, str], path_suites.ReaderScope]:
     linked = {(session.parent / entry["path"]).resolve()
               for entry in manifest.get("dependencies", {}).values()
               if isinstance(entry, dict) and "path" in entry}
-    unreached = [desk for desk in DESK_PACKAGES if (root / desk).resolve() not in linked]
+    unreached = [shell for shell in SHELL_PACKAGES if (root / shell).resolve() not in linked]
     if unreached:
-        raise ValueError(f"the desktop gate names desk crates {unreached} that {DESKTOP_GATE_PACKAGE} "
-                         "does not depend on: a change to one no longer reaches the desk's tests")
+        raise ValueError(f"the desktop gate names shell crates {unreached} that {DESKTOP_GATE_PACKAGE} "
+                         "does not depend on: a change to one no longer reaches the shell's tests")
     # One entry: the modules share the binary, so a run of it covers them all.
     modules = " or ".join(f"test({test}::)" for test in DESKTOP_GATE_TESTS)
     return {(DESKTOP_GATE_PACKAGE, DESKTOP_GATE_BINARY): path_suites.ReaderScope(
@@ -1397,7 +1397,7 @@ def make_plan(
         tested &= selected
         reason += "; re-check limited to what the base branch changed since the last green run"
     # Scoped tests by (package, test target): a package's reading scope and the
-    # desk's gate can name different targets of the same package, and each target
+    # shell's gate can name different targets of the same package, and each target
     # is its own run.
     scoped_tests = {(name, scope.test): scope for name, scope in reader_scopes.items()
                     if scope is not None and name in selected and name not in tested}
@@ -1535,7 +1535,7 @@ def make_plan(
                        (seeds | checked | dev_only | readers | tested
                         | {name for seed in seeds for name in reverse.get(seed, ())}) & selected),
         # Packages that only read a changed file through a scoped input, or that
-        # the desk's gate reads, and the target of each the test job runs.
+        # the shell's gate reads, and the target of each the test job runs.
         "scoped_tests": {f"{package}:{test}": f"--test {scope.test} -E '{scope.filter}'"
                          for (package, test), scope in sorted(scoped_tests.items())},
         # Changed packages whose direct dependants are only type-checked here

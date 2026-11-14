@@ -1,8 +1,8 @@
 // The web page boots for real: the built bundle in headless Chromium, served
 // beside a running relay, as a person's browser loads it. The tab arrives,
 // joins the Lounge's workspace, opens Notes from the search, and Notes'
-// window shows. Then its GPU device is lost, and the desk draws on with its
-// windows. (A sideways swipe over Sheets is the people's desk case,
+// window shows. Then its GPU device is lost, and the shell draws on with its
+// windows. (A sideways swipe over Sheets is the people's shell case,
 // people.mjs.)
 //
 // What it catches is what compiles and passes every unit test yet stops a
@@ -21,7 +21,7 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit, deskMetrics, DESK, machine} from './waits.mjs';
+import {stepLimit, shellMetrics, SHELL, machine} from './waits.mjs';
 
 const [site, relay, out] = process.argv.slice(2);
 if (!site || !relay || !out) {
@@ -57,7 +57,7 @@ browser.on(({sessionId, method, params}) => {
 });
 await tab.send('Network.enable', {}).catch(() => {});
 await tab.send('Log.enable', {}).catch(() => {});
-await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics)
+await tab.send('Emulation.setDeviceMetricsOverride', shellMetrics)
   .catch(() => {});
 
 // Every exception the page threw and every console line that reports a
@@ -177,7 +177,7 @@ mark('the page joined the workspace');
 const mac = await tab.evaluate('/Mac/.test(navigator.platform)');
 const box = JSON.parse(await tab.evaluate(`JSON.stringify((() => {
   const r = globalThis.tiloMount?.canvas?.getBoundingClientRect();
-  return r ? {x: r.x + r.width / 2, y: r.y + r.height * 0.85} : DESK.empty;
+  return r ? {x: r.x + r.width / 2, y: r.y + r.height * 0.85} : SHELL.empty;
 })())`));
 for (const type of ['mousePressed', 'mouseReleased']) {
   await tab.send('Input.dispatchMouseEvent', {type, x: box.x, y: box.y, button: 'left', clickCount: 1});
@@ -188,7 +188,7 @@ const open = async (name, app) => {
   await key('k', mac ? 4 : 2);
   await until('!!globalThis.tiloMount?.state()?.searchOpen', `the search opening for ${name}`);
   await type(name.toLowerCase());
-  // The card the desk publishes for the query typed, once it owes no row:
+  // The card the shell publishes for the query typed, once it owes no row:
   // nothing before that is its answer to this text (the rows shown right after
   // typing can be the previous query's), and Enter acts on its first row.
   const asked = JSON.stringify(name.toLowerCase());
@@ -208,10 +208,10 @@ const open = async (name, app) => {
     await sleep(250);
   }
   // Which frame showed the window, counted two ways: from the frame counter
-  // the page reads when the browser fires Enter, and from the count the desk
+  // the page reads when the browser fires Enter, and from the count the shell
   // says it had presented when it took the key (\`framesAtKey\`). A frame
   // presented between the two is the browser's event still on its way, not
-  // the desk being slow.
+  // the shell being slow.
   await tab.evaluate(`(() => {
     const mount = globalThis.tiloMount;
     const host = mount.canvas.parentElement;
@@ -242,7 +242,7 @@ const open = async (name, app) => {
     `the frame showing ${name}'s window`, stepLimit(2));
   const counted = JSON.parse(await tab.evaluate('JSON.stringify(globalThis.__bootOpen)'));
   report.opens = [...(report.opens ?? []), counted];
-  console.log(`frames: ${name} shown on frame ${counted.shown}; the page read ${counted.atKeydown} at Enter, the desk had presented ${counted.atKey} when it took the key; frames between: ${JSON.stringify(counted.trace)}`);
+  console.log(`frames: ${name} shown on frame ${counted.shown}; the page read ${counted.atKeydown} at Enter, the shell had presented ${counted.atKey} when it took the key; frames between: ${JSON.stringify(counted.trace)}`);
   console.log(`TIMING open=${app} seconds=${((Date.now() - began) / 1000).toFixed(1)}`);
 };
 await open('Notes', 'so.tilo.notes');
@@ -255,15 +255,15 @@ await sleep(3000);
 await checkPage('showing Notes');
 mark('Notes looked at');
 
-// What the desk drew since: its own frame count, waited on as frames, not a stopwatch.
+// What the shell drew since: its own frame count, waited on as frames, not a stopwatch.
 const frames = () => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0').catch(() => 0);
 const settled = async (by = 2) => {
   const from = await frames();
-  await until(`(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`, `the desk drawing ${by} more frame(s)`);
+  await until(`(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`, `the shell drawing ${by} more frame(s)`);
 };
 
 // 5. The GPU device is lost mid-session, as a driver reset or the browser
-// does it: the desk makes a new device and draws on, with every window it
+// does it: the shell makes a new device and draws on, with every window it
 // had, and a person can keep working there. A desktop that stopped instead
 // says so in its phase.
 const beforeLoss = {
@@ -278,7 +278,7 @@ await until(`(() => {
   const state = globalThis.tiloMount?.state();
   return !!state && state.phase !== 'failed' && (state.gpuGeneration ?? 0) > ${beforeLoss.gpu ?? 0}
     && (state.frames ?? 0) > ${beforeLoss.frames};
-})()`, 'the desk drawing again on a new GPU device after its device was lost', stepLimit(2));
+})()`, 'the shell drawing again on a new GPU device after its device was lost', stepLimit(2));
 await open('Calculator', 'so.tilo.calculator');
 await settled(2);
 const afterLoss = JSON.parse(await tab.evaluate(`JSON.stringify({
@@ -294,7 +294,7 @@ if (afterLoss.phase === 'failed' || afterLoss.error) {
 const kept = beforeLoss.windows.filter(app => !afterLoss.windows.includes(app));
 if (kept.length) await fail(`windows were gone after the GPU device was lost: ${JSON.stringify(kept)}`);
 await checkPage('drawing on after the GPU device was lost');
-console.log('ok: a GPU device lost mid-session is made again, and the desk draws on with its windows');
+console.log('ok: a GPU device lost mid-session is made again, and the shell draws on with its windows');
 mark('a GPU device lost and made again');
 report.frames = await frames();
 await finish(0);

@@ -428,7 +428,7 @@ def run_fs(ctx: RunContext) -> list[record.Record]:
 
 # The session and its MCP server, as tools/ci/perf-scheduled.sh builds them:
 # tilo-runtime's dev-overrides turn on the throwaway identity a development
-# login opens its desk with, which the run's spawned session mints.
+# login opens its shell with, which the run's spawned session mints.
 RELEASE_SESSION = ("cargo", "build", "--locked", "--release", "-p", "tilo-session", "--bin", "tilo-session",
                  "-p", "tilo-runtime", "--bin", "tilo-runtime-mcp", "--features", "dev-overrides")
 

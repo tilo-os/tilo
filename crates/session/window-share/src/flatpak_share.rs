@@ -1103,7 +1103,7 @@ mod tests {
             hardware_decode_max: [(H264, limit)].into(),
             ..CodecCapabilities::default()
         };
-        let desk = CodecCapabilities {
+        let full = CodecCapabilities {
             hardware_decode: [H264, Av1].into(),
             ..CodecCapabilities::default()
         };
@@ -1123,11 +1123,11 @@ mod tests {
             (1280, 800)
         );
         assert_eq!(
-            encode_size(H264, (2560, 1440), &[pi.clone(), small, desk.clone()]),
+            encode_size(H264, (2560, 1440), &[pi.clone(), small, full.clone()]),
             (1280, 720),
             "one encode at the lowest common limit"
         );
-        assert_eq!(encode_size(H264, (3840, 2160), &[desk]), (3840, 2160));
+        assert_eq!(encode_size(H264, (3840, 2160), &[full]), (3840, 2160));
         assert_eq!(
             encode_size(Av1, (3840, 2160), &[pi]),
             (3840, 2160),

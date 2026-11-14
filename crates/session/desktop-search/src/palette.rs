@@ -141,7 +141,7 @@ impl Sources {
                 content: Content::new(Vec::new(), Vec::new()),
                 actions: Arc::new(Actions(Vec::new())),
                 // What the app publishes through the host runs by address there: an app in a
-                // process of its own gives the desk no tree to read, so its window's actions are
+                // process of its own gives the shell no tree to read, so its window's actions are
                 // these.
                 published: Arc::new(Published(data.published)),
                 captures: Arc::new(Captures(Vec::new())),
@@ -361,13 +361,13 @@ impl DesktopSearch {
     /// Whether an application's answer to the query is still coming: it
     /// arrives on the host's clock, so the host keeps calling
     /// [`Self::refresh`] until it does. A source of the search's own is not
-    /// this: it answers on a worker, which wakes the desk's next pass.
+    /// this: it answers on a worker, which wakes the shell's next pass.
     pub fn waiting(&self) -> bool {
         self.sources.as_ref().is_some_and(Sources::waiting)
     }
 
     /// Whether a source of the open search still owes an answer: it works it
-    /// out off the frame, and wakes the desk when it is in.
+    /// out off the frame, and wakes the shell when it is in.
     pub fn answering(&self) -> bool {
         self.stream.as_ref().is_some_and(SearchStream::pending)
     }
@@ -416,9 +416,9 @@ impl DesktopSearch {
         self.finish();
     }
 
-    /// What Escape does in the desk's search: a typed query is cleared first
+    /// What Escape does in the shell's search: a typed query is cleared first
     /// and search stays open, so a slip of the finger never costs the whole
-    /// search; Escape on the empty field closes it. Returns whether the desk
+    /// search; Escape on the empty field closes it. Returns whether the shell
     /// did that.
     ///
     /// A step that asks for a value, a row's other actions, or a question a
@@ -503,7 +503,7 @@ impl DesktopSearch {
     /// Whether the search has a frame's work of its own left: a source that
     /// holds the frame's state still to ask, or rows to cut to the card's
     /// room. A host draws the frames this asks for; a source on a worker is
-    /// not this (its answer wakes the desk), and neither is an
+    /// not this (its answer wakes the shell), and neither is an
     /// application's answer still coming, which is looked for on the host's
     /// clock ([`Self::waiting`]).
     #[must_use]
@@ -518,7 +518,7 @@ impl DesktopSearch {
 
     /// Whether the search is over: the rows that are ready are cut to the
     /// card's room, and no source that is still out holds them back. What
-    /// the desk publishes as a search still searching.
+    /// the shell publishes as a search still searching.
     ///
     /// A source still out — a window opened a moment ago whose content
     /// index is being built, an app's own server still looking — does not
@@ -527,7 +527,7 @@ impl DesktopSearch {
     /// late rows join them when they come ([`Self::expecting`], which a
     /// host polls for). Holding the ready rows behind the slowest source is
     /// what kept a fresh window's search saying "Searching…" for the 14–57 s
-    /// its content index took on a page, measured on the page desk.
+    /// its content index took on a page, measured on the page shell.
     #[must_use]
     pub fn settled(&self) -> bool {
         // With nothing open there is nothing to wait for. Rows that are ready
@@ -594,7 +594,7 @@ impl DesktopSearch {
             self.choose_hit(hit, None, self.palette.held_modifier());
         }
         // The choice ends search in this pass, as [`Self::observe`] does for an Enter on rows
-        // shown: an idle desk takes no later pass, and kept it up over the window it opened.
+        // shown: an idle shell takes no later pass, and kept it up over the window it opened.
         if !self.palette.is_open() {
             self.finish();
         }
@@ -988,7 +988,7 @@ impl DesktopSearch {
                 self.show_everything();
             } else if outcome.id == ALL_APPS_ID {
                 // The catalogue of every app: the desktop lists them all,
-                // by name, as its empty desk's launchpad does.
+                // by name, as its empty shell's launchpad does.
                 self.choice = Some(Target::Command {
                     id: crate::model::ALL_APPS_COMMAND.into(),
                 });
@@ -1370,7 +1370,7 @@ mod tests {
 
         phase every_app_is_one_row_under_the_apps;
         // Under the apps the empty palette offers every one of them: the
-        // catalogue, as the empty desk's launchpad opens it.
+        // catalogue, as the empty shell's launchpad opens it.
         {
             let mut full = data();
             // More apps than the card lists unasked, as a full fleet has.
@@ -1949,7 +1949,7 @@ mod tests {
             settled(&mut search);
             search.set_query("notes");
             settled(&mut search);
-            assert!(search.escape(), "the desk's search clears its query");
+            assert!(search.escape(), "the shell's search clears its query");
             assert!(search.is_open(), "the first Escape keeps search open");
             assert_eq!(search.query(), "", "…and clears the query");
             settled(&mut search);
@@ -1961,7 +1961,7 @@ mod tests {
             assert!(!search.is_open(), "Escape on the empty field closes");
             assert!(
                 !search.escape(),
-                "and Escape on a closed search is not the desk's to handle"
+                "and Escape on a closed search is not the shell's to handle"
             );
         }
 
@@ -2031,7 +2031,7 @@ mod tests {
                 settled(&mut search);
                 search.palette_mut().set_held_modifiers(held);
                 search.palette_mut().activate_selected();
-                // Let go before the desk carries the choice out: what was held then still counts.
+                // Let go before the shell carries the choice out: what was held then still counts.
                 search
                     .palette_mut()
                     .set_held_modifiers(ModifiersState::empty());
@@ -2049,23 +2049,23 @@ mod tests {
 
         phase an_apps_name_opens_the_app_before_any_action_named_the_same;
         {
-            // An action can carry an app's name (the empty desk's cards did):
+            // An action can carry an app's name (the empty shell's cards did):
             // a person typing a name wants the app, and Enter on the top row
             // must start it.
-            let mut desk = ResourceSpec::new("desktop:shell", "desktop", "Shell");
-            desk.actions
+            let mut shell = ResourceSpec::new("desktop:shell", "desktop", "Shell");
+            shell.actions
                 .push(tilo_actions::ActionSpec::immediate_encoded(
                     "notes",
                     "Notes",
                     tilo_actions::ExecutionLocus::ClientLocal,
                     tilo_actions::EncodedAction {
-                        type_id: "desk.action".into(),
+                        type_id: "shell.action".into(),
                         payload: Vec::new(),
                     },
                 ));
             let mut search = DesktopSearch::new();
             search.open(SearchData {
-                published: vec![PublishedActions::of("shell", "workspace", &[desk])],
+                published: vec![PublishedActions::of("shell", "workspace", &[shell])],
                 ..data()
             });
             settled(&mut search);
@@ -2891,7 +2891,7 @@ mod tests {
     }
 
     /// Draw the frames a host draws for a search until every source has
-    /// answered: a source answers on a worker and wakes the desk, so a test
+    /// answered: a source answers on a worker and wakes the shell, so a test
     /// drives the frames those wakes ask for.
     pub(super) fn settled(search: &mut DesktopSearch) {
         let now = ui::time::now();

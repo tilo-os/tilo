@@ -1714,7 +1714,7 @@ shortcut_actions! {
 
     Search => "search", System, Session, None, default_chord(&["Super"], "space");
 
-    WorkspaceOverview => "workspace-overview", System, Desk, Some(("actions", "overview.toggle")), default_chord(&["Super"], "tab");
+    WorkspaceOverview => "workspace-overview", System, Shell, Some(("actions", "overview.toggle")), default_chord(&["Super"], "tab");
 
     Lock => "lock", System, Session, Some(("session", "lock")), default_chord(&["Super"], "l");
 
@@ -1726,16 +1726,16 @@ shortcut_actions! {
 
     // Spatial arrows are the always-visible desktop model. Alt+Tab remains
     // an immutable conventional ring alias in the shell.
-    FocusPreviousWindow => "focus-previous-window", Navigation, Desk, None, default_chord(&["Super"], "left");
-    FocusNextWindow => "focus-next-window", Navigation, Desk, None, default_chord(&["Super"], "right");
+    FocusPreviousWindow => "focus-previous-window", Navigation, Shell, None, default_chord(&["Super"], "left");
+    FocusNextWindow => "focus-next-window", Navigation, Shell, None, default_chord(&["Super"], "right");
 
     // Ctrl+Tab and Ctrl+Shift+Tab belong to the focused app first: browsers,
     // editors and terminals switch their own tabs with them, and a Tilo app
     // hands them to the window group only when no widget used them
     // (`ui::shell_tabs`). Super on top of the same chord is the desktop's
     // and works whatever the app is. Plain Super+Tab is the overview.
-    PreviousTab => "previous-tab", Navigation, Desk, Some(("actions", "tab.previous")), default_chord(&["Ctrl", "Shift", "Super"], "tab");
-    NextTab => "next-tab", Navigation, Desk, Some(("actions", "tab.next")), default_chord(&["Ctrl", "Super"], "tab");
+    PreviousTab => "previous-tab", Navigation, Shell, Some(("actions", "tab.previous")), default_chord(&["Ctrl", "Shift", "Super"], "tab");
+    NextTab => "next-tab", Navigation, Shell, Some(("actions", "tab.next")), default_chord(&["Ctrl", "Super"], "tab");
 
     /// Show the focused tab's shell context menu.
     TabMenu => "tab-menu", Windows, Session, Some(("actions", "tab.menu")), default_chord(&["Super"], "f10");
@@ -1743,73 +1743,73 @@ shortcut_actions! {
     // Super+Up/Down are the Windows and GNOME maximize and restore. Strips
     // are one level out, on Ctrl+Super; Shift carries the focused group the
     // same way (docs/architecture/window-management.md).
-    PreviousStrip => "previous-strip", Navigation, Desk, Some(("actions", "strip.focus-previous")), default_chord(&["Ctrl", "Super"], "up");
-    NextStrip => "next-strip", Navigation, Desk, Some(("actions", "strip.focus-next")), default_chord(&["Ctrl", "Super"], "down");
-    PreviousWorkspace => "previous-workspace", Navigation, Desk, Some(("actions", "workspace.previous")), default_chord(&["Super"], "pageup");
-    NextWorkspace => "next-workspace", Navigation, Desk, Some(("actions", "workspace.next")), default_chord(&["Super"], "pagedown");
+    PreviousStrip => "previous-strip", Navigation, Shell, Some(("actions", "strip.focus-previous")), default_chord(&["Ctrl", "Super"], "up");
+    NextStrip => "next-strip", Navigation, Shell, Some(("actions", "strip.focus-next")), default_chord(&["Ctrl", "Super"], "down");
+    PreviousWorkspace => "previous-workspace", Navigation, Shell, Some(("actions", "workspace.previous")), default_chord(&["Super"], "pageup");
+    NextWorkspace => "next-workspace", Navigation, Shell, Some(("actions", "workspace.next")), default_chord(&["Super"], "pagedown");
 
-    ToggleMaximize => "toggle-maximize", Windows, Desk, Some(("actions", "group.toggle-maximize")), default_chord(&["Super"], "m");
+    ToggleMaximize => "toggle-maximize", Windows, Shell, Some(("actions", "group.toggle-maximize")), default_chord(&["Super"], "m");
     /// Maximize the focused window group; nothing when it already is.
-    MaximizeWindow => "maximize-window", Windows, Desk, Some(("actions", "group.maximize")), default_chord(&["Super"], "up");
+    MaximizeWindow => "maximize-window", Windows, Shell, Some(("actions", "group.maximize")), default_chord(&["Super"], "up");
     /// Restore the focused window group from maximized; nothing when it is not maximized.
-    RestoreWindow => "restore-window", Windows, Desk, Some(("actions", "group.restore")), default_chord(&["Super"], "down");
-    DetachTab => "detach-tab", Windows, Desk, None, default_chord(&["Shift", "Super"], "enter");
-    AttachTabLeft => "attach-tab-left", Windows, Desk, None, default_chord(&["Super"], "[");
-    AttachTabRight => "attach-tab-right", Windows, Desk, None, default_chord(&["Super"], "]");
-    MoveGroupLeft => "move-group-left", Windows, Desk, Some(("actions", "group.move-left")), default_chord(&["Shift", "Super"], "left");
-    MoveGroupRight => "move-group-right", Windows, Desk, Some(("actions", "group.move-right")), default_chord(&["Shift", "Super"], "right");
+    RestoreWindow => "restore-window", Windows, Shell, Some(("actions", "group.restore")), default_chord(&["Super"], "down");
+    DetachTab => "detach-tab", Windows, Shell, None, default_chord(&["Shift", "Super"], "enter");
+    AttachTabLeft => "attach-tab-left", Windows, Shell, None, default_chord(&["Super"], "[");
+    AttachTabRight => "attach-tab-right", Windows, Shell, None, default_chord(&["Super"], "]");
+    MoveGroupLeft => "move-group-left", Windows, Shell, Some(("actions", "group.move-left")), default_chord(&["Shift", "Super"], "left");
+    MoveGroupRight => "move-group-right", Windows, Shell, Some(("actions", "group.move-right")), default_chord(&["Shift", "Super"], "right");
     /// Carry the focused window group, whole, into the strip above.
-    MoveGroupToPreviousStrip => "move-group-to-previous-strip", Windows, Desk, Some(("actions", "group.move-to-strip-previous")), default_chord(&["Ctrl", "Shift", "Super"], "up");
+    MoveGroupToPreviousStrip => "move-group-to-previous-strip", Windows, Shell, Some(("actions", "group.move-to-strip-previous")), default_chord(&["Ctrl", "Shift", "Super"], "up");
     /// Carry the focused window group, whole, into the strip below.
-    MoveGroupToNextStrip => "move-group-to-next-strip", Windows, Desk, Some(("actions", "group.move-to-strip-next")), default_chord(&["Ctrl", "Shift", "Super"], "down");
+    MoveGroupToNextStrip => "move-group-to-next-strip", Windows, Shell, Some(("actions", "group.move-to-strip-next")), default_chord(&["Ctrl", "Shift", "Super"], "down");
     /// Move the focused window group onto the display to the left of its
     /// own (the previous one in reading order).
-    MoveGroupToPreviousDisplay => "move-group-to-previous-display", Windows, Desk, Some(("actions", "group.move-to-display-previous")), default_chord(&["Ctrl", "Shift", "Super"], "left");
+    MoveGroupToPreviousDisplay => "move-group-to-previous-display", Windows, Shell, Some(("actions", "group.move-to-display-previous")), default_chord(&["Ctrl", "Shift", "Super"], "left");
     /// Move the focused window group onto the display to the right of its
     /// own (the next one in reading order). Super+Shift+arrows already
     /// reorder within a display; Ctrl widens the gesture to its neighbour.
-    MoveGroupToNextDisplay => "move-group-to-next-display", Windows, Desk, Some(("actions", "group.move-to-display-next")), default_chord(&["Ctrl", "Shift", "Super"], "right");
-    ResizeNarrower => "resize-narrower", Windows, Desk, Some(("actions", "group.narrower")), default_chord(&["Super"], "-");
-    ResizeWider => "resize-wider", Windows, Desk, Some(("actions", "group.wider")), default_chord(&["Super"], "=");
+    MoveGroupToNextDisplay => "move-group-to-next-display", Windows, Shell, Some(("actions", "group.move-to-display-next")), default_chord(&["Ctrl", "Shift", "Super"], "right");
+    ResizeNarrower => "resize-narrower", Windows, Shell, Some(("actions", "group.narrower")), default_chord(&["Super"], "-");
+    ResizeWider => "resize-wider", Windows, Shell, Some(("actions", "group.wider")), default_chord(&["Super"], "=");
 
     // Restore the most recently closed frame in this workspace, as Super+T
     // adds one and Super+W closes one. Ctrl+Shift+T stays the focused app's
     // and reopens a tab only where the app left it unhandled
     // (`ui::shell_tabs`).
     /// Bring back the most recently closed tab in the current workspace.
-    ReopenClosedTab => "reopen-closed-tab", Windows, Desk, Some(("actions", "tab.reopen")), default_chord(&["Shift", "Super"], "t");
+    ReopenClosedTab => "reopen-closed-tab", Windows, Shell, Some(("actions", "tab.reopen")), default_chord(&["Shift", "Super"], "t");
 
     /// Focus the Nth window group of the current strip (Ctrl+Super+1 … Ctrl+Super+9).
-    FocusGroup1 => "focus-group-1", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "1");
-    FocusGroup2 => "focus-group-2", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "2");
-    FocusGroup3 => "focus-group-3", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "3");
-    FocusGroup4 => "focus-group-4", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "4");
-    FocusGroup5 => "focus-group-5", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "5");
-    FocusGroup6 => "focus-group-6", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "6");
-    FocusGroup7 => "focus-group-7", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "7");
-    FocusGroup8 => "focus-group-8", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "8");
-    FocusGroup9 => "focus-group-9", Navigation, Desk, None, default_chord(&["Ctrl", "Super"], "9");
+    FocusGroup1 => "focus-group-1", Navigation, Shell, None, default_chord(&["Ctrl", "Super"], "1");
+    FocusGroup2 => "focus-group-2", Navigation, Shell, None, default_chord(&["Ctrl", "Super"], "2");
+    FocusGroup3 => "focus-group-3", Navigation, Shell, None, default_chord(&["Ctrl", "Super"], "3");
+    FocusGroup4 => "focus-group-4", Navigation, Shell, None, default_chord(&["Ctrl", "Super"], "4");
+    FocusGroup5 => "focus-group-5", Navigation, Shell, None, default_chord(&["Ctrl", "Super"], "5");
+    FocusGroup6 => "focus-group-6", Navigation, Shell, None, default_chord(&["Ctrl", "Super"], "6");
+    FocusGroup7 => "focus-group-7", Navigation, Shell, None, default_chord(&["Ctrl", "Super"], "7");
+    FocusGroup8 => "focus-group-8", Navigation, Shell, None, default_chord(&["Ctrl", "Super"], "8");
+    FocusGroup9 => "focus-group-9", Navigation, Shell, None, default_chord(&["Ctrl", "Super"], "9");
 
     /// Go to the Nth strip of the workspace, counting from the top
     /// (Super+1 … Super+9).
-    FocusStrip1 => "focus-strip-1", Navigation, Desk, None, default_chord(&["Super"], "1");
-    FocusStrip2 => "focus-strip-2", Navigation, Desk, None, default_chord(&["Super"], "2");
-    FocusStrip3 => "focus-strip-3", Navigation, Desk, None, default_chord(&["Super"], "3");
-    FocusStrip4 => "focus-strip-4", Navigation, Desk, None, default_chord(&["Super"], "4");
-    FocusStrip5 => "focus-strip-5", Navigation, Desk, None, default_chord(&["Super"], "5");
-    FocusStrip6 => "focus-strip-6", Navigation, Desk, None, default_chord(&["Super"], "6");
-    FocusStrip7 => "focus-strip-7", Navigation, Desk, None, default_chord(&["Super"], "7");
-    FocusStrip8 => "focus-strip-8", Navigation, Desk, None, default_chord(&["Super"], "8");
-    FocusStrip9 => "focus-strip-9", Navigation, Desk, None, default_chord(&["Super"], "9");
+    FocusStrip1 => "focus-strip-1", Navigation, Shell, None, default_chord(&["Super"], "1");
+    FocusStrip2 => "focus-strip-2", Navigation, Shell, None, default_chord(&["Super"], "2");
+    FocusStrip3 => "focus-strip-3", Navigation, Shell, None, default_chord(&["Super"], "3");
+    FocusStrip4 => "focus-strip-4", Navigation, Shell, None, default_chord(&["Super"], "4");
+    FocusStrip5 => "focus-strip-5", Navigation, Shell, None, default_chord(&["Super"], "5");
+    FocusStrip6 => "focus-strip-6", Navigation, Shell, None, default_chord(&["Super"], "6");
+    FocusStrip7 => "focus-strip-7", Navigation, Shell, None, default_chord(&["Super"], "7");
+    FocusStrip8 => "focus-strip-8", Navigation, Shell, None, default_chord(&["Super"], "8");
+    FocusStrip9 => "focus-strip-9", Navigation, Shell, None, default_chord(&["Super"], "9");
 
-    OpenFiles => "open-files", Apps, Desk, None, default_chord(&["Super"], "e");
-    OpenTerminal => "open-terminal", Apps, Desk, Some(("actions", "window.new.terminal")), default_chord(&["Ctrl", "Alt"], "t");
+    OpenFiles => "open-files", Apps, Shell, None, default_chord(&["Super"], "e");
+    OpenTerminal => "open-terminal", Apps, Shell, Some(("actions", "window.new.terminal")), default_chord(&["Ctrl", "Alt"], "t");
 
     ClipboardHistory => "clipboard-history", System, Session, Some(("actions", "quick-settings.clipboard")), default_chord(&["Super"], "v");
     // Super+N already opens an app as an adjacent window, so the
     // notification list takes Windows' other Action Center key.
     Notifications => "notifications", System, Session, Some(("actions", "notifications.open")), default_chord(&["Super"], "a");
-    ToggleFullscreen => "toggle-fullscreen", Windows, Desk, Some(("actions", "group.fullscreen")), default_chord(&["Super"], "f");
+    ToggleFullscreen => "toggle-fullscreen", Windows, Shell, Some(("actions", "group.fullscreen")), default_chord(&["Super"], "f");
 
     // GNOME's and Windows' magnifier keys (Super+Alt+8, Super+Plus); Super+=
     // and Super+- already resize windows, so the zoom keys carry Alt.
@@ -1828,7 +1828,7 @@ shortcut_actions! {
 
     // Windows' emoji panel key; GNOME uses Super+. for the same.
     /// Open the emoji picker over the focused text field.
-    EmojiPicker => "emoji-picker", System, Desk, Some(("actions", "emoji.picker")), default_chord(&["Super"], ".");
+    EmojiPicker => "emoji-picker", System, Shell, Some(("actions", "emoji.picker")), default_chord(&["Super"], ".");
 
     /// Ask an agent about what is selected in the focused window, in the
     /// quick composer seeded with that selection.
@@ -1846,9 +1846,9 @@ shortcut_actions! {
 
     // Next to Super+F, which covers the display with the window: this lifts
     // it out of its strip instead.
-    /// Lift the focused window above the desk, or put it back into its
+    /// Lift the focused window above the shell, or put it back into its
     /// strip.
-    ToggleFloat => "toggle-float", Windows, Desk, None, default_chord(&["Shift", "Super"], "f");
+    ToggleFloat => "toggle-float", Windows, Shell, None, default_chord(&["Shift", "Super"], "f");
 }
 impl ShortcutAction {
     /// The strip position a `FocusGroupN` action selects, counting from 0.

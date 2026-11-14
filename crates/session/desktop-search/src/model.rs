@@ -167,7 +167,7 @@ pub fn spoken(text: &str) -> String {
 }
 
 /// The provider name of what the desktop itself publishes (its chrome's and
-/// its desk's actions): a row the desktop runs on itself, by address, as
+/// its shell's actions): a row the desktop runs on itself, by address, as
 /// every other caller of the action protocol does.
 pub const DESKTOP_APP: &str = "tilo.desktop";
 
@@ -793,9 +793,9 @@ impl SearchStream {
     }
 
     /// Whether a source that holds the frame's state is still to ask: the
-    /// desk asks one such source per frame, so it owes the frames that ask
+    /// shell asks one such source per frame, so it owes the frames that ask
     /// them. A source on a worker is not this: it answers on its own, and
-    /// wakes the desk when it does.
+    /// wakes the shell when it does.
     #[must_use]
     pub fn awaiting_here(&self) -> bool {
         !self.here.is_empty()
@@ -847,7 +847,7 @@ impl SearchStream {
 
     /// Hand the sources not asked yet to the workers, ask one source that stays on the
     /// frame, and take the answers that came. Never waits for a source: an answer that is
-    /// not in yet wakes the desk when it is. `sources` is the slice the search was made
+    /// not in yet wakes the shell when it is. `sources` is the slice the search was made
     /// from, and a source that cannot move is asked from it at the end. Returns whether
     /// the rows changed.
     pub fn resume(
@@ -1028,7 +1028,7 @@ impl std::fmt::Debug for SearchStream {
 
 /// One frame of a search: hand the sources to `workers`, take the answers
 /// that came back, and merge them, one row per thing ([`Thing`]). The sources
-/// still out wake the desk when they answer — or, where `workers` was made
+/// still out wake the shell when they answer — or, where `workers` was made
 /// with a loop of its own ([`SearchWorkers::waking`]), the host's loop.
 ///
 /// This is what a host asks a search it must not wait for with (the session's

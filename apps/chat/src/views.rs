@@ -1245,7 +1245,7 @@ fn reactions(c: &Channel, message: &Message, key: &str) -> Node {
 ///
 /// The field is the composer's own draft, and what it holds is the `text` argument of Chat's own
 /// `send`: Enter sends what the field carries, and the button sends the draft the field is bound
-/// to, so a press, an agent's send and the desk's send-to box take the one path to the record.
+/// to, so a press, an agent's send and the shell's send-to box take the one path to the record.
 fn composer(c: &Channel, cx: &ViewCx) -> Node {
     let field: Node = ui::TextInputBuilder::new(&cx.key("draft"))
         .placeholder(crate::i18n::t_args(

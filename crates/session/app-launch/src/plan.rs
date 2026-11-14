@@ -156,7 +156,7 @@ pub struct PlanContext<'a> {
     /// request ([`crate::Answer::Start`]): ask for the new one the way its
     /// entry declares, through its New Window action where it has one.
     pub new_window: bool,
-    /// The tab the window takes, when the desk holds one for it: the app is
+    /// The tab the window takes, when the shell holds one for it: the app is
     /// told it as its window's instance, so what it reports about the window
     /// is about that tab.
     pub continuity_instance: Option<u64>,

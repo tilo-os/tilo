@@ -831,7 +831,7 @@ pub(super) async fn authorized_state_source(
 /// than its own record. Such a device writes none of that itself: what it
 /// shares is asked of this host, which writes it after checking it concerns
 /// the device's own windows. Its write is neither kept nor forwarded, and the
-/// session stays, since a session that writes its desk as any session does is
+/// session stays, since a session that writes its shell as any session does is
 /// not misbehaving.
 fn writes_for_an_environment(
     peer: &AuthenticatedPeer,

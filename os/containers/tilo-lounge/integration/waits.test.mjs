@@ -1,14 +1,14 @@
-// The gate's waits end on what the desk says, not on how many frames this
-// machine drew. A desk with nothing left to draw presents nothing, so a wait
+// The gate's waits end on what the shell says, not on how many frames this
+// machine drew. A shell with nothing left to draw presents nothing, so a wait
 // that counted frames alone would hang until its timeout — when the same wait
-// read the desk's own answer, it would already be done.
+// read the shell's own answer, it would already be done.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {settle, settleSearch, searching} from './waits.mjs';
 
-/** A page whose frames never advance and whose search owes nothing: the desk
+/** A page whose frames never advance and whose search owes nothing: the shell
  * has finished, it is just not drawing. */
-function settledDesk({frames = 5, searchSearching = false} = {}) {
+function settledShell({frames = 5, searchSearching = false} = {}) {
   const reads = [];
   return {
     reads,
@@ -21,22 +21,22 @@ function settledDesk({frames = 5, searchSearching = false} = {}) {
   };
 }
 
-test('a settle ends on the desk saying it owes nothing, without a frame advancing', async () => {
-  const desk = settledDesk({frames: 5});
+test('a settle ends on the shell saying it owes nothing, without a frame advancing', async () => {
+  const shell = settledShell({frames: 5});
   let slept = 0;
   const how = await settle({
-    evaluate: desk.evaluate,
+    evaluate: shell.evaluate,
     by: 2,
     owed: () => false,
     sleep: async () => { slept += 1; },
     timeoutMs: 1_000,
   });
-  assert.equal(how, 'settled', 'the wait ended on the desk owning no work, not on frames');
-  assert.ok(slept <= 1, 'it did not spin on the clock while the desk owed nothing');
+  assert.equal(how, 'settled', 'the wait ended on the shell owning no work, not on frames');
+  assert.ok(slept <= 1, 'it did not spin on the clock while the shell owed nothing');
 });
 
-test('a settle waits for the frames it was asked for while the desk still owes them', async () => {
-  // Each read of the frame count reports one more than the last: the desk is
+test('a settle waits for the frames it was asked for while the shell still owes them', async () => {
+  // Each read of the frame count reports one more than the last: the shell is
   // presenting, and the wait ends once it has seen `by` more than it started
   // from — however many turns that takes.
   let frames = 0;
@@ -73,19 +73,19 @@ test('the search settle ends on searchSearching false, not on a frame', async ()
     await new Promise(resolve => setImmediate(resolve));
   }, timeoutMs: 1_000});
   const how = await promises;
-  assert.equal(how, 'settled', 'the search settle ended the moment the desk owed no rows');
+  assert.equal(how, 'settled', 'the search settle ended the moment the shell owed no rows');
 });
 
-test('the searching predicate reads only the desk’s own answer', async () => {
+test('the searching predicate reads only the shell’s own answer', async () => {
   const seen = [];
   const tab = {evaluate: async expression => { seen.push(expression); return true; }};
   assert.equal(await searching(tab), true);
   assert.match(seen.at(-1), /searchSearching/);
 });
 
-test('a settle with idleMs ends on the desk drawing nothing, not on its timeout', async () => {
-  // The tour's case: no answer of the desk's own to read, frames that never
-  // move, and a desk that has simply stopped drawing. Waiting for the timeout
+test('a settle with idleMs ends on the shell drawing nothing, not on its timeout', async () => {
+  // The tour's case: no answer of the shell's own to read, frames that never
+  // move, and a shell that has simply stopped drawing. Waiting for the timeout
   // spends it on every screen.
   let clock = 0;
   const evaluate = async expression => (expression.includes('frames') ? 5 : false);
@@ -103,9 +103,9 @@ test('a settle with idleMs ends on the desk drawing nothing, not on its timeout'
   assert.ok(clock >= 2_500 && clock < 4_000, `it ended after ${clock} ms of silence, not at its timeout`);
 });
 
-test('a desk still drawing keeps an idle wait alive until its frames come', async () => {
+test('a shell still drawing keeps an idle wait alive until its frames come', async () => {
   // A frame a second on a slow rasteriser: every frame pushes the silence
-  // back, so the wait ends on the third frame and never calls the desk idle.
+  // back, so the wait ends on the third frame and never calls the shell idle.
   let clock = 0;
   let frame = 0;
   const evaluate = async expression => {

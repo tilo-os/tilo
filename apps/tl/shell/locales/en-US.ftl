@@ -868,7 +868,7 @@ d-vidcax4k = Workspace menu
 
 d-dgtjjxex = Person menu
     .w-you = You
-    .w-desk-style-and-workspaces = { $me }: desk style and workspaces
+    .w-style-and-workspaces = { $me }: style and workspaces
     .w-settings-for = Settings for { $style_title }
     .w-new-workspace = New workspace
     .w-workspaces = Workspaces

@@ -1,10 +1,10 @@
-//! The cards apps draw themselves, floating over the desk.
+//! The cards apps draw themselves, floating over the shell.
 //!
 //! A card is a window of the app that owns the activity — a call, a route —
 //! drawn by the app so its content stays live: a second toplevel whose app id
 //! carries a random token ([`crate::cards::TOKEN_PREFIX`]). The session
 //! authorises each token on the connection that presented it and says where
-//! the floating layer puts the card; this is that placement as the desk reads
+//! the floating layer puts the card; this is that placement as the shell reads
 //! it. A window whose token is unknown is no card at all: it is hidden, and
 //! never takes a tab.
 //!
@@ -43,7 +43,7 @@ struct Shared {
 }
 
 /// Where the session's cards stand, shared by the session that authorises
-/// them and the desk that places them.
+/// them and the shell that places them.
 #[derive(Clone, Default)]
 pub struct Placements {
     shared: Rc<RefCell<Shared>>,
@@ -111,7 +111,7 @@ impl Placements {
     }
 
     /// Whether `window` is a card at all: drawn, suspended, or one its app
-    /// has ended — a card's window is never a window of the desk.
+    /// has ended — a card's window is never a window of the shell.
     #[must_use]
     pub fn draws(&self, window: u64) -> bool {
         self.shared.borrow().tokens.contains_key(&window)
@@ -134,7 +134,7 @@ impl Placements {
         self.shared.borrow().windows.get(token).copied()
     }
 
-    /// The desk placed `window`, which carries `token`.
+    /// The shell placed `window`, which carries `token`.
     pub fn mapped(&self, token: &str, window: u64) {
         let mut shared = self.shared.borrow_mut();
         shared.windows.insert(token.to_owned(), window);

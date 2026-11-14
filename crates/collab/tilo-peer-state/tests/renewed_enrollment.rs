@@ -67,7 +67,7 @@ struct Admitted {
     invitation: String,
     owner: tilo_peer_state::owner::NativeWorkspaceOwner,
     client: WorkspaceJoinClient,
-    desk_key: SigningKey,
+    device_key: SigningKey,
 }
 
 impl Admitted {
@@ -76,10 +76,10 @@ impl Admitted {
         let bob = SigningKey::from_bytes(&[2; 32]);
         let host_key = SigningKey::from_bytes(&tilo_test_env::node_key());
         let laptop_key = SigningKey::from_bytes(&[4; 32]);
-        let desk_key = SigningKey::from_bytes(&[5; 32]);
+        let device_key = SigningKey::from_bytes(&[5; 32]);
         let host = certificate(&alice, &host_key, DeviceCapabilities::member(), 1, None);
         let laptop = certificate(&alice, &laptop_key, DeviceCapabilities::primary(), 1, None);
-        let held = held(&bob, &desk_key);
+        let held = held(&bob, &device_key);
         let now = tilo_clock::unix_now_ns();
         let state = tempfile::tempdir().unwrap();
         // The host reaches no packet relay: the link it hands out then names the addresses it
@@ -126,10 +126,10 @@ impl Admitted {
         let owner =
             tilo_peer_state::owner::open_file(&directory.path().join("joined-workspaces.json"))
                 .unwrap();
-        let client = WorkspaceJoinClient::new(endpoint(&desk_key).await);
+        let client = WorkspaceJoinClient::new(endpoint(&device_key).await);
         let unanswered = tilo_peer_state::owner::enroll::prepare_and_complete(
             client.clone(),
-            custody(&held, &desk_key),
+            custody(&held, &device_key),
             workspace.workspace_id,
             None,
             invitation.clone(),
@@ -147,7 +147,7 @@ impl Admitted {
             invitation,
             owner,
             client,
-            desk_key,
+            device_key,
         }
     }
 
@@ -169,7 +169,7 @@ impl Admitted {
     async fn retry(&self, current: &DeviceCert, replaced: &DeviceCert) {
         let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
             self.client.clone(),
-            custody(current, &self.desk_key),
+            custody(current, &self.device_key),
             self.workspace_id,
             None,
             self.invitation.clone(),
@@ -195,7 +195,7 @@ impl Admitted {
                 Ok(view
                     .peer()
                     .role(
-                        &self.desk_key.verifying_key().to_bytes(),
+                        &self.device_key.verifying_key().to_bytes(),
                         tilo_clock::wall(),
                     )
                     .ok())
@@ -209,11 +209,11 @@ impl Admitted {
 async fn a_retained_proof_with_a_certificate_due_for_renewal_presents_the_renewal() {
     let now = tilo_clock::unix_now_ns();
     let mut due = None;
-    let admitted = Admitted::start(|bob, desk_key| {
+    let admitted = Admitted::start(|bob, device_key| {
         // Two thirds through its lifetime: still valid, and due for renewal.
         let cert = certificate(
             bob,
-            desk_key,
+            device_key,
             DeviceCapabilities::primary(),
             now.saturating_sub(400 * SECOND),
             Some(now.saturating_add(200 * SECOND)),
@@ -227,7 +227,7 @@ async fn a_retained_proof_with_a_certificate_due_for_renewal_presents_the_renewa
     let bob = SigningKey::from_bytes(&[2; 32]);
     let renewed = certificate(
         &bob,
-        &admitted.desk_key,
+        &admitted.device_key,
         DeviceCapabilities::primary(),
         now,
         Some(now.saturating_add(600 * SECOND)),
@@ -265,10 +265,10 @@ async fn a_lapsed_certificate_is_answered_by_the_renewal(process: tilo_clock::te
     let lifetime = 3 * SECOND;
     let now = tilo_clock::unix_now_ns();
     let mut lapsing = None;
-    let admitted = Admitted::start(|bob, desk_key| {
+    let admitted = Admitted::start(|bob, device_key| {
         let cert = certificate(
             bob,
-            desk_key,
+            device_key,
             DeviceCapabilities::primary(),
             now.saturating_sub(SECOND),
             Some(now.saturating_add(lifetime)),
@@ -288,7 +288,7 @@ async fn a_lapsed_certificate_is_answered_by_the_renewal(process: tilo_clock::te
     let now = tilo_clock::unix_now_ns();
     let renewed = certificate(
         &bob,
-        &admitted.desk_key,
+        &admitted.device_key,
         DeviceCapabilities::primary(),
         now,
         Some(now.saturating_add(600 * SECOND)),
@@ -306,8 +306,8 @@ async fn a_lapsed_certificate_is_answered_by_the_renewal(process: tilo_clock::te
 #[tokio::test(flavor = "multi_thread")]
 async fn a_retry_after_an_identity_restore_keeps_the_retained_join() {
     let mut before = None;
-    let admitted = Admitted::start(|bob, desk_key| {
-        let cert = certificate(bob, desk_key, DeviceCapabilities::primary(), 1, None);
+    let admitted = Admitted::start(|bob, device_key| {
+        let cert = certificate(bob, device_key, DeviceCapabilities::primary(), 1, None);
         before = Some(cert.clone());
         cert
     })
@@ -317,7 +317,7 @@ async fn a_retry_after_an_identity_restore_keeps_the_retained_join() {
     let bob = SigningKey::from_bytes(&[2; 32]);
     let restored = certificate(
         &bob,
-        &admitted.desk_key,
+        &admitted.device_key,
         DeviceCapabilities::primary(),
         tilo_clock::unix_now_ns(),
         None,

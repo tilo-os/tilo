@@ -1128,7 +1128,7 @@ impl Core {
                 let registry = self.registry.borrow();
                 match (named, row) {
                     // A named view: the resource's own package's, or — when the name is a view
-                    // an installed package declares of a shared type, a desk style
+                    // an installed package declares of a shared type, a style
                     // (`shell.md` §6) — that package's, so a `show` draws a style another
                     // package wrote.
                     (Some(view), _) => registry
@@ -1144,7 +1144,7 @@ impl Core {
             found.ok_or_else(|| {
                 // A style reference names its package (`app:view`). One whose package this
                 // runtime does not hold yet is the ask for that package, and the call waits on
-                // it — the session publishes it, and the desk draws it when it arrives
+                // it — the session publishes it, and the shell draws it when it arrives
                 // (`missing_view`). But a package that already failed to load here is not
                 // coming: the call draws a failed state naming it, never a skeleton for ever
                 // (`shell.md` §6, "Nothing can lock a person out").

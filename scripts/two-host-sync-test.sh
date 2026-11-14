@@ -8,7 +8,7 @@
 #
 # Both start the desktop session, `tilo-session`. On the owner, open the
 # workspace's settings and, under "Invite people", "Create link" and then
-# "Copy link"; on the peer, "Join a workspace" and paste it. Both desks then
+# "Copy link"; on the peer, "Join a workspace" and paste it. Both shells then
 # hold one workspace: a note typed on one shows on the other.
 #
 # The session is the one the image installs, `/usr/bin/tilo-session`; a

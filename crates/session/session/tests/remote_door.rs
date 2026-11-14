@@ -1043,7 +1043,7 @@ fn laptop_of(computer: &ThisComputer) -> (SigningKey, DeviceCert) {
 /// This computer's shell with Notes running in the workspace it holds, and the door toward the
 /// person's other devices answered on its endpoint: the session, the questions it puts to the
 /// person, what the app took, and the laptop the agent runs on.
-struct DeskWithNotes {
+struct ShellWithNotes {
     session: Session,
     questions: Questions,
     /// Each invocation Notes was handed, as it took it.
@@ -1059,7 +1059,7 @@ struct DeskWithNotes {
     computer: ThisComputer,
 }
 
-impl DeskWithNotes {
+impl ShellWithNotes {
     fn start() -> Self {
         let computer = ThisComputer::new();
         // Notes' package names its surface, as the launcher does for an app it starts.
@@ -1398,7 +1398,7 @@ fn open_action() -> runtime_collab::ExportedAction {
 #[test]
 fn with_only_agents_from_other_devices_let_in_their_step_still_asks_the_person() {
     let _settled = ui::motion::testing::settled();
-    let mut shell = DeskWithNotes::start();
+    let mut shell = ShellWithNotes::start();
     shell.set(
         "set-accept-own-devices",
         settings_store::mcp_server::accepts_own_devices,
@@ -1461,7 +1461,7 @@ fn with_only_agents_from_other_devices_let_in_their_step_still_asks_the_person()
 #[test]
 fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_question() {
     let _settled = ui::motion::testing::settled();
-    let mut shell = DeskWithNotes::start();
+    let mut shell = ShellWithNotes::start();
     shell.set(
         "set-accept-own-devices",
         settings_store::mcp_server::accepts_own_devices,

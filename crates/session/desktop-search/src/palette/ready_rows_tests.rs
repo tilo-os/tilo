@@ -7,7 +7,7 @@
 //! runs on the one thread there is: the apps, actions and places that were
 //! ready in the first frame stayed under "Searching…" for as long as the
 //! last source took — 14 s for api-tester, 57 s for calendar, measured on
-//! the page desk. What is ready must show at once, and the slow source's
+//! the page shell. What is ready must show at once, and the slow source's
 //! rows join when they come.
 use super::*;
 use std::rc::Rc;
@@ -70,7 +70,7 @@ fn window_of(app: &str, title: &str, tab: u64) -> WindowEntry {
     }
 }
 
-/// The search over a desk where one app's content is still coming: what
+/// The search over a shell where one app's content is still coming: what
 /// the apps, windows and places ready in the first frame look like to
 /// the person while it is out.
 fn with_slow_content() -> (DesktopSearch, Rc<AtomicBool>, Rc<std::cell::Cell<usize>>) {
@@ -127,7 +127,7 @@ fn titles(search: &DesktopSearch) -> Vec<String> {
         .collect()
 }
 
-/// Frames until the desk shows `title`, or the deadline passes.
+/// Frames until the shell shows `title`, or the deadline passes.
 fn frames_until(search: &mut DesktopSearch, title: &str) {
     let now = ui::time::now();
     let deadline = now.checked_add(Duration::from_secs(10)).unwrap_or(now);
@@ -161,11 +161,11 @@ tilo_test_env::scenario! {
         // What the person sees is not drawn as still searching: the rows
         // that are ready are shown, and the one that is not yet does not
         // hold them behind "Searching…".
-        // THE BUG: the desk publishes `searching` until every source has
+        // THE BUG: the shell publishes `searching` until every source has
         // answered, so a window whose content is still coming kept the
         // apps, actions and places that were ready marked "still
         // searching" — for 14 s on api-tester, 57 s on calendar, measured on
-        // the page desk. The rows that are ready are the search's answer.
+        // the page shell. The rows that are ready are the search's answer.
         assert!(
             search.settled(),
             "the rows that are ready are not held behind a source still out"
@@ -231,7 +231,7 @@ tilo_test_env::scenario! {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(search.settled(), "\"cal\" is answered");
-        // A key more, typed into the field as a key event types it: the rows follow in the desk's
+        // A key more, typed into the field as a key event types it: the rows follow in the shell's
         // next pass, and until then the rows on screen are still "cal"'s.
         search.palette_mut().set_query("cale");
         assert!(

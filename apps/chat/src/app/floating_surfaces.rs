@@ -1,5 +1,5 @@
 //! The floating surface Chat hosts: the call's huddle, out of its window and
-//! over the desk, with what the host says back about it (adopted, suspended,
+//! over the shell, with what the host says back about it (adopted, suspended,
 //! closed, reattached).
 
 use automerge::ObjId;
@@ -99,7 +99,7 @@ impl FloatingSurfaceProvider for ChatApp {
         {
             return Vec::new();
         }
-        // Over the desk the card draws the call in the place the layer gives
+        // Over the shell the card draws the call in the place the layer gives
         // it, inside its own shadow margin; in its window the huddle keeps
         // its title bar, chips and controls around the video.
         let card = !returning_to_app
@@ -205,7 +205,7 @@ impl FloatingSurfaceProvider for ChatApp {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        // The pointer stands on the card, in the desk's coordinates: the
+        // The pointer stands on the card, in the shell's coordinates: the
         // frame the card's hits were recorded in, and the frame the app's
         // card-owned input reads.
         let previous = self.input_floating_surface.replace(id.to_owned());
@@ -216,7 +216,7 @@ impl FloatingSurfaceProvider for ChatApp {
 }
 
 impl ChatApp {
-    /// The card over the desk as assistive technology reads it: who the call
+    /// The card over the shell as assistive technology reads it: who the call
     /// is with and for how long, how it is connected, and the controls the
     /// card draws, where it draws them.
     fn call_card_accessibility(&self) -> Option<ui::a11y::AccessNode> {

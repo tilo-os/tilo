@@ -1364,16 +1364,16 @@ fn an_image_description_is_set_and_cleared_only_on_an_image() {
     let heads = replica.heads();
     for (blocks, alt) in [
         // A paragraph has no description to set.
-        (vec![paragraph.clone()], "A desk light"),
+        (vec![paragraph.clone()], "A studio light"),
         // Nor does a mixed selection, even with an image in it.
-        (vec![image.clone(), paragraph], "A desk light"),
+        (vec![image.clone(), paragraph], "A studio light"),
         (vec![image.clone()], "   "),
-        (vec![image.clone()], "A desk\nlight"),
+        (vec![image.clone()], "A studio\nlight"),
         (
             vec![image.clone()],
             &"x".repeat(action::MAX_IMAGE_ALT_CHARS + 1),
         ),
-        (vec!["gone".to_owned()], "A desk light"),
+        (vec!["gone".to_owned()], "A studio light"),
     ] {
         assert!(
             replica.apply_action(&set(blocks, alt)).is_err(),
@@ -1382,7 +1382,7 @@ fn an_image_description_is_set_and_cleared_only_on_an_image() {
     }
     assert_eq!(replica.heads(), heads, "nothing was written");
 
-    let alt = "Chalk-white articulated desk light on a desk, with a deep-teal campaign panel to the right.";
+    let alt = "Chalk-white articulated studio light on a stand, with a deep-teal campaign panel to the right.";
     replica
         .apply_action(&set(vec![image.clone()], alt))
         .unwrap();

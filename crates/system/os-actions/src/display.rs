@@ -125,7 +125,7 @@ fn read_f32(path: &Path) -> Option<f32> {
 }
 
 /// Stateful lux→brightness policy: a logarithmic map, as perception is, with an EMA and a deadband so a
-/// desk shadow does not make the panel pulse. It emits only meaningful changes.
+/// shell shadow does not make the panel pulse. It emits only meaningful changes.
 #[derive(Clone, Debug, Default)]
 pub struct AmbientBrightnessController {
     filtered_lux: Option<f32>,

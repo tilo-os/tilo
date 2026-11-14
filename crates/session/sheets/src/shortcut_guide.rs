@@ -1231,17 +1231,17 @@ fn essentials_with(
     groups
 }
 
-/// What the desk holds where the person is working, which a Super hold reads so it names only
+/// What the shell holds where the person is working, which a Super hold reads so it names only
 /// the chords that do something there.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct PeekDesk {
+pub struct PeekShell {
     /// The windows of the shown strip.
     pub windows: usize,
     /// The tabs of the focused window.
     pub tabs: usize,
 }
 
-/// What a peek row needs of the desk before its chord does anything.
+/// What a peek row needs of the shell before its chord does anything.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Needs {
     Nothing,
@@ -1254,12 +1254,12 @@ enum Needs {
 }
 
 impl Needs {
-    fn met(self, desk: PeekDesk) -> bool {
+    fn met(self, shell: PeekShell) -> bool {
         match self {
             Self::Nothing => true,
-            Self::Window => desk.windows >= 1,
-            Self::Neighbour => desk.windows >= 2,
-            Self::Sibling => desk.tabs >= 2,
+            Self::Window => shell.windows >= 1,
+            Self::Neighbour => shell.windows >= 2,
+            Self::Sibling => shell.tabs >= 2,
         }
     }
 }
@@ -1273,10 +1273,10 @@ enum Keys {
     Run(ShortcutAction, ShortcutAction),
 }
 
-/// A peek group's rows: each a name, the shortcuts it shows and what they need of the desk.
+/// A peek group's rows: each a name, the shortcuts it shows and what they need of the shell.
 type PeekRows = &'static [(&'static str, Keys, Needs)];
 
-/// The peek's groups: a title, then rows of a name, the shortcuts and what they need of the desk.
+/// The peek's groups: a title, then rows of a name, the shortcuts and what they need of the shell.
 /// The first row each group can show is the one the glance leads with.
 const PEEK: [(&str, PeekRows); 4] = {
     use Keys::{One, Pair, Run};
@@ -1384,21 +1384,21 @@ const PEEK: [(&str, PeekRows); 4] = {
     ]
 };
 
-/// The chords a held Super reaches on `desk` , in the peek's groups: each a title and its rows,
+/// The chords a held Super reaches on `shell` , in the peek's groups: each a title and its rows,
 /// every row the keys after Super as the active layout spells them and what they do. The keys are
 /// the table's, the one the desktop's keys resolve against, so a rebound shortcut reads as rebound
 /// here; a shortcut that holds no chord, or one without Super, which a held Super cannot reach, is
-/// left out, as is a row whose chord does nothing on `desk` . The person's own published
+/// left out, as is a row whose chord does nothing on `shell` . The person's own published
 /// shortcuts on Super close it, as they close the guide.
 #[must_use]
-pub fn peek(table: &ShortcutConfig, desk: PeekDesk) -> Vec<(String, Vec<KeyHint>)> {
+pub fn peek(table: &ShortcutConfig, shell: PeekShell) -> Vec<(String, Vec<KeyHint>)> {
     let keys = |action: ShortcutAction| table.bindings.get(&action).and_then(after_super);
     let mut groups: Vec<(String, Vec<KeyHint>)> = PEEK
         .iter()
         .map(|(title, rows)| {
             let hints = rows
                 .iter()
-                .filter(|(_, _, needs)| needs.met(desk))
+                .filter(|(_, _, needs)| needs.met(shell))
                 .filter_map(|(label, shortcuts, _)| {
                     let keys = match *shortcuts {
                         Keys::One(action) => keys(action)?,
@@ -1614,14 +1614,14 @@ mod tests {
             .cloned()
     }
 
-    const DESK: PeekDesk = PeekDesk {
+    const SHELL: PeekShell = PeekShell {
         windows: 2,
         tabs: 2,
     };
 
     tilo_test_env::scenario! {
         /// `peek`: the rows shown while Super is held.
-        fn the_peek_offers_what_a_held_super_reaches_on_this_desk;
+        fn the_peek_offers_what_a_held_super_reaches_on_this_shell;
 
         phase the_peek_names_the_keys_after_super_from_the_table;
         // The peek reads the table the guide explains: a rebound shortcut reads rebound, and one a
@@ -1630,7 +1630,7 @@ mod tests {
             let search = t("shortcut-name-search");
             let mut table = ShortcutConfig::default();
             assert_eq!(
-                peek_row(&peek(&table, DESK), &search).map(|hint| hint.keys),
+                peek_row(&peek(&table, SHELL), &search).map(|hint| hint.keys),
                 Some(vec![ui::keycaps::active().key("space")]),
                 "Super is held already: the row names only the key after it"
             );
@@ -1641,7 +1641,7 @@ mod tests {
                 )
                 .expect("no other shortcut holds it");
             assert_eq!(
-                peek_row(&peek(&table, DESK), &search).map(|hint| hint.keys),
+                peek_row(&peek(&table, SHELL), &search).map(|hint| hint.keys),
                 Some(KeyHint::new(["Shift", "j"], "").keys)
             );
             table
@@ -1651,20 +1651,20 @@ mod tests {
                 )
                 .expect("no other shortcut holds it");
             assert_eq!(
-                peek_row(&peek(&table, DESK), &search),
+                peek_row(&peek(&table, SHELL), &search),
                 None,
                 "a chord without Super is out of a held Super's reach"
             );
         }
 
-        phase the_peek_leaves_out_what_the_desk_gives_nothing_to_do;
+        phase the_peek_leaves_out_what_the_shell_gives_nothing_to_do;
         // The peek names what does something where the person works: a window of one tab has no
-        // tab to go to, and a desk with no window nothing to arrange.
+        // tab to go to, and a shell with no window nothing to arrange.
         {
             let table = ShortcutConfig::default();
             let tabs = t("guide-row-tabs");
             let windows = t("guide-row-windows");
-            let both = peek(&table, DESK);
+            let both = peek(&table, SHELL);
             assert!(peek_row(&both, &tabs).is_some());
             let titles: Vec<&str> = both.iter().map(|(title, _)| title.as_str()).collect();
             assert_eq!(
@@ -1679,7 +1679,7 @@ mod tests {
 
             let one_tab = peek(
                 &table,
-                PeekDesk {
+                PeekShell {
                     windows: 2,
                     tabs: 1,
                 },
@@ -1694,7 +1694,7 @@ mod tests {
                 "a closed tab still comes back"
             );
 
-            let empty = peek(&table, PeekDesk::default());
+            let empty = peek(&table, PeekShell::default());
             assert_eq!(peek_row(&empty, &t("guide-row-move-focus")), None);
             assert_eq!(
                 peek_row(&empty, &t("guide-row-maximize")),

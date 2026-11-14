@@ -199,7 +199,7 @@ impl<R: Resource> WindowBar<R> {
     }
 
     /// The label names a part of the app (its list, its presets) rather than what the person
-    /// opened: the desk names the window by its app ([`ToolbarLocation::section`]).
+    /// opened: the shell names the window by its app ([`ToolbarLocation::section`]).
     #[must_use]
     pub fn section(mut self, section: bool) -> Self {
         if let Some(location) = self.slots.location.as_mut() {

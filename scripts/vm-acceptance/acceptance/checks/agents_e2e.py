@@ -9,8 +9,8 @@ the model. The person answers each admission on the sheet.
 
 Everything goes through the production paths: `workspace.create` and `workspace.select.*`,
 Terminal opened from the app catalogue, its own actions (`create-environment`, `open-in`,
-`run`, `read`), the sheet's own answers (`so.tilo.portal-sheet`) and the desk's Stop
-(`session:desk` `stop-agent`). The harness reads the agents' transcripts and the workspace
+`run`, `read`), the sheet's own answers (`so.tilo.portal-sheet`) and the shell's Stop
+(`session:agents` `stop-agent`). The harness reads the agents' transcripts and the workspace
 trees through the slot's own account (`tilo-vm slot exec`), never through ush or the door.
 
 The checks share one scenario and run in order (E01..E07, `run.py` E2E_ORDER); each needs
@@ -38,7 +38,7 @@ from ..vm import VmError, wait_until
 AREA = "agents-e2e"
 TERMINAL = "so.tilo.terminal"
 NOTES = "so.tilo.notes"
-DESK = "session:desk"
+SHELL = "session:agents"
 AGENT = Path(__file__).resolve().parents[2] / "guest" / "mcp_agent.sh"
 # Where in each workspace's tree (the environments' `~`) the agents keep their transcripts.
 AGENTS_DIR = ".e2e-agents"
@@ -53,7 +53,7 @@ SHELL_S = 120
 REPLY_S = 45
 # The guest's files root and the trees in it (tilo_paths::workspace_tree).
 GUEST_TREES = "/var/workspace/.workspaces"
-# The desk's own actions: an action's id is `resource\x1faction`.
+# The shell's own actions: an action's id is `resource\x1faction`.
 SESSION = "so.tilo.session"
 NEW_WORKSPACE = "desktop:chrome\x1fnew-workspace"
 SWITCH_WORKSPACE = "desktop:chrome\x1fswitch-workspace"
@@ -81,7 +81,7 @@ def invoke(ctx, provider: str, action_id: str, args: dict | None = None, *, conf
     return PendingJob(ctx.vm, answer, ctx.out / "data", name).finish(timeout)
 
 
-# -- the desk ---------------------------------------------------------------------------
+# -- the shell ---------------------------------------------------------------------------
 
 
 def workspaces(ctx) -> list[dict]:
@@ -445,7 +445,7 @@ def tool_answering(ctx, agent: Agent, name: str, arguments: dict, what: str) -> 
 
 
 def agent_sessions(ctx) -> list[dict]:
-    """The agents at the person's desk, as the desk lists them (the state dump's `agents`)."""
+    """The agents at the person's shell, as the shell lists them (the state dump's `agents`)."""
     return [a for a in ctx.state().get("agents") or [] if isinstance(a, dict)]
 
 
@@ -453,20 +453,20 @@ def session_keys(ctx) -> list[str]:
     return sorted(a.get("key", "") for a in agent_sessions(ctx) if a.get("stoppable", True))
 
 
-# What the desk says beside each agent's name of where it works from: the other device it came
+# What the shell says beside each agent's name of where it works from: the other device it came
 # from, and the environment whose door it came in by. Every field is there, empty for none.
 WHERE = ("device", "device_name", "environment", "environment_id")
 
 
 def sessions_in(ctx, env: dict) -> list[dict]:
-    """The agents the desk seats as come in by `env`'s door: by the environment's id beside
+    """The agents the shell seats as come in by `env`'s door: by the environment's id beside
     their names, the one its shell reads as TILO_ENVIRONMENT. Never by the words of a name."""
     return [a for a in agent_sessions(ctx) if a.get("stoppable", True) and env["environment"]
             and a.get("environment_id") == env["environment"]]
 
 
 def where_wrong(agent: dict, env: dict | None) -> list[str]:
-    """What the desk says wrongly beside `agent` of where it works from: an agent of `env` names
+    """What the shell says wrongly beside `agent` of where it works from: an agent of `env` names
     that environment, by its name and its TILO_ENVIRONMENT, and an agent of no environment
     (`env` None) neither. Neither came from another device."""
     wrong = [f"lists no {field!r}" for field in WHERE if field not in agent]
@@ -492,7 +492,7 @@ def where_wrong(agent: dict, env: dict | None) -> list[str]:
 def _scene(ctx) -> dict:
     scene = ctx.facts.get("e2e")
     if scene is None:
-        raise Unobservable(f"precondition not met: {ctx.facts.get('e2e:why', 'E01 did not set the desk up')}")
+        raise Unobservable(f"precondition not met: {ctx.facts.get('e2e:why', 'E01 did not set the shell up')}")
     return scene
 
 
@@ -570,7 +570,7 @@ def environments(ctx, res):
         slot_write(ctx, f"{e['tree']}/{AGENTS_DIR}/mcp_agent.sh", AGENT.read_bytes())
     want(one["tree"] != two["tree"], f"both workspaces' files are one tree: {one['tree']}")
     res.metrics["trees"] = {e["name"]: e["tree"] for e in envs}
-    # The agents' checks run on the desk set up here, whatever of it was wrong.
+    # The agents' checks run on the shell set up here, whatever of it was wrong.
     ctx.facts["e2e"] = {"envs": envs, "run": run}
     if problems:
         raise CheckFailed("; ".join(problems))
@@ -598,19 +598,19 @@ def admitted(ctx, res):
         agents[e["name"]] = agent
     res.metrics["sheets"] = {e["name"]: e["dialog"] for e in (one, two)}
     res.metrics["served_as"] = {e["name"]: e["served_as"] for e in (one, two)}
-    # The desk tells the two apart by the environment each came in by, said beside its name.
+    # The shell tells the two apart by the environment each came in by, said beside its name.
     wait_until(lambda: all(sessions_in(ctx, e) for e in (one, two)) or None, 20, interval=0.5)
     res.metrics["sessions"] = agent_sessions(ctx)
     for e in (one, two):
         mine = sessions_in(ctx, e)
-        expect(len(mine) == 1, f"{e['name']}: the desk seats no single agent of the environment "
+        expect(len(mine) == 1, f"{e['name']}: the shell seats no single agent of the environment "
                                f"{e['environment']!r}: {agent_sessions(ctx)}")
         wrong = where_wrong(mine[0], e)
-        expect(not wrong, f"{e['name']}: the desk " + "; ".join(wrong) + f": {mine[0]}")
-        expect(str(mine[0].get("name") or "").strip(), f"{e['name']}: the desk seats its agent "
+        expect(not wrong, f"{e['name']}: the shell " + "; ".join(wrong) + f": {mine[0]}")
+        expect(str(mine[0].get("name") or "").strip(), f"{e['name']}: the shell seats its agent "
                                                       f"under no name: {mine[0]}")
         e["agent_id"] = mine[0].get("key")
-        expect(e["agent_id"], f"{e['name']}: the desk seats its agent under no key: {mine[0]}")
+        expect(e["agent_id"], f"{e['name']}: the shell seats its agent under no key: {mine[0]}")
     expect(one["agent_id"] != two["agent_id"], f"both agents are {one['agent_id']}")
     expect(one["environment"] != two["environment"],
            f"both environments read TILO_ENVIRONMENT {one['environment']!r}")
@@ -629,7 +629,7 @@ def person_note(ctx, env: dict, title: str) -> None:
     there, as its window offers it."""
     select_workspace(ctx, env["workspace"])
 
-    # The desk lists the apps of the workspace in front: its Notes is the one Notes listed.
+    # The shell lists the apps of the workspace in front: its Notes is the one Notes listed.
     def offered():
         rows = [r for r in ctx.vm.actions(NOTES, programmatic=True)
                 if r.get("application") == NOTES and r.get("operation") == "new-note"]
@@ -681,15 +681,15 @@ def own_workspace(ctx, res):
         want(not finds(theirs, titles[other["name"]]),
              f"{e['name']}: the agent finds {other['name']}'s note: {text_of(theirs)[:300]}")
         e["found"] = text_of(found)[:300]
-        # What the desk shows the agent of itself: none of it may name the other workspace's note.
-        desk = agent.tool("tilo_ls", {"path": "session"})
+        # What the shell shows the agent of itself: none of it may name the other workspace's note.
+        shell = agent.tool("tilo_ls", {"path": "session"})
         windows = agent.tool("tilo_ls", {"path": "session/Windows"})
-        e["desk"] = (text_of(desk) + "\n" + text_of(windows))[:2000]
-        want(titles[other["name"]] not in e["desk"],
-             f"{e['name']}: the desk shows the agent {other['name']}'s note: {e['desk'][:300]}")
+        e["shell"] = (text_of(shell) + "\n" + text_of(windows))[:2000]
+        want(titles[other["name"]] not in e["shell"],
+             f"{e['name']}: the shell shows the agent {other['name']}'s note: {e['shell'][:300]}")
         agent.keep()
     res.metrics["found"] = {e["name"]: e["found"] for e in envs}
-    res.metrics["desk"] = {e["name"]: e["desk"][:600] for e in envs}
+    res.metrics["shell"] = {e["name"]: e["shell"][:600] for e in envs}
     if problems:
         raise CheckFailed("; ".join(problems))
 
@@ -810,7 +810,7 @@ def asked_change(ctx, res):
     res.metrics["asked"] = {e["name"]: e["asked_for_file"] for e in envs}
     problems = []
     for e, other in ((one, two), (two, one)):
-        # The person was asked on the desk's sheet, which offers the step once, for the agent
+        # The person was asked on the shell's sheet, which offers the step once, for the agent
         # from now on, or not at all.
         shown = [str(name) for dialog in e["asked_for_file"] for name in dialog.get("targets") or []]
         if not e["asked_for_file"]:
@@ -888,12 +888,12 @@ def always_allow(ctx, res):
     mine = sessions_in(ctx, one)
     res.metrics["sessions"] = agent_sessions(ctx)
     keys = [a.get("key") for a in mine]
-    expect(first in keys, f"the desk no longer seats {first} in {one['env_name']}: {mine}")
+    expect(first in keys, f"the shell no longer seats {first} in {one['env_name']}: {mine}")
     others = [a for a in mine if a.get("key") != first]
-    expect(len(others) == 1, f"the desk does not seat a second agent of {one['env_name']} "
+    expect(len(others) == 1, f"the shell does not seat a second agent of {one['env_name']} "
                              f"({one['environment']!r}) beside {first}: {agent_sessions(ctx)}")
     wrong = where_wrong(others[0], one)
-    expect(not wrong, f"the second session: the desk " + "; ".join(wrong) + f": {others[0]}")
+    expect(not wrong, f"the second session: the shell " + "; ".join(wrong) + f": {others[0]}")
     res.metrics["second"] = others[0].get("key")
     scene["second"] = agent
 
@@ -903,7 +903,7 @@ def stop_one(ctx, res):
     scene = _scene(ctx)
     agents = _need(scene, "agents", "E02")
     one, two = scene["envs"]
-    provider, action, args = _desk_stop(ctx, two["agent_id"])
+    provider, action, args = _shell_stop(ctx, two["agent_id"])
     invoke(ctx, provider, action, args, name="stop-agent")
     stopped = agents[two["name"]]
     ended = wait_until(lambda: any(l.get("e2e") == "eof" for l in stopped.lines()), 20, interval=0.5)
@@ -911,9 +911,9 @@ def stop_one(ctx, res):
     res.metrics["seated_after"] = keys
     stopped.keep()
     expect(ended, f"{two['name']}'s connection did not close on the person's Stop")
-    expect(two["agent_id"] not in keys, f"{two['agent_id']} is still at the desk: {keys}")
-    expect(one["agent_id"] in keys, f"{one['agent_id']} left the desk with it: {keys}")
-    expect(not sessions_in(ctx, two), f"the desk still seats an agent of {two['env_name']}: "
+    expect(two["agent_id"] not in keys, f"{two['agent_id']} is still at the shell: {keys}")
+    expect(one["agent_id"] in keys, f"{one['agent_id']} left the shell with it: {keys}")
+    expect(not sessions_in(ctx, two), f"the shell still seats an agent of {two['env_name']}: "
                                     f"{sessions_in(ctx, two)}")
     still = agents[one["name"]]
     reply = still.tool("tilo_ls", {})
@@ -921,12 +921,12 @@ def stop_one(ctx, res):
     expect(is_error(reply) is False, f"{one['name']}'s agent stopped working too: {str(reply)[:300]}")
 
 
-def _desk_stop(ctx, agent_id: str) -> tuple[str, str, dict]:
-    """The person's Stop on the agent `agent_id` at their desk (`session:desk` stop-agent)."""
+def _shell_stop(ctx, agent_id: str) -> tuple[str, str, dict]:
+    """The person's Stop on the agent `agent_id` at their shell (`session:agents` stop-agent)."""
     rows = [r for r in ctx.vm.actions("stop") if str(r.get("id", "")).endswith("\x1fstop-agent")]
     ctx.write("E06-stop-rows.json", json.dumps(rows, indent=1))
     if not rows:
-        raise Unobservable("the desk offers no Stop for an agent (stop-agent)")
+        raise Unobservable("the shell offers no Stop for an agent (stop-agent)")
     return rows[0]["provider"], rows[0]["id"], {"agent": agent_id}
 
 
@@ -1048,9 +1048,9 @@ def host_agent_seated(ctx, res) -> None:
     init = said.get("initialize")
     expect(isinstance(init, dict) and "result" in init,
            f"the host program was not admitted through the session's own door: {str(said)[:300]}")
-    expect(len(fresh) == 1, f"the desk does not seat the host program as one new agent: {fresh}")
+    expect(len(fresh) == 1, f"the shell does not seat the host program as one new agent: {fresh}")
     wrong = where_wrong(fresh[0], None)
-    expect(not wrong, "the host program: the desk " + "; ".join(wrong) + f": {fresh[0]}")
+    expect(not wrong, "the host program: the shell " + "; ".join(wrong) + f": {fresh[0]}")
 
 
 @check("E07", AREA, "A program of the login outside the environments cannot use an environment's door; "

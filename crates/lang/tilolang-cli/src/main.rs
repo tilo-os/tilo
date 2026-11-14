@@ -72,7 +72,7 @@ usage:
       them in that shipped theme (default, glass, block, ...) instead of the stock pair, light and
       dark each. --bar-at-rest takes them as a maximized window stands at rest, its bar hidden
       until the person reaches for the top edge, instead of under the bar. --root lays out the
-      layer a package with more than one root names (the shell's `Desk`, its desk with the bar
+      layer a package with more than one root names (the shell's `Shell`, the one with the bar
       and the dock), instead of the package's first root.
       --state stages a view state at a value the app's own code names (`place=Task.today`, a
       filter; `side=Side.right`, a case of its enum) before any window opens: the place a

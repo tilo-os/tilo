@@ -3,7 +3,7 @@
 //! its actions asked of the workspace's relay over the grant's own session
 //! ([`crate::relay`], [`SessionActions`]). Record actions run on the relay's
 //! app workers, and each record the agent makes or changes opens on the
-//! workspace's desk as a window of the person's, naming the run, so whoever
+//! workspace's shell as a window of the person's, naming the run, so whoever
 //! enters the workspace sees what the agent did.
 //!
 //! - **Pinned** (a one-workspace grant): the session serves that one
@@ -280,7 +280,7 @@ impl Session {
         let device = &self.connection.device;
         let actions = device.actions(id);
         // The records the run works in open as windows on the workspace's
-        // desk; the host that executes the run shows it there.
+        // shell; the host that executes the run shows it there.
         let windows = Arc::new(mcp_windows::AgentWindows::new(
             actions.clone(),
             self.person.clone(),

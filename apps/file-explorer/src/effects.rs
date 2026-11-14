@@ -410,7 +410,7 @@ pub enum FilesEffect {
         #[param("The receiver's TLS port")]
         port: u16,
     },
-    /// Open the desk's invite sheet on the workspace the entry is in, where a
+    /// Open the shell's invite sheet on the workspace the entry is in, where a
     #[effect(row, job)]
     #[effect(keywords = "share, invite, send link, share file")]
     #[effect(icon = "user-plus")]

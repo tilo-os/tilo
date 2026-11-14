@@ -115,7 +115,7 @@ fn held_sections(cx: &ViewCx<Settings>) -> HashMap<TypeId, Box<dyn Any>> {
     hold::<crate::prefs::InputDevicePrefs>(cx, &mut held);
     hold::<ui::text_assistance::TextAssistancePrefs>(cx, &mut held);
     hold::<crate::prefs::PowerPrefs>(cx, &mut held);
-    hold::<crate::prefs::DeskWidgetsPrefs>(cx, &mut held);
+    hold::<crate::prefs::WidgetsPrefs>(cx, &mut held);
     hold::<crate::prefs::UpdatePrefs>(cx, &mut held);
     hold::<crate::prefs::NotificationPrefs>(cx, &mut held);
     hold::<crate::prefs::AudioPrefs>(cx, &mut held);

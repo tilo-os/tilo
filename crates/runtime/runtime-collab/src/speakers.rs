@@ -451,7 +451,7 @@ mod tests {
             let create = SpeakerCommand::Create {
                 name: "Living room".into(),
                 members: vec![SpeakerMemberSpec {
-                    device: "desk".into(),
+                    device: "tower".into(),
                     output: "ab".repeat(16),
                     role: SpeakerRoleSpec::Room {
                         x_mm: -1500,
@@ -467,7 +467,7 @@ mod tests {
                 create
             );
             let node_name = SpeakerCommand::Identify {
-                device: "desk".into(),
+                device: "tower".into(),
                 output: "alsa_output.pci-0000_00_1f.3.analog-stereo".into(),
             };
             assert!(!node_name.valid());
@@ -480,7 +480,7 @@ mod tests {
             );
             assert!(
                 serde_json::from_str::<SpeakerCommand>(
-                    r#"{"command":"identify","device":"desk","output":"00","node":57}"#
+                    r#"{"command":"identify","device":"tower","output":"00","node":57}"#
                 )
                 .is_err()
             );
@@ -491,7 +491,7 @@ mod tests {
             let start = SpeakerCommand::StartCalibration {
                 group: "0f".repeat(16),
                 excluded: vec!["phone".into()],
-                listening: Some("desk".into()),
+                listening: Some("tower".into()),
             };
             assert!(start.valid());
             let json = serde_json::to_vec(&start).unwrap();
@@ -525,7 +525,7 @@ mod tests {
                 groups: vec![SpeakerGroupInfo {
                     id: "0f".repeat(16),
                     name: "Living room".into(),
-                    leader_label: "Desk".into(),
+                    leader_label: "Tower".into(),
                     led_here: true,
                     members: Vec::new(),
                     playback: None,

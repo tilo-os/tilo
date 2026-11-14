@@ -27,8 +27,8 @@
 #                  or panic (integration/page-boot.mjs)
 #   people-call    two people chat, see each other here and call each other
 #                  (integration/people.mjs, TILO_PEOPLE_CASE=call)
-#   people-desk    two people; the window menu, a few apps from the search,
-#                  the strip panned over Notes and Sheets swiped (case desk)
+#   people-shell    two people; the window menu, a few apps from the search,
+#                  the strip panned over Notes and Sheets swiped (case shell)
 #   people-menus   two people; a pinch, the text menu, the profile card's
 #                  Report a problem, the search chord, and none of it reaching
 #                  the browser (case menus)
@@ -123,7 +123,7 @@ print("ok: the directory lists the Lounge, joined at its door as an editor")
 ' "$workspace"
       exit ;;
     boot) exec node "$integration/page-boot.mjs" "$site_origin" "$relay_origin" "$out" ;;
-    people-call|people-desk|people-menus|people-invite)
+    people-call|people-shell|people-menus|people-invite)
       TILO_PEOPLE_CASE=${flow#people-} exec node "$integration/people.mjs" "$site_origin" "$relay_origin" \
         "$relay_origin" "$out" "$owner_socket" ;;
     share-link) exec node "$integration/share-link.mjs" "$site_origin" "$relay_origin" "$workspace" "$out" ;;
@@ -157,7 +157,7 @@ fi
 bundle=${1:?$usage}
 work=${2:?$usage}
 shift 2
-all=(signin directory boot people-call people-desk people-menus people-invite share-link agent-setup setup-resume visa entry passkey wait-list onboarding restart)
+all=(signin directory boot people-call people-shell people-menus people-invite share-link agent-setup setup-resume visa entry passkey wait-list onboarding restart)
 # Run only when named: a person reloading their workspace page twenty times
 # in one browser, counting the reloads that crash or never come back.
 named_only=(reloads)
@@ -351,7 +351,7 @@ fi
 # flow slower rather than the run shorter (measured: with nine flows and four
 # people cases at once, steps a run of three cases passes in 15-20 s ran out at
 # 45 s - a search opening, a composer showing, a call's channel).
-order=(setup-resume visa people-call people-invite people-desk people-menus boot wait-list onboarding share-link agent-setup entry passkey directory reloads)
+order=(setup-resume visa people-call people-invite people-shell people-menus boot wait-list onboarding share-link agent-setup entry passkey directory reloads)
 queue=()
 for flow in "${order[@]}"; do [[ " ${parallel[*]} " == *" $flow "* ]] && queue+=("$flow"); done
 at_once=${E2E_PARALLEL:-4}

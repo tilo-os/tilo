@@ -104,11 +104,11 @@ async fn relay(state: &Path, operator: &SigningKey) -> tilo_relay::Relay {
 }
 
 /// An editor's invitation to `workspace`, as text, that the operator's own
-/// device `desk` issues; for anyone's device when `person` is `None`.
+/// device `shell` issues; for anyone's device when `person` is `None`.
 async fn invitation(
     relay: &tilo_relay::Relay,
     workspace: &str,
-    desk: &DeviceCert,
+    shell: &DeviceCert,
     person: Option<[u8; 32]>,
     request: u8,
 ) -> String {
@@ -117,7 +117,7 @@ async fn invitation(
         .unwrap()
         .issue(
             workspace,
-            desk,
+            shell,
             IssueInvitationRequest {
                 request_id: [request; 32],
                 role: Role::Editor,
@@ -231,9 +231,9 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
     let (_, member_device) =
         tilo_identity_host::broker::trusted_current_device(member.workspace()).unwrap();
 
-    // The relay governs the workspace; its operator's desk owns it.
+    // The relay governs the workspace; its operator's shell owns it.
     let operator = SigningKey::from_bytes(&[41; 32]);
-    let desk = certificate(
+    let shell = certificate(
         &operator,
         &SigningKey::from_bytes(&[43; 32]),
         DeviceCapabilities::primary(),
@@ -243,7 +243,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
     let workspace = run(async {
         let created = workspaces.create(WORKSPACE_NAME).await?;
         workspaces
-            .enter(&created.workspace, &desk)
+            .enter(&created.workspace, &shell)
             .await
             .map_err(|error| error.to_string())?;
         Ok::<_, String>(created.workspace)
@@ -254,7 +254,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
     let joined = member.joiner().unwrap()(&run(invitation(
         &relay,
         &workspace,
-        &desk,
+        &shell,
         Some(member_device.user_public_key),
         1,
     )))
@@ -275,7 +275,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
     let mut person = isolated_command(TEST, &person_root)
         .env(
             PERSON_INVITATION,
-            run(invitation(&relay, &workspace, &desk, None, 2)),
+            run(invitation(&relay, &workspace, &shell, None, 2)),
         )
         .env(
             tilo_test_env::hang::HANG_BOUND_ENV,
@@ -359,9 +359,9 @@ fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
     let (_, member_device) =
         tilo_identity_host::broker::trusted_current_device(member.workspace()).unwrap();
 
-    // The relay governs the workspace; its operator's desk owns it.
+    // The relay governs the workspace; its operator's shell owns it.
     let operator = SigningKey::from_bytes(&[51; 32]);
-    let desk = certificate(
+    let shell = certificate(
         &operator,
         &SigningKey::from_bytes(&[53; 32]),
         DeviceCapabilities::primary(),
@@ -372,7 +372,7 @@ fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
     let workspace = run(async {
         let created = workspaces.create(WORKSPACE_NAME).await?;
         workspaces
-            .enter(&created.workspace, &desk)
+            .enter(&created.workspace, &shell)
             .await
             .map_err(|error| error.to_string())?;
         Ok::<_, String>(created.workspace)
@@ -383,7 +383,7 @@ fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
     let joined = member.joiner().unwrap()(&run(invitation(
         &relay,
         &workspace,
-        &desk,
+        &shell,
         Some(member_device.user_public_key),
         1,
     )))
@@ -423,7 +423,7 @@ fn a_file_the_relay_kept_reaches_a_device_that_joins_after_its_writer_left() {
     let mut later = isolated_command(KEPT_TEST, &joiner_root)
         .env(
             JOINER_INVITATION,
-            run(invitation(&relay, &workspace, &desk, None, 2)),
+            run(invitation(&relay, &workspace, &shell, None, 2)),
         )
         .env(
             tilo_test_env::hang::HANG_BOUND_ENV,
@@ -472,7 +472,7 @@ fn content_the_relay_let_go_of_comes_back_from_the_writer_that_was_away() {
     let (_, member_device) =
         tilo_identity_host::broker::trusted_current_device(member.workspace()).unwrap();
     let operator = SigningKey::from_bytes(&[61; 32]);
-    let desk = certificate(
+    let shell = certificate(
         &operator,
         &SigningKey::from_bytes(&[63; 32]),
         DeviceCapabilities::primary(),
@@ -483,7 +483,7 @@ fn content_the_relay_let_go_of_comes_back_from_the_writer_that_was_away() {
     let workspace = run(async {
         let created = workspaces.create(WORKSPACE_NAME).await?;
         workspaces
-            .enter(&created.workspace, &desk)
+            .enter(&created.workspace, &shell)
             .await
             .map_err(|error| error.to_string())?;
         Ok::<_, String>(created.workspace)
@@ -492,7 +492,7 @@ fn content_the_relay_let_go_of_comes_back_from_the_writer_that_was_away() {
     let joined = member.joiner().unwrap()(&run(invitation(
         &relay,
         &workspace,
-        &desk,
+        &shell,
         Some(member_device.user_public_key),
         1,
     )))

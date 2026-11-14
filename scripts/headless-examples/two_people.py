@@ -1,9 +1,9 @@
 """Two sessions of different people in one workspace, as the collaboration harnesses start them.
 
-One person's session starts first, holding the workspace its own desk made; that person invites
-someone else into it with the desk's own invitation; the other person's session is started with
-that link and comes into the workspace on its way up, with nobody at its desk. Each session keeps
-its own state directory, its own identity and its own runtime directory, and the desk of each one
+One person's session starts first, holding the workspace its own shell made; that person invites
+someone else into it with the shell's own invitation; the other person's session is started with
+that link and comes into the workspace on its way up, with nobody at its shell. Each session keeps
+its own state directory, its own identity and its own runtime directory, and the shell of each one
 stands in the workspace they share, which is where a person works and where their session says
 they are.
 
@@ -28,8 +28,8 @@ from real_apps import BUILD, Failed, Session, build, prepare, until
 
 # The session's own provider, the resource it publishes the workspace's commands as, and the one
 # its invitations are made through.
-DESK = "so.tilo.session"
-WORKSPACE_COMMANDS = "session:desk"
+SHELL = "so.tilo.session"
+WORKSPACE_COMMANDS = "desktop:chrome"
 INVITATIONS = "session:invite"
 # The variable a session joins the workspace of an invitation with, at startup.
 JOIN_INVITATION = "TILO_SHELL_JOIN_INVITATION_FILE"
@@ -39,13 +39,13 @@ JOINING_BOUND = 240.0
 
 
 def workspaces(session: Session) -> dict[str, dict]:
-    """The workspaces this session's desk holds, each by its durable id."""
+    """The workspaces this session's shell holds, each by its durable id."""
     tree = (session.state_dump() or {}).get("workspace_tree") or {}
     return {workspace["id"]: workspace for workspace in tree.get("workspaces") or []}
 
 
 def front_workspace(session: Session) -> dict | None:
-    """The workspace in front on this session's desk."""
+    """The workspace in front on this session's shell."""
     tree = (session.state_dump() or {}).get("workspace_tree") or {}
     held = workspaces(session)
     front = tree.get("active")
@@ -77,23 +77,23 @@ def members_of(workspace: dict) -> list[str]:
 
 
 def invitation(host: Session) -> str:
-    """The link the host makes into the workspace in front, through its own desk action."""
-    answer = host.invoke(DESK, f"{INVITATIONS}\u001fissue-invitation",
+    """The link the host makes into the workspace in front, through its own shell action."""
+    answer = host.invoke(SHELL, f"{INVITATIONS}\u001fissue-invitation",
                          {"role": "editor", "expires_in_seconds": 3600})
     issued = (answer.get("receipt") or {}).get("update", {}).get("output", {}).get("value") or {}
     link = issued.get("link")
     if not link:
-        raise Failed(f"the desk made no invitation: {json.dumps(answer)[:1500]}")
+        raise Failed(f"the shell made no invitation: {json.dumps(answer)[:1500]}")
     return link
 
 
 def stand_in(session: Session, workspace: str) -> None:
-    """Put the desk in `workspace`, as a person switching to the workspace does, and wait for it: a
+    """Put the shell in `workspace`, as a person switching to the workspace does, and wait for it: a
     session says where its person is only in the workspace it is in front of."""
     front = front_workspace(session)
     if front is None or front["id"] != workspace:
-        session.invoke(DESK, f"{WORKSPACE_COMMANDS}\u001fswitch-workspace", {"workspace": workspace})
-    until(f"the desk on {session.tag} to stand in the workspace",
+        session.invoke(SHELL, f"{WORKSPACE_COMMANDS}\u001fswitch-workspace", {"workspace": workspace})
+    until(f"the shell on {session.tag} to stand in the workspace",
           lambda: (now["id"] if (now := front_workspace(session)) and now["id"] == workspace
                    else None), 60, 0.25)
 
@@ -124,7 +124,7 @@ def joined(
     `out` is the run directory: each session's state, its log and the invitation go under it.
     `tapps` builds what both sessions install besides `apps`, from the host's prepared state, so an
     app that is not the tree's own signed package is installed by both. What is yielded is the two
-    sessions, the workspace's row from the host's desk, and the link the peer came in by; both
+    sessions, the workspace's row from the host's shell, and the link the peer came in by; both
     sessions are stopped on the way out. `names` are the host's and the peer's profile names, as
     each person's own card keeps the name they gave; without them each goes by their account's.
     """
@@ -147,7 +147,7 @@ def joined(
         host.start(apps=apps, fresh=True, out=out, tag="host", tapps=installed)
         workspace = front_workspace(host)
         if workspace is None:
-            raise Failed("the host's desk holds no workspace to invite into")
+            raise Failed("the host's shell holds no workspace to invite into")
         link = invitation(host)
         invitation_path = out / "invitation.txt"
         invitation_path.write_text(link)

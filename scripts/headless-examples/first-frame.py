@@ -2,7 +2,7 @@
 """Chat, Terminal, Settings and Notes show their content soon after they are
 opened.
 
-An app's open is one chain: the desk asks for it, the session spawns the
+An app's open is one chain: the shell asks for it, the session spawns the
 launcher, the launcher starts the app in its sandbox, the app commits its
 first window buffer, and the compositor's first frame showing that buffer
 reaches a display. A person sees nothing until the last step. This proof
@@ -155,7 +155,7 @@ def main() -> int:
         # Each round opens the apps in a turned order, so every app is in turn the session's
         # first open, which also waits for what the session readies for its first app.
         order = APPS[round_ % len(APPS):] + APPS[:round_ % len(APPS)]
-        # A state that has run before brings back the desk it left, apps and all: this measures
+        # A state that has run before brings back the shell it left, apps and all: this measures
         # the open of an app that is not open yet, so each round gets its own copy of the
         # prepared state and leaves it behind.
         state = prepared.with_name(prepared.name + "-run")
@@ -166,7 +166,7 @@ def main() -> int:
                       tag="first-frame", env={"TILO_APP_STDERR_DIR": str(state / "app-diag")})
         try:
             open_at_start = [row.get("app_id") for row in session.windows()]
-            check("the desk starts with no window open", not open_at_start, str(open_at_start))
+            check("the shell starts with no window open", not open_at_start, str(open_at_start))
             for index, app in enumerate(order):
                 took = one_open(session, app, index == 0)
                 if took is not None:

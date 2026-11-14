@@ -323,7 +323,7 @@ mod tests {
                 kind: SourceKind::Output,
                 id: "DP-1".into(),
                 app_id: None,
-                label: "Desk".into(),
+                label: "Tower".into(),
             }],
             cursor_mode: cursor_mode::EMBEDDED,
             devices: 0,

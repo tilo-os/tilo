@@ -25,7 +25,7 @@ printed and who ran it. History keeps it as that person's or agent's run.
               reads the other's files;
   --gui       a Linux GUI app in the workspace's VM: the agent opens the
               guest's X11 terminal (`linux#open`, xterm), a person invited
-              into the workspace sees its window appear on their desk in
+              into the workspace sees its window appear on their shell in
               their own browser and types a command into it, and the file
               the command wrote is read back from the VM; the app runs as
               the tenant, never as Browser's account, and what it costs in
@@ -130,14 +130,14 @@ ISOLATION_COMMAND = (
 # by its desktop file, so the window comes through Xwayland and the typing
 # into it is a command whose effect is a file.
 GUI_APP = "xterm"
-# The window's name on the person's desk: its title, which xterm starts as
+# The window's name on the person's shell: its title, which xterm starts as
 # its own name and the tenant's shell sets to `user@host:dir`.
 GUI_WINDOW = r"xterm|tilo@"
 # What the person types into its window: a command that writes a file, with
 # the guest's clock in milliseconds when it ran, so the file says the keys
 # reached the app and when.
-GUI_FILE = "typed-on-the-desk.txt"
-GUI_TYPED = f"echo typed-on-the-desk $(date +%s%3N) > {GUI_FILE}"
+GUI_FILE = "typed-on-the-shell.txt"
+GUI_TYPED = f"echo typed-on-the-shell $(date +%s%3N) > {GUI_FILE}"
 # What the VM holds and runs, before and after the app opens: its memory in
 # use, and the apps session's processes with the account each runs as.
 GUI_MEMORY_COMMAND = (
@@ -225,7 +225,7 @@ async def asked(one: Person, call: object, answer: str = "allow", within: int = 
 
     A Terminal run reaches outside the workspace's records, so the host puts
     it to the person and the call waits: they answer beside it, as a person at
-    their desk would."""
+    their shell would."""
     started = one.begin(answer, within)
     result = await call
     questions = await one.settle(started, within)
@@ -634,9 +634,9 @@ async def vm_memory(ows: object, one: Person, what: str) -> dict[str, object]:
     return {"used_mib": (used or 0) // 1024, "rss_kib": rss}
 
 
-def type_on_the_desk(link: str) -> dict[str, object]:
+def type_on_the_shell(link: str) -> dict[str, object]:
     """A person invited into the workspace, in their own browser: they follow
-    the link, find the Linux app's window on their desk and type into it."""
+    the link, find the Linux app's window on their shell and type into it."""
     check(SITE and SITE_RELAY, "the check names the site and the relay a person enters through")
     out = Path(OUT) / "gui-person"
     ran = subprocess.run(
@@ -647,14 +647,14 @@ def type_on_the_desk(link: str) -> dict[str, object]:
     sys.stderr.write(ran.stderr[-4000:])
     check(
         ran.returncode == 0,
-        f"the person saw the window on their desk and typed into it (see {out}: "
+        f"the person saw the window on their shell and typed into it (see {out}: "
         f"{ran.stderr.strip().splitlines()[-1] if ran.stderr.strip() else ran.returncode})",
     )
     return json.loads(ran.stdout.strip().splitlines()[-1])
 
 
 async def gui() -> dict[str, object]:
-    """A Linux GUI app in the workspace's VM, on a person's desk."""
+    """A Linux GUI app in the workspace's VM, on a person's shell."""
     kept = await state()
     workspace = str(kept["workspace"])
     person_client = client(SERVER_KEY)
@@ -696,24 +696,24 @@ async def gui() -> dict[str, object]:
             "memory_added_mib": int(after["used_mib"]) - int(before["used_mib"]),
         }
         write_json("gui.json", report)
-        say("a person is invited into the workspace, to see it on their desk")
+        say("a person is invited into the workspace, to see it on their shell")
         invitation = await ows.members.invite(role="editor", email="gui-person@example.invalid")
         began = time.perf_counter()
-        person_said = await asyncio.to_thread(type_on_the_desk, invitation.link)
+        person_said = await asyncio.to_thread(type_on_the_shell, invitation.link)
         window = person_said.get("window") or {}
-        check(window.get("name"), f"the window appeared on the person's desk ({window})")
-        say("on the desk", f"{window.get('name')!r} after {window.get('appearedMs')} ms, typed in {window.get('typedMs')} ms")
+        check(window.get("name"), f"the window appeared on the person's shell ({window})")
+        say("on the shell", f"{window.get('name')!r} after {window.get('appearedMs')} ms, typed in {window.get('typedMs')} ms")
         # The keys reached the app: the command it ran wrote its file.
         written = ""
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             answer, _ = await asked(one, outcome(ows.do("terminal#run", command=f"cat {GUI_FILE}")))
             written = str((answer or {}).get("output") or "")
-            if "typed-on-the-desk" in written:
+            if "typed-on-the-shell" in written:
                 break
             await asyncio.sleep(1)
         check(
-            "typed-on-the-desk" in written,
+            "typed-on-the-shell" in written,
             f"what the person typed into the window ran in the VM and wrote {GUI_FILE} ({written.strip()[:200]!r})",
         )
         ran_ms = next((int(word) for word in written.split() if word.isdigit()), None)
@@ -724,7 +724,7 @@ async def gui() -> dict[str, object]:
         say("the typing took effect", f"{written.strip()!r}, the Enter key ran it {keys_ms} ms after the first key went")
         report.update({
             "window": window,
-            "desk_seconds": round(time.perf_counter() - began, 2),
+            "shell_seconds": round(time.perf_counter() - began, 2),
             "written": written.strip(),
             "keys_to_app_ms": keys_ms,
         })

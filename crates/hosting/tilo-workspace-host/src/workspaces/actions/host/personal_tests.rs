@@ -76,7 +76,7 @@ fn key_of(root: &SigningKey, label: &str, capabilities: DeviceCapabilities) -> D
     cert
 }
 
-const DESK: &str = "11111111-1111-4111-8111-111111111111";
+const SHELL: &str = "11111111-1111-4111-8111-111111111111";
 const LAPTOP: &str = "22222222-2222-4222-8222-222222222222";
 
 #[tokio::test]
@@ -122,7 +122,7 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
     let pinned = key_of(
         &root,
         "one workspace",
-        DeviceCapabilities::agent_grant(AgentScope::parse(DESK).unwrap()),
+        DeviceCapabilities::agent_grant(AgentScope::parse(SHELL).unwrap()),
     );
 
     // Nothing kept yet: a key reads only the workspaces this host keeps.
@@ -151,7 +151,7 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
 
     // The desktop keeps the person's list: its own workspaces, hosted on it.
     let kept = json!({"workspaces": [
-        {"workspace": DESK, "name": "Desk", "host": {"name": "studio", "hint": "00"}},
+        {"workspace": SHELL, "name": "Shell", "host": {"name": "studio", "hint": "00"}},
         {"workspace": LAPTOP, "name": "Laptop"},
         {"workspace": here, "name": "On the relay"},
     ]});
@@ -175,7 +175,7 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
     assert_eq!(
         names,
         [
-            (DESK, Some("studio")),
+            (SHELL, Some("studio")),
             (LAPTOP, None),
             (here.as_str(), Some("tilo.test")),
         ],
@@ -190,7 +190,7 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
             .iter()
             .map(|one| one.workspace.as_str())
             .collect::<Vec<_>>(),
-        [DESK]
+        [SHELL]
     );
 
     // A grant keeps nothing: the list is what the person's own devices hold.

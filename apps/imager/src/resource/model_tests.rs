@@ -54,7 +54,7 @@ tilo_test_env::scenario! {
             profile.keyboard.replace("nl"),
             profile.filesystem.set(Filesystem::Xfs),
             profile.wifi_ssid.replace("lab"),
-            profile.device_label.replace("Lab desk"),
+            profile.device_label.replace("Lab tower"),
             profile.enroll_local_identity.set(true),
         ] {
             edit(&mut imager, &change).unwrap();
@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
         assert_eq!(p.keyboard, "nl");
         assert_eq!(p.filesystem, Filesystem::Xfs);
         assert_eq!(p.wifi_ssid, "lab");
-        assert_eq!(p.device_label, "Lab desk");
+        assert_eq!(p.device_label, "Lab tower");
         assert!(p.enroll_local_identity);
         let mut local = imager.state().unwrap();
         local.profile.user.password = "hunter22".into();

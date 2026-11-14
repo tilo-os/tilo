@@ -2129,7 +2129,7 @@ name = "e2e-ws-branch"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 # A workspace set up once on one booted tilo box (a note, files, a Terminal environment with a
-# tool in it, a window on its desk) and branched twice through `workspace.branch` and once
+# tool in it, a window on its shell) and branched twice through `workspace.branch` and once
 # through `tilo workspace branch`: each branch starts with all of it and only its owner, no
 # chat, and from then on changes apart from its source and its sibling, also after the session
 # restarts; an agent in a branch's environment acts there alone
@@ -5581,7 +5581,7 @@ requires = ["arch=any"]
 on = ["dispatch"]
 
 # The Lounge, built and gated here: the programs, the image and the image used by people — two
-# headless browsers joining it through the web entry, chatting, sharing a desk and seeing each
+# headless browsers joining it through the web entry, chatting, sharing a shell and seeing each
 # other present, then one of them opening a shared document's link. One check per step, so a
 # change leaves the earlier ones cached, and the gate runs on any commit and branch instead of
 # only in the publication on main. Image-lounge-context publishes the app surfaces from the
@@ -5724,7 +5724,7 @@ requires = ["arch=x86_64"]
 isolation = "nested"
 # What it found, not what it ran: each flow's pages, reports and consoles, and each of the stack's
 # own logs; the site it served is the web entry's laid-out context again.
-outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/boot/**", "/target/e2e/people-call/**", "/target/e2e/people-desk/**", "/target/e2e/people-menus/**", "/target/e2e/people-invite/**", "/target/e2e/share-link/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/passkey/**", "/target/e2e/wait-list/**", "/target/e2e/onboarding/**", "/target/e2e/restart/**"]
+outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/boot/**", "/target/e2e/people-call/**", "/target/e2e/people-shell/**", "/target/e2e/people-menus/**", "/target/e2e/people-invite/**", "/target/e2e/share-link/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/passkey/**", "/target/e2e/wait-list/**", "/target/e2e/onboarding/**", "/target/e2e/restart/**"]
 # What a failure keeps of why: every service's log, which says which of them did not answer.
 evidence = ["/target/e2e/state/logs/**"]
 timeout_secs = 1200
@@ -5760,7 +5760,7 @@ timeout_secs = 600
 # One returning person reloading their workspace page twenty times in one browser, on the e2e
 # stack: per reload, how long the old page held the navigation and what its pagehide listeners
 # took, and the count of reloads that crashed the tab or never came back; then a second tab
-# beside the first, both editing the workspace's desk, and the first reloaded beside it, each tab
+# beside the first, both editing the workspace's shell, and the first reloaded beside it, each tab
 # one device of its own. The reloads alone take most of a flow's usual 480 s on the stack, so the
 # flow has the check's time. Run when named, to chase a reload that kills its tab.
 [[check]]
@@ -5868,7 +5868,7 @@ default = false
 # workspace runs a command through the `tilo` command; the Linux session runs as the tenant, not as
 # the Browser's account, and neither reads the other's files; and a Linux GUI app opens in the same
 # VM: the agent opens the guest's X11 terminal, a person invited into the workspace sees its window on
-# their desk in their own browser and types a command into it, and the file it wrote is read back,
+# their shell in their own browser and types a command into it, and the file it wrote is read back,
 # with the app running as the tenant and its memory measured.
 # What it found stays in /target/tilo-sh-local-vm.
 #

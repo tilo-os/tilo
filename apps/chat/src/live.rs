@@ -2,7 +2,7 @@
 //! in view while they work in another workspace, and the controls they press
 //! there.
 //!
-//! The shell decides whether the call's card stands on the desk: while Chat's
+//! The shell decides whether the call's card stands on the background: while Chat's
 //! own window is on screen the call is drawn there, and the card waits. What
 //! this module publishes is the reading the pill and the card's fallback show,
 //! and the activity id the card's window is presented under.

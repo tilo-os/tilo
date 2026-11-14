@@ -582,7 +582,7 @@ impl Registry {
     /// The offered view `named` (its id or name, optionally written `package:view`) that draws
     /// a resource of `ty`, when `ty` holds the session's layout (`origin:
     /// session.layout`) and the view is declared by a package other than the one holding
-    /// the type: a *desk style* (`shell.md` §6). A style is a view of the layout, and the
+    /// the type: a *style* (`shell.md` §6). A style is a view of the layout, and the
     /// layout's type belongs to `so.tilo.shell`, so a style in any installed package — the
     /// shipped four, a person's own, an agent's — is found here by the type its view takes,
     /// never by a list in code. `None` for a type that is not the layout's, or a name that
@@ -641,7 +641,7 @@ impl Registry {
     }
 
     /// Whether `ty` (a type id or an `app#Type`) holds the session's layout, the type a
-    /// desk style is a view of (`shell.md` §6).
+    /// style is a view of (`shell.md` §6).
     fn layout_type(&self, ty: &str) -> bool {
         let id = match crate::foreign::foreign_type(ty) {
             Some(_) => return true,

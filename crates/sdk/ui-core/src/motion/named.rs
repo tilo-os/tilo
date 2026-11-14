@@ -816,7 +816,7 @@ impl WindowMotion {
 // 9b. Ambient chrome
 // ---------------------------------------------------------------------------
 
-/// Chrome that comes back on its own and goes when it would be in the way: shell widgets, the Super
+/// Chrome that comes back on its own and goes when it would be in the way: widgets, the Super
 /// surface's time card.
 pub struct Ambient;
 

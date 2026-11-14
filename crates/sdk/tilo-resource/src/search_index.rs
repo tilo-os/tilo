@@ -63,7 +63,7 @@ pub struct IndexAction {
     pub action: String,
 }
 
-/// What kind of thing an entry is, where the app keeps something the desk's
+/// What kind of thing an entry is, where the app keeps something the shell's
 /// generic rows would read poorly: each is its own section, drawn as what it
 /// is rather than as a record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -117,7 +117,7 @@ pub struct IndexEntry {
     /// The result group the app lists the entry under ("Passwords").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
-    /// What kind of thing it is, when the app keeps something the desk's
+    /// What kind of thing it is, when the app keeps something the shell's
     /// generic rows would read poorly (an agent, a conversation, a message).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<IndexKind>,

@@ -811,7 +811,7 @@ test('an open combobox keeps focus and names its highlighted option as its activ
   bridge.update(combobox(false,2));
   assert.equal(box.getAttribute('aria-activedescendant'),null,'closing the list clears it');
 });
-// A chat-like tree as the runtime sends it whole: a shell widget holding an
+// A chat-like tree as the runtime sends it whole: a widget holding an
 // app widget whose semantics are a composer and a list of messages.
 const chatTree=(draft,messages)=>({viewport:[100,100],keyboard_focus_owner:'App[0]',root:{path:'Shell[0]',widget:'Shell',rect:[0,0,100,100],semantics:null,children:[
   {path:'App[0]',widget:'App',rect:[0,0,100,100],semantics:{role:'Group',name:'Chat',children:[

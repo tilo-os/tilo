@@ -343,7 +343,7 @@ tilo_test_env::scenario! {
         assert_eq!(windows(&followed), vec![1, 2, 3]);
     }
 
-    phase a_member_who_joins_a_shared_desk_opens_a_window_on_top_of_its_records;
+    phase a_member_who_joins_a_shared_shell_opens_a_window_on_top_of_its_records;
     // Two people open one shared layout: Ben joins, takes the records the layout
     // shows for its windows, opens one of his own, and writes it back. The
     // window Ada opened arrives with its record, and both can keep working.
@@ -375,7 +375,7 @@ tilo_test_env::scenario! {
         assert_eq!(windows(&guard), vec![1, 3]);
     }
 
-    phase a_member_who_joins_without_the_desks_records_is_refused;
+    phase a_member_who_joins_without_the_shells_records_is_refused;
     // A page that leaves out a window's record binds it to another one (none):
     // refused, as before.
     {
@@ -395,7 +395,7 @@ tilo_test_env::scenario! {
         assert_eq!(windows(&guard), vec![1], "the refused write left nothing");
     }
 
-    phase a_desk_holding_the_primarys_custody_key_reads_and_heals_to_its_route;
+    phase a_device_holding_the_primarys_custody_key_reads_and_heals_to_its_route;
     // A layout written before pages named records by their route holds the package
     // primary's custody key for it. It reads as the primary's route, so the page
     // that writes the layout next restates the same record instead of rebinding it.

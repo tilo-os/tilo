@@ -327,7 +327,7 @@ impl Widget for Still {
 }
 
 /// An animation frame that changed no pixel still takes its display frame: the next is due a
-/// display frame later, not at once, so a still animation does not turn the desk's loop as fast as
+/// display frame later, not at once, so a still animation does not turn the shell's loop as fast as
 /// it can and slow every app opening beside it.
 #[test]
 fn an_animation_frame_that_changes_nothing_waits_for_the_next_display_frame() {

@@ -10,7 +10,7 @@
 # workspace's material; every later line is one app to start (a desktop file
 # of this guest's, `tilo_actions::remote::linux_apps::AppLaunch`). Each app's
 # windows are shared with the workspace's members, who see and drive them on
-# their own desks.
+# their own shells.
 #
 # It is the tenant's: the apps are the tenant's own programs, run with the
 # tenant's files, never as Browser's account and never with its profile.

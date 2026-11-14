@@ -937,7 +937,7 @@ fn main() {
     if let Some(level) = asked.zoom {
         engine.send(WebViewCommand::SetZoomLevel(level));
     }
-    // A desk asks for the window's page: the session tells the app.
+    // A shell asks for the window's page: the session tells the app.
     if !asked.watched_before_load {
         counted.watched();
         paint::set_share_watched(true);

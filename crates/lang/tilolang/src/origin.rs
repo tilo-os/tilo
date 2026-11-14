@@ -11,7 +11,7 @@
 //! service accepts it. Code writing any other field of the kind is refused (E113), except in a
 //! scenario, whose seed data stands in for the service.
 //!
-//! Some kinds are the origin's to derive rather than to save: the time, the desk, who is here, the
+//! Some kinds are the origin's to derive rather than to save: the time, the shell, who is here, the
 //! workspaces on the device. They live in the store's unsaved layer, so a change reaches the views at
 //! once and leaves no change behind to be committed, synced or replayed.
 
@@ -190,7 +190,7 @@ pub const KINDS: &[OriginKind] = &[
     },
     OriginKind {
         name: "session.layout",
-        doc: "The person's own layout: what is open where on their desk (shell.md §2), as \
+        doc: "The person's own layout: what is open where on their shell (shell.md §2), as \
               the session keeps it in their own record. A shell's views read it; every change \
               is one of the arranging actions on `shell:layout`, so nothing writes it \
               directly.",
@@ -209,12 +209,12 @@ pub const KINDS: &[OriginKind] = &[
             field(
                 "workspaces",
                 "Collection<session.layout_workspace>",
-                "The workspaces the desk shows.",
+                "The workspaces the shell shows.",
             ),
             field(
                 "rows",
                 "Collection<session.layout_row>",
-                "The desk's rows, each a strip across a workspace.",
+                "The shell's rows, each a strip across a workspace.",
             ),
             field(
                 "strips",
@@ -240,7 +240,7 @@ pub const KINDS: &[OriginKind] = &[
     },
     OriginKind {
         name: "session.layout_workspace",
-        doc: "A workspace the person's desk shows.",
+        doc: "A workspace the person's shell shows.",
         derived: true,
         fields: &[
             field("key", "Text", "Its id, as the record names it."),
@@ -248,7 +248,7 @@ pub const KINDS: &[OriginKind] = &[
             field(
                 "current",
                 "Bool",
-                "Whether it is the workspace in front, which the desk shows.",
+                "Whether it is the workspace in front, which the shell shows.",
             ),
         ],
     },
@@ -263,7 +263,7 @@ pub const KINDS: &[OriginKind] = &[
     },
     OriginKind {
         name: "session.layout_row",
-        doc: "A row of the desk: a strip across a workspace's width, holding columns.",
+        doc: "A row of the shell: a strip across a workspace's width, holding columns.",
         derived: true,
         fields: &[
             field("key", "Text", "Its id, as the record names it."),

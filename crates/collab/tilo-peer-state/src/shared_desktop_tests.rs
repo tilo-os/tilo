@@ -2,7 +2,7 @@
 //! to what someone else made: closing, moving or renaming a window another
 //! person opened needs the workspace's moderation grant. The same write is what
 //! the workspace's other devices then draw: a page one device opens arrives over
-//! the peer replication and stands on another device's desk, with what the first
+//! the peer replication and stands on another device's shell, with what the first
 //! device changed about it afterwards.
 use std::collections::HashMap;
 
@@ -283,7 +283,7 @@ fn desktop_with_page(owner: &str, person: &str, title: &str, record: &str) -> Sh
     desktop
 }
 
-/// A desk that presents nothing: no window here is laid out or shown, so this
+/// A shell that presents nothing: no window here is laid out or shown, so this
 /// source is never asked for a tile, and it answers the tab's own name when it
 /// is, as a host with no app to open would.
 struct Notices;
@@ -297,7 +297,7 @@ impl TileSource for Notices {
     }
 }
 
-/// One window as a desk draws it: the strip it stands in, its tab, the name on
+/// One window as a shell draws it: the strip it stands in, its tab, the name on
 /// it, the app it runs, and the record it is a page of when it is one.
 #[derive(Debug, PartialEq, Eq)]
 struct Drawn {
@@ -308,17 +308,17 @@ struct Drawn {
     record: Option<String>,
 }
 
-/// The windows `desk` draws once it is given the desktop `peer` replicated, the
-/// way a mount gives its desk one that arrived — through the surface's own
+/// The windows `shell` draws once it is given the desktop `peer` replicated, the
+/// way a mount gives its shell one that arrived — through the surface's own
 /// reconcile of the tree, with the record each window is a page of beside it.
-fn drawn(desk: &DesktopHandle, peer: &StatePeer) -> Vec<Drawn> {
+fn drawn(shell: &DesktopHandle, peer: &StatePeer) -> Vec<Drawn> {
     let doc = AutoCommit::load(&peer.document(DESKTOP_APP, DESKTOP_RECORD).unwrap()).unwrap();
     let Some(shared) = shared_record::read(&doc, None) else {
         return Vec::new();
     };
     let records: HashMap<u64, String> = shared.records.into_iter().collect();
-    desk.replace_shared_tree(shared.tree, &[]);
-    desk.read(|tree| {
+    shell.replace_shared_tree(shared.tree, &[]);
+    shell.read(|tree| {
         tree.workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)
@@ -344,17 +344,17 @@ fn drawn(desk: &DesktopHandle, peer: &StatePeer) -> Vec<Drawn> {
 
 /// A second device of the workspace draws the page the first one opened: the
 /// workspace's desktop record the first device publishes reaches it through the
-/// replication, and its desk shows that window. When the first device renames
-/// the page, the window on the desk carries the new name.
+/// replication, and its shell shows that window. When the first device renames
+/// the page, the window on the shell carries the new name.
 ///
-/// The desk is the one that stands for the whole time, as a session's does: it
+/// The shell is the one that stands for the whole time, as a session's does: it
 /// is the arriving desktop that gives it the page, and the next arrival that
 /// changes it.
 #[test]
-fn another_devices_page_reaches_the_desk_and_its_rename_follows() {
+fn another_devices_page_reaches_the_shell_and_its_rename_follows() {
     let (mut peer, owner, key, guest) = workspace_with(Role::Editor);
     let person = hex::encode(guest.user_public_key);
-    let (_surface, desk) = DesktopSurface::new(Layout::default(), 7, Box::new(Notices));
+    let (_surface, shell) = DesktopSurface::new(Layout::default(), 7, Box::new(Notices));
 
     let opened = write(
         &peer,
@@ -364,7 +364,7 @@ fn another_devices_page_reaches_the_desk_and_its_rename_follows() {
     );
     receive(&mut peer, &guest, opened).expect("an editor opens a page");
     assert_eq!(
-        drawn(&desk, &peer),
+        drawn(&shell, &peer),
         [
             Drawn {
                 strip: 10,
@@ -391,7 +391,7 @@ fn another_devices_page_reaches_the_desk_and_its_rename_follows() {
     );
     receive(&mut peer, &guest, renamed).expect("an editor renames their own page");
     assert_eq!(
-        drawn(&desk, &peer),
+        drawn(&shell, &peer),
         [
             Drawn {
                 strip: 10,
@@ -408,6 +408,6 @@ fn another_devices_page_reaches_the_desk_and_its_rename_follows() {
                 record: Some("draft".into()),
             },
         ],
-        "the desk shows the page under its new name, on the record it was opened on"
+        "the shell shows the page under its new name, on the record it was opened on"
     );
 }

@@ -106,7 +106,7 @@ pub fn own_cgroup() -> Option<PathBuf> {
     cgroup_of_pid(std::process::id())
 }
 
-/// Put the cgroup this process runs in at [`Tier::Session`]: the compositor and the desk placing,
+/// Put the cgroup this process runs in at [`Tier::Session`]: the compositor and the shell placing,
 /// drawing and answering a window are what a person waits on when they open something, so they answer
 /// before every app.
 pub fn claim_session_weight() -> Result<(), String> {

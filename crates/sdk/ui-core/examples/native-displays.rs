@@ -39,13 +39,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ArrangedDisplay {
                 movement_group: None,
                 shared: Some(SharedDisplayState {
-                    device: "fixture-shell".into(),
+                    device: "fixture-tower".into(),
                     output: "monitor".into(),
                     online: true,
                     reachable: true,
                 }),
-                connector: "fixture-shell/eDP-1".into(),
-                label: "Shell · eDP-1".into(),
+                connector: "fixture-tower/eDP-1".into(),
+                label: "Tower · eDP-1".into(),
                 number: 2,
                 placement: Placement::new(960, 0, 1280, 720),
                 primary: false,

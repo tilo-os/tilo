@@ -240,7 +240,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// "Show this window" (`action`, answered `value`) shows it to the person: its record opens on
-    /// their desk when no window there shows it, and the window comes into view where the agent
+    /// their shell when no window there shows it, and the window comes into view where the agent
     /// works ([`Self::note_shown`]).
     pub(super) fn note_activated(&self, action: &str, value: &Value, resolved: &super::Resolved) {
         let failed = value.pointer("/update/state").and_then(Value::as_str) == Some("failed");

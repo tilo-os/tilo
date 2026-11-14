@@ -254,7 +254,7 @@ pub struct ToolbarLocation {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub view_only: bool,
     /// The label names a part of the app (its list of issues, its presets) rather than the
-    /// document or item the person opened: the bar shows it, and the desk goes on naming the window
+    /// document or item the person opened: the bar shows it, and the shell goes on naming the window
     /// by its app, since a person looks for "Tasks", not "Issues".
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub section: bool,

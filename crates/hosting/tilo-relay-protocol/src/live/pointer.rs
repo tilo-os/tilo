@@ -9,7 +9,7 @@
 //! window it is over, or, over the empty desktop, a point beside the nearest
 //! window. Strips are no common reference: where a workspace's layout is personal,
 //! every member's strips are their own, with ids of their own. Only on a
-//! desk showing no window at all does a pointer fall back to the strip's own
+//! shell showing no window at all does a pointer fall back to the strip's own
 //! coordinates, which a member showing the same strip places. Each viewer
 //! maps a pointer back through [`PointerLayout::place`], and does not draw
 //! what it does not show.
@@ -336,8 +336,8 @@ mod tests {
             assert_eq!(PointerLayout::default().anchor([1.0, 1.0]), None);
         }
 
-        phase an_empty_desk_points_in_its_strip;
-        // A desk showing no window has only its strip to say where a pointer
+        phase an_empty_shell_points_in_its_strip;
+        // A shell showing no window has only its strip to say where a pointer
         // is: a member showing that strip places it, however scrolled; one
         // whose strips are their own does not.
         {

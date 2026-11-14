@@ -412,7 +412,7 @@ fn lofi(channel: &Channel) -> Video {
         live: true,
         duration: 7200,
         category: "Music".into(),
-        description: "A 24/7 livestream of mellow beats. No sponsor, no intro, no outro — just the girl, her desk, and the rain.".into(),
+        description: "A 24/7 livestream of mellow beats. No sponsor, no intro, no outro — just the girl, her window, and the rain.".into(),
         likes: 980_000,
         comments: vec![
             comment(

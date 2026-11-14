@@ -3891,7 +3891,7 @@ mod tests {
         };
         laptop.speakers.groups.push(SpeakerGroup {
             id: SpeakerGroupId([5; 16]),
-            name: "Desk".into(),
+            name: "Living room".into(),
             leader: id("tablet"),
             members: vec![
                 member("laptop", StereoSide::Left),

@@ -102,7 +102,7 @@ pub fn run(_: &[String]) {
     renderer.render_png(&scene, c.surfaces.base, out);
 }
 
-/// A window standing on the desk, so each box is seen where it opens.
+/// A window standing on the shell, so each box is seen where it opens.
 fn shadowed(scene: &mut Scene, theme: &Theme, rect: Rect) {
     scene.fill(
         Fill::NonZero,

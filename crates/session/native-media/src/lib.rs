@@ -1,4 +1,4 @@
-//! Voice calls on the native desk: the channel an app's call is in, who is
+//! Voice calls on the native shell: the channel an app's call is in, who is
 //! in each channel of the record for it to show, and this device's own call,
 //! which the session says in its presence so everyone in the room reads where
 //! this person is.

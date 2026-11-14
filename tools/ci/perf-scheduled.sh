@@ -78,7 +78,7 @@ case $group in
     # no app, its sandboxes needing a /proc of their own, so such a step would
     # measure nothing; the agent's own task pipeline is the `agent-native`
     # group's. tilo-runtime's dev-overrides carry the throwaway identity the
-    # run's session mints for the desk it opens.
+    # run's session mints for the shell it opens.
     cargo build --locked --release -p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime-mcp \
       --features dev-overrides
     test -r "$VK_DRIVER_FILES"
@@ -138,13 +138,13 @@ case $group in
     exit "$status"
     ;;
   render)
-    # What a person notices: how long the desk takes to draw its first frame,
+    # What a person notices: how long the shell takes to draw its first frame,
     # what a frame costs while it animates and while a document is typed
     # into, and what frames offered at rest cost. session_perf measures the
     # shared desktop surface on the frame path both hosts draw with, per
     # profile: `arriving` is the native session's chrome, `apps` the page's
     # chrome and app paint, `activities` the floating layer's cards over a
-    # desk. Its budgets are [devices.x86.session.*] in
+    # shell. Its budgets are [devices.x86.session.*] in
     # tools/perf/kpi-budgets.toml, so a phase over budget fails this check.
     # Around it: the toolkit's own 4K redraw (ui-perf), the framework's
     # scaling with item counts, and a document's keystroke-to-frame latency.

@@ -17,7 +17,7 @@
 //! Editor at most, and as an administrator only where its person may make
 //! administrators; an agent's grant and a key for one workspace do not. A
 //! person names themself, from any key of theirs, in a workspace they are a
-//! member of. The link is the one a person's desk hands over: the invitation
+//! member of. The link is the one a person's shell hands over: the invitation
 //! sealed onto the site's shelf (`https://<site>/i/<handle>#<key>`), or, where
 //! the site keeps nothing, the invitation's own text after the workspace's
 //! route. Following it opens the site's sign-in, with a passkey or by
@@ -233,7 +233,7 @@ impl Session {
 impl crate::Server {
     /// The link that brings whoever follows it into `workspace` with
     /// `invitation` (its signed bytes), lasting until `expires_at_ns`: sealed
-    /// onto the site's shelf, as a person's desk hands one over, or the
+    /// onto the site's shelf, as a person's shell hands one over, or the
     /// invitation's own text after the workspace's route where the site
     /// keeps nothing. Either opens the site's sign-in and joins.
     pub(crate) async fn invitation_link(

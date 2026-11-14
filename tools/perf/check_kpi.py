@@ -40,7 +40,7 @@ KINDS = ("session", "startup_marks", "web_startup")
 
 #: The profiles a session measurement names: the native session draws chrome
 #: over its windows, the page draws chrome and its apps, and the floating layer
-#: draws activity cards over a desk.
+#: draws activity cards over a shell.
 PROFILES = ("arriving", "apps", "activities")
 
 

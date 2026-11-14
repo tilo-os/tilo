@@ -990,7 +990,7 @@ mod tests {
     /// A question over the shell holds the keys: no chord of the sessiontop's opens anything beneath
     /// it, and once it is answered the chords act again.
     #[test]
-    fn a_question_over_the_desk_holds_the_desktop_chords() {
+    fn a_question_over_the_shell_holds_the_desktop_chords() {
         let question = tilo_sheets::Presentation::default();
         let mut keys = NativeKeys::new(
             SessionKeys::new(

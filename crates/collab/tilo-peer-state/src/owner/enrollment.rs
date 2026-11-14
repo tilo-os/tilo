@@ -129,7 +129,7 @@ pub(crate) fn migrate_intents(storage: &mut NativeAuthorityStorage) -> Result<bo
 impl NativeWorkspaceOwner {
     /// Persist the signed Complete proof before it is sent, so a lost
     /// response is retried with the exact same proof. `local` is the
-    /// workspace on the host's desk the enrollment installs into, made for it.
+    /// workspace on the host's shell the enrollment installs into, made for it.
     pub fn prepare_enrollment_into(
         &self,
         intent: &VerifiedNativeEnrollmentIntent,
@@ -210,7 +210,7 @@ impl NativeWorkspaceOwner {
         }
         Ok(self.0.authority.read().pending.get(&workspace).cloned())
     }
-    /// The in-flight enrollment redeeming `invitation`, into no workspace on the host's desk.
+    /// The in-flight enrollment redeeming `invitation`, into no workspace on the host's shell.
     pub fn pending_enrollment_for_invitation(
         &self,
         invitation: &str,

@@ -11,16 +11,16 @@ use crate::Listed;
 use crate::store::Store;
 
 /// A workspace the caller already holds: its id, which leaves it out of what
-/// the sheet offers to join, and the key its desk knows it by and the name it
-/// shows, which a caller that keeps no desk says itself (`Hold` is read from
+/// the sheet offers to join, and the key its shell knows it by and the name it
+/// shows, which a caller that keeps no shell says itself (`Hold` is read from
 /// a page's `mountDesktop({directory})`).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct Held {
     /// The workspace's id, as a listing names it.
     pub workspace: String,
-    /// The key the caller's desk knows the workspace by.
+    /// The key the caller's shell knows the workspace by.
     pub key: String,
-    /// The name the caller's desk shows it under.
+    /// The name the caller's shell shows it under.
     pub name: String,
 }
 
@@ -31,7 +31,7 @@ impl Store {
         let now_ms = tilo_clock::unix_now_ms();
         // The workspaces the caller already holds are not ones to join: the
         // sheet offers what the sites list, and someone who holds a
-        // workspace reaches it from their own desk, not from here.
+        // workspace reaches it from their own shell, not from here.
         let held_by: BTreeSet<&str> = held
             .iter()
             .map(|workspace| workspace.workspace.as_str())
@@ -193,7 +193,7 @@ mod tests {
                 "a site listing the caller's own workspace does not offer it to join",
             ),
             (
-                "a_workspace_no_site_lists_is_left_to_the_callers_own_desk",
+                "a_workspace_no_site_lists_is_left_to_the_callers_own_shell",
                 Vec::new(),
                 vec![
                     Held {

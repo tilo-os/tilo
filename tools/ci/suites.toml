@@ -260,8 +260,8 @@ suites = [
 
 [[group]]
 name = "lounge-waits"
-# The page drivers' waits end on what the desk answers rather than on frames drawn; the
-# test drives them against a stand-in desk, so it needs no image and no browser.
+# The page drivers' waits end on what the shell answers rather than on frames drawn; the
+# test drives them against a stand-in shell, so it needs no image and no browser.
 inputs = ["os/containers/tilo-lounge/integration/"]
 suites = ["os/containers/tilo-lounge/integration/waits.test.mjs"]
 

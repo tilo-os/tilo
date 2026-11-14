@@ -890,14 +890,14 @@ async fn a_plane_whose_carrier_goes_away_dials_its_relay_again() {
     let since = std::time::Instant::now();
     while !heard(&a, Track::Presence)
         .iter()
-        .any(|object| object.body == b"desk=here" && object.sender == b_key)
+        .any(|object| object.body == b"shell=here" && object.sender == b_key)
     {
         assert!(
             since.elapsed() < Duration::from_secs(10),
             "the plane does not say on the carrier it dialled again, in {:?}",
             since.elapsed()
         );
-        b.publish(Track::Presence, sequence, b"desk=here").unwrap();
+        b.publish(Track::Presence, sequence, b"shell=here").unwrap();
         sequence = sequence.saturating_add(1);
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -1765,12 +1765,12 @@ async fn a_plane_that_dials_a_busy_relay_again_keeps_asking_until_it_is_carried(
     let mut sequence = 1;
     wait_until("the plane says on the carrier it dialled", || {
         plane
-            .publish(Track::Presence, sequence, b"desk=back")
+            .publish(Track::Presence, sequence, b"shell=back")
             .unwrap();
         sequence = sequence.saturating_add(1);
         heard(&planes[0], Track::Presence)
             .iter()
-            .any(|object| object.body == b"desk=back" && object.sender == stayed.key)
+            .any(|object| object.body == b"shell=back" && object.sender == stayed.key)
     });
 }
 

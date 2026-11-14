@@ -280,7 +280,7 @@ it let in are stopped.
   environment's workspace (above: the one its Terminal was opened in, as its
   record names it, read by `ush::workspace::environment_workspace`), never the
   one in front, and asking for another is refused. An environment of the
-  primary workspace, which the desk knows by no id, works in the workspace in
+  primary workspace, which the shell knows by no id, works in the workspace in
   front of the person when it opened. The session admits the workspace only
   if the person is one of its people.
 - **Who may use it.** Being reachable only inside the environment is what
@@ -298,7 +298,7 @@ it let in are stopped.
 - **An agent per connection.** Each connection the person admits is an agent
   of its own: the client's name, where it works from (the environment's record
   key, or `host`) and an instance number, as in `claude-code@dev#2`. Its
-  changes are attributed to that id, the desk lists it as `Claude Code in dev
+  changes are attributed to that id, the shell lists it as `Claude Code in dev
   #2`, and the person's Stop ends it alone. Instance numbers count from one in
   each session of the desktop.
 - **The Host case.** A program in the Host target, or any program of the login

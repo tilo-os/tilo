@@ -108,11 +108,11 @@ pub struct FrameSample {
     /// desktop that keeps animating while idle is attributed here.
     pub paint_animations: &'static str,
     /// The hosted surfaces' own frames before the submit: each surface the session hosts (the
-    /// shell's desk, its panels and sheets) laying its tree out and building its scene. Every
+    /// shell's own surface, its panels and sheets) laying its tree out and building its scene. Every
     /// frame a tick draws counts, the ones a catch-up draws included.
     pub hosts_us: u32,
     /// The session's share after the frame is out, besides the control socket: what assistive
-    /// technology reads of it, the desk and its views read back over it, and the session's
+    /// technology reads of it, the shell and its views read back over it, and the session's
     /// observations of what it published.
     pub after_us: u32,
 }

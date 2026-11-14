@@ -347,7 +347,7 @@ pub fn verify_invitation(text: &str, person: &Person) -> Result<Granted, String>
 /// Seal `invitation`, the signed bytes of one, under a fresh key and leave it
 /// on `site`'s shelf until `expires_at_ns`, naming `host`, the origin it
 /// admits into: the short link a person hands over
-/// (`https://<site>/i/<handle>#<key>`) and what takes it back. The desk's
+/// (`https://<site>/i/<handle>#<key>`) and what takes it back. The shell's
 /// sheet ([`crate::Store::shelve`]) and a door that invites for a person
 /// leave it the same way.
 ///

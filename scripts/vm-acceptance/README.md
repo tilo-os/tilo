@@ -139,19 +139,19 @@ in each environment's shell configured as Claude Code is, `{"command": "tilo-run
 ["--connect"]}`: `guest/mcp_agent.sh`, bash alone (the environment's runtime has no python),
 naming itself `claude-code`, sending what the harness appends to its inbox in the workspace's
 tree and keeping every line the server writes beside it. The person answers on the sheet by
-pressing its controls (`list-targets`, `click_named`), and stops an agent with the desk's
+pressing its controls (`list-targets`, `click_named`), and stops an agent with the shell's
 `stop-agent`. The checks: each environment names its workspace and environment, its `~` is
 its workspace's tree and the other's is unreadable (E01); both agents are asked about and
 admitted at once, with distinct ids naming their environments, the ids the door told them (E02);
 each one's tools work in its own workspace: it lists that workspace's apps, finds the note the
-person made there and not the other's, and the desk shows it no window of the other (E03); an
+person made there and not the other's, and the shell shows it no window of the other (E03); an
 environment's agent asking for the other workspace is refused before anyone is asked (E04);
 "Always allow" admits a second session there without the sheet, as the next instance (E05);
 Stop on one leaves the other working (E06); a program of the login outside the environments is
 refused on an environment's door (E07). E08 is an agent's own change, a note through
 `notes#new-note` taken in the run the door starts for its connection, landing in its workspace
 and not the other's. E09 is one that asks first, a file through `terminal#run`: its run puts the
-question to the person on the desk's sheet (Allow once, Always allow the agent, Deny), the harness
+question to the person on the shell's sheet (Allow once, Always allow the agent, Deny), the harness
 allows it once by its named control, and the file lands in the agent's own workspace's tree.
 
 ### A workspace branched (WB01-WB06, `e2e-ws-branch`)
@@ -165,11 +165,11 @@ e2e-ws-branch`, `t test e2e-ws-branch`; `--test hold` keeps a failed run's VM up
 The person makes a workspace, a note in it through Notes, a Terminal environment, and from its
 shell a question, a tool in `~/.local/bin` and a git checkout where the environment has git;
 a few hundred megabytes of data go into its tree beside them (WB01). They branch it twice
-through the desk's `workspace.branch` and once with `tilo workspace branch`; each branch is
-timed to its data in its own tree while a thread times the desk's answers, and an answer slower
-than `DESK_STALL_S` fails the branch as blocking the desk (WB02). Each branch holds the note, the
+through the shell's `workspace.branch` and once with `tilo workspace branch`; each branch is
+timed to its data in its own tree while a thread times the shell's answers, and an answer slower
+than `SHELL_STALL_S` fails the branch as blocking the shell (WB02). Each branch holds the note, the
 files, the environment (opened from Terminal there, the tool runs, the checkout reads, and
-`TILO_WORKSPACE`, `TILO_ENVIRONMENT` and `~` are the branch's own), the desk's windows; its owner
+`TILO_WORKSPACE`, `TILO_ENVIRONMENT` and `~` are the branch's own), the shell's windows; its owner
 is its only member and the source's chat stayed behind (WB03). An edit in the first branch (a
 note, a line and a file in its tree, its tool, a new environment) shows neither in the source nor
 the second branch, and one in the source not in the branches (WB04), also after the session

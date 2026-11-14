@@ -73,10 +73,10 @@ pub struct MappedWindow<'a> {
     pub workspace: &'a str,
 }
 
-/// The window the device holding `workspaces` maps in `tab`. `None` for a tab the desk does not
+/// The window the device holding `workspaces` maps in `tab`. `None` for a tab the shell does not
 /// hold, one in no workspace, and one that shows no window this device maps: the picture of
 /// another device's window, and an app whose window has yet to open. Only such a window is shared
-/// from this device, so a desk offers the share and its session carries it out by this one rule.
+/// from this device, so a shell offers the share and its session carries it out by this one rule.
 #[must_use]
 pub fn mapped_window(workspaces: &[Workspace], tab: TabId) -> Option<MappedWindow<'_>> {
     let (held, shown) = workspaces.iter().find_map(|held| {
@@ -354,7 +354,7 @@ mod tests {
 
     /// A workspace whose one window shows `tile` in `tab`.
     fn showing(tile: TileContent, tab: TabId) -> Workspace {
-        let mut workspace = Workspace::new(crate::WorkspaceId::from_u128(1), "Desk");
+        let mut workspace = Workspace::new(crate::WorkspaceId::from_u128(1), "Shell");
         let mut strip = crate::Strip::new(crate::StripId::from(1), "Main");
         strip.window_groups.push(crate::WindowGroup {
             id: crate::GroupId::from(1_u64),
@@ -381,7 +381,7 @@ mod tests {
         phase only_a_window_the_device_maps_in_a_workspace_is_one_it_can_share;
         // A device shares the window it maps in a tab of a workspace, and nothing else a tab can
         // show: not the picture of another device's window, not an app still to open, and nothing
-        // from a desk in no workspace.
+        // from a shell in no workspace.
         {
                 let tab = compose_id(7, 1);
                 let app = || "so.tilo.notes".to_owned();
@@ -405,7 +405,7 @@ mod tests {
                 assert_eq!(
                     mapped_window(std::slice::from_ref(&mapped), compose_id(7, 2)),
                     None,
-                    "a tab the desk does not hold shows no window"
+                    "a tab the shell does not hold shows no window"
                 );
                 for tile in [
                     TileContent::HostedWindow {
@@ -432,7 +432,7 @@ mod tests {
                 assert_eq!(
                     mapped_window(std::slice::from_ref(&nowhere), tab),
                     None,
-                    "a desk in no workspace has nobody to share with"
+                    "a shell in no workspace has nobody to share with"
                 );
         }
 

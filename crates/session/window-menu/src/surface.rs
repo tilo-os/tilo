@@ -1,5 +1,5 @@
 //! The menu drawn from the session's reading: a context menu over the rows
-//! the desk offers the window in front, whose every choice is one of the
+//! the shell offers the window in front, whose every choice is one of the
 //! session's verbs.
 //!
 //! The surface holds no menu state. What is up, for which window, where it
@@ -465,7 +465,7 @@ impl Widget for WindowMenuSurface {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         // The menu stands within the surface's own area: the session places
-        // that over the desk where the reading says.
+        // that over the shell where the reading says.
         self.viewport = self.rect;
         let inner = Point::new(self.rect.x0, self.rect.y0);
         if let [menu] = taffy.children(node).unwrap_or_default()[..] {
@@ -498,7 +498,7 @@ impl Widget for WindowMenuSurface {
         } else if was_open && !self.menu.is_open() {
             // The menu closed here without a row chosen: a press outside it.
             // The session hears the key that closes it but not this, so the
-            // view says so, and the desk stops holding the keyboard.
+            // view says so, and the shell stops holding the keyboard.
             self.dismiss();
         }
         Self::deliver();
@@ -579,7 +579,7 @@ mod tests {
     /// frame has nothing to draw and the worker that opens the reading lands
     /// afterwards; a reading published before the attach wakes no view, and
     /// nothing else asks the menu for a frame. A view that does not wake
-    /// itself is a menu nobody sees until some later press moves the desk.
+    /// itself is a menu nobody sees until some later press moves the shell.
     #[test]
     fn the_view_asks_for_a_frame_once_its_worker_lands() {
         let mut scope = ui::WakeScope::new();
@@ -744,12 +744,12 @@ mod tests {
         );
     }
 
-    /// A menu the length the desk publishes, naming its window.
+    /// A menu the length the shell publishes, naming its window.
     fn menu_of(rows: usize) -> String {
         menu_of_named(rows, "Notes")
     }
 
-    /// A menu whose window the desk names `name`.
+    /// A menu whose window the shell names `name`.
     fn menu_of_named(rows: usize, name: &str) -> String {
         let rows: Vec<Value> = (0..rows)
             .map(|i| {
@@ -783,7 +783,7 @@ mod tests {
             .and_then(|about| about.anchor.excerpt.clone())
     }
 
-    /// The box is about the window by the name the desk named it: the one rule every surface names
+    /// The box is about the window by the name the shell named it: the one rule every surface names
     /// a window by, never an id or a spelling of the app.
     #[test]
     fn the_box_is_about_the_window_the_way_a_person_names_it() {
@@ -882,7 +882,7 @@ mod tests {
     }
 
     /// The same rows, opened from the frame's last pixels: the corner of the
-    /// desk the window menu doubles as the way out of.
+    /// shell the window menu doubles as the way out of.
     const AT_THE_CORNER: &str = r#"{
         "tab": "20",
         "anchor": { "x": 1272, "y": 792 },

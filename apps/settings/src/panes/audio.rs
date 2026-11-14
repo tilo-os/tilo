@@ -2066,7 +2066,7 @@ mod tests {
                         groups: vec![SpeakerGroupInfo {
                             id: "cd".repeat(16),
                             name: "Living room".into(),
-                            leader_label: "Desk".into(),
+                            leader_label: "Tower".into(),
                             led_here: true,
                             members: Vec::new(),
                             playback: None,

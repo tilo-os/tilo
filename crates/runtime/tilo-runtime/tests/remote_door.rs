@@ -702,7 +702,7 @@ fn grant(
     (key, cert)
 }
 
-const DESK: &str = "11111111-1111-4111-8111-111111111111";
+const SHELL: &str = "11111111-1111-4111-8111-111111111111";
 const ON_RELAY: &str = "22222222-2222-4222-8222-222222222222";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -732,7 +732,7 @@ async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_on
         labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
     };
     let held = PersonalList {
-        workspaces: vec![entry(DESK, "Build box"), entry(ON_RELAY, "eu1.tilo.sh")],
+        workspaces: vec![entry(SHELL, "Build box"), entry(ON_RELAY, "eu1.tilo.sh")],
         ..PersonalList::default()
     };
     *b.door.list.lock().unwrap() = Some(held.clone());
@@ -749,7 +749,7 @@ async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_on
     let one = grant(
         &person.root,
         6,
-        tilo_user_identity::AgentScope::parse(DESK).unwrap(),
+        tilo_user_identity::AgentScope::parse(SHELL).unwrap(),
     );
     let listed = read_list(&endpoint(&one.0).await, addr(&b.endpoint), &one.1)
         .await
@@ -760,7 +760,7 @@ async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_on
             .iter()
             .map(|one| one.workspace.as_str())
             .collect::<Vec<_>>(),
-        [DESK]
+        [SHELL]
     );
     // Someone else's key reads nothing.
     let stranger = SigningKey::from_bytes(&[0x33; 32]);
@@ -825,13 +825,13 @@ async fn a_key_enters_a_workspace_its_persons_device_hosts_at_the_address_their_
         key: all.0.clone(),
         cert: all.1.clone(),
     };
-    let address = address_on_b(&person, &b, DESK);
+    let address = address_on_b(&person, &b, SHELL);
     assert_eq!(
         address.name, "Build box",
         "the list names the device that hosts it"
     );
     let dialing = endpoint(&all.0).await;
-    let entered = enter(&dialing, &key, DESK, &address)
+    let entered = enter(&dialing, &key, SHELL, &address)
         .await
         .expect("the person's device lets their key in");
     let introduced = entered.handle(initialize()).await.unwrap();
@@ -854,7 +854,7 @@ async fn a_key_enters_a_workspace_its_persons_device_hosts_at_the_address_their_
     let arrived = b.door.arrived.lock().unwrap().clone();
     assert_eq!(arrived.len(), 1);
     assert_eq!(arrived[0].device, all.1, "B knows which key came in");
-    assert_eq!(arrived[0].workspace.as_deref(), Some(DESK));
+    assert_eq!(arrived[0].workspace.as_deref(), Some(SHELL));
 
     // An address names one workspace: another's is not entered with it.
     assert!(enter(&dialing, &key, ON_RELAY, &address).await.is_err());
@@ -882,8 +882,8 @@ async fn a_key_for_another_workspace_or_a_revoked_key_is_refused_at_the_device()
             key: elsewhere.0.clone(),
             cert: elsewhere.1.clone(),
         },
-        DESK,
-        &address_on_b(&person, &b, DESK),
+        SHELL,
+        &address_on_b(&person, &b, SHELL),
     )
     .await
     .err()
@@ -896,8 +896,8 @@ async fn a_key_for_another_workspace_or_a_revoked_key_is_refused_at_the_device()
             key: revoked.0.clone(),
             cert: revoked.1.clone(),
         },
-        DESK,
-        &address_on_b(&person, &b, DESK),
+        SHELL,
+        &address_on_b(&person, &b, SHELL),
     )
     .await
     .err()

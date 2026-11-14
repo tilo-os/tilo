@@ -598,7 +598,7 @@ d-irl4ws35 = Places
     .w-close = Close
     .w-a-resource-s-view-on-the = A resource's view on the canvas: no frame, its handle on hover.
     .w-window = Window
-    .w-a-window-on-the-desk-its = A window on the desk: its bar, its controls, what it shows.
+    .w-a-window-on-the-shell-its = A window on the shell: its bar, its controls, what it shows.
 
 d-tsxcwdoy = Media
     .w-pictures = Pictures

@@ -101,7 +101,7 @@ tilo_test_env::scenario! {
     }
 
     phase the_repl_asks_the_person_and_never_answers_its_own_admission;
-    // A REPL started on a nested session (`--session`) tells the person at the desk that it asks to
+    // A REPL started on a nested session (`--session`) tells the person at the shell that it asks to
     // act as them, and gives itself no answer: the door's admission stays theirs, on the sheet, or
     // their `--admit-repl` made as they started the session.
     {

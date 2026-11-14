@@ -141,12 +141,12 @@ test-timeline-add-generated = Add a clip with an id of its own
 test-timeline-add-clip = Add a clip
 
 ## crates/sdk/tilo-resource/tests/outbox.rs
-test-desk = Desk
-test-desk-add-note = Add a note
-test-desk-remove-note = Remove a note
-test-desk-trash = Move a file to the trash
-test-desk-revert = Put back what a file operation changed
-test-desk-found-gone = Record that the device found a file already gone
+test-files = Files
+test-files-add-note = Add a note
+test-files-remove-note = Remove a note
+test-files-trash = Move a file to the trash
+test-files-revert = Put back what a file operation changed
+test-files-found-gone = Record that the device found a file already gone
 test-planner = Planner
 test-planner-add-event = Add an event
 test-planner-import-events = Import a calendar's events, one undo step

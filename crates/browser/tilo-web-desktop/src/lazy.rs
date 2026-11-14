@@ -12,14 +12,14 @@
 //! desktop asks for as it first lays out, the page's layout actions and
 //! search, which the page asks for as it first draws, the jobs band, which the first
 //! job that runs asks for, the file drops, which the first drag onto the
-//! desk asks for and the page fetches once its first frame is up, the
+//! shell asks for and the page fetches once its first frame is up, the
 //! document codecs, which a workspace's first document asks for, the
 //! notification centre,
 //! which opening it asks for, the people roster, which the bar's faces
 //! open, the HTML presenter, which a page mounted
 //! with `dom: true` asks for, the directory and invite sheets and the
 //! shortcut guide, which opening one asks for, a hosted window's page, which
-//! the first page to reach the desk asks for, and the renderer's maker, which
+//! the first page to reach the shell asks for, and the renderer's maker, which
 //! the page asks for as it compiles its pipelines.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
@@ -212,8 +212,8 @@ split_code! {
 }
 
 split_code! {
-    /// What a page does with files dropped on the desk or uploaded from its menu: the first drag
-    /// that reaches the desk asks for it.
+    /// What a page does with files dropped on the shell or uploaded from its menu: the first drag
+    /// that reaches the shell asks for it.
     mod page_drops: tilo_browser_runtime::MakeDrops = tilo_browser_runtime::builtin_drops()
         => tilo_browser_runtime::DROPS, module = "page_drops", hash = "e94b71d0c3a58f26";
 }
@@ -240,7 +240,7 @@ split_code! {
 }
 
 split_code! {
-    /// The jobs band the desk's card shows: the first job that runs asks for it.
+    /// The jobs band the shell's card shows: the first job that runs asks for it.
     mod jobs_band: ui::jobs::MakeBand = ui::jobs::builtin_band() => ui::jobs::BAND,
         module = "jobs_band", hash = "c1b8e04f7a2d9635";
 }
@@ -275,7 +275,7 @@ split_code! {
 
 split_code! {
     /// A window's page drawn from the paint stream another device publishes:
-    /// the first page that travels to a desk asks for it.
+    /// the first page that travels to a shell asks for it.
     mod page_view: tilo_desktop_surface::page_code::PageCode = tilo_desktop_surface::page_code::builtin_page()
         => tilo_desktop_surface::page_code::PAGE, module = "page_view", hash = "b46c0a91e7d23f58";
 }
@@ -389,9 +389,9 @@ pub(crate) fn register() {
 }
 
 /// Once the page has drawn its first frame, fetch what a file dropped on the
-/// desk or picked from its menu needs.
+/// shell or picked from its menu needs.
 ///
-/// A drag asks for it as it starts over the desk; a person who picks files
+/// A drag asks for it as it starts over the shell; a person who picks files
 /// with the menu instead picks them before anything asks, so the module goes
 /// after the first frame and is in before their choice comes back. Nothing of
 /// it is needed for that frame.

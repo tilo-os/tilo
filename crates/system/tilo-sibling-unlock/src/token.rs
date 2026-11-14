@@ -155,7 +155,7 @@ mod tests {
             cert: Token::encode_cert(&cert(3)).unwrap(),
             siblings: vec![Sibling {
                 device: "cc".repeat(32),
-                label: "Desk".into(),
+                label: "Tower".into(),
                 endpoint: String::new(),
             }],
             sealing: Sealing::Cleartext,

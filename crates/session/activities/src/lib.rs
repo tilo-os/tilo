@@ -1,4 +1,4 @@
-//! The desk's floating activity cards as an app: every activity's summary
+//! The shell's floating activity cards as an app: every activity's summary
 //! drawn in one card, docked in a corner column or dragged loose, over the
 //! windows and clear of the bar, the banners and the readout.
 //!

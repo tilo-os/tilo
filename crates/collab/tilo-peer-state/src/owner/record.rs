@@ -224,7 +224,7 @@ pub enum PendingEnrollmentStatus {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoredPendingEnrollment {
-    /// Whether the enrolled workspace is on this device's desk, made for the join before the
+    /// Whether the enrolled workspace is on this device's shell, made for the join before the
     /// enrollment began.
     #[serde(default)]
     pub(crate) shown: bool,

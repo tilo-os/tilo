@@ -303,7 +303,7 @@ mod tests {
     use settings_store::hardware::{OutputConfig, OutputMode};
     use settings_store::person_displays::{DeviceOutput, PersonDevice, PersonDisplays};
 
-    const DESK: &str = "settings.device-display:desk/edid:desk";
+    const TOWER: &str = "settings.device-display:tower/edid:tower";
 
     fn screen(id: &str, name: &str, builtin: bool) -> DeviceOutput {
         DeviceOutput {
@@ -323,7 +323,7 @@ mod tests {
         }
     }
 
-    /// This laptop and the person's desk computer, which is offline when `online` is not.
+    /// This laptop and the person's tower computer, which is offline when `online` is not.
     fn devices(online: bool) -> Vec<PersonDevice> {
         vec![
             PersonDevice {
@@ -334,17 +334,17 @@ mod tests {
                 outputs: vec![screen("edid:panel", "Built-in display", true)],
             },
             PersonDevice {
-                device: "desk".into(),
-                label: "Desk computer".into(),
+                device: "tower".into(),
+                label: "Tower computer".into(),
                 local: false,
                 online,
-                outputs: vec![screen("edid:desk", "Desk monitor", false)],
+                outputs: vec![screen("edid:tower", "Tower monitor", false)],
             },
         ]
     }
 
-    /// Displays open on the laptop with its one panel, beside the desk computer's screen.
-    fn beside_the_desk(online: bool) -> App {
+    /// Displays open on the laptop with its one panel, beside the tower computer's screen.
+    fn beside_the_tower(online: bool) -> App {
         let mut app = on_displays();
         let people = devices(online);
         change_model(&mut app, move |model| {
@@ -436,12 +436,12 @@ mod tests {
 
     #[test]
     fn one_canvas_draws_this_device_s_displays_and_the_other_devices_screens() {
-        let mut app = beside_the_desk(false);
+        let mut app = beside_the_tower(false);
         let shown = tiles(&mut app);
         assert_eq!(shown.len(), 2, "{shown:?}");
         let here = tile(&mut app, "Built-in display on Laptop");
-        let desk = tile(&mut app, "Desk monitor on Desk computer");
-        assert!(desk.description.as_ref().unwrap().contains("Offline"));
+        let tower = tile(&mut app, "Tower monitor on Tower computer");
+        assert!(tower.description.as_ref().unwrap().contains("Offline"));
         assert!(
             !here.description.as_ref().unwrap().contains("Offline"),
             "{here:?}"
@@ -455,13 +455,13 @@ mod tests {
 
     #[test]
     fn dragging_a_screen_on_the_canvas_moves_where_the_pointer_crosses() {
-        let mut app = beside_the_desk(true);
-        // Not placed yet, the desk computer stands left of the laptop: its id sorts first.
-        assert_eq!(crossing(&mut app, (-1.0, 0.0)), "desk");
+        let mut app = beside_the_tower(true);
+        // Not placed yet, the tower computer stands left of the laptop: its id sorts first.
+        assert_eq!(crossing(&mut app, (-1.0, 0.0)), "tower");
         assert_eq!(crossing(&mut app, (0.0, 1.0)), "laptop");
         let here = tile(&mut app, "on Laptop").bounds.unwrap();
-        let desk = tile(&mut app, "on Desk computer");
-        let (x, y) = centre(&desk);
+        let tower = tile(&mut app, "on Tower computer");
+        let (x, y) = centre(&tower);
         app.harness().send(&ui::synthetic_input::cursor_moved(x, y));
         app.harness().send(&ui::synthetic_input::mouse_press());
         let below = (
@@ -479,8 +479,8 @@ mod tests {
         frame(&mut app);
         assert_eq!(
             crossing(&mut app, (0.0, 1.0)),
-            "desk",
-            "the pointer goes down onto the desk computer's screen"
+            "tower",
+            "the pointer goes down onto the tower computer's screen"
         );
         assert_eq!(
             crossing(&mut app, (-1.0, 0.0)),
@@ -488,7 +488,7 @@ mod tests {
             "and no longer leaves the panel's left edge"
         );
         assert!(
-            !tile(&mut app, "on Desk computer")
+            !tile(&mut app, "on Tower computer")
                 .description
                 .unwrap()
                 .contains("Apart")
@@ -497,9 +497,9 @@ mod tests {
 
     #[test]
     fn a_screen_placed_apart_is_out_of_the_pointer_s_reach() {
-        let mut app = beside_the_desk(true);
+        let mut app = beside_the_tower(true);
         app.call_on(
-            DESK,
+            TOWER,
             "move-device-display",
             serde_json::json!({"x": 9000, "y": 4000}),
         )
@@ -508,15 +508,15 @@ mod tests {
         for toward in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
             assert_eq!(crossing(&mut app, toward), "laptop");
         }
-        let desk = tile(&mut app, "on Desk computer");
-        assert!(desk.description.unwrap().contains("Apart"));
+        let tower = tile(&mut app, "on Tower computer");
+        assert!(tower.description.unwrap().contains("Apart"));
     }
 
     #[test]
     fn choosing_another_device_s_screen_shows_whose_it_is() {
-        let mut app = beside_the_desk(true);
-        let desk = tile(&mut app, "on Desk computer");
-        let (x, y) = centre(&desk);
+        let mut app = beside_the_tower(true);
+        let tower = tile(&mut app, "on Tower computer");
+        let (x, y) = centre(&tower);
         app.harness().send(&ui::synthetic_input::cursor_moved(x, y));
         app.harness().send(&ui::synthetic_input::mouse_press());
         app.harness().send(&ui::synthetic_input::mouse_release());
@@ -527,11 +527,11 @@ mod tests {
                 model.selected_output().is_none(),
             )
         });
-        assert_eq!(chosen, (Some("desk".to_owned()), true));
+        assert_eq!(chosen, (Some("tower".to_owned()), true));
         let mut words = Vec::new();
         crate::panes::display::tests::page_words(app.harness().root_widget(), &mut words);
         assert!(
-            words.iter().any(|word| word.contains("Desk computer")),
+            words.iter().any(|word| word.contains("Tower computer")),
             "{words:?}"
         );
         assert!(
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn settings_lays_out_unplaced_devices_as_the_crossing_pointer_does() {
-        let mut app = beside_the_desk(true);
+        let mut app = beside_the_tower(true);
         let (shown, arrangement) = read_model(&mut app, |model| {
             (model.shared_layout(), model.arrangement())
         });
@@ -559,25 +559,25 @@ mod tests {
 
     #[test]
     fn shared_display_operations_use_the_mounted_exact_resource_door() {
-        let mut app = beside_the_desk(false);
+        let mut app = beside_the_tower(false);
         let surface = app.agent_surface();
         let row = surface
             .as_array()
             .unwrap()
             .iter()
-            .find(|row| row["resource"] == DESK && row["action"] == "move-device-display")
+            .find(|row| row["resource"] == TOWER && row["action"] == "move-device-display")
             .expect("another device's screen exports its move");
         assert_eq!(row["params"].as_array().unwrap().len(), 2);
         assert!(
             app.call_on(
-                DESK,
+                TOWER,
                 "move-device-display",
                 serde_json::json!({"x": 0, "y": 1080, "display": "laptop/edid:panel"})
             )
             .is_err()
         );
         app.call_on(
-            DESK,
+            TOWER,
             "move-device-display",
             serde_json::json!({"x": 0, "y": 1080}),
         )
@@ -588,13 +588,13 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(inspection["devices"][1]["online"], false);
-        let desk = inspection["layout"]["displays"]
+        let tower = inspection["layout"]["displays"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|display| display["device"] == "desk")
+            .find(|display| display["device"] == "tower")
             .unwrap();
-        assert_eq!(desk["rect"]["y"], 1080);
+        assert_eq!(tower["rect"]["y"], 1080);
         assert!(app.harness().component_contract_violations().is_empty());
     }
 
@@ -618,7 +618,7 @@ mod tests {
         assert_eq!(before["devices"][1]["outputs"][0]["refresh_mhz"], 60_000);
         assert!(
             app.call_on(
-                DESK,
+                TOWER,
                 "move-device-display",
                 serde_json::json!({"x": 0, "y": 1080})
             )

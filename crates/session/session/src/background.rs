@@ -17,17 +17,17 @@ use tilo_desktop::launchpad::CollaborationLaunchpad;
 use tilo_desktop::widgets::music::MusicAction as Action;
 use tilo_desktop::widgets::{Fold, Music};
 use tilo_lock::MutexRecover as _;
-use ui::desk_widgets::DeskWidgetPrefs;
+use ui::widgets::WidgetsPrefs;
 
 use crate::Options;
 use crate::wallpapers::Wallpapers;
 
 /// The Desktop widgets' choices as the session keeps them.
-pub(crate) type Prefs = Arc<Mutex<DeskWidgetPrefs>>;
+pub(crate) type Prefs = Arc<Mutex<WidgetsPrefs>>;
 
 /// The person's widget choices as the settings document has them now.
 pub(crate) fn prefs() -> Prefs {
-    Arc::new(Mutex::new(DeskWidgetPrefs::from_document(
+    Arc::new(Mutex::new(WidgetsPrefs::from_document(
         &settings_store::load(),
     )))
 }
@@ -80,7 +80,7 @@ pub(crate) fn running_apps(compositor: &tilo_compositor::Compositor) -> Vec<(Str
 
 /// Take the choices `document` carries into `prefs` , for the layer drawing from them.
 pub(crate) fn follow_prefs(prefs: &Prefs, document: &Map<String, Value>) {
-    *prefs.lock_recover() = DeskWidgetPrefs::from_document(document);
+    *prefs.lock_recover() = WidgetsPrefs::from_document(document);
 }
 
 /// What the shell's layer reads of the session: the person's Desktop widgets,

@@ -191,7 +191,7 @@ def start_client(args: argparse.Namespace, session, env: dict) -> subprocess.Pop
 
 
 def placed_window(session, app: str, timeout: float) -> dict:
-    """The app's window once the desk has drawn it somewhere: a row says where it is only after
+    """The app's window once the shell has drawn it somewhere: a row says where it is only after
     the window mapped, so a click has a rectangle to land in."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

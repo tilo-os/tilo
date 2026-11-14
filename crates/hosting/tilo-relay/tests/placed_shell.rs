@@ -139,9 +139,9 @@ struct Placed {
 /// fleet does.
 async fn placed() -> Arc<Placed> {
     let operator = TestUser::fresh("operator");
-    let desk = operator.enrol("host", DeviceCapabilities::primary());
+    let shell = operator.enrol("host", DeviceCapabilities::primary());
     let vm_host = operator.enrol(VM_HOST, DeviceCapabilities::member());
-    let hosted = host_on(&operator, &desk, WorkSetting::own_person()).await;
+    let hosted = host_on(&operator, &shell, WorkSetting::own_person()).await;
     let workspace = hosted
         .host
         .workspaces()
@@ -161,7 +161,7 @@ async fn placed() -> Arc<Placed> {
         profile.path(),
         (vm_host.sk.clone(), vm_host.cert.clone()),
         member_endpoint,
-        take_work::Relay::new(&hex::encode(desk.device_pubkey()), &host_address(&hosted)).unwrap(),
+        take_work::Relay::new(&hex::encode(shell.device_pubkey()), &host_address(&hosted)).unwrap(),
         None,
     )
     .unwrap();

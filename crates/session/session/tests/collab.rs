@@ -1319,10 +1319,10 @@ fn the_follow_banner_opens_the_followed_persons_card() {
 fn the_roster_kept_on_screen_from_the_start_names_its_workspace() {
     let _settled = ui::motion::testing::settled();
     let (_home, _settings) = settings_home();
-    settings_store::desk_widgets::PEOPLE_OVERLAY
-        .set(settings_store::desk_widgets::PeopleOverlayPrefs {
+    settings_store::widgets::PEOPLE_OVERLAY
+        .set(settings_store::widgets::PeopleOverlayPrefs {
             pinned: true,
-            edge: settings_store::desk_widgets::DockEdge::Right,
+            edge: settings_store::widgets::DockEdge::Right,
         })
         .expect("the roster was kept on screen before");
 

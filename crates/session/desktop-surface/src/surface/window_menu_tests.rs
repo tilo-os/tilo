@@ -834,8 +834,8 @@ fn only_a_window_the_sharing_app_lists_offers_the_share_row() {
     ));
 }
 
-/// What a session reads of the windows it shares with its workspaces, as a desk asks it: the
-/// reading a test changes, and every question the desk put to it.
+/// What a session reads of the windows it shares with its workspaces, as a shell asks it: the
+/// reading a test changes, and every question the shell put to it.
 #[derive(Default)]
 struct SessionShares {
     /// The workspaces the session takes part in, by id.
@@ -849,7 +849,7 @@ struct SessionShares {
 }
 
 impl SessionShares {
-    /// The reading as `handle` 's desk is given it.
+    /// The reading as `handle` 's shell is given it.
     fn read_by(self: &Rc<Self>, handle: &DesktopHandle) {
         let shares = Rc::clone(self);
         let reading: WorkspaceShares = Rc::new(move |tab, workspace| {
@@ -876,9 +876,9 @@ fn mapped_notes() -> TileContent {
     }
 }
 
-/// A desk of the device minting under 7 whose one window shows `tile`, in a tab minted under
+/// A shell of the device minting under 7 whose one window shows `tile`, in a tab minted under
 /// `salt`: the surface, its handle and the tab.
-fn desk_showing(salt: u16, tile: TileContent) -> (DesktopSurface, DesktopHandle, TabId) {
+fn shell_showing(salt: u16, tile: TileContent) -> (DesktopSurface, DesktopHandle, TabId) {
     let mut minter = IdMinter::new(salt);
     let id = minter.mint();
     let tab = Tab {
@@ -889,18 +889,18 @@ fn desk_showing(salt: u16, tile: TileContent) -> (DesktopSurface, DesktopHandle,
         view: String::new(),
         pinned: false,
     };
-    let tree = crate::seed_tree(&mut minter, "Desk", vec![tab]);
+    let tree = crate::seed_tree(&mut minter, "Shell", vec![tab]);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Apps));
     (surface, handle, id)
 }
 
-/// The id of the workspace the desk's one window stands in.
+/// The id of the workspace the shell's one window stands in.
 fn workspace_of(handle: &DesktopHandle) -> String {
     handle.read(|tree| tree.workspaces[0].policy.workspace.clone())
 }
 
-/// A session that takes part in the workspace of `handle` 's desk and shares nothing yet, read by
-/// that desk.
+/// A session that takes part in the workspace of `handle` 's shell and shares nothing yet, read by
+/// that shell.
 fn session_sharing_with(handle: &DesktopHandle) -> Rc<SessionShares> {
     let shares = Rc::new(SessionShares::default());
     shares.takes_part.borrow_mut().push(workspace_of(handle));
@@ -910,14 +910,14 @@ fn session_sharing_with(handle: &DesktopHandle) -> Rc<SessionShares> {
 
 /// The share with the workspace is offered where it can work and nowhere else: for a window this
 /// device maps, in a tab it minted, in a workspace its session takes part in. Another device's
-/// window, the picture of one, an app still to open and a desk whose session shares nothing with
+/// window, the picture of one, an app still to open and a shell whose session shares nothing with
 /// the workspace offer no such row.
 #[test]
 fn only_a_window_this_device_can_share_offers_the_share_with_its_workspace() {
-    let (_surface, handle, tab) = desk_showing(7, mapped_notes());
+    let (_surface, handle, tab) = shell_showing(7, mapped_notes());
     assert!(
         row(&handle.window_menu(tab), SHARE_WITH_WORKSPACE).is_none(),
-        "a desk no session reads the shares for offers no share"
+        "a shell no session reads the shares for offers no share"
     );
 
     let shares = session_sharing_with(&handle);
@@ -937,7 +937,7 @@ fn only_a_window_this_device_can_share_offers_the_share_with_its_workspace() {
     shares.takes_part.borrow_mut().clear();
     assert!(row(&handle.window_menu(tab), SHARE_WITH_WORKSPACE).is_none());
 
-    // A desk in no workspace is not asked about at all.
+    // A shell in no workspace is not asked about at all.
     shares.takes_part.borrow_mut().push(String::new());
     let mut nowhere = handle.read(Clone::clone);
     nowhere.workspaces[0].policy.workspace.clear();
@@ -981,7 +981,7 @@ fn only_a_window_this_device_can_share_offers_the_share_with_its_workspace() {
         (9, mapped_notes()),
     ];
     for (salt, tile) in not_this_devices {
-        let (_surface, handle, tab) = desk_showing(salt, tile.clone());
+        let (_surface, handle, tab) = shell_showing(salt, tile.clone());
         let shares = session_sharing_with(&handle);
         shares.shared.borrow_mut().insert(tab, 1);
         let rows = handle.window_menu(tab);
@@ -1002,11 +1002,11 @@ fn only_a_window_this_device_can_share_offers_the_share_with_its_workspace() {
 }
 
 /// The row says what the session reads of the share when the menu is asked for, every time: the
-/// desk keeps no flag of its own, so a share started, viewed, and ended elsewhere (a script, the
+/// shell keeps no flag of its own, so a share started, viewed, and ended elsewhere (a script, the
 /// window closing) is what the menu shows next.
 #[test]
 fn the_share_with_the_workspace_reads_as_the_session_says_it_stands() {
-    let (_surface, handle, tab) = desk_showing(7, mapped_notes());
+    let (_surface, handle, tab) = shell_showing(7, mapped_notes());
     let shares = session_sharing_with(&handle);
     let labels = |handle: &DesktopHandle| -> (Option<String>, Option<String>) {
         let rows = handle.window_menu(tab);
@@ -1084,7 +1084,7 @@ fn the_share_with_the_workspace_reads_as_the_session_says_it_stands() {
 /// nothing the menu says: the window reads as shared once the session's reading does.
 #[test]
 fn choosing_the_share_with_the_workspace_asks_the_session_by_the_tab() {
-    let (_surface, handle, tab) = desk_showing(7, mapped_notes());
+    let (_surface, handle, tab) = shell_showing(7, mapped_notes());
     let shares = session_sharing_with(&handle);
     assert!(handle.take_workspace_share_asks().is_empty());
 
@@ -1128,7 +1128,7 @@ fn choosing_the_share_with_the_workspace_asks_the_session_by_the_tab() {
 /// row and why they cannot choose it, and choosing it asks nothing.
 #[test]
 fn someone_elses_window_is_theirs_to_share_with_the_workspace() {
-    let (_surface, handle, tab) = desk_showing(7, mapped_notes());
+    let (_surface, handle, tab) = shell_showing(7, mapped_notes());
     let _shares = session_sharing_with(&handle);
     assert!(handle.set_holders(HashMap::from([(
         tab,
@@ -1155,7 +1155,7 @@ fn someone_elses_window_is_theirs_to_share_with_the_workspace() {
 /// says which it is: the window's live picture to the workspace, or its record in a channel.
 #[test]
 fn the_two_shares_of_a_window_stand_together_and_read_apart() {
-    let (_surface, handle, tab) = desk_showing(7, mapped_notes());
+    let (_surface, handle, tab) = shell_showing(7, mapped_notes());
     let shares = session_sharing_with(&handle);
     handle.shared.borrow_mut().window_offers = vec![OpenWindow {
         tab,

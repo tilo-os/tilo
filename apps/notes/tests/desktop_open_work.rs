@@ -89,7 +89,7 @@ impl Desktop {
         let mut minter = IdMinter::new(7);
         let tabs: Vec<Tab> = (0..windows).map(|_| notes_tab(minter.mint())).collect();
         let ids: Vec<TabId> = tabs.iter().map(|tab| tab.id).collect();
-        let tree = seed_tree(&mut minter, "Desk", tabs);
+        let tree = seed_tree(&mut minter, "Shell", tabs);
         let arrived = Arrived::default();
         let (surface, handle) =
             DesktopSurface::new(tree, 7, Box::new(Components(Rc::clone(&arrived))));

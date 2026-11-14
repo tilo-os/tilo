@@ -229,7 +229,7 @@ pub const WORKSPACE: &str = "/params/capabilities/experimental/so.tilo/workspace
 /// ["so.tilo"].key`. `--connect` and `tilo mcp` write the key [`AGENT_KEY_ENV`] names.
 pub const KEY: &str = "/params/capabilities/experimental/so.tilo/key";
 
-/// The provider the session's own resources (its desk, arrangement, windows and notices) are
+/// The provider the session's own resources (its shell, arrangement, windows and notices) are
 /// published under on its doors: what the catalogue lists them under and an invocation names.
 pub const SESSION_PROVIDER: &str = "so.tilo.session";
 
@@ -239,7 +239,7 @@ pub enum Consent {
     /// Serve it as agent `agent`, confined to `workspace`, acting for `person`:
     /// the person who admitted it, whose own records it reads and whose
     /// authority bounds what it does (the lesser of theirs and the agent's).
-    /// `name` is what the person's desk calls it: what everything it writes
+    /// `name` is what the person's shell calls it: what everything it writes
     /// is shown by.
     Admit {
         workspace: String,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Copy and cut files in Files, paste them into another folder, check the bytes.
 
-Files reaches the session's file clipboard through its hosted lane: the desk
+Files reaches the session's file clipboard through its hosted lane: the shell
 answers the capture, the publication and the paste, and the session's paste
 engine writes the files. The steps wait for the bytes on disk, because a key
 sent while the app is still reading a folder is one the app can only drop; a
@@ -39,13 +39,13 @@ TRIES = 3
 
 
 class Driver:
-    """Keys into the desk's own control socket, aimed at the front window."""
+    """Keys into the shell's own control socket, aimed at the front window."""
 
     def __init__(self, session: "ra.Session"):
         self.session = session
 
     def settle(self, rounds: int = 10) -> None:
-        """Round trips to the desk, so the app and the session have passed frames."""
+        """Round trips to the shell, so the app and the session have passed frames."""
         for _ in range(rounds):
             self.session.targets()
         time.sleep(0.3)
@@ -92,11 +92,11 @@ class Driver:
 
 def app_home(session: "ra.Session", state: Path) -> Path:
     """The folder a Files window opens on: the app's own home in the workspace the
-    desk's workspace holds, where the launcher mounts it, so the file planted
+    shell's workspace holds, where the launcher mounts it, so the file planted
     here is the file the window lists."""
     workspaces = session.state_dump()["workspace_tree"]["workspaces"]
     workspace = next((held["id"] for held in workspaces), None)
-    assert workspace, f"the desk holds no workspace: {workspaces!r}"
+    assert workspace, f"the shell holds no workspace: {workspaces!r}"
     home = state / "data/tilo-workspaces" / workspace / "so.tilo.file-explorer"
     home.mkdir(parents=True, exist_ok=True)
     return home

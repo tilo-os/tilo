@@ -221,16 +221,16 @@ type Draft {
     sent: Bool = false
 }
 
-type Desk {
+type Letters {
     drafts: Collection<Draft>
 }
 
-root Desk
+root Letters
 
-default view desk for Desk
+default view letters for Letters
 
-view desk(desk: Desk) {
-    std.list(desk.drafts) { (d, at) ->
+view letters(letters: Letters) {
+    std.list(letters.drafts) { (d, at) ->
         ui.ListItem(item: d, presence: at) {
             draft_line(d)
         }
@@ -271,7 +271,7 @@ action take_back(d: Draft) (icon: .undo_2, label: "Undo send") {
         let rt = tilolang_runtime::Runtime::new(Store::new(), auth).unwrap();
         app.load(&rt);
         rt.set_clock(move || clock.borrow().clone());
-        let _desk = rt.create_root("Desk").unwrap();
+        let _shell = rt.create_root("Letters").unwrap();
         // A draft with somebody to write to, as a person's draft has once they name them.
         let draft = rt.create("Draft").unwrap();
         let address = app.action("address");

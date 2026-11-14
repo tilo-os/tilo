@@ -703,19 +703,19 @@ tilo_test_env::scenario! {
         });
     }
 
-    phase the_first_desk_a_profile_starts_on_is_the_one_its_next_start_reads;
+    phase the_first_shell_a_profile_starts_on_is_the_one_its_next_start_reads;
     {
         let temp = tempfile::tempdir().unwrap();
         let first = ProfileWorkspace::open(temp.path()).unwrap();
         let made = first.snapshot().unwrap();
         assert!(!first.workspace().is_empty());
-        // The next start reads the desk this one made, rather than making another
+        // The next start reads the shell this one made, rather than making another
         // with fresh ids: what the person opened stays in the workspace it was
         // opened in.
         let second = ProfileWorkspace::open(temp.path()).unwrap();
         let read = second.snapshot().unwrap();
         assert_eq!(second.workspace(), first.workspace());
-        assert_eq!(read.workspaces.len(), 1, "one desk, not one per start");
+        assert_eq!(read.workspaces.len(), 1, "one shell, not one per start");
         assert_eq!(read.workspaces[0].id(), made.workspaces[0].id());
         assert_eq!(
             read.workspaces[0].strips[0].id,

@@ -85,7 +85,7 @@ fn shown(layout: &Placement) -> Vec<u64> {
     layout.shown.iter().map(|(id, _)| *id).collect()
 }
 
-/// The tabs the desk holds, in order: each tab's id and what it shows.
+/// The tabs the shell holds, in order: each tab's id and what it shows.
 fn tabs(policy: &DesktopPolicy) -> Vec<(u64, TileContent)> {
     policy.handle().read(|tree| {
         tree.workspaces
@@ -271,7 +271,7 @@ fn title_of(policy: &DesktopPolicy, tab: u64) -> String {
 }
 
 #[test]
-fn the_desk_names_the_tabs_it_has_for_apps_with_their_apps() {
+fn the_shell_names_the_tabs_it_has_for_apps_with_their_apps() {
     let (mut driver, mut policy) = mount();
     map(&mut driver, &mut policy, 4, "so.tilo.notes");
     map(&mut driver, &mut policy, 5, "org.gnome.Terminal");
@@ -285,7 +285,7 @@ fn the_desk_names_the_tabs_it_has_for_apps_with_their_apps() {
         ],
         "each window with the id its app announces itself by"
     );
-    // A launch the desk holds a place for has a tab from the frame it is
+    // A launch the shell holds a place for has a tab from the frame it is
     // asked for, and that tab is the app's window on its way: the next
     // launch of the app goes there instead of starting a second process.
     assert!(
@@ -305,7 +305,7 @@ fn the_desk_names_the_tabs_it_has_for_apps_with_their_apps() {
         "the place comes forward with the window that fills it"
     );
     // The launch started nothing: its place goes, and the app's own window is
-    // the one the desk has.
+    // the one the shell has.
     policy.release_held("so.tilo.notes");
     frames(&mut driver, 2);
     assert_eq!(
@@ -324,7 +324,7 @@ fn the_desk_names_the_tabs_it_has_for_apps_with_their_apps() {
     );
 }
 
-/// The desk's window groups in order: each with its id, its tabs and the tab
+/// The shell's window groups in order: each with its id, its tabs and the tab
 /// in front.
 fn groups(policy: &DesktopPolicy) -> Vec<(GroupId, Vec<u64>, u64)> {
     policy.handle().read(|tree| {
@@ -350,7 +350,7 @@ fn groups(policy: &DesktopPolicy) -> Vec<(GroupId, Vec<u64>, u64)> {
     })
 }
 
-/// The tab the window `window` of the desk sits in.
+/// The tab the window `window` of the shell sits in.
 fn window_tab(policy: &DesktopPolicy, window: u64) -> u64 {
     policy.handle().read(|tree| {
         tree.workspaces
@@ -524,7 +524,11 @@ fn a_window_taken_full_screen_covers_its_display() {
     assert!(policy.set_fullscreen(1, true), "the desktop holds it");
     frames(&mut driver, 30);
     let layout = policy.placement();
-    assert_eq!(layout.fullscreen, Some(1), "the desk says which one covers");
+    assert_eq!(
+        layout.fullscreen,
+        Some(1),
+        "the shell says which one covers"
+    );
     let cover = place(&layout, 1);
     assert!(
         cover.x0.abs() < 0.5
@@ -596,7 +600,7 @@ fn a_launch_with_no_window_behind_it_is_queued_for_the_session() {
     assert_eq!(asked[0].app, "host:org.example.Probe.desktop");
     assert!(
         asked[0].tab.is_some(),
-        "the desk holds the tab the app's window takes"
+        "the shell holds the tab the app's window takes"
     );
     assert!(
         policy.take_launches().is_empty(),
@@ -610,7 +614,7 @@ fn a_launch_with_no_window_behind_it_is_queued_for_the_session() {
 }
 
 #[test]
-fn a_desk_launch_holds_the_tab_the_apps_window_takes() {
+fn a_shell_launch_holds_the_tab_the_apps_window_takes() {
     let (mut driver, mut policy) = mount();
     let launch = ChromeEffect::OpenApp {
         app: "so.tilo.notes".into(),
@@ -625,7 +629,7 @@ fn a_desk_launch_holds_the_tab_the_apps_window_takes() {
     assert_eq!(asked.len(), 1, "one launch for one open");
     let tab = asked[0]
         .tab
-        .expect("the desk holds the tab the window takes");
+        .expect("the shell holds the tab the window takes");
     assert_eq!(
         tabs(&policy),
         vec![(
@@ -656,10 +660,10 @@ fn a_conversation_opens_beside_its_sender() {
     let sender = window_tab(&policy, 1);
     assert!(
         policy.hold("so.tilo.chat", None, false, true),
-        "the desk takes the place beside the sender"
+        "the shell takes the place beside the sender"
     );
     settle(&mut driver);
-    // The desk asks for the float; the session's layout makes the ask.
+    // The shell asks for the float; the session's layout makes the ask.
     policy.handle().arrange_asked_floats();
     settle(&mut driver);
 
@@ -667,7 +671,7 @@ fn a_conversation_opens_beside_its_sender() {
         .into_iter()
         .find(|(_, tile)| matches!(tile, TileContent::AppPlaceholder { .. }))
         .map(|(tab, _)| tab)
-        .expect("the desk holds the tab the conversation's window takes");
+        .expect("the shell holds the tab the conversation's window takes");
     let asked = policy.take_launches();
     assert_eq!(
         asked.len(),
@@ -720,21 +724,21 @@ fn a_conversation_opens_beside_its_sender() {
         "the two share the strip, so the sender keeps what the person was reading in view: {widths:?}"
     );
 
-    // It stands over the desk, where its strip gave it room: beside the
+    // It stands over the shell, where its strip gave it room: beside the
     // sender, never over the message list the person was reading.
     let place = policy
         .handle()
         .read(|tree| tree.workspaces.first()?.layout.float_of(*group));
     assert!(
         place.is_some(),
-        "the conversation stands over the desk, in the workspace's record"
+        "the conversation stands over the shell, in the workspace's record"
     );
     let sender_content = policy
         .content_rect(sender)
-        .expect("the sender's content stands on the desk");
+        .expect("the sender's content stands on the shell");
     let content = policy
         .content_rect(tab)
-        .expect("the conversation's content stands on the desk");
+        .expect("the conversation's content stands on the shell");
     assert!(
         content.x0 >= sender_content.x1,
         "the conversation stands beside its sender, never over what the person was reading: \
@@ -743,7 +747,7 @@ fn a_conversation_opens_beside_its_sender() {
     assert_eq!(
         policy.float_covers().len(),
         0,
-        "a place no window fills yet draws nothing over the desk"
+        "a place no window fills yet draws nothing over the shell"
     );
 
     // The session gives the place up when nothing came to fill it: the tab
@@ -758,7 +762,7 @@ fn a_conversation_opens_beside_its_sender() {
 }
 
 #[test]
-fn a_floated_windows_cover_is_where_the_desk_draws_it() {
+fn a_floated_windows_cover_is_where_the_shell_draws_it() {
     let (mut driver, mut policy) = mount();
     map(&mut driver, &mut policy, 1, "so.tilo.chat");
     policy
@@ -773,9 +777,9 @@ fn a_floated_windows_cover_is_where_the_desk_draws_it() {
     settle(&mut driver);
     assert!(
         policy.float_covers().is_empty(),
-        "a place no window fills draws nothing over the desk"
+        "a place no window fills draws nothing over the shell"
     );
-    // The window the desk held the place for takes it.
+    // The window the shell held the place for takes it.
     map(&mut driver, &mut policy, 2, "so.tilo.notes");
     settle(&mut driver);
     let covers = policy.float_covers();
@@ -783,12 +787,12 @@ fn a_floated_windows_cover_is_where_the_desk_draws_it() {
     let (window, cover) = covers[0];
     assert_eq!(window, 2, "the cover is of the window that floats");
     // A window an app opens floating stands as a card beside the window it
-    // opened next to: the cover is that card and what the desk draws round it.
+    // opened next to: the cover is that card and what the shell draws round it.
     let (card_width, card_height) = ui::widget::FLOAT_CARD_SIZE;
     assert_eq!(
         (cover.width() > card_width, cover.height() > card_height),
         (true, true),
-        "the whole of its bar and body and the lift it stands on, as the desk draws it: {cover:?}"
+        "the whole of its bar and body and the lift it stands on, as the shell draws it: {cover:?}"
     );
     assert!(
         policy.placement().covers == covers,
@@ -821,7 +825,7 @@ fn a_window_that_names_no_title_is_tabbed_under_its_apps_name() {
     settle(&mut driver);
     assert_eq!(title_of(&policy, tab), "Notes");
     // The toolkit then labels the window with the app's unlocalised name:
-    // the tab keeps the name this desk gives the app.
+    // the tab keeps the name this shell gives the app.
     policy.retitle(1, "Notes");
     settle(&mut driver);
     assert_eq!(title_of(&policy, tab), "Notes");

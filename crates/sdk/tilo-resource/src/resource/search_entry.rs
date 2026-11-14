@@ -34,7 +34,7 @@ pub struct SearchEntry {
     pub group: Option<String>,
     pub subtitle: Option<String>,
     pub icon: Option<String>,
-    /// What kind of thing it is, where the desk's generic rows would read
+    /// What kind of thing it is, where the shell's generic rows would read
     /// poorly: an agent, a conversation, a message.
     pub kind: Option<IndexKind>,
     /// Who the row shows, in the order people read them: the first is its
@@ -298,7 +298,7 @@ impl SearchEntry {
         self
     }
 
-    /// What kind of thing it is, where the desk's generic rows would read
+    /// What kind of thing it is, where the shell's generic rows would read
     /// poorly: an agent, a conversation, a message.
     #[must_use]
     pub fn of_kind(mut self, kind: IndexKind) -> Self {

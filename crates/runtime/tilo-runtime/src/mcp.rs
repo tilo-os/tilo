@@ -719,7 +719,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self.devices = devices;
         self
     }
-    /// The agent this connection is goes by `name` , as the person's desk calls it: what its
+    /// The agent this connection is goes by `name` , as the person's shell calls it: what its
     /// changes are shown by wherever they are read.
     #[must_use]
     pub fn agent_named(mut self, name: &str) -> Self {

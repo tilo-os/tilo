@@ -73,7 +73,7 @@ impl Captures {
         &self.broker
     }
 
-    /// End every live capture the desk no longer allows, and forget the asks
+    /// End every live capture the tower no longer allows, and forget the asks
     /// it would answer: `keep` is asked about each app, workspace and kind.
     /// Revoked streams stop and their portal sessions end; the apps keep
     /// running. Returns how many were stopped.
@@ -277,7 +277,7 @@ mod tests {
                 .hold_stream(
                     path,
                     &PortalCaller::new("org.example.Share"),
-                    "Desk",
+                    "Tower",
                     7,
                     Arc::new(move || hook.store(true, Ordering::SeqCst)),
                 )
@@ -288,7 +288,7 @@ mod tests {
             let resource = published[0].id.as_str().to_owned();
             assert_eq!(
                 captures.read(&resource).expect("read")["source"],
-                Value::from("Desk")
+                Value::from("Tower")
             );
             let stopped_now = captures.invoke(&published, &resource, "stop", &Map::new());
             assert!(matches!(stopped_now, Some(Ok(_))), "{stopped_now:?}");
@@ -305,7 +305,7 @@ mod tests {
                 .hold_stream(
                     path,
                     &PortalCaller::new("org.example.Share"),
-                    "Desk",
+                    "Tower",
                     7,
                     Arc::new(|| {}),
                 )
@@ -366,7 +366,7 @@ mod tests {
             );
         }
 
-        phase a_capture_the_desk_still_allows_is_left_alone;
+        phase a_capture_the_shell_still_allows_is_left_alone;
         {
             let sessions = Sessions::default();
             let captures = Captures::new(&sessions);

@@ -216,7 +216,7 @@ fn form_node(id: &str) -> u64 {
     nodes["backendNodeId"][found].as_u64().expect("a node")
 }
 
-/// The form as the tile of a watching desk draws it in `theme`, 1280 by 800 pixels.
+/// The form as the tile of a watching shell draws it in `theme`, 1280 by 800 pixels.
 fn form_tile(theme: &ui::Theme) -> Vec<u8> {
     let test = TestEngine::new();
     test.set_paint_snapshot(FORM);
@@ -258,7 +258,7 @@ fn pixels_in(picture: &[u8], left: usize, top: usize, width: usize, height: usiz
         .collect()
 }
 
-/// What the engine's own theme paints of a form reaches a watching desk as the sharing
+/// What the engine's own theme paints of a form reaches a watching shell as the sharing
 /// person sees it: the ring around the field being edited, a select's mark, a ticked box in
 /// the accent, a date as the engine words it. The page is the page's: it is drawn the same
 /// in a dark theme and in a light one.
@@ -269,7 +269,7 @@ fn a_form_is_drawn_with_what_the_engines_theme_paints_of_it_in_any_theme() {
     assert_eq!(
         OffscreenRenderer::pixels_differing_beyond_aa(&dark, &light),
         0,
-        "a page is drawn in its own colours whatever the desk's theme"
+        "a page is drawn in its own colours whatever the shell's theme"
     );
     let is_dark = |pixel: &[u8; 3]| pixel.iter().all(|channel| *channel < 96);
     // The field being edited ("Name", from 57 to 263 across, 86 to 110 down) wears the
@@ -452,8 +452,8 @@ fn a_tile_draws_the_page_the_shell_gives_it() {
     );
 }
 
-/// A desk whose one tab lists a window another device runs, in the toolkit's own frame pipeline.
-fn shown_desk() -> (FrameHarness, DesktopHandle, TabId) {
+/// A shell whose one tab lists a window another device runs, in the toolkit's own frame pipeline.
+fn shown_shell() -> (FrameHarness, DesktopHandle, TabId) {
     let mut minter = IdMinter::new(7);
     let (tree, tab) = shell(&mut minter);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(NoTiles));
@@ -498,7 +498,7 @@ fn built_of(root: &dyn ui::widget::Widget, under: &str) -> Vec<String> {
 
 /// A person who cannot see the tile is told what one who can sees there: the tile is a document
 /// called what it is, holding the text its page shows, each run where the tile draws it. That is
-/// also what anything listing the desk's named elements reads of the page.
+/// also what anything listing the shell's named elements reads of the page.
 #[test]
 fn a_tile_names_the_text_its_page_shows_where_it_draws_it() {
     let engine = engine();
@@ -550,12 +550,12 @@ fn a_tile_names_the_text_its_page_shows_where_it_draws_it() {
     );
 }
 
-/// The tab a desk lists another device's window in shows the arriving card while only the start
+/// The tab a shell lists another device's window in shows the arriving card while only the start
 /// of that window's page came, and the page once its whole frame did: the tile is built again
 /// from what it holds, with no part of the placeholder left in it.
 #[test]
 fn the_tab_listing_a_window_leaves_its_arriving_card_for_the_page_that_came() {
-    let (mut driver, handle, tab) = shown_desk();
+    let (mut driver, handle, tab) = shown_shell();
     let started = PeerStreamStart::announced(&announcement(tab), LOCAL, "Laptop", "Browser", false)
         .expect("a page stream is announced like any other");
     assert_eq!(
@@ -607,7 +607,7 @@ fn the_tab_listing_a_window_leaves_its_arriving_card_for_the_page_that_came() {
     for shown in ["Paint stream", "Alpha"] {
         assert!(
             texts.iter().any(|text| text.contains(shown)),
-            "the desk names {shown:?}, which the page shows: {texts:?}"
+            "the shell names {shown:?}, which the page shows: {texts:?}"
         );
     }
 }

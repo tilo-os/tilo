@@ -350,25 +350,25 @@ fn waiting_in(tree: &Layout, wanted: impl Fn(WorkspaceId) -> bool) -> Vec<(Works
 
 /// What a tab says when the app it holds is not on this machine.
 fn not_installed(name: &str) -> String {
-    t_args("layout-window-not-installed", &[("app", name.into())])
+    t_args("shell-window-not-installed", &[("app", name.into())])
 }
 
 /// What a tab says when its app started nothing.
 fn would_not_start(name: &str) -> String {
-    t_args("layout-window-would-not-start", &[("app", name.into())])
+    t_args("shell-window-would-not-start", &[("app", name.into())])
 }
 
 /// What a tab says while its app waits for `host` to take this device into its workspace.
 fn waits_for_host(name: &str, host: &str) -> String {
     t_args(
-        "layout-window-waits-for-host",
+        "shell-window-waits-for-host",
         &[("app", name.into()), ("host", host.into())],
     )
 }
 
 /// What a tab says when its app started and never showed a window.
 fn did_not_open(name: &str) -> String {
-    t_args("layout-window-did-not-open", &[("app", name.into())])
+    t_args("shell-window-did-not-open", &[("app", name.into())])
 }
 
 #[cfg(test)]

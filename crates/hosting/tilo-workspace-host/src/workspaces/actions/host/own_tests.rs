@@ -128,7 +128,7 @@ async fn join_with(workspaces: &Workspaces, invitation: Vec<u8>, device: &Device
             invitation,
             device.clone(),
             rand::random(),
-            // As the page or desk joining says what its person is called.
+            // As the page or shell joining says what its person is called.
             device.device_label.as_str(),
             None,
         )

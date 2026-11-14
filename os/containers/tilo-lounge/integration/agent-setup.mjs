@@ -27,7 +27,7 @@ import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'no
 import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit, deskMetrics, machine} from './waits.mjs';
+import {stepLimit, shellMetrics, machine} from './waits.mjs';
 
 const [site, relay, tiloBin, out] = process.argv.slice(2);
 if (!site || !relay || !tiloBin || !out) {
@@ -242,7 +242,7 @@ const visit = async name => {
   });
   await tab.send('Network.enable', {}).catch(() => {});
   await tab.send('Inspector.enable', {}).catch(() => {});
-  await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics).catch(() => {});
+  await tab.send('Emulation.setDeviceMetricsOverride', shellMetrics).catch(() => {});
   await tab.send('Browser.grantPermissions', {origin: new URL(site).origin,
     permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});
   await tab.navigate(site);
@@ -397,8 +397,8 @@ if (!/is in .*\.claude\.json/.test(checked.stdout) || !/tilo_ls/.test(checked.st
 await until(first, `document.documentElement.dataset.firstRun === undefined`, 'the first screen leaving', stepLimit(2));
 // Titled after the person's own workspace once it says its name, never the
 // Lounge's: the name is the one the workspace answered this page's admission
-// with, which the desk it starts is given. What the wait is on is the page
-// itself — its host admitting it and its first desk drawing — and the page
+// with, which the shell it starts is given. What the wait is on is the page
+// itself — its host admitting it and its first shell drawing — and the page
 // gives a host that says nothing two minutes before it calls it unanswered
 // (`whenReady` in peer.mjs), so this step is given as long rather than a
 // stopwatch on a frame. What the page was doing is said when it never comes.

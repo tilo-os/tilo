@@ -325,7 +325,7 @@ impl ChatApp {
         self.last_mouse = last_mouse;
         // Live-drag the floating call overlay.
         if self.call.placement.is_dragging() {
-            // The call's place over the desk is the shell's: the drag only
+            // The call's place over the shell is the shell's: the drag only
             // decides when it leaves the window.
             let desktop = self.desktop_floating_bounds();
             let handoff = self
@@ -333,7 +333,7 @@ impl ChatApp {
                 .placement
                 .update_drag(self.last_mouse, self.rect, desktop);
             if handoff == ui::floating_surface::Handoff::Detached {
-                // Over the desk the call is the card's, whatever it looked
+                // Over the shell the call is the card's, whatever it looked
                 // like in the window.
                 self.pending_floating = self.call_card_request();
             }
@@ -783,7 +783,7 @@ impl ChatApp {
     }
 
     /// Whether the input being dispatched came from the window that draws the
-    /// call card over the desk. Both frames hold desk coordinates, so the
+    /// call card over the shell. Both frames hold shell coordinates, so the
     /// source is what says which of them a point belongs to.
     fn call_card_owns_input(&self) -> bool {
         self.input_floating_surface
@@ -976,7 +976,7 @@ impl ChatApp {
             }
             Hit::CallLeave => self.leave_voice(),
             Hit::CallOpenWindow => {
-                // The card asks for the window that draws the call: the desk
+                // The card asks for the window that draws the call: the shell
                 // brings Chat's window forward and the call is drawn there
                 // again, rather than in a card standing over it.
                 self.call.placement.request_app_return();
@@ -1805,7 +1805,7 @@ impl ChatApp {
         }
         let body = self.focused_composer().clips();
         // The press sends what the draft holds to the conversation shown, as
-        // Chat's `send` does: the action an agent's send and the desk's
+        // Chat's `send` does: the action an agent's send and the shell's
         // send-to box run, answered here in the press that asked for it. The
         // post binds `@name` to participants once, so no reader re-parses the
         // body to work out who it was addressed to. The draft is the writer's

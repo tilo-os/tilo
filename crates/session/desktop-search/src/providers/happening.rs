@@ -3,7 +3,7 @@
 //!
 //! One row per workspace with someone in it, wearing their faces, and under
 //! it a row for each window someone is in (choosing it goes there) and each
-//! call in progress (choosing it joins). It reads the presence the desk
+//! call in progress (choosing it joins). It reads the presence the shell
 //! already holds: the collaborators the desktop writes into each workspace
 //! as its people say where they are, and the calls their presence names.
 //! Nothing here watches anything.
@@ -38,7 +38,7 @@ pub fn happening_kind() -> ResourceKind {
 /// first section did. Only the empty palette asks this source anything.
 const LEAD_INTENT: f32 = 1.0;
 
-/// Someone in a workspace, as the desk's collaborators list them.
+/// Someone in a workspace, as the shell's collaborators list them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PersonHere {
     /// Their id within the workspace's roster: their face is theirs.
@@ -50,7 +50,7 @@ pub struct PersonHere {
     pub agent: bool,
     /// They are away from their machine: the face dims.
     pub away: bool,
-    /// The window they are in, when the desk shows it here.
+    /// The window they are in, when the shell shows it here.
     pub tab: Option<u64>,
 }
 
@@ -134,7 +134,7 @@ fn channel_row(channel: &str) -> String {
     format!("{CHAT_RECORD_KIND}/channels/{channel}/call")
 }
 
-/// Who is in the person's workspaces now, as the desk holds it.
+/// Who is in the person's workspaces now, as the shell holds it.
 pub struct Happening {
     /// The workspace in front, every workspace when `every_workspace`.
     every_workspace: bool,
@@ -376,7 +376,7 @@ mod tests {
             let rows = happening.query("");
             let call = rows.iter().find(|row| row.id == "call:c_voice").unwrap();
             let Target::Invoke(invoke) = &call.target else {
-                panic!("a call is joined by asking Chat, not by the desk");
+                panic!("a call is joined by asking Chat, not by the shell");
             };
             assert_eq!(invoke.app, "so.tilo.chat");
             assert_eq!(invoke.workspace, "workspace-3");

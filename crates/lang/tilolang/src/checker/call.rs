@@ -1025,7 +1025,7 @@ impl Checker<'_> {
                 "E047",
                 span,
                 "`outside` queues its effect on the action's resource, and this action takes none: \
-                 give it the resource the effect is about (`action go(d: Desk, …)`)",
+                 give it the resource the effect is about (`action go(d: Shell, …)`)",
             );
             return Ex::error();
         }

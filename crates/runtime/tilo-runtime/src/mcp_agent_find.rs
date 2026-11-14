@@ -1,5 +1,5 @@
 //! What an agent's `find` answers, and the path it names each result by: the
-//! desk's one search, then every hit's path built the way `tilo_ls` writes it.
+//! shell's one search, then every hit's path built the way `tilo_ls` writes it.
 
 use super::*;
 

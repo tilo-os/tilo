@@ -217,8 +217,8 @@ pub struct Options {
     /// bundle's directory (`ui::theme_bundle`); none takes the stock
     /// light and dark.
     pub themes: Vec<String>,
-    /// The layer of the package to lay out, when it has more than one root (`Desk`, the `shell`
-    /// record): a shot of the shell's desk is `--root Desk`.
+    /// The layer of the package to lay out, when it has more than one root (`Shell`, the `shell`
+    /// record): a shot of the shell is `--root Shell`.
     pub root: Option<String>,
     /// View states every window is staged at, as the app's own code names them (`place=Task.today`, a
     /// filter of the type the state queries; `side=Side.right`, a case of its enum): the place a

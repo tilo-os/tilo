@@ -33,7 +33,7 @@ tilo_test_env::scenario! {
     phase an_early_enter_opens_the_typed_rows_while_an_app_still_answers;
     // An Enter that waited for the typed query's rows opens their top row once they stand, though
     // an app's answer to the query is still coming: the rows shown are the search's answer, as
-    // the desk publishes it, and an app that never answers must not hold the key for ever.
+    // the shell publishes it, and an app that never answers must not hold the key for ever.
     {
         let (mut search, arrived) = with_a_late_app(data());
         search.palette_mut().set_query("notes");
@@ -73,7 +73,7 @@ tilo_test_env::scenario! {
         search.palette_mut().set_query("notes");
         search.palette_mut().activate_selected();
         search.observe();
-        // The desk's passes after the batch, up to the first that shows rows for "notes".
+        // The shell's passes after the batch, up to the first that shows rows for "notes".
         for _ in 0..50 {
             search.refresh();
             if !search.is_open()
@@ -83,7 +83,7 @@ tilo_test_env::scenario! {
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        // The pass that chose also leaves search: the desk reads that in the same pass, and a desk with
+        // The pass that chose also leaves search: the shell reads that in the same pass, and a shell with
         // nothing left to draw may take no other to notice it later.
         assert!(
             !search.is_open(),

@@ -455,7 +455,7 @@ fn reached(
                     == 3
                 && observed(driver, |node| {
                     node.role == ui::a11y::Role::Image
-                        && node.name.as_deref() == Some("Settings, the way your desk starts")
+                        && node.name.as_deref() == Some("Settings, the way your shell starts")
                 })
         }
         Some("scrolled") => blocks.len() > 20,

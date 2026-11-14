@@ -5,7 +5,7 @@
 //   node reloads.mjs SITE_URL OUT_DIR [TIMES]
 //
 // One returning person (past the first screen) enters the workspace the site
-// opens, waits for the desk to arrive and draw, then reloads TIMES times
+// opens, waits for the shell to arrive and draw, then reloads TIMES times
 // (default 20, or TILO_RELOADS). For each reload it prints one line:
 //
 //   TIMING reload n=3 result=ok deviceLocks=#0 hide=12 handlers=4 unload=0 fetch=310 connect=0
@@ -20,18 +20,18 @@
 // timing); `fetch` the new document's fetchStart, which waits for the old one
 // to let go; `connect`, `request`, `response`, `body` its connection's setup
 // and when it asked, its first byte and its last; `commit` the new document committed (Page.frameNavigated);
-// `arrived` the page says it arrived; `frame` its desk drew a frame. A reload
+// `arrived` the page says it arrived; `frame` its shell drew a frame. A reload
 // whose tab crashed, or whose page never arrived, is counted and the run goes
 // on in a fresh tab. It fails when any reload crashed or never arrived, when
 // the reloads made more than one device, and when a second tab of the browser
 // waits for the first, does not work beside it (each opens a window on the
-// workspace's desk and each must see the other's), or when the first,
+// workspace's shell and each must see the other's), or when the first,
 // reloaded beside it, is not the same device again. It prints the counts and
 // the slowest reloads either way.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
-import {deskMetrics, machine, stepLimit} from './waits.mjs';
+import {shellMetrics, machine, stepLimit} from './waits.mjs';
 
 const [site, out, timesArg] = process.argv.slice(2);
 if (!site || !out) {
@@ -147,7 +147,7 @@ browser.on(({method, sessionId, params}) => {
 const open = async () => {
   const tab = await browser.tab();
   await tab.send('Inspector.enable').catch(() => {});
-  await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics).catch(() => {});
+  await tab.send('Emulation.setDeviceMetricsOverride', shellMetrics).catch(() => {});
   await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: EARLY});
   await tab.navigate(site);
   const arrived = await until(tab, ARRIVED, stepLimit(6));
@@ -168,7 +168,7 @@ for (let n = 1; n <= times; n += 1) {
   await tab.evaluate(LATE).catch(() => {});
   committed.delete(tab.sessionId);
   const release = process.env.TILO_RELOADS_RELEASE_GPU === '1' && n % 2 === 0;
-  // Every second reload (TILO_RELOADS_IDLE=0 for none) waits until the desk
+  // Every second reload (TILO_RELOADS_IDLE=0 for none) waits until the shell
   // has drawn nothing for ten seconds, so no frame of the old page is still
   // being drawn as it goes: side by side with the reloads that go at once,
   // they say whether a frame still drawing is what holds the new page back.
@@ -233,14 +233,14 @@ if (keys.length > 1) {
 // A second tab of the same browser while the first is in: it never waits for
 // the first, it is in and works at once, as a device of its own (a tab is
 // one, as the protocol takes one writer per device key). Both edit the
-// workspace's desk, each opening a window, and each sees the other's. Then
+// workspace's shell, each opening a window, and each sees the other's. Then
 // the first reloads under that contention and is the same device again.
 const WINDOWS = `JSON.stringify((globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).map(entry => entry.label))`;
 const opens = app => `globalThis.tiloMount.navigation.dispatch({effect: 'open-app', args: {app: ${JSON.stringify(app)}}}).then(() => true)`;
 const shows = label => `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === ${JSON.stringify(label)})`;
 const tabs = {waited: false, secondIn: false, secondSeesFirst: false, firstSeesSecond: false, reloadedIn: false, sameDevice: false};
 const second = await browser.tab();
-await second.send('Emulation.setDeviceMetricsOverride', deskMetrics).catch(() => {});
+await second.send('Emulation.setDeviceMetricsOverride', shellMetrics).catch(() => {});
 await second.send('Page.addScriptToEvaluateOnNewDocument', {source: EARLY});
 await second.navigate(site);
 const secondArrived = await until(second, `document.documentElement.dataset.custody === 'waiting' ? 'waiting' : (${ARRIVED})`, stepLimit(6));
@@ -276,8 +276,8 @@ const twoTabsBad = tabs.waited || !tabs.secondIn || !tabs.secondSeesFirst || !ta
   || !tabs.sameDevice || tabKeys.length !== 2;
 if (tabs.waited) console.error('FAIL: a second tab of the browser waited for the first');
 if (!tabs.secondIn) console.error('FAIL: a second tab of the browser never came in');
-if (tabs.secondIn && !tabs.secondSeesFirst) console.error('FAIL: the window the first tab opened is not on the second tab\'s desk');
-if (tabs.secondIn && !tabs.firstSeesSecond) console.error('FAIL: the window the second tab opened is not on the first tab\'s desk');
+if (tabs.secondIn && !tabs.secondSeesFirst) console.error('FAIL: the window the first tab opened is not on the second tab\'s shell');
+if (tabs.secondIn && !tabs.firstSeesSecond) console.error('FAIL: the window the second tab opened is not on the first tab\'s shell');
 if (tabs.secondIn && !(tabs.reloadedIn && tabs.sameDevice)) console.error('FAIL: the first tab, reloaded beside the second, did not come back as the same device');
 if (tabKeys.length !== 2) console.error(`FAIL: two tabs, reloaded ${times + 1} times between them, hold ${tabKeys.length} device keys, not 2`);
 await second.close().catch(() => {});

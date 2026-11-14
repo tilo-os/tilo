@@ -1,5 +1,5 @@
 //! A window's search, and the host that answers for it: the entries an app published into the
-//! session's index, which is what an app in a process of its own gives the desk.
+//! session's index, which is what an app in a process of its own gives the shell.
 
 use super::*;
 use crate::model::{Hit, Source, Target};
@@ -39,8 +39,8 @@ impl Source for Conversations {
 }
 
 /// A window's search asks what its host adds for it: the entries the app published into the
-/// session's index, which is everything an app in a process of its own gives the desk. The
-/// desk's own rows are not the window's.
+/// session's index, which is everything an app in a process of its own gives the shell. The
+/// shell's own rows are not the window's.
 #[test]
 fn a_windows_search_finds_what_the_host_adds_for_the_app() {
     let mut search = DesktopSearch::new();

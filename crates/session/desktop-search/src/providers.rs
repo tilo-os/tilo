@@ -250,7 +250,7 @@ impl Source for Commands {
 
     fn query(&self, needle: &str) -> Vec<Hit> {
         // Nothing typed lists the commands that stand unasked, in the order
-        // the desk offers them: what makes something first, and what only
+        // the shell offers them: what makes something first, and what only
         // takes something away or is looked for by name never. Typing finds
         // every one of them. Each stands below the one before it, and one
         // the person chose before rises above the rest.
@@ -1737,7 +1737,7 @@ mod tests {
         resource
     }
 
-    /// The verbs a person may do from an empty card, in the order the desk
+    /// The verbs a person may do from an empty card, in the order the shell
     /// offers them: making something and bringing someone in, then locking
     /// the screen. What only takes something away or closes the computer is
     /// not listed unasked, and typing still finds every one of them.
@@ -1845,8 +1845,8 @@ mod tests {
             assert_eq!(typed("new workspace"), ["New workspace"]);
         }
 
-        phase the_workspaces_verbs_keep_the_desks_order_under_what_was_chosen;
-        // Nothing typed offers the workspace's own verbs in the order the desk
+        phase the_workspaces_verbs_keep_the_shells_order_under_what_was_chosen;
+        // Nothing typed offers the workspace's own verbs in the order the shell
         // gives them; one the person chose before rises above the rest.
         {
             let commands = Commands::new(vec![

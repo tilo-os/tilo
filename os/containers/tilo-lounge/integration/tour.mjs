@@ -1,9 +1,9 @@
 // A newcomer's tour of the web page, for a person to look at: the built
 // bundle in headless Chromium against the Lounge's relay, walked through the
-// screens a first-time visitor meets — the arrival, the desk, the search,
+// screens a first-time visitor meets — the arrival, the shell, the search,
 // each everyday app, a note written and renamed, Settings and History — then
 // again in the dark appearance and at a phone's width. Every screen is kept as
-// a picture with the names the desk published and what the console said, so
+// a picture with the names the shell published and what the console said, so
 // a review reads what a person saw. It fails nothing on looks; it fails only
 // when the page itself reports an exception or a panic.
 //
@@ -42,7 +42,7 @@ const report = {site, relay, screens: [], problems: []};
 // The screens are numbered as they are taken, across the three appearances, so
 // a listing of them reads in the order a newcomer met the site.
 let shotNo = 0;
-// What the tour spent waiting for the desk to stand still: a fixed pause after
+// What the tour spent waiting for the shell to stand still: a fixed pause after
 // each step adds up over three appearances, and this says how much of the tour
 // it was, and what each wait ended on.
 let quietMs = 0;
@@ -184,7 +184,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
       await sleep(700);
       return;
     }
-    // Moved twice, so the desk sees the pointer arrive even where it already was; pressed with
+    // Moved twice, so the shell sees the pointer arrive even where it already was; pressed with
     // the button held, as a person's press is (a press that says no button is held is a hover).
     await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: x - 1, y});
     await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
@@ -208,10 +208,10 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     }
     await sleep(600);
   };
-  // The desk standing still before a picture: three frames, or the silence of
-  // a desk with nothing left to draw (`idleMs`), then a moment as a person
+  // The shell standing still before a picture: three frames, or the silence of
+  // a shell with nothing left to draw (`idleMs`), then a moment as a person
   // would look at it. Waiting only for frames costs the whole timeout on every
-  // screen a still desk drew nothing for.
+  // screen a still shell drew nothing for.
   const quiet = async (ms = 400) => {
     const began = Date.now();
     const how = await waits.settle({evaluate: tab.evaluate.bind(tab), by: 3, owed: () => true, idleMs: 2500, sleep, timeoutMs: 20_000});
@@ -219,7 +219,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     await sleep(ms);
     quietMs += Date.now() - began;
   };
-  // Press the control named `control` (a name, or a test of one) where the desk last laid it
+  // Press the control named `control` (a name, or a test of one) where the shell last laid it
   // out; `where` narrows it to the place it stands, such as the top bar.
   const press = async (control, where = () => true) => {
     const tree = await names();
@@ -267,7 +267,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
       report.problems.push(`${name}: Escape left the search open`);
       await shoot('search-stuck');
     }
-    // The keyboard goes to the desk without a click: a click to give it focus lands on whatever
+    // The keyboard goes to the shell without a click: a click to give it focus lands on whatever
     // stands there, a row of a search still up or a window's button.
     await tab.evaluate('globalThis.tiloMount?.canvas?.focus({preventScroll: true})').catch(() => {});
     await key('k', mac ? 4 : 2);
@@ -314,7 +314,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
       console.log(`  search stayed open: ${after}`);
     }
     await sleep(500);
-    // What the desk holds now, and what the page last said, for the log.
+    // What the shell holds now, and what the page last said, for the log.
     const held = await tab.evaluate(`JSON.stringify({
       windows: (globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).map(e => (e.app ?? '?') + ':' + (e.label ?? '')),
       status: document.getElementById('status')?.textContent?.trim().slice(0, 200) ?? null,
@@ -334,21 +334,21 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
   // has the command, and else skips: either way the page opens their own
   // workspace.
   let agent = null;
-  if (agentEnv && name === 'desk' && await tab.evaluate(`!!document.getElementById('first-run-agent')?.offsetParent`).catch(() => false)) {
+  if (agentEnv && name === 'shell' && await tab.evaluate(`!!document.getElementById('first-run-agent')?.offsetParent`).catch(() => false)) {
     await tab.waitFor(`document.getElementById('first-run')?.dataset.setup === 'ready'`, {timeout: 60_000}).catch(() => {});
     const prompt = await tab.evaluate(`document.getElementById('first-run-offer')?.textContent ?? ''`);
     await tab.evaluate(`document.getElementById('first-run-agent').click()`);
     await sleep(1500);
     await shoot('agent-waiting');
     const match = prompt.match(/(?:tilo|sh -s) login (\S+)(?: --site (\S+?))?(?:,|\s|$)/);
-    if (!match) report.problems.push(`desk: the prompt names no login code: ${prompt}`);
+    if (!match) report.problems.push(`shell: the prompt names no login code: ${prompt}`);
     else {
       const login = await tilo(['login', match[1], '--site', match[2] ?? site]);
       console.log(`  tilo login -> ${login.code}: ${(login.stdout + login.stderr).replace(/\s+/g, ' ').slice(0, 800)}`);
       await sleep(1500);
       await shoot('agent-connected');
       await tab.waitFor(`document.documentElement.dataset.firstRun === undefined`, {timeout: 90_000})
-        .catch(() => report.problems.push('desk: the door never left after tilo login'));
+        .catch(() => report.problems.push('shell: the door never left after tilo login'));
       await tab.waitFor('!!globalThis.tiloMount?.state()?.frames', {timeout: 180_000}).catch(() => {});
       await quiet(4000);
       await shoot('own-workspace');
@@ -370,12 +370,12 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     await sleep(2000);
     await shoot('skipped');
     await tab.waitFor('!!globalThis.tiloMount?.state()?.frames', {timeout: 180_000})
-      .catch(() => report.problems.push(`${name}: no desk after skipping`));
+      .catch(() => report.problems.push(`${name}: no shell after skipping`));
     await quiet(4000);
     await shoot('own-workspace');
   }
-  if (name !== 'desk') {
-    // The other appearances look at the desk, the search, one app and Settings.
+  if (name !== 'shell') {
+    // The other appearances look at the shell, the search, one app and Settings.
     await step('search', async () => { await search('notes'); await shoot('search-notes'); await opened(); await quiet(); await shoot('notes'); });
     await step('settings', async () => { await search('settings', 1); await quiet(); await shoot('settings'); });
   // The person's devices and the agents acting for them, found by name.
@@ -407,7 +407,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
   await step('workspaces', async () => { await search('workspace'); await shoot('search-workspace'); await key('Escape'); await quiet(500); });
   await step('tree', async () => {
     const tree = await names();
-    writeFileSync(join(out, 'desk-tree.json'), JSON.stringify(tree, null, 1));
+    writeFileSync(join(out, 'shell-tree.json'), JSON.stringify(tree, null, 1));
     // The bars' controls by name, for the next tour to press.
     const bars = tree.filter(([, , n, , b]) => n && b && b[1] < 80).map(([, role, n, , b]) => `${role}:${n}@${b[0]},${b[1]}`);
     console.log(`bars: ${[...new Set(bars)].join(' | ').slice(0, 3000)}`);
@@ -439,7 +439,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
   await tab.close().catch(() => {});
 };
 
-// One appearance after another: three desks drawn at once share one software
+// One appearance after another: three shells drawn at once share one software
 // rasteriser and one machine, and the tour then reads pages that never arrived
 // (measured: 19 minutes with three at once against 23 one after another, and
 // screens of a search that was still opening). One appearance that stops — a
@@ -453,10 +453,10 @@ const appearance = async (options, at) => {
   }
   mark(at);
 };
-await appearance({name: 'desk', width: 1280, height: 800}, 'the desk appearance');
+await appearance({name: 'shell', width: 1280, height: 800}, 'the shell appearance');
 await appearance({name: 'dark', width: 1280, height: 800, scheme: 'dark'}, 'the dark appearance');
 await appearance({name: 'phone', width: 390, height: 844, mobile: true}, 'the phone appearance');
 writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2));
 await browser.close().catch(() => {});
-console.log(`TIMING quiet=${(quietMs / 1000).toFixed(1)}s of the tour was waiting for the desk to stand still (${Object.entries(quietHow).map(([how, n]) => `${n} ${how}`).join(', ')})`);
+console.log(`TIMING quiet=${(quietMs / 1000).toFixed(1)}s of the tour was waiting for the shell to stand still (${Object.entries(quietHow).map(([how, n]) => `${n} ${how}`).join(', ')})`);
 console.log(JSON.stringify({screens: report.screens.length, problems: report.problems}));

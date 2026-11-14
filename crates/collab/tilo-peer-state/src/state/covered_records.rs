@@ -14,7 +14,7 @@ use super::{
 /// Hold every record the workspace's governance covers as empty and `peer`
 /// holds nothing of.
 ///
-/// The workspace holds such a record and every member may write it, its desk's
+/// The workspace holds such a record and every member may write it, its shell's
 /// for one. The replica holds it as if the checkpoint had reached it, so a
 /// write of its own builds on a record it has, and the checkpoint it would
 /// retransmit is the one the coverage names.

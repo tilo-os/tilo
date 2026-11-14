@@ -207,10 +207,14 @@ mod tests {
                 .pages
                 .iter()
                 .all(|(_, page)| page.title.is_empty()),
-            "the note keeps no title, so the desk says what an unnamed note is"
+            "the note keeps no title, so the shell says what an unnamed note is"
         );
         let hits = search(&notebook).search("ohne");
-        assert_eq!(hits.len(), 1, "a German desk finds it by the German word");
+        assert_eq!(
+            hits.len(),
+            1,
+            "the German locale finds it by the German word"
+        );
         assert_eq!(hits[0].title, "Ohne Titel");
         assert_eq!(hits[0].action_id, crate::actions::page_resource_id(id));
         CATALOG.set_locale("en-US");

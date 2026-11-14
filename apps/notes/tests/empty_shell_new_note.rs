@@ -1,6 +1,6 @@
 //! A window of Notes with nothing in it yet, hosted in a desktop tab as the
-//! browser desk hosts it: the window must offer New note by name, the way it
-//! does once a note exists, so a person (or an agent reading the desk's
+//! browser shell hosts it: the window must offer New note by name, the way it
+//! does once a note exists, so a person (or an agent reading the shell's
 //! semantics) can make the first one.
 
 use crate::component_support::{self, NotebookFixture};
@@ -13,7 +13,7 @@ use ui::application::AppComponent;
 use ui::headless::FrameHarness;
 use ui::widget::TileHost;
 
-/// Answers with a notice until its component arrives, as the browser desk
+/// Answers with a notice until its component arrives, as the browser shell
 /// does while a tab's record is still loading.
 struct Arriving(Rc<RefCell<Option<AppComponent>>>);
 impl TileSource for Arriving {
@@ -28,9 +28,9 @@ impl TileSource for Arriving {
     }
 }
 
-/// A desk showing one window of Notes over `f`'s notebook, the record having
-/// arrived after the desk was already running.
-fn desk(f: &NotebookFixture, width: u32) -> (FrameHarness, ui::record::RecordCheckout) {
+/// A shell showing one window of Notes over `f`'s notebook, the record having
+/// arrived after the shell was already running.
+fn shell(f: &NotebookFixture, width: u32) -> (FrameHarness, ui::record::RecordCheckout) {
     let checkout = component_support::notebook(f);
     let mut minter = IdMinter::new(7);
     let tab = Tab {
@@ -46,7 +46,7 @@ fn desk(f: &NotebookFixture, width: u32) -> (FrameHarness, ui::record::RecordChe
         pinned: false,
     };
     let tab_id = tab.id;
-    let tree = seed_tree(&mut minter, "Desk", vec![tab]);
+    let tree = seed_tree(&mut minter, "Shell", vec![tab]);
     let arriving = Rc::new(RefCell::new(None));
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Arriving(arriving.clone())));
     handle.set_viewport_width(f64::from(width));
@@ -94,13 +94,13 @@ fn nodes_named(
 /// A window of Notes with no note in it still offers New note, in the notebook itself (the
 /// page tree's header, or the empty notebook's own call), never in the window's bar, whose
 /// one "+" is the strip's: named for a screen reader and an agent, and pressing it makes the
-/// note. Both widths a person meets it at: a window of a desk, and a phone's.
+/// note. Both widths a person meets it at: a window of a shell, and a phone's.
 #[test]
 fn an_empty_notes_window_offers_new_note_and_it_makes_a_note() {
     ui::i18n::I18nManager::init("en-US");
     for width in [1280, 390] {
         let f = NotebookFixture::empty();
-        let (mut harness, checkout) = desk(&f, width);
+        let (mut harness, checkout) = shell(&f, width);
         assert_eq!(
             page_count(&f, &checkout),
             0,

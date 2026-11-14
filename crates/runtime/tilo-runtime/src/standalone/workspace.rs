@@ -48,7 +48,7 @@ impl ProfileWorkspace {
         let path = root.join(STANDALONE_WORKSPACE);
         let tree = match read_tree(&path) {
             Ok(tree) => tree,
-            // The desk a profile starts on is kept as soon as it is made: a
+            // The shell a profile starts on is kept as soon as it is made: a
             // later start reads this one instead of making another with fresh
             // ids, so everything the person opened stays in the workspace it
             // was opened in.
@@ -354,7 +354,7 @@ pub(super) fn bootstrap() -> Layout {
     let mut ids = IdMinter::default();
     let workspace = WorkspaceId::new();
     let strip = StripId(ids.mint());
-    // A desk nobody has named keeps no name: the desk that shows it names the workspace and the
+    // A shell nobody has named keeps no name: the shell that shows it names the workspace and the
     // strip it comes with in the language of whoever reads it.
     let home = {
         let mut workspace = Workspace::new(workspace, "");

@@ -19,7 +19,7 @@ fn picked(session: &mut Session) -> Vec<String> {
     picked
 }
 
-/// The window of Tasks of `route`'s workspace that takes the desk's tab `tab`, whose host keeps
+/// The window of Tasks of `route`'s workspace that takes the shell's tab `tab`, whose host keeps
 /// what it keeps in `storage`.
 fn tasks(route: &RouteSpec, tab: u64, storage: Option<std::path::PathBuf>) -> Session {
     let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
@@ -125,7 +125,7 @@ fn relay(from: &Session, to: &mut Session) {
 #[test]
 fn the_place_a_person_picks_reaches_their_other_device() {
     let route = RouteSpec::app(super::TASKS, uuid::Uuid::new_v4());
-    // The same window, the desk's same tab, on the laptop and on the phone.
+    // The same window, the shell's same tab, on the laptop and on the phone.
     let mut laptop = tasks(&route, 1, None);
     let mut phone = tasks(&route, 1, None);
     laptop.wire().1.borrow_mut().clear();

@@ -835,7 +835,7 @@ tilo_test_env::scenario! {
             assert_eq!(
                 presentation.window_rect,
                 stable_content.inflate(8.0, 8.0),
-                "over the desk the window is the card the layer places"
+                "over the shell the window is the card the layer places"
             );
             if let Some(prior) = prior_height {
                 assert_eq!(
@@ -1916,7 +1916,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             count_hits(&app, |hit| matches!(hit, Hit::CallDragHandle)),
             0,
-            "over the desk the call is the card's, not a draggable huddle"
+            "over the shell the call is the card's, not a draggable huddle"
         );
         assert!(
             count_hits(&app, |hit| matches!(hit, Hit::CallOpenWindow)) >= 1,
@@ -1983,7 +1983,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             count_hits(&app, |hit| matches!(hit, Hit::CallDragHandle)),
             0,
-            "over the desk the call is the card's, not a draggable huddle"
+            "over the shell the call is the card's, not a draggable huddle"
         );
         assert!(
             count_hits(&app, |hit| matches!(hit, Hit::CallOpenWindow)) >= 1,

@@ -47,9 +47,9 @@ fn banners() -> Surface {
 #[test]
 fn the_session_starts_the_banners_as_a_trusted_client_on_their_layer() {
     let mut session = session_with(&[]);
-    // The desk as it stands before the banners appear: what they leave alone
+    // The shell as it stands before the banners appear: what they leave alone
     // has to stay exactly this, pixel for pixel.
-    let desk = drawn_desk(&mut session);
+    let shell = drawn_shell(&mut session);
     session
         .start_surface(&banners())
         .expect("the banners start");
@@ -62,12 +62,12 @@ fn the_session_starts_the_banners_as_a_trusted_client_on_their_layer() {
 
     // What they drew is their own frame, composited like any client's: the
     // stack at the output's top right, and what lies left of it untouched.
-    let frame = drawn(&mut session, &desk);
+    let frame = drawn(&mut session, &shell);
     save(&frame, "session-banners");
     let beside = WIDTH - width() - 20;
     assert_eq!(
         pixel(&frame, beside, 100),
-        pixel(&desk, beside, 100),
+        pixel(&shell, beside, 100),
         "the banners take exactly their width"
     );
 
@@ -81,7 +81,7 @@ fn the_session_starts_the_banners_as_a_trusted_client_on_their_layer() {
 #[test]
 fn the_session_asks_the_banners_to_focus_their_newest() {
     let mut session = session_with(&[]);
-    let desk = drawn_desk(&mut session);
+    let shell = drawn_shell(&mut session);
     session
         .start_surface(&banners())
         .expect("the banners start");
@@ -143,15 +143,15 @@ fn the_session_asks_the_banners_to_focus_their_newest() {
         "the banners ran it: {ended:?}"
     );
 
-    let frame = drawn(&mut session, &desk);
+    let frame = drawn(&mut session, &shell);
     save(&frame, "session-banners-focused");
     session.stop_surface("notification-banners");
 }
 
 /// The frame once the banners have drawn into it.
-fn drawn(session: &mut Session, desk: &Screenshot) -> Screenshot {
+fn drawn(session: &mut Session, shell: &Screenshot) -> Screenshot {
     let deadline = Instant::now() + OPENING;
-    let stack_before = pixel(desk, WIDTH - width() / 2, 100);
+    let stack_before = pixel(shell, WIDTH - width() / 2, 100);
     loop {
         pump(session);
         let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
@@ -191,9 +191,9 @@ fn session_with(surfaces: &[Surface]) -> Session {
     .expect("session")
 }
 
-/// The desk as it stands before the surface appears: pumped until it has
+/// The shell as it stands before the surface appears: pumped until it has
 /// drawn, so what the surface leaves alone can be compared with it.
-fn drawn_desk(session: &mut Session) -> Screenshot {
+fn drawn_shell(session: &mut Session) -> Screenshot {
     let deadline = Instant::now() + OPENING;
     let mut last = session.compositor().screenshot("HEADLESS-1").expect("shot");
     loop {
@@ -204,7 +204,7 @@ fn drawn_desk(session: &mut Session) -> Screenshot {
             return frame;
         }
         last = frame;
-        assert!(Instant::now() < deadline, "the desk never drew");
+        assert!(Instant::now() < deadline, "the shell never drew");
     }
 }
 

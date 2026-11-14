@@ -24,7 +24,7 @@ import time
 from tilo import AsyncTilo, Refused
 
 DOOR, KEY, RECORDS, MESSAGES = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
-WORDS = ("tilo lounge workspace desk window share agent record history people call notes "
+WORDS = ("tilo lounge workspace shell window share agent record history people call notes "
          "sheets music photos relay door browser terminal build release sync device").split()
 CHANNELS = ("c_general", "c_feedback")
 

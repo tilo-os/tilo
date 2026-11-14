@@ -205,7 +205,7 @@ fn a_saved_shortcut_is_written_as_one_of_the_workspaces_settings() {
     assert_eq!(
         governor.workspace().workspace_shortcuts(),
         vec![tilo_automation::SavedShortcut::encode(&water)],
-        "the desk and every reader see the shortcut the workspace holds"
+        "the shell and every reader see the shortcut the workspace holds"
     );
 
     let delete = WorkspaceMembershipCommand::Settings(SettingsChange::Shortcuts(

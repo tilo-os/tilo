@@ -1365,7 +1365,7 @@ fn the_call_cards_own_frame_answers_its_presses() {
         &mut app,
         Rect::new(0.0, 0.0, 1600.0, 900.0),
     );
-    // Over the desk the shell gives the call a window of its own, and that
+    // Over the background the shell gives the call a window of its own, and that
     // window paints the card.
     let handle = app
         .hits
@@ -1535,7 +1535,7 @@ tilo_test_env::scenario! {
             &cursor_moved(control.center().x, control.center().y),
         );
         assert_eq!(app.call_hovered, Some(Hit::CallParticipantsToggle));
-        // Over the desk the pointer leaves the app's surface altogether.
+        // Over the shell the pointer leaves the app's surface altogether.
         feed(
             &mut app,
             &mut doc,

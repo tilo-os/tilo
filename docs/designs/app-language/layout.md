@@ -46,7 +46,7 @@ aspect ratio and text size. Getting it wrong should take effort. The engine unde
 | `spacer` | takes leftover space |
 
 Widgets own their padding and size, as the design system says. A container that holds what it did
-not draw — a desk's surfaces, a panel's body — keeps a padding of its own (`padding: .section`):
+not draw — a shell's surfaces, a panel's body — keeps a padding of its own (`padding: .section`):
 the room it holds back on every side. Text wraps by default; `lines: n` clamps it.
 
 ## 4. Responding to space

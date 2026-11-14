@@ -71,7 +71,7 @@ pub fn line(app: &str, stream: &str, said: &str) -> String {
 #[derive(Debug)]
 pub struct AppOutput {
     app: String,
-    /// Where the app's stderr also goes when the session's desk names a
+    /// Where the app's stderr also goes when the session's shell names a
     /// directory for it (`TILO_APP_STDERR_DIR`), as a headless acceptance
     /// reads it.
     file: Option<Mutex<std::fs::File>>,

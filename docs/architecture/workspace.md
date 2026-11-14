@@ -122,11 +122,11 @@ device's peers:
   branch then asks for each workspace's keys as itself, and a committer admits it
   with a `Welcome` and the key history, as for any further device of a member.
   The source stays the member it was.
-- **Workspace membership.** The workspaces on the copied desk are held as the
+- **Workspace membership.** The workspaces on the copied shell are held as the
   source's device: a workspace whose governance holds no certificate for this
   device is entered at its host as the person's further device — at the host
   the person's list names, or for one joined at someone's site, the host its
-  own state names — and stays on the desk meanwhile, also when an entry does
+  own state names — and stays on the shell meanwhile, also when an entry does
   not land. The membership the host answers replaces the source's enrollment
   the copy held, which was never this device's to act with.
 - **The person's own store.** The store the source kept is set aside beside it
@@ -418,20 +418,20 @@ another workspace it hosts. A device that links later reads it in the
 governance its link starts with. The admission matters to a share as much as
 the share does: a device that was never told of a newcomer takes no commit
 that brings the newcomer into the workspace's key group, and opens nothing its
-host seals under the keys that follow. A desk takes the grants into its own
+host seals under the keys that follow. A shell takes the grants into its own
 copy of a workspace only when the device holds no governance of that
-workspace: one that lives on that desk alone, which has no other device to
+workspace: one that lives on that shell alone, which has no other device to
 tell.
 
 Every other device shows the shared window as a window that runs on the
-sharing device, and asks that device for its pictures. Where a desk already
+sharing device, and asks that device for its pictures. Where a shell already
 lists the window as one that runs on that device, it is pictured in that tab,
 and the tab stays when the share ends: the window still runs there, and its
-tab is the layout's. Otherwise it stands in a tab of its own. Where a desk
+tab is the layout's. Otherwise it stands in a tab of its own. Where a shell
 lists the window under the window's own id as an app's window, that tab is the
 device's own view of it, which it opened itself: it is left as it is, and the
 shared window stands beside it in a tab the viewing device mints. That tab is
-the viewing desk's alone, and never goes into the desk's record: a window that
+the viewing shell's alone, and never goes into the shell's record: a window that
 runs on another device is that device's to add there. The two are different
 things. The view is what the viewing device opened; the shared window is what
 runs on the sharer's device, which is what someone reviewing it has to see.
@@ -455,13 +455,13 @@ share it: a person shares a window on the device that has it.
 
 A window whose app draws its own page, as the Browser's does, is shared as
 that page and not as a picture of it. Its app hands the session the page as a
-display list while a member's desk shows the window, the list travels the
+display list while a member's shell shows the window, the list travels the
 live plane on a track of its own, sealed as the pictures are, and the device
 showing the window draws it with its own text and vector stack. Nothing of
 such a window is captured or encoded, and the device showing it sends it no
 input. The tile that draws the page names the page's text, each run where it
 is drawn, so a reader who cannot see the page, and a tool that lists what a
-desk shows, read what is on the screen.
+shell shows, read what is on the screen.
 
 The window's pictures travel the workspace's live plane, which the device
 serving the workspace relays for its members. A device is in the plane once
@@ -493,7 +493,7 @@ reports nothing by itself: `live` names each workspace's plane as open or by
 what it waits for (the keys, the device that relays it, that device being
 busy, or its refusal), a window shared or watched under a plane that is not open says the
 same on its own row (`waiting_for`), and a shared window says whether it goes
-out to a member's desk now (`streaming`): a captured window as soon as a desk
+out to a member's shell now (`streaming`): a captured window as soon as a shell
 asks for it, a window shared as its page once its app handed a page over. A
 stream's start puts nothing on a screen, so a device that shows a window says
 whether its tile holds it (`pictured`: a decoded picture, or the page's whole
@@ -507,7 +507,7 @@ watches a window, or is in control of it, only while it goes out. `streaming`
 says what left the sharing device; whether a viewer's own tile holds the
 window is that device's to say (`pictured`), and it says so in the turn the
 tile takes the window or loses it: a picture is decoded off the loop and taken
-into the tile while the desk builds a frame, so the session asks its tiles
+into the tile while the shell builds a frame, so the session asks its tiles
 again once that frame is drawn. An open
 plane also says the epoch it seals under, what it opened and could not open
 of the other devices, and which of its windows another device asks it for
@@ -544,26 +544,26 @@ customer. A branch is a **new workspace of the person's own** that starts with
 everything the source holds and goes on apart from it. It never merges back;
 code comes back through git, not through Tilo.
 
-One verb makes it, on the desk's chrome beside `new-workspace`:
+One verb makes it, on the shell's chrome beside `new-workspace`:
 `desktop:chrome` `branch-workspace` {`source`, `name`}, where `source` is the
-workspace's name, its decimal id or the id it is shared under. The desk,
+workspace's name, its decimal id or the id it is shared under. The shell,
 agents and automations use that action; the workspace menu and search offer it
 as "Branch workspace", and the CLI is `tilo workspace branch <source> <name>`.
 Tools that spell the workspace verbs `workspace.create` and `workspace.branch`
 on the control socket reach the same two actions. The action answers the new
-workspace's id at once; the copy runs off the session's loop, so the desk never
-waits for it, and the branch goes on the desk — with the person in it — once
+workspace's id at once; the copy runs off the session's loop, so the shell never
+waits for it, and the branch goes on the shell — with the person in it — once
 what it holds is there, so no app opens in it before its records are and founds
 an empty record of its own. The person is told when it is ready, and what did
 not come along if anything did not.
 
 **Who may branch.** Whoever reads the whole workspace: this device holds it and
 its governance names the person as its owner or as a member not removed
-(a workspace the device holds no governance of is the desk's own, and the
+(a workspace the device holds no governance of is the shell's own, and the
 person's unless it names someone else). A record sealed to readers that exclude
 this device is one it cannot read, so it is not branched. An agent may branch
 only the workspace it works in, and only as the person's grants let it take
-the desk's actions; a branch of another workspace is refused at the MCP server.
+the shell's actions; a branch of another workspace is refused at the MCP server.
 
 **What a branch copies**
 
@@ -592,10 +592,10 @@ the desk's actions; a branch of another workspace is refused at the MCP server.
   and its `TILO_WORKSPACE` are the branch's, so its sessions and its MCP server
   act in the branch only. File actions not carried out yet stay with the
   source. Images are the device's and shared already.
-- **The desk.** The source's strips, a window for each of this device's
+- **The shell.** The source's strips, a window for each of this device's
   windows in it (opened again by its app, in the branch), and what the
   workspace grants its apps, its own files named as the branch's. The branch's
-  shared desk record is written from these windows, never copied from the
+  shared shell record is written from these windows, never copied from the
   source's record of everyone's.
 - Secrets (the Secret Service, the passwords vault, provider keys) are the
   person's on the device, not the workspace's: a branch on the same device has

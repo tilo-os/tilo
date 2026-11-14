@@ -1,7 +1,7 @@
 //! What an application is called to the person, and what a window of it is
 //! called: one answer for every surface that names an app or a window — the
 //! window bars, the strips and their tabs, the switcher, the overview, the
-//! window menus, the desk's published actions and search's rows. A surface
+//! window menus, the shell's published actions and search's rows. A surface
 //! never shows an app id and never falls back to one: an id with no name
 //! anywhere is written as words.
 

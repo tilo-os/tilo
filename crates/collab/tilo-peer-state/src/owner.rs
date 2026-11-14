@@ -143,7 +143,7 @@ pub trait Store: std::any::Any + collab_types::signer::MaybeSendSync {
     fn healthy(&self) -> bool;
     /// Whether such an uncertain publication may have made `workspace` durable.
     fn uncertain(&self, workspace: WorkspaceId) -> bool;
-    /// Whether the host's desk holds `workspace`.
+    /// Whether the host's shell holds `workspace`.
     fn shows(&self, workspace: WorkspaceId) -> bool;
     /// Make `next` durable, then call `install` before anyone can observe
     /// the new record. Nothing is installed when this fails.

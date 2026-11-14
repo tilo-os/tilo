@@ -187,7 +187,7 @@ class TiloVm:
         return self.raw({"op": "list_targets"})["targets"]
 
     def windows(self) -> list[dict]:
-        """The desk's open windows: each with `window` (the mapped window's id), `app_id`, `rect`
+        """The shell's open windows: each with `window` (the mapped window's id), `app_id`, `rect`
         (`[x, y, width, height]`, null while no window of the tab is mapped) and `frames`, how many
         frames that window's client committed."""
         return self.raw({"op": "windows"})["answer"]["windows"]

@@ -40,7 +40,7 @@ view places(p: Places) {
                 }
                 body: {
                     ui.Text(
-                        "A window on the desk: its bar, its controls, what it shows.",
+                        "A window on the shell: its bar, its controls, what it shows.",
                         role: .caption,
                         secondary: true,
                     )

@@ -1,5 +1,5 @@
-//! A desk style is a view of the session's layout that any installed package declares
-//! (`docs/designs/app-language/shell.md` §6). The shell's `desk_view` draws the person's chosen
+//! A style is a view of the session's layout that any installed package declares
+//! (`docs/designs/app-language/shell.md` §6). The shell's `style_shell` draws the person's chosen
 //! style by `show(a, view: <style>)`, and the style is a view of a package other than the one
 //! holding the layout type: `show` resolves it by the type its view takes, never by a list
 //! in code. A style of the shell's own package is found by `views_of_type` as before; one of
@@ -11,7 +11,7 @@ mod cases {
     use tilolang_runtime::{AmStore, Meta, Runtime, SimpleAuthority, ViewInstance};
 
     /// The session's layout type, as the shell's package declares it: the origin is what
-    /// makes a view of it a desk style.
+    /// makes a view of it a style.
     const SESSION: &str = r#"{
         "app": "so.tilo.session",
         "types": [
@@ -26,7 +26,7 @@ mod cases {
     }"#;
 
     /// The shell's package: it declares the layout type and one style of it of its own
-    /// (`strips`), and the `desk_view` that draws the person's chosen style.
+    /// (`strips`), and the `style_shell` that draws the person's chosen style.
     const SHELL: &str = r#"app so.tilo.shell "Shell"
 
 use so.tilo.session as session
@@ -42,7 +42,7 @@ type LayoutPlace (origin: session.layout_place) {
 
 root layout: Layout
 
-default view desk_view for layout
+default view style_shell for layout
 
 /// The shipped strips style.
 view strips(a: Layout) {
@@ -54,9 +54,9 @@ view strips(a: Layout) {
     }
 }
 
-/// What draws the desk: the style the person chose, by name. The `Viewing` record holds the
+/// What draws the shell: the style the person chose, by name. The `Viewing` record holds the
 /// style as a package and a view (`me.styles:timeline`), and `show` finds it by that.
-view desk_view(a: Layout) {
+view style_shell(a: Layout) {
     show(a, view: "me.styles:timeline")
 }
 
@@ -116,7 +116,7 @@ view timeline(a: shell.Layout) {
     }
 
     tilo_test_env::scenario! {
-        fn a_desk_style_is_drawn_by_the_package_that_declares_it;
+        fn a_shell_style_is_drawn_by_the_package_that_declares_it;
 
         phase a_style_declared_by_another_package_draws_the_arrangement;
         {
@@ -124,13 +124,13 @@ view timeline(a: shell.Layout) {
             let shell = shell_app();
             shell.load(&rt);
             // The person's own package is installed too, so its `timeline` is declared here: the
-            // `show` of `desk_view` finds it by the type its view takes.
+            // `show` of `style_shell` finds it by the type its view takes.
             style_app(&shell).load(&rt);
             let root = layout_of(&rt, &shell);
             let view = rt
                 .open_view(
                     &me(),
-                    &shell.view("desk_view"),
+                    &shell.view("style_shell"),
                     vec![Value::resource(&root)],
                 )
                 .unwrap_or_else(|why| panic!("{why}"));
@@ -147,13 +147,13 @@ view timeline(a: shell.Layout) {
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
             let shell = shell_app();
             shell.load(&rt);
-            // No `me.styles` here: `desk_view`'s `show` names a view of a package that is not loaded.
+            // No `me.styles` here: `style_shell`'s `show` names a view of a package that is not loaded.
             // The call waits on it rather than faulting, and asks for that package.
             let root = layout_of(&rt, &shell);
             let view = rt
                 .open_view(
                     &me(),
-                    &shell.view("desk_view"),
+                    &shell.view("style_shell"),
                     vec![Value::resource(&root)],
                 )
                 .unwrap_or_else(|why| panic!("{why}"));
@@ -178,7 +178,7 @@ view timeline(a: shell.Layout) {
             let view = rt
                 .open_view(
                     &me(),
-                    &shell.view("desk_view"),
+                    &shell.view("style_shell"),
                     vec![Value::resource(&root)],
                 )
                 .unwrap_or_else(|why| panic!("{why}"));
@@ -209,7 +209,7 @@ view timeline(a: shell.Layout) {
             let view = rt
                 .open_view(
                     &me(),
-                    &shell.view("desk_view"),
+                    &shell.view("style_shell"),
                     vec![Value::resource(&root)],
                 )
                 .unwrap_or_else(|why| panic!("{why}"));
@@ -233,13 +233,13 @@ view timeline(a: shell.Layout) {
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
             let shell = shell_naming("me.broken", "broken");
             shell.load(&rt);
-            // The package was tried and did not load: the desk shows its failed state.
+            // The package was tried and did not load: the shell shows its failed state.
             rt.app_failed("me.broken", "the module does not load".to_owned());
             let root = layout_of(&rt, &shell);
             let failed = rt
                 .open_view(
                     &me(),
-                    &shell.view("desk_view"),
+                    &shell.view("style_shell"),
                     vec![Value::resource(&root)],
                 )
                 .unwrap_or_else(|why| panic!("{why}"));
@@ -251,7 +251,7 @@ view timeline(a: shell.Layout) {
             let back = rt
                 .open_view(
                     &me(),
-                    &shell.view("desk_view"),
+                    &shell.view("style_shell"),
                     vec![Value::resource(&root)],
                 )
                 .unwrap_or_else(|why| panic!("{why}"));
@@ -263,7 +263,7 @@ view timeline(a: shell.Layout) {
             assert_eq!(
                 drawn(&back),
                 ["a working style"],
-                "the style's own words stand on the desk: {}",
+                "the style's own words stand on the shell: {}",
                 dump(back.tree())
             );
         }
@@ -296,7 +296,7 @@ view broken(a: shell.Layout) {
 }
 "#;
 
-    /// A shell whose `desk_view` names the style `view` of the package `app`.
+    /// A shell whose `style_shell` names the style `view` of the package `app`.
     fn shell_naming(app: &str, view: &str) -> App {
         let source = format!(
             r#"app so.tilo.shell "Shell"
@@ -314,7 +314,7 @@ type LayoutPlace (origin: session.layout_place) {{
 
 root layout: Layout
 
-default view desk_view for layout
+default view style_shell for layout
 
 /// The shipped strips style.
 view strips(a: Layout) {{
@@ -323,8 +323,8 @@ view strips(a: Layout) {{
     }}
 }}
 
-/// What draws the desk: the style the person chose, by name.
-view desk_view(a: Layout) {{
+/// What draws the shell: the style the person chose, by name.
+view style_shell(a: Layout) {{
     show(a, view: "{app}:{view}")
 }}
 "#
@@ -332,7 +332,7 @@ view desk_view(a: Layout) {{
         App::compile(&source, &[session()])
     }
 
-    /// The shell's `layout` root, made: what a desk style draws.
+    /// The shell's `layout` root, made: what a style draws.
     fn layout_of(rt: &Runtime, shell: &App) -> tilolang_runtime::ResourceRef {
         let ty = shell
             .meta()
@@ -344,7 +344,7 @@ view desk_view(a: Layout) {{
         rt.create_root(&ty).expect("the layout is made")
     }
 
-    /// The desk a failed style shows: a failed state naming the view, drawn where the call
+    /// The shell a failed style shows: a failed state naming the view, drawn where the call
     /// stands, in place of a blank frame or an endless skeleton.
     fn failed_state(view: &ViewInstance) -> Option<String> {
         fn find(node: &tilolang_runtime::UiNode, out: &mut Option<String>) {

@@ -1364,7 +1364,7 @@ impl BrowserShell {
                 // The page's own keys reach the browser's shortcuts.
                 // Leaving or deleting a workspace is a session's to confirm,
                 // carry out and say: a page holds no device record of it.
-                // It places no shell widget, so no music control of one is
+                // It places no widget, so no music control of one is
                 // here to press: steering a player is the session's, on the
                 // machine that runs it. A window that stopped answering is
                 // waited for or quit where the compositor runs, which a page

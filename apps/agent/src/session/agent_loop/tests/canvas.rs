@@ -7,7 +7,7 @@
 use super::*;
 
 /// The session's own surface: the arrangement, two places standing, and the person's viewing
-/// record whose `show-style` switches the desk style.
+/// record whose `show-style` switches the style.
 const SESSION_PEER: u64 = 31;
 /// The desktop's opens of the host programs installed on this computer.
 const HOST_PEER: u64 = 32;
@@ -439,7 +439,7 @@ fn a_question_is_answered_in_words_and_its_view_placed_beside_the_conversation()
 }
 
 /// "Show me my mails" places the inbox in one call; "put my notes next to the inbox" stands the
-/// note's place beside the inbox's; "switch to strips" shows the desk as strips. Each is one
+/// note's place beside the inbox's; "switch to strips" shows the shell as strips. Each is one
 /// model call, and a request naming an app (Notes) is satisfied by arranging that app's place.
 #[test]
 fn showing_arranging_and_restyling_are_one_step_each() {
@@ -473,7 +473,7 @@ fn showing_arranging_and_restyling_are_one_step_each() {
                 "tl:so.tilo.shell:root-v",
                 "show-style",
                 &serde_json::json!({"shown": "so.tilo.shell:strips"}),
-                Some("The desk shows strips now."),
+                Some("The shell shows strips now."),
             ),
             "show-style",
         ),

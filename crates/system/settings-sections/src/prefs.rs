@@ -1128,52 +1128,46 @@ pub struct PowerPrefs {
     pub critical_action: PowerActionPref,
 }
 
-/// The person's desk widgets: which they keep, when each shows itself and
+/// The person's widgets: which they keep, when each shows itself and
 /// where each rests. The compositor reads the same leaves
-/// ([`settings_store::desk_widgets`]), and the desk writes back a pin,
+/// ([`settings_store::widgets`]), and the shell writes back a pin,
 /// where a widget was dropped, its card's width and its removal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[model(defaults)]
-pub struct DeskWidgetsPrefs {
+pub struct WidgetsPrefs {
     /// Now playing, with play/pause and next.
     #[serde(default = "default_music_widget")]
-    pub music: settings_store::desk_widgets::WidgetPrefs,
+    pub music: settings_store::widgets::WidgetPrefs,
     /// The people in this workspace.
     #[serde(default = "default_team_widget")]
-    pub team: settings_store::desk_widgets::WidgetPrefs,
+    pub team: settings_store::widgets::WidgetPrefs,
     /// Today's date, and the month around it.
     #[serde(default = "default_calendar_widget")]
-    pub calendar: settings_store::desk_widgets::WidgetPrefs,
+    pub calendar: settings_store::widgets::WidgetPrefs,
     /// Processor, memory and temperature.
     #[serde(default = "default_system_monitor_widget")]
-    pub system_monitor: settings_store::desk_widgets::WidgetPrefs,
+    pub system_monitor: settings_store::widgets::WidgetPrefs,
 }
 
-fn default_music_widget() -> settings_store::desk_widgets::WidgetPrefs {
-    settings_store::desk_widgets::WidgetPrefs::default_for(
-        settings_store::desk_widgets::WidgetId::Music,
+fn default_music_widget() -> settings_store::widgets::WidgetPrefs {
+    settings_store::widgets::WidgetPrefs::default_for(settings_store::widgets::WidgetId::Music)
+}
+
+fn default_team_widget() -> settings_store::widgets::WidgetPrefs {
+    settings_store::widgets::WidgetPrefs::default_for(settings_store::widgets::WidgetId::Team)
+}
+
+fn default_calendar_widget() -> settings_store::widgets::WidgetPrefs {
+    settings_store::widgets::WidgetPrefs::default_for(settings_store::widgets::WidgetId::Calendar)
+}
+
+fn default_system_monitor_widget() -> settings_store::widgets::WidgetPrefs {
+    settings_store::widgets::WidgetPrefs::default_for(
+        settings_store::widgets::WidgetId::SystemMonitor,
     )
 }
 
-fn default_team_widget() -> settings_store::desk_widgets::WidgetPrefs {
-    settings_store::desk_widgets::WidgetPrefs::default_for(
-        settings_store::desk_widgets::WidgetId::Team,
-    )
-}
-
-fn default_calendar_widget() -> settings_store::desk_widgets::WidgetPrefs {
-    settings_store::desk_widgets::WidgetPrefs::default_for(
-        settings_store::desk_widgets::WidgetId::Calendar,
-    )
-}
-
-fn default_system_monitor_widget() -> settings_store::desk_widgets::WidgetPrefs {
-    settings_store::desk_widgets::WidgetPrefs::default_for(
-        settings_store::desk_widgets::WidgetId::SystemMonitor,
-    )
-}
-
-impl Default for DeskWidgetsPrefs {
+impl Default for WidgetsPrefs {
     fn default() -> Self {
         Self {
             music: default_music_widget(),
@@ -1184,14 +1178,13 @@ impl Default for DeskWidgetsPrefs {
     }
 }
 
-impl ui::storage::SettingsSchema for DeskWidgetsPrefs {
-    const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(settings_store::desk_widgets::SECTION);
+impl ui::storage::SettingsSchema for WidgetsPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared(settings_store::widgets::SECTION);
     ui::settings_codec!();
 }
 
-#[ui::tilo_resource::resource(kind = "settings.desk_widgets")]
-impl DeskWidgetsPrefs {}
+#[ui::tilo_resource::resource(kind = "settings.widgets")]
+impl WidgetsPrefs {}
 
 /// This device's idle and button preferences, read by the compositor's
 /// idle layer.

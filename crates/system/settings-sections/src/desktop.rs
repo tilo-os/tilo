@@ -38,7 +38,7 @@ impl ui::storage::SettingsSchema for DesktopControls {
 impl DesktopControls {}
 
 /// The shell's desktop preferences this device holds: a small laptop panel
-/// and a large desk display want different answers.
+/// and a large shell display want different answers.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
 )]

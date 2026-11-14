@@ -1853,7 +1853,7 @@ tilo_test_env::scenario! {
         };
         let apart = |root: InspectionNode| {
             holding(
-                node("Stack", "desk", [0.0, 0.0, 1280.0, 800.0], None),
+                node("Stack", "shell", [0.0, 0.0, 1280.0, 800.0], None),
                 vec![root],
             )
         };
@@ -2257,7 +2257,7 @@ tilo_test_env::scenario! {
 
     phase layers_cover_each_other_only_where_their_text_meets;
     // Layers that each hold text somewhere cover nothing until the text itself meets: a bar across the
-    // top and a dock on the foot of a desk drawn over the whole window are two layers whose words
+    // top and a dock on the foot of a shell drawn over the whole window are two layers whose words
     // stand apart; a caption drawn on another caption is caught.
     {
         let layer = |id: &str, text: [f64; 4]| {
@@ -2267,7 +2267,7 @@ tilo_test_env::scenario! {
             )
         };
         let apart = holding(
-            node("Layers", "desk", [0.0, 0.0, 800.0, 600.0], None),
+            node("Layers", "shell", [0.0, 0.0, 800.0, 600.0], None),
             vec![
                 layer("bar", [8.0, 8.0, 120.0, 20.0]),
                 layer("dock", [300.0, 560.0, 40.0, 20.0]),
@@ -2275,7 +2275,7 @@ tilo_test_env::scenario! {
         );
         assert!(inspected(&apart).is_empty());
         let meeting = holding(
-            node("Layers", "desk", [0.0, 0.0, 800.0, 600.0], None),
+            node("Layers", "shell", [0.0, 0.0, 800.0, 600.0], None),
             vec![
                 layer("bar", [8.0, 8.0, 120.0, 20.0]),
                 layer("over", [60.0, 12.0, 120.0, 20.0]),
@@ -2289,8 +2289,8 @@ tilo_test_env::scenario! {
             vec![node("Text", "scrolled-out", [8.0, 8.0, 120.0, 20.0], None)],
         );
         scroller.child_clip = Some([0.0, 100.0, 800.0, 400.0]);
-        let desk_over_scroller = holding(
-            node("Layers", "desk", [0.0, 0.0, 800.0, 600.0], None),
+        let shell_over_scroller = holding(
+            node("Layers", "shell", [0.0, 0.0, 800.0, 600.0], None),
             vec![
                 layer("bar", [8.0, 8.0, 120.0, 20.0]),
                 holding(
@@ -2299,7 +2299,7 @@ tilo_test_env::scenario! {
                 ),
             ],
         );
-        assert!(inspected(&desk_over_scroller).is_empty());
+        assert!(inspected(&shell_over_scroller).is_empty());
     }
 
     phase a_window_over_another_window_is_no_finding;
@@ -2321,16 +2321,16 @@ tilo_test_env::scenario! {
                 )],
             )
         };
-        let desk = holding(
-            node("Manual", "desk", [0.0, 0.0, 800.0, 600.0], None),
+        let shell = holding(
+            node("Manual", "shell", [0.0, 0.0, 800.0, 600.0], None),
             vec![
                 window("behind", [40.0, 40.0, 400.0, 300.0]),
                 window("front", [200.0, 100.0, 400.0, 300.0]),
             ],
         );
-        assert!(inspected(&desk).is_empty());
+        assert!(inspected(&shell).is_empty());
         let boxes = holding(
-            node("Manual", "desk", [0.0, 0.0, 800.0, 600.0], None),
+            node("Manual", "shell", [0.0, 0.0, 800.0, 600.0], None),
             vec![
                 node("Stack", "a", [40.0, 40.0, 400.0, 300.0], None),
                 node("Stack", "b", [200.0, 100.0, 400.0, 300.0], None),

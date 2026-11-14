@@ -200,7 +200,7 @@ impl LazyDesktopSearch {
     }
 
     /// Whether a source of the open search still owes an answer: it answers
-    /// on a worker, which wakes the desk when it is in.
+    /// on a worker, which wakes the shell when it is in.
     pub fn answering(&self) -> bool {
         self.search
             .as_ref()
@@ -277,7 +277,7 @@ impl LazyDesktopSearch {
         self.search.as_mut().is_some_and(|search| search.observe())
     }
 
-    /// What Escape does in the desk's search
+    /// What Escape does in the shell's search
     /// ([`DesktopSearch::escape`]): clear the typed query, or close an empty
     /// search. `false` where the key is the palette's to handle.
     pub fn escape(&mut self) -> bool {

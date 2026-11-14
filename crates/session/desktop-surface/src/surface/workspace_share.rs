@@ -2,7 +2,7 @@
 //!
 //! Sharing a window with its workspace shows its live picture in the tab that stands for it on
 //! the person's other devices and to the workspace's members. The share is the host session's
-//! (its window-share resource): the desk keeps nothing of it. What a window's menu says is what
+//! (its window-share resource): the shell keeps nothing of it. What a window's menu says is what
 //! the session reads of the share when the menu is asked for ([`WorkspaceShares`]), and choosing
 //! the row leaves the ask for the session ([`DesktopHandle::take_workspace_share_asks`]), which
 //! invokes the share's own action with the tab: the action that checks the workspace's
@@ -10,7 +10,7 @@
 //!
 //! The row stands only where the share can work: a window this device maps
 //! ([`tilo_desktop_model::window_share::mapped_window`]) in a tab it minted, in a workspace the
-//! session takes part in. Another device's window, the picture of one, and a desk whose host
+//! session takes part in. Another device's window, the picture of one, and a shell whose host
 //! shares nothing offer no such row.
 
 use std::rc::Rc;
@@ -41,7 +41,7 @@ pub type WorkspaceShares = Rc<dyn Fn(TabId, &str) -> Option<WorkspaceShare>>;
 impl DesktopHandle {
     /// Read the windows' shares with their workspaces from `shares`, the host session's: each
     /// window this device can share offers the share in its menu, as `shares` says it stands when
-    /// the menu is asked for. A desk nobody gave a reading offers no such row.
+    /// the menu is asked for. A shell nobody gave a reading offers no such row.
     pub fn reads_workspace_shares(&self, shares: WorkspaceShares) {
         self.shared.borrow_mut().workspace_shares = Some(shares);
     }
@@ -55,7 +55,7 @@ impl DesktopHandle {
 
     /// What the session reads of sharing the window `tab` shows with its workspace. `None` for a
     /// window that cannot be shared from here: one this device does not map, a tab another
-    /// device minted, a workspace the session takes no part in, or a desk with no reading.
+    /// device minted, a workspace the session takes no part in, or a shell with no reading.
     pub(super) fn workspace_share(&self, tab: TabId) -> Option<WorkspaceShare> {
         let (reading, workspace) = {
             let shared = self.shared.borrow();

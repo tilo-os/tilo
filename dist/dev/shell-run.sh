@@ -21,7 +21,7 @@
 # Nothing touches the person's own desktop: the session gets a scratch HOME and XDG
 # tree, a private XDG_RUNTIME_DIR, no D-Bus and no X11. It holds secrets in the
 # sealed file store a headless machine uses, in its own scratch directory, so
-# the workspaces it founds have channel keys and their shared desks are written
+# the workspaces it founds have channel keys and their shared layouts are written
 # as on any device. It prints where its MCP server and control socket are and
 # how to drive it, then runs until it ends or this script is stopped (Ctrl+C,
 # SIGTERM, SIGHUP). Either way the session, everything it started, its FUSE
@@ -44,7 +44,7 @@
 #                 logical pixels (both default 1280x800). A window draws at the desktop's own
 #                 scale, fractional included, and follows it when moved to another screen
 #   --scale S     the headless output's scale (default 1): `--size 2560x1600 --scale 2` is
-#                 the same 1280x800 desk as a HiDPI panel draws it
+#                 the same 1280x800 shell as a HiDPI panel draws it
 #   --window     show the session in a window on this Wayland desktop, drawn on its GPU
 #   --model-record FILE  give the person this model provider (`tilo-model-gateway
 #                 provision-provider --record` JSON) once the session is up
@@ -212,7 +212,7 @@ keys=$scratch/keys
 # (`TILO_SECRETS_DIR`, `crates/platform/tilo-secrets/src/files.rs`). The
 # session's private D-Bus answers no Secret Service, so without this it holds no
 # secret at all — and so no channel keys of any workspace, which leaves every
-# workspace's shared desk unwritten and unread here. A development session
+# workspace's shared shell unwritten and unread here. A development session
 # exercises the real path: the store it makes is its own, mode 0700 inside the
 # scratch directory, and goes with the rest of it.
 secrets=$scratch/secrets
@@ -437,7 +437,7 @@ done
 # The community site this session reads: its own, empty, rather than whatever
 # this machine is in (`/etc/tilo/community.toml`, `/usr/share/tilo/community.toml`).
 # A scratch-HOME session is a new device, not the person's computer here: it
-# founds its own desk and joins no community, so nothing it does lands in the
+# founds its own shell and joins no community, so nothing it does lands in the
 # machine's site and nothing the machine belongs to is in front of it. A site
 # the session is asked to join is given with `--community` (a site's address).
 community_file=$scratch/community.toml
@@ -504,7 +504,7 @@ start_session() {
 }
 
 # Nobody completes first-use setup here: a first pass mints the throwaway
-# identity a development session opens its desk with, as a dev image's does.
+# identity a development session opens its shell with, as a dev image's does.
 say "minting a throwaway identity"
 mkdir -m 700 "$scratch/identity"
 start_session

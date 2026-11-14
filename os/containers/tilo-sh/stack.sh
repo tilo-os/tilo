@@ -455,7 +455,7 @@ door_env() {
 
 # The web entry's environment: apps/tilo-web/deployment.yaml. INFO is what
 # page_host printed. The app a person lands in is the deployment's: production
-# opens Chat, and a page whose checks arrive on the workspace's desk names
+# opens Chat, and a page whose checks arrive on the workspace's shell names
 # none (TILO_SH_HOME_APP=).
 web_env() {
   local workspace=$1 info=$2

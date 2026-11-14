@@ -1155,7 +1155,7 @@ fn laptop_with_monitor() -> DisplayModel {
         refresh_mhz: 60_000,
     };
     let mut pane = model(vec![
-        display_with_modes("HDMI-A-1", "Desk monitor", false, vec![qhd]),
+        display_with_modes("HDMI-A-1", "Tower monitor", false, vec![qhd]),
         display_with_modes("eDP-1", "Built-in display", true, vec![full_hd]),
     ]);
     pane.output_config.outputs.insert(
@@ -1190,7 +1190,7 @@ fn the_arrangement_draws_mixed_dpi_displays_at_their_logical_size() {
     };
     let mut pane = model(vec![
         display_with_modes("eDP-1", "Built-in display", true, vec![panel_mode]),
-        display_with_modes("HDMI-A-1", "Desk monitor", false, vec![monitor_mode]),
+        display_with_modes("HDMI-A-1", "Tower monitor", false, vec![monitor_mode]),
     ]);
     pane.output_config.outputs.insert(
         "eDP-1".into(),
@@ -1357,7 +1357,7 @@ fn the_canvas_is_the_one_display_selection() {
         .filter_map(|tile| tile.name.clone())
         .collect();
     assert_eq!(chosen.len(), 1, "one tile is chosen: {chosen:?}");
-    assert!(chosen[0].contains("Desk monitor"), "{chosen:?}");
+    assert!(chosen[0].contains("Tower monitor"), "{chosen:?}");
     drop(connected);
 
     let connected = pane.connected_outputs();
@@ -1499,7 +1499,7 @@ fn choosing_or_dragging_a_display_shows_nothing_on_the_screens() {
         ui::theme::Theme::dark(),
     );
     host.profile_frame();
-    let monitor = tile(&host, "Desk monitor");
+    let monitor = tile(&host, "Tower monitor");
     host.send(&ui::synthetic_input::cursor_moved(
         monitor.center().x,
         monitor.center().y,

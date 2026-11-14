@@ -336,7 +336,7 @@ impl LauncherServices for Apps {
             .collect()
     }
 
-    /// A standalone runtime draws no desk, so there is no place to open at;
+    /// A standalone runtime draws no shell, so there is no place to open at;
     /// it opens the app's default record.
     fn launch(
         &self,

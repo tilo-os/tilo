@@ -2,7 +2,7 @@
 // entry, which joins the Lounge through its door as its own person (the
 // deployment admits everyone as an editor). Then one sends a chat message and
 // opens a window, and the other must see both, each shown present to the
-// other — the live plane's presence, the shared desk, and the chat all at
+// other — the live plane's presence, the shared shell, and the chat all at
 // once.
 //
 // Then one of them is made someone the workspace lets invite, while their page
@@ -38,7 +38,7 @@ import {request as httpsRequest} from 'node:https';
 import {launch, servedCertificate, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import * as waits from './waits.mjs';
-import {stepLimit, deskMetrics, DESK} from './waits.mjs';
+import {stepLimit, shellMetrics, SHELL} from './waits.mjs';
 
 const [site, relay, origin, out, ownerSocket, earlier] = process.argv.slice(2);
 if (!site || !relay || !origin || !out || !ownerSocket) {
@@ -56,7 +56,7 @@ const declareOwner = user => execFileSync(
 );
 mkdirSync(out, {recursive: true});
 // One case of what two people do, each with two people of its own who join
-// and see each other first: `call` (a call, its card and hanging up), `desk`
+// and see each other first: `call` (a call, its card and hanging up), `shell`
 // (the window menu, a few apps from the search, the strip panned over Notes
 // and Sheets swiped), `menus` (a pinch, the text menu, the profile card's
 // Report a problem, the search chord, and nothing of it reaching the browser)
@@ -64,16 +64,16 @@ mkdirSync(out, {recursive: true});
 // third). The cases share nothing but the Lounge, so a run starts them side by
 // side; none named runs them all in one pair, one after another.
 const only = process.env.TILO_PEOPLE_CASE ?? '';
-if (only && !['call', 'desk', 'menus', 'invite'].includes(only)) {
-  console.error(`TILO_PEOPLE_CASE is call, desk, menus or invite, not ${only}`);
+if (only && !['call', 'shell', 'menus', 'invite'].includes(only)) {
+  console.error(`TILO_PEOPLE_CASE is call, shell, menus or invite, not ${only}`);
   process.exit(2);
 }
 const runs = name => !only || only === name;
-// The apps the desk case opens from the search, by label: the browser's own
+// The apps the shell case opens from the search, by label: the browser's own
 // part of opening an app (its code fetched as its window fills in, its frame
 // drawn by the page's GPU), on a few apps. That every app the page offers
 // opens from the search on the frame after Enter is an in-process test of the
-// desk's own search, in seconds
+// shell's own search, in seconds
 // (crates/session/desktop-surface/tests/every_web_app_opens_from_search.rs);
 // `all` opens every one here as well.
 const APPS = (process.env.TILO_PEOPLE_APPS ?? 'Notes,Sheets,Calculator').split(',').map(label => label.trim()).filter(Boolean);
@@ -184,7 +184,7 @@ const snapshot = async tab => {
 const dump = async (tab, name) => {
   const shown = await snapshot(tab);
   shown.membership = JSON.parse(await membership(tab));
-  // Whether the desk is still stepping, or only what it last drew: a page that
+  // Whether the shell is still stepping, or only what it last drew: a page that
   // stops stepping answers nothing, whatever it shows.
   const frames = () => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? null').catch(() => null);
   const before = await frames();
@@ -207,8 +207,8 @@ const dump = async (tab, name) => {
 // a turn between frames, so a wait of forty polls was adding forty turns of
 // work to the very page it waited for.
 const until = async (tab, expression, what, timeout = stepLimit(3)) => {
-  // The frames the desk had presented as the wait began, kept in the page,
-  // so a wait that runs out says whether the desk drew at all meanwhile.
+  // The frames the shell had presented as the wait began, kept in the page,
+  // so a wait that runs out says whether the shell drew at all meanwhile.
   const value = await tab.evaluate(`(globalThis.__tiloWaitFrames = globalThis.tiloMount?.state()?.frames ?? 0,
     globalThis.__tiloWait?.(() => (${expression}), ${timeout}) ?? false)`)
     .catch(() => false);
@@ -254,7 +254,7 @@ const waitSource = `(() => {
 // time. Chromium answers a dispatched key or press when the page has taken it,
 // and this page's main thread is inside a frame for seconds under the gate: a
 // driver that waited for each key in turn typed a five-letter query in eight
-// frames, where a person types it in a tenth of a second and the desk reads
+// frames, where a person types it in a tenth of a second and the shell reads
 // the whole query on the frame it draws next.
 const event = (tab, params) => tab.send('Input.dispatchKeyEvent', params);
 const key = async (tab, name, modifiers = 0) => {
@@ -291,14 +291,14 @@ const paletteRows = async tab => {
     return JSON.stringify(rows);
   })()`));
 };
-// The desk presented `by` more frames: what waits on the desk's own work
+// The shell presented `by` more frames: what waits on the shell's own work
 // waits on that, not on a stopwatch, however slow presenting is. A page
 // drawing a megapixel through a software rasteriser draws a few frames a
 // second, and every wait here is a number of frames for that reason.
 //
-// A desk with nothing to draw presents none — it waits for what changes —
-// so a frame count is progress only while the desk owes work. `owed` says
-// whether it still does: the wait ends when the frames came or the desk says
+// A shell with nothing to draw presents none — it waits for what changes —
+// so a frame count is progress only while the shell owes work. `owed` says
+// whether it still does: the wait ends when the frames came or the shell says
 // it has nothing left to draw, and never outlives the work it waits for.
 const settle = (tab, by = 2, owed = () => true) => waits.settle({
   evaluate: tab.evaluate.bind(tab),
@@ -308,13 +308,13 @@ const settle = (tab, by = 2, owed = () => true) => waits.settle({
   timeoutMs: stepLimit(3),
   pollMs: 100,
   onTimeout: ({from, by}) => until(tab, `(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`,
-    `the desk stepping ${by} more frame(s) from frame ${from} in ${stepLimit(3) / 1000} s`, 1),
+    `the shell stepping ${by} more frame(s) from frame ${from} in ${stepLimit(3) / 1000} s`, 1),
 });
-// The desk presented `by` more frames, or none for a whole step: a desk that
+// The shell presented `by` more frames, or none for a whole step: a shell that
 // had already drawn what the person did (a pointer moved, a swipe it drew as
 // the wheel turned), or had nothing to draw for it, presents nothing more,
-// and that silence is its answer. A step is longer than a busy desk takes to
-// present a frame, so a desk still drawing is never taken for one that is done.
+// and that silence is its answer. A step is longer than a busy shell takes to
+// present a frame, so a shell still drawing is never taken for one that is done.
 const drawn = (tab, by = 2) => waits.settle({
   evaluate: tab.evaluate.bind(tab),
   by,
@@ -323,33 +323,33 @@ const drawn = (tab, by = 2) => waits.settle({
   timeoutMs: stepLimit(3),
   pollMs: 100,
 });
-// Seconds from `from` to now, and the frames the desk has presented: what the
+// Seconds from `from` to now, and the frames the shell has presented: what the
 // timing lines below print.
 const took = from => ((Date.now() - from) / 1000).toFixed(1);
 const presented = tab => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0').catch(() => 0);
 // A person's search: the chord, the query, and Enter on the row the palette
 // offers for it.
 //
-// Every wait here is on what the desk says, never on how many frames it drew.
+// Every wait here is on what the shell says, never on how many frames it drew.
 // A frame of this page costs seconds under the gate — a megapixel through a
 // software rasteriser, with the app opened last still compiling its module on
 // the same thread — so a wait that counted frames paid seconds for an answer
-// the desk had already given.
+// the shell had already given.
 //
-// The palette's card is that answer (`searchCard`): the query the desk's field
-// holds and the rows it will act on, in the order Enter walks them. The desk
+// The palette's card is that answer (`searchCard`): the query the shell's field
+// holds and the rows it will act on, in the order Enter walks them. The shell
 // says it still owes rows (`searchSearching`) while a source has yet to answer
 // or the rows are not cut to the card's room, and the rows it shows before that
-// answer are the previous query's. So Enter waits for the desk to have answered
+// answer are the previous query's. So Enter waits for the shell to have answered
 // *this* query, and for the row asked for to be the first one under the
 // palette's heading, which is where the highlight sits.
 const search = async (tab, command, query, row, opens = null) => {
   const began = Date.now();
   const framesFrom = await presented(tab);
-  // The desk keeps the search up until what it opened has arrived, and the
+  // The shell keeps the search up until what it opened has arrived, and the
   // chord toggles it: it is opened only when it is down.
   if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen')) {
-    await click(tab, DESK.empty.x, DESK.empty.y);
+    await click(tab, SHELL.empty.x, SHELL.empty.y);
     await key(tab, 'k', command);
   }
   const chorded = Date.now();
@@ -357,7 +357,7 @@ const search = async (tab, command, query, row, opens = null) => {
   await type(tab, query);
   const typed = Date.now();
   const asked = JSON.stringify(query);
-  // The card as the desk answers it for this query, once it owes no row:
+  // The card as the shell answers it for this query, once it owes no row:
   // nothing before that is its answer to the text in its field.
   const answered = `(() => {
     const s = globalThis.tiloMount?.state?.() ?? null;
@@ -368,10 +368,10 @@ const search = async (tab, command, query, row, opens = null) => {
   let last = null;
   const deadline = Date.now() + stepLimit(3);
   for (;;) {
-    const read = await until(tab, answered, `the desk answering "${query}"`, stepLimit(3));
+    const read = await until(tab, answered, `the shell answering "${query}"`, stepLimit(3));
     card = JSON.parse(read);
     if (card.rows[0]?.title === row) break;
-    // The same settled answer twice is the desk's answer, not a frame of one
+    // The same settled answer twice is the shell's answer, not a frame of one
     // still coming: a palette that offers something else first is the failure.
     if (read === last || Date.now() > deadline) {
       const rows = await paletteRows(tab);
@@ -389,30 +389,30 @@ const search = async (tab, command, query, row, opens = null) => {
   const pressed = Date.now();
   await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, stepLimit(4));
   // Where a search's time went, in the parts a person's search has: the chord,
-  // the text typed, the desk answering the query, the rows it offers, Enter,
+  // the text typed, the shell answering the query, the rows it offers, Enter,
   // and what the search waited for after it (the app's window, arriving), with
-  // the frames the desk presented meanwhile.
+  // the frames the shell presented meanwhile.
   console.log(`TIMING search=${asked} chord=${took(began)} type=${took(chorded)}` +
     ` answer=${took(typed)} rows=${card.rows.length} open=${took(pressed)}` +
     ` frames=${await presented(tab) - framesFrom}`);
   return chosen;
 };
 // A page-side clock around the person's Enter. What a person waits for is the
-// desk showing the app's window, and this desk paints into one canvas: the
+// shell showing the app's window, and this shell paints into one canvas: the
 // window is on screen when the frame that carries it is presented. So both
 // moments are frames the page presented — the press, stamped where the key
 // arrives, and the first presented frame after it that lists the window —
 // kept on the page's own clock, where a round trip from here never lands in
 // the number.
 //
-// The press is stamped by a `keydown` listener, not by reading the desk's
+// The press is stamped by a `keydown` listener, not by reading the shell's
 // state: a MutationObserver runs only after the frame the key caused has
 // already published, so a watch that took its press from the first status
 // showing search closed dated the press at or after the frame it was meant to
 // precede, and every open read as 0 ms.
 //
 // The frame that counts is the first presented one after the press whose
-// navigation lists the app's window: this desk draws a window in the pass that
+// navigation lists the app's window: this shell draws a window in the pass that
 // publishes it, so that frame carries the window's pixels, where the entry
 // alone can be published a frame before its pixels are shown.
 const armOpen = (tab, app) => tab.evaluate(`(() => {
@@ -438,14 +438,14 @@ const armOpen = (tab, app) => tab.evaluate(`(() => {
     if ((mount.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === w.app)) {
       w.shownAt = performance.now();
       w.framesShown = Number(host.dataset.frames ?? 0);
-      // The frames the desk had presented when it took the key, as it says
+      // The frames the shell had presented when it took the key, as it says
       // itself: the frame after that one is the first that can show the
       // window, whatever the page's counter read when the browser fired it.
       w.framesAtKey = mount.state()?.framesAtKey ?? null;
     }
   };
   new MutationObserver(read).observe(host, {attributes: true, attributeFilter: ['data-frames', 'data-phase']});
-  // The window's entry can be published after the desk's last frame, with no
+  // The window's entry can be published after the shell's last frame, with no
   // frame after it: read again as the navigation changes too, and once more
   // as the marks are taken. Shown is then never earlier than both a frame
   // after the key and the entry, so an open is never measured faster than it was.
@@ -453,12 +453,12 @@ const armOpen = (tab, app) => tab.evaluate(`(() => {
   watch.read = read;
   return true;
 })()`);
-// What the open cost, in the desk's own unit: the window is drawn on the frame
+// What the open cost, in the shell's own unit: the window is drawn on the frame
 // right after the one that took the key, so the open is worth no more frames
 // than that. The milliseconds ride along as what this machine's rasteriser
 // took to put that frame on screen — a megapixel through software costs about
 // half a second here and near nothing on a display, and neither says anything
-// about whether the desk heard the person.
+// about whether the shell heard the person.
 //
 // What was not measured is `ok: false`, never a number: an open the watch
 // never saw begun or never saw end is no reading at all, and the caller fails
@@ -612,7 +612,7 @@ const callOn = async tab => JSON.parse(await tab.evaluate('JSON.stringify(global
 // draws: resizing a presented surface suspends and re-presents it, and keys
 // sent between the two are nobody's. A browser paints the tab it shows and
 // leaves the others as they were, so each person gets one of their own: a
-// second tab in one browser is a desk that stops answering while the other
+// second tab in one browser is a shell that stops answering while the other
 // person is looked at.
 // People who come back to the site: a browser new to it opens on the first
 // screen (set up with an agent, or skip to one's own desktop), which these
@@ -623,7 +623,7 @@ const anotherBrowser = async () => {
   const launched = await launch({args: browserArgs});
   browsers.push(launched);
   const tab = await launched.tab();
-  await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics).catch(() => {});
+  await tab.send('Emulation.setDeviceMetricsOverride', shellMetrics).catch(() => {});
   await returning(tab);
   await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: waitSource});
   await recordLoading(launched, tab);
@@ -744,7 +744,7 @@ const browserArgs = [
   '--autoplay-policy=no-user-gesture-required',
   // A job container's /dev/shm is 64 MiB: a renderer that runs out of it dies.
   '--disable-dev-shm-usage',
-  // A browser a person is not looking at still answers: a desk slowed down to
+  // A browser a person is not looking at still answers: a shell slowed down to
   // save power answers the next key late.
   '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
   '--disable-backgrounding-occluded-windows',
@@ -856,7 +856,7 @@ try {
   await dump(a.tab, '3-a-chat');
   await dump(b.tab, '3-b-chat');
 
-  // A window A opens is in B's strip: one desk, every member of it.
+  // A window A opens is in B's strip: one shell, every member of it.
   const beforeB = await dump(b.tab, '4-b-before-open');
   await search(a.tab, a.command, 'notes', 'Notes');
   await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Notes')`,
@@ -893,7 +893,7 @@ try {
   console.log('ok: both pages joined the live plane');
   mark('both pages on the live plane');
 
-  // Each desk shows the other as here and never itself, with a window of
+  // Each shell shows the other as here and never itself, with a window of
   // theirs focused: the desktop's People list is what presence is on the
   // page, one row per person however many devices they are here from.
   const herePeople = async tab =>
@@ -920,10 +920,10 @@ try {
   };
   report.presence = {b: await theOther(b, a, 'B'), a: await theOther(a, b, 'A')};
   if (report.presence.a.id === report.presence.b.id) {
-    failed(`each desk shows the same person: ${JSON.stringify(report.presence)}`);
+    failed(`each shell shows the same person: ${JSON.stringify(report.presence)}`);
   }
-  console.log('ok: each desk shows the other person here');
-  mark('each desk shows the other here');
+  console.log('ok: each shell shows the other person here');
+  mark('each shell shows the other here');
 
   if (runs('call')) {
     // A call on the page both people share. A starts it from Chat's own call
@@ -936,7 +936,7 @@ try {
     // draws, and its controls — and hanging up ends it for both.
     const nameA = report.presence.b.label; // who B sees: the person A
     const nameB = report.presence.a.label;
-    // The same shared window in front on both desks, so its controls are where
+    // The same shared window in front on both shells, so its controls are where
     // a person reaches them.
     await search(a.tab, a.command, 'chat', 'Chat');
     await search(b.tab, b.command, 'chat', 'Chat');
@@ -944,7 +944,7 @@ try {
       return JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('Message composer'); })()`,
       "B's chat composer", stepLimit(4));
 
-    // A starts the call the way a person does — the desk's search, Chat's own
+    // A starts the call the way a person does — the shell's search, Chat's own
     // action — and Chat joins the workspace's voice channel muted, as every
     // Tilo call starts, with the call's card as the window's own reading of it.
     const cardReads = tab => tab.evaluate(`(() => {
@@ -1069,7 +1069,7 @@ try {
     const ring = await untilChannelPeople(b, 'voice', nameA, "the call's channel in B");
     console.log(`ok: B is rung: voice lists ${ring.join(', ')}`);
     mark('B rung and the call listed');
-    // Nobody is left in the channel: what each desk sees once the call ended.
+    // Nobody is left in the channel: what each shell sees once the call ended.
     const untilChannelEmpty = async (person, channel, what, timeout = stepLimit(3)) => {
       const deadline = Date.now() + timeout;
       let people = null;
@@ -1125,7 +1125,7 @@ try {
 
     // A hangs up: A's card goes, and B's call has A no longer in it. Each wait
     // says what it took, so a hang-up that costs minutes names the part that
-    // did: the press, the card leaving the desk's own tree, and the call the
+    // did: the press, the card leaving the shell's own tree, and the call the
     // page says is over, with the frames spent waiting.
     const hangup = async (person, who) => {
       const began = Date.now();
@@ -1140,7 +1140,7 @@ try {
         ` done=${took(over)} frames=${await presented(person.tab) - framesFrom}`);
     };
     await hangup(a, 'A');
-    // What the other page showed of it: A's card gone is A's own desk, and B
+    // What the other page showed of it: A's card gone is A's own shell, and B
     // naming itself alone again is the call ending reaching it, which is the
     // other half and is timed on its own.
     const peerFrom = Date.now();
@@ -1150,7 +1150,7 @@ try {
     mark('A hung up, B alone in the call');
     await dump(a.tab, '7-a-hung-up');
 
-    // B hangs up too: the call is over on both desks, and no one is in the
+    // B hangs up too: the call is over on both shells, and no one is in the
     // channel's call any more.
     await hangup(b, 'B');
     await untilChannelEmpty(a, 'voice', "A's voice channel after the call");
@@ -1160,11 +1160,11 @@ try {
     await dump(b.tab, '7-b-hung-up');
   }
 
-  // The desk as a laptop drives it: the launcher's search opens the apps
+  // The shell as a laptop drives it: the launcher's search opens the apps
   // asked for (APPS), two fingers sideways pan the strip over an app that does
   // not scroll that way and scroll the app over one that does, a pinch is no
   // pan, and the window menu, a right-click menu, Report a problem and the
-  // search chord are the desk's own. Nothing any of it does reaches the
+  // search chord are the shell's own. Nothing any of it does reaches the
   // browser: no page scroll, zoom or history.
   const nav = tab => tab.evaluate('JSON.stringify(globalThis.tiloMount?.navigation?.getSnapshot?.() ?? null)').then(JSON.parse);
   const panOf = async tab => (await nav(tab))?.desktopPan ?? null;
@@ -1198,17 +1198,17 @@ try {
     tab.send('Input.dispatchMouseEvent',
       {type: 'mouseWheel', x, y, deltaX, deltaY, ...(modifiers ? {modifiers} : {})});
   // One gesture: a trackpad's fingers send their travel many events per
-  // frame, and the desk gives a gesture to its first event's answer, so the
+  // frame, and the shell gives a gesture to its first event's answer, so the
   // events go in together and only the gesture's effect is waited for.
   const sidewaysSwipe = async (tab, x, y, forward = true, during = null) => {
     // The pointer rests where the fingers are, as a person's does: a wheel
-    // says where it is, and the desk routes it to that place.
+    // says where it is, and the shell routes it to that place.
     await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
     await drawn(tab, 1);
     const steps = [6, 12, 18, 24, 18, 12, 6];
     for (const [index, step] of steps.entries()) {
       await wheel(tab, x, y, {deltaX: forward ? step : -step});
-      // What the desk shows while the fingers are still on it, not only where
+      // What the shell shows while the fingers are still on it, not only where
       // the gesture left it: a pause mid-gesture, one frame drawn, the rest.
       if (during && index === 2) {
         await drawn(tab, 1);
@@ -1228,7 +1228,7 @@ try {
     const corner = JSON.parse(await canvasTopLeft(tab));
     return {x: corner.x + Math.round(corner.width / 2), y: corner.y + Math.round(corner.height / 2), corner};
   };
-  // Where the browser's own history stood, in this very document: the desk
+  // Where the browser's own history stood, in this very document: the shell
   // adds entries of its own as the person opens and moves between windows
   // (Back goes through Tilo), and the browser navigating on its own would
   // leave this document or step back from the newest entry.
@@ -1238,7 +1238,7 @@ try {
   // desktop can do to that window, and choosing a row does it. Asked before
   // any app opens or the strip is swiped, so the menu is tested whatever those
   // steps find, and asked twice, the second row giving back what the first
-  // took, so the desk the later steps meet is the one they would have met.
+  // took, so the shell the later steps meet is the one they would have met.
   // A window bar on screen: with windows the strip scrolled out of view, the
   // first Maximize in the tree can be one of theirs.
   const shownRow = name => a.tab.evaluate(`(() => {
@@ -1259,7 +1259,7 @@ try {
   // says whether the first choice did anything.
   const stripRow = async (what, bar) => {
     await rightClick(a.tab, bar.x, bar.y);
-    // The menu is the frame after the click's, and a busy desk draws a few a
+    // The menu is the frame after the click's, and a busy shell draws a few a
     // second: its rows are read until they are there.
     let row = null;
     for (const deadline = Date.now() + stepLimit(1); !row && Date.now() < deadline;) {
@@ -1281,7 +1281,7 @@ try {
     }
     return {row, open};
   };
-  // Where the desk's middle is, once the desk case or the menus case has
+  // Where the shell's middle is, once the shell case or the menus case has
   // looked: the pinch, the right-click and the profile card's swipe act there.
   let centre = null;
 
@@ -1320,7 +1320,7 @@ try {
       await failed(`the profile card offers no Report a problem: shown ${JSON.stringify(await namesOf(a.tab))}; the page said of feedback: ${JSON.stringify(said)}`, a.tab);
     }
     // Picking what to report takes every event: nothing under the pointer
-    // reacts to it, and the strip the desk shows stays where it was.
+    // reacts to it, and the strip the shell shows stays where it was.
     await settle(a.tab, 2);
     const pickingPan = await panOf(a.tab);
     await sidewaysSwipe(a.tab, centre.x, centre.y, true);
@@ -1333,12 +1333,12 @@ try {
     await key(a.tab, 'Escape');
   };
 
-  if (runs('desk')) {
-    const desk = await centreOf(a.tab);
+  if (runs('shell')) {
+    const shell = await centreOf(a.tab);
     const barRow = await shownRow('Maximize') ?? await shownRow('Close');
     if (!barRow) failed(`no window bar on screen to open the window menu from: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
     const [bx0, by0, bx1, by1] = barRow.bounds;
-    const bar = {x: desk.corner.x + (bx0 + bx1) / 2, y: desk.corner.y + (by0 + by1) / 2};
+    const bar = {x: shell.corner.x + (bx0 + bx1) / 2, y: shell.corner.y + (by0 + by1) / 2};
     const first = await stripRow('the window menu', bar);
     const second = await stripRow('the window menu again', bar);
     const [filled, given] = [first.row, second.row];
@@ -1355,14 +1355,14 @@ try {
     if (missing.length) failed(`the Lounge does not offer ${missing.join(', ')}: ${offered.map(application => application.label).join(', ')}`);
     if (!applications.length) failed('the Lounge offers no app');
     const opened = [];
-    // What a person waits for: Enter on the app's row, to the desk showing its
-    // window. Opening an app is a window on the desk the person already has;
+    // What a person waits for: Enter on the app's row, to the shell showing its
+    // window. Opening an app is a window on the shell the person already has;
     // the app's own code arriving is that window filling in, and it must not
-    // hold the window back. The desk draws the window on the frame after the one
-    // that took the key, and that is the whole wait: past it the desk reads as
+    // hold the window back. The shell draws the window on the frame after the one
+    // that took the key, and that is the whole wait: past it the shell reads as
     // not having heard the person. How long that frame took to reach the screen
     // is this machine's rasteriser, so it is reported and not held against the
-    // desk.
+    // shell.
     const OPEN_FRAMES = 1;
     const timings = [];
     const started = Date.now();
@@ -1416,12 +1416,12 @@ try {
     await search(a.tab, a.command, 'notes', 'Notes');
     await settle(a.tab, 2);
     // Where Notes' own window is once the strip is at rest: with a few windows
-    // open the middle of the desk can be another window's, one whose content
+    // open the middle of the shell can be another window's, one whose content
     // scrolls sideways itself.
     const keptNotes = await restingPan(a.tab);
     const notesButton = await notesPoint(a.tab);
     if (!notesButton) failed('Notes shows no New note button to find its window by');
-    // In Notes' column, at the desk's middle height: its body, not the window's
+    // In Notes' column, at the shell's middle height: its body, not the window's
     // bar, whose row of tabs scrolls sideways itself.
     const overNotes = {x: notesButton.x, y: centre.y};
     const windowsBefore = (await snapshot(a.tab)).windows;
@@ -1453,7 +1453,7 @@ try {
     // The same gesture over Sheets, whose grid scrolls sideways itself: the app
     // takes it and the strip stays where it was.
     // The fingers rest on Sheets' grid, wherever on the strip the search
-    // brought its window: the middle of the desk can be another window's then,
+    // brought its window: the middle of the shell can be another window's then,
     // whose sideways wheel the strip takes, as it should.
     // The search slides the strip to Sheets: the swipe waits until it is at rest.
     await search(a.tab, a.command, 'sheets', 'Sheets');
@@ -1526,11 +1526,11 @@ try {
     await reportProblem();
 
     // The launcher's chord opens the search, and Escape closes it opening
-    // nothing: the keys a browser leaves to the page. The desk has every app
+    // nothing: the keys a browser leaves to the page. The shell has every app
     // the Lounge offers open by now and presents a frame every several
     // seconds through the software rasteriser, and each answer is a presented
     // frame: the waits are the ones a search gets everywhere in this gate.
-    await click(a.tab, DESK.empty.x, DESK.empty.y);
+    await click(a.tab, SHELL.empty.x, SHELL.empty.y);
     await key(a.tab, 'k', a.command);
     await until(a.tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search chord', stepLimit(3));
     await key(a.tab, 'Escape');
@@ -1539,7 +1539,7 @@ try {
     mark('the search chord and Escape');
 
     // None of it reached the browser: the page neither scrolled nor zoomed,
-    // and the browser did not navigate. The entries the desk added for the
+    // and the browser did not navigate. The entries the shell added for the
     // windows opened are its own and all in this document; the browser
     // taking a key or click as Back, or following a link, would have left it
     // or stepped back from the newest.
@@ -1566,7 +1566,7 @@ try {
     // A person the workspace lets invite, from the page itself: the operator
     // declares them one while their page stands open (through the workspace's
     // operator socket), and the bar offers inviting without a reload, as a
-    // promotion reaches the native desk.
+    // promotion reaches the native shell.
     const offeredBefore = (await snapshot(a.tab)).names.filter(name => name === 'Invite');
     report.inviteBefore = offeredBefore.length;
     if (offeredBefore.length) await failed('the bar offered inviting before the workspace allowed it', a.tab);
@@ -1577,13 +1577,13 @@ try {
     console.log(`ok: the page offers inviting ${report.inviteAfterMs} ms after the workspace allowed it, with no reload`);
     mark('the invite offered without a reload');
 
-    // The page's own sheet, the same one a desk shows: the role a link brings
+    // The page's own sheet, the same one a shell shows: the role a link brings
     // someone in at, chosen before the link is made.
     // The sheet is up once its choices stand where a person presses them:
     // its title names the sheet without standing anywhere of its own.
     if (!await press(a.tab, 'Invite')) await failed("the bar's invite button could not be pressed", a.tab);
     await waitFor(a.tab, 'Commenter', "the invite sheet's Commenter part");
-    // A sheet slides in over the desk, and a press lands where its controls
+    // A sheet slides in over the shell, and a press lands where its controls
     // stood when the last frame was read: the parts are pressed once they
     // have stood still for a frame, as a person presses what they see.
     const atCommenter = async () => JSON.parse(await find(a.tab, 'Commenter'))?.bounds ?? null;
@@ -1705,7 +1705,7 @@ try {
     mark('the invitee arrived from the link');
     await dump(c.tab, '10-c-arrived');
 
-    // The desk each person is in is the desk the new person is on too: A's
+    // The shell each person is in is the shell the new person is on too: A's
     // People list names them beside B.
     const rowsAfter = await (async () => {
       const deadline = Date.now() + stepLimit(3);
@@ -1717,7 +1717,7 @@ try {
         }
         if (Date.now() > deadline) {
           await dump(a.tab, 'timeout-people-invited');
-          await failed(`A's desk does not show the invitation's person beside B: ${JSON.stringify(rows)}`, a.tab);
+          await failed(`A's shell does not show the invitation's person beside B: ${JSON.stringify(rows)}`, a.tab);
         }
         await sleep(500);
       }
@@ -1725,8 +1725,8 @@ try {
     report.hereAfter = rowsAfter.map(row => ({id: row.id, user: row.user ?? null, label: row.label}));
     const invitedRow = rowsAfter.find(row => row.user === keptC.userPublicKey);
     if (invitedRow.id === report.presence.a.id) await failed('A sees B and the invitation\'s person as one row', a.tab);
-    console.log(`ok: A's desk shows ${invitedRow.label} beside B`);
-    mark('A\'s desk shows the invitee');
+    console.log(`ok: A's shell shows ${invitedRow.label} beside B`);
+    mark('A\'s shell shows the invitee');
     await dump(a.tab, '11-a-people-invited');
   }
 
@@ -1735,7 +1735,7 @@ try {
   report.logs = {a: a.tab.log.slice(-10), b: b.tab.log.slice(-10), c: invited?.tab.log.slice(-10) ?? null};
   if (errors.length) failed(`pages reported errors: ${errors.slice(0, 5).join('; ')}`);
 
-  // The desk one person arranged is the desk the other shows: neither page's
+  // The shell one person arranged is the shell the other shows: neither page's
   // write of the shared desktop was refused.
   const refused = both.filter(line => /the workspace refused a change/.test(line));
   report.refused = refused;
@@ -1743,7 +1743,7 @@ try {
   // A frame repainted in part must leave no stale pixel. A page built with the
   // retained-frame check says so where it happens; the check also says when it
   // could not read its two frames back. A stale pixel on either page fails the
-  // run: the desk a person sees is the frame that repaint left behind.
+  // run: the shell a person sees is the frame that repaint left behind.
   report.mismatched = both.filter(line => /retained frame differs from a full render/.test(line));
   report.unreadable = both.filter(line => /could not read a frame back/.test(line));
   if (report.mismatched.length) {

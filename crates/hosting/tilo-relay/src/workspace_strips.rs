@@ -40,7 +40,7 @@ pub(crate) fn settle_strips(
     let tree = &mut desktop.tree;
     let mut minter = Minter::new(workspace, tree);
     if tree.workspaces.is_empty() {
-        // The desktop's workspace is the workspace itself, by its id, as every member's desk is.
+        // The desktop's workspace is the workspace itself, by its id, as every member's shell is.
         let identity = WorkspaceId::parse(workspace)
             .ok_or_else(|| format!("{workspace:?} is not a workspace id"))?;
         let workspace = Workspace::new(identity, shown);

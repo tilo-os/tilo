@@ -186,7 +186,7 @@ impl Editor {
         self.ime_rect = None;
         self.chrome = ChromeColors::for_theme(theme);
         self.paper_theme = theme.on_ground(self.chrome.paper);
-        self.desk_theme = theme.clone();
+        self.theme = theme.clone();
         self.text_scale = f64::from(theme.text_scale.clamp(0.75, 2.0) * theme.ui_scale);
         let full = self.rect;
         // Each region is its own paint part, so a typed character repaints its paragraph,
@@ -662,7 +662,7 @@ impl Editor {
     ) {
         let canvas = fg.canvas;
         let reach = ui::widget::focus_ring_reach(theme);
-        let gutter = f64::from(self.desk_theme.tokens.metrics.scrollbar_gutter);
+        let gutter = f64::from(self.theme.tokens.metrics.scrollbar_gutter);
         let track = Rect::new(canvas.x1 - gutter, canvas.y0, canvas.x1, canvas.y1);
         parts.draw(
             scene,

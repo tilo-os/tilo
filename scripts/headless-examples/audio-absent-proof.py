@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A session starts with no audio server: the desk works, Quick Settings shows
+"""A session starts with no audio server: the shell works, Quick Settings shows
 the volume row saying there is no audio device, and the sound comes back when
 the server appears, without a restart.
 
@@ -9,7 +9,7 @@ same desktop with its sound controls saying so.
 
 The session starts with a `pipewire` on PATH that fails at once, so it runs
 exactly as it does in a container. A person opens Notes, and opens Quick
-Settings from the bar: the panel stands over the desk and the sound's own
+Settings from the bar: the panel stands over the shell and the sound's own
 volume action answers that there is no output to set. Then a real PipeWire,
 WirePlumber and its session output start in the session's own runtime
 directory: the same action sets the output's level, which the graph now
@@ -66,7 +66,7 @@ def wait_for(label: str, read, deadline: float = 20.0):
 
 
 def show_quick_settings(session) -> None:
-    """Open the panel over the desk, as a person presses the bar's control."""
+    """Open the panel over the shell, as a person presses the bar's control."""
     session.wait_target("Open quick settings", 30)
     session.click_named("Open quick settings")
 
@@ -144,19 +144,19 @@ def main() -> int:
                       env={"PATH": f"{shim}:{os.environ['PATH']}"})
         check("the session starts with no audio server", session.running())
 
-        # The desk works: a person opens Notes through the desktop's launcher.
+        # The shell works: a person opens Notes through the desktop's launcher.
         session.launch("notes")
         session.answering("notes", deadline=180)
-        check("the desk opens an application",
+        check("the shell opens an application",
               any(window.get("app_id") == "so.tilo.notes" for window in session.windows()))
 
-        # Quick Settings stands over the desk, its volume row in the absent
+        # Quick Settings stands over the shell, its volume row in the absent
         # state: the panel is drawn and the sound's own volume action answers
         # that there is no output to set.
         show_quick_settings(session)
         shown = wait_for("the quick settings panel",
                          lambda: (chrome(session).get("surfaces") or {}).get("quick-settings"))
-        check("quick settings stands over the desk without an audio server", shown is not None,
+        check("quick settings stands over the shell without an audio server", shown is not None,
               json.dumps(chrome(session).get("overlays")))
         volume = sound_action(session)
         before = None

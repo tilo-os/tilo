@@ -1307,7 +1307,7 @@ mod tests {
     /// nothing to tell.
     #[test]
     fn a_mapped_window_tells_the_policy_its_process() {
-        let (_desk, mut policy) = desktop(1, 1.0);
+        let (_shell, mut policy) = desktop(1, 1.0);
         let told = Rc::new(RefCell::new(Vec::new()));
         let heard = Rc::clone(&told);
         policy.set_window_mapped(Rc::new(move |pid| heard.borrow_mut().push(pid)));
@@ -1396,7 +1396,7 @@ mod hidpi {
     /// the windows' bars paint the pixels a `HiDPI` panel shows, rather than
     /// one scale's worth stretched over twice the area.
     #[test]
-    fn the_desk_draws_at_its_displays_scale() {
+    fn the_shell_draws_at_its_displays_scale() {
         let (mut desktop, _policy) = desktop(7, 1.0);
         SurfaceHost::outputs_changed(
             &mut desktop,

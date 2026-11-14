@@ -468,7 +468,7 @@ class Session:
         the session opens the way a first login does; without it the
         workspaces, windows and their layout come back as they were left.
         `session_args` go to `tilo-session` itself, after the script's `--`:
-        the further displays of a multi-display desk (`--output`), or another
+        the further displays of a multi-display shell (`--output`), or another
         backend's options."""
         if self.proc is not None:
             raise Failed("the session is running already")
@@ -639,7 +639,7 @@ class Session:
 
     def search_rows(self) -> dict:
         """The open search's query, the rows it shows and whether it is still
-        filling in, as of the last frame the desk drew (`search_rows`)."""
+        filling in, as of the last frame the shell drew (`search_rows`)."""
         return self.control({"op": "search_rows"})["answer"]
 
     def wait_search_rows(self, query: str, wanted=(), deadline: float = 30.0) -> dict:
@@ -708,10 +708,10 @@ class Session:
 
     def answering(self, app: str, deadline: float = 60.0) -> bool:
         """Whether `app` is up: a process of it runs from the session's own
-        store, and the desk holds its window.
+        store, and the shell holds its window.
 
-        Both are the desk's, not a guess: the launcher's sandbox runs the app
-        under `/var/tilo-apps/<id>/`, and the window is the one the desk placed
+        Both are the shell's, not a guess: the launcher's sandbox runs the app
+        under `/var/tilo-apps/<id>/`, and the window is the one the shell placed
         for it. What it draws is proved by what comes next: a control of its own
         pressed, and what that changes."""
         ident = app if "." in app else app_id(app)
@@ -720,7 +720,7 @@ class Session:
             return bool(self.processes(ident)) and any(
                 w.get("app_id") == ident for w in self.windows())
 
-        return until(f"{ident} to run with its window on the desk", up, deadline)
+        return until(f"{ident} to run with its window on the shell", up, deadline)
 
     def wait_target(self, name: str, deadline: float = 60.0) -> dict:
         """The control `name` once the surface showing it offers it."""

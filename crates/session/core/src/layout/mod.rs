@@ -1832,7 +1832,7 @@ fn position(tree: &mut Tree, place: u64, x: i32, y: i32) -> Result<bool, String>
     Ok(held.layout.set_position(group, x, y))
 }
 
-/// Give the place `place` the canvas size `width` × `height`; whether the desk changed.
+/// Give the place `place` the canvas size `width` × `height`; whether the shell changed.
 fn size(tree: &mut Tree, place: u64, width: u32, height: u32) -> Result<bool, String> {
     let Some((workspace, row, group, _)) = locate(tree, place) else {
         return Err("that place is not in the layout".into());

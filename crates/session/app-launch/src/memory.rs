@@ -3,17 +3,17 @@
 //!
 //! Every app starts in the startup tier: the most CPU and IO weight a cgroup
 //! may carry, so the app the person just asked for is served before every
-//! other app, the session's desk and any batch work while it opens
+//! other app, the session's shell and any batch work while it opens
 //! (`launcher::priority`). Once it has had its startup window it takes
 //! the tier of what the person can see: the session is what knows which
-//! windows the desk shows, so it is what moves an app between the tiers.
-//! While the desk shows a window of an app the app is in the foreground tier,
+//! windows the shell shows, so it is what moves an app between the tiers.
+//! While the shell shows a window of an app the app is in the foreground tier,
 //! with a memory-low floor; an app with no window in view is in the
 //! background tier, whose weight is below default and whose floor is none.
 //! Both writes are the same ([`launcher::app_cgroup::set_tier`]): the files a
 //! launch is born with.
 //!
-//! The cgroup the session itself runs in carries [`Tier::Session`]: the desk
+//! The cgroup the session itself runs in carries [`Tier::Session`]: the shell
 //! placing and drawing a window is work a person waits on, so it outranks
 //! every app. A launch a host gave no scope of its own runs in that same
 //! cgroup: it is served by the session's weight while it opens, and the
@@ -115,7 +115,7 @@ fn launches_of(apps: &Running) -> Vec<Launch> {
 /// A cgroup one of whose launches is still opening keeps the startup tier, so
 /// two apps sharing a cgroup (a host with no user manager runs every launch in
 /// the session's) do not demote each other. Afterwards the cgroup the session
-/// itself runs in is the session's tier whatever the desk shows, and a
+/// itself runs in is the session's tier whatever the shell shows, and a
 /// launch's own cgroup takes the tier of what the person can see. `total` is
 /// this machine's memory, which a foreground app's floor is an eighth of; the
 /// session's own cgroup sets weights only, since its floor is the image's.
@@ -341,7 +341,7 @@ mod tests {
             let hidden = app_cgroup(&home.path().join("app-hidden"), Tier::Startup, 2 * GIB);
             let apps = [in_front.clone(), hidden.clone()];
 
-            // The desk shows a window of the first app and none of the other, and
+            // The shell shows a window of the first app and none of the other, and
             // both have opened: the pass moves one up and the other down, writing
             // the launch's own tier files.
             let moved = put_in_tiers(
@@ -403,7 +403,7 @@ mod tests {
         {
             let home = tempfile::tempdir().unwrap();
             let app = app_cgroup(&home.path().join("app-probe"), Tier::Foreground, GIB);
-            // Opening, and the desk already shows its window: it keeps the
+            // Opening, and the shell already shows its window: it keeps the
             // startup tier until its startup window has passed.
             assert_eq!(tiered(&app, true, true, None), 1);
             assert_eq!(weight(&app), "10000");
@@ -422,14 +422,14 @@ mod tests {
             let home = tempfile::tempdir().unwrap();
             // A host with no user manager runs the launch in the session's own
             // cgroup: while it opens, that cgroup is the launch's; afterwards it is
-            // the desk's, and never the background tier of an app nobody sees.
+            // the shell's, and never the background tier of an app nobody sees.
             let session = app_cgroup(&home.path().join("session.scope"), Tier::Session, GIB);
             let own = session.0.clone();
             std::fs::write(session.0.join("memory.low"), "0").unwrap();
             assert_eq!(tiered(&session, false, true, Some(&own)), 1);
             assert_eq!(weight(&session), "10000");
             assert_eq!(tiered(&session, false, false, Some(&own)), 1);
-            assert_eq!(weight(&session), "1000", "the desk keeps its own weight");
+            assert_eq!(weight(&session), "1000", "the shell keeps its own weight");
             assert!(!has_floor(&session.0.join("memory.low")));
             // A second app opening in the same cgroup is not demoted by the first
             // one having opened.

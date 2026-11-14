@@ -322,14 +322,14 @@ impl Editor {
         }
         if !drew_footer && !foot_editing {
             let label = t_args("page-indicator", &[arg("n", num::i64_of_usize(page_no))]);
-            let style = self.desk_theme.text(TextRole::Caption).numeric();
+            let style = self.theme.text(TextRole::Caption).numeric();
             let (w, h) = text_renderer.measure_style(&label, None, &style);
             let lx = f64::midpoint(sheet.x0, sheet.x1) - f64::from(w) / 2.0;
             let ly = sheet.y1 + (PAGE_GAP - f64::from(h)) / 2.0;
             text_renderer.draw_style(
                 scene,
                 &label,
-                self.desk_theme.tokens.colors.text_dim,
+                self.theme.tokens.colors.text_dim,
                 fg.ctf * Affine::translate((lx, ly)),
                 None,
                 &style,
@@ -396,7 +396,7 @@ impl Editor {
         // its marks reach past it, so a typed character repaints its paragraph only.
         let page_to_widget = self.zoom.transform(Affine::IDENTITY);
         // What marks reach past a block's band, in content px.
-        let reach = f64::from(self.desk_theme.tokens.spacing.s2);
+        let reach = f64::from(self.theme.tokens.spacing.s2);
         for l in input.laid {
             let mut band = Rect::new(
                 fg.page_x,
@@ -1121,14 +1121,14 @@ impl Editor {
 
     pub(super) fn draw_scrollbar(&self, scene: &mut Scene, transform: Affine, canvas: Rect) {
         if self.max_scroll > 0.0 {
-            let gutter = f64::from(self.desk_theme.tokens.metrics.scrollbar_gutter);
+            let gutter = f64::from(self.theme.tokens.metrics.scrollbar_gutter);
             let track = Rect::new(canvas.x1 - gutter, canvas.y0, canvas.x1, canvas.y1);
             ui::widget::Scrollbar::vertical().draw(
                 scene,
                 transform,
                 track,
                 self.canvas_scroll_metrics(),
-                &self.desk_theme,
+                &self.theme,
                 false,
             );
         }

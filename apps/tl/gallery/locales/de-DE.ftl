@@ -589,7 +589,7 @@ d-irl4ws35 = Orte
     .w-a-resource-s-view-on-the = Die Ansicht einer Ressource auf der Fläche: kein Rahmen, ihr Griff beim Darüberfahren.
     .w-window = Fenster
     .w-close = Schließen
-    .w-a-window-on-the-desk-its = Ein Fenster auf dem Schreibtisch: seine Leiste, seine Bedienelemente, was es zeigt.
+    .w-a-window-on-the-shell-its = Ein Fenster auf dem Schreibtisch: seine Leiste, seine Bedienelemente, was es zeigt.
 
 d-tsxcwdoy = Medien
     .w-pictures = Bilder

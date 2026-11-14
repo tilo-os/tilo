@@ -56,7 +56,7 @@ fn six_notes(
         })
         .collect();
     let ids: Vec<TabId> = tabs.iter().map(|tab| tab.id).collect();
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tree = seed_tree(&mut minter, "Shell", tabs);
     let arrived = Arrived::default();
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Components(Rc::clone(&arrived))));
     handle.set_viewport_width(1800.0);

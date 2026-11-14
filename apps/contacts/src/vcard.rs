@@ -815,15 +815,15 @@ mod tests {
 
             {
                 let mut c = sample();
-                c.phones = vec![Labeled::new("desk; ext: 12", "+1 555 0100")].into();
+                c.phones = vec![Labeled::new("work; ext: 12", "+1 555 0100")].into();
                 let doc = to_vcard(&c, VCardVersion::V4);
                 assert!(
-                    doc.contains("TEL;TYPE=\"desk; ext: 12\":+1 555 0100"),
+                    doc.contains("TEL;TYPE=\"work; ext: 12\":+1 555 0100"),
                     "{doc}"
                 );
                 let back = parse_vcards(&doc);
                 assert_eq!(back[0].phones[0].value, "+1 555 0100");
-                assert_eq!(back[0].phones[0].label, "desk; ext: 12");
+                assert_eq!(back[0].phones[0].label, "work; ext: 12");
             }
 
             {

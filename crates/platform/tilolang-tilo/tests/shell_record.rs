@@ -705,7 +705,7 @@ fn a_bar_that_hides_when_a_window_overlaps_it_hides_only_while_one_does() {
 /// name them, read from the device's and Settings' published resources: here no other is
 /// published, so each reads as absent (off, empty).
 #[test]
-fn the_quick_settings_stand_over_the_desk() {
+fn the_quick_settings_stand_over_the_shell() {
     let mut r = workspace();
     for (resource, ty) in tilolang_tilo::platform_apps::platform_roots() {
         let target = tilolang_tilo::runtime::ResourceRef::parse_id(resource, ty).unwrap();

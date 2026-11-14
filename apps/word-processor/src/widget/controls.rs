@@ -486,7 +486,7 @@ impl Editor {
             clear_label,
             anchor,
             host: self.rect,
-            theme: &self.desk_theme,
+            theme: &self.theme,
         });
         self.lifecycle.dirty = true;
     }
@@ -993,8 +993,7 @@ impl Editor {
     }
 
     pub(super) fn floating_viewport(&self) -> Rect {
-        self.rect
-            .inset(-f64::from(self.desk_theme.tokens.spacing.s2))
+        self.rect.inset(-f64::from(self.theme.tokens.spacing.s2))
     }
 
     /// Replace the content with the template in place, keeping the host state, its undo history

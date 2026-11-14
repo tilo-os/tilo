@@ -244,7 +244,7 @@ impl StudioSurface {
         {
             // A shot taken while the bar is down is said on the floating
             // layer's card, which the session put up with it: nothing opens
-            // over the desk for it.
+            // over the shell for it.
             self.widget.set_screenshot_finished(
                 kept.kept,
                 kept.width,
@@ -874,10 +874,10 @@ mod tests {
         assert!(!nothing_in_front(&take));
     }
 
-    /// A shot taken at the desk once the person put the studio away says so
-    /// on the floating layer; the bar does not come back over the desk for it.
+    /// A shot taken at the shell once the person put the studio away says so
+    /// on the floating layer; the bar does not come back over the shell for it.
     #[test]
-    fn a_shot_from_the_desk_does_not_bring_the_studio_back() {
+    fn a_shot_from_the_shell_does_not_bring_the_studio_back() {
         use crate::link::Kept;
         use ui::widget::{CapturePreview, ScreenshotKept};
 
@@ -896,8 +896,8 @@ mod tests {
             "the studio goes down with its bar"
         );
 
-        // A shot taken from the desk answers where the bar is down: on the
-        // floating layer, with nothing opening over the desk.
+        // A shot taken from the shell answers where the bar is down: on the
+        // floating layer, with nothing opening over the shell.
         let kept = Kept {
             kept: ScreenshotKept::SAVED,
             path: "/home/person/Pictures/Screenshots/shot.png".into(),
@@ -923,7 +923,7 @@ mod tests {
 
     /// A capture that could not be written says so on the bar, and a person
     /// who puts the bar down while that answer is still up takes the studio
-    /// with it: the next capture answers on the desk, not behind a studio the
+    /// with it: the next capture answers on the shell, not behind a studio the
     /// session still thinks it has up.
     #[test]
     fn a_failure_put_away_takes_the_studio_down_with_it() {
@@ -950,7 +950,7 @@ mod tests {
         );
 
         // Escape, with the answer still up: the bar goes down, and the studio
-        // goes with it rather than standing over a desk nobody sees it on.
+        // goes with it rather than standing over a shell nobody sees it on.
         surface.widget.close();
         surface.catch_up();
         assert!(

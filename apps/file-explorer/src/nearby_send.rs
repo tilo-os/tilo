@@ -460,7 +460,7 @@ mod tests {
             transfers: vec![NearbyTransferStatus {
                 handle: NearbyTransferHandle::from_issued_bytes([31; 16]),
                 name: "report.pdf".into(),
-                device_label: "Desk".into(),
+                device_label: "Tower".into(),
                 direction: NearbyTransferDirection::Sending,
                 phase,
                 transferred_bytes,
@@ -544,7 +544,7 @@ mod tests {
                     request_id,
                     sending(NearbyTransferPhase::Queued, 0)
                 ),
-                vec![NearbyUiEffect::Status("Queued report.pdf for Desk".into())],
+                vec![NearbyUiEffect::Status("Queued report.pdf for Tower".into())],
                 "a transfer that starts is shown"
             );
 
@@ -668,7 +668,7 @@ mod tests {
                     request_id,
                     sending(NearbyTransferPhase::Queued, 0)
                 ),
-                vec![NearbyUiEffect::Status("Queued report.pdf for Desk".into())]
+                vec![NearbyUiEffect::Status("Queued report.pdf for Tower".into())]
             );
         }
 
@@ -733,7 +733,7 @@ mod tests {
                 if had_targets {
                     state.snapshot.targets.push(NearbyTransferTarget {
                         handle: NearbyTargetHandle::from_issued_bytes([4; 16]),
-                        label: "Desk".into(),
+                        label: "Tower".into(),
                         online: true,
                     });
                 }
@@ -864,7 +864,7 @@ mod tests {
                         snapshot: NearbyTransferSnapshot {
                             targets: vec![NearbyTransferTarget {
                                 handle: NearbyTargetHandle::from_issued_bytes([4; 16]),
-                                label: "Desk".into(),
+                                label: "Tower".into(),
                                 online: true,
                             }],
                             destinations: vec![destination.clone()],

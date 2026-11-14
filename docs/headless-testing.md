@@ -270,7 +270,7 @@ Read the ids the app publishes (`apps/tl/<app>/app.ids`) rather than its words; 
 - `first-frame.py`, `startup-frame-timeline.py` — what a session's first frame costs
 - `session-e2e.py`, `canvas-e2e.py`, `tilolang-e2e.py`, `files-clipboard-e2e.py`, `agent-chat-e2e.py` — whole flows, each on a session of its own
 - `agent-seats-proof.py`, `session-lock-proof.py` — the proofs `tools/ci/session-proofs.sh` runs
-- `notes-persist-proof.py`, `notes-caret-proof.py`, `desk-restore-proof.py`, `audio-absent-proof.py` — proofs that need the tree's apps built (the restore proof checks that a session comes back to the layout it had)
+- `notes-persist-proof.py`, `notes-caret-proof.py`, `shell-restore-proof.py`, `audio-absent-proof.py` — proofs that need the tree's apps built (the restore proof checks that a session comes back to the layout it had)
 
 `scripts/headless-examples/README.md` says what each proof asserts.
 

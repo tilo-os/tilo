@@ -2455,7 +2455,7 @@ fn a_window_given_the_keyboard_before_its_instance_answered_types_into_the_entry
     use ui::winit::keyboard::NamedKey;
     let _settled = ui::motion::testing::settled();
     let mut session = Session::opened(TASKS, "ada", Window::live);
-    // The desk gives a window the keyboard as it maps it, before what its instance sends has
+    // The shell gives a window the keyboard as it maps it, before what its instance sends has
     // arrived: the entry the window shows once it does takes what the person types.
     if let Window::Live(app) = &mut session.window {
         Window::live_input(app, ui::winit::event::WindowEvent::Focused(true));
@@ -2843,7 +2843,7 @@ fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
     );
 }
 
-/// The names of the controls the live window offers a tool, as it hands them to the desk.
+/// The names of the controls the live window offers a tool, as it hands them to the shell.
 fn controls_of(app: &mut ui::App) -> Vec<String> {
     app.window_controls()
         .into_iter()
@@ -2897,7 +2897,7 @@ fn a_click_on_a_tasks_box_marks_it_done() {
 }
 
 /// What a tool and a screen reader reach of a task by name in the window a window process runs,
-/// as the desk lists its controls: its row's menu, and its box, which marks it done.
+/// as the shell lists its controls: its row's menu, and its box, which marks it done.
 #[test]
 fn a_tool_opens_a_tasks_menu_and_marks_it_done_by_its_box() {
     use ui::winit::keyboard::NamedKey;

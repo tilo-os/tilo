@@ -1363,7 +1363,7 @@ impl Live {
         };
         // A boundary writes into its own `fragment`, and nowhere else. Its path is a cached
         // trail of child indices, so it can outlive the node it named: when a branch of the
-        // view swaps (a preset that lays the desk another way), the `fragment` the boundary
+        // view swaps (a preset that lays the shell another way), the `fragment` the boundary
         // was made for leaves the tree while the boundary itself stays behind, rendered and
         // reading what changed. Its path is then the empty trail of a boundary that was never
         // placed, and an empty path names the root: writing there would put this one call's

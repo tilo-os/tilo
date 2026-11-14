@@ -1,12 +1,12 @@
 //! A window that runs on another device, while nothing of it is shown here.
 //!
-//! The workspace's layout lists such a window on every desk as its device's
-//! ([`tilo_desktop_model::TileContent::HostedWindow`]), shared or not, and a desk that holds none
+//! The workspace's layout lists such a window on every shell as its device's
+//! ([`tilo_desktop_model::TileContent::HostedWindow`]), shared or not, and a shell that holds none
 //! of its pictures has nothing of the window to draw. Its tab says so, in the toolkit's own notice
 //! for a place that holds nothing: which app's window it is and the device it runs on, and under
 //! that why it is not here, as the host's session reads it ([`Elsewhere`]).
 //!
-//! The device goes by the name the desk already calls it, the one its tile carries. A device
+//! The device goes by the name the shell already calls it, the one its tile carries. A device
 //! nothing names is another device of the workspace: its key is never a name.
 
 use tilo_desktop_model::{Tab, TileContent as ModelTile};
@@ -15,8 +15,8 @@ use ui::widget::TileContent;
 use crate::i18n::{t, t_args};
 
 /// Why a window that runs on another device is not shown in its tab, as the host's session reads
-/// it. The desk decides none of it: a session that reads its workspaces says which holds, and a
-/// desk nobody told says only where the window runs.
+/// it. The shell decides none of it: a session that reads its workspaces says which holds, and a
+/// shell nobody told says only where the window runs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Elsewhere {
     /// Nobody said how the window stands here: the tab says where it runs, and no more.

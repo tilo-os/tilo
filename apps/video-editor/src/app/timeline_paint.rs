@@ -380,7 +380,7 @@ impl VideoEditorApp {
                     level.is_some_and(|l| l.clipped),
                 );
             }
-            // Lettered M, S and L, the mixing desk's shorthand, centred on the toolkit's
+            // Lettered M, S and L, the mixing shell's shorthand, centred on the toolkit's
             // toggle face: the head is too narrow for a labelled face's insets.
             let muted = track.is_some_and(|t| t.muted);
             let locked = track.is_some_and(|t| t.locked);

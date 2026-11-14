@@ -73,7 +73,7 @@ sections!(
     prefs::InputDevicePrefs,
     ui::text_assistance::TextAssistancePrefs,
     prefs::PowerPrefs,
-    prefs::DeskWidgetsPrefs,
+    prefs::WidgetsPrefs,
     search::SearchHistory,
     prefs::UpdatePrefs,
     prefs::NotificationPrefs,

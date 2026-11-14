@@ -111,8 +111,8 @@ if (follow) await until(`(() => {
 })()`, 'the invitation offering to join');
 await until(`['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, 'the page arriving');
 if (await tab.evaluate('document.documentElement.dataset.arrival') !== 'done') await finish(1, `the page stopped arriving: ${await text()}`);
-await until('Boolean(globalThis.tiloMount?.canvas)', 'the desk mounting');
-console.error('ok: on the desk');
+await until('Boolean(globalThis.tiloMount?.canvas)', 'the shell mounting');
+console.error('ok: on the shell');
 
 // Open Files by its link, as following a link to an app opens it: the
 // workspace the page joined, and the app in it.

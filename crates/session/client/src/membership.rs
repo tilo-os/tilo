@@ -192,7 +192,7 @@ impl<'a> Membership<'a> {
 /// its own, and the grants it makes, which are the ones the broker decides a person's and an app's
 /// actions against here: a grant governs from the device it was written on, and one taken back is
 /// gone here as it is everywhere. The windows its devices share with it are among them
-/// ([`tilo_desktop_model::window_share`]): a share is the workspace's, so the desk of every device
+/// ([`tilo_desktop_model::window_share`]): a share is the workspace's, so the shell of every device
 /// that holds the workspace reads it there, the sharer's own included. Whether anything changed.
 pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
     let owner = policy.owner.as_deref();

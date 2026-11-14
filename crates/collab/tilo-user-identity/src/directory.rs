@@ -1310,7 +1310,7 @@ mod tests {
                 "the person's other device knows they decided, and asks nobody"
             );
             // Leaving is a leave of the workspace, not an undo of the decision:
-            // the record outlives the workspace being taken off the desk.
+            // the record outlives the workspace being taken off the shell.
             laptop.remove_workspace(WorkspaceId::from_u128(7)).unwrap();
             assert_eq!(laptop.community(site), Some(CommunityState::Decided));
         }

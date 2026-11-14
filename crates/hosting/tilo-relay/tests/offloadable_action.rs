@@ -329,15 +329,15 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     let mut env = tilo_test_env::ScopedEnv::new();
     env.remove("TILO_ACTION_OFFLOAD");
     let owner = TestUser::fresh("offload owner");
-    let desk = owner.enrol("desk", DeviceCapabilities::primary());
-    let desk_key = desk.device_pubkey();
+    let tower = owner.enrol("tower", DeviceCapabilities::primary());
+    let device_key = tower.device_pubkey();
     let laptop = owner.enrol("laptop", DeviceCapabilities::member());
     let root = tempfile::tempdir().unwrap();
 
     // The host governs the workspace and keeps its content: the photographs
     // are the workspace's, so the device that asks reads them exactly where
     // the host does.
-    let hosted = host_on(&owner, &desk, WorkSetting::own_person()).await;
+    let hosted = host_on(&owner, &tower, WorkSetting::own_person()).await;
     let created = hosted.host.workspaces().create("Photos").await.unwrap();
     let workspace = created.workspace.clone();
     let content = Arc::new(Media::default());
@@ -354,7 +354,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
             content as Arc<dyn ComputeContentStore>,
             Arc::new(FixtureCatalogue(package.clone())),
             Arc::new(ThumbnailSandbox),
-            desk_key,
+            device_key,
             root.path().join(format!("{dir}-data")),
             root.path().join(format!("{dir}-state")),
         ))
@@ -368,7 +368,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     // device does, so the host answers it.
     let laptop_endpoint = device_endpoint(&laptop).await;
     invited(&hosted, &workspace, &owner, &laptop, &laptop_endpoint).await;
-    let plane = asking_plane(&laptop, &desk, &workspace);
+    let plane = asking_plane(&laptop, &tower, &workspace);
     let host_addr = hosted.host.node_addr();
     let elsewhere = host_addr.clone();
     let peers = PlanePeers::new(
@@ -435,7 +435,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     let Offloaded::Ran { output, device, .. } = second else {
         panic!("the host is better placed: {second:?}");
     };
-    assert_eq!(device, hex::encode(desk_key));
+    assert_eq!(device, hex::encode(device_key));
     assert_eq!(output, here, "the same output, wherever it ran");
     for resource in &output.resources {
         let hash = tilo_actions::content_hash(resource).unwrap();
@@ -508,7 +508,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
 #[tokio::test]
 async fn a_host_at_its_capacity_takes_no_second_job() {
     use tilo_workspace_host::workspaces::HostJobs as _;
-    let desk = TestUser::fresh("capacity host").enrol("desk", DeviceCapabilities::primary());
+    let tower = TestUser::fresh("capacity host").enrol("tower", DeviceCapabilities::primary());
     let root = tempfile::tempdir().unwrap();
     let content = Arc::new(Media::default());
     let (package, _) = installed_package(&root.path().join("host"), PACKAGE, ENTRYPOINT);
@@ -516,7 +516,7 @@ async fn a_host_at_its_capacity_takes_no_second_job() {
         Arc::clone(&content) as Arc<dyn ComputeContentStore>,
         Arc::new(FixtureCatalogue(package)),
         Arc::new(ThumbnailSandbox),
-        desk.device_pubkey(),
+        tower.device_pubkey(),
         root.path().join("data"),
         root.path().join("state"),
     )
@@ -566,14 +566,14 @@ async fn a_host_at_its_capacity_takes_no_second_job() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_host_refuses_a_job_it_does_not_hold_the_inputs_for() {
     use tilo_workspace_host::workspaces::HostJobs as _;
-    let desk = TestUser::fresh("job host").enrol("desk", DeviceCapabilities::primary());
+    let tower = TestUser::fresh("job host").enrol("tower", DeviceCapabilities::primary());
     let root = tempfile::tempdir().unwrap();
     let (package, _) = installed_package(&root.path().join("host"), PACKAGE, ENTRYPOINT);
     let jobs = ComputeJobs::new(
         Arc::new(Media::default()) as Arc<dyn ComputeContentStore>,
         Arc::new(FixtureCatalogue(package)),
         Arc::new(ThumbnailSandbox),
-        desk.device_pubkey(),
+        tower.device_pubkey(),
         root.path().join("data"),
         root.path().join("state"),
     );

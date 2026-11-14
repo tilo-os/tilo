@@ -180,7 +180,7 @@ impl Invite {
 
 /// What a host keeps of the sheet between passes: the link it last made, the
 /// invitation still on its way to a site's shelf, and what became of the last
-/// ask. The session's desk and a page's host replica keep this the same way,
+/// ask. The session's shell and a page's host replica keep this the same way,
 /// so a link is handed over the same way wherever the sheet is shown: as the
 /// site's short link, once the site keeps the invitation, and never as the
 /// invitation's own text.
@@ -341,7 +341,7 @@ pub fn lasting(expires_at_ns: u64) -> String {
     crate::t_args(key, &[(name, count)])
 }
 
-/// What the sheet asks of whoever makes its invitations: the session's desk,
+/// What the sheet asks of whoever makes its invitations: the session's shell,
 /// which keeps them in the workspace's governance, and a page's host
 /// replica, which asks its host. Both answer the same facts and carry out the
 /// same presses, so the sheet is the same wherever it stands.

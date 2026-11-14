@@ -122,7 +122,7 @@ fn a_drag_in_a_desktop_window_selects_the_text_and_ctrl_c_copies_it() {
     let queue = OwnerWakeQueue::default();
     let state = dir.path().join("state");
     let (surface, handle) = DesktopSurface::new(
-        seed_tree(&mut minter, "Desk", tabs),
+        seed_tree(&mut minter, "Shell", tabs),
         29,
         Box::new(Readers {
             owners: ui::record::RecordOwners::new(state.clone()),

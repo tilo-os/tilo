@@ -12,7 +12,7 @@
 /// Panning and zooming is the map's camera (a middle drag, Ctrl and a wheel, the arrow keys, two
 /// fingers); it moves the lens and nothing in the layout, so a place stays where it was
 /// while the person looks around, and the places keep their canvas points.
-/// The map fills the desk: it cuts off what it holds at its edge, so a map only as tall as its
+/// The map fills the shell: it cuts off what it holds at its edge, so a map only as tall as its
 /// content would show none of it.
 ///
 /// A resource dragged out of a view — a message's attachment chip, a search hit, a row of

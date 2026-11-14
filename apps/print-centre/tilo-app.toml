@@ -40,7 +40,7 @@ landlock = "strict"
 mode = "off"
 
 [sandbox.services]
-# The app's actions reach the desk over the workspace's broker: its window
+# The app's actions reach the shell over the workspace's broker: its window
 # publishes them there, and they are invoked back through it.
 collab = "optional@27"
 

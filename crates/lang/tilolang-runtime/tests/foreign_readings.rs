@@ -1,5 +1,5 @@
 //! A view over another app's reading whose fields are not bare values: the window menu's rows,
-//! a list of objects the desk offers a window. Each row reads as the record its app declares —
+//! a list of objects the shell offers a window. Each row reads as the record its app declares —
 //! its label, whether it can be chosen and why not — and a reading that does not match the
 //! declared types is an error that says which field of which row.
 
@@ -11,7 +11,7 @@ mod cases {
         AmStore, Meta, ResourceRef, Runtime, SimpleAuthority, UiNode, Value, ViewInstance,
     };
 
-    /// The window menu as the desk publishes it: the window it is for, where it stands, and the
+    /// The window menu as the shell publishes it: the window it is for, where it stands, and the
     /// rows that window offers now (`crates/session/window-menu`, `session/src/mount/shell.rs`).
     const READING: &str = r#"{
         "tab": "20",
@@ -27,7 +27,7 @@ mod cases {
         ]
     }"#;
 
-    /// A view over the desk's window menu: a row for each the desk offers, as it labels it,
+    /// A view over the shell's window menu: a row for each the shell offers, as it labels it,
     /// and the reason beside the ones this window cannot choose.
     const VIEW: &str = r#"app test.menu "Menu"
 
@@ -47,7 +47,7 @@ view menu(m: desktop.WindowMenu) {
 }
 "#;
 
-    /// The desk's description, as a host registers it for an app this runtime does not run: the
+    /// The shell's description, as a host registers it for an app this runtime does not run: the
     /// menu's type, its rows, and where it stands.
     fn desktop() -> Meta {
         meta(json!({
@@ -81,7 +81,7 @@ view menu(m: desktop.WindowMenu) {
         }))
     }
 
-    /// A view over the desk's menu state: which case the desk published for it.
+    /// A view over the shell's menu state: which case the shell published for it.
     const STATE_VIEW: &str = r#"app test.state "State"
 
 use desktop as desktop
@@ -97,17 +97,17 @@ view state(m: desktop.MenuState) {
 }
 "#;
 
-    /// The desk's window menu, as a view of ours names it.
+    /// The shell's window menu, as a view of ours names it.
     fn menu() -> ResourceRef {
         ResourceRef::parse_id("window-menu", "desktop#WindowMenu").expect("a resource id")
     }
 
-    /// The view, the desk's package loaded, and the desk's menu reading `text`.
+    /// The view, the shell's package loaded, and the shell's menu reading `text`.
     fn workspace(text: &str) -> (Runtime, ViewInstance) {
         let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
-        let desk = desktop();
-        rt.load_foreign(desk.clone()).unwrap();
-        let view = App::compile(VIEW, std::slice::from_ref(&desk));
+        let shell = desktop();
+        rt.load_foreign(shell.clone()).unwrap();
+        let view = App::compile(VIEW, std::slice::from_ref(&shell));
         view.load(&rt);
         rt.set_reading(&menu(), text)
             .expect("a reading of the menu");
@@ -137,7 +137,7 @@ view state(m: desktop.MenuState) {
     tilo_test_env::scenario! {
         fn a_reading_draws_its_rows_as_the_records_its_app_declares;
 
-        phase a_view_draws_a_row_for_each_row_the_desk_offers;
+        phase a_view_draws_a_row_for_each_row_the_shell_offers;
         {
             let (_rt, view) = workspace(READING);
             assert_eq!(
@@ -149,7 +149,7 @@ view state(m: desktop.MenuState) {
             assert_eq!(
                 drawn(&view),
                 ["Normal", "Move to workspace", "There is no other workspace"],
-                "each row as the desk labels it, with the reason of the one it cannot choose"
+                "each row as the shell labels it, with the reason of the one it cannot choose"
             );
         }
 
@@ -200,9 +200,9 @@ view state(m: desktop.MenuState) {
         // same of the reading as of a value of its own.
         {
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
-            let desk = desktop();
-            rt.load_foreign(desk.clone()).unwrap();
-            let view = App::compile(STATE_VIEW, std::slice::from_ref(&desk));
+            let shell = desktop();
+            rt.load_foreign(shell.clone()).unwrap();
+            let view = App::compile(STATE_VIEW, std::slice::from_ref(&shell));
             view.load(&rt);
             let state =
                 ResourceRef::parse_id("menu-state", "desktop#MenuState").expect("a resource id");
@@ -214,7 +214,7 @@ view state(m: desktop.MenuState) {
             assert_eq!(
                 drawn(&opened),
                 ["open"],
-                "the reading's case is the one the desk declares"
+                "the reading's case is the one the shell declares"
             );
         }
 
@@ -227,7 +227,7 @@ view state(m: desktop.MenuState) {
             let Value::Ref(row) = &rows[0] else {
                 panic!("a row is a record: {:?}", rows[0]);
             };
-            // The desk moves the window: the row it named is still there, as the desk lists it now.
+            // The shell moves the window: the row it named is still there, as the shell lists it now.
             let moved = r#"{"tab": null, "anchor": null, "rows": [
             { "id": "window-normal", "label": "Maximized", "enabled": false, "reason": "Full" },
             { "id": "window-move-workspace", "label": "Move to workspace", "enabled": false }
@@ -332,7 +332,7 @@ view state(m: desktop.MenuState) {
             rt.load_foreign(elsewhere).unwrap();
             let why = rt
                 .read(&menu(), "title")
-                .expect_err("the desk's package declares no menu");
+                .expect_err("the shell's package declares no menu");
             assert!(why.to_string().contains("is not declared"), "{why}");
             assert!(
                 !rt.waiting(&why.to_string()),
@@ -384,7 +384,7 @@ view from(n: Note) {
 }
 "#;
 
-    /// The desk's description with a menu a view can read the title of.
+    /// The shell's description with a menu a view can read the title of.
     fn titled_desktop() -> Meta {
         meta(json!({
             "app": "desktop",
@@ -397,11 +397,11 @@ view from(n: Note) {
         }))
     }
 
-    /// A note on a board made from the desk's menu, as a view over it would read what it was
+    /// A note on a board made from the shell's menu, as a view over it would read what it was
     /// made from; the view and the note.
-    fn note_from_the_desk(desk: &Meta) -> (Runtime, String, ResourceRef) {
+    fn note_from_the_shell(shell: &Meta) -> (Runtime, String, ResourceRef) {
         let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
-        let app = App::compile(LINK_SOURCE, std::slice::from_ref(desk));
+        let app = App::compile(LINK_SOURCE, std::slice::from_ref(shell));
         app.load(&rt);
         let board = rt.create("Board").expect("a board");
         let menu = menu();
@@ -426,19 +426,19 @@ view from(n: Note) {
 
     #[test]
     fn a_view_reading_an_apps_type_asks_for_that_apps_package() {
-        let desk = titled_desktop();
-        let (rt, view, note) = note_from_the_desk(&desk);
+        let shell = titled_desktop();
+        let (rt, view, note) = note_from_the_shell(&shell);
         let mut opened = rt
             .open_view(&me(), &view, vec![Value::resource(&note)])
             .unwrap_or_else(|why| panic!("the view waits, rather than failing: {why}"));
         assert!(
             rt.wants_packages(),
-            "the view waits for the desk's package, not on a fault"
+            "the view waits for the shell's package, not on a fault"
         );
         assert_eq!(
             rt.take_wanted_packages(),
             [("desktop".to_owned(), "desktop#WindowMenu".to_owned())],
-            "the host is asked for the desk's package"
+            "the host is asked for the shell's package"
         );
         assert!(
             rt.take_wanted_packages().is_empty(),
@@ -450,22 +450,22 @@ view from(n: Note) {
             dump(opened.tree())
         );
 
-        // The host loads the desk's package: the view runs again and reads the menu's title.
-        rt.load_foreign(desk).unwrap();
+        // The host loads the shell's package: the view runs again and reads the menu's title.
+        rt.load_foreign(shell).unwrap();
         opened.poll_patches().unwrap_or_else(|why| panic!("{why}"));
         assert_eq!(
             drawn(&opened),
             ["note", "Book the van"],
-            "the note reads what it was made from through the desk's own declaration"
+            "the note reads what it was made from through the shell's own declaration"
         );
     }
 
-    /// Opening the view over the desk's menu reading `text`, as it went.
+    /// Opening the view over the shell's menu reading `text`, as it went.
     fn opening(text: &str) -> Result<(), String> {
         let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
-        let desk = desktop();
-        rt.load_foreign(desk.clone()).map_err(|e| e.to_string())?;
-        let view = App::compile(VIEW, std::slice::from_ref(&desk));
+        let shell = desktop();
+        rt.load_foreign(shell.clone()).map_err(|e| e.to_string())?;
+        let view = App::compile(VIEW, std::slice::from_ref(&shell));
         view.load(&rt);
         rt.set_reading(&menu(), text).map_err(|e| e.to_string())?;
         rt.open_view(&me(), &view.view("menu"), vec![Value::resource(&menu())])

@@ -42,8 +42,8 @@ fn active(
     }
     Ok(())
 }
-/// Redeem `invitation` into `local`, the workspace on the host's desk made for the join, where
-/// the host has a desk. The signed Complete proof is durable before
+/// Redeem `invitation` into `local`, the workspace on the host's shell made for the join, where
+/// the host has a shell. The signed Complete proof is durable before
 /// it is sent, and a retry resends exactly that proof.
 ///
 /// Returns closed response evidence only. The owner still rechecks the

@@ -98,10 +98,10 @@ impl crate::speaker_setup::SpeakerService for SampleSpeakerSets {
                     groups: vec![SpeakerGroupInfo {
                         id: "cd".repeat(16),
                         name: "Living room".into(),
-                        leader_label: "Desk".into(),
+                        leader_label: "Tower".into(),
                         led_here: true,
                         members: [
-                            ("Desk", ui::collaboration::SpeakerRoleSpec::Left),
+                            ("Tower", ui::collaboration::SpeakerRoleSpec::Left),
                             ("Shelf", ui::collaboration::SpeakerRoleSpec::Right),
                         ]
                         .into_iter()

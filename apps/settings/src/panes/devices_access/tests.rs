@@ -442,7 +442,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase connecting_asks_the_desk_for_its_setup;
+    phase connecting_asks_the_shell_for_its_setup;
     {
         en();
         let host = RecordingHost::new(record(0));

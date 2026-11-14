@@ -132,7 +132,7 @@ pub fn own_name() -> Option<String> {
 /// own card keeps it), `None` while they chose none and every surface derives
 /// theirs from their identity.
 ///
-/// Their apps and their desk announce it where they say who they are, and every
+/// Their apps and their shell announce it where they say who they are, and every
 /// surface paints them in it, so one person is one colour here, in every app
 /// they edit in and on everyone else's screens.
 #[must_use]

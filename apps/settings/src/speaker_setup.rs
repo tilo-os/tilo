@@ -807,7 +807,7 @@ mod tests {
             id: id.into(),
             label: id.into(),
             online: true,
-            local: id == "desk",
+            local: id == "tower",
             can_join: true,
             outputs: outputs
                 .iter()
@@ -834,7 +834,7 @@ mod tests {
         SpeakerSnapshot {
             media_enabled: true,
             devices: vec![
-                device("desk", &["Speakers"], true),
+                device("tower", &["Speakers"], true),
                 device("shelf", &["Line out"], false),
             ],
             groups: Vec::new(),
@@ -868,7 +868,7 @@ mod tests {
             assert_eq!(
                 setup.identify_command(),
                 Some(SpeakerCommand::Identify {
-                    device: "desk".into(),
+                    device: "tower".into(),
                     output: "00".repeat(16),
                 })
             );
@@ -982,7 +982,7 @@ mod tests {
             let group = "ab".repeat(16);
             assert_eq!(
                 setup.listening(&group).map(|microphone| microphone.device),
-                Some("desk".into()),
+                Some("tower".into()),
                 "this device is where you sit by default"
             );
             let extras = setup.extra_microphones(&group);
@@ -1000,12 +1000,12 @@ mod tests {
                 Ok(SpeakerCommand::StartCalibration {
                     group: group.clone(),
                     excluded: vec!["phone".into(), "attic".into()],
-                    listening: Some("desk".into()),
+                    listening: Some("tower".into()),
                 })
             );
             setup.set_listening("phone");
             setup.set_also_listens("shelf", false);
-            setup.set_also_listens("desk", true);
+            setup.set_also_listens("tower", true);
             assert_eq!(
                 setup.calibrate_command(&group),
                 Ok(SpeakerCommand::StartCalibration {
@@ -1017,7 +1017,7 @@ mod tests {
             setup.set_listening("attic");
             assert_eq!(
                 setup.listening(&group).map(|microphone| microphone.device),
-                Some("desk".into()),
+                Some("tower".into()),
                 "a declined microphone cannot be where you sit"
             );
         }
@@ -1038,7 +1038,7 @@ mod tests {
             setup.update(snap.clone());
             assert_eq!(
                 setup.calibration_problem(&group),
-                Some("Calibrate Living room on desk, where it was set up".into())
+                Some("Calibrate Living room on tower, where it was set up".into())
             );
             snap.groups[0] = saved_group(SpeakerMemberStatus::Ready, true);
             setup.update(snap.clone());
@@ -1087,7 +1087,7 @@ mod tests {
         SpeakerGroupInfo {
             id: "ab".repeat(16),
             name: "Living room".into(),
-            leader_label: "desk".into(),
+            leader_label: "tower".into(),
             led_here,
             members: vec![SpeakerMemberInfo {
                 device: "shelf".into(),
@@ -1100,7 +1100,7 @@ mod tests {
             }],
             playback: None,
             microphones: vec![
-                microphone("desk", true, MicrophoneStatus::Ready),
+                microphone("tower", true, MicrophoneStatus::Ready),
                 microphone("shelf", false, MicrophoneStatus::Ready),
                 microphone("phone", false, MicrophoneStatus::NotAsked),
                 microphone("attic", false, MicrophoneStatus::Declined),

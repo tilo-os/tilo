@@ -33,7 +33,7 @@ tilo_test_env::scenario! {
             .expect("the row under the highlight");
 
         // The answer lands in the frame the press is taken: the list is rebuilt and renumbered
-        // under it before the press reaches the desk.
+        // under it before the press reaches the shell.
         arrived.set(true);
         assert!(search.refresh(), "the answer re-ranks the rows");
         settled(&mut search);

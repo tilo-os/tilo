@@ -16,8 +16,8 @@ every claim back off that session rather than off the thing that asked for it.
 
 | Proof | What it asserts |
 |---|---|
-| `agent-seats-proof.py` | Two agents at the session's MCP server, each admitted as itself through the workspace's governance, each served its own tools, the desk's Stop ending one of their connections alone. |
-| `session-lock-proof.py` | The desk's own lock action locks the session, the lock screen's own frame covers the desk, a password that is not the person's is refused, and the person's own password brings the desk back. |
+| `agent-seats-proof.py` | Two agents at the session's MCP server, each admitted as itself through the workspace's governance, each served its own tools, the shell's Stop ending one of their connections alone. |
+| `session-lock-proof.py` | The shell's own lock action locks the session, the lock screen's own frame covers the shell, a password that is not the person's is refused, and the person's own password brings the shell back. |
 
 `agent-files-story.py` drives a desktop with the tree's own apps as an agent
 does, through the session's MCP server and nothing else: it names Files as the
@@ -34,7 +34,7 @@ and its apps built (`dist/dev/nested-session-build.sh`) and so is not part of
 `tools/ci/session-proofs.sh`.
 
 `notes-caret-proof.py` opens Notes the same way, types a page with no input
-method running, and checks that the desk holds the body's caret, that it follows
+method running, and checks that the shell holds the body's caret, that it follows
 the typing, and that Super+V, pressed the moment the caret moves, opens the
 clipboard pane under that caret's line, its first frame as tall as its page.
 

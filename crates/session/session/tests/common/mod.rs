@@ -460,7 +460,7 @@ pub fn preset_menu(session: &Session) -> Option<String> {
 /// the styles and the workspaces.
 pub fn person_menu(session: &Session) -> Option<String> {
     session.accessible_labels().into_iter().find(|label| {
-        label.ends_with(": shell style and workspaces") && on_screen(session, label).is_some()
+        label.ends_with(": style and workspaces") && on_screen(session, label).is_some()
     })
 }
 

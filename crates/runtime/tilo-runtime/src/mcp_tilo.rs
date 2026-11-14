@@ -1404,7 +1404,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             };
             return self.task_change(change).await;
         }
-        // An action of a resource the session itself publishes (its desk, its arrangement) goes
+        // An action of a resource the session itself publishes (its shell, its arrangement) goes
         // to the session's own provider, as every other caller of the desktop reaches it.
         let provider = if call.get("published").and_then(Value::as_bool) == Some(true) {
             Addressed {

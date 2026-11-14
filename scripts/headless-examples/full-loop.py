@@ -13,8 +13,8 @@ Usage:
 What it does:
   1. Spawns ./target/debug/tilo-session --backend headless on a scratch
      profile, with TILO_TEST_CONTROL set to the socket path.
-  2. Lists targets, opens the desk's search (Super+Space), proves the palette
-     is up in the desk's own state (`chrome.overlays.search`) and that it
+  2. Lists targets, opens the shell's search (Super+Space), proves the palette
+     is up in the shell's own state (`chrome.overlays.search`) and that it
      exports its input as a target, types a query, and snapshots.
   3. Closes the palette (Escape), snapshots again, and proves the frame
      changed rather than only the state.
@@ -55,7 +55,7 @@ def state(session) -> dict:
 
 
 def search_is_open(session) -> bool:
-    """Whether the desk's own state says its search is up."""
+    """Whether the shell's own state says its search is up."""
     return bool(state(session)["chrome"]["overlays"]["search"])
 
 
@@ -211,7 +211,7 @@ def main() -> int:
     print(f"socket up: {session.control_socket}")
     time.sleep(0.5)  # let the first paint complete
     try:
-        # 2. List targets, then open the desk's search the way a person does.
+        # 2. List targets, then open the shell's search the way a person does.
         resp = session.control({"op": "list_targets"})
         print(f"  {len(resp['targets'])} targets")
         session.control({"op": "key_down", "key": "Super"})

@@ -18,7 +18,7 @@
 //! would hold the app's records against the first, and one of them would read
 //! nothing.
 //!
-//! The desk is what knows which windows and places exist, so it hands them in
+//! The shell is what knows which windows and places exist, so it hands them in
 //! ([`Shown`]) and this module decides ([`Instance::answer`]). Nothing here
 //! reads a screen or starts anything.
 
@@ -39,7 +39,7 @@ pub enum Windows {
     Many,
 }
 
-/// The tabs the desk has for apps, each with the id its app announces itself
+/// The tabs the shell has for apps, each with the id its app announces itself
 /// by: a window that mapped, and a place held for one on its way.
 ///
 /// Only the tabs of the workspace in front belong here: a launch belongs to
@@ -59,7 +59,7 @@ impl Shown {
         }
     }
 
-    /// The first tab of `app` the desk holds.
+    /// The first tab of `app` the shell holds.
     #[must_use]
     pub fn of(&self, app: &Instance) -> Option<u64> {
         self.tabs
@@ -122,7 +122,7 @@ impl Instance {
             .any(|identity| identity == announced)
     }
 
-    /// What a launch of this app does, given the tabs the desk has for it.
+    /// What a launch of this app does, given the tabs the shell has for it.
     #[must_use]
     pub fn answer(&self, launch: &Launch, shown: &Shown) -> Answer {
         let Some(tab) = shown.of(self) else {
@@ -268,7 +268,7 @@ mod tests {
 
         phase a_launch_of_an_app_that_is_starting_goes_to_the_place_it_holds;
         // A launch of an app whose window is on its way goes to the place the
-        // desk holds for it: the tab a saved window waits in, or the one a
+        // shell holds for it: the tab a saved window waits in, or the one a
         // launch already holds — the record the launch names is open in that
         // very process, and a second one could not read it.
         {

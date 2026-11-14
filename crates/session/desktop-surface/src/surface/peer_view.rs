@@ -147,7 +147,7 @@ pub enum Standing {
 /// reads it later reads it in their language now, whatever language it ended in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WhyEnded {
-    /// The tab it stood in is no longer on the desk, or shows something else.
+    /// The tab it stood in is no longer on the shell, or shows something else.
     TabGone,
     /// This device left the workspace the window is shared with.
     LeftWorkspace,

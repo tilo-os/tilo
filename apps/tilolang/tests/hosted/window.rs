@@ -923,12 +923,12 @@ fn an_agent_reads_the_catalogue_and_a_view_block_a_value_block_and_a_bad_block_a
     assert!(refused.contains("does not compile"), "{refused}");
 }
 
-/// The first draft on the letters desk.
+/// The first draft on the letters shell.
 fn first_draft(session: &mut Session) -> ResourceRef {
     items_of(session, LETTERS, "drafts")
         .into_iter()
         .next()
-        .expect("the desk holds a draft")
+        .expect("the shell holds a draft")
 }
 
 /// Whether the letter went, as the record says: no device sends it again.
@@ -941,7 +941,7 @@ fn sent(session: &mut Session, draft: &ResourceRef) -> bool {
 /// nothing leaves before the person does, and approving it sends it once.
 #[test]
 fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_once() {
-    let mut session = staged(LETTERS, "a desk of letters");
+    let mut session = staged(LETTERS, "a mailbox of letters");
     let draft = first_draft(&mut session);
     let source = format!("letters.send(@letters.Draft:{})", draft.id_string());
     let suggested = agent_runs(&mut session, "Run a block", &json!({ "source": source })).unwrap();
@@ -996,12 +996,12 @@ fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_onc
 /// The person's own Send asks them first, showing the letter, and goes once they allow it.
 #[test]
 fn approving_a_pressed_send_through_the_ask_bar_sends_the_letter_once() {
-    let mut session = staged(LETTERS, "a desk of letters");
+    let mut session = staged(LETTERS, "a mailbox of letters");
     let draft = opened(&mut session).expect("the scenario opens its letter");
     let draft = items_of(&mut session, LETTERS, "drafts")
         .into_iter()
         .find(|letter| letter.id_string() == draft)
-        .expect("the open letter is on the desk");
+        .expect("the open letter is on the shell");
     let send = key_of(&composed(&mut session), "ui.MenuItem", "label", "Send");
     fire(&mut session, &send, "choose", None);
     assert!(

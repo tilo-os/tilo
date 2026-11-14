@@ -649,7 +649,7 @@ mod tests {
             assert_eq!(tree.active_strip_id(), Some(StripId(1)));
         }
 
-        phase a_monitor_plugged_in_while_the_desk_runs_takes_a_group_and_hands_its_groups_on_when_it_goes;
+        phase a_monitor_plugged_in_while_the_shell_runs_takes_a_group_and_hands_its_groups_on_when_it_goes;
         // A monitor is unplugged and plugged back in while the session runs, as a
         // docked laptop's is: what it held moves to the display left and
         // returns with it, a group opened on it is homed to it, and the strip

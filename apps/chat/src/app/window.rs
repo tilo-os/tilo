@@ -487,7 +487,7 @@ impl FloatingSurfaceProvider for ChatWindow {
 
 impl ui::widget::controls::ActionControls for ChatWindow {
     /// The composer's send button is where Chat's `send` lands: a person's
-    /// press, an agent's send and the desk's send-to box are one action, so a
+    /// press, an agent's send and the shell's send-to box are one action, so a
     /// marker drawn for anyone sending rests on that button.
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         let chat = self.chat.borrow();

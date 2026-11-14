@@ -441,7 +441,7 @@ tilo_test_env::scenario! {
     // a page the index of that window's content is built on the same one
     // thread, so a build in that frame held the palette's first paint until
     // tantivy finished: the 14–57 s between typing and the first row measured
-    // on the page desk, per app. With the build moved off the frame the ready
+    // on the page shell, per app. With the build moved off the frame the ready
     // rows are there in the first search, the content's row joins when the
     // build lands, and the search says it is still expecting that row until
     // then — never that the ready rows are still searching.

@@ -302,7 +302,7 @@ scenario "a discussion on a task" -> Task {
     let t = tasks.items.insert(
         Task(
             title: "Order the new office chairs",
-            notes: RichText("Two for the window desks, and four for the room."),
+            notes: RichText("Two for the windows, and four for the room."),
             due: 2026-07-01,
             assignee: ada,
         ),

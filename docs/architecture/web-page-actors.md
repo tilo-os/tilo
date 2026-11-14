@@ -527,7 +527,7 @@ A Browser window is a window of the device whose engine holds its page, and of
 no other. Browser says so of its windows in its manifest (`[entrypoint] window
 = "device"`), and the session does the rest for any app that says it: the
 device writes the window into the workspace's layout as one that runs on it,
-and every other desk lists it as that device's window and starts no Browser
+and every other shell lists it as that device's window and starts no Browser
 for it ([Workspaces](workspace.md), "Sharing a window"). What Browser keeps in
 records (bookmarks, history, the tab's record, continuing a page on another
 device) is unchanged: that is the Browser's records, not its window.
@@ -568,7 +568,7 @@ record, its field review and its review screen keep and show it. The tab
 steps also read that the Browser's window stands live on the device that runs
 it and that no other machine opened a Browser of its own in its tab. A further
 step has one device of the person share the Browser's window by its tab and
-another hold its picture in the tab its desk lists the window in, as a window
+another hold its picture in the tab its shell lists the window in, as a window
 that runs on the sharing device, before the share, during it and after it
 ended.
 
@@ -579,7 +579,7 @@ The share step has not passed there. When it first ran, the sharing device
 said it shared the window, the other said it watched it, and no picture
 crossed. Two causes were found and are closed in the session: a device that
 did not reach the device relaying the workspace's live plane when its session
-started never asked again, and a desk that listed the window as its own view
+started never asked again, and a shell that listed the window as its own view
 of it had no tab to picture the shared window in. The second is held by the
 shares' own tests, which carry the workspace's governance between two
 sessions by hand.
@@ -587,9 +587,9 @@ sessions by hand.
 After the session came to open another device's window as each device's own
 view of it, the tab steps broke on the machines: every device started a
 Browser of its own for the tab, a second start of a running Browser opened no
-window, and the desks' launches overwrote the tab in the layout until the
+window, and the shells' launches overwrote the tab in the layout until the
 device that ran the page had no window in it. A Browser window is now written
-as a window that runs on its device, which no other device opens. The desk
+as a window that runs on its device, which no other device opens. The shell
 model's, the session's and the shares' own tests hold that; the machines have
 not run it yet.
 
@@ -855,8 +855,8 @@ down.
   tab's tile the page's objects in the plane's framing, which the tile cannot
   read; that is closed, and two sessions on one relay now carry a page from
   the window to the watching tab in a test. The step reads the page's text
-  off the watching desk rather than take the sessions' word for it. When it
-  ran with that, the page still did not come: the watching desk asked for
+  off the watching shell rather than take the sessions' word for it. When it
+  ran with that, the page still did not come: the watching shell asked for
   it, the sharing session read that it was asked for, and the Browser was
   never asked. The session wrote its ask for a whole frame to the connection
   that names the window's tab, and the connection of an app's first window,
@@ -877,7 +877,7 @@ down.
   outbox and one watched flag, so a window's frames could leave on another
   window's connection and be published as that window's, and stopping one
   window's share stopped them all; a page was published to any member's
-  desk that asked for it, shared or not; a whole frame or an image over
+  shell that asked for it, shared or not; a whole frame or an image over
   700 KiB was dropped in the app without a word, so a table of 2000 rows
   never arrived and an article arrived without its largest photograph; and
   a view drawn from pixels said after its first capture, for as long as its
@@ -908,7 +908,7 @@ down.
   tests on one machine, never on real ones, and no real session has been
   told busy by a real relay in a test: since endpoints nobody knows no
   longer hold a relay's places, only sixteen of a workspace's own devices
-  asking at once fill them, which is sixteen sessions with a desk each.
+  asking at once fill them, which is sixteen sessions with a shell each.
   The plane's bound of thirty-two devices heard is what a device costs
   today, not what a workspace may hold. Each device read is three
   subscriptions on the reading device and on the relay, so a plane grows

@@ -658,8 +658,8 @@ mod cases {
             let apps = apps();
             let w = world(&apps, &AmStore::new());
             let (_, conv) = start_chat(&w, &apps);
-            let desk = w.create("Desk");
-            let draft = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&desk)]));
+            let letters = w.create("Letters");
+            let draft = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&letters)]));
             let mut editor = w.view(&apps.letters, "editor", vec![res(&draft)]);
             let inputs = letter_fields(&editor);
             for (key, text) in inputs
@@ -784,8 +784,8 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        let desk = w.create("Desk");
-        let draft = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&desk)]));
+        let letters = w.create("Letters");
+        let draft = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&letters)]));
         let src = format!("letters.send(@letters.Draft:{})", draft.id_string());
         let message = post(&w, &apps, &conv, "agent:helper", "", &src);
         let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
@@ -1008,8 +1008,8 @@ mod cases {
         let (mut a, mut b) = (AmStore::new(), AmStore::new());
         let (wa, wb) = (world(&apps, &a), world(&apps, &b));
         let (_, conv) = start_chat(&wa, &apps);
-        let desk = wa.create("Desk");
-        let draft = returned_ref(wa.call(&apps.letters, "new_draft", vec![res(&desk)]));
+        let letters = wa.create("Letters");
+        let draft = returned_ref(wa.call(&apps.letters, "new_draft", vec![res(&letters)]));
         let editor = wa.view(&apps.letters, "editor", vec![res(&draft)]);
         let inputs = letter_fields(&editor);
         for (key, text) in inputs.iter().zip(["bo@example.org", "Plans", "Nine."]) {
@@ -1323,12 +1323,12 @@ mod cases {
             );
         }
 
-        phase a_desk_opens_on_its_drafts_as_the_app_chose;
+        phase a_shell_opens_on_its_drafts_as_the_app_chose;
         {
             let apps = apps();
             let w = world(&apps, &AmStore::new());
-            let desk = w.create("Desk");
-            let v = w.view(&apps.letters, "desk", vec![res(&desk)]);
+            let letters = w.create("Letters");
+            let v = w.view(&apps.letters, "letters", vec![res(&letters)]);
             let tree = v.tree();
             assert_eq!(
                 text_prop(of_kind(tree, "ui.NavList")[0], "selected"),
@@ -2485,12 +2485,12 @@ mod cases {
     fn letters_list_rows_carry_the_subject_and_the_recipient() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let desk = w.create("Desk");
-        let d = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&desk)]));
+        let letters = w.create("Letters");
+        let d = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&letters)]));
         let editor = w.view(&apps.letters, "editor", vec![res(&d)]);
         let to = of_kind(editor.tree(), "ui.TextInput")[0].key.clone();
         editor.edit(&to, &Value::text("bo@example.org")).unwrap();
-        let mut v = w.view(&apps.letters, "desk", vec![res(&desk)]);
+        let mut v = w.view(&apps.letters, "letters", vec![res(&letters)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
             let rows = of_kind(tree, "ui.ListRow");

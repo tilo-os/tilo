@@ -32,7 +32,7 @@ class NamedPackageTests(unittest.TestCase):
 
 
 class DesktopGateTests(unittest.TestCase):
-    """The desk's gate names a package and test targets, and all of them must exist.
+    """The shell's gate names a package and test targets, and all of them must exist.
 
     A gate keyed on a package that is not there is in no plan's selection: it
     selects and runs nothing, which is how the gate went inert when the old
@@ -40,25 +40,25 @@ class DesktopGateTests(unittest.TestCase):
     """
 
     def tree(self, root: Path, *, package: str = ci_select.DESKTOP_GATE_PACKAGE,
-             desktops: tuple[str, ...] = ci_select.DESK_PACKAGES,
+             desktops: tuple[str, ...] = ci_select.SHELL_PACKAGES,
              tests: tuple[str, ...] = ci_select.DESKTOP_GATE_TESTS,
              binary: str = ci_select.DESKTOP_GATE_BINARY) -> Path:
         session = root / ci_select.DESKTOP_GATE_MANIFEST
         (session.parent / "tests").mkdir(parents=True, exist_ok=True)
         for test in tests:
             (session.parent / "tests" / f"{test}.rs").write_text("")
-        dependencies = "".join(f'tilo-{Path(desk).name} = {{ path = "../{Path(desk).name}" }}\n'
-                               for desk in desktops)
+        dependencies = "".join(f'tilo-{Path(shell).name} = {{ path = "../{Path(shell).name}" }}\n'
+                               for shell in desktops)
         session.write_text(f'[package]\nname = "{package}"\nversion = "0.1.0"\n\n'
                            f'[dependencies]\n{dependencies}\n'
                            f'[[test]]\nname = "{binary}"\npath = "tests/it.rs"\n')
         return root
 
-    def test_the_gate_names_the_session_and_desk_tests_the_tree_holds(self):
+    def test_the_gate_names_the_session_and_shell_tests_the_tree_holds(self):
         self.assertEqual(ci_select.desktop_gate(REPO_ROOT), ci_select.DESKTOP_GATE)
         self.assertEqual(sorted(ci_select.DESKTOP_GATE),
                          [(ci_select.DESKTOP_GATE_PACKAGE, ci_select.DESKTOP_GATE_BINARY)])
-        # The desk's tests are modules of that binary, so the gate picks them out
+        # The shell's tests are modules of that binary, so the gate picks them out
         # by name and a name that is no binary would be refused by nextest.
         scope = ci_select.DESKTOP_GATE[(ci_select.DESKTOP_GATE_PACKAGE,
                                         ci_select.DESKTOP_GATE_BINARY)]
@@ -66,7 +66,7 @@ class DesktopGateTests(unittest.TestCase):
         for test in ci_select.DESKTOP_GATE_TESTS:
             self.assertIn(f"test({test}::)", scope.filter)
 
-    def test_a_package_test_or_desk_crate_that_is_gone_fails_loudly(self):
+    def test_a_package_test_or_shell_crate_that_is_gone_fails_loudly(self):
         for phase, named, options in (
             ("the session's package is renamed", ci_select.DESKTOP_GATE_PACKAGE,
              {"package": "another-session"}),
@@ -74,8 +74,8 @@ class DesktopGateTests(unittest.TestCase):
              {"binary": "the_old_per_file_target"}),
             ("a named test file is gone", ci_select.DESKTOP_GATE_TESTS[0],
              {"tests": ci_select.DESKTOP_GATE_TESTS[1:]}),
-            ("a desk crate is no longer the session's", ci_select.DESK_PACKAGES[0],
-             {"desktops": ci_select.DESK_PACKAGES[1:]}),
+            ("a shell crate is no longer the session's", ci_select.SHELL_PACKAGES[0],
+             {"desktops": ci_select.SHELL_PACKAGES[1:]}),
         ):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
                 root = self.tree(Path(directory), **options)
@@ -180,24 +180,24 @@ class SelectorTests(unittest.TestCase):
 
     def test_the_desktop_gate_runs_whenever_a_change_reaches_the_desktop(self):
         # A gate entry is a test target of the session's, so two entries are two
-        # runs; the real gate names one, its desk tests being modules of it.
-        gate = ci_select.path_suites.ReaderScope((), "it", "binary(it) and test(desk::)")
+        # runs; the real gate names one, its shell tests being modules of it.
+        gate = ci_select.path_suites.ReaderScope((), "it", "binary(it) and test(shell::)")
         door = ci_select.path_suites.ReaderScope((), "probe", "binary(probe)")
         saved = ci_select.DESKTOP_GATE
         self.addCleanup(setattr, ci_select, "DESKTOP_GATE", saved)
         # "leaf" stands in for the session: the end of the dependency chain.
         ci_select.DESKTOP_GATE = {("leaf", "it"): gate, ("leaf", "probe"): door}
-        with self.subTest(phase="a foundation change reaching it without testing it runs its desk tests"):
+        with self.subTest(phase="a foundation change reaching it without testing it runs its shell tests"):
             plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
             self.assertIn("leaf", plan["selected"])
             self.assertNotIn("leaf", plan["tested"])
             self.assertEqual(plan["scoped_tests"], {
-                "leaf:it": "--test it -E 'binary(it) and test(desk::)'",
+                "leaf:it": "--test it -E 'binary(it) and test(shell::)'",
                 "leaf:probe": "--test probe -E 'binary(probe)'"})
             rows = [json.loads(row["scoped_tests"]) for row in plan["matrix"]["include"] if row["scoped_tests"]]
             self.assertEqual(rows, [[{"package": "leaf", "test": "it", "filter": gate.filter},
                                      {"package": "leaf", "test": "probe", "filter": door.filter}]])
-        with self.subTest(phase="a change to it tests all of it, and the desk tests are part of that"):
+        with self.subTest(phase="a change to it tests all of it, and the shell tests are part of that"):
             plan = ci_select.make_plan(self.metadata, self.root, ["leaf/src/main.rs"], 2)
             self.assertIn("leaf", plan["tested"])
             self.assertEqual(plan["scoped_tests"], {})
@@ -212,7 +212,7 @@ class SelectorTests(unittest.TestCase):
             plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs", "os/x.json"], 2,
                                        suite_manifest=manifest)
             self.assertEqual(plan["scoped_tests"], {
-                "leaf:it": "--test it -E '(test(/^audit::/)) or (binary(it) and test(desk::))'",
+                "leaf:it": "--test it -E '(test(/^audit::/)) or (binary(it) and test(shell::))'",
                 "leaf:probe": "--test probe -E 'binary(probe)'"})
         with self.subTest(phase="a reading scope on another target is a run of its own"):
             manifest = ci_select.path_suites.parse(
@@ -221,7 +221,7 @@ class SelectorTests(unittest.TestCase):
             plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs", "os/x.json"], 2,
                                        suite_manifest=manifest)
             self.assertEqual(plan["scoped_tests"], {
-                "leaf:it": "--test it -E 'binary(it) and test(desk::)'",
+                "leaf:it": "--test it -E 'binary(it) and test(shell::)'",
                 "leaf:other": "--test other -E 'test(/^audit::/)'",
                 "leaf:probe": "--test probe -E 'binary(probe)'"})
 
@@ -2561,9 +2561,9 @@ class MapHygieneTests(unittest.TestCase):
             for path in (crate, *inputs):
                 if not (REPO_ROOT / path).exists():
                     missing.append(path)
-        for desk in ci_select.DESK_PACKAGES:
-            if not (REPO_ROOT / desk).is_dir():
-                missing.append(desk)
+        for shell in ci_select.SHELL_PACKAGES:
+            if not (REPO_ROOT / shell).is_dir():
+                missing.append(shell)
         self.assertEqual(sorted(set(missing)), [])
 
     def test_every_test_run_config_file_is_attributed(self):

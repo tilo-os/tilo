@@ -407,8 +407,8 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
                 section(&t("settings-appearance-desktop-card"), rows(vec![top_bar])).into_element(),
             );
         }
-        let desk = cx.settings::<crate::prefs::DeskWidgetsPrefs>();
-        if let Some(card) = cx.record(&desk, desk_widgets::card) {
+        let widget_prefs = cx.settings::<crate::prefs::WidgetsPrefs>();
+        if let Some(card) = cx.record(&widget_prefs, widgets::card) {
             groups.push(card);
         }
         let colour = cx.settings::<crate::prefs::IdentityPrefs>();
@@ -1257,8 +1257,8 @@ mod tests {
     }
 }
 
-#[path = "appearance/desk_widgets.rs"]
-mod desk_widgets;
+#[path = "appearance/widgets.rs"]
+mod widgets;
 
 #[cfg(test)]
 #[path = "appearance/inspection_tests.rs"]

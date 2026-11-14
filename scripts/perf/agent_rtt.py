@@ -40,8 +40,8 @@ ops to the device admin) or let it start a headless compositor through
 release build only with `--features dev-overrides`, which
 serves the test-control socket; that socket runs the same dispatch and
 capability gate as the admin socket, without the admin socket's per-connection
-peer check. It starts on a desk: a first pass mints the throwaway identity a
-development login opens its desk with, so the no-op is the desk's own action
+peer check. It starts on a shell: a first pass mints the throwaway identity a
+development login opens its shell with, so the no-op is the shell's own action
 and not setup's. The compositor, its profile and its socket are removed on
 exit, whatever happens.
 
@@ -246,24 +246,24 @@ def throughput(socket_path: str, address: tuple[str, str], clients: int,
 
 
 @contextlib.contextmanager
-def desk_session(shell: Path, log: Path, timeout: int) -> Iterator[tuple[str, Path]]:
-    """A headless session with a desk of its own: (control socket, runtime directory).
+def shell_session(shell: Path, log: Path, timeout: int) -> Iterator[tuple[str, Path]]:
+    """A headless session with a shell of its own: (control socket, runtime directory).
 
-    A session that holds no identity opens setup instead of a desk, so a first
-    pass mints the throwaway identity a development login opens its desk with
+    A session that holds no identity opens setup instead of a shell, so a first
+    pass mints the throwaway identity a development login opens its shell with
     and exits; the pass that is measured starts on it. Both run the binary this
     run built (`real_apps.ScriptedSession`), on one scratch profile, and the
     profile, the runtime directory and the session are removed on exit.
     """
     cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     cache.mkdir(parents=True, exist_ok=True)
-    profile = Path(tempfile.mkdtemp(prefix="desk-session.", dir=cache))
+    profile = Path(tempfile.mkdtemp(prefix="shell-session.", dir=cache))
     identity_log = log.with_name(log.stem + ".identity.log")
     env = {"RUST_LOG": os.environ.get("RUST_LOG", "info")}
     try:
-        # A first pass opens setup instead of a desk when the profile holds no
+        # A first pass opens setup instead of a shell when the profile holds no
         # identity: it mints the throwaway one, which the measured pass then
-        # finds, so the no-op is the desk's own action and not setup's.
+        # finds, so the no-op is the shell's own action and not setup's.
         try:
             with real_apps.ScriptedSession(shell, profile=profile, timeout=timeout,
                                            env=env, log=identity_log) as session:
@@ -408,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.spawn:
             log = args.log or Path(tempfile.gettempdir()) / "agent-rtt-compositor.log"
-            with desk_session(args.spawn, log, args.startup_timeout) as (socket_path, _runtime):
+            with shell_session(args.spawn, log, args.startup_timeout) as (socket_path, _runtime):
                 results = run(args, socket_path)
         else:
             results = run(args, args.socket)

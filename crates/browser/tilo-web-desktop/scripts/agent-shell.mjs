@@ -88,7 +88,7 @@ const out = resolve(option('--out', join(target, 'look/agent-shell')));
 const work = resolve(option('--work', join(target, 'agent-shell-work')));
 // A run is a first visit. The host's state keeps what an earlier run did: the workspace
 // remembers that the person was following the agent and what the agent wrote there, and a run
-// starting from it shoots the last run's desk — already following, so no Follow to press, with
+// starting from it shoots the last run's shell — already following, so no Follow to press, with
 // a note the person never opened. `--keep-work` runs against what was left.
 if (!flag('--keep-work')) {
   rmSync(work, {recursive: true, force: true});
@@ -302,7 +302,7 @@ async function afterFrames(tab, frames = 1, ms = 30000) {
 }
 /** Shoot `name` once two screenshots in a row are the same while `up()` still holds: what moves
  * on the clock is at rest then. Something else on the page may keep changing (a frame for another
- * part of the desk), so by `settledMs` the screenshot then is kept, as the notice stands at rest
+ * part of the shell), so by `settledMs` the screenshot then is kept, as the notice stands at rest
  * long before it starts to leave; the last one taken before it left would be on its way out. */
 async function restingShot(tab, combo, name, up, ms = 15000, settledMs = 2000) {
   const began = Date.now();
@@ -526,7 +526,7 @@ async function semantics(tab) {
 // A control is found by the name it is announced under; where a name is empty
 // (a bar chip named by its glyph) its spoken description is what a reader
 // hears, so that is looked at too. A `role` narrows it to the kind of node a
-// place offers: a search result, not the same word elsewhere on the desk.
+// place offers: a search result, not the same word elsewhere on the shell.
 const speaks = (node, pattern) => pattern instanceof RegExp
   ? pattern.test(node.name) || pattern.test(node.description)
   : node.name === pattern || node.description === pattern;
@@ -602,7 +602,7 @@ async function press(tab, pattern, {what = null} = {}) {
 }
 /** The pointer moves by a pixel and back over the middle of the page: an input
  * the page never ignores, for the frame a press's own wake should have drawn.
- * Nothing is pressed, so nothing on the desk changes. */
+ * Nothing is pressed, so nothing on the shell changes. */
 async function nudge(tab) {
   const middle = await tab.evaluate(`[Math.round(innerWidth / 2), Math.round(innerHeight / 2)]`)
     .catch(() => [100, 100]);
@@ -611,7 +611,7 @@ async function nudge(tab) {
   }
 }
 
-/** A click at a point on the page, where no control is named: what the desk
+/** A click at a point on the page, where no control is named: what the shell
  * or a window under it takes, as a person's finger lands there. */
 async function clickAt(tab, x, y) {
   await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
@@ -629,8 +629,8 @@ async function typeText(tab, text) {
     await sleep(30);
   }
 }
-/** What the page's own search or a menu left covering the desk, closed: a shot
- * is of the desk, not of the box that was open over it. */
+/** What the page's own search or a menu left covering the shell, closed: a shot
+ * is of the shell, not of the box that was open over it. */
 async function dismissOverlays(tab) {
   const covering = /search apps, windows, documents|command palette|^results$|type to search/i;
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -642,20 +642,20 @@ async function dismissOverlays(tab) {
 }
 
 /**
- * `name`'s shot of the whole viewport, once what covers the desk is closed and
+ * `name`'s shot of the whole viewport, once what covers the shell is closed and
  * what it is of is on screen: `expect` names the subject, by the same names a
  * reader finds it under. A shot of something else is a failed check, not a
  * picture nobody looked at.
  */
 async function shot(tab, combo, name, {expect = null, read = null} = {}) {
-  // A shot of a moment, its tree (`read`) taken just before: closing what covers the desk and
+  // A shot of a moment, its tree (`read`) taken just before: closing what covers the shell and
   // reading the tree again would outlast the moment the shot is of.
   if (!read) await dismissOverlays(tab);
   if (expect) {
     const nodes = read ?? await semantics(tab);
     const missing = expect.filter(pattern => !nodes.some(node => speaks(node, pattern)));
     check(`${combo}: ${name} shows ${expect.map(String).join(' and ')}`, missing.length === 0,
-      missing.length ? `not on screen: ${missing.map(String).join(', ')}; the desk shows ${names(nodes)}` : '');
+      missing.length ? `not on screen: ${missing.map(String).join(', ')}; the shell shows ${names(nodes)}` : '');
   }
   const png = await tab.screenshot();
   if (!png) throw new Error(`${combo}: the page answered no screenshot for ${name}`);
@@ -872,7 +872,7 @@ async function planActions(agent, apps) {
   const actionsOf = async path => actionRows((await ask('tilo_ls', {path, kind: 'actions'})).text);
   // The desktop's own service answers without an app: asking the person's
   // page what it shows is an action like any other, and the first one an
-  // agent does here (a host that draws no desk has none to list).
+  // agent does here (a host that draws no shell has none to list).
   const desktop = await ask('tilo_ls', {path: 'desktop'});
   if (!desktop.failed) {
     const windows = firstAction(desktop.text, /#(list-windows|windows)/i) ?? 'desktop#list-windows';
@@ -1181,7 +1181,7 @@ async function unpinned(tab) {
   if (!back) return undefined;
   await press(tab, /^put back in the bar$/i, {what: 'putting who is here back in the bar'});
   // Back in the bar, the panel it was pinned as is gone, and so is the control only the pinned
-  // panel offers. A list still standing over the desk is the press having done nothing.
+  // panel offers. A list still standing over the shell is the press having done nothing.
   const left = await untilDrawn(tab, async () => {
     const seen = await semantics(tab);
     const pinned = seen.some(node => speaks(node, /^put back in the bar$/i));
@@ -1204,7 +1204,7 @@ async function palette(tab, words) {
     if (open) break;
   }
   await typeText(tab, words);
-  // The result, not the same word elsewhere on the desk the palette covers.
+  // The result, not the same word elsewhere on the shell the palette covers.
   const result = /listitem|menuitem|treeitem|option|button/i;
   // A loaded machine draws the page a frame every few seconds: the results come a few frames
   // after the words are typed.
@@ -1215,7 +1215,7 @@ async function palette(tab, words) {
   return null;
 }
 
-/** The desktop's search, opened with its chord and dismissed by a press on the desk beside its
+/** The desktop's search, opened with its chord and dismissed by a press on the shell beside its
  * card. A palette still up after the press is the answer: the press went under it instead. */
 async function pressBesideSearch(tab, {height}) {
   const mac = await tab.evaluate('/Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? "")');
@@ -1225,7 +1225,7 @@ async function pressBesideSearch(tab, {height}) {
   await key(tab, 'k', 'KeyK', 75, mac ? 4 : 2);
   if (!await untilDrawn(tab, showing, 8000)) return `the search chord opened no search: ${names(await semantics(tab))}`;
   const searchOpen = () => tab.evaluate('globalThis.tiloMount?.state()?.searchOpen ?? null');
-  // The desk's bottom-left corner: the card stands centred over the top of it.
+  // The shell's bottom-left corner: the card stands centred over the top of it.
   const x = 40, y = height - 40;
   await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
   await tab.send('Input.dispatchMouseEvent', {type: 'mousePressed', x, y, button: 'left', clickCount: 1});
@@ -1249,7 +1249,7 @@ async function openNote(tab) {
   const windowed = async () => (await semantics(tab)).some(node => node.role === 'Group' && /^notes$/i.test(node.name));
   if (await withNote()) return null;
   if (!await windowed()) {
-    // The desk's own app list first ("Open an app"), the palette after.
+    // The shell's own app list first ("Open an app"), the palette after.
     if (await press(tab, /^open an app$/i, {what: 'the app list'})) {
       // The list's own Notes, once a frame drew the list: pressed sooner, the press found the
       // welcome card's Notes, a verb that waits on the app starting in the workspace and opened
@@ -1507,11 +1507,11 @@ async function record(browser, tab, name, {width, height}, body) {
 
 /** The most wasm memory a run may hold, in bytes. Opening the workspace, the
  * apps and the notes it writes in settles at 79 MB on a 390-wide phone and
- * 115 MB on a 1280 desk, both at twice the pixel density; a whole desktop with
+ * 115 MB on a 1280-wide screen, both at twice the pixel density; a whole desktop with
  * its records and pictures is under a third of this. */
 const WASM_BUDGET = 384 * 1024 * 1024;
 /** How much the heap may grow from the workspace to the end of the flow: the
- * warm-up above is 22 MB on the phone and 48 MB on the desk, so a page that
+ * warm-up above is 22 MB on the phone and 48 MB on the wide screen, so a page that
  * asks for megabytes a second — what allocating without bound looks like — is
  * past it long before the run ends. */
 const WASM_GROWTH_ALLOWED = 128 * 1024 * 1024;
@@ -1744,7 +1744,7 @@ try {
         memory = watchMemory(tab);
         await memory.sample('landed');
 
-        // The desk itself, before anything opens over it: its search takes the keyboard when the
+        // The shell itself, before anything opens over it: its search takes the keyboard when the
         // chord asks for it, and the first press beside the card puts it away again.
         const searchProblem = await pressBesideSearch(tab, {height});
         check(`${combo}: a press beside system search dismisses it`, !searchProblem, searchProblem ?? '');
@@ -1866,17 +1866,17 @@ try {
         const scaled = scale => tab.send('Emulation.setDeviceMetricsOverride',
           {width, height, deviceScaleFactor: scale, mobile});
         // The scale the follow is recorded at, and the shots' 2 again after it. A change of the
-        // device scale alone leaves the page's CSS box as it was, and the desk lays out in CSS
+        // device scale alone leaves the page's CSS box as it was, and the shell lays out in CSS
         // pixels: the first frame drawn at the new scale lays out at that same box, drawn at the
         // other density. Wait for that frame, and say the box held: a page that read the extent
-        // of the old density as the new one laid a phone's desk out at a laptop's width.
+        // of the old density as the new one laid a phone's shell out at a laptop's width.
         const box = await tab.evaluate('[tiloMount.canvas.clientWidth, tiloMount.canvas.clientHeight]');
         const scaleTo = async scale => {
           const before = await presentedFrames(tab);
           await scaled(scale);
           // An emulated scale change tells the page nothing — the media query a real one changes does
           // not change under it — so the page draws when something asks it to, and a key does. Shift
-          // alone changes nothing the desk shows.
+          // alone changes nothing the shell shows.
           const shift = {key: 'Shift', code: 'ShiftLeft', windowsVirtualKeyCode: 16};
           await tab.send('Input.dispatchKeyEvent', {type: 'rawKeyDown', ...shift, modifiers: 8});
           await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', ...shift, modifiers: 0});
@@ -1884,7 +1884,7 @@ try {
             const now = await tab.evaluate(`(() => { const state = tiloMount.state(); return {dpr: state.dpr, logical: state.logicalSize, frames: state.frames}; })()`).catch(() => null);
             return now?.dpr === scale && (before === null || now.frames > before) ? now : undefined;
           }, 30000, 150);
-          check(`${combo}: the desk lays out at its own box at device scale ${scale}`,
+          check(`${combo}: the shell lays out at its own box at device scale ${scale}`,
             Boolean(drawn) && drawn.logical.every((side, axis) => Math.abs(side - box[axis]) <= 1),
             drawn ? `laid out ${drawn.logical} at device scale ${scale}, in a box of ${box}`
               : `no frame drawn at device scale ${scale}`);
@@ -1959,13 +1959,13 @@ try {
         const cardNow = cardSays(await semantics(tab));
         check(`${combo}: the agent's card lists its run`, Boolean(card),
           card ? card.name : cardNow ? `the card says "${cardNow.name}"`
-            // The windows standing, by their tabs: what the desk holds at once, which the first
+            // The windows standing, by their tabs: what the shell holds at once, which the first
             // names of the tree (one window's controls) do not say.
             : `no card; the windows are ${(await semantics(tab)).filter(node => node.role === 'Tab').map(node => `"${node.name}"`).join(', ')}`);
         await shot(tab, combo, 'agent-card');
 
         // 6. Who is here with the agent in it: kept on screen on a laptop; on a phone a sheet at the
-        //    desk's foot, never kept, which a press above it puts away.
+        //    shell's foot, never kept, which a press above it puts away.
         const phone = width <= 600;
         if (phone) {
           const sheetProblem = await openPeople(tab);
@@ -1993,14 +1993,14 @@ try {
           const away = await untilDrawn(tab, async () => !rosterOf(await semantics(tab)), 4000, 150);
           check(`${combo}: a press above the sheet puts who is here away`, Boolean(away), names(await semantics(tab)));
         } else {
-          // Kept on screen, it stays while the person works elsewhere: a press on the desk is the
-          // desk's, and the list is still there after it. The desk's bottom edge, away from it.
+          // Kept on screen, it stays while the person works elsewhere: a press on the background
+          // closes it, and the list is still there after it. The shell's bottom edge, away from it.
           await clickAt(tab, Math.round(width / 2), Math.round(height - 12));
           await afterFrames(tab, 2);
-          check(`${combo}: who is here stays while the desk is pressed`, Boolean(rosterOf(await semantics(tab))),
+          check(`${combo}: who is here stays while the shell is pressed`, Boolean(rosterOf(await semantics(tab))),
             names(await semantics(tab)));
         }
-        // A window filling the desk: the bar's own controls and the reading it shows stand apart at
+        // A window filling the shell: the bar's own controls and the reading it shows stand apart at
         // every width, the phone's included.
         // The window maximized is one the person sees: on a phone the strip's other windows stand
         // off the screen, their controls published where they are drawn, beyond its edge. The
@@ -2013,9 +2013,9 @@ try {
           const at = [Math.round((x0 + x1) / 2), Math.round((y0 + y1) / 2)];
           await clickAt(tab, ...at);
           log(`pressed maximizing the window: Maximize at ${at.join(',')}`);
-          // The window's control is Restore once it fills the desk.
+          // The window's control is Restore once it fills the shell.
           const filled = await untilDrawn(tab, async () => matching(await semantics(tab), /^restore$/i), 900);
-          check(`${combo}: the window's Maximize fills the desk`, Boolean(filled),
+          check(`${combo}: the window's Maximize fills the shell`, Boolean(filled),
             filled ? 'its control reads Restore' : `no Restore after the press: ${names(await semantics(tab))}`);
           await shot(tab, combo, 'maximized');
           await clickAt(tab, ...at);
@@ -2045,7 +2045,7 @@ try {
         const closedAt = Date.now();
         // What the page says of the agent: its face in the bar, or the banner of following it. A
         // phone's bar has room for one face, and it is whoever did something last, so an agent
-        // that comes back is on the desk where the person looks, at every width.
+        // that comes back is on the shell where the person looks, at every width.
         const presentAs = async () => (await semantics(tab)).find(node =>
           /^claude code, agent$/i.test(node.name)
           || /^following claude code/i.test(node.name));
@@ -2126,7 +2126,7 @@ try {
         // The notice slides in on the clock and stands a few seconds before it fades out, and the
         // builder draws a frame in seconds: it is shot once two screenshots in a row are the same
         // while it is still up, which is the notice at rest, neither part way in nor on its way out.
-        // Taken as it is: closing what covers the desk first would close the notice too.
+        // Taken as it is: closing what covers the shell first would close the notice too.
         // A person reading it rests the pointer on it, which holds it where it stands (a held
         // banner does not age): the builder takes seconds per screenshot, longer than the notice
         // stands untouched.

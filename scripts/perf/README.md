@@ -86,7 +86,7 @@ executable stand-alone; the higher-level flow is described below.
   client's side of the control socket, after
   100 warm-up calls, with 1,000 samples. `--app PROVIDER:ID` adds an app
   action. With `--env-json` it writes `tools/perf/record.py` records. A
-  spawned session starts on a desk, the throwaway identity a development
+  spawned session starts on a shell, the throwaway identity a development
   login opens it with minted first. The performance run runs it as the
   `agent` group.
 

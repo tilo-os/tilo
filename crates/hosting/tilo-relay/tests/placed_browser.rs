@@ -133,9 +133,9 @@ struct Placed {
 
 async fn placed() -> Placed {
     let operator = TestUser::fresh("operator");
-    let desk = operator.enrol("host", DeviceCapabilities::primary());
+    let shell = operator.enrol("host", DeviceCapabilities::primary());
     let vm_host = operator.enrol(VM_HOST, DeviceCapabilities::member());
-    let hosted = host_on(&operator, &desk, WorkSetting::own_person()).await;
+    let hosted = host_on(&operator, &shell, WorkSetting::own_person()).await;
     let workspace = hosted
         .host
         .workspaces()
@@ -156,7 +156,7 @@ async fn placed() -> Placed {
         (vm_host.sk.clone(), vm_host.cert.clone()),
         member_endpoint,
         take_work::Relay::new(
-            &hex::encode(desk.device_pubkey()),
+            &hex::encode(shell.device_pubkey()),
             &address_of(hosted.router.endpoint()),
         )
         .unwrap(),

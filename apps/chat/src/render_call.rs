@@ -1006,7 +1006,7 @@ impl ChatApp {
         }
     }
 
-    /// The call as the shell's floating layer places it, over the desk: the
+    /// The call as the shell's floating layer places it, over the shell: the
     /// card's body at the width the layer's column gives it. Who is in the
     /// call leads — their faces stacked, their names and the run time beside
     /// them — then how the call is connected, then what the person does from

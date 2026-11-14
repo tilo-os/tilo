@@ -54,7 +54,7 @@ pub enum ActionCmd {
 #[derive(Debug, Subcommand)]
 pub enum WorkspaceCmd {
     /// Make a workspace that starts with everything another holds and then goes its own way:
-    /// its records, desk, files and Terminal environments, with you as its only member. Its
+    /// its records, shell, files and Terminal environments, with you as its only member. Its
     /// chat and its other people stay behind. Prints the new workspace's id.
     #[command(
         after_help = "Examples:\n  tilo workspace branch Research \"Question 2\"\n  tilo workspace branch 3f2b1c00-0000-4000-8000-00000000000a \"Customer A\""
@@ -72,7 +72,7 @@ pub fn run_workspace(cmd: WorkspaceCmd, spelling: &Spelling) -> ExitCode {
     let doors = doors();
     with_io(|io| match cmd {
         WorkspaceCmd::Branch { source, name } => {
-            // The desk's own verb, as the workspace menu and an agent invoke it.
+            // The shell's own verb, as the workspace menu and an agent invoke it.
             let address =
                 tilo_actions::ActionAddress::new("desktop:chrome", "branch-workspace").encode();
             front::run_address(

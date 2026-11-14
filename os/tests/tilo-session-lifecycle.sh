@@ -54,14 +54,14 @@ if [ -e "$identity_unit" ]; then
   exit 1
 fi
 # The identity helper must return before the long-lived session services bind:
-# the process verifies or repairs this device's identity, then starts the desk.
+# the process verifies or repairs this device's identity, then starts the shell.
 # GPU selection intentionally happens elsewhere so every process shape uses the
 # same explicit device policy; line-order checks against an older startup
 # layout made this lifecycle test fail without proving a runtime defect.
 identity_line=$(grep -n 'tilo_session::startup::identity()' "$session_main" | cut -d: -f1)
-desk_start_line=$(grep -n '^    start(ours, command, line,' "$session_main" | cut -d: -f1)
-if [ -z "$identity_line" ] || [ -z "$desk_start_line" ] \
-   || [ "$identity_line" -ge "$desk_start_line" ]; then
+shell_start_line=$(grep -n '^    start(ours, command, line,' "$session_main" | cut -d: -f1)
+if [ -z "$identity_line" ] || [ -z "$shell_start_line" ] \
+   || [ "$identity_line" -ge "$shell_start_line" ]; then
   echo 'identity helper no longer returns before the session services start' >&2
   exit 1
 fi

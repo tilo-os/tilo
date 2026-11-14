@@ -1,4 +1,4 @@
-//! A window of Notes on the desk, alone in its window and among other tabs, at a desk's width, a
+//! A window of Notes on the shell, alone in its window and among other tabs, at a shell's width, a
 //! narrow window's and a phone's: the window's own maximize and close stand in its bar, and the
 //! tab in front of a window of several offers its own close, each where a person and an agent
 //! find it by name.
@@ -44,9 +44,9 @@ fn tab(minter: &mut IdMinter, app: &str, label: &str) -> Tab {
     }
 }
 
-/// A desk `width` wide of one window whose tab in front is Notes over `f`'s notebook, with
+/// A shell `width` wide of one window whose tab in front is Notes over `f`'s notebook, with
 /// `others` more tabs after it.
-fn desk(
+fn shell(
     f: &NotebookFixture,
     checkout: &ui::record::RecordCheckout,
     width: u32,
@@ -55,7 +55,7 @@ fn desk(
     let mut minter = IdMinter::new(7);
     let notes = tab(&mut minter, "so.tilo.notes", "Notes");
     let notes_id = notes.id;
-    let mut tree = seed_tree(&mut minter, "Desk", vec![notes]);
+    let mut tree = seed_tree(&mut minter, "Shell", vec![notes]);
     for &(app, label) in others {
         let more = tab(&mut minter, app, label);
         tree.workspaces[0].strips[0].window_groups[0]
@@ -101,7 +101,7 @@ fn drawn_in_bar(harness: &FrameHarness, name: &str) -> bool {
 /// person meets it at; and the tab in front of a window of several keeps its own close, which a
 /// narrow window used to squeeze away with the rest of its tabs.
 #[test]
-fn a_desk_window_keeps_its_close_and_maximize_and_its_tab_its_close() {
+fn a_shell_window_keeps_its_close_and_maximize_and_its_tab_its_close() {
     ui::i18n::I18nManager::init("en-US");
     let others = [("so.tilo.sheets", "Sheets"), ("so.tilo.files", "Files")];
     let mut missing = Vec::new();
@@ -109,7 +109,7 @@ fn a_desk_window_keeps_its_close_and_maximize_and_its_tab_its_close() {
         for others in [&[][..], &others[..]] {
             let f = NotebookFixture::rich();
             let checkout = component_support::notebook(&f);
-            let harness = desk(&f, &checkout, width, others);
+            let harness = shell(&f, &checkout, width, others);
             let case = format!("{width} px, {} tabs", others.len() + 1);
             for name in ["Maximize", "Close"] {
                 if !drawn_in_bar(&harness, name) {

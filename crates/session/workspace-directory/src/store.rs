@@ -153,7 +153,7 @@ pub struct Store {
     settling: std::cell::RefCell<Option<String>>,
     /// Why joining a listing failed, by its key, until it is joined.
     pub(crate) failures: std::cell::RefCell<BTreeMap<String, String>>,
-    /// The workspaces joined since the caller last took them, for the desk
+    /// The workspaces joined since the caller last took them, for the shell
     /// to add.
     joined: std::cell::RefCell<Vec<Joined>>,
     /// The invitations left on a site's shelf, by the invitation's id: the
@@ -709,7 +709,7 @@ impl Store {
     }
 
     /// The name the site listed `workspace` under, once a join was granted:
-    /// a slot the desk makes when the host admits this device shows the
+    /// a slot the shell makes when the host admits this device shows the
     /// workspace by the name it was chosen under, not its id.
     pub fn listed_name(&self, workspace: &str) -> Option<String> {
         self.names.borrow().get(workspace).cloned()

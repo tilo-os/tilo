@@ -1,6 +1,6 @@
 //! Where a Desktop widget rests, and how far an open card reaches from it.
 //! A widget rests wherever the person put it, on whichever display: its place is kept per display
-//! as fractions of the space its resting form can move in there ([`ui::desk_widgets::Place`]), so a
+//! as fractions of the space its resting form can move in there ([`ui::widgets::Place`]), so a
 //! widget against an edge or in a corner stays there when the resolution changes.
 //! A widget's open card grows from its resting form toward the middle of the display
 //! ([`open_rect`]): from the corner of the form nearest the display's nearer sides, so opening

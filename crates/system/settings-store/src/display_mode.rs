@@ -758,28 +758,28 @@ mod tests {
                     Err(DisplayLayoutError::SingleDisplay)
                 );
             }
-            let desk = vec![
+            let shell = vec![
                 output("DP-1", false, &[mode(1920, 1080, 60_000)]),
                 output("DP-2", false, &[mode(1920, 1080, 60_000)]),
             ];
             assert!(layout_available(
                 DisplayLayoutMode::Extend,
-                &desk,
+                &shell,
                 &DisplayConfig::default()
             ));
             assert!(layout_available(
                 DisplayLayoutMode::Mirror,
-                &desk,
+                &shell,
                 &DisplayConfig::default()
             ));
             assert!(!layout_available(
                 DisplayLayoutMode::BuiltinOnly,
-                &desk,
+                &shell,
                 &DisplayConfig::default()
             ));
             assert!(!layout_available(
                 DisplayLayoutMode::ExternalOnly,
-                &desk,
+                &shell,
                 &DisplayConfig::default()
             ));
         }

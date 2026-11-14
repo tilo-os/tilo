@@ -207,7 +207,7 @@ shortcut-name-toggle-maximize = Fenster maximieren oder wiederherstellen
 shortcut-name-maximize-window = Fenster maximieren
 shortcut-name-restore-window = Fenster wiederherstellen
 shortcut-name-detach-tab = Tab in neue Gruppe verschieben
-shortcut-name-toggle-float = Fenster über den Schreibtisch schweben lassen
+shortcut-name-toggle-float = Fenster über die Shell schweben lassen
 shortcut-name-attach-tab-left = Tab in die Gruppe links verschieben
 shortcut-name-attach-tab-right = Tab in die Gruppe rechts verschieben
 shortcut-name-move-group-left = Gruppe nach links verschieben
@@ -2692,17 +2692,17 @@ accounts-mail-not-synced = Mail-Zugriff gewährt. Noch keine erste Synchronisier
 accounts-remove-files = Dateien entfernen
 accounts-disconnect-mail = Mail trennen
 
-## Appearance: desk widgets
+## Appearance: widgets
 
-settings-desk-card = Widgets am Rand
-settings-desk-music = Musik
-settings-desk-team = Leute in diesem Arbeitsbereich
-settings-desk-calendar = Kalender
-settings-desk-system-monitor = Systemmonitor
-settings-desk-when = Erscheint
-settings-desk-show-pause = Wenn ich beim Tippen innehalte
-settings-desk-show-always = Immer, auf den Streifen, an die ich es anhefte
-settings-desk-show-ask = Nur, wenn ich frage
+settings-widgets-card = Widgets am Rand
+settings-widgets-music = Musik
+settings-widgets-team = Leute in diesem Arbeitsbereich
+settings-widgets-calendar = Kalender
+settings-widgets-system-monitor = Systemmonitor
+settings-widgets-when = Erscheint
+settings-widgets-show-pause = Wenn ich beim Tippen innehalte
+settings-widgets-show-always = Immer, auf den Streifen, an die ich es anhefte
+settings-widgets-show-ask = Nur, wenn ich frage
 
 settings-drives-title = Gemerkte Laufwerke
 settings-drives-intro = Gemerkte Laufwerke öffnen sich ohne erneute Nachfrage. Ein Laufwerk in diesem Computer öffnet sich, wenn du es in Dateien öffnest; bei einem externen wirst du bei jedem Anschließen gefragt.

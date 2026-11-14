@@ -1004,7 +1004,7 @@ impl Default for Track {
 pub const MIN_GAIN_DB: f64 = -60.0;
 
 /// **+12 dB is four times unity.** A fader with no ceiling can destroy a mix by accident, and
-/// +12 is where the desks land: it is the most a recorded signal usefully takes. Above unity
+/// +12 is where the shells land: it is the most a recorded signal usefully takes. Above unity
 /// has to be reachable, since a voiceover under music is unmixable if the only direction is
 /// down.
 pub const MAX_GAIN_DB: f64 = 12.0;
@@ -1061,7 +1061,7 @@ impl Track {
     }
 
     /// How the pan reads: `"C"` at centre, `"L40"` / `"R25"` either side —
-    /// the notation every desk uses, and shorter than any sentence.
+    /// the notation every shell uses, and shorter than any sentence.
     pub fn pan_words(&self) -> String {
         let p = self.pan.clamp(-1.0, 1.0);
         let n = (p.abs() * 100.0).round();

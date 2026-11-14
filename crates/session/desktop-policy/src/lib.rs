@@ -34,11 +34,11 @@ const LAUNCH_PREFIX: &str = "window:";
 const CRASHED_PREFIX: &str = "crashed:";
 
 /// The launch id a tab held for a window an app asked its session for is opened under: the session
-/// planned that window and starts it in the tab when the desk asks back, the tab being what the
+/// planned that window and starts it in the tab when the shell asks back, the tab being what the
 /// window is known by ([`DesktopPolicy::hold`]).
 pub const HELD_PREFIX: &str = "held:";
 
-/// The name of a launch whose place the desk holds for a window the session
+/// The name of a launch whose place the shell holds for a window the session
 /// starts itself.
 fn held_name(app: &str) -> String {
     format!("{HELD_PREFIX}{app}")
@@ -84,7 +84,7 @@ pub struct Placement {
     /// fills that display's whole area, the bar's room included, and the
     /// bar steps aside while it does.
     pub fullscreen: Option<u64>,
-    /// Each window floating over the desk, and what the desk covers the
+    /// Each window floating over the shell, and what the shell covers the
     /// windows under it with for that window: its bar and body, the whole
     /// rect they fill, in surface coordinates ([`DesktopPolicy::float_covers`]).
     pub covers: Vec<(u64, Rect)>,
@@ -93,11 +93,11 @@ pub struct Placement {
 /// Windows waiting for their tab, shared with the surface's tile source.
 type Arriving = Rc<RefCell<BTreeMap<u64, Window>>>;
 
-/// One launch the desk asks this session to make: the command naming the app,
-/// and the tab the desk holds for the window it opens, when it made one.
+/// One launch the shell asks this session to make: the command naming the app,
+/// and the tab the shell holds for the window it opens, when it made one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaunchAsk {
-    /// The launch command, as the desk was asked for it. A window an app asked
+    /// The launch command, as the shell was asked for it. A window an app asked
     /// its session for is named by [`HELD_PREFIX`] and its app: the session
     /// starts the window it planned in the tab, whatever else the command names.
     pub app: String,
@@ -108,7 +108,7 @@ pub struct LaunchAsk {
     /// shows, or put back after it was closed: the launch opens a new window
     /// there, as the app's own ask for another window does, rather than coming
     /// forward in the one the app has. A launch in a place of its own opens the
-    /// window the desk named and raises the app's window where it already shows
+    /// window the shell named and raises the app's window where it already shows
     /// one.
     pub beside: bool,
 }
@@ -117,7 +117,7 @@ pub struct LaunchAsk {
 /// starts each one ([`DesktopPolicy::take_launches`]).
 type Launches = Rc<RefCell<Vec<LaunchAsk>>>;
 
-/// What each window on this desk shows, as its app holds the record: the
+/// What each window on this shell shows, as its app holds the record: the
 /// record it is on and the kind of resource that record keeps.
 pub trait WindowNotes {
     /// The record `tab`'s window shows and the kind of resource it keeps,
@@ -145,7 +145,7 @@ type Titles = Rc<RefCell<BTreeMap<String, String>>>;
 
 /// What the session calls each app, shared with the surface's tile source:
 /// the installed package's localised name, else the machine's desktop entry,
-/// else the registry's. A desk told no names uses the ones every desktop
+/// else the registry's. A shell told no names uses the ones every desktop
 /// carries ([`tilo_desktop_search::names::app_name`]).
 type AppNames = Rc<RefCell<Option<Rc<dyn Fn(&str) -> String>>>>;
 
@@ -271,7 +271,7 @@ impl TileSource for Windows {
             record.tab = Some(id);
             drop(held);
             // The tab is the window's instance: the session starts the window it planned for it
-            // now that the desk holds the place it takes.
+            // now that the shell holds the place it takes.
             self.launches.borrow_mut().push(LaunchAsk {
                 app: held_name(app),
                 tab: Some(id),
@@ -307,7 +307,7 @@ impl TileSource for Windows {
             })
         } else {
             // A Tilo package or one of the machine's apps: this session starts it, and its
-            // window takes the tab the desk holds for it. The tab is what the window is known
+            // window takes the tab the shell holds for it. The tab is what the window is known
             // by — an app's continuation reports are addressed by its id — so the launch names
             // it. A launch that opens a record or content of an app is a window of that app: its
             // tab is the app's, and the window takes it as every window of the app does.
@@ -424,20 +424,20 @@ pub struct DesktopPolicy {
     floating: BTreeMap<u64, Option<u64>>,
     /// The displays, primary first, a mirror set as one.
     displays: Vec<Display>,
-    /// The app-drawn cards floating over the desk, as the session placed
+    /// The app-drawn cards floating over the shell, as the session placed
     /// them.
     cards: cards::Placements,
     /// The workspace each launched window belongs to, as the session that launched it knows:
     /// a window launched into a workspace that is not in front opens there, never in front.
     launched_into: Option<LaunchWorkspaces>,
-    /// The windows launched into a workspace not in front whose tab the desk has not made yet,
+    /// The windows launched into a workspace not in front whose tab the shell has not made yet,
     /// each with where it goes ([`Self::carry_launched`]).
     to_carry: Vec<(u64, WorkspaceId)>,
 }
 
 impl DesktopPolicy {
     /// A policy over a desktop of one workspace with one empty strip, and
-    /// the surface the compositor hosts under its windows. Nothing of it is named: the desk names
+    /// the surface the compositor hosts under its windows. Nothing of it is named: the shell names
     /// what nobody named when it shows it, in the language of whoever reads it.
     #[must_use]
     pub fn new(salt: u16) -> (Self, DesktopSurface) {
@@ -447,7 +447,7 @@ impl DesktopPolicy {
 
     /// A policy over `tree`, the desktop as last kept, minting under `salt`:
     /// a kept tree carries no range of its own (it is not written to the
-    /// file), so the device whose session builds the desk says which it is.
+    /// file), so the device whose session builds the shell says which it is.
     #[must_use]
     pub fn with_tree(tree: Layout, salt: u16) -> (Self, DesktopSurface) {
         let mut tree = tree;
@@ -506,7 +506,7 @@ impl DesktopPolicy {
         std::mem::take(&mut *self.launches.borrow_mut())
     }
 
-    /// Read what each window shows from `notes`, the session's: the desk asks
+    /// Read what each window shows from `notes`, the session's: the shell asks
     /// it for the windows a person may share, and a window whose app reports
     /// no record shows none.
     pub fn reads_window_records(&mut self, notes: Rc<dyn WindowNotes>) {
@@ -571,17 +571,17 @@ impl DesktopPolicy {
     /// What the person asked for in `tab` did not happen, and `answer` says what and
     /// why: the tab keeps its place, shows the answer instead of a window that is not
     /// coming, and trying again opens the window in that same tab. The tab may not be on
-    /// the desk yet: the answer waits in the maps the tile source reads.
+    /// the shell yet: the answer waits in the maps the tile source reads.
     pub fn failed_at(&mut self, tab: TabId, asked: &str, answer: Outcome) {
         self.crashed.borrow_mut().insert(tab, asked.to_owned());
         self.answers.borrow_mut().insert(asked.to_owned(), answer);
         // The tab's content stood from the frame it was opened in: the
-        // answer takes its place on the desk's next pass.
+        // answer takes its place on the shell's next pass.
         self.handle.rebuild(tab);
     }
 
     /// The name the person knows `asked` by, for the words its answer uses:
-    /// what the desk showed in the app's tab, else the app's own id.
+    /// what the shell showed in the app's tab, else the app's own id.
     #[must_use]
     pub fn name_of(&self, asked: &str) -> String {
         self.titles
@@ -591,7 +591,7 @@ impl DesktopPolicy {
             .unwrap_or_else(|| app_name(&self.names, asked))
     }
 
-    /// The answer `app` left on the desk goes, `tab` having shown its window
+    /// The answer `app` left on the shell goes, `tab` having shown its window
     /// again.
     fn keep_answer_gone(&self, tab: TabId) {
         let app = self.crashed.borrow_mut().remove(&tab);
@@ -660,14 +660,14 @@ impl DesktopPolicy {
     }
 
     /// Whether `window` is a dialog floating over its parent, or a card an
-    /// app draws over the desk.
+    /// app draws over the shell.
     #[must_use]
     pub fn is_floating(&self, window: u64) -> bool {
         self.floating.contains_key(&window)
     }
 
     /// Place the cards the session authorises: where the floating layer puts
-    /// each one is the session's to say, and this desk's to lay out.
+    /// each one is the session's to say, and this shell's to lay out.
     pub fn use_cards(&mut self, cards: cards::Placements) {
         self.cards = cards;
     }
@@ -696,7 +696,7 @@ impl DesktopPolicy {
         self.cards.size_of(window)
     }
 
-    /// Whether `app` has a window shown on the desk now: the activity it
+    /// Whether `app` has a window shown on the shell now: the activity it
     /// runs draws there, and its floating card is suspended until it does
     /// not.
     #[must_use]
@@ -795,12 +795,12 @@ impl DesktopPolicy {
     }
 
     /// Move each window launched into a workspace that is not in front into that workspace, once
-    /// the desk made its tab: what a host calls after it lays the desk out for a mapped window.
+    /// the shell made its tab: what a host calls after it lays the shell out for a mapped window.
     pub fn carry_launched(&mut self) {
         let pending = std::mem::take(&mut self.to_carry);
         for (window, slot) in pending {
             let Some(tab) = self.tab_of(window) else {
-                // Its tab comes with the desk's next layout.
+                // Its tab comes with the shell's next layout.
                 self.to_carry.push((window, slot));
                 continue;
             };
@@ -820,7 +820,7 @@ impl DesktopPolicy {
         self.handle.read(|tree| anchor_for(tree, app))
     }
 
-    /// The tab of `app` the window `instance` runs in, when the desk shows it:
+    /// The tab of `app` the window `instance` runs in, when the shell shows it:
     /// the tab a window is given is the window's instance ([`LaunchAsk::tab`]).
     #[must_use]
     pub fn tab_of_instance(&self, app: &str, instance: u64) -> Option<TabId> {
@@ -835,9 +835,9 @@ impl DesktopPolicy {
         })
     }
 
-    /// Where the window of `tab` shows its content, in the desk's own
+    /// Where the window of `tab` shows its content, in the shell's own
     /// pixels, as of the surface's last layout: where a box a window drew
-    /// stands on the desk.
+    /// stands on the shell.
     #[must_use]
     pub fn content_rect(&self, tab: TabId) -> Option<Rect> {
         self.handle
@@ -916,9 +916,9 @@ impl DesktopPolicy {
 
     /// Hold a tab for the next window of `app`, in a window of its own, taking focus there unless
     /// `background`. It lands right after `anchor` (the tab [`Self::anchor_for`] finds when none is
-    /// named), and — `floated` — stands over the desk beside it instead: the window a send landed
-    /// in, which the desk gives the strip's room to so the card it draws at stands beside the window
-    /// that sent rather than over it. The session starts that window when the desk asks back for the
+    /// named), and — `floated` — stands over the shell beside it instead: the window a send landed
+    /// in, which the shell gives the strip's room to so the card it draws at stands beside the window
+    /// that sent rather than over it. The session starts that window when the shell asks back for the
     /// tab ([`Self::take_launches`]). False when the desktop holds no tab of `app` to open beside.
     pub fn hold(
         &mut self,
@@ -959,7 +959,7 @@ impl DesktopPolicy {
         self.hold_launch(app, command, background)
     }
 
-    /// Ask the desk for `command`'s window and keep the place it makes for
+    /// Ask the shell for `command`'s window and keep the place it makes for
     /// `app`. The desktop makes the tab on its next pass: the place is asked
     /// for here, so one that never comes can be given up before then.
     fn hold_launch(&self, app: &str, command: ChromeEffect, background: bool) -> bool {
@@ -995,7 +995,7 @@ impl DesktopPolicy {
         self.forget_held(app);
     }
 
-    /// The launch the desk held `tab` for opens no window in it: the place
+    /// The launch the shell held `tab` for opens no window in it: the place
     /// held for the app's next window and the tab go.
     pub fn release_tab(&mut self, tab: TabId) {
         self.held.borrow_mut().retain(|_, queue| {
@@ -1005,7 +1005,7 @@ impl DesktopPolicy {
         self.close_held(tab);
     }
 
-    /// Close `tab`, one the desk held for a window that never came.
+    /// Close `tab`, one the shell held for a window that never came.
     fn close_held(&self, tab: TabId) {
         let mut tree = self.handle.read(Clone::clone);
         if tree.close_tab(tab).is_some() {
@@ -1031,7 +1031,7 @@ impl DesktopPolicy {
 
     /// Hold `tab` for the next window `app` opens, in the background: the window takes
     /// the tab the person left it in — its place, its width, the strip it was in — and
-    /// does not take focus. False when `tab` is not on the desk any more.
+    /// does not take focus. False when `tab` is not on the shell any more.
     pub fn adopt(&mut self, app: &str, tab: TabId) -> bool {
         self.hold_tab(app.to_owned(), tab, true)
     }
@@ -1069,7 +1069,7 @@ impl DesktopPolicy {
 
     /// Carry tab `tab` into the workspace at `to`, with a window of its own.
     /// # Errors
-    /// The tab is not on the desk, it is already in that workspace, or there is no such
+    /// The tab is not on the shell, it is already in that workspace, or there is no such
     /// workspace.
     pub fn carry(&mut self, tab: TabId, to: WorkspaceId) -> Result<(), String> {
         let mut tree = self.handle.read(Clone::clone);
@@ -1235,7 +1235,7 @@ impl DesktopPolicy {
     /// A window's title changed. A window is named by what it shows: while its app names
     /// that, that name stands and the window's own title shows once it names nothing. A
     /// window's own title that is only its app's name under another spelling shows the
-    /// app's name as this desk says it. The person's own name for the tab stands in front
+    /// app's name as this shell says it. The person's own name for the tab stands in front
     /// of both.
     pub fn retitle(&mut self, window: u64, title: &str) {
         let mut tree = self.handle.read(Clone::clone);
@@ -1256,7 +1256,7 @@ impl DesktopPolicy {
     }
 
     /// The app `window` says it belongs to changed. Its tab is that app's from here on,
-    /// so the desk names the window by the program its client claims; an id the client
+    /// so the shell names the window by the program its client claims; an id the client
     /// clears leaves the tab as it is.
     pub fn set_app_id(&mut self, window: u64, app_id: &str) {
         if app_id.trim().is_empty() {
@@ -1364,7 +1364,7 @@ impl DesktopPolicy {
         self.handle.read(|tree| tab_of(tree, window))
     }
 
-    /// The tabs the desk has for apps on the workspace in front whose window is there or
+    /// The tabs the shell has for apps on the workspace in front whose window is there or
     /// on its way, each with the id its app announces itself by: what a launch of an app
     /// that may already be running is decided against. A window that mapped is here, and
     /// so is the tab a launch holds until its window fills it, so a launch of an app that
@@ -1444,7 +1444,7 @@ impl DesktopPolicy {
 
     /// Bring the tab `tab` forward and focus it, on the next update pass: what
     /// a launch of an app whose window is there, or on its way in this tab,
-    /// does instead of starting it again. False when the desk holds no such
+    /// does instead of starting it again. False when the shell holds no such
     /// tab.
     pub fn focus_tab(&mut self, tab: TabId) -> bool {
         self.handle.focus_tab(tab)
@@ -1504,7 +1504,7 @@ impl DesktopPolicy {
         }
     }
 
-    /// Each window floating over the desk, and the rect the desk draws over the windows under
+    /// Each window floating over the shell, and the rect the shell draws over the windows under
     /// it for that window: the whole of its bar and body, which it paints opaque, in surface
     /// coordinates. What lies under it there is drawn around it.
     #[must_use]
@@ -1607,7 +1607,7 @@ fn app_name(names: &AppNames, app_id: &str) -> String {
 /// What a tab showing a window of `app_id` is titled: the window's own
 /// title, unless that is only the app's name under another spelling — the
 /// toolkit labels a window with the app's unlocalised name — in which case
-/// it is the app's name as this desk says it.
+/// it is the app's name as this shell says it.
 fn tab_title(names: &AppNames, app_id: &str, title: Option<&str>) -> String {
     match title.map(str::trim).filter(|title| !title.is_empty()) {
         Some(title) if !tilo_desktop_search::names::is_apps_own_name(app_id, title) => {
@@ -1645,7 +1645,7 @@ fn window_of(tree: &Layout, tab: TabId) -> Option<u64> {
 }
 
 /// The window covering the display the person works on, if one is: the tab
-/// in front of the group the desk took full screen there.
+/// in front of the group the shell took full screen there.
 fn covering_window(tree: &Layout) -> Option<u64> {
     let group = tree.fullscreen_group()?;
     tree.workspaces

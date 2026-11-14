@@ -77,7 +77,7 @@ impl ShortcutGuide {
     /// The chords a held Super reaches on `shell` , from the table the guide explains.
     pub(crate) fn peek(
         &self,
-        shell: tilo_sheets::shortcut_guide::PeekDesk,
+        shell: tilo_sheets::shortcut_guide::PeekShell,
     ) -> Vec<tilo_desktop::super_peek::PeekGroup> {
         tilo_sheets::shortcut_guide::peek(&self.state.table().borrow(), shell)
     }

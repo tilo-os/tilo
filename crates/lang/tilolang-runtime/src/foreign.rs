@@ -635,7 +635,7 @@ impl FailedViews {
     }
 
     /// The app's package arrived after all: it is no longer failed to load, and the host is
-    /// told so ([`FailedViews::take_recovered`]) — a desk style that failed comes back.
+    /// told so ([`FailedViews::take_recovered`]) — a style that failed comes back.
     pub(crate) fn app_arrived(&mut self, app: &str) {
         if self.apps.remove(app).is_some() {
             self.recovered.push(app.to_owned());

@@ -389,9 +389,9 @@ struct HostLog {
 
 /// The host the shell searches through: one source of its own, which only a search of the workspace
 /// asks.
-struct DeskHost(Rc<HostLog>);
+struct ShellHost(Rc<HostLog>);
 
-impl SearchHost for DeskHost {
+impl SearchHost for ShellHost {
     fn feed(&self, _: &str, scope: &Scope) -> SearchHostFeed {
         self.0.scopes.borrow_mut().push(scope.clone());
         SearchHostFeed {
@@ -946,7 +946,7 @@ impl Shell {
     fn with_host(&self) -> Rc<HostLog> {
         let log = Rc::new(HostLog::default());
         self.handle
-            .set_search_host(Rc::new(DeskHost(Rc::clone(&log))));
+            .set_search_host(Rc::new(ShellHost(Rc::clone(&log))));
         log
     }
 
@@ -1292,7 +1292,7 @@ fn a_host_set_while_search_is_open_feeds_it() {
     assert_eq!(host.scopes.borrow().as_slice(), [Scope::Workspace]);
 }
 
-/// The chord that opens search is the desk's, never the window's under it: an app that takes every
+/// The chord that opens search is the shell's, never the window's under it: an app that takes every
 /// key it is handed is not handed the chord, so no app's own Control+K runs on the press that opened
 /// the search.
 #[test]

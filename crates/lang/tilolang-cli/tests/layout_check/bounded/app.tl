@@ -8,8 +8,8 @@ root Sample
 
 default view samples for Sample
 
-/// A desk as the shell lays one out: a bar over a middle longer than the window, and a dock
-/// over its foot holding more items than the window is wide. The desk is the window's height:
+/// A window as the shell lays one out: a bar over a middle longer than the window, and a dock
+/// over its foot holding more items than the window is wide. The view is the window's height:
 /// the middle scrolls between the bar and the dock, and the dock's body is the window's width
 /// at most, its items scrolling along it.
 view samples(s: Sample) {

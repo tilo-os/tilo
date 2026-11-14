@@ -1720,7 +1720,7 @@ impl Map {
                 // no further than a click reports its point (`press`), and one that travelled
                 // more reports the rectangle it covered (`frame`). A press on a pin is the pin's,
                 // not the canvas's, and the map keeps nothing for it.
-                // A press outside the map (the desk's bar over it, a panel beside it) is not one
+                // A press outside the map (the shell's bar over it, a panel beside it) is not one
                 // on the canvas, whatever reaches the map of it.
                 if !self.rect.contains(self.cursor)
                     || self.over_pin(self.cursor - self.rect.origin().to_vec2())

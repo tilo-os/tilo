@@ -263,10 +263,10 @@ async fn a_window_named_by_its_provider_is_the_one_that_answers() {
 }
 
 /// The person sees what their agent opens: `open` of an app that runs already, and "Show this
-/// window" on one of its windows, each ask for the app's window on the person's desk (the host
+/// window" on one of its windows, each ask for the app's window on the person's shell (the host
 /// leaves one already there where it is, and the page brings it into view). A read shows nothing.
 #[tokio::test]
-async fn opening_or_showing_a_running_app_asks_for_its_window_on_the_desk() {
+async fn opening_or_showing_a_running_app_asks_for_its_window_on_the_shell() {
     let workspace = Workspace::default();
     let server = agent(&workspace);
     let browser = || {

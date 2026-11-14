@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
-use settings_store::desk_widgets::{PEOPLE_OVERLAY, PeopleOverlayPrefs};
+use settings_store::widgets::{PEOPLE_OVERLAY, PeopleOverlayPrefs};
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::edges::{self, DockEdge, EdgeDrag, Item};

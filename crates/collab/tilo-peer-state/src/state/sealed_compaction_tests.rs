@@ -685,7 +685,7 @@ fn a_history_that_writes_a_sequence_twice_opens_with_the_second_write_named() {
     let keys = f.keys();
     let mut first = Author::new(&f.host);
     let mut conflicting = Author::new(&f.host);
-    // Two writers of one desk used one actor: each wrote the next sequence of
+    // Two writers of one shell used one actor: each wrote the next sequence of
     // the same writer without seeing the other's change.
     let actor = automerge::ActorId::from(vec![0x42]);
     first.0.set_actor(actor.clone());

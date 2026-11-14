@@ -21,12 +21,12 @@ behind each binding, and how every transition moves.
    the glass:          which display                Alt+Super + arrow
 ```
 
-A workspace is a **desk**: its strips stack top to bottom as full-height
-screens (the strip deck the desktop surface draws; one fills the work area at
-a time and each keeps its own horizontal pan), a strip's window
-groups run left to right, and each display is a window onto part of that desk
+A workspace's **layout** is a deck: its strips stack top to bottom as
+full-height screens (the strip deck the desktop surface draws; one fills the
+work area at a time and each keeps its own horizontal pan), a strip's window
+groups run left to right, and each display is a window onto part of that deck
 (every display shows the same workspace and holds its own groups).
-Workspaces are separate desks, stacked in order. Windows tile, and nothing
+Each workspace's layout is separate, stacked in order. Windows tile, and nothing
 overlaps where they tile; a window the person floats stands above them, in a
 size of its own, until it is dragged back into a gap or snapped back.
 
@@ -65,9 +65,9 @@ same door. Actions come in two forms:
   display, and they are what a chord runs;
 - **absolute**, on the `windows` provider next to today's `group.close:<group>`
   and `tab.move:<group>:<tab>:<workspace>`: the same operation on a named
-  group, so an agent rearranges a desk without taking anyone's focus.
+  group, so an agent rearranges a shell without taking anyone's focus.
 
-A relative action that rearranges the desk answers once the overlay host has
+A relative action that rearranges the shell answers once the overlay host has
 run it: a move past the edge, a second maximize or a second restore reports
 that nothing changed instead of a success.
 
@@ -119,7 +119,7 @@ each tab through the window-transfer consent sheet exactly where
 |---|---|---|---|---|
 | Maximize, restore | `group.maximize`, `group.restore` | Super+↑ maximizes, Super+↓ restores (on any strip); Super+M toggles | double-click or double-tap the tab-bar ground; frame button | today; the maximize animation planned |
 | Full screen / restore | `group.fullscreen` | Super+F | — | today |
-| Float over the desk, snap back into the strip | a place's `float` / `snap-back` | Super+Shift+F toggles | drag a window's tab-bar ground off its strip to float it; drag a float over a strip, into a gap ([Floating over the desk](#floating-over-the-desk)); a float's frame button snaps it back | today |
+| Float over the shell, snap back into the strip | a place's `float` / `snap-back` | Super+Shift+F toggles | drag a window's tab-bar ground off its strip to float it; drag a float over a strip, into a gap ([Floating over the shell](#floating-over-the-shell)); a float's frame button snaps it back | today |
 | Narrower / wider, 5 % steps | `group.narrower` / `-wider` | Super+- / = | drag either edge ([Resizing a window](#resizing-a-window)) | steps and edge drags today |
 | Previous / next tab | `tab.previous` / `-next` | Super+Ctrl+Shift+Tab / Super+Ctrl+Tab (Ctrl+Shift+Tab / Ctrl+Tab where the app leaves them unhandled) | click a tab | today |
 | Tab into the neighbouring group | `tab.move-to-group-previous` / `-next` | Super+[ / ] | drag the tab onto the group | today |
@@ -136,7 +136,7 @@ window starts, and only a client's full screen covers it. Both still hold one sl
 for the whole desktop; each display getting its own, so a group full screen on
 a projector leaves the laptop's chrome alone, is planned.
 
-### Floating over the desk
+### Floating over the shell
 
 A group dragged by its tab-bar ground and let go where no strip is lifts
 where the hand let it: it takes the floating size, stands above every strip
@@ -147,7 +147,7 @@ member sees it floating in the same spot, each on their own display: the
 record keeps the corner it holds and its distances from it, so a smaller
 screen finds it inside their display.
 
-A float stands on the desk rather than in it: it carries the floating
+A float stands on the shell rather than in it: it carries the floating
 elevation and its own opaque ground under its bar and body, so the window it
 covers never reads through it, and while the hand carries it, it reads as
 lifted off what it passes over.
@@ -405,8 +405,8 @@ shortcut) and `Motion::context` for what only says where something went
 | Switch workspace | a whole-view change (`slow`), gesture-triggered at the end of the swipe | the same change with only a `fast` direction cue |
 | Overview in / out | each window zooms between its live rect and its card | lands at once |
 
-The workspace switch swaps the desk's content in place today; the vertical
-desk slide that should carry its direction cue is not drawn yet (#5248).
+The workspace switch swaps the shell's content in place today; the vertical
+shell slide that should carry its direction cue is not drawn yet (#5248).
 
 **Reduced motion** (`theme.reduce_motion`) stays the global override: it
 collapses every duration to 0 and jumps springs to their targets, whatever

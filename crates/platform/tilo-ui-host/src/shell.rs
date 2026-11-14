@@ -1044,12 +1044,12 @@ mod tests {
             Some("summary"),
             "the view's own tree, whole"
         );
-        let filling = node("layers", "desk", &[]);
+        let filling = node("layers", "shell", &[]);
         let filled = as_shell(&filling);
         let content = slot_children(&filled, "content");
         assert_eq!(
             content.first().map(|node| node.key.as_str()),
-            Some("desk"),
+            Some("shell"),
             "a body that fills the window keeps the column"
         );
     }

@@ -8,7 +8,7 @@
 //! Nothing here names an application. The canvas is what the session publishes
 //! on its layout's resources (`shell:layout`, a `shell:place:<key>`
 //! per place, a `shell:strip:<key>` per strip) and on the record of how the
-//! person views it (the desk style package's `Viewing`, whose `show_style` is
+//! person views it (the style package's `Viewing`, whose `show_style` is
 //! the style switch, and every action a style package publishes there).
 
 use std::collections::BTreeMap;
@@ -24,7 +24,7 @@ pub const PLACE: &str = "place";
 /// The prefix of every resource of the layout: itself, its record, and
 /// each row, strip and place.
 const SHELL_PREFIX: &str = "shell:";
-/// The kind of the record a person's view of their desk is kept in: the desk
+/// The kind of the record a person's view of their shell is kept in: the shell
 /// style it shows, and the strip in front. Its actions switch the style.
 const VIEWING_KIND_SUFFIX: &str = ".Viewing";
 /// The prefix of the resources a place of the canvas is published as.
@@ -64,7 +64,7 @@ pub fn conversation_of(task_id: &str) -> Option<&str> {
 }
 
 /// A resource there is to show on the canvas: a tilolang app's record, not
-/// one of the layout's own and not one of the desk style's.
+/// one of the layout's own and not one of the style's.
 fn showable(offer: &Offer) -> bool {
     let resource = offer.address().resource.as_str();
     resource.starts_with(TILOLANG_PREFIX)

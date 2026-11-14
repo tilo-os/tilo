@@ -817,7 +817,7 @@ fn shelf() -> Vec<Item> {
             "bartleby",
             "Bartleby",
             "Herman Melville",
-            vec!["I would prefer not to, said Bartleby, at his desk by the wharves."],
+            vec!["I would prefer not to, said Bartleby, at his table by the wharves."],
         ),
     ]
 }

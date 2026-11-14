@@ -42,7 +42,7 @@ fn part() -> (ShellPart, Rc<SessionLink>) {
     part_with(reading())
 }
 
-/// The canvas, as assistive technology names it: the map the framed desk style stands its places
+/// The canvas, as assistive technology names it: the map the framed style stands its places
 /// on, whose free ground a press puts the caret on.
 const CANVAS: &str = "Canvas";
 /// The launcher's field, announced the same way: the view's own words for it, not the state's

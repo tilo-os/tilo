@@ -7,7 +7,7 @@
 //! keyboard — Enter and Escape keep the workspace, as does a click beside the
 //! dialog — and the red destructive button taking a press of its own. The
 //! shell opens it wherever deleting was asked for (the workspace menu, the
-//! settings, an agent's action) and carries the answer out through the desk's
+//! settings, an agent's action) and carries the answer out through the shell's
 //! own action, which is the only thing that deletes.
 
 use std::cell::RefCell;

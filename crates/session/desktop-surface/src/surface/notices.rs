@@ -1469,7 +1469,7 @@ mod tests {
     /// arrives joins it, and once the shell says it closed, the shell's own panel is not opened in
     /// its place.
     #[test]
-    fn the_shells_centre_holds_arrivals_without_opening_the_desks_panel() {
+    fn the_shells_centre_holds_arrivals_without_opening_the_shells_panel() {
         let (layer, notifications) = layer_with(1);
         notifications.set_shell_centre(true);
         assert!(notifications.centre_open());

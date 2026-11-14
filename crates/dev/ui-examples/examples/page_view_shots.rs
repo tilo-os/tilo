@@ -57,8 +57,8 @@ fn main() {
         let name = theme.name.clone();
         write(
             &out,
-            &format!("page-desk-{name}.png"),
-            &desk(&theme),
+            &format!("page-shell-{name}.png"),
+            &shell(&theme),
             1200,
             800,
         );
@@ -167,8 +167,8 @@ fn announcement(tab: TabId) -> NeighbourMsg {
     }
 }
 
-/// A desk with one window another device hosts, its tab in the workspace.
-fn desk_tree() -> (tilo_desktop_model::Layout, TabId) {
+/// A shell with one window another device hosts, its tab in the workspace.
+fn shell_tree() -> (tilo_desktop_model::Layout, TabId) {
     let mut minter = IdMinter::new(7);
     let tab = Tab {
         id: minter.mint(),
@@ -188,10 +188,10 @@ fn desk_tree() -> (tilo_desktop_model::Layout, TabId) {
     (tree, id)
 }
 
-/// The window whose page reached this desk, as the desk draws it: the desktop's own chrome around
+/// The window whose page reached this shell, as the shell draws it: the desktop's own chrome around
 /// the page the publisher holds.
-fn desk(theme: &Theme) -> Vec<u8> {
-    let (tree, tab) = desk_tree();
+fn shell(theme: &Theme) -> Vec<u8> {
+    let (tree, tab) = shell_tree();
     let peers = Rc::new(RefCell::new(PeerSurfaces::default()));
     let start =
         PeerStreamStart::announced(&announcement(tab), LOCAL, "Browser VM", "Browser", false)

@@ -225,7 +225,7 @@ pdf-chooser-save-accept = Save
 pdf-delete = Delete
 pdf-try-again = Try again
 
-## What the app offers to the desk's search
+## What the app offers to the shell's search
 
 pdf-search-open = Open PDF document
 pdf-search-bookmark = Bookmark: { $title }

@@ -1089,7 +1089,7 @@ const SAMPLE_HOTEL: &str = "3c8f9b21-7d44-4e0a-b5c6-1a2b3c4d5e6f";
 const SAMPLE_WIRED: &str = "0f1e2d3c-4b5a-4968-8776-655443322110";
 const SAMPLE_VPN_HOME: &str = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
 const SAMPLE_VPN_WORK: &str = "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e";
-const SAMPLE_DESK_PC: &str = "6f1d2c3b4a5968778695a4b3c2d1e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091";
+const SAMPLE_TOWER_PC: &str = "6f1d2c3b4a5968778695a4b3c2d1e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091";
 const SAMPLE_STUDIO: &str = "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9";
 const SAMPLE_PHONE: &str = "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0";
 
@@ -1256,8 +1256,8 @@ impl NetworkService for SampleNetwork {
             exit_available: true,
             offered: vec![
                 OfferedExit {
-                    device: SAMPLE_DESK_PC.into(),
-                    label: "Desk PC".into(),
+                    device: SAMPLE_TOWER_PC.into(),
+                    label: "Tower PC".into(),
                 },
                 OfferedExit {
                     device: SAMPLE_STUDIO.into(),
@@ -1816,8 +1816,8 @@ impl NetworkModel {
                 }
                 if let Some(status) = &mut model.vpn.devices.status {
                     status.client = Some(ClientStatus {
-                        device: SAMPLE_DESK_PC.into(),
-                        label: "Desk PC".into(),
+                        device: SAMPLE_TOWER_PC.into(),
+                        label: "Tower PC".into(),
                         state: ClientState::Connected {
                             since_unix_ms: 1_792_000_000_000,
                         },

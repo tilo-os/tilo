@@ -905,7 +905,7 @@ impl Scrollable {
 
     /// Show the descendant whose id is `id` (`Widget::test_id`) once a layout
     /// has placed it, moving as little as it takes: what just arrived on a
-    /// surface the person pans (a place put on the desk) is where they can
+    /// surface the person pans (a place put on the shell) is where they can
     /// see it. The latest asked wins; one never placed is never shown.
     pub fn reveal_on_layout(&mut self, id: impl Into<String>) {
         self.reveal_id = Some(id.into());

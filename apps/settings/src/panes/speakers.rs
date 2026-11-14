@@ -1659,7 +1659,7 @@ impl SpeakerService for SampleSpeakers {
                 snapshot: SpeakerSnapshot {
                     media_enabled: true,
                     devices: vec![
-                        device("Desk", true),
+                        device("Tower", true),
                         device("Shelf", false),
                         device("Bookcase", false),
                         device("Kitchen", false),
@@ -1667,10 +1667,10 @@ impl SpeakerService for SampleSpeakers {
                     groups: vec![SpeakerGroupInfo {
                         id: "cd".repeat(16),
                         name: "Living room".into(),
-                        leader_label: "Desk".into(),
+                        leader_label: "Tower".into(),
                         led_here: true,
                         members: vec![
-                            member("Desk", SpeakerRoleSpec::Left),
+                            member("Tower", SpeakerRoleSpec::Left),
                             member("Shelf", SpeakerRoleSpec::Right),
                         ],
                         playback: None,
@@ -1728,7 +1728,7 @@ mod tests {
             let stateful = Arc::new(StatefulService {
                 snapshot: Mutex::new(SpeakerSnapshot {
                     media_enabled: true,
-                    devices: vec![device("desk"), device("shelf")],
+                    devices: vec![device("tower"), device("shelf")],
                     groups: Vec::new(),
                     calibrations: Vec::new(),
                 }),
@@ -1742,7 +1742,7 @@ mod tests {
                 SpeakerEffect::CreateSpeakerSet {
                     name: "Living room".into(),
                     members: vec![SpeakerMemberSpec {
-                        device: "desk".into(),
+                        device: "tower".into(),
                         output: "0a".repeat(16),
                         role: SpeakerRoleSpec::Room {
                             x_mm: 0,
@@ -1845,7 +1845,7 @@ mod tests {
                     .iter()
                     .any(|command| matches!(
                         command,
-                        SpeakerCommand::Identify { device, .. } if device == "desk"
+                        SpeakerCommand::Identify { device, .. } if device == "tower"
                     ))
             );
             press(
@@ -1885,7 +1885,7 @@ mod tests {
             let service = fake();
             {
                 let mut snapshot = service.snapshot.lock().unwrap();
-                for (device, local) in [("desk", true), ("shelf", false), ("phone", false)] {
+                for (device, local) in [("tower", true), ("shelf", false), ("phone", false)] {
                     snapshot.groups[0]
                         .microphones
                         .push(ui::collaboration::CalibrationMicrophoneInfo {
@@ -1922,7 +1922,7 @@ mod tests {
                     .unwrap()
                     .contains(&SpeakerCommand::StartCalibration {
                         group: group.clone(),
-                        excluded: vec!["desk".into(), "shelf".into()],
+                        excluded: vec!["tower".into(), "shelf".into()],
                         listening: Some("phone".into()),
                     })
             );
@@ -2023,7 +2023,7 @@ mod tests {
             id: id.into(),
             label: id.into(),
             online: true,
-            local: id == "desk",
+            local: id == "tower",
             can_join: true,
             outputs: vec![SpeakerEndpointInfo {
                 selector: "0a".repeat(16),
@@ -2038,11 +2038,11 @@ mod tests {
         Arc::new(FakeService {
             snapshot: Mutex::new(SpeakerSnapshot {
                 media_enabled: true,
-                devices: vec![device("desk"), device("shelf")],
+                devices: vec![device("tower"), device("shelf")],
                 groups: vec![SpeakerGroupInfo {
                     id: "cd".repeat(16),
                     name: "Kitchen".into(),
-                    leader_label: "desk".into(),
+                    leader_label: "tower".into(),
                     led_here: true,
                     members: vec![SpeakerMemberInfo {
                         device: "shelf".into(),
@@ -2083,7 +2083,7 @@ mod tests {
                     snapshot.groups.push(SpeakerGroupInfo {
                         id: id.clone(),
                         name,
-                        leader_label: "desk".into(),
+                        leader_label: "tower".into(),
                         led_here: true,
                         members: members
                             .into_iter()

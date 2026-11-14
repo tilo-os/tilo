@@ -67,7 +67,7 @@ fn peer_tab(minter: &mut IdMinter) -> Tab {
     }
 }
 
-/// A host with nothing to draw for a window that runs on another device, as the native desk's own
+/// A host with nothing to draw for a window that runs on another device, as the native shell's own
 /// tile source has: it answers with the place of a window still to come, which paints nothing.
 struct NothingToDraw;
 
@@ -81,22 +81,22 @@ impl TileSource for NothingToDraw {
 fn shell() -> (FrameHarness, DesktopHandle, TabId) {
     let mut minter = IdMinter::new(7);
     let tab = peer_tab(&mut minter);
-    desk_showing(minter, tab, Box::new(HostTiles))
+    shell_showing(minter, tab, Box::new(HostTiles))
 }
 
-/// A desktop whose one window runs on the device the desk calls `device` , over a host that has
+/// A desktop whose one window runs on the device the shell calls `device` , over a host that has
 /// nothing to draw for it.
-fn desk_of_device(device: &str) -> (FrameHarness, DesktopHandle, TabId) {
+fn shell_of_device(device: &str) -> (FrameHarness, DesktopHandle, TabId) {
     let mut minter = IdMinter::new(7);
     let mut tab = peer_tab(&mut minter);
     if let ModelTile::HostedWindow { host_label, .. } = &mut tab.tile {
         device.clone_into(host_label);
     }
-    desk_showing(minter, tab, Box::new(NothingToDraw))
+    shell_showing(minter, tab, Box::new(NothingToDraw))
 }
 
 /// A desktop showing `tab` over `tiles` , in the toolkit's own frame pipeline.
-fn desk_showing(
+fn shell_showing(
     mut minter: IdMinter,
     tab: Tab,
     tiles: Box<dyn TileSource>,
@@ -272,7 +272,7 @@ fn a_tile_says_whose_window_it_is_and_how_it_stands_in_the_readers_language() {
     let mut minter = IdMinter::new(7);
     let tab = peer_tab(&mut minter);
     let tab_id = tab.id;
-    let tree = seed_tree(&mut minter, "Desk", vec![tab]);
+    let tree = seed_tree(&mut minter, "Shell", vec![tab]);
     let mut peers = PeerSurfaces::default();
     let tab = peers
         .start(&tree, &stream_start(tab_id, false))
@@ -497,8 +497,8 @@ fn ending_the_share_removes_the_tile_s_resource() {
     );
 }
 
-/// What the desk's tab says of a window that is not shown in it: the notice's title, and the
-/// sentence under it, as a reader who cannot see the desk and a tool listing it read them.
+/// What the shell's tab says of a window that is not shown in it: the notice's title, and the
+/// sentence under it, as a reader who cannot see the shell and a tool listing it read them.
 fn notice(driver: &FrameHarness) -> Option<(String, String)> {
     driver.a11y_nodes().into_iter().find_map(|(_, node)| {
         let title = node.label()?;
@@ -511,7 +511,7 @@ fn notice(driver: &FrameHarness) -> Option<(String, String)> {
     })
 }
 
-/// The notice `driver` 's desk shows once `handle` was told the window in `tab` stands as
+/// The notice `driver` 's shell shows once `handle` was told the window in `tab` stands as
 /// `standing` .
 fn notice_for(
     driver: &mut FrameHarness,
@@ -525,7 +525,7 @@ fn notice_for(
     assert_eq!(
         &handle.elsewhere(tab),
         standing,
-        "the desk keeps what it was told"
+        "the shell keeps what it was told"
     );
     notice(driver)
 }
@@ -538,15 +538,15 @@ fn words(title: &str, why: &str) -> (String, String) {
 /// A window that runs on another device and is not shown here never leaves its tab empty. Its
 /// host has nothing to draw for it, so the tab says where the window runs, and under that why it
 /// is not here, as the session read it: not shared, shared and still on its way, on a device
-/// nothing is heard of, or on a device the workspace no longer admits. A desk nobody told says
+/// nothing is heard of, or on a device the workspace no longer admits. A shell nobody told says
 /// only where it runs.
 #[test]
 fn a_window_on_another_device_says_where_it_runs_and_why_it_is_not_here() {
-    let (mut driver, handle, tab) = desk_of_device("Laptop");
+    let (mut driver, handle, tab) = shell_of_device("Laptop");
     assert_eq!(
         notice(&driver),
         Some(words("Writer runs on Laptop", "")),
-        "a desk nobody told says where the window runs, and no more"
+        "a shell nobody told says where the window runs, and no more"
     );
     let waits_for_keys = "Waiting for this workspace's keys to reach this device";
     for (standing, why) in [
@@ -589,7 +589,7 @@ fn a_window_on_another_device_says_where_it_runs_and_why_it_is_not_here() {
 fn a_device_nothing_names_is_another_device_of_the_workspace_and_never_its_key() {
     let key = "ab".repeat(32);
     for label in ["", "  ", key.as_str()] {
-        let (mut driver, handle, tab) = desk_of_device(label);
+        let (mut driver, handle, tab) = shell_of_device(label);
         let title = "Writer runs on another device of this workspace";
         for (standing, why) in [
             (
@@ -618,7 +618,7 @@ fn a_device_nothing_names_is_another_device_of_the_workspace_and_never_its_key()
             for said in [node.label(), node.description(), node.value()] {
                 assert!(
                     !said.unwrap_or_default().contains(&key),
-                    "the desk shows a device's key: {said:?}"
+                    "the shell shows a device's key: {said:?}"
                 );
             }
         }
@@ -629,7 +629,7 @@ fn a_device_nothing_names_is_another_device_of_the_workspace_and_never_its_key()
 /// built again when they choose another.
 #[test]
 fn a_window_on_another_device_is_said_in_the_language_the_person_reads_now() {
-    let (mut driver, handle, tab) = desk_of_device("Laptop");
+    let (mut driver, handle, tab) = shell_of_device("Laptop");
     assert_eq!(
         notice_for(&mut driver, &handle, tab, &Elsewhere::NotShared),
         Some(words(
@@ -665,7 +665,7 @@ fn a_window_on_another_device_is_said_in_the_language_the_person_reads_now() {
 /// sender, the notice again, saying what the session reads of the window now.
 #[test]
 fn a_share_takes_the_tab_from_the_notice_and_gives_it_back_when_its_sender_stops() {
-    let (mut driver, handle, tab) = desk_of_device("Laptop");
+    let (mut driver, handle, tab) = shell_of_device("Laptop");
     let not_shared = Some(words(
         "Writer runs on Laptop",
         "It is not shared with this workspace right now",
@@ -729,7 +729,7 @@ fn a_share_takes_the_tab_from_the_notice_and_gives_it_back_when_its_sender_stops
 /// no longer follows the window, and refuses what is asked of it in that language too.
 #[test]
 fn a_window_this_device_let_go_says_so_and_refuses_in_the_language_read_now() {
-    let (mut driver, handle, tab) = desk_of_device("Laptop");
+    let (mut driver, handle, tab) = shell_of_device("Laptop");
     handle.set_elsewhere(vec![(tab, Elsewhere::NotShared)]);
     handle.show_peer_surface(&stream_start(tab, true));
     for (index, unit) in keyframes(1).into_iter().enumerate() {
@@ -808,7 +808,7 @@ fn a_tiles_actions_are_named_and_refused_in_the_readers_language() {
     let mut minter = IdMinter::new(7);
     let tab = peer_tab(&mut minter);
     let tab_id = tab.id;
-    let tree = seed_tree(&mut minter, "Desk", vec![tab]);
+    let tree = seed_tree(&mut minter, "Shell", vec![tab]);
     let mut peers = PeerSurfaces::default();
     let tab = peers
         .start(&tree, &stream_start(tab_id, false))

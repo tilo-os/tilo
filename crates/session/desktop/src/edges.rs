@@ -2,7 +2,7 @@
 //! things sharing that edge, and around the system activities (a call, a navigation card) already
 //! floating there. The Desktop widgets and the pinned people overlay both stand here, in the native
 //! shell and the browser alike: dragged and let go, each snaps to the edge nearest the drop
-//! ([`nearest_edge`]) and keeps it in the person's settings (`settings_store::desk_widgets`).
+//! ([`nearest_edge`]) and keeps it in the person's settings (`settings_store::widgets`).
 //! Widgets that share an edge stack along it, away from its corner or out from its middle. A system
 //! activity floating over an edge is an occupant the stack steps past, so a call card and a music
 //! widget never sit on each other: system activities and widgets share the edges, and the activity
@@ -15,7 +15,7 @@
 
 use vello::kurbo::{Point, Rect, Size, Vec2};
 
-pub use ui::desk_widgets::DockEdge;
+pub use ui::widgets::DockEdge;
 
 /// Gap between a widget and the display edge, and between stacked widgets.
 pub const MARGIN: f64 = ui::tokens::Spacing::BASE.s3 as f64;
@@ -248,7 +248,7 @@ fn reach_zone(area: Rect, edge: DockEdge, glance: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::desk_widgets::WidgetId;
+    use ui::widgets::WidgetId;
 
     const AREA: Rect = Rect::new(0.0, 24.0, 1600.0, 900.0);
 

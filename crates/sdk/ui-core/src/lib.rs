@@ -274,12 +274,12 @@ pub mod shortcut_table {
         FixedAction, ShortcutHome, fixed_action, fixed_shortcut,
     };
 }
-/// The shell widgets and the screen edges things kept at the screen's edges wait at, as the settings
+/// The widgets and the screen edges things kept at the screen's edges wait at, as the settings
 /// document keeps them: what every shell host places them by, the native shell and a browser page
 /// alike.
-pub mod desk_widgets {
-    pub use settings_store::desk_widgets::{
-        DeskWidgetPrefs, DockEdge, Place, ShowMode, WidgetId, WidgetPrefs, prefs_key,
+pub mod widgets {
+    pub use settings_store::widgets::{
+        DockEdge, Place, ShowMode, WidgetId, WidgetPrefs, WidgetsPrefs, prefs_key,
     };
 }
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};

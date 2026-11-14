@@ -1488,7 +1488,7 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             if response.pointer("/ok/locked") == Some(&serde_json::Value::Bool(true)) {
                 eprintln!(
                     "note: the session is locked, so the picture is of the lock screen, not \
-                     of the desk"
+                     of the shell"
                 );
             }
         }

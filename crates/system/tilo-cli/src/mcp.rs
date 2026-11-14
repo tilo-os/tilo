@@ -213,7 +213,7 @@ fn open(session: Arc<Session>, device: &Device, run: &str) -> Result<Served, Str
     let actions = session.device.actions(workspace_id);
     let person = hex::encode(user);
     // The records the agent works in open as windows on the workspace's
-    // desk; the host that executes its run shows it there, doing what it
+    // shell; the host that executes its run shows it there, doing what it
     // does.
     let windows = Arc::new(mcp_windows::AgentWindows::new(
         actions.clone(),

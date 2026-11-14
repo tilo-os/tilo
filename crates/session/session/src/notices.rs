@@ -211,13 +211,10 @@ pub(crate) fn style_failed_notice(style: &str, reason: &str) -> Notice {
     // does instead, and that their choice is kept.
     tracing::warn!(%style, %reason, "the shell style the person chose did not load");
     Notice::new(
-        t("shell-style-failed-app-name"),
+        t("style-failed-app-name"),
         2,
-        t("shell-style-failed-title"),
-        t_args(
-            "shell-style-failed-body",
-            &[("style", style.to_owned().into())],
-        ),
+        t("style-failed-title"),
+        t_args("style-failed-body", &[("style", style.to_owned().into())]),
     )
     .here()
     .staying(Some(Duration::from_secs(30)))

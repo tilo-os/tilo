@@ -1625,14 +1625,14 @@ async fn a_change_a_repair_kept_is_taken_in_once_what_it_builds_on_arrives() {
 
 /// A device linked to the workspace directly, as a desktop's runtime is,
 /// hearing what the link brings it.
-struct Desk {
+struct Peer {
     key: ed25519_dalek::SigningKey,
     link: tilo_peer_state::direct::DirectSync,
     heard: tilo_peer_state::direct::Reader,
     pairing: tokio::task::JoinHandle<Result<(), String>>,
 }
 
-impl Desk {
+impl Peer {
     /// Another device of the lounge's person, admitted and linked to the node, caught up.
     async fn link(lounge: &Lounge, seed: u8) -> Self {
         Self::reading(lounge, seed, 0).await
@@ -1665,7 +1665,7 @@ impl Desk {
             tokio::spawn(
                 async move { tilo_peer_state::direct::DirectSync::pair(&linked, &host).await },
             );
-        tilo_test_env::within("the desk catches up with the node", async {
+        tilo_test_env::within("the device catches up with the node", async {
             caught_up.wait_for(|caught_up| *caught_up).await.unwrap();
         })
         .await;
@@ -1677,18 +1677,18 @@ impl Desk {
         }
     }
 
-    /// The sequence numbers of `author`'s writes of [`RECORD`] this desk hears live, in order,
-    /// up to and including `last`: each write the desk took in, as many times as it arrived.
+    /// The sequence numbers of `author`'s writes of [`RECORD`] this device hears live, in order,
+    /// up to and including `last`: each write the device took in, as many times as it arrived.
     async fn hears(&mut self, author: [u8; 32], last: u64) -> Vec<u64> {
         let heard = &mut self.heard;
-        tilo_test_env::within("the desk hears the writes", async {
+        tilo_test_env::within("the device hears the writes", async {
             let mut seqs = Vec::new();
             loop {
                 let frame = heard.recv().await.unwrap();
                 if let Some(seq) = write_of(&frame.message, author) {
                     assert!(
                         frame.report.is_ok(),
-                        "the desk takes the write in: {:?}",
+                        "the device takes the write in: {:?}",
                         frame.report.err()
                     );
                     seqs.push(seq);
@@ -1747,14 +1747,14 @@ async fn delivered(client: &crate::RelayClient, author: [u8; 32], last: u64) -> 
 /// A workspace's members write on whatever carrier their runtime runs: a page
 /// through a relay session, a desktop over the workspace's direct link. What
 /// one writes reaches every other member live, once, on either carrier, and
-/// never comes back to its own: each linked desk hears each of the page's
-/// writes once, and the page and the other desk each get each of a desk's
+/// never comes back to its own: each linked device hears each of the page's
+/// writes once, and the page and the other device each get each of a device's
 /// writes once, all sealed as their authors wrote them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
     const WRITES: u64 = 6;
     let (lounge, page) = lounge_with_client().await;
-    let mut desks = [Desk::link(&lounge, 5).await, Desk::link(&lounge, 6).await];
+    let mut peers = [Peer::link(&lounge, 5).await, Peer::link(&lounge, 6).await];
     let page_author = lounge.member_key.verifying_key().to_bytes();
 
     let started = std::time::Instant::now();
@@ -1768,19 +1768,19 @@ async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
             &format!("from the page {line}"),
         );
     }
-    for desk in &mut desks {
+    for peer in &mut peers {
         assert_eq!(
-            desk.hears(page_author, WRITES).await,
+            peer.hears(page_author, WRITES).await,
             (1..=WRITES).collect::<Vec<_>>(),
-            "a linked desk hears each of the page's writes once, live"
+            "a linked device hears each of the page's writes once, live"
         );
     }
     eprintln!(
-        "{WRITES} writes of a relay session reached two linked desks in {:?}",
+        "{WRITES} writes of a relay session reached two linked devices in {:?}",
         started.elapsed()
     );
 
-    let [writer, other] = &mut desks;
+    let [writer, other] = &mut peers;
     let sealing = SealingMember::join(
         &lounge.workspaces,
         &lounge.workspace,
@@ -1788,32 +1788,32 @@ async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
         writer.key.clone(),
     )
     .await;
-    let desk_author = writer.key.verifying_key().to_bytes();
+    let peer_author = writer.key.verifying_key().to_bytes();
     let started = std::time::Instant::now();
     for line in 0..WRITES {
         let ((), message) = sealing.seal(&lounge.workspace, |doc| {
-            doc.put(ROOT, "title", format!("from a desk {line}"))
+            doc.put(ROOT, "title", format!("from a device {line}"))
                 .unwrap();
             doc.commit_edit("fixture", "title");
         });
         assert!(
             matches!(&message, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some()),
-            "the desk writes sealed"
+            "the device writes sealed"
         );
         writer.link.send(message).unwrap();
     }
     assert_eq!(
-        other.hears(desk_author, WRITES).await,
+        other.hears(peer_author, WRITES).await,
         (1..=WRITES).collect::<Vec<_>>(),
-        "the other linked desk hears each of the desk's writes once"
+        "the other linked device hears each of the device's writes once"
     );
     assert_eq!(
-        delivered(&page, desk_author, WRITES).await,
+        delivered(&page, peer_author, WRITES).await,
         (1..=WRITES).collect::<Vec<_>>(),
-        "the page's session is sent each of the desk's writes once"
+        "the page's session is sent each of the device's writes once"
     );
     eprintln!(
-        "{WRITES} writes of a linked desk reached the other desk and a relay session in {:?}",
+        "{WRITES} writes of a linked device reached the other device and a relay session in {:?}",
         started.elapsed()
     );
 
@@ -1836,8 +1836,8 @@ async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
             if write_of(&frame.message, page_author) == Some(WRITES + 1) {
                 return echoed;
             }
-            if let Some(seq) = write_of(&frame.message, desk_author) {
-                echoed.push(("the desk's own", seq, frame.retained));
+            if let Some(seq) = write_of(&frame.message, peer_author) {
+                echoed.push(("the device's own", seq, frame.retained));
             }
             if let Some(seq) = write_of(&frame.message, page_author) {
                 echoed.push(("the page's", seq, frame.retained));
@@ -1849,8 +1849,8 @@ async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
         echoed.is_empty(),
         "no write came back to its author or reached the writer twice: {echoed:?}"
     );
-    for desk in desks {
-        desk.pairing.abort();
+    for peer in peers {
+        peer.pairing.abort();
     }
     drop(page);
     let Lounge {
@@ -2154,16 +2154,16 @@ async fn writes_sent(
 /// A desktop whose reader of the workspace's link falls behind, and a host
 /// whose reader of it does while a page waits on the relay's session, still
 /// read every write once after catching up from the workspace's history:
-/// the desk each of the page's writes, the page each of the desk's, and
+/// the device each of the page's writes, the page each of the device's, and
 /// neither its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn readers_that_fell_behind_read_every_write_once() {
     const WRITES: u64 = 6;
     let (lounge, page) = lounge_reading_with_client(2).await;
-    let mut desk = Desk::reading(&lounge, 5, 2).await;
+    let mut peer = Peer::reading(&lounge, 5, 2).await;
     let page_author = lounge.member_key.verifying_key().to_bytes();
 
-    // The page writes while the desk reads nothing: its link has room for two.
+    // The page writes while the device reads nothing: its link has room for two.
     let started = std::time::Instant::now();
     for line in 0..WRITES {
         seal_and_send_title(
@@ -2175,12 +2175,12 @@ async fn readers_that_fell_behind_read_every_write_once() {
             &format!("from the page {line}"),
         );
     }
-    // Every write reached the desk's link before the desk reads one.
-    let mut landed = desk.link.changes();
-    tilo_test_env::within("the page's writes reach the desk", async {
+    // Every write reached the device's link before the device reads one.
+    let mut landed = peer.link.changes();
+    tilo_test_env::within("the page's writes reach the device", async {
         landed
             .wait_for(|_| {
-                desk.link.cursors().iter().any(|cursor| {
+                peer.link.cursors().iter().any(|cursor| {
                     cursor.lineage.author == page_author && cursor.after_seq == WRITES
                 })
             })
@@ -2190,26 +2190,26 @@ async fn readers_that_fell_behind_read_every_write_once() {
     .await;
     let caught_up = std::time::Instant::now();
     assert_eq!(
-        desk.hears(page_author, WRITES).await,
+        peer.hears(page_author, WRITES).await,
         (1..=WRITES).collect::<Vec<_>>(),
-        "a desk that fell behind reads each of the page's writes once"
+        "a device that fell behind reads each of the page's writes once"
     );
     eprintln!(
-        "a desk that fell behind {WRITES} writes caught up in {:?} ({:?} after the first write)",
+        "a device that fell behind {WRITES} writes caught up in {:?} ({:?} after the first write)",
         caught_up.elapsed(),
         started.elapsed()
     );
 
-    // The host's reader of the link stalls while the desk writes: it cannot
+    // The host's reader of the link stalls while the device writes: it cannot
     // take the workspace while the test holds it.
     let sealing = SealingMember::join(
         &lounge.workspaces,
         &lounge.workspace,
         (APP, RECORD),
-        desk.key.clone(),
+        peer.key.clone(),
     )
     .await;
-    let desk_author = desk.key.verifying_key().to_bytes();
+    let peer_author = peer.key.verifying_key().to_bytes();
     let state = lounge
         .workspaces
         .workspace(&lounge.workspace)
@@ -2224,17 +2224,17 @@ async fn readers_that_fell_behind_read_every_write_once() {
     let held = state.lock().await;
     for line in 0..WRITES {
         let ((), message) = sealing.seal(&lounge.workspace, |doc| {
-            doc.put(ROOT, "title", format!("from a desk {line}"))
+            doc.put(ROOT, "title", format!("from a device {line}"))
                 .unwrap();
             doc.commit_edit("fixture", "title");
         });
-        desk.link.send(message).unwrap();
+        peer.link.send(message).unwrap();
     }
-    tilo_test_env::within("the desk's writes reach the host's link", async {
+    tilo_test_env::within("the device's writes reach the host's link", async {
         landed
             .wait_for(|_| {
                 host.cursors().iter().any(|cursor| {
-                    cursor.lineage.author == desk_author && cursor.after_seq == WRITES
+                    cursor.lineage.author == peer_author && cursor.after_seq == WRITES
                 })
             })
             .await
@@ -2243,10 +2243,10 @@ async fn readers_that_fell_behind_read_every_write_once() {
     .await;
     let released = std::time::Instant::now();
     drop(held);
-    let sent: Vec<_> = writes_sent(&page, desk_author, WRITES)
+    let sent: Vec<_> = writes_sent(&page, peer_author, WRITES)
         .await
         .into_iter()
-        .filter(|(author, _)| [desk_author, page_author].contains(author))
+        .filter(|(author, _)| [peer_author, page_author].contains(author))
         .collect();
     eprintln!(
         "a host reader that fell behind {WRITES} writes carried them to a session in {:?}",
@@ -2255,11 +2255,11 @@ async fn readers_that_fell_behind_read_every_write_once() {
     assert_eq!(
         sent,
         (1..=WRITES)
-            .map(|seq| (desk_author, seq))
+            .map(|seq| (peer_author, seq))
             .collect::<Vec<_>>(),
-        "the page's session is sent each of the desk's writes once, and none of its own"
+        "the page's session is sent each of the device's writes once, and none of its own"
     );
-    desk.pairing.abort();
+    peer.pairing.abort();
     lounge.relay.shutdown().await;
 }
 
@@ -2270,11 +2270,11 @@ async fn readers_that_fell_behind_read_every_write_once() {
 /// once asked; a desktop decides on its link's replay alone, and a record it
 /// holds nothing of after that replay is one its app makes anew. The relay's
 /// start hands the link what it retains before it serves anyone
-/// ([`Workspaces::recall`]): a desk that links holds every one of them once it
+/// ([`Workspaces::recall`]): a device that links holds every one of them once it
 /// caught up, the parts behind the head included, and reads them rather than
 /// making them again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_desk_linking_later_holds_every_part_a_page_wrote_before_the_link_kept_it() {
+async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_kept_it() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     // The host after the restart holds the channel keys the one before it took part with.
@@ -2358,14 +2358,14 @@ async fn a_desk_linking_later_holds_every_part_a_page_wrote_before_the_link_kept
         member_cert,
         member,
     };
-    let desk = Desk::link(&lounge, 5).await;
+    let peer = Peer::link(&lounge, 5).await;
     for record in &written {
         assert!(
-            desk.link.read(|peer| peer.document(APP, record).is_some()),
-            "a desk that caught up holds {record}: its app reads it, and does not make it again"
+            peer.link.read(|peer| peer.document(APP, record).is_some()),
+            "a device that caught up holds {record}: its app reads it, and does not make it again"
         );
     }
-    drop(desk);
+    drop(peer);
     let Lounge {
         workspaces, relay, ..
     } = lounge;
@@ -2404,14 +2404,14 @@ async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
     let member =
         SealingMember::join(&workspaces, &workspace, (APP, RECORD), member_key.clone()).await;
     // A desktop's part behind the chain's head, kept by the link alone.
-    let (desk_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 5).await;
+    let (device_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 5).await;
     let older = neighbour_wire::record_part(RECORD, 0);
-    let desk = SealingMember::join(&workspaces, &workspace, (APP, RECORD), desk_key)
+    let device = SealingMember::join(&workspaces, &workspace, (APP, RECORD), device_key)
         .await
         .part(&workspaces, &workspace, &older)
         .await;
-    let ((), message) = desk.seal(&workspace, |doc| {
-        doc.put(ROOT, "title", "the desk's older part").unwrap();
+    let ((), message) = device.seal(&workspace, |doc| {
+        doc.put(ROOT, "title", "the device's older part").unwrap();
         doc.commit_edit("fixture", "title");
     });
     let frame = tilo_peer_state::store::Frame::of(&message).unwrap();
@@ -2481,10 +2481,10 @@ async fn opened_frames(page: &crate::RelayClient, workspace_id: WorkspaceId, rec
     .await
 }
 
-/// A linked desk writes a part over the workspace's link while the relay
+/// A linked device writes a part over the workspace's link while the relay
 /// runs, and the relay's copy of it for its sessions fails `failing` times;
 /// the part, and the relay's page, wait.
-async fn a_desk_writes_while_its_copy_fails(
+async fn a_device_writes_while_its_copy_fails(
     failing: usize,
 ) -> (Lounge, crate::RelayClient, String) {
     let (lounge, page) = lounge_with_client().await;
@@ -2494,23 +2494,23 @@ async fn a_desk_writes_while_its_copy_fails(
         .session_carriers
         .failing
         .store(failing, std::sync::atomic::Ordering::Release);
-    let desk = Desk::link(&lounge, 5).await;
+    let peer = Peer::link(&lounge, 5).await;
     let record = neighbour_wire::record_part(RECORD, 0);
     let part = SealingMember::join(
         &lounge.workspaces,
         &lounge.workspace,
         (APP, RECORD),
-        desk.key.clone(),
+        peer.key.clone(),
     )
     .await
     .part(&lounge.workspaces, &lounge.workspace, &record)
     .await;
     let ((), message) = part.seal(&lounge.workspace, |doc| {
-        doc.put(ROOT, "title", "the desk's part").unwrap();
+        doc.put(ROOT, "title", "the device's part").unwrap();
         doc.commit_edit("fixture", "title");
     });
-    desk.link.send(message).unwrap();
-    tilo_test_env::within("the relay tries to copy the desk's write", async {
+    peer.link.send(message).unwrap();
+    tilo_test_env::within("the relay tries to copy the device's write", async {
         while lounge
             .workspaces
             .inner
@@ -2526,12 +2526,12 @@ async fn a_desk_writes_while_its_copy_fails(
     (lounge, page, record)
 }
 
-/// The relay's copy of a desk's write for its sessions fails once while it
+/// The relay's copy of a device's write for its sessions fails once while it
 /// runs: it is tried again until it lands, and a page that opens the record
 /// is sent it from the relay's own history.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_desks_write_whose_copy_failed_once_still_reaches_a_page() {
-    let (lounge, page, record) = Box::pin(a_desk_writes_while_its_copy_fails(1)).await;
+async fn a_devices_write_whose_copy_failed_once_still_reaches_a_page() {
+    let (lounge, page, record) = Box::pin(a_device_writes_while_its_copy_fails(1)).await;
     tilo_test_env::within("the copy is tried again until it lands", async {
         while retained_writes(&lounge.relay, lounge.workspace_id, &record)
             .await
@@ -2544,7 +2544,7 @@ async fn a_desks_write_whose_copy_failed_once_still_reaches_a_page() {
     assert_eq!(
         opened_frames(&page, lounge.workspace_id, &record).await,
         1,
-        "the page is sent the desk's write, once"
+        "the page is sent the device's write, once"
     );
     drop(page);
     let Lounge {
@@ -2554,12 +2554,12 @@ async fn a_desks_write_whose_copy_failed_once_still_reaches_a_page() {
     relay.shutdown().await;
 }
 
-/// The relay's copy of a desk's write keeps failing: until it lands, a page
+/// The relay's copy of a device's write keeps failing: until it lands, a page
 /// that opens the record is sent the write from the workspace's link, never
 /// told the record is absent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_is_sent_a_desks_write_whose_copy_has_not_landed() {
-    let (lounge, page, record) = Box::pin(a_desk_writes_while_its_copy_fails(usize::MAX)).await;
+async fn a_page_is_sent_a_devices_write_whose_copy_has_not_landed() {
+    let (lounge, page, record) = Box::pin(a_device_writes_while_its_copy_fails(usize::MAX)).await;
     assert!(
         retained_writes(&lounge.relay, lounge.workspace_id, &record)
             .await
@@ -2569,7 +2569,7 @@ async fn a_page_is_sent_a_desks_write_whose_copy_has_not_landed() {
     assert_eq!(
         opened_frames(&page, lounge.workspace_id, &record).await,
         1,
-        "the page is sent the desk's write from the link"
+        "the page is sent the device's write from the link"
     );
     drop(page);
     let Lounge {

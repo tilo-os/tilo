@@ -111,8 +111,8 @@ mod canonical_views;
 #[path = "sidebar_selection.rs"]
 mod sidebar_selection;
 
-#[path = "empty_desk_new_note.rs"]
-mod empty_desk_new_note;
+#[path = "empty_shell_new_note.rs"]
+mod empty_shell_new_note;
 #[path = "hosted_header_controls.rs"]
 mod hosted_header_controls;
 #[path = "note_context_menu.rs"]
@@ -183,7 +183,7 @@ mod perf_interaction;
 #[path = "notion_import.rs"]
 mod notion_import;
 
-#[path = "desk_window_controls.rs"]
-mod desk_window_controls;
 #[path = "html_composition.rs"]
 mod html_composition;
+#[path = "shell_window_controls.rs"]
+mod shell_window_controls;

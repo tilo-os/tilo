@@ -976,7 +976,7 @@ fn one_persons_menu_is_their_whole_avatar() {
     let own = MenuButton::from_props(
         "me",
         MenuButtonProps {
-            label: "Sam Rivera: desk style and workspaces".into(),
+            label: "Sam Rivera: style and workspaces".into(),
             faces: vec!["Sam Rivera".into()],
             ..MenuButtonProps::default()
         },

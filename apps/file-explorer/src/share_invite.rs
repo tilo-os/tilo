@@ -1,4 +1,4 @@
-//! Sharing what Files shows: the desk's own invite sheet, asked for and followed.
+//! Sharing what Files shows: the shell's own invite sheet, asked for and followed.
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::session_actions;
@@ -137,9 +137,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn sharing_asks_the_desk_once_and_says_why_when_refused;
+        fn sharing_asks_the_shell_once_and_says_why_when_refused;
 
-        phase sharing_asks_the_desk_for_its_invite_sheet;
+        phase sharing_asks_the_shell_for_its_invite_sheet;
         {
             let mut invite = ShareInvite::default();
             invite.ask().expect("nothing is opening");

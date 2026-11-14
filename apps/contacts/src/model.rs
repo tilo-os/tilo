@@ -775,7 +775,7 @@ fn sample_contacts_part1() -> Vec<Contact> {
             }],
             birthday: "1906-12-09",
             website: "",
-            notes: "Coined the term \"debugging\". Keeps a nanosecond on her desk.",
+            notes: "Coined the term \"debugging\". Keeps a nanosecond on her clock.",
             groups: &["Work"],
             favorite: true,
         }),

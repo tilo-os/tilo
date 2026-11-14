@@ -47,12 +47,12 @@ def layout_problems(targets: list[dict], displays: dict) -> dict:
     for t in targets:
         tmap.setdefault(tuple(t["rect"]), t["name"])  # one name per rect: indexed aliases collapse
     rects = [(n, r) for r, n in tmap.items() if r[2] > 0 and r[3] > 0 and not NOT_CHROME.search(n)]
-    desk = (min(d[0] for d in displays.values()), min(d[1] for d in displays.values()),
+    shell = (min(d[0] for d in displays.values()), min(d[1] for d in displays.values()),
             max(d[0] + d[2] for d in displays.values()), max(d[1] + d[3] for d in displays.values()))
-    desk_rect = (desk[0], desk[1], desk[2] - desk[0], desk[3] - desk[1])
+    shell_rect = (shell[0], shell[1], shell[2] - shell[0], shell[3] - shell[1])
     outside, overlaps = [], []
     for n, r in rects:
-        if core.rect_inside(r, desk_rect) and (r[2] >= desk_rect[2] - 1 or r[3] >= desk_rect[3] - 1):
+        if core.rect_inside(r, shell_rect) and (r[2] >= shell_rect[2] - 1 or r[3] >= shell_rect[3] - 1):
             continue  # a desktop-wide container
         # Wholly off screen is scrolled away (a panned strip), not clipped.
         visible = any(core.overlap(r, d) > 0 for d in displays.values())

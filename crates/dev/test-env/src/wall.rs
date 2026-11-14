@@ -1,4 +1,4 @@
-//! The wall clock a test holds, so what the desk draws of the date and time
+//! The wall clock a test holds, so what the shell draws of the date and time
 //! is the same at the end of the test as at its start.
 
 use tilo_clock::testing::SharedWall;
@@ -6,7 +6,7 @@ use tilo_clock::testing::SharedWall;
 /// Hold this thread's wall clock at [`crate::CAPTURE_LOCAL_TIME`], the
 /// instant a test environment and a `--shots` capture start at.
 ///
-/// A test that takes a picture of the desk before something happens and
+/// A test that takes a picture of the shell before something happens and
 /// another after compares the thing it did, not the minute the bar's clock
 /// turned over in between. Hold the clock and the bar shows the same date and
 /// time in both pictures.

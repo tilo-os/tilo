@@ -1960,7 +1960,7 @@ impl Compositor {
     }
 
     /// The identifier the mapped window whose [`WindowInfo::id`] is `id` can be captured under, as
-    /// [`Self::shareable_windows`] lists it: what the session shares the window a desk's tab holds
+    /// [`Self::shareable_windows`] lists it: what the session shares the window a shell's tab holds
     /// by. `None` for a window that is not mapped or cannot be captured.
     #[must_use]
     pub fn shareable_window_of(&self, id: u64) -> Option<String> {
@@ -2071,7 +2071,7 @@ impl Compositor {
         }
         let mut drew = false;
         // The hosted surfaces' own frames (their layout and scene) are this tick's
-        // `hosts_us`: the session's desk is drawn here, before the submit.
+        // `hosts_us`: the session's shell is drawn here, before the submit.
         let hosting = Instant::now();
         // The displays hold each frame for this long: a surface whose content only moves draws one
         // frame per one of these, so what the person sees runs at the screens' rate rather than at

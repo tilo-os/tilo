@@ -8,7 +8,7 @@
 //! session the device already holds with the host, and shows what it answers.
 //!
 //! The answer comes over the wire, so a query asks and returns at once; the answer is kept for
-//! that query, wakes the desk, and the next pass lists it ([`Source::poll`]). A host that has not
+//! that query, wakes the shell, and the next pass lists it ([`Source::poll`]). A host that has not
 //! answered within [`PATIENCE`] is no longer waited for: the search ends with the rows the other
 //! sources brought, and this source says nothing.
 
@@ -41,7 +41,7 @@ pub struct HostSearch {
     search: Arc<dyn ResourceSearch>,
     caller: Caller,
     workspace: String,
-    /// What asks the device's desk for the pass that lists an answer.
+    /// What asks the device's shell for the pass that lists an answer.
     wake: Arc<dyn Fn() + Send + Sync>,
     asked: Arc<Mutex<Asked>>,
 }
@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(
             woken.load(std::sync::atomic::Ordering::SeqCst),
             1,
-            "the answer wakes the desk"
+            "the answer wakes the shell"
         );
         assert!(source.poll(), "the answer came");
         assert!(!source.waiting());

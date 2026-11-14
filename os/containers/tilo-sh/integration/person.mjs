@@ -16,7 +16,7 @@
 //   --window NAME --type TEXT
 //                   after following the invitation, a window of the
 //                   workspace another device hosts (a Linux app in the
-//                   workspace's VM) appears on their desk, as a tile whose
+//                   workspace's VM) appears on their shell, as a tile whose
 //                   accessible name matches NAME (a case-blind pattern); they
 //                   click it and type TEXT, then Enter, key by key as a
 //                   keyboard sends it. report.window says when it appeared,
@@ -24,16 +24,16 @@
 //                   (keyToFrameMs), and a picture of it is kept as
 //                   window.png;
 //   --page NAME --changes N
-//                   after following the invitation, the desk tile whose
+//                   after following the invitation, the shell tile whose
 //                   accessible name matches NAME (the hosted Browser window)
 //                   is the page of a window another device draws, and they
-//                   watch it: a line `{"desk": …}` says when the page is drawn
+//                   watch it: a line `{"shell": …}` says when the page is drawn
 //                   there and how much of the tile is content rather than
 //                   background, and every N pictures that differ from the one
 //                   before are kept as page-<n>.png and said in a line of their
 //                   own, with the milliseconds since the last one. That is how
 //                   a check holds the person to seeing the agent's work on
-//                   their desk while it happens;
+//                   their shell while it happens;
 //   --passkey       they keep themselves with a passkey (a virtual
 //                   authenticator, as a platform one answers), the browser
 //                   then forgets the site, and they sign in again with that
@@ -278,7 +278,7 @@ const press = async ({code, key, shift = false}, text = key) => {
 };
 
 // A picture of a window's box, as the PNG the browser writes it: what the
-// person looking at their desk sees of it. The pixels are read back so that
+// person looking at their shell sees of it. The pixels are read back so that
 // two pictures can be compared by what changed in them, not by whether the
 // file's bytes differ — a caret blinking is not the page changing.
 const pixelsOf = png => {
@@ -393,9 +393,9 @@ if (windowName || pageName) {
       && pattern.test(String(node.name?.value ?? '')));
     if (!found) await sleep(250);
   }
-  if (!found) await finish(1, `no window named like /${name}/i appeared on the desk in 180 s (it reads: ${await text()})`);
+  if (!found) await finish(1, `no window named like /${name}/i appeared on the shell in 180 s (it reads: ${await text()})`);
   report.window = {name: found.name?.value, role: found.role?.value, appearedMs: Date.now() - waiting};
-  console.error(`ok: the window ${JSON.stringify(report.window.name)} is on the desk after ${report.window.appearedMs} ms`);
+  console.error(`ok: the window ${JSON.stringify(report.window.name)} is on the shell after ${report.window.appearedMs} ms`);
   const {result: box} = await tab.send('DOM.getBoxModel', {backendNodeId: found.backendDOMNodeId});
   const quad = box?.model?.content ?? [];
   if (quad.length < 8) await finish(1, `the window ${JSON.stringify(report.window.name)} has no box on the page to click`);
@@ -464,15 +464,15 @@ if (pageName) {
     if (picture?.width && contentShare(picture) >= 0.02) drawn = picture;
     else await sleep(250);
   }
-  if (!drawn) await finish(1, `the page on the desk is still the arriving card after 120 s (it reads: ${await text()})`);
-  writeFileSync(join(out, 'page-desk.png'), Buffer.from(await shot(), 'base64'));
+  if (!drawn) await finish(1, `the page on the shell is still the arriving card after 120 s (it reads: ${await text()})`);
+  writeFileSync(join(out, 'page-shell.png'), Buffer.from(await shot(), 'base64'));
   const said = {name: report.window.name, appearedMs: report.window.appearedMs,
     drawnMs: Date.now() - lookFrom, content: Number(contentShare(drawn).toFixed(4))};
-  report.desk = said;
+  report.shell = said;
   // A line of its own, before the run ends: the check goes on to have the
   // agent work the page while the person watches, and reads these as they come.
-  process.stdout.write(`${JSON.stringify({desk: said})}\n`);
-  console.error(`ok: the page is drawn on the desk after ${said.drawnMs} ms, ${(said.content * 100).toFixed(1)}% of the tile its content`);
+  process.stdout.write(`${JSON.stringify({shell: said})}\n`);
+  console.error(`ok: the page is drawn on the shell after ${said.drawnMs} ms, ${(said.content * 100).toFixed(1)}% of the tile its content`);
   // Every picture that differs from the one before is the page changing
   // under their eyes. A caret blinking moves a few pixels; the agent filling
   // a field or a page showing its receipt moves many.
@@ -494,7 +494,7 @@ if (pageName) {
       writeFileSync(join(out, `page-${changed}.png`), Buffer.from(kept, 'base64'));
       const one = {n: changed, ms: Date.now() - at, moved, picture: join(out, `page-${changed}.png`)};
       at = Date.now();
-      console.error(`ok: the page on the desk changed ${moved} pixels, ${one.ms} ms after the change before`);
+      console.error(`ok: the page on the shell changed ${moved} pixels, ${one.ms} ms after the change before`);
       report.changes = [...(report.changes ?? []), one];
       process.stdout.write(`${JSON.stringify({change: one})}\n`);
       continue;
@@ -502,7 +502,7 @@ if (pageName) {
     await sleep(150);
   }
   if (changed < changes && !existsSync(join(out, 'stop'))) {
-    await finish(1, `the page on the desk changed ${changed} times of the ${changes} the check waits for`);
+    await finish(1, `the page on the shell changed ${changed} times of the ${changes} the check waits for`);
   }
 }
 

@@ -6,7 +6,7 @@ is an error: the caller is told, the person is refused or notified, or the
 failure is logged with enough context to act on. When it is thrown away
 instead, the failure looks like an absent value or a default, and whatever
 depended on it silently does nothing -- a shell whose restore failed to open
-looked like an empty desk, a join sheet dropped a site it could not read, a
+looked like an empty shell, a join sheet dropped a site it could not read, a
 broker's empty delta went out as success.
 
 This check finds, in the production sources of the crates listed in
@@ -33,7 +33,7 @@ This check finds, in the production sources of the crates listed in
 A failure that is genuinely fine to drop says why in code, in the call that
 keeps it::
 
-    let _ = ignored!("the receiver of a broadcast is gone when no desk listens", queue.send(part));
+    let _ = ignored!("the receiver of a broadcast is gone when no shell listens", queue.send(part));
 
 `tilo_failure::ignored!` is the expression it wraps, and its first argument is
 the reason: a sentence a reader can check. A bare marker, or a word or two,

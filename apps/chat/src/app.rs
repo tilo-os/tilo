@@ -439,7 +439,7 @@ pub struct ChatApp {
     // [`crate::record`].
     pub(crate) dispatch: Option<ui::framework::Dispatcher<crate::resource::Chat>>,
     /// Chat's `send`, as the window publishes it: the action the composer's
-    /// send button runs, and the one an agent's send and the desk's send-to
+    /// send button runs, and the one an agent's send and the shell's send-to
     /// box run. The button is where it lands, so a marker drawn for anyone
     /// sending rests there.
     pub(crate) send_action: Option<ui::tilo_actions::ActionAddress>,
@@ -907,7 +907,7 @@ impl ChatApp {
     /// Show the running call as the shell's live activity, and ask it once
     /// per call to draw the call as a card of the app's own: the activity is
     /// what the bar's pill reads, and the card's body is the live call while
-    /// the shell shows it over the desk.
+    /// the shell shows it over the background.
     fn publish_call(&mut self) {
         // Who the call is with leads, never the channel's slug, and the run
         // time is the value beside it.
@@ -1184,7 +1184,7 @@ impl ChatApp {
 
     /// Take the resource the window publishes its actions on: the composer's
     /// send button is where Chat's `send` lands, so a person's press, an
-    /// agent's send and the desk's send-to box are one action at one control.
+    /// agent's send and the shell's send-to box are one action at one control.
     pub(crate) fn with_send_action(
         mut self,
         actions: &ui::framework::Actions<crate::resource::Chat>,
@@ -2741,7 +2741,7 @@ impl ChatApp {
         presence: &PresenceCtx,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        // Over the desk the shell places the card, so the call is drawn as
+        // Over the background the shell places the card, so the call is drawn as
         // one: who is in it and for how long, how it is connected, and what
         // the person does from there. In its own window it stays the huddle.
         let card = matches!(

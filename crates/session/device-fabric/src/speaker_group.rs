@@ -13,7 +13,7 @@
 //!
 //! Calibration may listen with the microphones of any of the person's
 //! devices, not only the leader's. Each such device asks its own user once
-//! ("Let the desk use this microphone to calibrate 'Living room'?") and, on
+//! ("Let the shell use this microphone to calibrate 'Living room'?") and, on
 //! approval, authors a [`SpeakerListener`] in its own snapshot, bound to the
 //! group, its leader and that one microphone.
 //!
@@ -767,11 +767,11 @@ mod tests {
         SpeakerGroup {
             id: SpeakerGroupId([7; 16]),
             name: "Living room".into(),
-            leader: id("desk"),
+            leader: id("tower"),
             members,
             stamp: FabricStamp {
                 counter: 1,
-                device: id("desk"),
+                device: id("tower"),
             },
         }
     }
@@ -781,8 +781,8 @@ mod tests {
 
     #[test]
     fn a_stereo_pair_across_two_devices_is_valid_and_includes_the_leader() {
-        let pair = group(vec![member("desk", LEFT), member("shelf", RIGHT)]);
-        assert_eq!(pair.validate(&id("desk")), Ok(()));
+        let pair = group(vec![member("tower", LEFT), member("shelf", RIGHT)]);
+        assert_eq!(pair.validate(&id("tower")), Ok(()));
         assert_eq!(
             pair.channel_roles(),
             vec![ChannelRole::Left, ChannelRole::Right]
@@ -792,16 +792,16 @@ mod tests {
     #[test]
     fn roles_must_be_unique_and_complete() {
         for members in [
-            vec![member("desk", LEFT), member("shelf", LEFT)],
-            vec![member("desk", LEFT)],
+            vec![member("tower", LEFT), member("shelf", LEFT)],
+            vec![member("tower", LEFT)],
             vec![
-                member("desk", LEFT),
+                member("tower", LEFT),
                 member("shelf", RIGHT),
                 member("tv", SpeakerRole::Surround(SurroundChannel::SurroundLeft)),
             ],
             vec![member("tv", SpeakerRole::Surround(SurroundChannel::Center))],
             vec![
-                member("desk", LEFT),
+                member("tower", LEFT),
                 member("shelf", RIGHT),
                 member(
                     "tv",
@@ -814,7 +814,7 @@ mod tests {
             ],
         ] {
             assert_eq!(
-                group(members.clone()).validate(&id("desk")),
+                group(members.clone()).validate(&id("tower")),
                 Err(FabricError::InvalidSpeakerGroup),
                 "{members:?}"
             );
@@ -826,30 +826,33 @@ mod tests {
     #[test]
     fn a_pair_is_valid_only_from_its_leader_with_an_output_for_each_role() {
         let right_on = |output: EndpointSelector| {
-            let mut right = member("desk", RIGHT);
+            let mut right = member("tower", RIGHT);
             right.output = output;
             right
         };
         let rows = [
             (
                 "only_the_leader_authors_its_group",
-                vec![member("desk", LEFT), member("shelf", RIGHT)],
+                vec![member("tower", LEFT), member("shelf", RIGHT)],
                 "shelf",
                 Err(FabricError::ForeignAuthorship),
             ),
             (
                 "one_output_cannot_play_two_roles",
-                vec![member("desk", LEFT), right_on(member("desk", LEFT).output)],
-                "desk",
+                vec![
+                    member("tower", LEFT),
+                    right_on(member("tower", LEFT).output),
+                ],
+                "tower",
                 Err(FabricError::InvalidSpeakerGroup),
             ),
             (
                 "two_outputs_on_one_device_can_form_a_pair",
                 vec![
-                    member("desk", LEFT),
-                    right_on(EndpointSelector::mint(&id("desk"), "bluez_output.speaker")),
+                    member("tower", LEFT),
+                    right_on(EndpointSelector::mint(&id("tower"), "bluez_output.speaker")),
                 ],
-                "desk",
+                "tower",
                 Ok(()),
             ),
         ];
@@ -869,7 +872,7 @@ mod tests {
             member("e", surround(SurroundChannel::SurroundLeft)),
             member("f", surround(SurroundChannel::SurroundRight)),
         ]);
-        assert_eq!(set.validate(&id("desk")), Ok(()));
+        assert_eq!(set.validate(&id("tower")), Ok(()));
         assert_eq!(
             set.channel_roles(),
             vec![
@@ -897,7 +900,7 @@ mod tests {
             member("b", point(1_500)),
             member("c", point(0)),
         ]);
-        assert_eq!(spread.validate(&id("desk")), Ok(()));
+        assert_eq!(spread.validate(&id("tower")), Ok(()));
         assert_eq!(
             spread.channel_roles(),
             vec![ChannelRole::Left, ChannelRole::Right, ChannelRole::Mono]
@@ -919,11 +922,11 @@ mod tests {
             })
         };
         assert_eq!(
-            group(vec![member("a", at(10)), member("b", at(10))]).validate(&id("desk")),
+            group(vec![member("a", at(10)), member("b", at(10))]).validate(&id("tower")),
             Err(FabricError::InvalidSpeakerGroup)
         );
         assert_eq!(
-            group(vec![member("a", at(MAX_ROOM_COORDINATE_MM + 1))]).validate(&id("desk")),
+            group(vec![member("a", at(MAX_ROOM_COORDINATE_MM + 1))]).validate(&id("tower")),
             Err(FabricError::InvalidSpeakerGroup)
         );
     }
@@ -931,10 +934,10 @@ mod tests {
     #[test]
     fn names_are_bounded_and_trimmed() {
         for name in ["", "  padded ", "tab\there", &"x".repeat(65)] {
-            let mut named = group(vec![member("desk", LEFT), member("shelf", RIGHT)]);
+            let mut named = group(vec![member("tower", LEFT), member("shelf", RIGHT)]);
             named.name = name.into();
             assert_eq!(
-                named.validate(&id("desk")),
+                named.validate(&id("tower")),
                 Err(FabricError::InvalidSpeakerGroup),
                 "{name:?}"
             );
@@ -976,11 +979,11 @@ mod tests {
 
     #[test]
     fn membership_covers_only_the_exact_group_output_and_role() {
-        let pair = group(vec![member("desk", LEFT), member("shelf", RIGHT)]);
+        let pair = group(vec![member("tower", LEFT), member("shelf", RIGHT)]);
         let right = pair.member(&id("shelf")).unwrap();
         let consent = SpeakerMembership {
             group: pair.id,
-            leader: id("desk"),
+            leader: id("tower"),
             output: right.output,
             role: RIGHT,
             stamp: FabricStamp {
@@ -998,7 +1001,7 @@ mod tests {
         elsewhere.leader = id("phone");
         assert!(!consent.covers(&elsewhere, right));
         assert_eq!(
-            consent.validate(&id("desk")),
+            consent.validate(&id("tower")),
             Err(FabricError::ForeignAuthorship)
         );
     }
@@ -1006,8 +1009,8 @@ mod tests {
     #[test]
     fn selectors_are_stable_per_device_and_disclose_nothing() {
         let name = "alsa_output.pci-0000_66_00.6.analog-stereo";
-        let a = EndpointSelector::mint(&id("desk"), name);
-        assert_eq!(a, EndpointSelector::mint(&id("desk"), name));
+        let a = EndpointSelector::mint(&id("tower"), name);
+        assert_eq!(a, EndpointSelector::mint(&id("tower"), name));
         assert_ne!(a, EndpointSelector::mint(&id("shelf"), name));
         assert!(!a.to_hex().contains("alsa"));
         assert_eq!(EndpointSelector::from_hex(&a.to_hex()), Some(a));

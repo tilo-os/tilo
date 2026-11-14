@@ -277,7 +277,7 @@ async fn device_host(root: &SigningKey) -> Box_ {
     if held {
         tokio::time::resume();
     }
-    let made = host.workspaces().create("Desk").await.unwrap();
+    let made = host.workspaces().create("Shell").await.unwrap();
     let store = PersonalStore::open(
         root.verifying_key().to_bytes(),
         cert.clone(),

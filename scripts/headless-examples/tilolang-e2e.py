@@ -525,8 +525,8 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
     session.control({"op": "key", "key": "Enter"})
     until("the second task in both of Tasks' windows", lambda: (lambda now: now if all(
         a != b for a, b in zip(now, after)) else None)(shot("next")), 30, 1.0)
-    # What each window offers by name, listed while it is the one in front: the desk names the
-    # controls of the window an app drew, so a window whose instance is not a tab of the desk's
+    # What each window offers by name, listed while it is the one in front: the shell names the
+    # controls of the window an app drew, so a window whose instance is not a tab of the shell's
     # names nothing of its content at all.
     typed = ["Water the plants", "Call the plumber"]
     listed = {}
@@ -631,15 +631,15 @@ def check_record_open(session: Session, out: Path) -> dict:
 
 
 def window_of(session: Session, app: str, title: str | None = None) -> dict:
-    """The first window of `app` on the desk, the one titled `title` when given; a failure that
-    names the windows the desk holds instead."""
+    """The first window of `app` on the shell, the one titled `title` when given; a failure that
+    names the windows the shell holds instead."""
     shown = session.windows()
     found = next((w for w in shown if w.get("app_id") == app
                   and (title is None or w.get("title") == title)), None)
     if found is None:
         held = [(w.get("app_id"), w.get("title")) for w in shown]
         raise Failed(f"no window of {app}" + (f" titled {title!r}" if title else "")
-                     + f" on the desk, which holds {held!r}")
+                     + f" on the shell, which holds {held!r}")
     return found
 
 
@@ -668,9 +668,9 @@ def check_places(session: Session, out: Path) -> dict:
 
 
 def drawn_window(session: Session, tab) -> dict | None:
-    """The desk's row of the window `tab` once the session says the window is drawn: the
+    """The shell's row of the window `tab` once the session says the window is drawn: the
     compositor placed it on a display (`rect`) and its client committed a frame (`frames`). A
-    tab is on the desk as soon as its app opened the window, and the compositor maps the window
+    tab is on the shell as soon as its app opened the window, and the compositor maps the window
     when its first buffer arrives, so a row whose `rect` is null is a window nothing has drawn
     yet. A tool reads a window once the session reports it drawn, never on a timer's guess."""
     row = next((shown for shown in session.windows() if shown.get("tab") == tab), None)
@@ -680,13 +680,13 @@ def drawn_window(session: Session, tab) -> dict | None:
 
 
 def window_controls(session: Session, window: dict) -> list[str]:
-    """The controls the desk names in `window`, with the window in front: what its app drew of its
+    """The controls the shell names in `window`, with the window in front: what its app drew of its
     own content — its rows, its lists — named where the window stands."""
     focus(session, window)
     until(f"window {window['tab']} in front", lambda: any(
         shown.get("tab") == window["tab"] and shown.get("active")
         for shown in session.windows()), 30)
-    drawn = until(f"window {window['tab']} drawn on the desk to be read",
+    drawn = until(f"window {window['tab']} drawn on the shell to be read",
                   lambda: drawn_window(session, window["tab"]), 30)
     x, y, width, height = drawn["rect"]
     return [target["name"] for target in session.targets()
@@ -698,7 +698,7 @@ def today_shown(session: Session, out: Path, name: str) -> bytes:
     today = app_id("today")
     window = window_of(session, today)
     focus(session, window)
-    until(f"window {window['tab']} drawn on the desk to be read",
+    until(f"window {window['tab']} drawn on the shell to be read",
           lambda: drawn_window(session, window["tab"]), 30)
     # The frame that shows the window in front, drawn before its picture is taken.
     time.sleep(1.0)
@@ -715,7 +715,7 @@ def hold_today(session: Session, out: Path, held: list[bytes]) -> dict:
 
 
 def named(session: Session) -> list[str]:
-    """The controls the desk names now, by the names a tool presses them by."""
+    """The controls the shell names now, by the names a tool presses them by."""
     return [target["name"] for target in session.targets()]
 
 
@@ -771,7 +771,7 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
                 raise Failed(f"{title!r} left Tasks without the note Morning cleanup files")
         if note in named(session):
             raise Failed("the note is named without the change it describes")
-    # What the person sees of it, as the pictures the desk drew before and after.
+    # What the person sees of it, as the pictures the shell drew before and after.
     after = today_shown(session, out, "after")
     width = 4  # a snapshot holds RGBA pixels
     moved = sum(1 for i in range(0, min(len(after), len(before)), width)
@@ -941,7 +941,7 @@ def doing(session: Session, name: str, declared: str) -> str:
 
 
 def focus(session: Session, window: dict) -> None:
-    """Bring the tab of `window` to the front, as the desk's own verb does."""
+    """Bring the tab of `window` to the front, as the shell's own verb does."""
     session.invoke("so.tilo.session", f"{SHELL_RESOURCE}\u001ffocus", {"tab": str(window["tab"])})
 
 
@@ -1066,7 +1066,7 @@ def log_lines(session: Session, pattern: str) -> list[dict]:
 
 
 def check_hosted_here(session: Session, windows: dict, out: Path) -> dict:
-    """The session's own workspace is hosted by this device: this device holds it (the desk's
+    """The session's own workspace is hosted by this device: this device holds it (the shell's
     dump names it among the workspaces kept here, not as a replica still on its way from
     another device), so its apps wait on no host and each shows its own state at once."""
     state = session.state_dump()
@@ -1119,7 +1119,7 @@ def probe_packages(state: Path, out: Path) -> list[Path]:
 
 
 def open_probes(session: Session) -> None:
-    """The probe packages up, each with a window: one the desk already shows is left to it (a
+    """The probe packages up, each with a window: one the shell already shows is left to it (a
     workspace's record says what was open in it), the rest opened as a person opens an app."""
     def up():
         windows = {window.get("app_id") for window in session.windows()}
@@ -1190,8 +1190,8 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         ("native", lambda: check_native(session, out)),
         ("activation", lambda: check_activation(session)),
         ("read", lambda: check_read(session)),
-        # Before the checks that type into the desk: every app's threads are held to sleeping
-        # on a desk no other check has just touched.
+        # Before the checks that type into the shell: every app's threads are held to sleeping
+        # on a shell no other check has just touched.
         ("idle", lambda: check_idle(session, summary["checks"]["processes"], pid)),
         ("today-before", lambda: hold_today(session, out, today_before)),
         ("windows", lambda: check_windows(session, summary["checks"]["processes"], pid, out)),

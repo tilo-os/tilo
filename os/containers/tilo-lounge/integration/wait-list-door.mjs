@@ -11,7 +11,7 @@
 import {mkdirSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, pinnedCertificates, servedCertificate, sleep} from '../../../../tools/web/chrome.mjs';
-import {stepLimit, deskMetrics} from './waits.mjs';
+import {stepLimit, shellMetrics} from './waits.mjs';
 
 const [site, relay, mailDir, out, before] = process.argv.slice(2);
 if (!site || !relay || !mailDir || !out) {
@@ -35,7 +35,7 @@ const browser = await launch({args: [
 // page opens on its first screen unless the door takes its place.
 const tab = await browser.tab({firstRun: true});
 await tab.send('Page.enable', {});
-await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics);
+await tab.send('Emulation.setDeviceMetricsOverride', shellMetrics);
 
 const failures = () => tab.log.filter(line => /^(EXC|ERROR) /.test(line) || /panic/i.test(line));
 // The first screen of a first visit (`#first-run` in the entry page) stays in
@@ -91,7 +91,7 @@ const until = async (expression, what, timeout = stepLimit(4)) => {
 // own, so neither visit sees the other's storage.
 if (before) {
   const was = await browser.tab({firstRun: true});
-  await was.send('Emulation.setDeviceMetricsOverride', deskMetrics);
+  await was.send('Emulation.setDeviceMetricsOverride', shellMetrics);
   await was.navigate(before);
   for (let tries = 0; tries < 240; tries += 1) {
     const shown = await was.evaluate(firstScreenShown).catch(() => false);
@@ -193,7 +193,7 @@ if (phoneShot) writeFileSync(join(out, '4-phone-german.png'), phoneShot);
 console.log(`ok: a phone in German (${report.phone?.heading})`);
 await phone.close().catch(() => {});
 
-// 6. Nothing behind the door opened: no membership, no desk.
+// 6. Nothing behind the door opened: no membership, no shell.
 report.memberships = await tab.evaluate(`globalThis.localStorage?.getItem('tilo-host-memberships') ?? null`);
 report.arrival = await tab.evaluate(`document.documentElement.dataset.arrival`);
 if (report.memberships) await finish(1, `a stranger at the wait list was let into the workspace: ${report.memberships}`);

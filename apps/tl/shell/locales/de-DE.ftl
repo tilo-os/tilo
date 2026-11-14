@@ -1003,7 +1003,7 @@ d-ukun4zmh = Auf der Fläche gefragt
 
 d-dgtjjxex = Menü der Person
     .w-you = Du
-    .w-desk-style-and-workspaces = { $me }: Schreibtischstil und Arbeitsbereiche
+    .w-style-and-workspaces = { $me }: Stil und Arbeitsbereiche
     .w-settings-for = Einstellungen für { $style_title }
     .w-new-workspace = Neuer Arbeitsbereich
     .w-workspaces = Arbeitsbereiche

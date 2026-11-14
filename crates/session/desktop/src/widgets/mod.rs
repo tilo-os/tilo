@@ -49,8 +49,8 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use ui::desk_widgets::{DeskWidgetPrefs, ShowMode, WidgetId};
 use ui::time::{Duration, Instant};
+use ui::widgets::{ShowMode, WidgetId, WidgetsPrefs};
 use vello::kurbo::{Point, Rect};
 
 /// Whether a shell card is open, and the keys asking it to fold.
@@ -139,7 +139,7 @@ pub struct Slot {
 #[derive(Clone, Copy, Debug)]
 pub struct Context<'a> {
     pub now: Instant,
-    pub prefs: &'a DeskWidgetPrefs,
+    pub prefs: &'a WidgetsPrefs,
     /// The active strip, for [`ShowMode::Always`].
     pub strip: Option<u64>,
     /// The whole Super surface is up: every widget with content is open.
@@ -444,7 +444,7 @@ mod tests {
 
     struct Rig {
         board: WidgetBoard,
-        prefs: DeskWidgetPrefs,
+        prefs: WidgetsPrefs,
         slots: Vec<Slot>,
         engaged: Option<WidgetId>,
         super_surface: bool,
@@ -456,7 +456,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 board: WidgetBoard::default(),
-                prefs: DeskWidgetPrefs::default(),
+                prefs: WidgetsPrefs::default(),
                 slots: slots(),
                 engaged: None,
                 super_surface: false,

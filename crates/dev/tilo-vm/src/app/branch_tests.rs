@@ -789,8 +789,8 @@ fn taken_in(vm: &str) -> Guest {
         slots: BTreeMap::from([(
             "me".to_owned(),
             Some(vec![Held {
-                workspace: "workspace-desk".into(),
-                name: "Desk".into(),
+                workspace: "workspace-shell".into(),
+                name: "Shell".into(),
                 host: "dev".into(),
                 hosted_here: vm == "dev",
                 awaiting: false,
@@ -970,7 +970,7 @@ tilo_test_env::scenario! {
         assert!(
             error
                 .to_string()
-                .contains("a: Desk (slot me) has not taken it in yet"),
+                .contains("a: Shell (slot me) has not taken it in yet"),
             "{error}"
         );
         assert!(
@@ -1105,15 +1105,15 @@ tilo_test_env::scenario! {
     phase a_sessions_workspace_hosts_say_who_hosts_them_and_whether_they_wait;
     {
         let answer = json!({"answer": {"workspaces": [
-            {"workspace": "workspace-desk", "name": "Desk", "host": "dev", "hosted_here": false, "awaiting_host": true},
+            {"workspace": "workspace-shell", "name": "Shell", "host": "dev", "hosted_here": false, "awaiting_host": true},
             {"workspace": "workspace-old", "name": ""},
         ]}});
         assert_eq!(
             branch_admit::held_of(&answer),
             [
                 Held {
-                    workspace: "workspace-desk".into(),
-                    name: "Desk".into(),
+                    workspace: "workspace-shell".into(),
+                    name: "Shell".into(),
                     host: "dev".into(),
                     hosted_here: false,
                     awaiting: true

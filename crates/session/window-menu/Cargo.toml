@@ -1,6 +1,6 @@
 [package]
 name = "tilo-window-menu"
-description = "The menu of the window in front as a view of the session's window-menu resource: the rows the desk offers, drawn as a context menu, and the verbs that open, close and choose from it."
+description = "The menu of the window in front as a view of the session's window-menu resource: the rows the shell offers, drawn as a context menu, and the verbs that open, close and choose from it."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true

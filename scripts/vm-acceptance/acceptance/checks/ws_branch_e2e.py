@@ -2,14 +2,14 @@
 
 A person sets a workspace up the way they work in it: a note, files (a question, a tool in
 `~/.local/bin`, a git checkout where the environment has git, and a few hundred megabytes of
-data), a Terminal environment, windows on its desk. They branch it per research question or per
-customer: through the desk's `workspace.branch` (twice) and `tilo workspace branch` (once). A
+data), a Terminal environment, windows on its shell. They branch it per research question or per
+customer: through the shell's `workspace.branch` (twice) and `tilo workspace branch` (once). A
 branch starts as a copy of everything but the people: its owner is its only member, and the
 source's chat stays behind. From then on the branches and their source change apart: an edit in
 one (a note, a file, an environment) shows in no other, also after the session restarts. An
 agent started in a branch's environment works in that branch alone.
 
-Everything goes through the production paths, as `agents_e2e` does: the desk's own actions
+Everything goes through the production paths, as `agents_e2e` does: the shell's own actions
 (`new-workspace`, `switch-workspace`, `workspace.branch`), the apps' own actions (Notes'
 `new-note` and `read`, Terminal's `create-environment`, `open-in`, `run`, `read`), the person's
 `tilo` command, the sheet's own answers, and a scripted MCP client configured as Claude Code
@@ -38,7 +38,7 @@ from ..vm import VmError, wait_until
 from . import agents_e2e as ae
 
 AREA = "ws-branch-e2e"
-# The person's workspace, and the branches they make of it: two through the desk's action, one
+# The person's workspace, and the branches they make of it: two through the shell's action, one
 # through `tilo workspace branch`.
 SOURCE = "Research"
 BRANCHES = ("Question A", "Question B")
@@ -55,14 +55,14 @@ SMALL_FILES = 400
 SMALL_KB = 64
 # How long a branch of that may take before the check gives up on it.
 BRANCH_S = 600
-# How long one answer of the desk may take while a branch runs before the branch blocks the desk:
-# this many seconds, or four times the slowest answer just before it. A desk the copy held would
+# How long one answer of the shell may take while a branch runs before the branch blocks the shell:
+# this many seconds, or four times the slowest answer just before it. A shell the copy held would
 # not answer for as long as the copy runs, a minute and more; the busy VM, drawing in software
 # beside the copy, answers a state dump in 0.3-1 s and now and then in 3-4 s.
-DESK_STALL_S = 5.0
+SHELL_STALL_S = 5.0
 # How long an app may take to open a window while the box is busy copying and drawing in software.
 TERMINAL_S = 120
-# The desk's own Branch workspace entry, as the person reads it, and the action's names.
+# The shell's own Branch workspace entry, as the person reads it, and the action's names.
 BRANCH_ENTRY = "Branch workspace"
 WORKSPACE_BRANCH = "workspace.branch"
 BRANCH_IDS = (WORKSPACE_BRANCH, "branch-workspace", "workspace-branch")
@@ -75,7 +75,7 @@ COMPOSER = "Message composer"
 APP_ROOMS = ".local/share/tilo-workspaces"
 
 
-# -- the desk ------------------------------------------------------------------------------
+# -- the shell ------------------------------------------------------------------------------
 
 
 def workspace_rows(state: dict) -> list[dict]:
@@ -86,8 +86,8 @@ def find_ws(state: dict, ws: dict) -> dict | None:
     return next((w for w in workspace_rows(state) if w["id"] == ws["id"]), None)
 
 
-def desk_apps(state: dict, ws: dict) -> list[str]:
-    """The apps of the windows on `ws`'s desk, sorted, a tab each."""
+def shell_apps(state: dict, ws: dict) -> list[str]:
+    """The apps of the windows on `ws`'s shell, sorted, a tab each."""
     row = find_ws(state, ws) or {}
     return sorted(str(core.tab_app(t)) for s in row.get("strips") or [] for g in s.get("window_groups") or []
                   for t in g.get("tabs") or [])
@@ -118,7 +118,7 @@ def ws_key(ws: dict, field: str) -> str:
 
 
 def branch_action(ctx) -> dict:
-    """The desk's `workspace.branch`, where `workspace.create` is published: its row."""
+    """The shell's `workspace.branch`, where `workspace.create` is published: its row."""
     def found():
         rows = [r for r in ctx.vm.actions("branch", programmatic=True)
                 if str(r.get("id", "")).split("\x1f")[-1] in BRANCH_IDS
@@ -128,7 +128,7 @@ def branch_action(ctx) -> dict:
     rows = wait_until(found, 20, interval=1.0)
     if not rows:
         ctx.write("WB02-branch-rows.json", json.dumps(ctx.vm.actions("branch", programmatic=True), indent=1))
-        raise CheckFailed(f"the desk publishes no {WORKSPACE_BRANCH}")
+        raise CheckFailed(f"the shell publishes no {WORKSPACE_BRANCH}")
     ctx.write("WB02-branch-action.json", json.dumps(rows, indent=1))
     return rows[0]
 
@@ -161,8 +161,8 @@ def by_answer(state: dict, answer: str, before: set) -> dict | None:
     return None
 
 
-class DeskProbe:
-    """How long the desk takes to answer, sampled while something else runs: a thread asks for
+class ShellProbe:
+    """How long the shell takes to answer, sampled while something else runs: a thread asks for
     the state dump back to back and keeps each answer's time."""
 
     def __init__(self, ctx):
@@ -190,7 +190,7 @@ class DeskProbe:
         self.thread.join(timeout=120)
 
 
-def desk_baseline(ctx, n: int = 10) -> list[float]:
+def shell_baseline(ctx, n: int = 10) -> list[float]:
     times = []
     for _ in range(n):
         started = time.monotonic()
@@ -227,7 +227,7 @@ def note_rows(ctx, operation: str) -> list[dict]:
 
 
 def ensure_notes(ctx, ws: dict) -> None:
-    """Notes open in `ws`, in front: the one the branch brought on its desk, else a new one."""
+    """Notes open in `ws`, in front: the one the branch brought on its shell, else a new one."""
     ae.select_workspace(ctx, ws)
     if wait_until(lambda: len(note_rows(ctx, "new-note")) == 1 or None, 10, interval=1.0):
         return
@@ -240,7 +240,7 @@ def ensure_notes(ctx, ws: dict) -> None:
             "| tail -n 80 | cut -c1-500", timeout=180, check=False)
         names = sorted({str(t.get("name")) for t in ctx.vm.targets() if "/" not in str(t.get("name"))})
         raise Unobservable(f"{ws.get('name')}: Notes in front offers no single new-note; it offers "
-                           f"{offered(ctx, ae.NOTES)}; the desk names {names[:60]}; what was said of Notes: "
+                           f"{offered(ctx, ae.NOTES)}; the shell names {names[:60]}; what was said of Notes: "
                            f"{everything[-9000:]}")
 
 
@@ -373,7 +373,7 @@ def runtime_environments(ctx, ws: dict) -> list[dict]:
 
 
 def terminal_in(ctx, ws: dict, label: str) -> ae.Terminal:
-    """A Terminal session in `ws`: one on its desk already (a branch's desk opens the source's
+    """A Terminal session in `ws`: one on its shell already (a branch's shell opens the source's
     windows again), else a Terminal the person opens there."""
     ae.select_workspace(ctx, ws)
 
@@ -492,7 +492,7 @@ class Problems(list):
 
 
 @check("WB01", AREA, "The person sets a workspace up: a note, files, a Terminal environment with a tool "
-                     "and a checkout in it, windows on its desk, a few hundred MB of data")
+                     "and a checkout in it, windows on its shell, a few hundred MB of data")
 def set_up(ctx, res):
     ctx.facts["wsb:why"] = "WB01 failed"
     ctx.reset()
@@ -510,7 +510,7 @@ def set_up(ctx, res):
     note = f"Sources {run}"
     new_note(ctx, ws, note)
     # The workspace's chat says something, which its branches leave behind; the person closes
-    # Chat again, so the desk keeps Notes and Terminal.
+    # Chat again, so the shell keeps Notes and Terminal.
     chat = f"Chat line {run}"
     problems = Problems()
     try:
@@ -566,8 +566,8 @@ fi
     problems.want(tree.endswith("/" + ws["tilo_workspace"]),
                   f"the workspace's tree {tree} is not named for {ws['tilo_workspace']}")
     state = ctx.state()
-    apps = desk_apps(state, ws)
-    problems.want(ae.NOTES in apps and ae.TERMINAL in apps, f"the desk of {ws['name']} shows {apps}")
+    apps = shell_apps(state, ws)
+    problems.want(ae.NOTES in apps and ae.TERMINAL in apps, f"the shell of {ws['name']} shows {apps}")
     size = tree_bytes(ctx, tree)
     ctx.record("ws_branch.source_mib", "MiB", [round(size / 2**20, 1)])
     # The branches are judged against this, whatever of the reading below goes wrong.
@@ -579,7 +579,7 @@ fi
         "git": facts.get("git", "absent"),
     }
     res.metrics.update(workspace={k: ws.get(k) for k in ("id", "name", "tilo_workspace", "tree", "record")},
-                       desk=apps, bytes=size, git=facts.get("git"))
+                       shell=apps, bytes=size, git=facts.get("git"))
     try:
         titles = note_titles(ctx, ws)
         res.metrics["notes"] = titles
@@ -604,33 +604,33 @@ fi
 
 
 def branch_by_action(ctx, source: dict, name: str, field: str) -> tuple[dict, dict]:
-    """Branch `source` into `name` through the desk's `workspace.branch`, as the person's desk
-    asks for it, timing it to the branch's data in its tree and sampling the desk meanwhile.
+    """Branch `source` into `name` through the shell's `workspace.branch`, as the person's shell
+    asks for it, timing it to the branch's data in its tree and sampling the shell meanwhile.
     The new workspace, and what was measured."""
     before = {w["id"] for w in workspace_rows(ctx.state())}
     row = branch_action(ctx)
     args = branch_args(row, str(source["id"]), name)
-    baseline = desk_baseline(ctx)
+    baseline = shell_baseline(ctx)
     started = time.monotonic()
-    with DeskProbe(ctx) as probe:
+    with ShellProbe(ctx) as probe:
         answer = ae.invoke(ctx, row["provider"], row["id"], args, confirmed=True,
                            name=f"branch-{name.split()[-1].lower()}", timeout=BRANCH_S)
         answered = time.monotonic() - started
         new_id = answered_id(answer)
         if new_id is None:
             raise CheckFailed(f"{WORKSPACE_BRANCH} answered no workspace id: {str(answer)[:300]}")
-        # The branch goes on the desk once what it holds is copied.
+        # The branch goes on the shell once what it holds is copied.
         made = wait_until(lambda: awake(ctx) and by_answer(ctx.state(), new_id, before), BRANCH_S, interval=0.5)
         if made is None:
-            raise CheckFailed(f"the desk shows no workspace {new_id} {WORKSPACE_BRANCH} answered")
+            raise CheckFailed(f"the shell shows no workspace {new_id} {WORKSPACE_BRANCH} answered")
         ctx.wait_state(lambda s: ae.held_here(s, made["id"]), 120, f"{name} held on this device")
         held = time.monotonic() - started
     return made, {"answered_s": round(answered, 2), "held_s": round(held, 2), "answer": answer,
-                  "desk_baseline_s": baseline, "desk_during_s": probe.times, "desk_errors": probe.errors}
+                  "shell_baseline_s": baseline, "shell_during_s": probe.times, "shell_errors": probe.errors}
 
 
 def branch_said(ctx, name: str, workspace: str) -> dict:
-    """What the desk told the person when the branch `name` was made ("<name> is ready", or "<name>
+    """What the shell told the person when the branch `name` was made ("<name> is ready", or "<name>
     is not complete" with what did not come along), as its notifications name it, and what the
     runtime that keeps the environments recorded of the branch into `workspace`."""
     def told():
@@ -647,7 +647,7 @@ def branch_said(ctx, name: str, workspace: str) -> dict:
                         check=False)
     shown = []
     if any("is not complete" in n for n in notices):
-        # The desk's notices, as its state says them: the one about this branch, its body
+        # The shell's notices, as its state says them: the one about this branch, its body
         # naming what did not come along.
         try:
             toasts = (ctx.state().get("chrome") or {}).get("notifications") or []
@@ -655,7 +655,7 @@ def branch_said(ctx, name: str, workspace: str) -> dict:
             toasts = []
         shown += [json.dumps(t)[:1500] for t in toasts if name in json.dumps(t)][-3:]
         # The notice's body lists what did not come along, one part a line ("<record> of <app>:
-        # <why>", "… did not reach this device"), where the desk shows it.
+        # <why>", "… did not reach this device"), where the shell shows it.
         shown += sorted({str(t.get("name")) for t in ctx.vm.targets()
                         if re.search(r" of [a-z0-9-]+\.[a-z0-9.-]+|did not reach|keys|could not|this device",
                                      str(t.get("name", "")))})[:20]
@@ -678,31 +678,31 @@ def branch_by_cli(ctx, source: dict, name: str, field: str) -> tuple[dict, dict]
     if status != "0":
         raise CheckFailed(f"`tilo workspace branch` exited {status}: {out[-600:]}")
     text = out.rsplit("E2E-STATUS", 1)[0].strip()
-    # The branch goes on the desk once what it holds is copied; the command says its id at once.
+    # The branch goes on the shell once what it holds is copied; the command says its id at once.
     made = wait_until(lambda: awake(ctx) and next((w for w in workspace_rows(ctx.state())
                                     if w["id"] not in before and (w.get("name") == name or str(w.get("id")) in text)),
                                    None), BRANCH_S, interval=1.0)
     if made is None:
-        raise CheckFailed(f"`tilo workspace branch` said {text[-300:]!r}; the desk shows no workspace {name!r}")
+        raise CheckFailed(f"`tilo workspace branch` said {text[-300:]!r}; the shell shows no workspace {name!r}")
     ctx.wait_state(lambda s: ae.held_here(s, made["id"]), 120, f"{name} held on this device")
     named = [w for w in (str(made.get("id")),) if w in text]
     return made, {"seconds": seconds, "said": text[-300:], "names_it": bool(named)}
 
 
-@check("WB02", AREA, "The person branches the workspace twice through the desk's workspace.branch and once "
-                     "with `tilo workspace branch`; each branch is timed, and none blocks the desk")
+@check("WB02", AREA, "The person branches the workspace twice through the shell's workspace.branch and once "
+                     "with `tilo workspace branch`; each branch is timed, and none blocks the shell")
 def branch(ctx, res):
     scene = _scene(ctx)
     source, run, field = scene["source"], scene["run"], scene["field"]
     problems = Problems()
-    # The desk offers the person its Branch workspace entry.
+    # The shell offers the person its Branch workspace entry.
     entries = ctx.vm.actions("Branch")
     ctx.write("WB02-entries.json", json.dumps(entries, indent=1))
     # By its action, whatever words the catalogue gives its title ("Branch the workspace").
     offered = [r for r in entries if str(r.get("id", "")).endswith("branch-workspace")
                or str(r.get("title", "")).lower() in (BRANCH_ENTRY.lower(), "branch a workspace", "branch the workspace")]
     res.metrics["entry"] = [{k: r.get(k) for k in ("provider", "id", "title")} for r in offered][:5]
-    problems.want(bool(offered), f"the desk offers no {BRANCH_ENTRY!r} entry")
+    problems.want(bool(offered), f"the shell offers no {BRANCH_ENTRY!r} entry")
     branches, timings = [], {}
     for label in BRANCHES:
         name = f"{label} {run}"
@@ -719,23 +719,23 @@ def branch(ctx, res):
         made["tree"] = tree
         timing["said"] = branch_said(ctx, name, str(made.get("id")))
         problems.want(not timing["said"]["missing"], f"{name} is not complete: {timing['said']}")
-        during = timing["desk_during_s"]
-        timing["desk_max_s"] = max(during) if during else None
-        timing["desk_p50_s"] = statistics.median(during) if during else None
+        during = timing["shell_during_s"]
+        timing["shell_max_s"] = max(during) if during else None
+        timing["shell_p50_s"] = statistics.median(during) if during else None
         timings[label] = timing
         ctx.write(f"WB02-{label.split()[-1]}-timing.json", json.dumps(timing, indent=1, default=str))
         ctx.record("ws_branch.branch_s", "s", [timing["data_s"]], mib=round(scene["bytes"] / 2**20, 1))
-        ctx.record("ws_branch.desk_answer_max_s", "s", [timing["desk_max_s"] or 0])
+        ctx.record("ws_branch.shell_answer_max_s", "s", [timing["shell_max_s"] or 0])
         problems.want(whole, f"{name}'s tree {tree} holds {tree_count(ctx, tree, DATA_DIR)} of "
                              f"{scene['files']} data files {BRANCH_S} s after the branch")
         problems.want(made.get("name") == name, f"the branch is named {made.get('name')!r}, not {name!r}")
-        base = max(timing["desk_baseline_s"])
-        stalls = [t for t in during if t > max(DESK_STALL_S, 4 * base)]
-        problems.want(not stalls, f"branching {name} blocked the desk: {len(stalls)} of {len(during)} answers "
-                                  f"took over {max(DESK_STALL_S, 4 * base):.1f} s (longest {max(stalls or [0]):.1f} s, "
+        base = max(timing["shell_baseline_s"])
+        stalls = [t for t in during if t > max(SHELL_STALL_S, 4 * base)]
+        problems.want(not stalls, f"branching {name} blocked the shell: {len(stalls)} of {len(during)} answers "
+                                  f"took over {max(SHELL_STALL_S, 4 * base):.1f} s (longest {max(stalls or [0]):.1f} s, "
                                   f"{base:.2f} s before the branch)")
-        problems.want(not timing["desk_errors"], f"the desk did not answer while branching {name}: "
-                                                 f"{timing['desk_errors'][:3]}")
+        problems.want(not timing["shell_errors"], f"the shell did not answer while branching {name}: "
+                                                 f"{timing['shell_errors'][:3]}")
     name = f"{CLI_BRANCH} {run}"
     try:
         made, timing = branch_by_cli(ctx, source, name, field)
@@ -752,19 +752,19 @@ def branch(ctx, res):
     ids = [source["id"]] + [b["id"] for b in branches] + ([scene["cli_branch"]["id"]] if "cli_branch" in scene else [])
     problems.want(len(set(ids)) == len(ids), f"the branches are not workspaces of their own: {ids}")
     res.metrics["branches"] = [{k: b.get(k) for k in ("id", "name", "tree")} for b in branches]
-    res.metrics["timings"] = {k: {x: v for x, v in t.items() if x not in ("desk_during_s", "answer")}
+    res.metrics["timings"] = {k: {x: v for x, v in t.items() if x not in ("shell_during_s", "answer")}
                               for k, t in timings.items()}
     scene["branches"] = branches
     problems.judge()
 
 
 def members_of(ctx, ws: dict) -> dict:
-    """The workspace's owner and members, as its governance says and the desk projects it
+    """The workspace's owner and members, as its governance says and the shell projects it
     (`policy`: owner, members person to role)."""
     row = find_ws(ctx.state(), ws) or {}
     policy = row.get("policy")
     if not isinstance(policy, dict) or not isinstance(policy.get("members"), dict):
-        raise Unobservable(f"the desk projects no members of {ws.get('name')}: {str(policy)[:300]}")
+        raise Unobservable(f"the shell projects no members of {ws.get('name')}: {str(policy)[:300]}")
     return {"owner": policy.get("owner"), "members": sorted(policy["members"])}
 
 
@@ -790,7 +790,7 @@ def chat_dir(ctx, ws: dict) -> bool:
 
 def chat_says(ctx, ws: dict, text: str, label: str) -> dict:
     """Whether `ws`'s chat holds `text`, Chat opened there: in what Chat's own `read` answers,
-    and among what the desk's search lists in front."""
+    and among what the shell's search lists in front."""
     ae.select_workspace(ctx, ws)
     if not app_rows(ctx, CHAT):
         open_by_id(ctx, CHAT)
@@ -806,7 +806,7 @@ def chat_says(ctx, ws: dict, text: str, label: str) -> dict:
 
 def open_by_id(ctx, app: str, patience: float = TERMINAL_S) -> None:
     """Open `app` in the workspace in front by its id, as the launcher does, and wait until it
-    offers its actions there: a window the desk opened again for it counts as much as a new one."""
+    offers its actions there: a window the shell opened again for it counts as much as a new one."""
     deadline = time.monotonic() + patience
     asked = False
     while not app_rows(ctx, app):
@@ -1058,7 +1058,7 @@ def app_processes(ctx, app: str) -> str:
 
 
 def app_evidence(ctx, app: str) -> str:
-    """What the session said about `app` lately, and what the desk says of it: for a failure where
+    """What the session said about `app` lately, and what the shell says of it: for a failure where
     `app` did not open."""
     said = ctx.vm.root_exec(
         "journalctl --no-pager -o cat | sed 's/\\x1b\\[[0-9;]*m//g' "
@@ -1067,7 +1067,7 @@ def app_evidence(ctx, app: str) -> str:
         "| tail -n 30 | cut -c1-500", timeout=180, check=False)
     shown = sorted({str(t.get("name")) for t in ctx.vm.targets()
                     if "/" not in str(t.get("name")) and ("stopped" in str(t.get("name")) or "ended" in str(t.get("name")))})
-    return f"the desk shows {shown}; the session said: {said[-6000:]}"
+    return f"the shell shows {shown}; the session said: {said[-6000:]}"
 
 
 def contents(ctx, scene: dict, ws: dict, label: str) -> tuple[dict, list[str]]:
@@ -1082,12 +1082,12 @@ def contents(ctx, scene: dict, ws: dict, label: str) -> tuple[dict, list[str]]:
         except (CheckFailed, VmError) as exc:
             problems.append(f"{label}: {name}: {exc}")
 
-    def desk():
+    def shell():
         state = ctx.state()
-        problems.want(find_ws(state, ws) is not None, f"{label}: the desk no longer shows it")
-        got["desk"] = desk_apps(state, ws)
-        problems.want(all(a in got["desk"] for a in scene["apps"] if CHAT not in a),
-                      f"{label}: its desk shows {got['desk']}, the source's showed {scene['apps']}")
+        problems.want(find_ws(state, ws) is not None, f"{label}: the shell no longer shows it")
+        got["shell"] = shell_apps(state, ws)
+        problems.want(all(a in got["shell"] for a in scene["apps"] if CHAT not in a),
+                      f"{label}: its shell shows {got['shell']}, the source's showed {scene['apps']}")
 
     def notes():
         got["notes"] = note_titles(ctx, ws)
@@ -1139,14 +1139,14 @@ def contents(ctx, scene: dict, ws: dict, label: str) -> tuple[dict, list[str]]:
             problems.want(not (got["chat"]["read"] or got["chat"]["listed"] or got["chat"]["shown"]),
                           f"{label}: it holds the source's chat: {got['chat']}")
 
-    for name, judge in (("desk", desk), ("notes", notes), ("files", files), ("environment", environment),
+    for name, judge in (("shell", shell), ("notes", notes), ("files", files), ("environment", environment),
                         ("members", members), ("chat", chat)):
         part(name, judge)
     return got, problems
 
 
 @check("WB03", AREA, "Each branch holds what the person set up: the note, the files, the environment with "
-                     "its tool and TILO_WORKSPACE its own, the desk's windows; its owner is its only member "
+                     "its tool and TILO_WORKSPACE its own, the shell's windows; its owner is its only member "
                      "and the chat stayed behind")
 def branch_contents(ctx, res):
     scene = _scene(ctx)
@@ -1346,14 +1346,14 @@ def agent_in_branch(ctx, res):
            f"initialize was not answered after the person allowed it: {str(reply)[:300]}")
     agent.send("notifications/initialized", notify=True)
     res.metrics["sheet"] = dialog
-    # The desk seats the agent in the branch's environment: the session whose environment_id is
+    # The shell seats the agent in the branch's environment: the session whose environment_id is
     # the TILO_ENVIRONMENT its shell reads (the agent door is the MCP server since a3a6caf4255).
     environment = agent.hello.get("environment", "")
     seated = wait_until(lambda: [a for a in ae.agent_sessions(ctx) if a.get("stoppable", True)
                                  and environment and a.get("environment_id") == environment] or None,
                         30, interval=1.0) or []
     res.metrics["seated"] = [{k: a.get(k) for k in ("key", "name", *ae.WHERE)} for a in seated]
-    problems.want(len(seated) == 1, f"the desk seats {len(seated)} agents in {environment!r}: "
+    problems.want(len(seated) == 1, f"the shell seats {len(seated)} agents in {environment!r}: "
                                     f"{[{k: a.get(k) for k in ('key', 'name', *ae.WHERE)} for a in ae.agent_sessions(ctx)]}")
     problems.want(environment.startswith(f"{tid}/"),
                   f"the agent's TILO_ENVIRONMENT {environment!r} is not of its branch {tid}")

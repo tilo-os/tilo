@@ -14,7 +14,7 @@ pub enum CarriedDrag {
         workspace: String,
         offers: Vec<CarriedOffer>,
     },
-    /// A resource the desk carries (a window's record, an item of a list): what its drag names it
+    /// A resource the shell carries (a window's record, an item of a list): what its drag names it
     /// by, and what it shows under the pointer.
     Resource {
         kind: String,

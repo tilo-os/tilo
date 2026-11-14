@@ -42,7 +42,7 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {FIRST_RUN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit, deskMetrics, machine} from './waits.mjs';
+import {stepLimit, shellMetrics, machine} from './waits.mjs';
 
 const [site, relay, work, tiloBin, ownerSocket] = process.argv.slice(2);
 if (!site || !relay || !work || !tiloBin || !ownerSocket) {
@@ -186,7 +186,7 @@ const visit = async (name, {passkey = false, setupDone = false} = {}) => {
       tab.log.push(`${params.type.toUpperCase()} ${params.args.map(a => a.value ?? a.description ?? '').join(' ')}`.slice(0, 500));
     }
   });
-  await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics).catch(() => {});
+  await tab.send('Emulation.setDeviceMetricsOverride', shellMetrics).catch(() => {});
   if (passkey) await authenticator(tab);
   said.push({name, tab});
   return {name, tab, browser};
@@ -214,7 +214,7 @@ const ownWorkspace = tab => tab.evaluate(`/^Tilo · /.test(document.title) && !/
 /** What the page is doing while it is not there yet: the mount's own phase,
  * the frames it drew and the name the workspace answered admission with, so a
  * wait that runs out says which of them it was waiting on. A page waits on its
- * host admitting it and replaying what it made before its desk draws, and
+ * host admitting it and replaying what it made before its shell draws, and
  * gives a host that says nothing two minutes before it calls it unanswered
  * (`whenReady` in peer.mjs): the waits below on the person's own workspace are
  * given as long, never a stopwatch on a frame. */
@@ -261,14 +261,14 @@ const searchRows = async (tab, query) => {
     const card = s?.searchCard ?? null;
     return card && s.searchSearching === false && card.query === ${asked} ? JSON.stringify(card.rows ?? []) : '';
   })()`;
-  return JSON.parse(await until(tab, answered, `the desk answering "${query}"`, stepLimit(4)));
+  return JSON.parse(await until(tab, answered, `the shell answering "${query}"`, stepLimit(4)));
 };
 /** A person's search: the chord, the query, and Enter on the row titled
  * `title` — an app, or one of the workspace's own actions. */
 const search = async (tab, query, title) => {
   if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen')) {
     const box = JSON.parse(await canvasBox(tab));
-    await clickAt(tab, box.x + deskMetrics.width / 2, box.y + deskMetrics.height - 100);
+    await clickAt(tab, box.x + shellMetrics.width / 2, box.y + shellMetrics.height - 100);
     await key(tab, 'k', 2);
   }
   await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search opening', stepLimit(3));
@@ -649,7 +649,7 @@ try {
   const second = await stranger.browser.tab();
   second.log ??= [];
   said.push({name: 'stranger-second-tab', tab: second});
-  await second.send('Emulation.setDeviceMetricsOverride', deskMetrics).catch(() => {});
+  await second.send('Emulation.setDeviceMetricsOverride', shellMetrics).catch(() => {});
   await second.navigate(site);
   await until(second, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`,
     'a second tab of the person arriving', stepLimit(8));

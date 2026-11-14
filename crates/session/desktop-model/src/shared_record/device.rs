@@ -82,7 +82,7 @@ pub struct Host<'a> {
     pub runs_here: &'a dyn Fn(&str) -> bool,
 }
 
-/// `workspace`, this device's desk, as it publishes it to the others: a window
+/// `workspace`, this device's shell, as it publishes it to the others: a window
 /// of its own whose app says its windows run only on the device that opened
 /// them is that window hosted on this device ([`TileContent::HostedWindow`]),
 /// which every other device leaves as published and opens no instance for.
@@ -392,7 +392,7 @@ fn shown(record: &Tab, local: Option<&Tab>, device: &str) -> Tab {
 /// record keeps it.
 pub struct Kept<'a> {
     /// Whether this device minted `id`: a strip it made that the record does
-    /// not hold yet stays on its desk until the write of it reaches the
+    /// not hold yet stays on its shell until the write of it reaches the
     /// workspace.
     pub mine: &'a dyn Fn(u64) -> bool,
     /// Whether `id` is this device's to keep to itself: a window it had

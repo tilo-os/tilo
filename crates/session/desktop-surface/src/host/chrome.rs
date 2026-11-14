@@ -133,7 +133,7 @@ pub struct ChromeOverlays {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ActiveExposure {
     pub peer: u64,
-    /// The tab the window stands in on this device's desk.
+    /// The tab the window stands in on this device's shell.
     pub surface: u64,
     pub can_control: bool,
     /// Whether anything of the window goes out to the devices showing it now, as its share's

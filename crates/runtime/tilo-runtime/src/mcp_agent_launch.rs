@@ -47,7 +47,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// `action` (`open` or `start`) of the app `resolved` names, which runs already: it is there,
     /// and what is in it. Running is not shown: `open` asks for the app's window on the person's
-    /// desk, or brings the one there into view.
+    /// shell, or brings the one there into view.
     pub(super) async fn running(&self, resolved: &super::Resolved, action: &str) -> Done {
         let app_id = resolved.app_id.as_str();
         if action == tilo_actions::remote::APPLICATION_OPEN_ACTION {
@@ -83,7 +83,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             )
             .await
         {
-            // An app that opened on the person's desk but publishes nothing an
+            // An app that opened on the person's shell but publishes nothing an
             // agent lists (yet) is not answered as both running and not.
             if listing
                 .text
@@ -91,7 +91,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             {
                 if reply.text.ends_with("is running") {
                     reply.text = format!(
-                        "ok: {name} opened on the person's desk; it lists nothing to agents"
+                        "ok: {name} opened on the person's shell; it lists nothing to agents"
                     );
                 }
                 return reply;

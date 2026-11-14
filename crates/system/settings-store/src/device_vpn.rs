@@ -413,7 +413,7 @@ mod tests {
                 offered: vec![
                     OfferedExit {
                         device: "a".into(),
-                        label: "Desk".into(),
+                        label: "Tower".into(),
                     },
                     OfferedExit {
                         device: "b".into(),

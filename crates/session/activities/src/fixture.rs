@@ -14,7 +14,7 @@ use crate::link::Feed;
 /// Every screenshot scenario.
 pub const SCENARIOS: &[&str] = &["resting", "banner", "narrow", "folded"];
 
-/// The bar over the desk, where the pill shows the same activities.
+/// The bar over the shell, where the pill shows the same activities.
 const BAR: f64 = 32.0;
 
 /// The window a scenario is drawn in.

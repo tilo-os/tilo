@@ -14,7 +14,7 @@
     reason = "widths are finite logical pixels"
 )]
 
-use ui::desk_widgets::WidgetId;
+use ui::widgets::WidgetId;
 
 /// The width band around a breakpoint across which two stages cross-fade: wide enough that a card
 /// twice as tall in the next stage still grows only a few pixels for each pixel of drag.

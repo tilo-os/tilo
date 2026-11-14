@@ -7,7 +7,7 @@ enabled (`TILO_FRAME_TRACE` / `TILO_FRAME_SUMMARY`, see
 `TILO_TEST_CONTROL` socket and/or runs a continuously-painting Wayland
 client against it, then reports the frame-time distribution. A window's frames
 come from the session's `windows` rows: `frames` is how many frames that
-window's client committed, so a still desk keeps every count.
+window's client committed, so a still shell keeps every count.
 
 The session must be a development build (one with `dev-overrides`, or a debug
 one) for the test-control socket to open:
@@ -471,7 +471,7 @@ def cpu_percent_between(pid: int, seconds: float) -> float:
 
 
 def window_frames(ctl: Control) -> list[dict]:
-    """The desk's open windows: `window` (its id), `app_id`, `rect` (null while no window of the
+    """The shell's open windows: `window` (its id), `app_id`, `rect` (null while no window of the
     tab is mapped) and `frames`, how many frames its client committed. A window showing the same
     thing keeps its count, so a rise between two reads is a frame it drew."""
     reply = ctl.send({"op": "windows"})

@@ -10,10 +10,10 @@ own, and reads every claim back off the session rather than off the clients:
                for runs until the person answers the sheet the door puts up.
   2. seats     the person answers each sheet, once per client; each agent is
                admitted as an agent session of its own (`Claude Code #1`) acting
-               for the person, and shows on the desk as its own presence, a
+               for the person, and shows on the shell as its own presence, a
                seat of its own beside the person's runs.
   3. acting    each admitted client is served as itself: its own tools answer,
-               and what the desk offers a person's own socket is not what it is
+               and what the shell offers a person's own socket is not what it is
                offered.
   4. faces     each agent's face on the bar opens its own card: pressed where
                the bar publishes it, and pressed by the name a reader is told.
@@ -71,20 +71,20 @@ def until(check, timeout: float = 40.0):
     return False
 
 
-def open_card(desk: "Desk", name: str) -> None:
+def open_card(shell: "Shell", name: str) -> None:
     """Open an agent's card from its face on the bar, as the person's own press does."""
-    face = desk.targets().get(f"{name}, agent")
+    face = shell.targets().get(f"{name}, agent")
     if face is not None:
         x, y, width, height = face
-        desk.call({"op": "click_at", "x": x + width / 2, "y": y + height / 2})
-    until(lambda: f"{name}’s profile" in desk.targets(), 10)
+        shell.call({"op": "click_at", "x": x + width / 2, "y": y + height / 2})
+    until(lambda: f"{name}’s profile" in shell.targets(), 10)
 
 
-def close_card(desk: "Desk") -> None:
+def close_card(shell: "Shell") -> None:
     """Leave the card standing: the roster's place takes it back."""
-    if any(card.endswith("’s profile") for card in desk.targets()):
-        desk.call({"op": "key", "key": "Escape"})
-        until(lambda: not any(card.endswith("’s profile") for card in desk.targets()), 10)
+    if any(card.endswith("’s profile") for card in shell.targets()):
+        shell.call({"op": "key", "key": "Escape"})
+        until(lambda: not any(card.endswith("’s profile") for card in shell.targets()), 10)
 
 
 def runtime_directory(state: pathlib.Path) -> pathlib.Path:
@@ -106,7 +106,7 @@ def runtime_directory(state: pathlib.Path) -> pathlib.Path:
     return runtime
 
 
-class Desk:
+class Shell:
     """A headless session on a scratch home of its own, driven at its socket."""
 
     def __init__(self) -> None:
@@ -117,7 +117,7 @@ class Desk:
         for path in (self.home, self.identity):
             path.mkdir(parents=True, exist_ok=True)
         self.identity.chmod(0o700)
-        # The desk's state is this scratch directory's, as a launcher's state
+        # The shell's state is this scratch directory's, as a launcher's state
         # is a session's: the runtime directory its sockets go in comes from
         # there, from the one place that picks it.
         self.runtime = runtime_directory(self.state)
@@ -199,11 +199,11 @@ class Desk:
         return [grant.get("id", "") for grant in policy.get("grants") or []]
 
     def agents(self) -> list[dict]:
-        """The agents the desk shows, as its bar seats them."""
+        """The agents the shell shows, as its bar seats them."""
         return (self.call({"op": "state_dump"}).get("state") or {}).get("agents") or []
 
     def targets(self) -> dict[str, list[float]]:
-        """The desk's named controls, each with where it stands."""
+        """The shell's named controls, each with where it stands."""
         return {target["name"]: target["rect"]
                 for target in self.call({"op": "list_targets"}).get("targets") or []}
 
@@ -219,11 +219,11 @@ class Desk:
         return True
 
     def stop_row(self) -> dict | None:
-        """The Stop the person's own door lists on the desk, if it lists one."""
+        """The Stop the person's own door lists on the shell, if it lists one."""
         rows = (self.call({"op": "actions_enumerate", "query": "stop"}).get("answer")
                 or {}).get("actions") or []
         return next((row for row in rows
-                     if row.get("resource") == "session:desk"
+                     if row.get("resource") == "session:agents"
                      and row.get("operation") == "stop-agent"), None)
 
 
@@ -233,26 +233,26 @@ def main() -> int:
             print(f"FAIL: no {what} at {path}", file=sys.stderr)
             return 1
 
-    desk = Desk()
+    shell = Shell()
     agents: list[Agent] = []
     try:
-        # A development desk opens on first-use setup; the throwaway identity a
-        # development session opens its desk with is minted here, so the agents
+        # A development shell opens on first-use setup; the throwaway identity a
+        # development session opens its shell with is minted here, so the agents
         # are admitted into a workspace rather than into Setup.
-        print("\n[0] a desk of its own")
-        desk.start()
-        minted = desk.call({"op": "provision_test_identity"})
-        desk.stop()
-        check("a development desk mints its throwaway identity",
+        print("\n[0] a shell of its own")
+        shell.start()
+        minted = shell.call({"op": "provision_test_identity"})
+        shell.stop()
+        check("a development shell mints its throwaway identity",
               bool((minted.get("answer") or {}).get("created")), json.dumps(minted)[:120])
-        desk.start()
-        check("the desk opens with a workspace in front", bool(desk.workspace()),
-              json.dumps(desk.workspace())[:80])
-        check("and its MCP server answers", until(lambda: desk.door.exists()))
+        shell.start()
+        check("the shell opens with a workspace in front", bool(shell.workspace()),
+              json.dumps(shell.workspace())[:80])
+        check("and its MCP server answers", until(lambda: shell.door.exists()))
 
         print("\n[1] two agents ask, and nothing they ask for runs yet")
         for name, _ in CLIENTS:
-            agents.append(Agent(desk.door, name))
+            agents.append(Agent(shell.door, name))
         # The sheet is up: the person's own keyboard is what answers it. The
         # clients are still waiting on their `initialize` until then.
         check("no client is served before the person answers",
@@ -263,28 +263,28 @@ def main() -> int:
         # agent's, in a run its admission starts, so the workspace's policy
         # gains no grant of its own for it.
         print("\n[2] the person admits each agent, each as an agent of its own")
-        grants_before = desk.grants()
-        desk.answer(choice=1)
+        grants_before = shell.grants()
+        shell.answer(choice=1)
         check("the first answer serves one client", until(
             lambda: any(agent.hears() for agent in agents), 30)
             and sum(agent.hears() for agent in agents) == 1,
               "the other is still waiting on its own sheet")
-        desk.answer(choice=1)
+        shell.answer(choice=1)
         if not until(lambda: all(agent.hears() for agent in agents), 15):
             # The sheet for the second client came up after the keys went by.
-            desk.answer(choice=1)
+            shell.answer(choice=1)
         check("each client is served its initialize", until(lambda: all(
             agent.hears() for agent in agents), 15) and all(agent.answered() for agent in agents),
               "the door answered both")
         for agent in agents:
             agent.notify("notifications/initialized")
         check("admitting them grants nothing beyond the person's own",
-              desk.grants() == grants_before, ", ".join(desk.grants())[:160])
-        sessions = {agent.get("name") for agent in desk.agents()}
-        check("the desk shows both agent sessions, each as itself",
+              shell.grants() == grants_before, ", ".join(shell.grants())[:160])
+        sessions = {agent.get("name") for agent in shell.agents()}
+        check("the shell shows both agent sessions, each as itself",
               sessions == {expected for _, expected in CLIENTS}, ", ".join(sorted(map(str, sessions))))
         check("each seat is the person's own to end",
-              all(agent.get("stoppable") for agent in desk.agents()), json.dumps(desk.agents())[:160])
+              all(agent.get("stoppable") for agent in shell.agents()), json.dumps(shell.agents())[:160])
 
         print("\n[3] each agent acts as itself")
         for agent, (name, _) in zip(agents, CLIENTS):
@@ -296,18 +296,18 @@ def main() -> int:
             text, failed = agent.call("tilo_ls", {})
             check(f"{name}'s listing answers its own work", not failed,
                   text.splitlines()[0][:100] if text else "")
-        # What the desk offers the person's own door as a write is not what an
+        # What the shell offers the person's own door as a write is not what an
         # agent is offered: the seat's Stop is the person's.
-        stop = desk.stop_row()
+        stop = shell.stop_row()
         check("the person's own door lists the seat's Stop", stop is not None)
         text, failed = agents[0].call("tilo_do", {"path": "session#stop-agent",
-                                                  "args": {"agent": desk.agents()[-1].get("key")}})
+                                                  "args": {"agent": shell.agents()[-1].get("key")}})
         check("an agent is not offered it", failed, text.splitlines()[0][:100] if text else "")
         # The same door speaks the control protocol to a program inside an app this
         # session started, and to nothing else: a program of this login's own is told so.
         with socket.socket(socket.AF_UNIX) as outsider:
             outsider.settimeout(30)
-            outsider.connect(str(desk.door))
+            outsider.connect(str(shell.door))
             outsider.sendall(b'{"op":"state_dump"}\n')
             reply = b""
             while not reply.endswith(b"\n"):
@@ -320,61 +320,61 @@ def main() -> int:
               reply.decode()[:140])
 
         print("\n[4] each agent's face on the bar opens its own card")
-        seats = {seat.get("name"): seat.get("key") for seat in desk.agents()}
+        seats = {seat.get("name"): seat.get("key") for seat in shell.agents()}
         for name in seats:
-            face = desk.targets().get(f"{name}, agent")
+            face = shell.targets().get(f"{name}, agent")
             opened = None
             if face is not None:
                 x, y, width, height = face
-                desk.call({"op": "click_at", "x": x + width / 2, "y": y + height / 2})
-                until(lambda: f"{name}’s profile" in desk.targets(), 10)
+                shell.call({"op": "click_at", "x": x + width / 2, "y": y + height / 2})
+                until(lambda: f"{name}’s profile" in shell.targets(), 10)
                 opened = [card.removesuffix("’s profile")
-                          for card in desk.targets() if card.endswith("’s profile")]
+                          for card in shell.targets() if card.endswith("’s profile")]
             check(f"{name}'s face opens its own card", opened == [name],
                   f"opened {opened} at {face}")
-            close_card(desk)
+            close_card(shell)
         # A reader is told the same face, and presses it where a person does: the name it
         # publishes is the face, not the bar behind it.
         for name in seats:
-            desk.call({"op": "click_named", "name": f"{name}, agent"})
-            until(lambda: f"{name}’s profile" in desk.targets(), 10)
+            shell.call({"op": "click_named", "name": f"{name}, agent"})
+            until(lambda: f"{name}’s profile" in shell.targets(), 10)
             opened = [card.removesuffix("’s profile")
-                      for card in desk.targets() if card.endswith("’s profile")]
+                      for card in shell.targets() if card.endswith("’s profile")]
             check(f"a reader's {name} opens the same card", opened == [name], f"opened {opened}")
-            close_card(desk)
+            close_card(shell)
 
         print("\n[5] the person stops one agent from its card, by name")
         stopped_name = next(iter(seats))
-        open_card(desk, stopped_name)
-        check("its card offers Stop", "profile-agent-stop" in desk.targets())
+        open_card(shell, stopped_name)
+        check("its card offers Stop", "profile-agent-stop" in shell.targets())
         # The name a reader activates it by, as a person's pointer press reaches the same button.
-        pressed = desk.call({"op": "click_named", "name": "Stop"})
+        pressed = shell.call({"op": "click_named", "name": "Stop"})
         check("Stop is a control a reader can name", "ok" in pressed, json.dumps(pressed)[:120])
         keys = [shown for _, shown in CLIENTS]
         gone = keys.index(stopped_name)
         stopped, other = agents[gone], agents[1 - gone]
-        until(lambda: len(desk.agents()) < 2, 10)
+        until(lambda: len(shell.agents()) < 2, 10)
         text, failed = stopped.call("tilo_ls", {})
         check("the stopped agent's connection is over", failed,
               text.splitlines()[0][:100] if text else "")
         text, failed = other.call("tilo_ls", {})
         check("the other agent still answers", not failed,
               text.splitlines()[0][:100] if text else "")
-        left = [agent.get("name") for agent in desk.agents()]
-        check("the desk keeps the other agent's seat alone", left == [keys[1 - gone]],
+        left = [agent.get("name") for agent in shell.agents()]
+        check("the shell keeps the other agent's seat alone", left == [keys[1 - gone]],
               ", ".join(map(str, left)))
 
         print("\n[6] the person takes over the other agent's work")
-        # It works in this desk alone: nothing of it is left seated, and its
+        # It works in this shell alone: nothing of it is left seated, and its
         # connection is over once the person takes its work on.
-        open_card(desk, next(iter([name for name in seats if name != stopped_name])))
-        taken_at = desk.targets().get("profile-agent-take-over")
+        open_card(shell, next(iter([name for name in seats if name != stopped_name])))
+        taken_at = shell.targets().get("profile-agent-take-over")
         check("its card offers Take over", taken_at is not None)
-        pressed = desk.call({"op": "click_named", "name": "Take over"})
+        pressed = shell.call({"op": "click_named", "name": "Take over"})
         check("Take over is a control a reader can name", "ok" in pressed, json.dumps(pressed)[:120])
-        until(lambda: not desk.agents(), 10)
-        check("the desk seats nobody after taking the work on", not desk.agents(),
-              json.dumps(desk.agents())[:160])
+        until(lambda: not shell.agents(), 10)
+        check("the shell seats nobody after taking the work on", not shell.agents(),
+              json.dumps(shell.agents())[:160])
         text, failed = other.call("tilo_ls", {})
         check("the agent it was taken from stopped working", failed,
               text.splitlines()[0][:100] if text else "")
@@ -382,32 +382,32 @@ def main() -> int:
         print("\n[7] the person revokes what let an agent in")
         # A client of the same program, admitted as its own connection: Revoke takes back its
         # work here, and the next client of that program is asked about, as the first was.
-        again = Agent(desk.door, "Claude Code")
+        again = Agent(shell.door, "Claude Code")
         agents.append(again)
-        desk.answer(choice=1)
+        shell.answer(choice=1)
         check("a client of the program is admitted",
               until(lambda: again.hears(), 30) and again.answered(),
               json.dumps(again.served)[:120])
         again.notify("notifications/initialized")
-        sessions = [agent.get("key") for agent in desk.agents()]
-        check("the desk shows the agent it let in", len(sessions) == 1, ", ".join(sessions))
-        open_card(desk, desk.agents()[0]["name"])
-        check("its card offers Revoke", "profile-agent-revoke" in desk.targets())
-        pressed = desk.call({"op": "click_named", "name": "profile-agent-revoke"})
+        sessions = [agent.get("key") for agent in shell.agents()]
+        check("the shell shows the agent it let in", len(sessions) == 1, ", ".join(sessions))
+        open_card(shell, shell.agents()[0]["name"])
+        check("its card offers Revoke", "profile-agent-revoke" in shell.targets())
+        pressed = shell.call({"op": "click_named", "name": "profile-agent-revoke"})
         check("Revoke is a control a reader can press", "ok" in pressed, json.dumps(pressed)[:120])
-        until(lambda: not desk.agents(), 10)
+        until(lambda: not shell.agents(), 10)
         text, failed = again.call("tilo_ls", {})
         check("the revoked agent's connection is over", failed,
               text.splitlines()[0][:100] if text else "")
-        check("the desk seats nobody after the revoke", not desk.agents(),
-              json.dumps(desk.agents())[:160])
+        check("the shell seats nobody after the revoke", not shell.agents(),
+              json.dumps(shell.agents())[:160])
         # What let it in is not the previous answer: the next client of that program is asked
         # about, and served once the person answers.
-        next_client = Agent(desk.door, "Claude Code")
+        next_client = Agent(shell.door, "Claude Code")
         agents.append(next_client)
         check("the next client of the program waits for the person",
               not next_client.hears(1.0))
-        desk.answer(choice=1)
+        shell.answer(choice=1)
         check("the person's answer admits it",
               until(lambda: next_client.hears(), 30) and next_client.answered(),
               json.dumps(next_client.served)[:120])
@@ -415,11 +415,11 @@ def main() -> int:
     finally:
         for agent in agents:
             agent.close()
-        desk.stop()
-        # The runtime directory the launcher named for this desk's state is
+        shell.stop()
+        # The runtime directory the launcher named for this shell's state is
         # this run's, like the scratch home it belongs to.
-        shutil.rmtree(desk.runtime, ignore_errors=True)
-        shutil.rmtree(desk.dir, ignore_errors=True)
+        shutil.rmtree(shell.runtime, ignore_errors=True)
+        shutil.rmtree(shell.dir, ignore_errors=True)
 
     print()
     if failures:

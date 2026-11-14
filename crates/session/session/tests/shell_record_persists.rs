@@ -266,7 +266,7 @@ fn the_shell_choices_survive_the_session_ending() {
     );
 }
 
-/// The shell's shell choices a test reads across a restart: the dock's edge, whether the Frames
+/// The shell's own choices a test reads across a restart: the dock's edge, whether the Frames
 /// grid is on, and the style shown, as each setting's record value.
 #[derive(Debug, PartialEq)]
 struct Choices {

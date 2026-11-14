@@ -44,7 +44,7 @@ def display_name(runtime: pathlib.Path) -> str:
 
 
 def opens_probe(row: dict) -> bool:
-    """Whether `row` is the desk's one launch of the probe: the applications provider's, under
+    """Whether `row` is the shell's one launch of the probe: the applications provider's, under
     this machine's own app id (`host:<desktop id>`) or the desktop file's."""
     if row.get("provider") != "applications":
         return False
@@ -53,7 +53,7 @@ def opens_probe(row: dict) -> bool:
 
 
 def is_probe_window(row: dict) -> bool:
-    """Whether `row` is a mapped window of the probe that its client has drawn in: the desk names
+    """Whether `row` is a mapped window of the probe that its client has drawn in: the shell names
     a program of this machine `host:<desktop id>`."""
     if row.get("frames", 0) <= 0 or row.get("rect") is None:
         return False
@@ -201,7 +201,7 @@ def prepare_fonts(payload: pathlib.Path, profile: pathlib.Path) -> pathlib.Path:
 
 
 def windows(sock: pathlib.Path) -> list[dict]:
-    """The desk's open windows: each with `window`, `app_id`, `rect` (`[x, y, width, height]`,
+    """The shell's open windows: each with `window`, `app_id`, `rect` (`[x, y, width, height]`,
     null while no window of the tab is mapped) and `frames`, the frames its client committed."""
     try:
         response = control_call(sock, {"op": "windows"}, timeout=5)

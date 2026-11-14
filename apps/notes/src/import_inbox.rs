@@ -199,7 +199,7 @@ pub(crate) fn migrated_scenario() -> Vec<Invoke<Notebook>> {
         "doc-onboarding",
         "Onboarding checklist",
         format!(
-            "Read [[Welcome]] first, then work through the list.\n\n- [ ] Get your laptop\n- [ ] Set up your Tilo identity\n- [ ] Join the team workspace\n\n![Settings, the way your desk starts](asset:{digest})\n\nQuestions go to [[Security basics]] or the team chat."
+            "Read [[Welcome]] first, then work through the list.\n\n- [ ] Get your laptop\n- [ ] Set up your Tilo identity\n- [ ] Join the team workspace\n\n![Settings, the way your shell starts](asset:{digest})\n\nQuestions go to [[Security basics]] or the team chat."
         ),
         Some("doc-welcome"),
     );

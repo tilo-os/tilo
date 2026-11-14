@@ -112,7 +112,7 @@ pub enum ChatEffect {
     /// whom it names — people, agents, or a conversation that is already
     /// there — and answers the conversation it landed in, as the item that
     /// names it. Sent from a person's box, the conversation opens as a
-    /// window of the desk where the box stood; sent by anyone else, nothing
+    /// window of the shell where the box stood; sent by anyone else, nothing
     /// opens. The composer's send button runs this same action, so what it
     /// does and what an agent's send does cannot drift apart.
     #[effect(returns, kind = "undoable")]

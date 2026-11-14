@@ -329,7 +329,7 @@ mod tests {
             assert!(asks(&unknown, &rename).is_err());
         }
 
-        phase only_owner_and_moderators_add_or_change_the_workspaces_desks;
+        phase only_owner_and_moderators_add_or_change_the_workspaces_shells;
         {
             let add = DesktopCommand::CreateStrip {
                 name: "Mine".into(),

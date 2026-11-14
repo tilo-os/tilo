@@ -383,7 +383,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// An app's actions reach the person's desk only over the collaboration service: its running
+/// An app's actions reach the person's shell only over the collaboration service: its running
 /// window publishes them to the workspace's broker (`CollabRequest::PublishActionSurface`), which lists
 /// them in the desktop's catalogue and routes their invocations back. An app whose surface
 /// declares verbs but whose sandbox has no `collab` service joins nothing

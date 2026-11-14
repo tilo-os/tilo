@@ -9,7 +9,7 @@ root Sample
 default view samples for Sample
 
 /// A view whose whole body is one `layers`: its content fills the window and a row stands over
-/// its foot, as the shell's desk lays its dock over the desk. The row covers the content on
+/// its foot, as the shell lays its dock over the window. The row covers the content on
 /// purpose, and the text of each stands apart from the other's, so neither is an overlap.
 view samples(s: Sample) {
     layers {

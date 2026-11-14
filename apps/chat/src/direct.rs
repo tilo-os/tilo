@@ -112,7 +112,7 @@ impl ChatApp {
     /// Send what a box held: the words and everything they carry go to the
     /// conversation with whom it names — a person, an agent, several of
     /// them, or a conversation that is already there. When it `opens`, the
-    /// conversation opens as a window of the desk, floated where the box
+    /// conversation opens as a window of the shell, floated where the box
     /// stood ([`ui::shell_tabs::open_floated`]). The window that sent it goes
     /// on showing what it showed, its box ready for the next message.
     ///
@@ -143,7 +143,7 @@ impl ChatApp {
             .invoke(&post(&id, text, parent.map(Id::from_raw), body, attached))
             .map_err(|error| error.to_string())?;
         let message = ui::tilo_resource::take_minted().into_iter().next();
-        // The conversation stands where the box stood: a window of the desk,
+        // The conversation stands where the box stood: a window of the shell,
         // floated over it, that the workspace's record keeps for every
         // member.
         let anchor = item_row_id("channels", id.as_str());

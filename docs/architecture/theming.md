@@ -372,7 +372,7 @@ Its bundle is that module, renamed `bauhaus.wasm`, beside the crate's
 
 ## Live surfaces
 
-A live surface is a program that draws a layer the shell places: the desk
+A live surface is a program that draws a layer the shell places: the shell
 background below the windows, the lock screen's backdrop. It uses the same kit
 (Rust compiled to wasm, vello and wgpu) and gets read-only inputs: time, the
 pointer, the windows' rectangles and motion, notifications, the audio level. It

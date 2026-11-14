@@ -2276,7 +2276,7 @@ async fn an_environment_writes_nothing_of_the_workspaces_own_document_and_stays(
             workspace_id: WS,
             author_device_public_key: device,
             authored_at_ns: tilo_clock::unix_now_ns(),
-            delta: b"a desk layout and a grant of its own making".to_vec(),
+            delta: b"a shell layout and a grant of its own making".to_vec(),
             signature: [0; 64],
         })
         .unwrap();
@@ -2295,7 +2295,7 @@ async fn an_environment_writes_nothing_of_the_workspaces_own_document_and_stays(
         !after
             .iter()
             .any(|envelope| matches!(envelope, Envelope::NotAuthorised { .. })),
-        "a session that writes its desk as any session does is not cut for it: {after:?}"
+        "a session that writes its shell as any session does is not cut for it: {after:?}"
     );
     let retained: Vec<Vec<u8>> =
         tilo_relay::store::WorkspaceStore::open(&fixture.relay.state_root, WS, true)
@@ -2313,7 +2313,7 @@ async fn an_environment_writes_nothing_of_the_workspaces_own_document_and_stays(
     assert!(
         !retained
             .iter()
-            .any(|delta| delta.starts_with(b"a desk layout")),
+            .any(|delta| delta.starts_with(b"a shell layout")),
         "the workspace keeps nothing of its document from the environment's device"
     );
     assert_eq!(

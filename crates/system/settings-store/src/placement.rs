@@ -52,7 +52,7 @@ pub const SECTIONS: &[(&str, Holder)] = &[
     ("clock", Holder::Device),
     ("collaboration", Holder::Device),
     ("continuity", Holder::Device),
-    ("desk_widgets", Holder::Device),
+    ("widgets", Holder::Device),
     ("desktop_controls_device", Holder::Device),
     ("device", Holder::Device),
     ("device_vpn", Holder::Device),

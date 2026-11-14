@@ -60,11 +60,11 @@ const CHOICES: [&str; 20] = [
     "--full-name",
     "Ada Lovelace",
     "--device-label",
-    "Desk",
+    "Tower",
     "--purpose",
     "computer",
     "--hostname",
-    "desk",
+    "tower",
     "--locale",
     "en_GB.UTF-8",
     "--timezone",
@@ -78,8 +78,8 @@ const CHOICES: [&str; 20] = [
 ];
 
 fn profile() -> Value {
-    json!({"username": "ada", "full_name": "Ada Lovelace", "device_label": "Desk",
-           "purpose": "computer", "hostname": "desk", "locale": "en_GB.UTF-8",
+    json!({"username": "ada", "full_name": "Ada Lovelace", "device_label": "Tower",
+           "purpose": "computer", "hostname": "tower", "locale": "en_GB.UTF-8",
            "timezone": "Europe/London", "filesystem": "btrfs", "keyboard": "dvorak"})
 }
 
@@ -159,10 +159,10 @@ tilo_test_env::scenario! {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("machine-info");
         let path_text = path.to_str().unwrap();
-        stdout(&helper(&["write-machine-info", path_text, "Desk"], b""));
+        stdout(&helper(&["write-machine-info", path_text, "Tower"], b""));
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
-            "PRETTY_HOSTNAME=\"Desk\"\n"
+            "PRETTY_HOSTNAME=\"Tower\"\n"
         );
         fs::write(
             &path,
@@ -193,7 +193,7 @@ tilo_test_env::scenario! {
         fs::remove_file(&path).unwrap();
         symlink(&target, &path).unwrap();
         assert_eq!(
-            refused(&helper(&["write-machine-info", path_text, "Desk"], b"")),
+            refused(&helper(&["write-machine-info", path_text, "Tower"], b"")),
             "machine-info is a symbolic link\n"
         );
         assert_eq!(

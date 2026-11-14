@@ -704,7 +704,7 @@ tilo_test_env::scenario! {
             paths.shown_name.set("Ada".to_owned()).risk(),
             RiskLevel::Destructive
         );
-        assert_eq!(paths.label.set("Desk".to_owned()).risk(), RiskLevel::Low);
+        assert_eq!(paths.label.set("Tower".to_owned()).risk(), RiskLevel::Low);
 
         let mut lock = Replica::<Lock>::new();
         assert!(matches!(
@@ -715,7 +715,7 @@ tilo_test_env::scenario! {
             lock.apply(paths.shown_name.set("Ada".to_owned())),
             Err(tilo_actions::DoorError::ConfirmationRequired)
         ));
-        lock.apply(paths.label.set("Desk".to_owned())).unwrap();
+        lock.apply(paths.label.set("Tower".to_owned())).unwrap();
         lock.apply_confirmed(paths.minutes.set(0)).unwrap();
         assert_eq!(lock.state().unwrap().minutes, 0);
 
@@ -824,9 +824,9 @@ tilo_test_env::scenario! {
                 "{refused}"
             );
         }
-        lock.apply(set_at(&["lock", "label"], "Desk")).unwrap();
+        lock.apply(set_at(&["lock", "label"], "Tower")).unwrap();
         let state = lock.state().unwrap();
-        assert_eq!((state.minutes, state.label.as_str()), (0, "Desk"));
+        assert_eq!((state.minutes, state.label.as_str()), (0, "Tower"));
     }
 
     phase only_a_change_making_a_field_weaker_asks_and_is_privileged;

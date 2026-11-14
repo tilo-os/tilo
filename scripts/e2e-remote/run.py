@@ -17,7 +17,7 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
 4. With B's "Accept agents from my other devices" off and nobody at B, the agent is not
    admitted; the person approving B's sheet admits it; their Stop on B ends A's connection.
 5. With the setting on (turned on through its own action), the agent is let in on B without a
-   question: it lists B's apps, opens Notes and makes a note there, seated on B's desk with
+   question: it lists B's apps, opens Notes and makes a note there, seated on B's shell with
    A's device beside its name (its whole key and its label as the door caps it) and with no
    environment. Its step `terminal#run`, which asks first, is still put to B's person on the
    run's sheet, who allows it once, and the command then runs.
@@ -26,7 +26,7 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
    with no sheet ever up on B. That the step is asked with the second setting off is step 5,
    in the same run, just before.
 7. Two agents on two machines work in one Browser tab on B at once: B's person opens the
-   Browser from the desk's apps, the agent on A, through B's door, sends its tab to a form B
+   Browser from the shell's apps, the agent on A, through B's door, sends its tab to a form B
    serves on its loopback, and an agent on B itself joins it. Each answers its part of the
    form with `fill-page-form` in the same moment; B's second setting is off again, and B's
    person allows each agent on B's sheet.
@@ -40,18 +40,18 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
    as well as a name: D does not list B (step 10).
 9. In B's tab, each agent that came from another machine is recorded with its device beside
    its name: the device B's door verified it came from, by its whole key and its name, in the
-   tab's record and in who set each field. B's own agent is recorded with none. B's desk seats
+   tab's record and in who set each field. B's own agent is recorded with none. B's shell seats
    each of them the same way: an agent from another machine with that machine's key and label,
    B's own with neither, and none of them with an environment.
 10. The person's third device lists the second among their devices (`tilo_devices`), as the
     first does, so that `--device <name>` can name it there.
 11. A person at another machine watches that tab: B's person shares the Browser's window with
-    the workspace, naming its tab, and A's desk holds the window's picture in a tab of its own,
+    the workspace, naming its tab, and A's shell holds the window's picture in a tab of its own,
     as a window that runs on B, whatever it lists as its own view of that window. A picture of
     each screen is kept.
 12. The same the other way round: A, the machine that hosts the workspace, opens a Browser of
     its own on the form, served on A's loopback as B serves it, and A's person shares that
-    window. B's desk holds it as a window that runs on A and shows the form's text.
+    window. B's shell holds it as a window that runs on A and shows the form's text.
 13. C, another person's device, is refused at B's door.
 
 Every step is a result in report.json / report.md under --out; any failure fails the run.
@@ -104,7 +104,7 @@ OUTPUT = "1280x800"
 # How long a step that waits on the boxes finding each other may take.
 FIND_S = 180
 # The MCP server sheet's choice and button, as the person reads them (en-US).
-# The name a desk shows the scripted client by: its clientInfo is `claude-code`.
+# The name a shell shows the scripted client by: its clientInfo is `claude-code`.
 CLIENT_SHOWN = "Claude Code"
 ALLOW_ONCE = "Allow once"
 ALLOW = "Allow"
@@ -112,7 +112,7 @@ DENY = "Deny"
 # The choice only the door's own sheet offers: a sheet with "Allow once" and without it asks
 # about one step of an agent that is in already (crates/session/session/src/step_questions.rs).
 ALLOW_SESSION = "Allow for this session"
-# The Browser, as the desk names the app.
+# The Browser, as the shell names the app.
 BROWSER = "so.tilo.browser"
 # How long the person is not there to answer B's sheet.
 UNANSWERED_S = 45
@@ -206,7 +206,7 @@ class Run:
         self.results: list[Result] = []
         # The agents from other machines as B's tab named them, with their devices.
         self.tab_actors: list[dict] = []
-        # B's desk while the agents worked in its tab: each agent's machine and what was seated.
+        # B's shell while the agents worked in its tab: each agent's machine and what was seated.
         self.tab_sessions: list[dict] = []
         # Whether the third device D was made, for the step that asks what it lists.
         self.third_made = False
@@ -307,12 +307,12 @@ class Run:
         return status
 
     def wait_session(self, box: Box, timeout: float = 300) -> None:
-        """The box's session as it came up with the box: its desk, with nothing restarted to
+        """The box's session as it came up with the box: its shell, with nothing restarted to
         get there, as a person who turns the box on finds it."""
         self.ready(box, timeout)
 
     def ready(self, box: Box, timeout: float = 120) -> None:
-        """Once `box`'s session answers its control socket with its desk drawn and unlocked,
+        """Once `box`'s session answers its control socket with its shell drawn and unlocked,
         and no first-use setup over it."""
         def answering():
             try:
@@ -328,7 +328,7 @@ class Run:
 
         if not wait_until(answering, timeout, 1.0):
             self.what_shows(box, "not ready")
-            raise Failed(f"{box.name}'s session did not show its desk within {timeout:.0f}s")
+            raise Failed(f"{box.name}'s session did not show its shell within {timeout:.0f}s")
 
     def keep_awake(self, *boxes: Box) -> None:
         for box in boxes:
@@ -434,7 +434,7 @@ class Run:
             raise Failed(holder["error"])
         return holder["transcript"]
 
-    # -- B's desk ------------------------------------------------------------------
+    # -- B's shell ------------------------------------------------------------------
 
     def agent_sessions(self, box: Box) -> list[dict]:
         dump = box.vm.state()
@@ -493,7 +493,7 @@ class Run:
 
     def stop_agent(self, box: Box, agent: str) -> dict:
         row = self.find_row(box, "stop-agent", "stop")
-        provider, rid = (row["provider"], row["id"]) if row else ("session", "session:desk\x1fstop-agent")
+        provider, rid = (row["provider"], row["id"]) if row else ("session", "session:agents\x1fstop-agent")
         return box.vm.invoke(provider, rid, {"agent": agent})
 
     # -- the run ----------------------------------------------------------------------
@@ -542,21 +542,21 @@ class Run:
             self.step("E11", "Three machines answer one form in that tab: A, a third device D of "
                              "the person, and B itself",
                       lambda res: self.three_machines(a, b, d, res, facts), "E10")
-            self.step("E12", "B's tab and desk name the device of each agent that came from another "
+            self.step("E12", "B's tab and shell name the device of each agent that came from another "
                              "machine (key and capped label), and none for B's own agent",
                       self.devices_named, "E10")
             self.step("E13", "The person's third device lists the second among their devices "
                              "(tilo_devices)",
                       lambda res: self.third_lists_second(d, b, res), "E10")
             self.step("E14", "A's person watches the Browser window B shares, in a tab of its own "
-                             "on A's desk",
+                             "on A's shell",
                       lambda res: self.window_watched(a, b, res), "E10")
             self.step("E17", "While B's window is not shared, A's tab for it says where it runs",
                       lambda res: self.tab_says_where(res), "E10")
-            self.step("E16", "A change B's person makes on the page B shares shows on A's desk",
+            self.step("E16", "A change B's person makes on the page B shares shows on A's shell",
                       lambda res: self.window_watched(a, b, res, change=True), "E14")
             self.step("E15", "B's person watches the Browser window A shares: the machine that "
-                             "hosts the workspace shares, and its copy's desk shows the form",
+                             "hosts the workspace shares, and its copy's shell shows the form",
                       lambda res: self.host_window_watched(a, b, res), "E03")
             self.step("E09", "A device of another person is refused at B's door",
                       lambda res: self.stranger(b, c, res), "E03")
@@ -908,10 +908,10 @@ class Run:
         # this agent comes, so a sheet afterwards is this agent's.
         if wait_until(lambda: not self.sheet_targets(b), 60, 1.0) is None:
             names = [t.get("name") for t in self.targets(b)]
-            raise Failed(f"a question about an agent that left still stands on B's desk: {names}")
+            raise Failed(f"a question about an agent that left still stands on B's shell: {names}")
 
     def check_work(self, a: Box, b: Box, res: Result, t: dict, sessions: list, title: str) -> dict:
-        """What the agent from A did on B, and how B's desk seats it: under a name, with A's
+        """What the agent from A did on B, and how B's shell seats it: under a name, with A's
         whole key and A's label as the door caps it beside the name, and with no environment.
         Its session."""
         for key in ("initialize", "devices", "apps", "open_notes", "run_command", "new_note",
@@ -929,7 +929,7 @@ class Run:
             raise Failed(f"the agent's terminal#run did not go through on B: {ran}")
         if not sessions:
             raise Failed("B seats no agent")
-        # B's desk seats the agent under the name it shows the client by ("Claude Code", then
+        # B's shell seats the agent under the name it shows the client by ("Claude Code", then
         # its number) and says beside the name the device it came from, as B's door verified it:
         # A's whole key and A's label as the door caps it. The session's key names the agent
         # session, which says nothing of a device. It came in by B's door, by no environment.
@@ -937,7 +937,7 @@ class Run:
         res.facts["session"] = session
         for field_name in ("device", "device_name", "environment", "environment_id"):
             if field_name not in session:
-                raise Failed(f"B's desk lists the agent without its {field_name!r}: {session}")
+                raise Failed(f"B's shell lists the agent without its {field_name!r}: {session}")
         if not str(session.get("name") or "").startswith(CLIENT_SHOWN):
             raise Failed(f"B seats the agent under the name {session.get('name')!r}, not as "
                          f"{CLIENT_SHOWN!r}: {session}")
@@ -1085,9 +1085,9 @@ class Run:
             raise
 
     def browser_runs_on(self, b: Box, others: list[Box], res: Result) -> None:
-        """A Browser window is a window of the device whose engine holds its page: B's desk
+        """A Browser window is a window of the device whose engine holds its page: B's shell
         shows it, live, in its tab, and no other machine opened a Browser of its own in that
-        tab. What each desk lists is read from its session; nothing is written anywhere."""
+        tab. What each shell lists is read from its session; nothing is written anywhere."""
         def windows(box: Box) -> list:
             return (box.vm.raw({"op": "windows"}).get("answer") or {}).get("windows") or []
 
@@ -1096,7 +1096,7 @@ class Run:
                 and window.get("window") is not None]
         res.facts["browser_on_b"] = live
         if not live:
-            raise Failed("B's desk holds no live Browser window after the agents worked in its "
+            raise Failed("B's shell holds no live Browser window after the agents worked in its "
                          f"tab: {json.dumps(windows(b))[:800]}")
         tabs = {window.get("tab") for window in live}
         for box in others:
@@ -1144,7 +1144,7 @@ class Run:
                                  f"{json.dumps(held, ensure_ascii=False)[:600]}")
             sessions = [s for s in self.agent_sessions(b) if s.get("stoppable")]
             res.facts["sessions"] = sessions
-            # Every agent is in B's tab now: how B's desk seats each of them is E12's to judge.
+            # Every agent is in B's tab now: how B's shell seats each of them is E12's to judge.
             self.tab_sessions.append({
                 "parties": [{"who": party.box.letter.upper(), "remote": party.remote,
                              "device": (party.box.identity.get("this_device") or {}).get("device", ""),
@@ -1224,34 +1224,34 @@ class Run:
         whole key, as that machine's own identity names it, and its label as B's door caps it.
         B's own agent is recorded and reviewed with no device. The record's device is the one
         the change it made was invoked with (`/invoker/device`): the tab takes no entry whose
-        device is not that (apps/browser/src/page_record.rs). B's desk seats them the same way
+        device is not that (apps/browser/src/page_record.rs). B's shell seats them the same way
         while they work, none of them as an agent of an environment."""
         res.facts["actors"] = self.tab_actors
         res.facts["sessions"] = self.tab_sessions
         if not self.tab_sessions:
-            raise Failed("B's desk was not read while the agents worked in its tab")
+            raise Failed("B's shell was not read while the agents worked in its tab")
         for held in self.tab_sessions:
             sessions = held["sessions"]
             for session in sessions:
                 missing = [f for f in ("device", "device_name", "environment", "environment_id")
                            if f not in session]
                 if missing:
-                    raise Failed(f"B's desk lists an agent without {missing}: {session}")
+                    raise Failed(f"B's shell lists an agent without {missing}: {session}")
                 if session.get("environment") or session.get("environment_id"):
-                    raise Failed(f"B's desk seats an agent in its tab as one of an environment: {session}")
+                    raise Failed(f"B's shell seats an agent in its tab as one of an environment: {session}")
                 if not session.get("device") and session.get("device_name"):
-                    raise Failed(f"B's desk names a device for an agent that came from none: {session}")
+                    raise Failed(f"B's shell names a device for an agent that came from none: {session}")
             for party in held["parties"]:
                 who, device = party["who"], party["device"]
                 if not party["remote"]:
                     if not [s for s in sessions if not s.get("device") and not s.get("device_name")]:
-                        raise Failed(f"B's desk seats its own agent ({who}) with a device: {sessions}")
+                        raise Failed(f"B's shell seats its own agent ({who}) with a device: {sessions}")
                     continue
                 theirs = [s for s in sessions if len(device) == 64 and s.get("device") == device]
                 if not theirs:
-                    raise Failed(f"B's desk seats no agent from {who}'s device {device}: {sessions}")
+                    raise Failed(f"B's shell seats no agent from {who}'s device {device}: {sessions}")
                 if any((s.get("device_name") or "") != capped(party["label"]) for s in theirs):
-                    raise Failed(f"B's desk calls {who}'s device other than "
+                    raise Failed(f"B's shell calls {who}'s device other than "
                                  f"{capped(party['label'])!r}: {theirs}")
         if not any(seen["remote"] for seen in self.tab_actors):
             raise Failed("B's tab recorded no agent from another machine")
@@ -1271,8 +1271,8 @@ class Run:
                                  f"{capped(label)!r} as that device's label reads")
 
     def person_opens_browser(self, b: Box, res: Result) -> None:
-        """B's person opens the Browser from their desk's list of apps, and it is there once
-        its window stands on the desk and stays: a Browser that ends as it starts shows its
+        """B's person opens the Browser from their shell's list of apps, and it is there once
+        its window stands on the shell and stays: a Browser that ends as it starts shows its
         window for a moment."""
         def open_windows() -> bool:
             return BROWSER in json.dumps(b.vm.raw({"op": "windows"}))
@@ -1288,14 +1288,14 @@ class Run:
                 break
             except VmError as exc:
                 if "unknown_action" not in str(exc) or time.monotonic() >= deadline:
-                    raise Failed(f"{b.name}'s person cannot open the Browser from the desk's apps: "
+                    raise Failed(f"{b.name}'s person cannot open the Browser from the shell's apps: "
                                  f"{str(exc)[:600]}") from exc
                 time.sleep(0.5)
         if not wait_until(open_windows, 90, 2.0):
-            raise Failed("the Browser B's person opened never stood on B's desk")
+            raise Failed("the Browser B's person opened never stood on B's shell")
         time.sleep(6.0)
         if not open_windows():
-            raise Failed("the Browser B's person opened did not stay on B's desk")
+            raise Failed("the Browser B's person opened did not stay on B's shell")
 
     def two_machines(self, a: Box, b: Box, res: Result, facts: dict) -> None:
         # B's person has the Browser open; the agent on A sends its tab to the form, and the
@@ -1363,24 +1363,24 @@ class Run:
     def window_watched(self, a: Box, b: Box, res: Result, change: bool = False) -> None:
         """B's person shares the Browser's window with the workspace, naming it by its tab
         ("Share a window with the workspace"), and A, their other device, holds its picture in
-        the tab its desk lists the window in: a share is the workspace's, so nobody asks for it
-        on A. A Browser window runs only on the device whose engine holds its page, so A's desk
+        the tab its shell lists the window in: a share is the workspace's, so nobody asks for it
+        on A. A Browser window runs only on the device whose engine holds its page, so A's shell
         lists B's under the window's own tab as a window that runs on B, before anything is
         shared, and opens no Browser of its own for it; what B shares is what runs on B, which
         is what a person reviewing the tab from another machine has to see, and to go on seeing:
         the step judges by what the two sessions publish of the share and by what A's screen
         holds, when the window first came and again some seconds later. The Browser's window
-        travels as its page, which A draws itself: A's desk names the page's text where it draws
+        travels as its page, which A draws itself: A's shell names the page's text where it draws
         it, as it names every control (`tilo-control list-targets`), so the step reads the form's
-        heading and labels off A's desk, and fails on a tab that shows the card of a window still
+        heading and labels off A's shell, and fails on a tab that shows the card of a window still
         arriving, whatever the sessions say. When the share ends the window is still B's on both
-        desks. Before the share and after it, the tab A lists the window in holds no picture of
+        shells. Before the share and after it, the tab A lists the window in holds no picture of
         it and says so: that the window runs on B, on A's screen, and that it is not shared with
         the workspace, as A's session reads it."""
         # How long after the first picture the share is read again: longer than a plane that
         # lost its relay takes to say so, and than the wait before it asks the relay again.
         stays_live_s = 20
-        def desk(box: Box) -> dict:
+        def shell(box: Box) -> dict:
             dump = box.vm.state()
             return dump.get("state") or dump
 
@@ -1400,8 +1400,8 @@ class Run:
             return None, None
 
         def listed(box: Box, query: str) -> list:
-            """The rows `box`'s desk lists for `query`, as a person's menu lists them and as
-            the desktop lists them for scripts. A desk with a page open lists thousands of
+            """The rows `box`'s shell lists for `query`, as a person's menu lists them and as
+            the desktop lists them for scripts. A shell with a page open lists thousands of
             rows, and they change while they are paged: a listing that cannot be read whole is
             left out and said, never taken for an empty one."""
             rows = []
@@ -1425,7 +1425,7 @@ class Run:
             return None
 
         def governed(state: dict) -> list:
-            """The window shares the workspace's governance names on this desk."""
+            """The window shares the workspace's governance names on this shell."""
             held = (state.get("workspace_tree") or {}).get("workspaces") or []
             return [grant.get("id") for workspace in held
                     for grant in (workspace.get("policy") or {}).get("grants") or []
@@ -1437,12 +1437,12 @@ class Run:
             return (state.get("sharing") or {}).get(part) or []
 
         def show_tab(box: Box, shown) -> str:
-            """Bring the tab `shown` to the front of `box`'s desk with the desk's own `focus`,
-            as picking the window from the desk's list does: no pointer moves. The action is
-            asked of whoever the desk lists it under, and of the session where it lists none.
-            What the desk answered, for the step's facts."""
-            focus = "desktop:desk\x1ffocus"
-            row = next((row for query in ("desktop:desk", "focus") for row in listed(box, query)
+            """Bring the tab `shown` to the front of `box`'s shell with the shell's own `focus`,
+            as picking the window from the shell's list does: no pointer moves. The action is
+            asked of whoever the shell lists it under, and of the session where it lists none.
+            What the shell answered, for the step's facts."""
+            focus = "desktop:shell\x1ffocus"
+            row = next((row for query in ("desktop:shell", "focus") for row in listed(box, query)
                         if str(row.get("id", "")) == focus), None)
             providers = ([str(row.get("provider"))] if row else []) + ["so.tilo.session", "session"]
             refused = []
@@ -1468,20 +1468,20 @@ class Run:
                          "waiting_for": "its session names no live plane for the workspace"})
 
         self.person_opens_browser(b, res)
-        on_b = desk(b)
+        on_b = shell(b)
         group, tab = browser_window(on_b)
         workspace = next((held.get("workspace") for held in on_b.get("held_workspaces") or []
                      if held.get("workspace")), None)
         res.facts.update(group=group, tab=tab, workspace=workspace)
         if not group or not tab or not workspace:
-            raise Failed(f"B's desk does not hold the Browser's window in a workspace it shares: "
+            raise Failed(f"B's shell does not hold the Browser's window in a workspace it shares: "
                          f"group {group}, tab {tab}, workspace {workspace}")
         # What A lists under the window's own tab before anything is shared: the window that
         # runs on B, as the workspace's layout brought it, and no window of A's own.
         b_key = (b.identity.get("this_device") or {}).get("device", "")
 
         def listed_on_a(state: dict | None = None):
-            return next((held.get("tile") for _, held in tabs(state or desk(a))
+            return next((held.get("tile") for _, held in tabs(state or shell(a))
                          if held.get("id") == tab), None)
 
         def runs_on_b(tile) -> bool:
@@ -1491,20 +1491,20 @@ class Run:
         wait_until(lambda: runs_on_b(listed_on_a()), 60, 2.0)
         res.facts["listed_on_a_before"] = listed_on_a()
         if not runs_on_b(res.facts["listed_on_a_before"]):
-            raise Failed("A's desk does not list B's Browser window as a window that runs on B "
+            raise Failed("A's shell does not list B's Browser window as a window that runs on B "
                          f"({b_key[:8]}): under the window's tab it lists "
                          f"{json.dumps(res.facts['listed_on_a_before'])[:300]}")
 
         def stands_on_a() -> dict:
-            """How B's window stands on A's desk while nothing of it is shown there, from both
+            """How B's window stands on A's shell while nothing of it is shown there, from both
             places that say it. A's session reads it (`hosted` among its shares: `not-shared`,
             `awaited`, `away`, `left`, and `shown` while a share stands in the tab). A's tab says
-            it in the desk's notice: its title names the app and the device the window runs on,
-            and the sentence under it says why the window is not here. A desk lists its elements
+            it in the shell's notice: its title names the app and the device the window runs on,
+            and the sentence under it says why the window is not here. A shell lists its elements
             by name (`tilo-control list-targets`), and a notice's name is its title; the sentence
             under it is the notice's description, which that listing does not carry. So the title
             is read off A's screen and the reason off A's session."""
-            state = desk(a)
+            state = shell(a)
             said = next((row for row in shares(state, "hosted")
                          if str(row.get("tab")) == str(tab)), None) or {}
             label = str(((listed_on_a(state) or {}).get("HostedWindow") or {}).get("host_label")
@@ -1540,7 +1540,7 @@ class Run:
                 return
             if not seen["notice"]:
                 self.tab_stands[when] = (f"{when} the share, A's tab for B's Browser window does not say where "
-                                         "the window runs: A's desk names no element reading "
+                                         "the window runs: A's shell names no element reading "
                                          f"{seen['expected']!r}, so the tab shows nothing of why it is empty")
                 return
             self.tab_stands[when] = ""
@@ -1548,7 +1548,7 @@ class Run:
         # Before anything is shared, the tab A lists the window in is not an empty pane: it says
         # the window runs on B, and A's session reads it as not shared with the workspace.
         not_shared_on_a("before")
-        # The desk's own "Share a window" (`share-window`) is another thing: it asks Chat to put a
+        # The shell's own "Share a window" (`share-window`) is another thing: it asks Chat to put a
         # window's record in a channel. The window's picture goes to the workspace's devices
         # through the session's share, which takes the tab and finds the window itself.
         share = row_of(b, "share", "session:window-share")
@@ -1578,20 +1578,20 @@ class Run:
 
             def sharing_on_b(state: dict) -> dict | None:
                 """What B's session says of the window it shares: its `sharing` row for the tab,
-                with `streaming` while the window goes out to a desk that asks for it (for a
+                with `streaming` while the window goes out to a shell that asks for it (for a
                 window whose app draws its page: once that app handed a page over) and
                 `waiting_for` in words while something is missing."""
                 return next((row for row in shares(state, "sharing")
                              if str(row.get("tab")) == str(tab)), None)
 
             def pictured_on_a() -> dict | None:
-                row = received_on_a(desk(a))
+                row = received_on_a(shell(a))
                 return row if row and row.get("pictured") is True else None
 
             def hosted_on_a(state: dict) -> dict | None:
-                """The tab of A's desk that holds B's window as one running on another device: the
+                """The tab of A's shell that holds B's window as one running on another device: the
                 tab A's session says it pictures the window in (`shown_in`), which is the tab A's
-                desk lists the window in."""
+                shell lists the window in."""
                 watched = next((row for row in shares(state, "watching")
                                 if str(row.get("tab")) == str(tab)), None) or {}
                 shown_in = str(watched.get("shown_in") or tab)
@@ -1606,13 +1606,13 @@ class Run:
 
             def screen_on_a(also: str = "") -> dict:
                 """What A's screen holds of the window, read as `tilo-control list-targets` lists
-                A's desk and with no pointer: every element the desk names, with where it stands.
+                A's shell and with no pointer: every element the shell names, with where it stands.
                 A tile that draws the window's page is a document named "<window> on <device>",
                 and the page's text stands inside it, run by run, where it is drawn. A tile with
                 nothing to draw is the card of something still arriving, which names the device
                 it waits for and no text of the page. `page` is the form's text found there,
                 `placeholder` that card's caption, `scope` whether the text was read inside the
-                tile or, where no tile names itself, anywhere on the desk."""
+                tile or, where no tile names itself, anywhere on the shell."""
                 def named(target: dict) -> str:
                     return " ".join(str(target.get("name") or "").split())
 
@@ -1634,7 +1634,7 @@ class Run:
                                                             else set())
                 return {
                     "tile": [named(tile) for tile in tiles],
-                    "scope": "tile" if tiles else "desk",
+                    "scope": "tile" if tiles else "shell",
                     "page": [known for known in SITE_TEXT if known in text],
                     "placeholder": sorted({named(target) for target in placed} & waiting),
                     # Whether `also`, a text the step itself put on the page, is among it.
@@ -1645,14 +1645,14 @@ class Run:
             def page_on_a() -> dict | None:
                 """A's screen once it shows the form: every known text of it inside the tile
                 that draws the window. Where no tile names itself the text is looked for on the
-                whole desk, and a card of something still arriving from B counts against it."""
+                whole shell, and a card of something still arriving from B counts against it."""
                 seen = screen_on_a()
                 shown = (len(seen["page"]) == len(SITE_TEXT)
                          and (seen["scope"] == "tile" or not seen["placeholder"]))
                 return seen if shown else None
 
             # The window's content travels the workspace's live plane, on a track of its own that
-            # A's plane asks B's for while A's desk holds the window's tab: its pictures, or for a
+            # A's plane asks B's for while A's shell holds the window's tab: its pictures, or for a
             # window whose app draws its page, as the Browser's does, that page. What A's session
             # publishes says how far it came: the window's `received` row is there once the first
             # keyframe or the page's announcement reached A, and says `pictured` once its tile
@@ -1661,11 +1661,11 @@ class Run:
             # and are kept as a fact only.
             pictured = wait_until(pictured_on_a, 120, 2.0)
             # A's person looks at the window: the tab that holds it comes to the front of A's
-            # desk, so A's picture below shows the window and not the strip beside it.
-            shown_in = (hosted_on_a(desk(a)) or {}).get("tab") or tab
+            # shell, so A's picture below shows the window and not the strip beside it.
+            shown_in = (hosted_on_a(shell(a)) or {}).get("tab") or tab
             res.facts["shown_on_a"] = show_tab(a, shown_in)
             res.facts["peer_surface_rows"] = json.dumps(held_on_a(), ensure_ascii=False)[:1500]
-            # What that person sees there is the judge: the form's own text on A's desk. A
+            # What that person sees there is the judge: the form's own text on A's shell. A
             # session that says a window is pictured over a tab that shows a placeholder is wrong,
             # and this is where it is found out. The pictures below are taken after it, so they
             # show what was judged.
@@ -1676,7 +1676,7 @@ class Run:
             # session says it shares, watches and received. `received` holds a window from its
             # first keyframe on; `viewers` are the devices that told B they view it, which is
             # what B names them and lets them in by, and no condition of the pictures.
-            on_a, on_b = desk(a), desk(b)
+            on_a, on_b = shell(a), shell(b)
             seen = {
                 "governed_on_b": governed(on_b), "governed_on_a": governed(on_a),
                 "sharing_on_b": shares(on_b, "sharing"), "starting_on_b": shares(on_b, "starting"),
@@ -1705,7 +1705,7 @@ class Run:
                                in (("B", seen["live_on_b"]), ("A", seen["live_on_a"]))
                                if stands is not None and stands.get("state") != "open"), None)
                 # Whether B sends the window: its row says `streaming` once the window goes out
-                # to a desk that asks for it. Whether a desk asks is what B's plane says it is
+                # to a shell that asks for it. Whether a shell asks is what B's plane says it is
                 # asked for (`asked_for`), the window's tab among them.
                 unasked = [shared for shared in seen["sharing_on_b"]
                            if str(shared.get("tab")) == str(tab) and shared.get("streaming") is False]
@@ -1717,9 +1717,9 @@ class Run:
                 elif not seen["governed_on_b"]:
                     why = "B's workspace does not say the window is shared"
                 elif not seen["governed_on_a"]:
-                    why = "the share B's workspace names never reached A's desk"
+                    why = "the share B's workspace names never reached A's shell"
                 elif not seen["watching_on_a"]:
-                    why = ("A's desk reads the share and asks no device for the window: it does not "
+                    why = ("A's shell reads the share and asks no device for the window: it does not "
                            "know which device hosts the tab")
                 elif closed:
                     letter, stands = closed
@@ -1738,7 +1738,7 @@ class Run:
                     why = ("A watches the window and no keyframe of its track reached A over the "
                            f"workspace's live plane ({heard}): {res.facts['watching_on_a'][:300]}")
                 elif not seen["hosted_tab_on_a"]:
-                    why = ("the window's pictures reached A and its desk holds no tab for the window "
+                    why = ("the window's pictures reached A and its shell holds no tab for the window "
                            f"that runs on B: A received {res.facts['received_on_a'][:300]}; under "
                            f"the window's own id A lists {res.facts['listed_on_a'][:200]}")
                 else:
@@ -1759,17 +1759,17 @@ class Run:
                            f"nothing of it ({row.get('waiting_for') or 'it says no more'}): {link}; "
                            f"A received {res.facts['received_on_a'][:300]}; on A's screen: "
                            f"{res.facts['screen_on_a'][:300]}")
-                raise Failed(f"A's desk never pictured the window B shares: {why}")
+                raise Failed(f"A's shell never pictured the window B shares: {why}")
             if str(seen["hosted_tab_on_a"]["tab"]) != str(tab):
                 raise Failed("A pictures the window B shares in a tab of its own, "
-                             f"{seen['hosted_tab_on_a']['tab']}, and not in the tab its desk lists "
+                             f"{seen['hosted_tab_on_a']['tab']}, and not in the tab its shell lists "
                              f"the window in: there it lists {res.facts['listed_on_a'][:200]}")
             if not screen:
                 what = ("the card of a window still arriving" if held["placeholder"]
                         else "none of the page" if not held["page"]
                         else f"only {held['page']} of the page")
                 raise Failed("A's session says the window B shares is pictured, and A's screen "
-                             f"shows {what}: of {list(SITE_TEXT)} A's desk names "
+                             f"shows {what}: of {list(SITE_TEXT)} A's shell names "
                              f"{res.facts['screen_on_a'][:500]}; A received "
                              f"{res.facts['received_on_a'][:300]}")
             # A share is not a moment. Some seconds on, the window is still received and pictured
@@ -1777,7 +1777,7 @@ class Run:
             # and waits for nothing: a stream that started and died fails here, by what the two
             # sessions publish.
             time.sleep(stays_live_s)
-            on_a, on_b = desk(a), desk(b)
+            on_a, on_b = shell(a), shell(b)
             later = {
                 "received_on_a_later": received_on_a(on_a),
                 "sharing_on_b_later": sharing_on_b(on_b),
@@ -1832,7 +1832,7 @@ class Run:
                 changed = f"Reviewed {int(time.time()) % 100000}"
                 fill = row_of(b, "fill-page-form", "browser") or row_of(b, "fill-page-form", "")
                 if fill is None:
-                    raise Failed("B's desk lists no action that answers the form on its "
+                    raise Failed("B's shell lists no action that answers the form on its "
                                  "Browser's page, so nothing could be changed there")
                 reply = b.vm.invoke(fill["provider"], fill["id"],
                                     {"form": "form1", "answers": {"Given names": changed}})
@@ -1856,9 +1856,9 @@ class Run:
                                                               ensure_ascii=False)[:900]
                 if not arrived:
                     raise Failed(f"B's person changed an answer on the shared page to "
-                                 f"{changed!r} and A's desk went on showing the page as it "
+                                 f"{changed!r} and A's shell went on showing the page as it "
                                  f"was: {res.facts['screen_on_a_changed'][:500]}; B shares: "
-                                 f"{json.dumps(sharing_on_b(desk(b)), ensure_ascii=False)[:300]}")
+                                 f"{json.dumps(sharing_on_b(shell(b)), ensure_ascii=False)[:300]}")
         finally:
             # The share ends with the step: what follows finds B as it was.
             try:
@@ -1869,13 +1869,13 @@ class Run:
         # and A still lists it there as a window that runs on B, with no picture of it.
 
         def still_b_s() -> bool:
-            on_b = next((held.get("tile") for _, held in tabs(desk(b))
+            on_b = next((held.get("tile") for _, held in tabs(shell(b))
                          if held.get("id") == tab), None)
             return isinstance(on_b, dict) and "Foreign" in on_b and runs_on_b(listed_on_a())
 
         stays = wait_until(still_b_s, 30, 2.0)
         res.facts["listed_on_a_after"] = listed_on_a()
-        res.facts["listed_on_b_after"] = next((held.get("tile") for _, held in tabs(desk(b))
+        res.facts["listed_on_b_after"] = next((held.get("tile") for _, held in tabs(shell(b))
                                                if held.get("id") == tab), None)
         if not stays:
             raise Failed("the Browser's window did not stay B's once its share ended: B lists "
@@ -1907,16 +1907,16 @@ class Run:
         A's person shares that window with the workspace by its tab. B, the copy, lists the
         window under its own tab as one that runs on A before anything is shared, pictures it
         there once it is, and names the form's text where it draws the page: the step reads the
-        heading and labels off B's desk (`tilo-control list-targets`), when the page first came
+        heading and labels off B's shell (`tilo-control list-targets`), when the page first came
         and again some seconds later, and fails on the card of a window still arriving whatever
         the sessions say. What the hosting device shares is a change of the governance it keeps
         itself, with no host to hand it on: the direction in which a share never arrived. When
-        the share ends the window is still A's on both desks."""
+        the share ends the window is still A's on both shells."""
         # As in E14: longer than a plane that lost its relay takes to say so.
         stays_live_s = 20
         a_key = (a.identity.get("this_device") or {}).get("device", "")
 
-        def desk(box: Box) -> dict:
+        def shell(box: Box) -> dict:
             dump = box.vm.state()
             return dump.get("state") or dump
 
@@ -1932,7 +1932,7 @@ class Run:
                          if str(held.get("id")) == str(wanted)), None)
 
         def own_browser() -> list:
-            """A's own live Browser windows. Its desk lists B's Browser too, as a window that
+            """A's own live Browser windows. Its shell lists B's Browser too, as a window that
             runs on B, so a Browser among A's windows is not yet one A runs."""
             listed = (a.vm.raw({"op": "windows"}).get("answer") or {}).get("windows") or []
             return [window for window in listed
@@ -1940,7 +1940,7 @@ class Run:
                     and window.get("window") is not None]
 
         def rows_of(box: Box, query: str) -> list:
-            """The rows `box`'s desk lists for `query`, for a person and for scripts. A listing
+            """The rows `box`'s shell lists for `query`, for a person and for scripts. A listing
             that cannot be read whole is left out and said, never taken for an empty one."""
             found = []
             for read in (lambda: self.rows(box, query),
@@ -1970,7 +1970,7 @@ class Run:
                          if str(row.get("tab")) == str(tab)), None)
 
         def governed(state: dict) -> list:
-            """The window shares the workspace's governance names on this desk."""
+            """The window shares the workspace's governance names on this shell."""
             held = (state.get("workspace_tree") or {}).get("workspaces") or []
             return [grant.get("id") for workspace in held
                     for grant in (workspace.get("policy") or {}).get("grants") or []
@@ -1983,10 +1983,10 @@ class Run:
                          "waiting_for": "its session names no live plane for the workspace"})
 
         def bring_to_front(box: Box, shown) -> str:
-            """Bring the tab `shown` to the front of `box`'s desk with the desk's own `focus`:
-            no pointer moves. What the desk answered, for the step's facts."""
-            focus = "desktop:desk\x1ffocus"
-            row = next((row for query in ("desktop:desk", "focus") for row in rows_of(box, query)
+            """Bring the tab `shown` to the front of `box`'s shell with the shell's own `focus`:
+            no pointer moves. What the shell answered, for the step's facts."""
+            focus = "desktop:shell\x1ffocus"
+            row = next((row for query in ("desktop:shell", "focus") for row in rows_of(box, query)
                         if str(row.get("id", "")) == focus), None)
             providers = ([str(row.get("provider"))] if row else []) + ["so.tilo.session", "session"]
             refused = []
@@ -2004,8 +2004,8 @@ class Run:
             self.serve_form(a)
         except Failed as exc:
             raise Failed(f"A does not serve the form on its own loopback ({exc})") from exc
-        # A's person opens a Browser of A's own from the desk's apps. Asking for the app on a
-        # desk that lists another device's Browser window opens this device's own.
+        # A's person opens a Browser of A's own from the shell's apps. Asking for the app on a
+        # shell that lists another device's Browser window opens this device's own.
         if not own_browser():
             deadline = time.monotonic() + 45
             while True:
@@ -2014,29 +2014,29 @@ class Run:
                     break
                 except VmError as exc:
                     if "unknown_action" not in str(exc) or time.monotonic() >= deadline:
-                        raise Failed("A's person cannot open the Browser from the desk's apps: "
+                        raise Failed("A's person cannot open the Browser from the shell's apps: "
                                      f"{str(exc)[:600]}") from exc
                     time.sleep(0.5)
             if not wait_until(lambda: bool(own_browser()), 90, 2.0):
-                raise Failed("the Browser A's person opened never stood on A's desk as a window "
+                raise Failed("the Browser A's person opened never stood on A's shell as a window "
                              f"A runs: {json.dumps(a.vm.raw({'op': 'windows'}))[:600]}")
             time.sleep(6.0)
         live = own_browser()
         if not live:
-            raise Failed("the Browser A's person opened did not stay on A's desk")
+            raise Failed("the Browser A's person opened did not stay on A's shell")
         tab = live[0].get("tab")
         workspace = next((workspace.get("id") or (workspace.get("policy") or {}).get("workspace")
-                     for workspace, held in tabs(desk(a)) if str(held.get("id")) == str(tab)), None)
+                     for workspace, held in tabs(shell(a)) if str(held.get("id")) == str(tab)), None)
         res.facts.update(tab=tab, workspace=workspace)
         if tab is None or not workspace:
-            raise Failed("A's desk does not hold its Browser's window in a tab of a workspace: "
+            raise Failed("A's shell does not hold its Browser's window in a tab of a workspace: "
                          f"tab {tab}, workspace {workspace}")
         # A's person sends that Browser to the form, with the Browser's own action on its page,
         # and reads the form there before sharing anything.
         navigate = action_row(a, "navigate", "browser") or action_row(a, "navigate", "")
         if navigate is None:
             res.facts["page_rows"] = [str(row.get("id")) for row in rows_of(a, "page")][:40]
-            raise Failed("A's desk lists no action that sends its Browser's page to an address")
+            raise Failed("A's shell lists no action that sends its Browser's page to an address")
         res.facts["navigated"] = a.vm.invoke(navigate["provider"], navigate["id"], {"url": SITE_URL})
 
         def form_on_a() -> bool:
@@ -2055,11 +2055,11 @@ class Run:
             hosted = (tile or {}).get("HostedWindow") if isinstance(tile, dict) else None
             return bool(hosted) and bool(a_key) and hosted.get("host") == a_key
 
-        wait_until(lambda: runs_on_a(tile_of(desk(b), tab)), 60, 2.0)
-        before = tile_of(desk(b), tab)
+        wait_until(lambda: runs_on_a(tile_of(shell(b), tab)), 60, 2.0)
+        before = tile_of(shell(b), tab)
         res.facts["listed_on_b_before"] = before
         if not runs_on_a(before):
-            raise Failed("B's desk does not list A's Browser window as a window that runs on A "
+            raise Failed("B's shell does not list A's Browser window as a window that runs on A "
                          f"({a_key[:8]}): under the window's tab it lists "
                          f"{json.dumps(before)[:300]}")
         host_label = str(((before or {}).get("HostedWindow") or {}).get("host_label") or "")
@@ -2073,7 +2073,7 @@ class Run:
         res.facts["shared"] = a.vm.invoke(share["provider"], share["id"], {"tab": str(tab)})
         try:
             def hosted_on_b(state: dict) -> dict | None:
-                """The tab of B's desk that holds A's window as one running on another device:
+                """The tab of B's shell that holds A's window as one running on another device:
                 the tab B's session says it pictures the window in (`shown_in`)."""
                 shown_in = str((row_for(state, "watching") or {}).get("shown_in") or tab)
                 tile = tile_of(state, shown_in)
@@ -2083,7 +2083,7 @@ class Run:
 
             def screen_on_b() -> dict:
                 """What B's screen holds of the window, as `tilo-control list-targets` lists B's
-                desk: the tile that draws the window's page is named "<window> on <device>", and
+                shell: the tile that draws the window's page is named "<window> on <device>", and
                 the page's text stands inside it, run by run. A tile with nothing to draw is the
                 card of something still arriving, which names the device it waits for and no
                 text of the page."""
@@ -2108,7 +2108,7 @@ class Run:
                                                             else set())
                 return {
                     "tile": [named(tile) for tile in tiles],
-                    "scope": "tile" if tiles else "desk",
+                    "scope": "tile" if tiles else "shell",
                     "page": [known for known in SITE_TEXT if known in text],
                     "placeholder": sorted({named(target) for target in placed} & waiting),
                     "text": text[:400],
@@ -2117,25 +2117,25 @@ class Run:
             def page_on_b() -> dict | None:
                 """B's screen once it shows the form: every known text of it inside the tile
                 that draws the window. Where no tile names itself the text is looked for on the
-                whole desk, and a card of something still arriving from A counts against it."""
+                whole shell, and a card of something still arriving from A counts against it."""
                 seen = screen_on_b()
                 shown = (len(seen["page"]) == len(SITE_TEXT)
                          and (seen["scope"] == "tile" or not seen["placeholder"]))
                 return seen if shown else None
 
             def pictured_on_b() -> dict | None:
-                row = row_for(desk(b), "received")
+                row = row_for(shell(b), "received")
                 return row if row and row.get("pictured") is True else None
 
             pictured = wait_until(pictured_on_b, 120, 2.0)
-            # B's person looks at the window: its tab comes to the front of B's desk.
-            shown_in = (hosted_on_b(desk(b)) or {}).get("tab") or tab
+            # B's person looks at the window: its tab comes to the front of B's shell.
+            shown_in = (hosted_on_b(shell(b)) or {}).get("tab") or tab
             res.facts["shown_on_b"] = bring_to_front(b, shown_in)
-            # What that person sees there is the judge: the form's own text on B's desk.
+            # What that person sees there is the judge: the form's own text on B's shell.
             screen = wait_until(page_on_b, 60, 2.0) if pictured else None
             held = screen or screen_on_b()
             res.facts["screen_on_b"] = json.dumps(held, ensure_ascii=False)[:900]
-            on_a, on_b = desk(a), desk(b)
+            on_a, on_b = shell(a), shell(b)
             seen = {
                 "governed_on_a": governed(on_a), "governed_on_b": governed(on_b),
                 "sharing_on_a": shares(on_a, "sharing"), "starting_on_a": shares(on_a, "starting"),
@@ -2161,10 +2161,10 @@ class Run:
                 elif not seen["governed_on_a"]:
                     why = "A's workspace does not say the window is shared"
                 elif not seen["governed_on_b"]:
-                    why = ("the share A wrote into the workspace it hosts never reached B's desk: "
+                    why = ("the share A wrote into the workspace it hosts never reached B's shell: "
                            "B's copy of the workspace's governance names no shared window")
                 elif not seen["watching_on_b"]:
-                    why = ("B's desk reads the share and asks no device for the window: it does not "
+                    why = ("B's shell reads the share and asks no device for the window: it does not "
                            "know which device hosts the tab")
                 elif closed:
                     letter, stands = closed
@@ -2176,7 +2176,7 @@ class Run:
                            f"live plane: B watches {res.facts['watching_on_b'][:300]}; A shares "
                            f"{res.facts['sharing_on_a'][:300]}")
                 elif not seen["hosted_tab_on_b"]:
-                    why = ("the window's start reached B and its desk holds no tab for the window "
+                    why = ("the window's start reached B and its shell holds no tab for the window "
                            f"that runs on A: B received {res.facts['received_on_b'][:300]}; under "
                            f"the window's own id B lists {res.facts['listed_on_b'][:200]}")
                 else:
@@ -2185,22 +2185,22 @@ class Run:
                            f"nothing of it ({row.get('waiting_for') or 'it says no more'}): A says "
                            f"of its share {sent.get('waiting_for') or res.facts['sharing_on_a'][:300]}; "
                            f"on B's screen: {res.facts['screen_on_b'][:300]}")
-                raise Failed(f"B's desk never pictured the window A shares: {why}")
+                raise Failed(f"B's shell never pictured the window A shares: {why}")
             if str(seen["hosted_tab_on_b"]["tab"]) != str(tab):
                 raise Failed("B pictures the window A shares in a tab of its own, "
-                             f"{seen['hosted_tab_on_b']['tab']}, and not in the tab its desk lists "
+                             f"{seen['hosted_tab_on_b']['tab']}, and not in the tab its shell lists "
                              f"the window in: there it lists {res.facts['listed_on_b'][:200]}")
             if not screen:
                 what = ("the card of a window still arriving" if held["placeholder"]
                         else "none of the page" if not held["page"]
                         else f"only {held['page']} of the page")
                 raise Failed("B's session says the window A shares is pictured, and B's screen "
-                             f"shows {what}: of {list(SITE_TEXT)} B's desk names "
+                             f"shows {what}: of {list(SITE_TEXT)} B's shell names "
                              f"{res.facts['screen_on_b'][:500]}; B received "
                              f"{res.facts['received_on_b'][:300]}")
             # A share is not a moment: some seconds on, it is read again on both machines.
             time.sleep(stays_live_s)
-            on_a, on_b = desk(a), desk(b)
+            on_a, on_b = shell(a), shell(b)
             sent, kept = row_for(on_a, "sharing"), row_for(on_b, "received")
             later = {"sharing_on_a_later": sent, "received_on_b_later": kept,
                      "live_on_a_later": plane(on_a), "live_on_b_later": plane(on_b)}
@@ -2248,14 +2248,14 @@ class Run:
         # B still lists it there as a window that runs on A, and B holds nothing of the share.
 
         def still_a_s() -> bool:
-            own = tile_of(desk(a), tab)
-            on_b = desk(b)
+            own = tile_of(shell(a), tab)
+            on_b = shell(b)
             return (isinstance(own, dict) and "Foreign" in own and runs_on_a(tile_of(on_b, tab))
                     and row_for(on_b, "watching") is None and row_for(on_b, "received") is None)
 
         stays = wait_until(still_a_s, 30, 2.0)
-        on_b = desk(b)
-        res.facts["listed_on_a_after"] = tile_of(desk(a), tab)
+        on_b = shell(b)
+        res.facts["listed_on_a_after"] = tile_of(shell(a), tab)
         res.facts["listed_on_b_after"] = tile_of(on_b, tab)
         res.facts["shares_on_b_after"] = json.dumps(
             {"watching": row_for(on_b, "watching"), "received": row_for(on_b, "received")},
@@ -2296,7 +2296,7 @@ class Run:
         said = json.dumps(t)
         if "someone else" not in said and "refus" not in said.lower():
             raise Failed(f"C was not told B's door refused it: {said[:1500]}")
-        # B's desk says of each agent it seats which device it came from: none came from C's.
+        # B's shell says of each agent it seats which device it came from: none came from C's.
         from_c = (sc.get("this_device") or {}).get("device", "")
         if len(from_c) != 64:
             raise Failed(f"C's identity names no device: {sc}")

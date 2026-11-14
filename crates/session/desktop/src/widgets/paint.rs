@@ -10,9 +10,9 @@
 )]
 
 use ui::TextRole;
-use ui::desk_widgets::WidgetId;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widgets::WidgetId;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size, Vec2};
 use vello::peniko::{BlendMode, Fill};

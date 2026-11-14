@@ -101,9 +101,9 @@ fn opened(doc: &AutoCommit) -> SharedDesktop {
 }
 
 tilo_test_env::scenario! {
-    fn the_desk_is_one_document;
+    fn the_shell_is_one_document;
 
-    phase an_old_shared_record_opens_as_the_desks_own_document;
+    phase an_old_shared_record_opens_as_the_shells_own_document;
     // The record older builds wrote — a workspace, strip, group and window as
     // an entry each at the record's root — opens as the layout's one document
     // with its windows, records and people, and the entries it wrote stop
@@ -171,7 +171,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_build_from_before_writes_into_the_desk_document;
+    phase a_build_from_before_writes_into_the_shell_document;
     // A peer that knows only the old record — a build from before the layout was
     // one document — writes into the layout's document rather than beside it, so
     // both keep working on the same layout.
@@ -203,7 +203,7 @@ tilo_test_env::scenario! {
         assert_eq!(held.authors, older.authors);
     }
 
-    phase two_peers_each_change_the_desk_and_keep_both_changes;
+    phase two_peers_each_change_the_shell_and_keep_both_changes;
     // Two peers each change the layout and merge: the layout holds both changes,
     // by both of them, and each peer reads the same layout.
     {

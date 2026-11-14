@@ -2778,7 +2778,7 @@ impl Applier {
     /// one per-workspace resource of each of the package's root types is made the first time it
     /// is wanted, here as in a window that opens it, and a task reads it from the package
     /// whether or not any window ever made it. A package may declare several roots
-    /// (`root viewing: Viewing`, `root Desk`); the change names which. It is applied as the
+    /// (`root viewing: Viewing`, `root Shell`); the change names which. It is applied as the
     /// change's invoker's step, before the change. Whether it made it.
     fn make_root(
         &mut self,

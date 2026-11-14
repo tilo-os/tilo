@@ -15,12 +15,12 @@ pub const FOREGROUND_WEIGHT: u64 = 800;
 /// CPU and IO weight of an app that yields: below default.
 pub const BACKGROUND_WEIGHT: u64 = 50;
 /// CPU and IO weight of an app while it opens: the most a cgroup may carry, so the app a person just
-/// asked for is served before every other app, the session's desk and any batch work.
+/// asked for is served before every other app, the session's shell and any batch work.
 pub const STARTUP_WEIGHT: u64 = 10_000;
 /// How long a launch keeps the startup weight, counted from the process it started: the app's own
-/// start, its first frame's work and the desk's placement of its window under load.
+/// start, its first frame's work and the shell's placement of its window under load.
 pub const STARTUP_WINDOW: Duration = Duration::from_secs(2);
-/// CPU and IO weight of the session itself: the compositor and the desk placing, drawing and answering
+/// CPU and IO weight of the session itself: the compositor and the shell placing, drawing and answering
 /// the windows of the person's work.
 pub const SESSION_WEIGHT: u64 = 1_000;
 /// `oom_score_adj` of an app: the kernel's default, the lowest an unprivileged process may hand out
@@ -40,7 +40,7 @@ pub enum Tier {
     Foreground,
     /// An app nobody is looking at: yields CPU, IO and memory.
     Background,
-    /// The session's own cgroup: the compositor and the desk.
+    /// The session's own cgroup: the compositor and the shell.
     Session,
 }
 
@@ -139,10 +139,10 @@ mod tests {
             assert_eq!(
                 session,
                 [("CPUWeight", 1_000), ("IOWeight", 1_000)],
-                "the desk outranks every app, and its floor is the image's"
+                "the shell outranks every app, and its floor is the image's"
             );
             let foreground = tier_properties(Tier::Foreground, Some(32 * GIB));
-            // The order a person's work is served in: what they just asked for, then the desk showing it,
+            // The order a person's work is served in: what they just asked for, then the shell showing it,
             // then what they can see, then the rest.
             let cpu_weight = |tier| {
                 tier_properties(tier, Some(32 * GIB))

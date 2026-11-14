@@ -61,7 +61,6 @@ pub mod clock;
 pub mod continuity_privacy;
 pub mod control_hints;
 pub mod day_schedule;
-pub mod desk_widgets;
 pub mod desktop_control;
 pub mod desktop_controls;
 pub mod device_class;
@@ -103,6 +102,7 @@ mod store;
 pub mod system_sounds;
 #[cfg(feature = "watch")]
 pub mod watch;
+pub mod widgets;
 
 pub use accessibility::Labelled;
 pub use device_class::DeviceClass;

@@ -25,14 +25,14 @@ pub struct FileOp {
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Desk {
+pub struct Files {
     pub notes: Collection<Note>,
     /// Settled with where the file went.
     pub ops: Outbox<FileOp, String>,
 }
 
-#[resource(kind = "test.desk", params = desk, catalogue = "tests/locales")]
-impl Desk {
+#[resource(kind = "test.files", params = files, catalogue = "tests/locales")]
+impl Files {
     /// Add a note.
     #[action]
     pub fn add_note(&mut self, cx: &mut ActionCx, title: String) {
@@ -58,7 +58,7 @@ impl Desk {
         );
     }
 
-    fn untrash(undoing: Undoing<'_, Self, desk::Trash>) -> Option<Invoke<Self>> {
+    fn untrash(undoing: Undoing<'_, Self, files::Trash>) -> Option<Invoke<Self>> {
         Some(Self::REVERT.with(undoing.minted.first()?.clone()))
     }
 
@@ -93,15 +93,15 @@ impl Desk {
     }
 }
 
-fn edit(replica: &mut Replica<Desk>, edit: Edit<Desk>) -> ChangeKind {
-    let action = Desk::edit_action(edit).unwrap();
+fn edit(replica: &mut Replica<Files>, edit: Edit<Files>) -> ChangeKind {
+    let action = Files::edit_action(edit).unwrap();
     let change = action.change_kind();
     replica.apply_action(&action).unwrap();
     change
 }
 
-fn trashed(replica: &mut Replica<Desk>, name: &str) -> (Id, tilo_actions::ActionEnvelope) {
-    let envelope = replica.apply(Desk::TRASH.with(name)).unwrap().clone();
+fn trashed(replica: &mut Replica<Files>, name: &str) -> (Id, tilo_actions::ActionEnvelope) {
+    let envelope = replica.apply(Files::TRASH.with(name)).unwrap().clone();
     let state = replica.state().unwrap();
     let (id, _) = state
         .ops
@@ -116,27 +116,27 @@ tilo_test_env::scenario! {
 
     phase an_entry_settles_with_its_result_as_nobodys_step;
     {
-        let mut desk = Replica::<Desk>::new();
-        let (id, envelope) = trashed(&mut desk, "a.txt");
+        let mut files = Replica::<Files>::new();
+        let (id, envelope) = trashed(&mut files, "a.txt");
         assert_eq!(
             envelope.context.as_ref().unwrap().kind,
             Some(ActionKind::Outside)
         );
         // A pending entry is not forgotten by an edit.
-        let action = Desk::edit_action(Desk::paths().ops.forget(&id)).unwrap();
-        assert!(desk.apply_action(&action).is_err());
+        let action = Files::edit_action(Files::paths().ops.forget(&id)).unwrap();
+        assert!(files.apply_action(&action).is_err());
 
-        let settle = Desk::paths()
+        let settle = Files::paths()
             .ops
             .settle(&id, &Settled::Done("Trash/a.txt".to_owned()));
-        assert_eq!(edit(&mut desk, settle), ChangeKind::External);
-        let state = desk.state().unwrap();
+        assert_eq!(edit(&mut files, settle), ChangeKind::External);
+        let state = files.state().unwrap();
         assert_eq!(state.ops.pending().count(), 0);
         assert_eq!(
             state.ops.outcome(&id),
             Some(&Settled::Done("Trash/a.txt".to_owned()))
         );
-        let entry = desk.log().last().unwrap().context.clone().unwrap();
+        let entry = files.log().last().unwrap().context.clone().unwrap();
         assert_eq!(entry.change, ChangeKind::External);
         let Some(tilo_actions::Described {
             what: tilo_actions::Did::Edit(recorded),
@@ -150,23 +150,23 @@ tilo_test_env::scenario! {
         assert_eq!(recorded.args["state"].as_str(), Some("done"));
 
         assert_eq!(
-            edit(&mut desk, Desk::paths().ops.forget(&id)),
+            edit(&mut files, Files::paths().ops.forget(&id)),
             ChangeKind::Housekeeping
         );
-        assert!(desk.state().unwrap().ops.is_empty());
+        assert!(files.state().unwrap().ops.is_empty());
     }
 
     phase undoing_a_queueing_verb_queues_its_compensation_for_the_entry_it_minted;
     {
-        let mut desk = Replica::<Desk>::new();
-        let (id, envelope) = trashed(&mut desk, "a.txt");
+        let mut files = Replica::<Files>::new();
+        let (id, envelope) = trashed(&mut files, "a.txt");
         let compensation = envelope
             .context
             .as_ref()
             .and_then(|context| context.compensation.clone())
             .expect("a verb with a declared undo records its compensation");
-        let undo: <Desk as Resource>::Action = serde_json::from_slice(&compensation.payload).unwrap();
-        let revert = Desk::REVERT.with(id.clone()).build(0).unwrap();
+        let undo: <Files as Resource>::Action = serde_json::from_slice(&compensation.payload).unwrap();
+        let revert = Files::REVERT.with(id.clone()).build(0).unwrap();
         assert_eq!(
             serde_json::to_value(&undo.operation).unwrap(),
             serde_json::to_value(&revert.operation).unwrap(),
@@ -174,21 +174,21 @@ tilo_test_env::scenario! {
         );
 
         // A peer replays the verb and checks its recorded compensation.
-        let mut peer = desk.fork();
-        let (_, later) = trashed(&mut desk, "b.txt");
+        let mut peer = files.fork();
+        let (_, later) = trashed(&mut files, "b.txt");
         peer.replay(&later).unwrap();
         assert_eq!(peer.state().unwrap().ops.len(), 2);
 
         // The owning device carried it out; undo queues the compensation,
         // which reads where the file went.
         edit(
-            &mut desk,
-            Desk::paths()
+            &mut files,
+            Files::paths()
                 .ops
                 .settle(&id, &Settled::Done("Trash/a.txt".to_owned())),
         );
-        desk.apply_action(&undo).unwrap();
-        let state = desk.state().unwrap();
+        files.apply_action(&undo).unwrap();
+        let state = files.state().unwrap();
         let restore = state
             .ops
             .pending()
@@ -201,39 +201,39 @@ tilo_test_env::scenario! {
 
     phase undoing_before_the_owner_ran_it_cancels_the_entry;
     {
-        let mut desk = Replica::<Desk>::new();
-        let (id, envelope) = trashed(&mut desk, "a.txt");
+        let mut files = Replica::<Files>::new();
+        let (id, envelope) = trashed(&mut files, "a.txt");
         let compensation = envelope.context.unwrap().compensation.unwrap();
-        let undo: <Desk as Resource>::Action = serde_json::from_slice(&compensation.payload).unwrap();
-        desk.apply_action(&undo).unwrap();
-        assert!(desk.state().unwrap().ops.get(&id).is_none());
+        let undo: <Files as Resource>::Action = serde_json::from_slice(&compensation.payload).unwrap();
+        files.apply_action(&undo).unwrap();
+        assert!(files.state().unwrap().ops.get(&id).is_none());
     }
 
     phase a_verb_settles_and_prunes_and_an_entry_verb_is_no_item_verb;
     {
-        let mut desk = Replica::<Desk>::new();
-        desk.apply(Desk::ADD_NOTE.with("first")).unwrap();
-        let (a, _) = trashed(&mut desk, "a.txt");
-        let (b, _) = trashed(&mut desk, "b.txt");
+        let mut files = Replica::<Files>::new();
+        files.apply(Files::ADD_NOTE.with("first")).unwrap();
+        let (a, _) = trashed(&mut files, "a.txt");
+        let (b, _) = trashed(&mut files, "b.txt");
         edit(
-            &mut desk,
-            Desk::paths()
+            &mut files,
+            Files::paths()
                 .ops
                 .settle(&a, &Settled::Done("Trash/a.txt".into())),
         );
-        let envelope = desk.apply(Desk::FOUND_GONE.with(b.clone())).unwrap();
+        let envelope = files.apply(Files::FOUND_GONE.with(b.clone())).unwrap();
         assert_eq!(
             envelope.context.as_ref().unwrap().change,
             ChangeKind::External
         );
-        let state = desk.state().unwrap();
+        let state = files.state().unwrap();
         assert!(state.ops.get(&a).is_none(), "pruned to the newest settled");
         assert_eq!(
             state.ops.outcome(&b).and_then(Settled::reason),
             Some("already gone")
         );
 
-        let tree = desk.published().unwrap();
+        let tree = files.published().unwrap();
         let note = tree
             .children
             .iter()

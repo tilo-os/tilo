@@ -38,7 +38,7 @@ struct Job {
     query: Query,
     /// Where the answer goes: the asking search's own channel.
     answer: Sender<Answer>,
-    /// What wakes the desk that asked when the answer is in: the desk draws
+    /// What wakes the shell that asked when the answer is in: the shell draws
     /// no frame for a search while a source works, so the answer is what asks
     /// for the frame that shows it.
     wake: ui::wake::WakeHandle,
@@ -93,7 +93,7 @@ impl std::fmt::Debug for SearchWorkers {
 
 impl SearchWorkers {
     /// A palette's work, on the host's own background threads, its answers waking
-    /// the desk's own frames.
+    /// the shell's own frames.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -154,7 +154,7 @@ impl SearchWorkers {
     /// that source is already in flight: then this one waits for it.
     ///
     /// Called from the frame that asks its sources, which is the frame of the
-    /// desk that shows the answer: its wake is what asks for the frame that
+    /// shell that shows the answer: its wake is what asks for the frame that
     /// collects and shows it, and it stays with the job while the job waits
     /// for an older query of the same source.
     pub(crate) fn ask(
@@ -190,7 +190,7 @@ impl SearchWorkers {
     }
 
     /// Run `job` away from the frame, and once it is done let the query that
-    /// waited for its source run. The answer wakes the desk: no frame is
+    /// waited for its source run. The answer wakes the shell: no frame is
     /// drawn for the search while its sources work. `loop_wake` is the host's
     /// own wake, where it asks the search from off the frames.
     fn start(&self, job: Job, key: &str, loop_wake: Option<&LoopWake>) {

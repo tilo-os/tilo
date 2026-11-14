@@ -111,7 +111,7 @@ def wayland_display(log: Path) -> str | None:
 
 
 def windows(control: Control) -> dict:
-    """The desk's open windows, each with `rect` (`[x, y, width, height]`, null while no window
+    """The shell's open windows, each with `rect` (`[x, y, width, height]`, null while no window
     of the tab is mapped) and `frames`, the frames its client committed."""
     return control.send({"op": "windows"})
 

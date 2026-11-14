@@ -44,7 +44,11 @@ impl Device {
 
     /// What this device's certificate calls it.
     fn name(&self) -> &'static str {
-        if self.key == LAPTOP { "Laptop" } else { "Desk" }
+        if self.key == LAPTOP {
+            "Laptop"
+        } else {
+            "Tower"
+        }
     }
 
     /// The workspace as other devices are to see it: the windows that run
@@ -463,47 +467,47 @@ tilo_test_env::scenario! {
         assert_eq!(laptop.tab(NOTES).tile, notes(NOTES).tile);
     }
 
-    phase a_window_bound_to_its_device_is_hosted_there_and_stays_its_own_whatever_another_desk_writes;
+    phase a_window_bound_to_its_device_is_hosted_there_and_stays_its_own_whatever_another_device_writes;
     {
-            let (mut laptop, mut desk) = with_a_browser_on_the_laptop();
-            // The desk holds the laptop's Browser as that window, running on the
+            let (mut laptop, mut tower) = with_a_browser_on_the_laptop();
+            // The tower holds the laptop's Browser as that window, running on the
             // laptop: not as an app's window it would open an instance of.
-            assert_eq!(desk.tab(BROWSER).tile, browser_on_the_laptop());
+            assert_eq!(tower.tab(BROWSER).tile, browser_on_the_laptop());
             // A window that shows a record is still one every device opens for
             // itself.
             assert!(matches!(
-                &desk.tab(NOTES).tile,
+                &tower.tab(NOTES).tile,
                 TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.notes"
             ));
 
-            // The desk lays the laptop's Browser elsewhere and writes: the laptop
-            // shows its own live window there, and the desk still holds it as the
+            // The tower lays the laptop's Browser elsewhere and writes: the laptop
+            // shows its own live window there, and the tower still holds it as the
             // laptop's.
-            desk.change(|w| move_tab(w, BROWSER, LATER, LATER_GROUP));
-            laptop.hear(&mut desk);
+            tower.change(|w| move_tab(w, BROWSER, LATER, LATER_GROUP));
+            laptop.hear(&mut tower);
             assert_eq!(laptop.tab(BROWSER).tile, browser(BROWSER).tile);
             assert!(
                 laptop.places().contains(&(LATER, LATER_GROUP, BROWSER)),
-                "the window is where the other desk put it: {:?}",
+                "the window is where the other tower put it: {:?}",
                 laptop.places()
             );
-            assert_eq!(desk.tab(BROWSER).tile, browser_on_the_laptop());
+            assert_eq!(tower.tab(BROWSER).tile, browser_on_the_laptop());
 
-            // Neither desk writing again changes whose window it is.
+            // Neither tower writing again changes whose window it is.
             laptop.write();
-            desk.write();
-            desk.hear(&mut laptop);
-            laptop.hear(&mut desk);
+            tower.write();
+            tower.hear(&mut laptop);
+            laptop.hear(&mut tower);
             assert_eq!(laptop.tab(BROWSER).tile, browser(BROWSER).tile);
-            assert_eq!(desk.tab(BROWSER).tile, browser_on_the_laptop());
+            assert_eq!(tower.tab(BROWSER).tile, browser_on_the_laptop());
     }
 
-    phase a_bound_window_another_desk_wrote_as_an_app_s_window_is_its_device_s_again;
+    phase a_bound_window_another_device_wrote_as_an_app_s_window_is_its_device_s_again;
     {
-            let (mut laptop, mut desk) = with_a_browser_on_the_laptop();
-            // A desk that took the window for one it opens itself writes it so: the
+            let (mut laptop, mut tower) = with_a_browser_on_the_laptop();
+            // A tower that took the window for one it opens itself writes it so: the
             // record now lists an app's window under the laptop's tab.
-            desk.change(|w| {
+            tower.change(|w| {
                 let tab = w
                     .strips
                     .iter_mut()
@@ -517,30 +521,30 @@ tilo_test_env::scenario! {
                     note: String::new(),
                 };
             });
-            laptop.hear(&mut desk);
+            laptop.hear(&mut tower);
             // The laptop's window keeps its tab and its tile.
             assert_eq!(laptop.tab(BROWSER).tile, browser(BROWSER).tile);
             assert!(laptop.places().contains(&(MAIN, BROWSER_GROUP, BROWSER)));
-            // Its next write says whose window it is again, and the other desk
+            // Its next write says whose window it is again, and the other tower
             // holds it as the laptop's, with nothing of its own to open.
             assert!(laptop.write(), "the laptop publishes its window again");
-            desk.hear(&mut laptop);
-            assert_eq!(desk.tab(BROWSER).tile, browser_on_the_laptop());
+            tower.hear(&mut laptop);
+            assert_eq!(tower.tab(BROWSER).tile, browser_on_the_laptop());
             assert_eq!(laptop.tab(BROWSER).tile, browser(BROWSER).tile);
     }
 }
 
 /// The laptop opens a Browser window beside what [`two_devices`] hold, and the
-/// desk hears of it.
+/// tower hears of it.
 fn with_a_browser_on_the_laptop() -> (Device, Device) {
-    let (mut laptop, mut desk) = two_devices();
+    let (mut laptop, mut tower) = two_devices();
     laptop.change(|w| {
         w.strips[0]
             .window_groups
             .push(group(BROWSER_GROUP, vec![browser(BROWSER)]));
     });
-    desk.hear(&mut laptop);
-    (laptop, desk)
+    tower.hear(&mut laptop);
+    (laptop, tower)
 }
 
 tilo_test_env::scenario! {

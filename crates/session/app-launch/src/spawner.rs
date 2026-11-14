@@ -271,7 +271,7 @@ impl Spawner {
             // Nothing the app writes ever reaches the session's own streams.
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // Where an app's own diagnostics go when the session's desk names a
+        // Where an app's own diagnostics go when the session's shell names a
         // directory for them (`TILO_APP_STDERR_DIR`): a headless acceptance
         // reads them there, and the log keeps them too.
         let diagnostics = std::env::var_os("TILO_APP_STDERR_DIR").and_then(|dir| {
@@ -473,7 +473,7 @@ impl App {
     }
 
     /// Whether this launch is still opening: inside the window in which it is
-    /// served before every other app and the desk
+    /// served before every other app and the shell
     /// ([`launcher::priority::STARTUP_WINDOW`]).
     pub(crate) fn opening(&self) -> bool {
         self.started.elapsed() < launcher::priority::STARTUP_WINDOW

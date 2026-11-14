@@ -28,7 +28,7 @@ only sets up and tears down what is around it:
 The app opens in the workspace the session publishes in
 $XDG_RUNTIME_DIR/tilo-session/workspace-id, which is the one `tilo-app dev`
 joins; the session mints a throwaway identity first, as a development login
-does, so the desk has that workspace at all.
+does, so the shell has that workspace at all.
 
 Everything lives under target/agent-loop/APP (state, logs) and a private
 directory in $XDG_RUNTIME_DIR (sockets, the runtime profile). Your real home,
@@ -190,8 +190,8 @@ def start(args) -> int:
     wrapper.chmod(0o700)
     env["CARGO"] = str(wrapper)
     logs = session.root / "logs"
-    # A desk with no identity shows setup, not a workspace, so a session that
-    # has none mints the throwaway identity a development login opens its desk
+    # A shell with no identity shows setup, not a workspace, so a session that
+    # has none mints the throwaway identity a development login opens its shell
     # with, and is started again onto it.
     if not (session.root / "identity" / "device" / "cert.bin").exists():
         mint_identity(session, env)
@@ -199,7 +199,7 @@ def start(args) -> int:
     display_file = session.run / "tilo-session" / "wayland-display"
     wait_for(display_file, session_process, args.timeout, "the session")
     env["WAYLAND_DISPLAY"] = display_file.read_text().strip()
-    # The desk's workspace in front is up with it, and `tilo-app dev` reads it
+    # The shell's workspace in front is up with it, and `tilo-app dev` reads it
     # for the app it starts.
     wait_for(display_file.with_name("workspace-id"), session_process, args.timeout, "the session")
     # The app sees the desktop a Tilo login gives its apps, so it leaves
@@ -269,8 +269,8 @@ def start_session(session: Session, env: dict) -> subprocess.Popen:
 
 def mint_identity(session: Session, env: dict) -> None:
     """Give the session the throwaway identity a development login opens its
-    desk with, through the door the tree's own development harnesses use, and
-    stop the session that minted it: the one started after it reads the desk
+    shell with, through the door the tree's own development harnesses use, and
+    stop the session that minted it: the one started after it reads the shell
     through that identity."""
     control = pathlib.Path(env["TILO_TEST_CONTROL"])
     minting = subprocess.Popen(

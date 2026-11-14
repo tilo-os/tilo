@@ -1086,8 +1086,8 @@ impl Reconciler {
             inner = inner.push_slot(slot);
         }
         // A surface that fills its pane gives what it holds the pane's height, so its content is
-        // the pane's size and pans inside it instead of growing: the desk a person pans, and a row
-        // of windows kept to their own widths whose bars and apps fill the room between the desk's
+        // the pane's size and pans inside it instead of growing: the shell a person pans, and a row
+        // of windows kept to their own widths whose bars and apps fill the room between the shell's
         // edges.
         let filling = flag(node, "fill") || token(node, "axis") == Some("both");
         if filling {
@@ -1106,7 +1106,7 @@ impl Reconciler {
         } else {
             Scrollable::new_vertical().fit_content_height()
         };
-        // A row that shares the desk's width by weight fills it when its children fit, and scrolls
+        // A row that shares the shell's width by weight fills it when its children fit, and scrolls
         // once their least widths need more.
         let scroll = if filling && across == Some("horizontal") {
             scroll.with_content_min_viewport_width()
@@ -1610,7 +1610,7 @@ impl Reconciler {
                 let kept = scroll
                     .child_mut()
                     .is_some_and(|content| self.reconcile_children(content, old_node, new_node));
-                // A surface the person pans (a desk of strips) shows what just arrived on it: a
+                // A surface the person pans (a strip deck) shows what just arrived on it: a
                 // card put on a canvas, or the window of a place just placed, comes into view.
                 if kept {
                     let canvas = token(new_node, "axis") == Some("both");
@@ -1789,7 +1789,7 @@ pub(crate) fn presence_path(node: &UiNode) -> Vec<PathSegment> {
 }
 
 /// The card that arrived under `new_node` since `old_node`, by its key: the last of `new_node`'s
-/// outermost cards (a place on a desk, not what its content holds) `old_node` did not hold. A
+/// outermost cards (a place on a shell, not what its content holds) `old_node` did not hold. A
 /// card's body is laid out under its key, which is what the scroll holding it finds it by
 /// ([`Scrollable::reveal_on_layout`]).
 fn arrived_card(old_node: &UiNode, new_node: &UiNode) -> Option<String> {
@@ -1812,8 +1812,8 @@ fn arrived_card(old_node: &UiNode, new_node: &UiNode) -> Option<String> {
 }
 
 /// The window that arrived under `new_node` since `old_node`, by its key: the frames a row of a
-/// desk holds, the last of them new. A row pans to the window just placed in it, as the desk's own
-/// row does, so the place that just came onto the desk is where the person can see it.
+/// shell holds, the last of them new. A row pans to the window just placed in it, as the shell's own
+/// row does, so the place that just came onto the shell is where the person can see it.
 fn arrived_window(old_node: &UiNode, new_node: &UiNode) -> Option<String> {
     fn frames<'a>(node: &'a UiNode, out: &mut Vec<&'a str>) {
         if node.kind == crate::adapter::kind("WindowFrame") {

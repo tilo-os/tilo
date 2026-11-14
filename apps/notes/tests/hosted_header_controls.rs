@@ -98,7 +98,7 @@ fn hosted_header_plus_creates_a_page_in_a_desktop_tab_built_late() {
         pinned: false,
     };
     let tab_id = tab.id;
-    let tree = seed_tree(&mut minter, "Desk", vec![tab]);
+    let tree = seed_tree(&mut minter, "Shell", vec![tab]);
     let arriving = Rc::new(RefCell::new(None));
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Arriving(arriving.clone())));
     handle.set_viewport_width(1800.0);

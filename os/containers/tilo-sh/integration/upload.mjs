@@ -14,10 +14,10 @@
 //   4. a picture onto the open Photos window, which imports it;
 //   5. a picture onto the open Notes window, which takes it itself;
 //   6. onto a window whose app opens no files (Calculator, opened from the
-//      desk's search), which says so where it fell;
+//      shell's search), which says so where it fell;
 //   7. a large file no app opens onto an empty place of the strip, kept a
 //      chunk at a time;
-//   8. the folder again, chosen in the desk's menu ("Upload a folder…").
+//   8. the folder again, chosen in the shell's menu ("Upload a folder…").
 //
 // Each keeps a picture of the hover and of the end, and reads what the page
 // said at the drop's place.
@@ -94,7 +94,7 @@ await until(`['done', 'stopped'].includes(document.documentElement.dataset.arriv
 if (await tab.evaluate('document.documentElement.dataset.arrival') !== 'done') {
   await finish(1, `the page stopped arriving: ${await text()}`);
 }
-await until('Boolean(globalThis.tiloMount?.canvas)', 'the desk mounting');
+await until('Boolean(globalThis.tiloMount?.canvas)', 'the shell mounting');
 await sleep(3000);
 console.error('ok: in the workspace');
 
@@ -115,8 +115,8 @@ const hovering = async (x, y, files) => {
     note: document.querySelector('.tilo-drop-note')?.hidden === false ? document.querySelector('.tilo-drop-note').textContent : null,
   })`));
 };
-// A point of the desk where hovering `files` says `wanted` (a note's words, or
-// a place's kind): scanned across the desk.
+// A point of the shell where hovering `files` says `wanted` (a note's words, or
+// a place's kind): scanned across the shell.
 const find = async (files, wanted) => {
   await drag('dragEnter', canvas.left + 10, canvas.top + 10, files);
   for (let y = 0.3; y <= 0.9; y += 0.15) {
@@ -142,7 +142,7 @@ const dropStep = async (name, files, wanted) => {
   const found = await find(files, wanted);
   if (!found) {
     await drag('dragCancel', 0, 0, files).catch(() => {});
-    await finish(1, `no place of the desk said what step ${name} looks for`);
+    await finish(1, `no place of the shell said what step ${name} looks for`);
   }
   await shot(`${name}-hover`);
   await markShown();
@@ -164,7 +164,7 @@ const key = async (key, code, modifiers = 0, text = '') => {
   await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key, code, modifiers, text});
   await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key, code, modifiers});
 };
-// Open `app` from the desk's search, as a person does.
+// Open `app` from the shell's search, as a person does.
 const openApp = async app => {
   await key('k', 'KeyK', 2);
   await sleep(800);
@@ -173,8 +173,8 @@ const openApp = async app => {
   await key('Enter', 'Enter', 0, '\r');
   await sleep(3000);
 };
-// An empty place of the strip: a gap between windows, or the whole desk while none is open.
-const strip = seen => ['strip', 'desk'].includes(seen.kind);
+// An empty place of the strip: a gap between windows, or the whole shell while none is open.
+const strip = seen => ['strip', 'shell'].includes(seen.kind);
 await dropStep('1-files-on-strip', ['plan.pdf', 'photo.png', 'notes.md', 'data.json'].map(file), strip);
 await dropStep('2-folder-on-strip', [file('docs')], strip);
 await dropStep('3-file-onto-files', [file('notes.md')], seen => /^Add to /.test(seen.note ?? ''));
@@ -187,7 +187,7 @@ await dropStep('6-on-a-window-that-opens-no-files', [file('data.json')], seen =>
 // its end.
 await dropStep('7-large-file-on-strip', [file('big.bin')], strip);
 
-// 8. The desk's menu: "Upload a folder…", found in the desk's search, and the
+// 8. The shell's menu: "Upload a folder…", found in the shell's search, and the
 // folder given to the chooser it opens.
 await tab.send('Page.enable', {});
 await tab.send('Page.setInterceptFileChooserDialog', {enabled: true});
@@ -203,7 +203,7 @@ await sleep(1200);
 await key('Enter', 'Enter', 0, '\r');
 const deadline = Date.now() + 30_000;
 while (!chooserOpened && Date.now() < deadline) await sleep(250);
-if (!chooserOpened) await finish(1, `the desk menu opening the folder chooser never happened: ${await text()}`);
+if (!chooserOpened) await finish(1, `the shell menu opening the folder chooser never happened: ${await text()}`);
 const chose = await tab.send('DOM.setFileInputFiles', {files: [file('docs')], backendNodeId: chooserOpened.backendNodeId});
 if (chose.error) await finish(1, `the chooser took no folder: ${chose.error.message}`);
 report.steps['8-menu-upload'] = await until(`(() => {

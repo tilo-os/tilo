@@ -850,7 +850,7 @@ impl Editor {
 
     pub(super) fn styles_panel_full_window(&self) -> bool {
         self.view.styles_panel_visible
-            && ui::widget::modal_dialog::uses_full_window(self.rect, &self.desk_theme)
+            && ui::widget::modal_dialog::uses_full_window(self.rect, &self.theme)
     }
 
     pub(super) fn draw_styles_panel(

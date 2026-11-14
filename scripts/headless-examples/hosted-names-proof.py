@@ -10,7 +10,7 @@ as the author too, never as a guest.
 
     python3 scripts/headless-examples/hosted-names-proof.py --out DIR [--build]
 
-Each step's AT-SPI names and both desks are written to DIR on the way.
+Each step's AT-SPI names and both shells are written to DIR on the way.
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ def chat_says(address: str, seen: dict) -> list[str]:
     for name, pid in bus_pids(address).items():
         client = AtspiClient(address, name)
         try:
-            # Only a tilolang app's window is walked: the desk's own tree is the session's.
+            # Only a tilolang app's window is walked: the shell's own tree is the session's.
             if "tilolang-app" not in client.property(ROOT_PATH, "Name"):
                 continue
             tree = client.tree(APP_TREE_NODE_LIMIT)
@@ -102,14 +102,14 @@ def chat_says(address: str, seen: dict) -> list[str]:
 
 
 def targets_of(session: Session) -> list[str]:
-    """The names of the controls `session`'s desk shows."""
+    """The names of the controls `session`'s shell shows."""
     return [target["name"] for target in session.targets()]
 
 
 def click_on(session: Session, name: str) -> None:
-    """Click where `session`'s desk draws the control `name`, as a person points at it: the one
-    window that shows it, whichever other windows are on the desk."""
-    target = until(f"{name!r} on {session.tag}'s desk", lambda: next(
+    """Click where `session`'s shell draws the control `name`, as a person points at it: the one
+    window that shows it, whichever other windows are on the shell."""
+    target = until(f"{name!r} on {session.tag}'s shell", lambda: next(
         (t for t in session.targets() if t["name"] == name), None), 60)
     x, y, width, height = target["rect"]
     session.click_at(x + width / 2, y + height / 2)

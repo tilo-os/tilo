@@ -1134,7 +1134,7 @@ impl Apps {
     }
 
     /// Whether the person still waits for the window of the launch that ended with `event`: the
-    /// desk holds a place for it that no window filled.
+    /// shell holds a place for it that no window filled.
     fn waits_for_window(&self, event: &tilo_app_launch::Event) -> bool {
         let asked = self
             .state

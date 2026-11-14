@@ -12,15 +12,15 @@ use settings_store::device_vpn::{
 use super::super::NetworkService;
 use super::{FakeNetwork, hosted_model, mount_network, rendered_enabled, settle_until};
 
-const DESK: &str = "desk-id";
+const TOWER: &str = "tower-id";
 const PHONE: &str = "phone-id";
 
 fn status() -> DeviceVpnStatus {
     DeviceVpnStatus {
         exit_available: true,
         offered: vec![OfferedExit {
-            device: DESK.into(),
-            label: "Desk PC".into(),
+            device: TOWER.into(),
+            label: "Tower PC".into(),
         }],
         exit_users: vec![ExitUser {
             device: PHONE.into(),
@@ -66,13 +66,13 @@ fn the_vpn_list_routes_through_and_shares_with_the_persons_devices() {
     let document = document(&mut app);
     let section = |document: &ui::storage::SettingsDocument| document.section(device_vpn::SECTION);
 
-    let switch = format!("settings.network.vpn.device.switch.{DESK}");
+    let switch = format!("settings.network.vpn.device.switch.{TOWER}");
     let stop = format!("settings.network.vpn.exit-user.stop.{PHONE}");
     for id in [switch.as_str(), "settings.network.vpn.exit", stop.as_str()] {
         assert!(shown(&mut app, id), "`{id}` is a live control");
     }
 
-    // Through the desk PC: the route is written and shown as connecting
+    // Through the tower PC: the route is written and shown as connecting
     // until the session says otherwise.
     app.harness().click_named(&switch).unwrap();
     settle_until(&mut app, |model| {
@@ -85,7 +85,7 @@ fn the_vpn_list_routes_through_and_shares_with_the_persons_devices() {
     });
     assert_eq!(
         THROUGH.from_section(&section(&document)),
-        Some(Through::device(DESK))
+        Some(Through::device(TOWER))
     );
     let state = app
         .with_widget::<crate::window::Inspected, _>(|settings| {
@@ -99,7 +99,7 @@ fn the_vpn_list_routes_through_and_shares_with_the_persons_devices() {
     assert_eq!(state, Some(ClientState::Connecting));
 
     app.call_on(
-        &format!("vpn.device:{DESK}"),
+        &format!("vpn.device:{TOWER}"),
         "set-device-vpn",
         serde_json::json!({"on": false}),
     )
@@ -138,8 +138,8 @@ fn the_vpn_list_routes_through_and_shares_with_the_persons_devices() {
 
     let mut connected = status();
     connected.client = Some(device_vpn::ClientStatus {
-        device: DESK.into(),
-        label: "Desk PC".into(),
+        device: TOWER.into(),
+        label: "Tower PC".into(),
         state: ClientState::Connected { since_unix_ms: 2 },
         ..device_vpn::ClientStatus::default()
     });
@@ -223,7 +223,7 @@ fn a_vpn_carrying_everything_turns_off_the_other_that_does() {
     let mut through = serde_json::Map::new();
     through.insert(
         THROUGH.name().into(),
-        serde_json::to_value(Some(Through::device(DESK))).unwrap(),
+        serde_json::to_value(Some(Through::device(TOWER))).unwrap(),
     );
     document
         .update_section(device_vpn::SECTION, through)
@@ -249,7 +249,7 @@ fn a_vpn_carrying_everything_turns_off_the_other_that_does() {
     assert_eq!(
         THROUGH.from_section(&document.section(device_vpn::SECTION)),
         None,
-        "the route through the desk PC stopped"
+        "the route through the tower PC stopped"
     );
 }
 
@@ -261,15 +261,15 @@ fn routing_through_a_device_turns_off_the_vpn_carrying_everything() {
     let mut app = on_the_vpn_list(&fake);
     let document = document(&mut app);
     app.harness()
-        .click_named(&format!("settings.network.vpn.device.switch.{DESK}"))
+        .click_named(&format!("settings.network.vpn.device.switch.{TOWER}"))
         .unwrap();
     settle_until(&mut app, |model| model.in_flight == 0);
     assert_eq!(fake.changes.lock().unwrap().as_slice(), ["vpn Home false"]);
 
     if let Some(status) = fake.device_vpn.lock().unwrap().as_mut() {
         status.client = Some(device_vpn::ClientStatus {
-            device: DESK.into(),
-            label: "Desk PC".into(),
+            device: TOWER.into(),
+            label: "Tower PC".into(),
             state: ClientState::Connecting,
             ..device_vpn::ClientStatus::default()
         });
@@ -306,6 +306,6 @@ fn routing_through_a_device_turns_off_the_vpn_carrying_everything() {
     assert!(
         THROUGH
             .from_section(&document.section(device_vpn::SECTION))
-            .is_some_and(|through| through.kill_switch && through.device == DESK)
+            .is_some_and(|through| through.kill_switch && through.device == TOWER)
     );
 }

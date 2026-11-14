@@ -506,7 +506,7 @@ fn a_revealed_match_stands_clear_of_the_window_searchs_options() {
 }
 
 #[test]
-fn a_sideways_wheel_the_columns_cannot_follow_is_left_to_the_desk() {
+fn a_sideways_wheel_the_columns_cannot_follow_is_left_to_the_shell() {
     let (mut app, mut doc, _tr, _theme) = painted();
     let wheel = |dx: f64| ui::winit::event::WindowEvent::MouseWheel {
         device_id: ui::winit::event::DeviceId::dummy(),
@@ -515,7 +515,7 @@ fn a_sideways_wheel_the_columns_cannot_follow_is_left_to_the_desk() {
     };
     assert!(
         !feed(&mut app, &mut doc, &wheel(-24.0), Modifiers::default()),
-        "the sheet shows its first column: a swipe before it is the desk's"
+        "the sheet shows its first column: a swipe before it is the shell's"
     );
     app.pending.redraw = false;
     assert!(

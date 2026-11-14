@@ -34,7 +34,7 @@ import {execFile} from 'node:child_process';
 import {chmodSync, mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
-import {stepLimit, deskMetrics, machine} from './waits.mjs';
+import {stepLimit, shellMetrics, machine} from './waits.mjs';
 import {clock} from './timing.mjs';
 
 const [site, relay, tiloBin, out] = process.argv.slice(2);
@@ -120,7 +120,7 @@ const tabIn = async (context, name) => {
   // Each tab counts as focused, as the one a person works in: the clipboard
   // answers only a focused page, and several tabs share this browser.
   await tab.send('Emulation.setFocusEmulationEnabled', {enabled: true}).catch(() => {});
-  await tab.send('Emulation.setDeviceMetricsOverride', deskMetrics);
+  await tab.send('Emulation.setDeviceMetricsOverride', shellMetrics);
   await tab.send('Browser.grantPermissions', {origin: new URL(site).origin, browserContextId: context,
     permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});
   return tab;
@@ -189,8 +189,8 @@ const inLounge = async tab => {
   return !at.screen && /lounge/i.test(at.title);
 };
 // The person's own workspace, as the page says it: the first screen gone, the
-// desk the workspace names drawn, and the tab titled after it. A page waits on
-// its host admitting it and replaying what it made before that desk draws, and
+// shell the workspace names drawn, and the tab titled after it. A page waits on
+// its host admitting it and replaying what it made before that shell draws, and
 // gives a host that says nothing two minutes before it calls it unanswered
 // (`whenReady` in peer.mjs): this step is given as long, never a stopwatch on
 // a frame, and what the page was doing is said when it never comes.

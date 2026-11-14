@@ -85,7 +85,7 @@ view clock() {
 ///
 /// On the canvas the canvas is the whole screen (`canvas.md` §7): the bar keeps only what a
 /// person needs on any screen — the time, the notices and the person — and a question put to
-/// the person. The desk style and the workspaces are in the person's own menu and in Settings,
+/// the person. The style and the workspaces are in the person's own menu and in Settings,
 /// not in a control that is always there (`canvas_keeps`).
 view bar() {
     let s = shell
@@ -197,7 +197,7 @@ view bar_part(part: BarPart) {
             agent_chip(a)
         }
     } else if part.slot == .status and frames_style() {
-        // The canvas's bar: the notices and the person, whose menu holds the desk style and the
+        // The canvas's bar: the notices and the person, whose menu holds the style and the
         // workspaces the canvas does not keep on its bar.
         row(gap: .related, align: .center) {
             bell()
@@ -262,14 +262,14 @@ view workspace_menu() {
     }
 }
 
-/// The person's own menu, as their face on the bar: the desk styles to show the desk as, the
+/// The person's own menu, as their face on the bar: the styles to show the shell as, the
 /// chosen style's settings, and the workspaces to switch between, folded under one row. Where
 /// the bar keeps no style switch and no workspace menu of its own (the canvas), this is where a
 /// person finds them; Settings has the same.
 view person_menu() {
     let v = viewing
     let me = if layout.person != "" { layout.person } else { "You" }
-    ui.MenuButton("{me}: desk style and workspaces", faces: [me], role: .bar) {
+    ui.MenuButton("{me}: style and workspaces", faces: [me], role: .bar) {
         for style in device.styles.offered {
             if style_listed(style) {
                 ui.MenuItem(style_label(style), checked: v.style == style.style) {

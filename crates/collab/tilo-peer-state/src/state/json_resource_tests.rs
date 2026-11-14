@@ -26,7 +26,7 @@ pub(crate) fn identity_fixture() -> (GovernedIdentity, SystemTime) {
     };
     let mut identity = GovernedIdentity::decode(bytes).unwrap();
     let root = SigningKey::from_bytes(&[1; 32]);
-    identity.device_cert.device_label = "Desk 🦀\n\"Workspace\"\\".into();
+    identity.device_cert.device_label = "Tower 🦀\n\"Workspace\"\\".into();
     identity.device_cert.expires_at_ns = Some(u64::MAX);
     tilo_user_identity::sign_device_cert(&mut identity.device_cert, &root).unwrap();
     let mut revocation = tilo_user_identity::RevocationEntry {

@@ -7,7 +7,7 @@
 //! guessing one.
 //!
 //! A link that invites is the other way round: what an app shows lives in the
-//! workspace, and what is shared is the invitation into it. The desk's own action
+//! workspace, and what is shared is the invitation into it. The shell's own action
 //! makes it ([`session_actions::ISSUE_INVITATION`]), asked through the broker as the
 //! person using the app, so the link is the invitation the invite sheet makes, under
 //! the part the person asks for and the workspace's governance allows them to hand out.
@@ -48,7 +48,7 @@ struct Minting {
 }
 
 /// What a minting waits for: the host's locator for the resource, whose entry the link renders
-/// under, or the desk's answer to the invitation, whose link it is.
+/// under, or the shell's answer to the invitation, whose link it is.
 enum Call {
     Locator {
         call: CatalogueCall,
@@ -257,7 +257,7 @@ fn settled(pending: &Pending) -> Option<Result<String, String>> {
             Arrival::Failed(error) => Some(Err(format!(
                 "The workspace would not make the invitation: {error}"
             ))),
-            // The admission is not the answer: the desk makes the link on the session's own
+            // The admission is not the answer: the shell makes the link on the session's own
             // pass, and the link comes with the update that says it did.
             Arrival::Ready(update) if !update.is_terminal() => None,
             Arrival::Ready(update) => Some(invited_link(update)),
@@ -265,7 +265,7 @@ fn settled(pending: &Pending) -> Option<Result<String, String>> {
     }
 }
 
-/// The link the desk's invitation answered with, or why it made none.
+/// The link the shell's invitation answered with, or why it made none.
 fn invited_link(update: &InvocationUpdate) -> Result<String, String> {
     match update {
         InvocationUpdate::Succeeded { output, .. } => output
@@ -285,9 +285,9 @@ fn invited_link(update: &InvocationUpdate) -> Result<String, String> {
     }
 }
 
-/// What the desk's invitation is asked for: the part the invitation brings someone in at, and
+/// What the shell's invitation is asked for: the part the invitation brings someone in at, and
 /// for whom, exactly as the person's own sheet names them. Anything else an app passes is not
-/// the desk's to read.
+/// the shell's to read.
 fn invitation_arguments(
     args: &serde_json::Map<String, serde_json::Value>,
 ) -> serde_json::Map<String, serde_json::Value> {
@@ -436,7 +436,7 @@ pub fn host_link(
 ) -> Result<String, String> {
     if request.invite {
         // A host answers for its records; the invitation into the workspace is the person's own
-        // device's to make, which is where the desk that makes it runs.
+        // device's to make, which is where the shell that makes it runs.
         return Err("This host makes no invitation: the person's own device makes it".into());
     }
     // The host does not know which resource is the record's root, so its
@@ -636,8 +636,8 @@ mod tests {
         }
     }
 
-    /// A host answering with what the desk's `issue-invitation` answers.
-    fn desk(value: serde_json::Value) -> std::sync::Arc<tilo_actions::remote::TestHost> {
+    /// A host answering with what the shell's `issue-invitation` answers.
+    fn shell(value: serde_json::Value) -> std::sync::Arc<tilo_actions::remote::TestHost> {
         std::sync::Arc::new(tilo_actions::remote::TestHost::new().completing(move |_| {
             tilo_actions::ActionOutput {
                 value: Some(value.clone()),
@@ -653,13 +653,13 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn an_invitation_is_asked_of_the_desk_only_by_who_may_invite;
+        fn an_invitation_is_asked_of_the_shell_only_by_who_may_invite;
 
-        phase an_invitation_is_the_desks_and_answers_with_its_link;
-        // An app's invitation is the desk's: the same action the invite sheet drives, asked through
+        phase an_invitation_is_the_shells_and_answers_with_its_link;
+        // An app's invitation is the shell's: the same action the invite sheet drives, asked through
         // the broker with the part and the person it is for, and answered with the link it made.
         {
-            let host = desk(serde_json::json!({
+            let host = shell(serde_json::json!({
                 "invite": "ab".repeat(32),
                 "link": "https://tilo.so/join#ab",
                 "role": "editor",
@@ -681,7 +681,7 @@ mod tests {
                     &CHAT,
                     true,
                 )
-                .expect("the desk answers at once")
+                .expect("the shell answers at once")
                 .expect("the invitation is made");
             assert!(!minted.copied);
             assert_eq!(
@@ -706,15 +706,15 @@ mod tests {
                         .cloned()
                         .expect("an object")
                 ),
-                "a view the resource links to is not the desk's to read"
+                "a view the resource links to is not the shell's to read"
             );
         }
 
-        phase a_person_who_may_not_invite_asks_the_desk_nothing;
+        phase a_person_who_may_not_invite_asks_the_shell_nothing;
         // Someone the workspace's governance lets hand out no invitation hears a reason, and the
-        // desk is never asked.
+        // shell is never asked.
         {
-            let host = desk(serde_json::json!({"link": "https://tilo.so/join#ab"}));
+            let host = shell(serde_json::json!({"link": "https://tilo.so/join#ab"}));
             let _served = RemoteActions::enter(
                 host.clone(),
                 tilo_actions::remote::Caller::local_person("ada"),

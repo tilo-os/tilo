@@ -478,7 +478,7 @@ fn shows_nothing_under_its_title(node: &InspectionNode, own: Rect) -> Option<(Re
 
 /// Whether some text of `a` and some text of `b` stand on each other, so
 /// neither can be read: two boxes laid over each other on purpose (a dock
-/// over the desk under the bar) whose text stands apart can both be read.
+/// over the shell under the bar) whose text stands apart can both be read.
 fn texts_meet(a: &InspectionNode, b: &InspectionNode, clip: Rect) -> bool {
     let (mut under, mut over) = (Vec::new(), Vec::new());
     text_boxes(a, clip, &mut under);
@@ -496,7 +496,7 @@ fn stands_as_window(node: &InspectionNode) -> bool {
 }
 
 /// Whether `node` is a surface floating over what it covers on its own opaque ground: a panel or a
-/// popover over the desk is read on its own, as a window on a desktop is, so what stands behind it
+/// popover over the shell is read on its own, as a window on a desktop is, so what stands behind it
 /// is behind it by design.
 fn floats_opaque(node: &InspectionNode) -> bool {
     matches!(

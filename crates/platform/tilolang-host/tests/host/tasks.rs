@@ -548,7 +548,7 @@ fn joined_instance(
 }
 
 /// Today and Tasks on one broker, each over its own record, as their windows run in a session.
-struct Desk {
+struct Shell {
     host: TilolangHost,
     tasks: Window,
     today: Window,
@@ -562,7 +562,7 @@ struct Desk {
     delivered: u64,
 }
 
-impl Desk {
+impl Shell {
     fn new() -> (Self, Rc<RefCell<Vec<RouteSpec>>>) {
         let workspace = uuid::Uuid::new_v4();
         let tasks_route = RouteSpec::app(TASKS, workspace);
@@ -752,9 +752,9 @@ impl Desk {
 /// of Tasks' resources.
 #[test]
 fn today_reads_tasks_from_its_record_and_clears_it_at_its_door() {
-    let (mut desk, joined) = Desk::new();
+    let (mut shell, joined) = Shell::new();
     assert!(
-        joined.borrow().contains(&desk.tasks_route),
+        joined.borrow().contains(&shell.tasks_route),
         "Today joined Tasks' record: {:?}",
         joined.borrow()
     );
@@ -765,9 +765,9 @@ fn today_reads_tasks_from_its_record_and_clears_it_at_its_door() {
             .any(|route| route.app_id == "so.tilo.lang.discussion"),
         "Discussion is no app here: its records are the apps' that use it"
     );
-    desk.settle();
+    shell.settle();
 
-    let new_task = desk.tasks_action("New task", |resource| !resource.contains('/'));
+    let new_task = shell.tasks_action("New task", |resource| !resource.contains('/'));
     let mut arguments = serde_json::Map::new();
     arguments.insert("title".to_owned(), "Water the plants".into());
     // Due today, the person's: what Today's place holds.
@@ -775,28 +775,28 @@ fn today_reads_tasks_from_its_record_and_clears_it_at_its_door() {
         .date_naive()
         .to_string();
     arguments.insert("due".to_owned(), today.into());
-    desk.deliver(
+    shell.deliver(
         &new_task,
         tilo_actions::remote::InvokeArgument::Json(arguments).to_slot(),
     );
-    desk.settle();
-    assert_eq!(desk.titles_in_tasks(), ["Water the plants"]);
+    shell.settle();
+    assert_eq!(shell.titles_in_tasks(), ["Water the plants"]);
     assert!(
-        desk.today_shows("Water the plants"),
+        shell.today_shows("Water the plants"),
         "the task Tasks made shows in Today: {:?}",
-        desk.today.root
+        shell.today.root
     );
 
-    let complete = desk.tasks_action("Complete", |resource| resource.contains('/'));
-    desk.deliver(&complete, None);
-    desk.settle();
+    let complete = shell.tasks_action("Complete", |resource| resource.contains('/'));
+    shell.deliver(&complete, None);
+    shell.settle();
     assert!(
-        !desk.today_shows("Water the plants"),
+        !shell.today_shows("Water the plants"),
         "a task checked off in Tasks leaves Today's place"
     );
 
     let button = node_with(
-        desk.today.root.as_ref().expect("Today is shown"),
+        shell.today.root.as_ref().expect("Today is shown"),
         "label",
         "Morning cleanup",
     )
@@ -808,25 +808,25 @@ fn today_reads_tasks_from_its_record_and_clears_it_at_its_door() {
         .next()
         .expect("the button fires")
         .clone();
-    desk.today.send(&[ToApp::Fire {
+    shell.today.send(&[ToApp::Fire {
         lane: Lane::Root,
         key: button.key,
         event,
         value: None,
     }]);
-    desk.settle();
+    shell.settle();
     assert!(
-        desk.titles_in_tasks().is_empty(),
+        shell.titles_in_tasks().is_empty(),
         "the finished task went from Tasks' own record"
     );
-    let filed = desk.today_sent.borrow().iter().any(|request| {
+    let filed = shell.today_sent.borrow().iter().any(|request| {
         matches!(request, CollabRequest::RemoteAction {
             message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
         } if invoke.target.provider.ends_with(":so.tilo.lang.notes")
             && format!("{:?}", invoke.argument).contains("Morning: 1 done"))
     });
     assert!(filed, "the morning's note is asked of Notes' door");
-    let today = desk
+    let today = shell
         .host
         .instances()
         .find(|hosted| hosted.spec().app == "so.tilo.lang.today")

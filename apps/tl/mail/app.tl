@@ -1284,7 +1284,7 @@ scenario "a busy inbox" -> Thread {
             subject: "You have won a cruise",
             latest: 2026-06-26T03:12,
             snippet: "Claim your prize within 24 hours by confirming your card details.",
-            senders: "Prize Desk",
+            senders: "Prize Draw",
             count: 1,
         ),
     )
@@ -1295,7 +1295,7 @@ scenario "a busy inbox" -> Thread {
             account: a.key,
             subject: "You have won a cruise",
             from: "win@deals.example",
-            from_name: "Prize Desk",
+            from_name: "Prize Draw",
             to: "sam@rivera.example",
             received: 2026-06-26T03:12,
             snippet: "Claim your prize.",

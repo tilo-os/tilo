@@ -9,10 +9,10 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, Value};
 
-    /// The desk's shape, as the shell's is: a root view on one root (`layout`) that reads
+    /// The shell's shape, as the shell's is: a root view on one root (`layout`) that reads
     /// another root (`shell`) through a function call and an `if`, choosing one of several
     /// views by it. The preset the person picks is a field of the shell's record.
-    const SOURCE: &str = r#"app so.tilo.desk "Desk"
+    const SOURCE: &str = r#"app so.tilo.shell "Shell"
 
 type Shell {
     preset: Preset = .strips
@@ -43,7 +43,7 @@ type Layout {
 
 root layout: Layout
 
-default view desk_view for layout
+default view style_shell for layout
 
 fn is_traditional(s: Shell) -> Bool {
     return s.preset == .desktop and s.bar
@@ -58,7 +58,7 @@ action set_bar(s: Shell, on: Bool) {
     s.bar = on
 }
 
-view desk_view(a: Layout) {
+view style_shell(a: Layout) {
     stack {
         screen(a)
     }
@@ -122,13 +122,13 @@ action unpin(item: DockItem) {
 }
 "#;
 
-    struct Desk {
+    struct Shell {
         rt: Runtime,
         app: App,
         layout: ResourceRef,
     }
 
-    impl Desk {
+    impl Shell {
         fn new() -> Self {
             let app = App::compile(SOURCE, &[]);
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
@@ -203,8 +203,8 @@ action unpin(item: DockItem) {
         // A view whose root reads a field of another root through a function call runs again when
         // that field changes, and its patches show the other preset.
         {
-            let d = Desk::new();
-            let mut view = d.view("desk_view");
+            let d = Shell::new();
+            let mut view = d.view("style_shell");
             assert_eq!(texts(&view), ["the strips"]);
             d.call(
                 "apply",
@@ -219,7 +219,7 @@ action unpin(item: DockItem) {
         phase a_root_field_read_inside_a_match_reaches_the_view;
         // The same read inside a `match` arm.
         {
-            let d = Desk::new();
+            let d = Shell::new();
             let mut view = d.view("shown");
             assert_eq!(texts(&view), ["the strips"]);
             d.call(
@@ -235,8 +235,8 @@ action unpin(item: DockItem) {
         // `is_stale` and what there is to run agree: a view that says it is stale patches
         // something, and a view with nothing to patch says it is not stale.
         {
-            let d = Desk::new();
-            let mut view = d.view("desk_view");
+            let d = Shell::new();
+            let mut view = d.view("style_shell");
             let _ = view.poll_patches().unwrap();
             assert!(!view.is_stale(), "at rest the view is not stale");
             assert!(view.poll_patches().unwrap().is_empty());
@@ -265,7 +265,7 @@ action unpin(item: DockItem) {
             let mut view = rt_a
                 .open_view(
                     &me(),
-                    &app.view("desk_view"),
+                    &app.view("style_shell"),
                     vec![Value::resource(&layout)],
                 )
                 .unwrap();
@@ -311,17 +311,17 @@ action unpin(item: DockItem) {
         // A view that builds a record and hands it to another view's record parameter draws it,
         // as the shell's dock hands its running items to its tiles.
         {
-            let d = Desk::new();
+            let d = Shell::new();
             let view = d.view("dock_run");
             assert_eq!(texts(&view), ["App 0", "App 1"]);
         }
 
         phase only_the_boundaries_that_read_the_field_run;
         // Only the boundaries that read the changed field run: the screen reads `preset` through
-        // `is_traditional`, so it runs once and the desk view around it stands.
+        // `is_traditional`, so it runs once and the shell view around it stands.
         {
-            let d = Desk::new();
-            let mut view = d.view("desk_view");
+            let d = Shell::new();
+            let mut view = d.view("style_shell");
             let opened = view.stats();
             assert_eq!(
                 opened.renders,
@@ -350,13 +350,13 @@ action unpin(item: DockItem) {
         // A record a view builds names no resource, so an action, whose changes must land in one,
         // refuses it rather than change a copy that is dropped.
         {
-            let desk = Desk::new();
+            let shell = Shell::new();
             let built = Value::Rec(tilolang_runtime::RecordInit {
-                ty: desk.app.compiled.ids.get("DockItem").unwrap().to_owned(),
+                ty: shell.app.compiled.ids.get("DockItem").unwrap().to_owned(),
                 fields: std::collections::BTreeMap::new(),
             });
-            let unpin = desk.app.action("unpin");
-            let refused = desk.rt.invoke_action(&me(), (unpin.as_str(), vec![built]));
+            let unpin = shell.app.action("unpin");
+            let refused = shell.rt.invoke_action(&me(), (unpin.as_str(), vec![built]));
             assert!(
                 refused.is_err(),
                 "an action took a record no resource holds: {refused:?}"

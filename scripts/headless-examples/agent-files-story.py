@@ -5,11 +5,11 @@ A program of this login asks at the session's MCP server to work here, the
 person allows it on the sheet the door puts up, and from then on every step is
 the agent's own tool call (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_put_*`):
 nothing is clicked or typed for it. Each claim is read back off the disk, the
-apps' published state or the desk, never off the agent's own reply.
+apps' published state or the shell, never off the agent's own reply.
 
   start    Files is not running: the agent names it as the listing does
            (`files`), and running one of its actions starts it first,
-           without a window: the desk shows no window of Files or Chat while
+           without a window: the shell shows no window of Files or Chat while
            the agent works in them
   find     the agent finds what it renames in what Files publishes: the
            folder's entries, and the device Files' changes are carried out on
@@ -19,11 +19,11 @@ apps' published state or the desk, never off the agent's own reply.
            its conversations through Chat's `send`, the one action the
            window's send box sends with
   quiet    do not disturb is turned on through the session's own action, and
-           the desk holds it
+           the shell holds it
   ask      the person asks from the canvas: the question is their send to the
            agent they keep, read back from Chat's messages as a message of
            their direct conversation with it, and Chat opens that
-           conversation on the desk
+           conversation on the shell
 
 Usage:
   ./agent-files-story.py [--build] [--state DIR] [--shots DIR] [--remote-exec PREFIX]
@@ -114,7 +114,7 @@ def call(agent: "ra.Agent", tool: str, args: dict,
 
 
 def no_window_of(session: "ra.Session", app: str) -> bool:
-    """Whether a process of `app` runs and the desk shows no window of it."""
+    """Whether a process of `app` runs and the shell shows no window of it."""
     ident = ra.app_id(app)
     try:
         ra.until(f"{ident} to run", lambda: bool(session.processes(ident)), 30, 0.25)
@@ -191,7 +191,7 @@ def main() -> int:
               and "installed but not running" in text, text.splitlines()[0] if text else "")
         text, failed = call(agent, "tilo_do", {"path": "files#read", "wait_ms": 30000}, session)
         check("Files' read answers its document", not failed and '"places"' in text, text[:120])
-        check("Files runs, with no window on the desk", no_window_of(session, "files"),
+        check("Files runs, with no window on the shell", no_window_of(session, "files"),
               json.dumps(session.windows()))
 
         print("\n[find] the folder and the device, from what Files publishes")
@@ -241,12 +241,12 @@ def main() -> int:
         check("Chat's send takes the file into the conversation", not failed
               and '"accepted":true' in text.replace(" ", ""), text[:200])
         session.snapshot(shots / "shared.png")
-        check("neither Files nor Chat got a window on the desk",
+        check("neither Files nor Chat got a window on the shell",
               no_window_of(session, "files") and no_window_of(session, "chat"),
               json.dumps(session.windows()))
 
         print("\n[quiet] do not disturb, through the session's own action")
-        # The bar's bell, as the desk names it: "Notifications silenced".
+        # The bar's bell, as the shell names it: "Notifications silenced".
         silenced = lambda: [target["name"] for target in session.targets()  # noqa: E731
                             if "silenced" in target["name"].lower()]
         before = silenced()
@@ -277,12 +277,12 @@ def main() -> int:
               channel.startswith("direct:") and "agent:" in channel
               and "person:" in channel, channel)
         try:
-            opened = ra.until("Chat's window on the desk", lambda: any(
+            opened = ra.until("Chat's window on the shell", lambda: any(
                 window.get("app_id") == ra.app_id("chat") for window in session.windows()),
                 30, 0.25)
         except ra.Failed:
             opened = False
-        check("Chat opens the conversation on the desk", bool(opened),
+        check("Chat opens the conversation on the shell", bool(opened),
               json.dumps(session.windows()))
         session.snapshot(shots / "asked.png")
 

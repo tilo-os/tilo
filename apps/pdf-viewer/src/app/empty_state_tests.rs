@@ -119,20 +119,20 @@ fn a_touch_only_phone_is_not_told_to_drop_a_file() {
     use ui::headless::Framed;
     use ui::interaction::InteractionEnvironment;
 
-    let mut desk = framed(
+    let mut shell = framed(
         staged_empty("empty"),
         crate::scenarios::record_state(),
         390.0,
         844.0,
         None,
     );
-    let with_hint = desk.empty_open_button_rect().y0;
+    let with_hint = shell.empty_open_button_rect().y0;
 
-    let harness = Framed::harness_mut(&mut desk);
+    let harness = Framed::harness_mut(&mut shell);
     harness.set_interaction_environment(InteractionEnvironment::TOUCH);
     harness.relayout();
     harness.poll_frame().expect("the phone's frame draws");
-    let without_hint = desk.empty_open_button_rect().y0;
+    let without_hint = shell.empty_open_button_rect().y0;
 
     assert!(
         without_hint - with_hint > 8.0,

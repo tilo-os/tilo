@@ -13,7 +13,7 @@ back in.
            while the app runs
   stopped  and still holds it once the session has ended, so the writer
            finished rather than leaving the last words in memory
-  again    the restarted session reads the same record, and the desk's
+  again    the restarted session reads the same record, and the shell's
            workspace still makes Notes an author there, so the launch it
            made on the first start was the one that could write
 
@@ -69,13 +69,13 @@ def record_sizes() -> str:
 
 
 def front(session) -> dict | None:
-    """The Notes window the desk shows in front: the one keys are typed into."""
+    """The Notes window the shell shows in front: the one keys are typed into."""
     return next((window for window in session.windows()
                  if window.get("app_id") == NOTES and window.get("active")), None)
 
 
 def authors(dump: dict) -> list[str]:
-    """The apps the desk's workspaces make authors of their own records."""
+    """The apps the shell's workspaces make authors of their own records."""
     tree = (dump or {}).get("workspace_tree") or {}
     return sorted({grant.get("id", "") for workspace in tree.get("workspaces", [])
                    for grant in (workspace.get("policy") or {}).get("grants", [])
@@ -112,7 +112,7 @@ def main() -> int:
             check("Notes keeps a record of the workspace", False, str(error))
             raise
         check("the Notes window is the one in front", front(session) is not None)
-        check("the desk makes Notes an author of the workspace",
+        check("the shell makes Notes an author of the workspace",
               f"app-author:{NOTES}" in authors(session.state_dump()),
               json.dumps(authors(session.state_dump())))
         session.snapshot(SHOTS / "01-notes.png")
@@ -138,7 +138,7 @@ def main() -> int:
         session.snapshot(SHOTS / "03-relaunched.png")
         check("the restarted session has the text back", written(),
               f"records {record_sizes()}")
-        check("the restarted desk still makes Notes an author",
+        check("the restarted shell still makes Notes an author",
               f"app-author:{NOTES}" in authors(session.state_dump()),
               json.dumps(authors(session.state_dump())))
     finally:

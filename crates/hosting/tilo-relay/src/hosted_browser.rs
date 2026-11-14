@@ -252,7 +252,7 @@ pub trait BrowserSessions: Send + Sync {
 
     /// Start `launch` in the workspace's Linux apps session, starting that
     /// session with `material` when none runs, and answer once it is up and
-    /// was told to start the app. The app's windows join the desk as they
+    /// was told to start the app. The app's windows join the shell as they
     /// map.
     ///
     /// # Errors
@@ -1335,7 +1335,7 @@ impl HostedBrowsers {
     /// Start `launch` in `workspace_id`'s Linux apps session — the workspace
     /// whose UUID is `workspace`, opened on the record `record` — starting
     /// that session when none runs: a device certified for it, confined to
-    /// that record and the workspace's own document (the desk its windows
+    /// that record and the workspace's own document (the shell its windows
     /// stand on), and listed as a member device, as a Browser session is. A
     /// session already up is told to start the app.
     ///

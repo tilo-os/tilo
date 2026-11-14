@@ -522,7 +522,7 @@ mod tests {
                 "CHASSIS=laptop\nICON_NAME=computer\n\
              PRETTY_HOSTNAME=\"Ada's \\\"\\$HOME\\\" \\`x\\` \\\\\"\n"
             );
-            assert_eq!(machine_info("", "Desk"), "PRETTY_HOSTNAME=\"Desk\"\n");
+            assert_eq!(machine_info("", "Tower"), "PRETTY_HOSTNAME=\"Tower\"\n");
         }
 
         phase device_labels_are_bounded_and_printable;

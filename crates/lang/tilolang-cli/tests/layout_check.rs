@@ -241,12 +241,12 @@ fn a_word_a_window_shows_from_another_languages_catalogue_is_a_finding() {
     );
 }
 
-/// A desk bounded by its window: a middle longer than the window scrolls between the bar and the
+/// A view bounded by its window: a middle longer than the window scrolls between the bar and the
 /// dock (a filled share takes no more than its share, in a stack and in layers), and a dock holding
 /// more than the window is wide is as wide as the window, its items scrolling along it (a chrome
 /// body narrows to the room it has).
 #[test]
-fn a_desk_longer_and_wider_than_its_window_scrolls_inside_it() {
+fn a_view_longer_and_wider_than_its_window_scrolls_inside_it() {
     let report = layout_check::check(&Options {
         dirs: vec![manifest().join("tests/layout_check/bounded")],
         ..Options::default()

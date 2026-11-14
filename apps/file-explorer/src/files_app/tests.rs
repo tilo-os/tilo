@@ -1989,7 +1989,7 @@ mod command_path_tests {
 
         phase sharing_history_and_identity_surfaces_use_governed_identity;
         {
-            sharing_offers_the_desks_invite_sheet();
+            sharing_offers_the_shells_invite_sheet();
             governed_history_surfaces_open_real_detail_panels();
             history_activity_intent_preserves_selected_version_and_signed_identity();
             running_files_reloads_new_renamed_removed_and_expired_governed_devices();
@@ -4008,7 +4008,7 @@ mod command_path_tests {
         (directory, person)
     }
 
-    fn sharing_offers_the_desks_invite_sheet() {
+    fn sharing_offers_the_shells_invite_sheet() {
         let root = tempfile::tempdir().unwrap();
         let folder = root.path().join("shared-assets");
         std::fs::create_dir(&folder).unwrap();
@@ -4029,7 +4029,7 @@ mod command_path_tests {
         assert_eq!(
             sharing,
             [&("Share…".to_owned(), Some(FileCommand::Share))],
-            "one sharing row, and it is the desk's sheet"
+            "one sharing row, and it is the shell's sheet"
         );
         let at = spec
             .iter()
@@ -4057,7 +4057,7 @@ mod command_path_tests {
                 } => Some(request),
                 _ => None,
             })
-            .expect("the sheet is asked of the desk");
+            .expect("the sheet is asked of the shell");
         assert_eq!(request.target.provider, "so.tilo.session");
         assert_eq!(request.target.address.resource, "session:invite");
         assert_eq!(request.target.address.action, "show-invite");

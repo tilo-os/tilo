@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""A field a person types into in an app tells the desk where its caret is, with
+"""A field a person types into in an app tells the shell where its caret is, with
 no input method running, Super+V opens the clipboard under that caret, and what
 the person copied in the app is in it and pastes elsewhere.
 
 A session starts on a scratch home with the tree's own Notes, the person opens
 Notes, makes a page with Ctrl+N and types into its body. Everything is read off
-the desk's own state, as the paste pane and the presence carets read it:
+the shell's own state, as the paste pane and the presence carets read it:
 
-  caret    the desk holds a caret once the page's name is typed, follows it
+  caret    the shell holds a caret once the page's name is typed, follows it
            down into the body, and moves right as more is typed
   paste    Super+V, pressed the moment the caret moves, opens the clipboard pane
            under that caret's line, its first frame as tall as its page
   closed   Escape closes the pane and the caret stays where it was
   copy     what Ctrl+A, Ctrl+C took in the page is in the pane, pastes into the
-           desk's search with Ctrl+V, and a copy the session's own action makes
+           shell's search with Ctrl+V, and a copy the session's own action makes
            joins it in the same history
   choose   a copy clicked in the pane is pasted at the page's caret and the pane
-           goes; opened over the desk's search, the pane leaves the search up,
+           goes; opened over the shell's search, the pane leaves the search up,
            takes the keys typed to find a copy, and Enter pastes it there
 
 It needs the session and the tree's apps built (dist/dev/nested-session-build.sh,
@@ -61,7 +61,7 @@ def chrome(session) -> dict:
 
 
 def caret(session) -> list | None:
-    """The caret of the focused field, `[x0, y0, x1, y1]` on the desk."""
+    """The caret of the focused field, `[x0, y0, x1, y1]` on the shell."""
     return chrome(session).get("caret")
 
 
@@ -128,21 +128,21 @@ def bars_in(path, rect) -> list[list[int]]:
     return [bar for bar in bars if 1 <= bar[2] - bar[0] <= 4]
 
 
-def carets_on_desk(session, area, frames: int = 6) -> list[list[int]]:
-    """Every caret bar the desk shows in `area` across `frames` fresh frames, so each caret is seen
+def carets_on_shell(session, area, frames: int = 6) -> list[list[int]]:
+    """Every caret bar the shell shows in `area` across `frames` fresh frames, so each caret is seen
     on either side of its blink: only a field that holds the keyboard paints one."""
     bars: list[list[int]] = []
     for frame in range(frames):
-        path = SHOTS / f"desk-{frame}.png"
+        path = SHOTS / f"shell-{frame}.png"
         session.snapshot(path)
         bars += [bar for bar in bars_in(path, area) if bar not in bars]
     return bars
 
 
 def only_caret_in(session, rect, area) -> tuple[bool, list[list[int]]]:
-    """Whether the desk shows a caret in `area` and every one there is inside `rect`, and those
+    """Whether the shell shows a caret in `area` and every one there is inside `rect`, and those
     seen."""
-    seen = carets_on_desk(session, area)
+    seen = carets_on_shell(session, area)
     return bool(seen) and all(rect[0] <= bar[0] and bar[2] <= rect[2] and rect[1] <= bar[1]
                               and bar[3] <= rect[3] for bar in seen), seen
 
@@ -159,12 +159,12 @@ def keeps_a_record() -> bool:
 
 
 def query(session) -> str:
-    """What the desk's search field holds."""
+    """What the shell's search field holds."""
     return session.control({"op": "search_rows"})["answer"]["query"]
 
 
 def searching(session) -> bool:
-    """Whether the desk's search is open."""
+    """Whether the shell's search is open."""
     return any(shown for slot, shown in (chrome(session).get("overlays") or {}).items()
                if "search" in slot)
 
@@ -241,19 +241,19 @@ def main() -> int:
         at = moved or first
 
         # The caret back at the line's end, then Super+V at once: the pane is placed at the
-        # caret the app's last redraw moved, not the one the desk knew before it.
+        # caret the app's last redraw moved, not the one the shell knew before it.
         session.chord("Control", "a")
         session.chord("Control", "c")
         session.key("End")
         session.chord("Super", "v")
         # The first frame the person sees is the size the panel fits, never the room it was
-        # given: the desk holds the pane back until its app has drawn that frame.
+        # given: the shell holds the pane back until its app has drawn that frame.
         opened = wait_for("the clipboard pane, drawn", lambda: pane(session))
         span = room(session) or opened
         shot = session.snapshot(SHOTS / "02-super-v-at-caret.png")
         print(f"  shot {shot}")
         # The pane holds the keyboard, so the page's field under it keeps its text and gives up its
-        # caret: the pane's search is the only caret the desk shows.
+        # caret: the pane's search is the only caret the shell shows.
         pane_at = pane(session) or [0, 0, 0, 0]
         one, seen = only_caret_in(session, pane_at, area)
         check("the pane's search is the only caret over the page's field", one,
@@ -280,19 +280,19 @@ def main() -> int:
                   span[0] - 1 <= opened[0] <= end[0] + 24,
                   f"caret {json.dumps(end)}, pane {json.dumps(opened)}, room {json.dumps(span)}")
 
-        # What was copied in the page pastes into another app's field: the desk's search.
+        # What was copied in the page pastes into another app's field: the shell's search.
         session.chord("Super", "Space")
         # The search holds the keys over the page, which is left: the search's caret is the one
-        # caret the desk shows, and the page's comes back with the keys.
+        # caret the shell shows, and the page's comes back with the keys.
         over_page = wait_for("the search's caret over the page",
                              lambda: settled(lambda: caret(session)))
         one, seen = only_caret_in(session, around(over_page or [0, 0, 0, 0]), area)
-        check("the search over the page shows the desk's one caret", one,
+        check("the search over the page shows the shell's one caret", one,
               f"carets {json.dumps(seen)}, search caret {json.dumps(over_page)}")
         session.chord("Control", "v")
         pasted = wait_for("the paste in the search", lambda: query(session) or None)
         session.snapshot(SHOTS / "03-pasted-in-search.png")
-        check("Ctrl+V pastes the page's copy into the desk's search",
+        check("Ctrl+V pastes the page's copy into the shell's search",
               pasted == "Water the beds before noon", repr(pasted))
         # Escape empties the query, then closes the search.
         session.key("Escape")
@@ -308,7 +308,7 @@ def main() -> int:
         session.chord("Control", "v")
         pasted = wait_for("the session's copy in the search",
                           lambda: (now := query(session)) and "autumn" in now and now)
-        check("Ctrl+V pastes the session's copy into the desk's search",
+        check("Ctrl+V pastes the session's copy into the shell's search",
               pasted == "the autumn release", repr(query(session)))
         session.key("Escape")
         session.key("Escape")
@@ -337,11 +337,11 @@ def main() -> int:
               wait_for("the paste in the page's record",
                        lambda: page_holds("the autumn release") or None) is not None)
 
-        # Opened over the desk's search, the pane leaves it up, and Enter pastes the copy that
+        # Opened over the shell's search, the pane leaves it up, and Enter pastes the copy that
         # matches what was typed into it.
         session.chord("Super", "Space")
         wait_for("the search open", lambda: searching(session) or None)
-        # Where the desk's own search draws its caret while it is the one typed into.
+        # Where the shell's own search draws its caret while it is the one typed into.
         search_caret = wait_for("the search's caret", lambda: settled(lambda: caret(session)))
         session.chord("Super", "v")
         wait_for("the clipboard pane over the search", lambda: settled(lambda: pane(session)))
@@ -352,11 +352,11 @@ def main() -> int:
         check("the search under the pane keeps what it held", query(session) == "",
               repr(query(session)))
         session.snapshot(SHOTS / "06-pane-over-search.png")
-        # Only the surface holding the keyboard paints a caret: the pane's search, not the desk's
+        # Only the surface holding the keyboard paints a caret: the pane's search, not the shell's
         # search it opened over (which keeps its text and takes its caret back with the pane gone).
         pane_at = pane(session) or [0, 0, 0, 0]
         one, seen = only_caret_in(session, pane_at, area)
-        check("the pane's search is the one caret the desk shows, not the search under it", one,
+        check("the pane's search is the one caret the shell shows, not the search under it", one,
               f"carets {json.dumps(seen)}, pane {json.dumps(pane_at)}, "
               f"search caret {json.dumps(search_caret)}")
         session.key("Enter")
@@ -369,7 +369,7 @@ def main() -> int:
         # The search under it takes the keyboard, and its caret, back.
         back = wait_for("the search's caret again", lambda: settled(lambda: caret(session)))
         one, seen = only_caret_in(session, around(back or [0, 0, 0, 0]), area)
-        check("the search under the pane shows the desk's one caret again", one,
+        check("the search under the pane shows the shell's one caret again", one,
               f"carets {json.dumps(seen)}, search caret {json.dumps(back)}")
         session.type("!")
         check("the search has the keyboard back",

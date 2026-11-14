@@ -106,12 +106,12 @@ The agent does the same work under any of these, and may read them to present it
 
 ## 6. Shells as packages
 
-A desk style is a tilolang view of the person's arrangement, and nothing more. A person, or an
+A style is a tilolang view of the person's arrangement, and nothing more. A person, or an
 agent working for them, makes a new one the way they make any app: write a package, install
 it, pick it. The four styles that ship (strips, frames, spaces, desktop) are written exactly
 that way, and are the examples.
 
-**What makes a view a desk style.** Its first parameter is the session's arrangement, the type
+**What makes a view a style.** Its first parameter is the session's arrangement, the type
 whose origin is `session.arrangement`:
 
 ```tilolang
@@ -120,15 +120,16 @@ use so.tilo.shell as shell        // the shipped parts: bar, dock, notices, quic
 
 /// My agents' work as a timeline, today's newest first.
 view timeline(a: shell.Arrangement) {
-    shell.bar(shell.desk)
-    ui.List(a.places.newest(), |p| ui.Card(p.title) { place_view(p) })
+    shell.style_shell(a, false) {
+        ui.List(a.places.newest(), |p| ui.Card(p.title) { place_view(p) })
+    }
 }
 ```
 
 There is no list of styles in code and no keyword. The type is the contract, as it is for every
 view (one-app-model.md §2).
 
-**Where styles come from.** Any installed tilolang package may declare desk styles. The session
+**Where styles come from.** Any installed tilolang package may declare styles. The session
 reads installed packages from the person's package store the way it reads every tilolang app:
 `package_store::Catalog`, then `Bundle::read(payload_root)` and `Host::load_bundle`. That is
 `seeded_apps.rs`'s path, made the only path.
@@ -139,28 +140,28 @@ reads installed packages from the person's package store the way it reads every 
 **Picking a style.** The person's `Viewing` record (`arrangement.tl`, `records: .own`) holds
 the style as a view reference: package and view name. It is not the closed `Preset` enum,
 which goes away.
-- The style switch in the bar and the Desk page of Settings list every desk style of every
+- The style switch in the bar and the Appearance page of Settings list every style of every
   installed package, by the view's doc line.
 - The shell part's screen layer (`screen_layer()`, today fixed to `so.tilo.shell`'s
-  `desk_view`) shows the referenced view.
+  `style_shell`) shows the referenced view.
 - Switching keeps every place where it was, because the arrangement is the session's and the
   same in every style.
 
-**What a style can do.** Read the session's resources (arrangement, places, windows, desk,
+**What a style can do.** Read the session's resources (arrangement, places, windows, shell,
 notices, people, the device) and call their actions, exactly as the shipped styles do. It can
 show any resource's view in a place (`place_view`). It never draws trusted surfaces: the sheet,
 asks, sign-in and lock stay the system's (§1). Looks stay the theme's: a style names roles, never
 colours, so every theme reaches it.
 
-**Two ways to change a desk.**
+**Two ways to change a shell.**
 - **Without an agent.** A person picks a shipped style and adjusts it in Settings. The adjustments
   are the style's own actions on its own record: today `so.tilo.shell`'s `Shell` type in
   `chrome.tl` (`bar_on`, `set_bar_size`, `dock_on`, `set_dock_zoom`, `move_part`, `reset`, …).
-  The Desk page of Settings shows the chosen style's settings view, the same way it shows any
+  The Appearance page of Settings shows the chosen style's settings view, the same way it shows any
   app's. A style an agent writes gets settings the same way: by declaring actions on its own
   record. Nothing in Settings is per style.
 - **With an agent, in conversation.** The person asks the canvas chat for a change ("put the
-  calendar where the dock is", "a desk that shows what happened while I was away"). The agent
+  calendar where the dock is", "a shell that shows what happened while I was away"). The agent
   composes `so.tilo.shell`'s exported parts (bar, dock, notices, quick settings, places, window
   frames), or writes new views, and installs the result as described below.
   - **Make it mine** turns a shipped style into the person's own package: a copy of its source
@@ -190,13 +191,13 @@ the runtime holds, or is not a package) or when its view fails as it runs (a tra
 draws a shared failed state where it stands — the toolkit's empty state, in its error colour,
 naming the view and why — and never a blank frame or a skeleton that never fills. It reports
 `(app, view, reason)` to its host once, and the report is what the session acts on:
-- a failure names a **desk style** when the call's view is one the switch lists: the session
-  marks that style `loads: false` with the reason, publishes it, and raises the notice. The desk
+- a failure names a **style** when the call's view is one the switch lists: the session
+  marks that style `loads: false` with the reason, publishes it, and raises the notice. The shell
   draws the built-in strips while the person's choice stays in `Viewing.style`.
 - the app's package loading again (a reinstall) clears the failure, the runtime tells its host,
-  the session marks the style `loads: true` again, and the desk returns to it without a restart.
-- a failure that is no desk style (a place's own view, another package's view drawn inline)
-  draws its failed state and is reported; nothing else on the desk changes.
+  the session marks the style `loads: true` again, and the shell returns to it without a restart.
+- a failure that is no style (a place's own view, another package's view drawn inline)
+  draws its failed state and is reported; nothing else on the shell changes.
 
 The decision is the runtime's, not each view's: there is no tilolang construct that catches a
 failing call, so a style author writes nothing for this, and a style that fails is treated the
@@ -206,11 +207,11 @@ same as one whose package never loads.
 1. The shell loads from the store. `so.tilo.shell` is installed in the image, dev shells install
    it as they install the tilolang apps, and the built-in copy becomes the fallback.
 2. Styles are views. `Viewing.showing` becomes a view reference, and the switch and Settings
-   list desk styles from every installed package. The four presets become views found that way.
+   list styles from every installed package. The four presets become views found that way.
 3. The fallback and the notice, each with a test where the style fails to compile and one where
    it traps.
 4. Agent authoring, end to end: a test in which a scripted agent writes, checks and installs a
-   style package and switches to it, and the desk draws it. Then the same live with a real model.
+   style package and switches to it, and the shell draws it. Then the same live with a real model.
 
 Themes change how parts look, never which parts exist. Styles change which parts exist and where.
 
@@ -221,7 +222,7 @@ motion stays in the Rust components. Idle means no work. The shell's views are h
 budgets and `layout-check` as apps.
 
 A shell's own data is derived, not saved. What the session owns and can make again at start (the
-clock, the desk, the device's state, the session origin's resources) is written into the store's
+clock, the shell, the device's state, the session origin's resources) is written into the store's
 unsaved layer, never into a collaborative record: a change of one reaches the views at once, and
 leaves no change to be committed, synced or replayed. A minute therefore costs a view run and a
 draw, not a record round-trip. Data that is the person's (their arrangement, their settings)
@@ -232,14 +233,14 @@ stays a saved record, synced and undoable like any app's.
 The native session (`crates/session/session`) is already a thin host: the compositor
 (`tilo-compositor`) shows buffers and routes input and draws no interface; a `WindowPolicy`
 decides placement and focus; surface apps reach the screen as `SurfaceHost` layers through
-`tilo-surface-host`; the desk and chrome are the Rust widgets of `tilo-desktop`
+`tilo-surface-host`; the shell and chrome are the Rust widgets of `tilo-desktop`
 (`desktop_host`, `topbar`, `overview`, `window_switcher`, …) over `tilo-desktop-model`, and
 everything a person can do is a published action (`Session::resources`, `Session::invoke`).
 The tilolang shell takes the place of `tilo-desktop`'s widgets, one part at a time, on the same
 seams:
 
 - **Shell views on layers.** A shell package's views run in the tilolang host like any app's
-  and draw through the same UI host; a `SurfaceHost` shows each part (bar, desk, overlays) as
+  and draw through the same UI host; a `SurfaceHost` shows each part (bar, layout, overlays) as
   layers, exactly as `tilo-surface-host` shows a toolkit app. Headless, nested and DRM work
   unchanged, because the compositor's backends do.
 - **System resources for the shell.** What the chrome reads today through `chrome.rs` (clock,
@@ -250,7 +251,7 @@ seams:
   A `WindowPolicy` implementation per arrangement mechanic (scrolling strips: today's
   `tilo-desktop-policy`; canvas; floating desktop) reads it and places windows; gestures are
   Rust and commit one arranging action at their end.
-- **Frames.** A window's frame (bar, tabs, actions) is a shell view drawn on the desk layer
+- **Frames.** A window's frame (bar, tabs, actions) is a shell view drawn on the shell layer
   under the window, positioned from the policy's layout, as `tilo-desktop`'s window bars are
   today. Per-type and per-app frame rules are the shell's.
 - **Where a window goes.** For a surface it can't compose (a foreign or legacy window), a shell
@@ -267,14 +268,14 @@ seams:
   ```
 
   `ui.WindowWell` is a described Rust component. It draws nothing and takes no input, because
-  the window is composited above the desk layer. After each layout, and on each frame that a
+  the window is composited above the shell layer. After each layout, and on each frame that a
   component around it moves it (`ui.Map`'s pan and zoom, a strip row's scroll), it reports its
   rectangle in layout coordinates to the host's `Wells`, keyed by place. The shell's views run in
   the compositor's process (`tilo-surface-host`), so the surface host and the policy share one
-  `Wells` handle, as `DesktopHost` and `StripPolicy` share `Desk` today.
+  `Wells` handle, as `DesktopHost` and `StripPolicy` share `Shell` today.
 
   The policy for a tilolang shell answers `initial_size`, `place` and `arrange` from `Wells`, as
-  `StripPolicy` answers them from `Desk::shown`. A well that moves without changing size moves
+  `StripPolicy` answers them from `Shell::shown`. A well that moves without changing size moves
   its window in the same frame. A size change configures the client, and the window catches up
   on its next commit, as it does today. A place without a well on screen (scrolled away, or on
   another workspace) leaves its window unmapped from the output, so it gets no frame callbacks.
@@ -354,7 +355,7 @@ no run and no transcript; it places the channel like any resource.
   to the agent they keep in the workspace (a new one, kept with `WorkspaceAgents`, when they
   keep none) through `session:send-to#send`, the one send a send-to box, an agent and a
   script run. It lands in their direct conversation with the agent, and Chat opens that
-  conversation on the desk, started without a window first when it was not running.
+  conversation on the shell, started without a window first when it was not running.
 - **Asking from search.** The palette offers the same send for what was typed: one row, "Send to
   {agent}: …", standing after everything the query names. Choosing it runs
   `session:send-to#send` with the agent the person keeps in the workspace the search was opened
@@ -421,7 +422,7 @@ carries its own actions:
 | `Notice` | a notification | `act(choice)`, `dismiss`; `clear_all` on the centre |
 | `Person` | someone here | `follow`, `message`, `call`, `see_work` |
 | `Setting` | a device setting quick settings shows | `set(value)` |
-| `Surface` | the system surface over the desk (launcher, overview, search) | `show`, `close` |
+| `Surface` | the system surface over the shell (launcher, overview, search) | `show`, `close` |
 | `Clock`, `TrayItem`, `Task` | the time, a tray item, a running task | their own, if any |
 
 - The session describes these the way a native app describes its own (`surface.toml`, generated
@@ -429,8 +430,8 @@ carries its own actions:
   as session` and calls the actions directly: `w.focus()`, `n.dismiss()`,
   `session.surfaces.launcher.show()`. Nothing in the shell turns a string into an action, and the
   shell declares no wrapper action around one of these.
-- No reading bundles them. `Desk` (the old chrome's every input in one record) and the
-  `desktop:desk`, `desktop:chrome` and `desktop:tab:N` addresses are replaced by the types above.
+- No reading bundles them. `Shell` (the old chrome's every input in one record) and the
+  `desktop:shell`, `desktop:chrome` and `desktop:tab:N` addresses are replaced by the types above.
   `Room` and `ArrangementWorkspace` are replaced by `Workspace`, and `Win` by `Window`.
 - Values the session derives (the time, which surface is up, whether the pointer is at an edge)
   stay unsaved (§7).

@@ -102,7 +102,7 @@ impl Workspaces {
     /// those linked now, and kept for those that join later. A member reaches
     /// the workspace on whatever carrier its runtime runs, and every member
     /// reads every other's records and channel governance on its own. What a
-    /// member's desk publishes of its windows reaches the link as the
+    /// member's shell publishes of its windows reaches the link as the
     /// workspace's governance once the governor took it in.
     pub(super) fn carry_to_links(
         &self,

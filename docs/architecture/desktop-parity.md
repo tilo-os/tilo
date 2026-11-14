@@ -45,7 +45,7 @@ the old file and function, what the new code has, and where the two stand.
 
 `docs/architecture/window-management.md` §Motion is the contract the new code
 should meet, and it already records part of the gap: "The workspace switch
-swaps the desk's content in place today; the vertical desk slide that should
+swaps the shell's content in place today; the vertical shell slide that should
 carry its direction cue is not drawn yet."
 
 ## 1. Workspace and strip navigation, and its animations
@@ -58,7 +58,7 @@ carry its direction cue is not drawn yet."
 | Strip deck: every strip laid at the deck's whole size, only the shown one drawn and taking input; going to another strip slides the deck | `StripDeck` (`begin_drag`/`drag_to`/`end_drag`, `Snap::SPEC`, `FingerPath` resampling, `COMMIT_SHARE` a quarter of the deck) | `surface/slide.rs`: the shown strip is laid out and takes input while the one before it is posed away | same (§9) |
 | Switch strip by key (Ctrl+Super+↑/↓, Super+1..9, controller): `Snap` within `fast` | `desktop_host.rs` `go_to_strip` → `ShowStrip`; `composition.rs` `deck.show(display, index, source)` | `go_to_strip` → `ChromeEffect::ShowStrip` → `show_active_strip` swaps the row | worse → **fixed** (§9) |
 | Switch strip by clicking the strip switcher / ribbon | `overlay_host/strip_switcher.rs`, `strip_rail.rs`; the click calls `state.focus_strip` and the deck slides | `desktop/src/strip_switcher.rs`, `strip_navigator.rs`, `strip_indicators.rs` (the sliding indicator moves on `ListChange::MOVE`); the switch itself jumped | worse → **fixed** (§9) |
-| Three fingers up/down move the deck with the hand; release settles with momentum | `update_strip_deck_drag` → `StripDeck::begin_drag/drag_to/end_drag`; commit past a quarter or a flick | `GestureTracker` streams `StripDeckUpdate`; the desk reads the travel at the lift and steps the strip past `SWIPE_THRESHOLD`, sliding as a finger's change; the deck does not follow the hand | worse |
+| Three fingers up/down move the deck with the hand; release settles with momentum | `update_strip_deck_drag` → `StripDeck::begin_drag/drag_to/end_drag`; commit past a quarter or a flick | `GestureTracker` streams `StripDeckUpdate`; the shell reads the travel at the lift and steps the strip past `SWIPE_THRESHOLD`, sliding as a finger's change; the deck does not follow the hand | worse |
 | Horizontal strip pan follows three fingers 1:1 with rubber band and coast | `GroupRow::update_strip_pan` driven by `StripPanUpdate` | `GestureReader` hands every `StripPanUpdate` to `DesktopSurface::carry_strip`, which drives `update_strip_pan`; release coasts by `end_strip_pan` and focus follows the window left in view | same |
 | Focused window framed; a keyboard focus change slides the viewport only when the target was off screen, at `fast` | `navigation.rs` `begin_transition`, `scroll_group_into_view_animated` | `desktop/src/navigation.rs` `apply_navigation` (built only behind `composition.rs`); `desktop-surface` `scroll_group_into_view` jumps | worse |
 | Strip indicator ribbon and rail fade and slide between strips | `StripIndicators` `Transient::CONFIRMATION`, `SlidingFocus::follow` | `desktop/src/strip_indicators.rs` same | same |
@@ -75,7 +75,7 @@ reorder are literally the same code the old shell drew.
 | Open a window: width grows from 0, neighbours slide aside, content fades and scales 0.96→1 | `WindowGroup::start_spawn_animation`, `TileHost::spawn_progress` (`WindowMotion::OPEN`) | `desktop-surface/src/surface/open_motion_tests.rs` | same |
 | Close: drawn from the client's last frame, reverse of open | `WindowGroup::start_closing` | `desktop-surface/src/surface/close_motion_tests.rs` (`the_window_right_of_a_closed_one_slides_into_its_place`) | same |
 | Resize by an edge: direct manipulation, fixed opposite edge, size chip, outline lit | `group_row_edges.rs` `RowEdgeDrag`, `edge_resize.rs` | same | same |
-| Move a group (reorder, between strips, between displays): springs to its new rect, neighbours close and open the gap | `GroupRow::record_shift_anim`, `window_move.rs` | same; a cross-strip move still slides the desk by `deck.show` | same |
+| Move a group (reorder, between strips, between displays): springs to its new rect, neighbours close and open the gap | `GroupRow::record_shift_anim`, `window_move.rs` | same; a cross-strip move still slides the shell by `deck.show` | same |
 | Maximize / restore: rect spring, siblings fade at `fast`; full screen as maximize with the chrome off | `WindowGroup::toggle_maximized`, `sync_sibling_fade` | same | same |
 | Tab chips open and close (180 ms) | `tabs.rs` `close_fade` | same | same |
 | Drag a tab across groups; a drag resting at an edge springs the strip across; a background tab comes forward after a dwell | `GroupRow` `DragReach`, `DRAG_SPRING_LOAD` | same | same |
@@ -127,7 +127,7 @@ What differs is the host around it.
 |---|---|---|---|
 | Banner stack: top-right, springs to its slot, hover-to-hold with an aim delay, at most three, the rest folding into `+N more from the app` which opens the centre, never ages while held | `desktop-surface/src/notifications/stack.rs`, mounted by `overlay_host/banners.rs` | the same crate; `DesktopNotifications` installed by `session/src/background.rs` `set_notifications` | better (the corner never fills; a fold leads to the one list) |
 | Banners below window bars, shifting when a bar arrives under them | `stack.rs` `transient_slot`, `clear_top` | `DesktopNotifications` + `surface/notices.rs` `set_clear_top` | same |
-| Notification centre: groups by app, one scrolling list, per-row actions, reader, agent hand-off, clear with an 8 s undo | `notifications/center.rs`, `history.rs`, `reader.rs` | `notifications/center.rs`, and the one door to it: the bell and the Quick Settings notifications row both open the desk's centre (`quick-settings/src/verbs.rs` `ShowCentre`) | better (one list, no paging; the panel keeps no second copy) |
+| Notification centre: groups by app, one scrolling list, per-row actions, reader, agent hand-off, clear with an 8 s undo | `notifications/center.rs`, `history.rs`, `reader.rs` | `notifications/center.rs`, and the one door to it: the bell and the Quick Settings notifications row both open the shell's centre (`quick-settings/src/verbs.rs` `ShowCentre`) | better (one list, no paging; the panel keeps no second copy) |
 | Quiet: Do Not Disturb, presenting, sharing, a focus schedule; banners held with a line saying why | `chrome_state` `notifications_quiet`, `QuietReason` | `NotificationsView::quiet`, `qs-notifications-quiet` | same |
 | Machine-wide banners on the other displays; a locked session shows a redacted count | `stack.rs` `draw_machine_wide`, `draw_locked_card` | `DesktopNotifications::show_banners_elsewhere`; `surface/notices.rs` | same |
 | Banners answer a call, reply inline, act on their sender | `banners.rs` `Ask::Banner/Reply/AnswerCall`; `notification.rs` `actions_for` | `notices.rs` `answer`, `DesktopNotifications::take_outcomes` | same |
@@ -155,7 +155,7 @@ What differs is the host around it.
 | Display identify: a numbered card on every display, in the corner the focused window leaves free, for 3 s | `shell/display_identify.rs` | `desktop/src/display_identify.rs` | same |
 | Focused display, pointer moving focus between displays, menus and panels opening on the focused display | `overlay_host/displays.rs` (652-line module) | `desktop-surface/src/surface/displays.rs` `lanes()`, `display_at()`, `focus_display_at`; `desktop/src/overlays.rs` `display_for` | same |
 | Each display shows a strip of its own and moves between strips alone | `strip_rail.rs`, `focus_strip` per display, `show_strip_on(display, strip)` | `lay_out_displays` places lanes, but `show_active_strip` keys off `tree.active_strip_id()`, so every display shows the same strip | **missing** |
-| A window moved to another display, and a group carried across the seam | `move_focused_group_to_display`, `carry_focused_group_across_seam` | `desktop:desk` `move-to-display`; `surface/displays.rs` | same |
+| A window moved to another display, and a group carried across the seam | `move_focused_group_to_display`, `carry_focused_group_across_seam` | `desktop:shell` `move-to-display`; `surface/displays.rs` | same |
 | Touch: a tap is one click where the finger was, a hold is a context menu, a drag on an edge resizes, the top edge reveals the bar | `compositor/touch_pointer.rs` `TouchPointer`, `ui-core/src/interaction.rs` `TouchPointerEmulator` | the same unchanged | same |
 | On-screen keyboard: follows touch typing and tablet mode | `compositor/input_method.rs` `osk_wanted` | unchanged | same |
 | Touchpad: three fingers the plane, four workspaces, a pinch the overview | `compositor/gestures.rs` | `compositor/src/gestures.rs`, unchanged; the **host** side lost the direct stream (§1) | worse (host only) |

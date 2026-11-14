@@ -5,7 +5,7 @@ A service or the MCP server asks the person a question; the portal sheet
 choice ("Allow once", "Allow for this session", "Always allow"), the sheet's
 Allow that answers with the choice highlighted, or its Deny. Everything here
 presses those controls by the names an assistive technology reads
-(`list_targets`, the desk's own named controls), never a provider of the old
+(`list_targets`, the shell's own named controls), never a provider of the old
 shell's: the choice and the Allow are the person's answer, and Deny is their
 refusal.
 
@@ -39,7 +39,7 @@ SHEET_S = 60
 
 
 def sheet_targets(ctx) -> list[dict]:
-    """The controls the person can press on the sheet up now (`list-targets`, the desk's
+    """The controls the person can press on the sheet up now (`list-targets`, the shell's
     named controls, as an assistive technology reads them), or [] when no sheet is up."""
     try:
         targets = ctx.vm.targets()
@@ -50,7 +50,7 @@ def sheet_targets(ctx) -> list[dict]:
 
 
 def portal_dialog(ctx) -> dict | None:
-    """The question on the sheet, as far as the desk shows it: its controls."""
+    """The question on the sheet, as far as the shell shows it: its controls."""
     targets = sheet_targets(ctx)
     return {"targets": [t.get("name") for t in targets]} if targets else None
 

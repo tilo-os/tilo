@@ -39,10 +39,10 @@
 #  12. the agent fills the visa test page through page actions with the
 #      person asked nothing (their key operates web pages), captures it, and
 #      a person invited into the workspace, in their own browser, sees that
-#      page on their desk — the agent's next fill changes the picture they
+#      page on their shell — the agent's next fill changes the picture they
 #      are looking at — before anyone is asked to approve anything; then the
 #      submission runs once the person allows that one submission, the
-#      receipt reaches the same desk, and a second submission is refused when
+#      receipt reaches the same shell, and a second submission is refused when
 #      they deny it — both answered by the person on the question sheet of
 #      their own page, open on the site since step 1, their view of each kept
 #      as WORK/startup/submission-{denied,allowed}-{asked,answered}.png — and
@@ -66,7 +66,7 @@
 #      Browser session runs as, and neither reads the other's files;
 #  18. a Linux GUI app in that workspace's VM: the agent opens the guest's X11
 #      terminal, a person invited into the workspace sees its window appear on
-#      their desk in their own browser and types a command into it, and the
+#      their shell in their own browser and types a command into it, and the
 #      file the command wrote is read back from the VM; the app runs as the
 #      tenant, not as Browser's account, and the VM's memory with it open is
 #      measured, in the guest and on the host.
@@ -529,11 +529,11 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
     fill_status=${PIPESTATUS[0]}
     set -e
     if [[ $fill_status != 0 ]]; then
-      # The person at their desk, in their own browser: what their page said,
+      # The person at their shell, in their own browser: what their page said,
       # and what they saw of the hosted window, when the flow stopped.
-      echo '--- the person at their desk said:' >&2
-      sed -n '1,200p' "$work/hosted/desk.jsonl" >&2 2>/dev/null || true
-      tail -40 "$work/hosted/desk.log" >&2 2>/dev/null || true
+      echo '--- the person at their shell said:' >&2
+      sed -n '1,200p' "$work/hosted/shell.jsonl" >&2 2>/dev/null || true
+      tail -40 "$work/hosted/shell.log" >&2 2>/dev/null || true
       fail "the hosted Browser flow failed (see $work/hosted-fill.log)"
     fi
     echo "ok: the hosted Browser ran in $((SECONDS - launch))s, its open taking ${hosted_seconds}s"
@@ -574,7 +574,7 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
   fi
 
   if runs_step 18; then
-    step "18. a Linux GUI app opens in the workspace's VM, on a person's desk"
+    step "18. a Linux GUI app opens in the workspace's VM, on a person's shell"
     # What the workspace's VM takes of this host, as the VM host measures it,
     # before the app and with it open: what admitting a VM counts.
     vm_resident() {
@@ -597,7 +597,7 @@ for line in sys.stdin.read().splitlines():
         >&2 2>/dev/null || true
       echo '--- the VM host said:' >&2
       sudo -n podman logs --tail 40 tilo-sh-vm-host-0 >&2 2>/dev/null || true
-      fail "the Linux app did not open on the person's desk, or the typing did not take (see $work/hosted/gui.json and $work/hosted/gui-person)"
+      fail "the Linux app did not open on the person's shell, or the typing did not take (see $work/hosted/gui.json and $work/hosted/gui-person)"
     fi
     resident_after=$(vm_resident)
     echo "the VM on its host: ${resident_before:-?} MiB before the app, ${resident_after:-?} MiB with it open"
@@ -608,7 +608,7 @@ report = json.load(open(path))
 report["host_resident_mib"] = {"before": int(before) if before else None, "after": int(after) if after else None}
 json.dump(report, open(path, "w"), indent=2)
 EOF_GUI
-    echo "ok: a Linux app opened in the VM and on the person's desk, and took their typing, in $((SECONDS - at))s"
+    echo "ok: a Linux app opened in the VM and on the person's shell, and took their typing, in $((SECONDS - at))s"
   fi
 fi
 

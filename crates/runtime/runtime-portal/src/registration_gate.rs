@@ -12,7 +12,7 @@
 //!
 //! Two kinds of host start such a child: a session starting `tilo-launcher`
 //! for an app it opens ([`install`]), and a session starting its own surface
-//! apps directly — the bar, the desk, the panels, the views it binds to a
+//! apps directly — the bar, the shell, the panels, the views it binds to a
 //! slot of the shell — which call [`wait_on_stdin`] before they connect their
 //! services.
 //!

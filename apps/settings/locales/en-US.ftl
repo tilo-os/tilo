@@ -207,7 +207,7 @@ shortcut-name-toggle-maximize = Maximize or restore window
 shortcut-name-maximize-window = Maximize window
 shortcut-name-restore-window = Restore window
 shortcut-name-detach-tab = Move tab to new group
-shortcut-name-toggle-float = Float the window over the desk
+shortcut-name-toggle-float = Float the window over the shell
 shortcut-name-attach-tab-left = Move tab into group on left
 shortcut-name-attach-tab-right = Move tab into group on right
 shortcut-name-move-group-left = Move group left
@@ -2692,17 +2692,17 @@ accounts-mail-not-synced = Mail access granted. No first sync yet.
 accounts-remove-files = Remove Files
 accounts-disconnect-mail = Disconnect Mail
 
-## Appearance: desk widgets
+## Appearance: widgets
 
-settings-desk-card = Desk widgets
-settings-desk-music = Music
-settings-desk-team = People in this workspace
-settings-desk-calendar = Calendar
-settings-desk-system-monitor = System monitor
-settings-desk-when = Shows
-settings-desk-show-pause = When I pause typing
-settings-desk-show-always = Always, on the strips I pin it to
-settings-desk-show-ask = Only when I ask
+settings-widgets-card = Widgets
+settings-widgets-music = Music
+settings-widgets-team = People in this workspace
+settings-widgets-calendar = Calendar
+settings-widgets-system-monitor = System monitor
+settings-widgets-when = Shows
+settings-widgets-show-pause = When I pause typing
+settings-widgets-show-always = Always, on the strips I pin it to
+settings-widgets-show-ask = Only when I ask
 
 settings-drives-title = Remembered drives
 settings-drives-intro = Drives you chose to remember open without asking again. A drive inside this computer opens when you open it in Files; an external one is still asked about each time you connect it.

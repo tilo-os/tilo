@@ -1,6 +1,6 @@
 [package]
 name = "tilo-activities"
-description = "The floating layer as an app: the activity cards over the desk, their controls, and the feed the session lends them."
+description = "The floating layer as an app: the activity cards over the shell, their controls, and the feed the session lends them."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true

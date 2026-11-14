@@ -21,7 +21,7 @@ pub struct ProfileOptions {
     pub scenario: Option<String>,
     pub seed: Option<usize>,
     pub size: (u32, u32),
-    /// The layer of a package with more than one root to show (`Desk`, `Layout`).
+    /// The layer of a package with more than one root to show (`Shell`, `Layout`).
     pub root: Option<String>,
     /// Interactions to run after the app is open, each in [`Interaction`]'s spelling.
     pub then: Vec<String>,

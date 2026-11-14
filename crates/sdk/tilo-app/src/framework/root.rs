@@ -1472,7 +1472,7 @@ impl SearchCache {
     /// [`background`](ui_core::background) queue between frames, so a build
     /// in the frame holds the palette's first paint until it finishes, and
     /// indexing a window's content into tantivy there is what the page
-    /// desk measured as the 14–57 s between typing and the first row, per
+    /// shell measured as the 14–57 s between typing and the first row, per
     /// app, moving with whichever window was opened last. A background job
     /// runs after the frame returns, so the ready rows paint at once and the
     /// content's rows join them when the index is built

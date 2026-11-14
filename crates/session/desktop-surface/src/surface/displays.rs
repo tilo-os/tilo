@@ -180,7 +180,7 @@ pub(crate) fn display_strips(tree: &Layout) -> Vec<StripPlan> {
 
 /// The display among `displays` (in the surface's coordinates, the surface at `surface` ) holding
 /// point `p` .
-/// A display's rectangle, in the desk's coordinates.
+/// A display's rectangle, in the shell's coordinates.
 #[must_use]
 pub fn display_rect(display: &Display) -> Rect {
     Rect::new(
@@ -191,7 +191,7 @@ pub fn display_rect(display: &Display) -> Rect {
     )
 }
 
-/// The display the person works on, in the desk's coordinates, while the desk spans several: the
+/// The display the person works on, in the shell's coordinates, while the shell spans several: the
 /// one every shell surface without a place of its own stands on. `None` on one display.
 #[must_use]
 pub fn working_display(tree: &Layout) -> Option<Rect> {
@@ -750,7 +750,7 @@ mod tests {
         assert_eq!(
             working_display(&tree),
             Some(Rect::new(800.0, 0.0, 1600.0, 600.0)),
-            "the right display, not the desk across both"
+            "the right display, not the shell across both"
         );
         tree.outputs.set_focused(0);
         assert_eq!(

@@ -38,7 +38,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_workspace_or_a_strip_nobody_named_reads_as_the_desks_own_word() {
+    fn a_workspace_or_a_strip_nobody_named_reads_as_the_shells_own_word() {
         crate::i18n::ensure();
         assert_eq!(workspace("Research"), "Research");
         assert_eq!(workspace("  "), "Workspace");

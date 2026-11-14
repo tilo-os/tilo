@@ -300,7 +300,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_windows_width_on_its_strip;
 
-        phase a_window_opened_over_the_desk_takes_the_width_of_the_card_it_draws_at;
+        phase a_window_opened_over_the_shell_takes_the_width_of_the_card_it_draws_at;
         {
             let (usable, gap, card) = (1216.0, 10.0, 640.0);
             let (beside, floating) =
