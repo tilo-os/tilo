@@ -114,7 +114,7 @@ impl Item {
     }
 }
 
-/// An layout action: one change of the person's layout.
+/// A layout action: one change of the person's layout.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "do", rename_all = "kebab-case")]
 pub enum LayoutAction {
@@ -659,7 +659,7 @@ pub struct Busy {
 }
 
 impl Busy {
-    /// Whether an layout must wait.
+    /// Whether a layout must wait.
     #[must_use]
     pub const fn holds(self) -> bool {
         self.gesture || self.typing
