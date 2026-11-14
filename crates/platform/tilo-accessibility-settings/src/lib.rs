@@ -228,8 +228,11 @@ macro_rules! accessibility_settings {
                       independently meaningful serialized setting, not a related toggle group"
         )]
         pub struct AccessibilitySettings {
+            /// Draw the pointer larger than the theme's pointer, at the size `cursor_size` sets.
             pub large_cursor: bool,
+            /// How many pixels across the pointer is drawn, between the section's bounds.
             pub cursor_size: u32,
+            /// Which pointer picture the person uses: the theme's, or one of the high-contrast shapes.
             pub cursor_theme: $crate::CursorTheme,
             $(#[$readonly])*
             pub screen_reader: bool,
@@ -238,29 +241,46 @@ macro_rules! accessibility_settings {
             pub on_screen_keyboard: OnScreenKeyboard,
             /// Latch modifier keys so chords can be typed one key at a time.
             pub sticky_keys: bool,
+            /// Wait to accept a key until it has been held long enough, so a pressed key can be ignored.
             pub slow_keys: bool,
+            /// Ignore key presses that bounce back from a worn switch or a held key.
             pub bounce_keys: bool,
+            /// How long a bouncing key is ignored, in milliseconds.
             pub bounce_keys_delay_ms: u32,
+            /// Show a notice on screen when a bouncing key press is ignored.
             pub bounce_keys_alert: bool,
+            /// Move the pointer with the numeric keypad and press with its keys.
             pub mouse_keys: bool,
             /// Flash the screen instead of (or alongside) an audible alert.
             pub visual_alerts: bool,
+            /// Shift colours so they are easier to tell apart, or read as greys.
             pub color_filter: ColorFilter,
+            /// How far the magnifier enlarges the screen, counted in steps.
             pub magnifier_zoom: u8,
+            /// Whether the magnifier follows the pointer, a lens over it, or shows the edge of the
+            /// screen in a docked window.
             pub magnifier_view: MagnifierView,
             $(#[$readonly])*
             pub magnifier_last_zoom: u8,
+            /// Show a crosshair over the pointer to find it on a busy screen.
             pub cursor_crosshair: bool,
+            /// Draw the text caret thicker so it is easier to see.
             pub thick_text_caret: bool,
+            /// Tap one or two switches to move a highlight between controls and press the one it
+            /// stands on.
             pub switch_control: bool,
+            /// Which two switches the person uses: two separate switches, or one switch in both
+            /// positions.
             pub switch_key_pair: SwitchKeyPair,
             /// Automatic scan period in milliseconds; zero means manual two-switch scanning.
             pub switch_scan_ms: u16,
             /// Normalised screen-reader speech rate, where 100 is the engine default.
             pub screen_reader_rate: u16,
+            /// The voice the screen reader speaks with.
             pub screen_reader_voice: ScreenReaderVoice,
             /// Personal recognition language; selecting it never grants microphone access.
             pub dictation_language: DictationLanguage,
+            /// Insert dictated words as they are, without matching them to commands.
             pub dictation_literal: bool,
         }
 

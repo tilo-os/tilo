@@ -12,8 +12,11 @@ pub const SETTINGS_SECTION: &str = "text_assistance";
 )]
 #[model(defaults)]
 pub struct TextAssistancePrefs {
+    /// Underline words the spell checker does not know, in every text field.
     pub check_spelling: bool,
+    /// Replace common misspellings with the word the checker suggests as they are typed.
     pub auto_correct: bool,
+    /// The language the checker reads, as a BCP 47 tag; empty uses the person's interface language.
     #[serde(default)]
     pub spelling_language: String,
 }
