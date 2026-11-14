@@ -277,6 +277,16 @@ test-group = "agent-collaboration"
 filter = 'package(tilolang-tilo) and binary(budgets)'
 slow-timeout = { period = "30s", terminate-after = 40 }
 
+# A company's workspace at real size: a thousand notes and five hundred issues
+# written through the API one at a time, then every call an agent makes most
+# timed against what an empty workspace answers in. Writing them is the bulk of
+# the run and takes minutes on a busy machine; the bound only has to catch a run
+# that stopped. Printed on a pass too, so the timings show in every log.
+[[profile.default.overrides]]
+filter = 'package(tilo-agent-participant) and binary(it) and test(workspace_actions::scale::)'
+success-output = "final"
+slow-timeout = { period = "60s", terminate-after = 30 }
+
 [[profile.default.overrides]]
 filter = '(package(notes) and binary(it) and (test(scenarios::) or test(capture_runtime::)))'
 threads-required = 16
