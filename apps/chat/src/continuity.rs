@@ -42,7 +42,7 @@ impl ChatCallContinuation {
     pub fn resume_intent(&self) -> ui::realtime_continuity::RealtimeResumeIntent {
         ui::realtime_continuity::RealtimeResumeIntent {
             provider: CHAT_REALTIME_PROVIDER.into(),
-            room_id: self.channel_id.clone(),
+            channel_id: self.channel_id.clone(),
             semantic_position: Some(self.workspace_id.clone()),
             media: self.media,
             controls: self.controls,

@@ -1195,7 +1195,7 @@ tilo_test_env::scenario! {
             request: HandoffRequest::Retire {
                 token: 8,
                 successor: Successor {
-                    room: uuid::Uuid::new_v4().to_string(),
+                    workspace: uuid::Uuid::new_v4().to_string(),
                     record: "elsewhere".to_owned(),
                     by: "ada".to_owned(),
                 },

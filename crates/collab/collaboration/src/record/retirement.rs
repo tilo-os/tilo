@@ -55,7 +55,7 @@ pub fn retirement(doc: &AutoCommit) -> Option<Retirement> {
     }
     let successor = match (field("workspace"), field("record"), field("by")) {
         (Some(workspace), Some(record), Some(by)) => Some(Successor {
-            room: workspace,
+            workspace,
             record,
             by,
         }),

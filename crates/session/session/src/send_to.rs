@@ -725,7 +725,7 @@ mod tests {
             serde_json::from_value(target.arguments["submission"].clone())
                 .expect("the reviewed report");
         assert_eq!(
-            submission.destination.room, "w_tilo",
+            submission.destination.workspace, "w_tilo",
             "the report says where it is filed"
         );
         assert_eq!(submission.destination.channel, "c_feedback");

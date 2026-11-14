@@ -41,7 +41,7 @@ impl FeedbackHost for Host {
 fn composer(calls: &Rc<RefCell<Calls>>) -> Composer {
     Composer::new(
         Destination {
-            room: "room".into(),
+            workspace: "demo".into(),
             provider: "record:so.tilo.chat:".into(),
             channel: "c_feedback".into(),
         },

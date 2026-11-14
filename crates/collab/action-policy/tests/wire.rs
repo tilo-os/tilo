@@ -128,32 +128,12 @@ tilo_test_env::scenario! {
         );
         let mut golden = vec![0x01, b'g'];
         golden.extend([0x00, 0x00, 0x01, b'p']);
-        golden.push(0x06);
-        golden.extend(b"room:r");
+        golden.push(0x0b);
+        golden.extend(b"workspace:r");
         golden.extend([0x03, 0x00, 0x01, 0x02]);
         golden.push(0x02);
         golden.push(0x04);
         golden.extend([0x00, 0x00, 0x01, b'c']);
         stored_as!(&grant, &golden);
-    }
-
-    phase a_grant_written_while_the_level_was_named_for_workspaces_reads_as_the_same_grant;
-    {
-        // The same grant as above, with the node as one build wrote it: its bytes
-        // still name a node, and the same one.
-        let stored = b"\x01g\x00\x00\x01p\x0bworkspace:r\x03\x00\x01\x02\x02\x04\x00\x00\x01c";
-        let read: Grant = postcard::from_bytes(stored).expect("the stored grant still loads");
-        assert_eq!(read.node, TreePath::workspace("r"));
-        assert_eq!(
-            read,
-            Grant::new(
-                "g",
-                Grantee::person("p"),
-                TreePath::workspace("r"),
-                KindSet::ALL,
-                Answer::Allow,
-                Grantee::person("c"),
-            )
-        );
     }
 }

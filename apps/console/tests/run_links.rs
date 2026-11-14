@@ -347,7 +347,7 @@ fn a_runs_link_parses_back_to_that_run() {
         target.view, None,
         "a run's page is its primary view, which a link leaves out: {url}"
     );
-    let Scope::Room { id, .. } = &target.scope else {
+    let Scope::Workspace { id, .. } = &target.scope else {
         panic!("a link opens in the workspace's session: {url}");
     };
     assert_eq!(id.to_string(), WORKSPACE.to_lowercase(), "{url}");

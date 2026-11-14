@@ -72,10 +72,7 @@ pub mod destination {
 #[serde(deny_unknown_fields)]
 pub struct Destination {
     /// The workspace the report goes to.
-    // Stored and sent as `room`: a queued submission's digest, its receipt and
-    // every filed report are keyed so, and the native session reads the field
-    // by that name.
-    pub room: String,
+    pub workspace: String,
     pub provider: String,
     pub channel: String,
 }
@@ -87,7 +84,7 @@ impl Destination {
     /// # Errors
     /// Refuses empty, oversized or control-character identifiers.
     pub fn validate(&self) -> Result<(), Error> {
-        for value in [&self.room, &self.provider, &self.channel] {
+        for value in [&self.workspace, &self.provider, &self.channel] {
             if value.trim().is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
                 return Err(Error::Invalid("destination"));
             }
@@ -275,7 +272,7 @@ mod submission_tests {
         Submission {
             id: "0123456789abcdef".repeat(2),
             destination: Destination {
-                room: "demo".into(),
+                workspace: "demo".into(),
                 provider: "record:chat:feedback".into(),
                 channel: "feedback".into(),
             },
@@ -289,24 +286,22 @@ mod submission_tests {
     }
 
     #[test]
-    fn a_destination_keeps_the_key_it_was_stored_and_sent_under() {
-        // A queued submission's digest, its receipt and every filed report are
-        // keyed `room`: renaming the field without this key would orphan them.
+    fn a_destination_is_written_under_its_fields() {
         let destination: Destination = serde_json::from_value(serde_json::json!({
-            "room": "w", "provider": "p", "channel": "c"
+            "workspace": "w", "provider": "p", "channel": "c"
         }))
         .unwrap();
-        assert_eq!(destination.room, "w");
+        assert_eq!(destination.workspace, "w");
         assert_eq!(
             serde_json::to_value(&destination).unwrap(),
-            serde_json::json!({"room": "w", "provider": "p", "channel": "c"})
+            serde_json::json!({"workspace": "w", "provider": "p", "channel": "c"})
         );
         let keys: Vec<&str> = <Destination as tilo_resource::Model>::SHAPE
             .fields()
             .iter()
             .map(|field| field.key)
             .collect();
-        assert_eq!(keys, ["room", "provider", "channel"]);
+        assert_eq!(keys, ["workspace", "provider", "channel"]);
     }
 
     #[test]

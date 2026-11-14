@@ -274,10 +274,7 @@ pub enum Scope {
     /// The workspace the person is in (`/me`).
     Own,
     /// A workspace on `host`.
-    ///
-    /// The variant keeps its name: the desktop shell matches it by name and
-    /// is deleted whole when its windows move onto the new session.
-    Room {
+    Workspace {
         host: HostOrigin,
         id: Uuid,
         slug: Option<Slug>,
@@ -289,7 +286,7 @@ impl PartialEq for Scope {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Own, Self::Own) => true,
-            (Self::Room { host: a, id: x, .. }, Self::Room { host: b, id: y, .. }) => {
+            (Self::Workspace { host: a, id: x, .. }, Self::Workspace { host: b, id: y, .. }) => {
                 a == b && x == y
             }
             _ => false,
@@ -501,7 +498,7 @@ impl LinkTarget {
     fn write_scope(&self, omit_host: Option<&HostOrigin>, out: &mut String) {
         match &self.scope {
             Scope::Own => out.push_str("/me"),
-            Scope::Room {
+            Scope::Workspace {
                 host,
                 id: workspace,
                 slug,
@@ -645,7 +642,7 @@ mod tests {
     }
 
     fn workspace(host: &str) -> Scope {
-        Scope::Room {
+        Scope::Workspace {
             host: HostOrigin::new(host).unwrap(),
             id: WORKSPACE.parse().unwrap(),
             slug: None,
@@ -783,7 +780,7 @@ mod tests {
     #[test]
     fn formats_the_spec_examples() {
         let mut target = LinkTarget::new(workspace("https://ada.tilo.cloud"));
-        if let Scope::Room { slug, .. } = &mut target.scope {
+        if let Scope::Workspace { slug, .. } = &mut target.scope {
             *slug = Slug::from_name("Reading Group");
         }
         target.app = Some(AppId::parse("so.tilo.word-processor").unwrap());

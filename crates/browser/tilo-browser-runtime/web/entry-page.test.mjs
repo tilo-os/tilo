@@ -59,8 +59,8 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     dispose: async () => calls.push('dispose')};
   const page = {peer: own ? null : {...peer, ...member}, entry: entry ?? {base: 'https://web.example/'},
     mount: {setHostActions: actions => shown.push(actions), setOwnPerson: person => calls.push(['own', person]), flush: async () => calls.push('flush'), cleanup: async () => calls.push('cleanup')},
-    router: {route: {target: {scope: own ? {kind: 'own'} : {kind: 'room', host: ORIGIN, room: 'current'}}}, stop: () => calls.push('stop')},
-    link: {format: route => `https://web.example/#/${route.target.scope.room}`}};
+    router: {route: {target: {scope: own ? {kind: 'own'} : {kind: 'workspace', host: ORIGIN, workspace: 'current'}}}, stop: () => calls.push('stop')},
+    link: {format: route => `https://web.example/#/${route.target.scope.workspace}`}};
   const prepared = [];
   const runtime = runtimeFake({
     presenceColor: id => {
@@ -151,7 +151,7 @@ test('a page the host refuses mounts nothing, so it compiles no renderer for the
 
 test('a page that cannot open its workspace shows one failure screen: the cause, Try again, and the other workspaces in it', async () => {
   const {failure, screen, calls} = await fixture({boot: async ({deps, onStep}) => {
-    deps.onScope({scope: {kind: 'room', host: 'https://127.0.0.1:24100', room: 'current'},
+    deps.onScope({scope: {kind: 'workspace', host: 'https://127.0.0.1:24100', workspace: 'current'},
       entry: {base: 'https://web.example/', home: null}});
     onStep('join');
     throw Object.assign(new Error('join: HTTP 500'), {name: 'HostAdmissionError', code: 'refused', status: 500});
@@ -177,7 +177,7 @@ test('a page that cannot open its workspace shows one failure screen: the cause,
 test('a page whose host never answers names that host, not this site', async () => {
   globalThis.fetch = async () => ({ok: true});
   const {screen} = await fixture({boot: async ({deps}) => {
-    deps.onScope({scope: {kind: 'room', host: 'https://127.0.0.1:24100', room: 'current'},
+    deps.onScope({scope: {kind: 'workspace', host: 'https://127.0.0.1:24100', workspace: 'current'},
       entry: {base: 'https://web.example/', home: null}});
     // Let in, then the host's connection goes.
     deps.onAdmitted({workspaceName: 'Lounge'});
@@ -319,7 +319,7 @@ test('the page keeps switch actions together and dispatches them', async () => {
 
 test('a workspace offers the way back to the person’s own desktop, and their own desktop does not offer itself', async () => {
   const {calls, shown, diagnostics, page} = await fixture();
-  page.link.format = route => `https://web.example/#/${route.target.scope.kind === 'own' ? 'me' : route.target.scope.room}`;
+  page.link.format = route => `https://web.example/#/${route.target.scope.kind === 'own' ? 'me' : route.target.scope.workspace}`;
   chooseWorkspace({origin: ORIGIN, room: 'other'});
   const back = shown.at(-1).find(action => action.title === 'Open your desktop');
   assert.ok(back, 'a room is no dead end');
@@ -361,7 +361,7 @@ test('creating a workspace remembers it and uses the existing save-and-close swi
   await tick();
   assert.deepEqual(calls, ['enter', 'flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
   assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, room: 'created'});
-  assert.equal(enteredWorkspaces().find(room => room.room === 'created').name, 'Created');
+  assert.equal(enteredWorkspaces().find(entry => entry.room === 'created').name, 'Created');
 });
 
 

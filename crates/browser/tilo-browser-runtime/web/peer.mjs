@@ -1179,7 +1179,7 @@ async function connect({
      * admission it answers with: a workspace that sends its records when
      * they are opened sends this page no chat until someone opens Chat. */
     async configureFeedback(destination) {
-      if (!workspace || destination?.room !== workspace || disposed) throw new Error('Feedback needs this existing workspace');
+      if (!workspace || destination?.workspace !== workspace || disposed) throw new Error('Feedback needs this existing workspace');
       if (typeof peer?.configureFeedback !== 'function') throw new Error('Feedback delivery is unavailable in this runtime');
       peer.configureFeedback(JSON.stringify(destination));
       await untilSnapshot(() => {

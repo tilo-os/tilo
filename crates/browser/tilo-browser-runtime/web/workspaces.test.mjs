@@ -781,7 +781,7 @@ test('the person switches between the home and the workspaces they entered, neve
     // Another workspace on the home's host is a workspace of its own.
     {origin: 'https://rooms.example', room: 'TEAM', name: 'Team', unavailable: false},
   ];
-  const fromAcme = workspaceChoices({home, homeWorkspace: 'LOUNGE', entered, current: {kind: 'room', host: 'https://acme.example', room: 'A'}});
+  const fromAcme = workspaceChoices({home, homeWorkspace: 'LOUNGE', entered, current: {kind: 'workspace', host: 'https://acme.example', workspace: 'A'}});
   assert.deepEqual(fromAcme.map(choice => [choice.id, choice.name, choice.room, choice.home, choice.unavailable]), [
     ['open-workspace:home', 'Lounge', null, true, false],
     ['open-workspace:https://globex.example/G', 'globex.example', 'G', false, true],
@@ -789,7 +789,7 @@ test('the person switches between the home and the workspaces they entered, neve
   ]);
   // In the home (before or after its workspace is known), the home is not offered.
   for (const room of [null, 'LOUNGE']) {
-    const fromHome = workspaceChoices({home, homeWorkspace: 'LOUNGE', entered, current: {kind: 'room', host: 'https://rooms.example', room}});
+    const fromHome = workspaceChoices({home, homeWorkspace: 'LOUNGE', entered, current: {kind: 'workspace', host: 'https://rooms.example', workspace: room}});
     assert.deepEqual(fromHome.map(choice => choice.name), ['Acme', 'globex.example', 'Team']);
   }
   // Without a home, the person's own desktop offers every workspace entered.
@@ -810,7 +810,7 @@ test('the directory lists the workspaces this page holds by the host actions tha
       {origin: 'https://rooms.example/', room: 'WORKSPACE', name: 'Commons'},
       {origin: 'https://garden.example', room: 'GARDEN', name: null},
     ],
-    current: {kind: 'room', host: 'https://rooms.example/join', room: 'HERE', name: 'Here'},
+    current: {kind: 'workspace', host: 'https://rooms.example/join', workspace: 'HERE', name: 'Here'},
   });
   assert.deepEqual(held, [
     {workspace: 'HERE', key: 'open-workspace:https://rooms.example/HERE', name: 'Here'},
@@ -856,7 +856,7 @@ test('an invitation to another workspace on the home\'s host leaves the home its
   // Then the person accepts an invitation to a customer's workspace on the same host.
   keepJoinedHost({origin: 'https://lounge.example/', room: 'customer', userPublicKey: person}, store);
   assert.equal(keptMembership(home, store).room, 'lounge');
-  const scope = room => ({kind: 'room', host: 'https://lounge.example', room});
+  const scope = room => ({kind: 'workspace', host: 'https://lounge.example', workspace: room});
   assert.equal(listedAt([home], scope('customer'), null, store), null, 'the customer\'s workspace is not named Lounge');
   assert.equal(listedAt([home], scope('lounge'), null, store), home);
   const choices = workspaceChoices({home, homeWorkspace: keptMembership(home, store).room,

@@ -1627,7 +1627,7 @@ impl Collaborative for ChatApp {
                 };
                 let offered = crate::continuity::ChatCallContinuation {
                     workspace_id,
-                    channel_id: intent.room_id.clone(),
+                    channel_id: intent.channel_id.clone(),
                     media: intent.media,
                     controls: intent.controls,
                 };

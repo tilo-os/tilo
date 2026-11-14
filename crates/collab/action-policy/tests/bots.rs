@@ -152,7 +152,7 @@ tilo_test_env::scenario! {
         let governing = Rule::new(
             TreePath::root()
                 .any(Level::Workspace)
-                .kind(roles::ROOM_KIND)
+                .kind(roles::WORKSPACE_KIND)
                 .action(governance::GRANT),
             KindSet::ALL,
             Answer::Allow,

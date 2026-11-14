@@ -16,7 +16,7 @@ fn submitted_as(author: &str) -> (automerge::AutoCommit, Submission, ResourceSpe
     let submission = Submission {
         id: "0123456789abcdef0123456789abcdef".into(),
         destination: Destination {
-            room: "room".into(),
+            workspace: "room".into(),
             provider: "fixture-chat".into(),
             channel: channel.id,
         },
@@ -142,7 +142,7 @@ fn fixture_submission(workspace: &str) -> Submission {
     Submission {
         id: "0123456789abcdef0123456789abcdef".into(),
         destination: Destination {
-            room: workspace.into(),
+            workspace: workspace.into(),
             provider: "record:so.tilo.chat:".into(),
             channel: "feedback".into(),
         },
@@ -268,7 +268,10 @@ fn mounted_chat_reader_returns_the_actual_primary_route_stamp() {
         .completed()
         .expect("the registered read must complete immediately");
     let value = output.value.unwrap();
-    assert_eq!(value["record"]["workspaceId"], submission.destination.room);
+    assert_eq!(
+        value["record"]["workspaceId"],
+        submission.destination.workspace
+    );
     assert_eq!(value["record"]["appId"], crate::definition().app_id());
     assert_eq!(value["record"]["recordId"], "");
     let receipt: Receipt = serde_json::from_value(value["content"].clone()).unwrap();

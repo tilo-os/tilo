@@ -34,8 +34,8 @@ pub const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Successor {
-    /// The room the record now lives in.
-    pub room: String,
+    /// The workspace the record now lives in.
+    pub workspace: String,
     /// Its id there.
     pub record: String,
     /// The person who moved it.
@@ -47,7 +47,7 @@ pub struct Successor {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OwnerView {
-    pub room: String,
+    pub workspace: String,
     pub app: String,
     pub instance: u64,
     pub generation: u64,
@@ -71,9 +71,9 @@ impl OwnerView {
     pub fn valid(&self) -> bool {
         self.generation > 0
             && self
-                .room
+                .workspace
                 .parse::<uuid::Uuid>()
-                .is_ok_and(|room| !room.is_nil())
+                .is_ok_and(|workspace| !workspace.is_nil())
             && !self.app.is_empty()
             && self.app.len() <= 256
             && self.source.len() <= 256
@@ -206,7 +206,7 @@ mod tests {
         phase handoff_messages_round_trip_and_refuse_anything_else;
         {
             let successor = Successor {
-                room: "3f2b1c00-0000-4000-8000-0000000000e1".into(),
+                workspace: "3f2b1c00-0000-4000-8000-0000000000e1".into(),
                 record: "uuid:5b0e".into(),
                 by: "person:ada".into(),
             };
@@ -238,7 +238,7 @@ mod tests {
         phase owner_messages_are_bounded_and_do_not_expand_legacy_handoffs;
         {
             let mut view = OwnerView {
-                room: "3f2b1c00-0000-4000-8000-0000000000e1".into(),
+                workspace: "3f2b1c00-0000-4000-8000-0000000000e1".into(),
                 app: "so.tilo.code-editor".into(),
                 instance: 7,
                 generation: 1,

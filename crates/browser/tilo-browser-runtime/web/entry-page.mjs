@@ -777,7 +777,7 @@ export async function startEntryPage({mode}) {
   /** The host the page was reaching when `error` stopped it: the one the
    * error names, else the workspace's. */
   const failingHost = error => (typeof error?.origin === 'string' && error.origin) || namedOrigin(error) || visitedAt?.host?.origin
-    || (admitting?.scope?.kind === 'room' ? admitting.scope.host : null) || admitting?.entry?.home?.host?.origin || null;
+    || (admitting?.scope?.kind === 'workspace' ? admitting.scope.host : null) || admitting?.entry?.home?.host?.origin || null;
   /**
    * Stop on the failure screen: `error`'s cause in plain words, the action
    * that gets the person in, their other workspaces, and the details. The
@@ -998,8 +998,8 @@ export async function startEntryPage({mode}) {
     directory: () => {
       if (!admitting?.entry?.base) return null;
       const scope = admitting.scope ?? null;
-      const current = scope?.kind === 'room'
-        ? {kind: 'room', host: scope.host, room: scope.room ?? admitted?.workspace ?? null, name: workspaceName} : null;
+      const current = scope?.kind === 'workspace'
+        ? {kind: 'workspace', host: scope.host, workspace: scope.workspace ?? admitted?.workspace ?? null, name: workspaceName} : null;
       const user = currentIdentity()?.userPublicKey;
       return {
         site: admitting.entry.base,
@@ -1254,12 +1254,12 @@ export async function startEntryPage({mode}) {
     if (page.peer) page.peer.onStatus?.(() => bar.look());
     else if (!page.mount) noDesktop = true;
     bar.look();
-    if (!embed && !enteredViaDoor && !viaTicket && page.peer && here.kind === 'room') {
+    if (!embed && !enteredViaDoor && !viaTicket && page.peer && here.kind === 'workspace') {
       // A workspace entered as a member: offered again from the person's other workspaces.
-      const entry = {origin: here.host, room: here.room ?? page.peer.workspace};
+      const entry = {origin: here.host, room: here.workspace ?? page.peer.workspace};
       remembering(() => {
         rememberEntered(runtime, {...entry, hostDevice, name: invitedTo});
-        if (!rememberedWorkspace({kind: 'room', host: entry.origin, room: entry.room})?.name) unnamed = entry;
+        if (!rememberedWorkspace({kind: 'workspace', host: entry.origin, workspace: entry.room})?.name) unnamed = entry;
       });
     }
     if (hostActions) {
@@ -1344,7 +1344,7 @@ export async function startEntryPage({mode}) {
     // their agent, opens a workspace of their own instead of leaving them on
     // the shared desktop they landed in. A link into another workspace is that
     // workspace's, and is left alone.
-    if (!embed && !firstRun && here.kind === 'room' && readSetup()?.step !== 'done'
+    if (!embed && !firstRun && here.kind === 'workspace' && readSetup()?.step !== 'done'
         && page.peer?.workspace && page.peer.workspace === homeRoomOf(page.entry)) {
       loadPage(page.entry.base);
       return;
@@ -1554,9 +1554,9 @@ function remembering(read) {
 
 /** The remembered workspace `scope` names, if this browser entered it as a member. */
 function rememberedWorkspace(scope) {
-  if (scope?.kind !== 'room' || !scope.room) return null;
+  if (scope?.kind !== 'workspace' || !scope.workspace) return null;
   const origin = new URL(scope.host).origin;
-  return enteredWorkspaces().find(entry => entry.origin === origin && entry.room === scope.room) ?? null;
+  return enteredWorkspaces().find(entry => entry.origin === origin && entry.room === scope.workspace) ?? null;
 }
 
 /** The workspace the site's own door names, as its admission address spells it
@@ -1576,7 +1576,7 @@ function homeWorkspaceOf(entry) {
 function choiceUrl(choice, entry, link) {
   if (choice.home) return entry.base;
   if (choice.own) return link.format({mode: 'desktop', target: {scope: {kind: 'own'}}});
-  return link.format({mode: 'desktop', target: {scope: {kind: 'room', host: choice.origin, room: choice.room}}});
+  return link.format({mode: 'desktop', target: {scope: {kind: 'workspace', host: choice.origin, workspace: choice.room}}});
 }
 
 /**
@@ -2147,7 +2147,7 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
   const signIn = async ({user, invite}) => {
     const peer = await Promise.race([pageLetIn, new Promise(resolve => setTimeout(resolve, LET_IN_MS, null))]);
     if (!peer?.workspace) throw Object.assign(new Error('this tab is not in its workspace yet'), {code: 'not-let-in'});
-    const url = (await link).format({mode: 'desktop', target: {scope: {kind: 'room', host: peer.origin, room: peer.workspace}}});
+    const url = (await link).format({mode: 'desktop', target: {scope: {kind: 'workspace', host: peer.origin, workspace: peer.workspace}}});
     setupDone();
     try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
     globalThis.location.assign(`${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(user, invite)}`);
@@ -2325,7 +2325,7 @@ function pairingAt({origin, identity, runtime, link}) {
   }).catch(error => { host = null; throw error; }));
   return {
     link: (invite, room) => {
-      const url = link.format({mode: 'desktop', target: {scope: {kind: 'room', host: origin, room}}});
+      const url = link.format({mode: 'desktop', target: {scope: {kind: 'workspace', host: origin, workspace: room}}});
       return `${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(identity.userPublicKey, invite)}`;
     },
     pending: async () => JSON.parse(await (await at()).pending(identity)),
@@ -2348,7 +2348,7 @@ function pairingOf({peer, identity, link}) {
   const at = () => (host ??= peer.pairing());
   return {
     link: (invite, room = peer.workspace) => {
-      const url = link.format({mode: 'desktop', target: {scope: {kind: 'room', host: peer.origin, room}}});
+      const url = link.format({mode: 'desktop', target: {scope: {kind: 'workspace', host: peer.origin, workspace: room}}});
       return `${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(identity.userPublicKey, invite)}`;
     },
     pending: async () => JSON.parse(await at().pending(identity)),

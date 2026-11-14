@@ -841,7 +841,7 @@ mod tests {
             let storage = Rc::new(MemoryStore::queued());
             let controller = Composer::new(
                 Destination {
-                    room: "private-fixture".into(),
+                    workspace: "private-fixture".into(),
                     provider: "record:chat:feedback".into(),
                     channel: "feedback".into(),
                 },
@@ -937,7 +937,7 @@ mod tests {
             let controller = Rc::new(RefCell::new(
                 Composer::new(
                     Destination {
-                        room: "demo".into(),
+                        workspace: "demo".into(),
                         provider: "record:chat:feedback".into(),
                         channel: "feedback".into(),
                     },
@@ -1040,7 +1040,7 @@ mod tests {
             let controller = Rc::new(RefCell::new(
                 Composer::new(
                     Destination {
-                        room: "demo".into(),
+                        workspace: "demo".into(),
                         provider: "record:chat:feedback".into(),
                         channel: "feedback".into(),
                     },
@@ -1376,7 +1376,7 @@ mod tests {
         let controller = Rc::new(RefCell::new(
             Composer::new(
                 Destination {
-                    room: "lounge".into(),
+                    workspace: "lounge".into(),
                     provider: "record:so.tilo.chat:".into(),
                     channel: "c_feedback".into(),
                 },

@@ -38,7 +38,7 @@ impl Level {
         Self::Action,
     ];
 
-    /// The tag the level is read by, in the text people are shown.
+    /// The tag of the level in the text form of a path.
     #[must_use]
     pub const fn tag(self) -> &'static str {
         match self {
@@ -49,19 +49,6 @@ impl Level {
             Self::Item => "item",
             Self::Field => "field",
             Self::Action => "action",
-        }
-    }
-
-    /// The tag of the level in the text form of a path: the form a grant, a
-    /// policy and a peer's stated node are stored and sent in. A device or a
-    /// page in the same workspace runs whatever build it was imaged with, so
-    /// the outermost level keeps the tag it was first written under;
-    /// [`Level::from_tag`] is the one place both tags read.
-    #[must_use]
-    pub const fn stored_tag(self) -> &'static str {
-        match self {
-            Self::Workspace => "room",
-            other => other.tag(),
         }
     }
 
@@ -79,15 +66,9 @@ impl Level {
         }
     }
 
-    /// The level a text form's tag names: the tag it is stored under (see
-    /// [`Level::stored_tag`]), or the one the code reads it by. A path
-    /// written while the level was called a room holds data, so it reads as
-    /// the same level.
+    /// The level a text form's tag names.
     fn from_tag(tag: &str) -> Option<Self> {
-        match tag {
-            "room" => Some(Self::Workspace),
-            _ => Self::ALL.into_iter().find(|level| level.tag() == tag),
-        }
+        Self::ALL.into_iter().find(|level| level.tag() == tag)
     }
 }
 
@@ -356,27 +337,8 @@ impl TreePath {
         self.trimmed().iter().map(Segment::weight).cmp(theirs)
     }
 
-    /// The path as a sentence reads it: the same text form, with each level
-    /// named by what the code calls it (`workspace:r/app:mail`). Prose about a
-    /// grant uses this; a path that is stored or sent uses the [`Display`]
-    /// form, which keeps the names other builds read.
-    #[must_use]
-    pub fn readable(&self) -> String {
-        struct Readable<'a>(&'a TreePath);
-        impl fmt::Display for Readable<'_> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                self.0.write_with(f, Level::tag)
-            }
-        }
-        Readable(self).to_string()
-    }
-
-    /// The text form of `self`, with each level tagged by `tag`.
-    fn write_with(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        tag: fn(Level) -> &'static str,
-    ) -> fmt::Result {
+    /// The text form of `self`.
+    fn write_with(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.0.is_empty() {
             return f.write_str("/");
         }
@@ -386,7 +348,7 @@ impl TreePath {
             }
             match segment {
                 Segment::Name(level, id) => {
-                    write!(f, "{}:", tag(*level))?;
+                    write!(f, "{}:", level.tag())?;
                     if id == "*" {
                         f.write_str("%2A")?;
                     } else {
@@ -399,7 +361,7 @@ impl TreePath {
                         }
                     }
                 }
-                Segment::Any(level) => write!(f, "{}:*", tag(*level))?,
+                Segment::Any(level) => write!(f, "{}:*", level.tag())?,
                 Segment::Rest => f.write_str("**")?,
             }
         }
@@ -466,13 +428,12 @@ fn compatible(left: &Segment, right: &Segment) -> bool {
 }
 
 impl fmt::Display for TreePath {
-    /// The form a path is stored and sent in: `room:r/app:mail/
+    /// The form a path is stored and sent in: `workspace:r/app:mail/
     /// kind:mail.message/resource:*/action:send`, `**` for any depth, `/` for
     /// the root. Ids escape `%` and `/` as `%25` and `%2F`, and an id that is
-    /// exactly `*` as `%2A`. [`TreePath::readable`] is the form a sentence
-    /// reads.
+    /// exactly `*` as `%2A`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.write_with(f, Level::stored_tag)
+        self.write_with(f)
     }
 }
 

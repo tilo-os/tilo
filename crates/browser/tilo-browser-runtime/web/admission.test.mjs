@@ -8,7 +8,7 @@ import {runtimeFake} from './runtime-surface.mjs';
 // (tilo-session-client's `way_in`, tested there). These tests hold the page to
 // taking the way it is answered, and to telling the runtime what it knows.
 
-const room = {kind: 'room', host: 'https://ada.tilo.cloud', room: '6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90'};
+const room = {kind: 'workspace', host: 'https://ada.tilo.cloud', workspace: '6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90'};
 const commons = {name: 'Commons', host: {origin: room.host}, admission: `${room.host}/`};
 
 /** A runtime answering `ways` in turn, the first to `wayIn` and each next to
@@ -32,9 +32,9 @@ function doors(overrides = {}) {
   const record = (name, value) => async (...args) => { calls.push([name, ...args]); return typeof value === 'function' ? value(...args) : value; };
   return {calls, deps: {
     workspaceAt: () => null,
-    enterViaHost: record('enterViaHost', {admission: true, room: room.room}),
+    enterViaHost: record('enterViaHost', {admission: true, room: room.workspace}),
     openInvitation: record('openInvitation', (site, secret) => ({invitation: `opened ${secret}`})),
-    inspectInvitation: record('inspectInvitation', {workspaceName: 'Reading group', role: 'editor', room: room.room, members: 4}),
+    inspectInvitation: record('inspectInvitation', {workspaceName: 'Reading group', role: 'editor', room: room.workspace, members: 4}),
     confirmInvitation: record('confirmInvitation', true),
     joinWorkspace: record('joinWorkspace', {joined: true}),
     readAccounts: record('readAccounts', []),
@@ -52,15 +52,15 @@ test('the runtime is told what the link carries and what the page knows of its h
   const {calls, deps} = doors({workspaceAt: origin => (origin === room.host ? commons : null),
     entered: ({origin, room: id}) => origin === room.host && id === 'elsewhere'});
   assert.deepEqual(await admit({scope: room, secrets: {}, tickets: 'https://rooms.example/', runtime, deps}),
-    {peer: {admission: true, room: room.room}});
+    {peer: {admission: true, room: room.workspace}});
   const here = {door: true, entered: false, tickets: true, pairing: true};
   assert.deepEqual(asked.slice(0, 2), [
-    ['wayIn', {scope: {kind: 'room', room: room.room}, malformed: false, invite: false, ticket: false}, here],
-    ['wayIn', {scope: {kind: 'room', room: room.room}, malformed: false, invite: false, ticket: false}, {...here, accounts: 0}],
+    ['wayIn', {scope: {kind: 'workspace', workspace: room.workspace}, malformed: false, invite: false, ticket: false}, here],
+    ['wayIn', {scope: {kind: 'workspace', workspace: room.workspace}, malformed: false, invite: false, ticket: false}, {...here, accounts: 0}],
   ]);
   // The door is told which workspace the link names: a host set up again is not
   // offered to be joined again from a link to a workspace it no longer has.
-  assert.deepEqual(calls, [['readAccounts', room.host], ['enterViaHost', {workspace: commons, room: room.room}]]);
+  assert.deepEqual(calls, [['readAccounts', room.host], ['enterViaHost', {workspace: commons, room: room.workspace}]]);
   // A pairing secret is read by the page: the runtime hears whether it names someone.
   const pairing = rules(['pair']);
   await admit({scope: room, secrets: {pair: 'ab'.repeat(32)}, runtime: pairing.runtime, deps: doors().deps});
@@ -98,7 +98,7 @@ test('the own desktop opens without a peer for whom the home’s gate is open, o
   let disposed = false;
   let kept = false;
   const letIn = doors({ownDesktopOpen: async () => kept,
-    enterViaHost: async () => { kept = true; return {room: room.room, dispose: async () => { disposed = true; }}; }});
+    enterViaHost: async () => { kept = true; return {room: room.workspace, dispose: async () => { disposed = true; }}; }});
   assert.deepEqual(await admit({scope: {kind: 'own'}, home: commons, runtime: own(), deps: letIn.deps}), {peer: null});
   assert.ok(disposed, 'the door’s peer is let go: the own desktop has none');
   // A door with nothing to admit yet (an embed before its visitor's first
@@ -119,11 +119,11 @@ test('an embed the door has nothing to admit yet mounts nothing', async () => {
 });
 
 test('the home workspace, whose workspace is not known yet, is entered through its host’s door', async () => {
-  const home = {kind: 'room', host: room.host, room: null};
+  const home = {kind: 'workspace', host: room.host, workspace: null};
   const {calls, deps} = doors({workspaceAt: () => commons});
   const {asked, runtime} = rules(['door']);
-  assert.deepEqual(await admit({scope: home, runtime, deps}), {peer: {admission: true, room: room.room}});
-  assert.deepEqual(asked[0][1].scope, {kind: 'room'});
+  assert.deepEqual(await admit({scope: home, runtime, deps}), {peer: {admission: true, room: room.workspace}});
+  assert.deepEqual(asked[0][1].scope, {kind: 'workspace'});
   assert.deepEqual(calls, [['enterViaHost', {workspace: commons}]], 'the bare entry names no room');
 });
 
@@ -133,7 +133,7 @@ test('a person let in through the door is not taken to another workspace on the 
     enterViaHost: async () => ({workspace: 'another-workspace', dispose: async () => { disposed = true; }})});
   const {asked, runtime} = rules(['door'], {asAsked: false});
   await assert.rejects(admit({scope: room, runtime, deps}), {code: 'no-access', message: NO_ACCESS});
-  assert.deepEqual(asked.at(-1), ['admittedAsAsked', room.room, 'another-workspace']);
+  assert.deepEqual(asked.at(-1), ['admittedAsAsked', room.workspace, 'another-workspace']);
   assert.ok(disposed);
 });
 
@@ -153,7 +153,7 @@ test('an invitation is opened, inspected and confirmed before it is redeemed', a
   const other = doors({inspectInvitation: async () => ({room: 'other', role: 'viewer'})});
   const mismatch = rules(['invitation'], {asAsked: false});
   await assert.rejects(admit({scope: room, secrets: {invite: 'AAEC'}, runtime: mismatch.runtime, deps: other.deps}), {code: 'mismatch'});
-  assert.deepEqual(mismatch.asked.at(-1), ['admittedAsAsked', room.room, 'other']);
+  assert.deepEqual(mismatch.asked.at(-1), ['admittedAsAsked', room.workspace, 'other']);
   assert.ok(!other.calls.some(([name]) => name === 'confirmInvitation'));
 });
 
@@ -200,7 +200,7 @@ test('a member connects with their account for that host, chosen where there are
   const account = {userPublicKey: 'ab', profile: 'p', device: 'd'};
   const {calls, deps} = doors({readAccounts: async () => [account]});
   assert.deepEqual(await admit({scope: room, runtime: rules(['accounts', 'member']).runtime, deps}), {peer: {member: true}});
-  assert.deepEqual(calls, [['connectMember', {origin: room.host, room: room.room, account}]]);
+  assert.deepEqual(calls, [['connectMember', {origin: room.host, room: room.workspace, account}]]);
   const second = {userPublicKey: 'cd'};
   const several = doors({readAccounts: async () => [account, second], chooseAccount: async () => second});
   await admit({scope: room, runtime: rules(['accounts', 'member']).runtime, deps: several.deps});
@@ -232,7 +232,7 @@ test('a member whose device keys other tabs hold gets in as a new device, or is 
   const reconnected = doors({...member, reconnect: async ({origin, room: wanted}) => ({origin, room: wanted, admission: 'reconnect'})});
   const way = rules(['accounts', 'member', 'reconnect']);
   assert.deepEqual(await admit({scope: room, runtime: way.runtime, deps: reconnected.deps}),
-    {peer: {origin: room.host, room: room.room, admission: 'reconnect'}});
+    {peer: {origin: room.host, room: room.workspace, admission: 'reconnect'}});
   assert.deepEqual([way.asked.at(-1)[0], way.asked.at(-1)[2].accounts], ['wayIn', 0], 'asked again as a browser without the account');
   // Where it cannot, the page says other tabs hold them: another tab of this
   // browser says nothing about the host.
@@ -256,11 +256,11 @@ test('reconnecting says the page is connecting, so a host that does not answer i
 test('a host this browser set up or joined as its person is reconnected to, and the door is the way in only when that fails', async () => {
   const back = doors({reconnect: async ({origin, room: wanted}) => ({owner: true, origin, room: wanted})});
   assert.deepEqual(await admit({scope: room, runtime: rules(['accounts', 'reconnect']).runtime, deps: back.deps}),
-    {peer: {owner: true, origin: room.host, room: room.room}});
+    {peer: {owner: true, origin: room.host, room: room.workspace}});
   for (const reconnect of [async () => null, async () => { throw new Error('not a member of this room'); }]) {
     const {calls, deps} = doors({workspaceAt: () => commons, reconnect});
     const {asked, runtime} = rules(['accounts', 'reconnect', 'door']);
-    assert.deepEqual(await admit({scope: room, runtime, deps}), {peer: {admission: true, room: room.room}});
+    assert.deepEqual(await admit({scope: room, runtime, deps}), {peer: {admission: true, room: room.workspace}});
     assert.deepEqual(asked.find(([name]) => name === 'wayInAfter').slice(0, 2), ['wayInAfter', 'reconnect'], 'the host’s reason is not passed on');
     assert.ok(calls.some(([name]) => name === 'enterViaHost'));
   }
@@ -271,11 +271,11 @@ test('a guest ticket is redeemed where the web host says, and a pairing link pai
   const ticket = doors();
   assert.deepEqual(await admit({scope: room, secrets: {ticket: 't1'}, tickets, runtime: rules(['ticket']).runtime, deps: ticket.deps}),
     {peer: {admission: 'ticket'}});
-  assert.deepEqual(ticket.calls, [['redeemTicket', {origin: room.host, room: room.room, ticket: 't1', tickets}]]);
+  assert.deepEqual(ticket.calls, [['redeemTicket', {origin: room.host, room: room.workspace, ticket: 't1', tickets}]]);
   const person = 'ab'.repeat(32);
   const invite = '0f'.repeat(16);
   const pair = doors();
   assert.deepEqual(await admit({scope: room, secrets: {pair: `${person}${invite}`}, runtime: rules(['pair']).runtime, deps: pair.deps}),
     {peer: {admission: 'paired'}});
-  assert.deepEqual(pair.calls, [['pairDevice', {origin: room.host, room: room.room, userPublicKey: person, invite, workspace: null}]]);
+  assert.deepEqual(pair.calls, [['pairDevice', {origin: room.host, room: room.workspace, userPublicKey: person, invite, workspace: null}]]);
 });

@@ -84,7 +84,7 @@ fn picked(picture: bool) -> (Doc, Submission) {
     let submission = Submission {
         id: "0123456789abcdef0123456789abcdef".into(),
         destination: Destination {
-            room: "room".into(),
+            workspace: "room".into(),
             provider: "demo-chat".into(),
             channel: channel.id,
         },

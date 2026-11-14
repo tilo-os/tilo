@@ -15,9 +15,7 @@ pub struct ItemRef {
 /// One committed change to a record in the workspace, as a trigger sees it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecordEvent {
-    /// The workspace's id. It keeps the key `room` on the wire: a program
-    /// reads it as `event.room`, and the bot host fills it in.
-    #[serde(rename = "room")]
+    /// The workspace's id.
     pub workspace: String,
     /// The record's id.
     pub record: String,
@@ -188,10 +186,7 @@ pub struct ConnectorEvent {
 /// knows any one app's events.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppEvent {
-    /// The workspace whose record announced it. It keeps the key `room` on
-    /// the wire, as a host compares it with the workspace an armed program
-    /// watches.
-    #[serde(rename = "room")]
+    /// The workspace whose record announced it.
     pub workspace: String,
     pub app_id: String,
     /// The announced event kind, such as `mail.message`.

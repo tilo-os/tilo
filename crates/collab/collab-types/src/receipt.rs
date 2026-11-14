@@ -304,7 +304,7 @@ pub fn check_claims(
             let node = claim_node(record, surface, member);
             if !allows(&node, kind) {
                 return Err(ReceiptRefusal::NotGranted {
-                    node: node.readable(),
+                    node: node.to_string(),
                     kind,
                 });
             }
@@ -526,7 +526,7 @@ pub fn decide_op_pinned(
             Ok(Receipt::Admit)
         } else {
             Err(ReceiptRefusal::NotGranted {
-                node: node.readable(),
+                node: node.to_string(),
                 kind: roles::GOVERNANCE_KIND,
             })
         }
@@ -548,7 +548,7 @@ pub fn decide_op_pinned(
                     Ok(Receipt::Admit)
                 } else {
                     Err(ReceiptRefusal::NotGranted {
-                        node: node.readable(),
+                        node: node.to_string(),
                         kind: ActionKind::Undoable,
                     })
                 };

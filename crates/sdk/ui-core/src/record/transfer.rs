@@ -98,7 +98,7 @@ pub fn stamp_retired(doc: &mut AutoCommit, why: &Retirement) -> Result<(), Trans
         .map_err(automerge)?;
     doc.put(&stamp, "reason", why.reason()).map_err(automerge)?;
     if let Retirement::Moved(Some(successor)) = why {
-        doc.put(&stamp, "workspace", successor.room.as_str())
+        doc.put(&stamp, "workspace", successor.workspace.as_str())
             .map_err(automerge)?;
         doc.put(&stamp, "record", successor.record.as_str())
             .map_err(automerge)?;
@@ -831,7 +831,7 @@ mod tests {
 
     fn moved() -> Retirement {
         Retirement::Moved(Some(Successor {
-            room: TO.into(),
+            workspace: TO.into(),
             record: "uuid:successor".into(),
             by: "person:ada".into(),
         }))

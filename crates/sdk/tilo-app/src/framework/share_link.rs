@@ -464,7 +464,7 @@ fn render_at(
         .map_err(|_| "The workspace's host named no workspace a link can carry")?;
     let host = HostOrigin::new(&locator.origin).map_err(|error| error.to_string())?;
     let target = LinkTarget {
-        scope: Scope::Room {
+        scope: Scope::Workspace {
             host,
             id: workspace,
             slug: None,

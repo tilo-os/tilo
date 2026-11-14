@@ -738,7 +738,7 @@ fn classify(text: &str) -> Result<Pasted, String> {
             if link.secrets.pair.is_some() {
                 return Err("that link pairs a device with a host, not a workspace".to_owned());
             }
-            let tilo_reference::link::Scope::Room { id: room, .. } = link.target.scope else {
+            let tilo_reference::link::Scope::Workspace { id: room, .. } = link.target.scope else {
                 return Ok(Pasted::Site {
                     entry,
                     workspace: None,

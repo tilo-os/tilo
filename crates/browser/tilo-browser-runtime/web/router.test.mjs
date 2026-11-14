@@ -58,7 +58,7 @@ function fakeNavigation(snapshot) {
   };
 }
 
-const scope = {kind: 'room', host: 'https://team.example', room: '0b5e7a62-4d0f-4c55-9d2a-58d3a3f0c001'};
+const scope = {kind: 'workspace', host: 'https://team.example', workspace: '0b5e7a62-4d0f-4c55-9d2a-58d3a3f0c001'};
 const route = (tab, extra = {}) => ({workspace: '1', strip: '2', group: `g${tab}`, tab, ...extra});
 const desk = (windows, active) => ({
   generation: 'g', active: active === undefined ? null : route(active),

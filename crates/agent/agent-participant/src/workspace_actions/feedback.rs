@@ -72,14 +72,14 @@ pub(super) fn answer(
     mut query: FeedbackQuery,
 ) -> Result<FeedbackAnswer, ActionHostError> {
     let destination = Destination {
-        room: query.destination.workspace.clone(),
+        workspace: query.destination.workspace.clone(),
         provider: query.destination.provider.clone(),
         channel: query.destination.channel.clone(),
     };
     destination
         .validate()
         .map_err(|error| unavailable(&error))?;
-    let route = record_of(&destination.provider, &destination.room)
+    let route = record_of(&destination.provider, &destination.workspace)
         .filter(|route| {
             route.app_id == "so.tilo.chat"
                 && route.record.is_empty()
@@ -88,11 +88,11 @@ pub(super) fn answer(
         .ok_or_else(|| unavailable("feedback source mismatch"))?;
     if caller
         .workspace()
-        .is_some_and(|workspace| workspace != destination.room)
+        .is_some_and(|workspace| workspace != destination.workspace)
     {
         return Err(unavailable("feedback caller workspace mismatch"));
     }
-    let caller = caller.in_workspace(destination.room.clone());
+    let caller = caller.in_workspace(destination.workspace.clone());
     let policy = link
         .view_read_policy(workspace, &caller, &route.app_id, &route.record)
         .filter(|policy| policy.workspace == route.cluster_id)
@@ -105,7 +105,7 @@ pub(super) fn answer(
         return Err(unavailable("feedback owner identity mismatch"));
     }
     let owner = Caller::authenticated(cert.user_public_key, cert.device_public_key)
-        .in_workspace(destination.room.clone());
+        .in_workspace(destination.workspace.clone());
     let enrollment = Enrollment {
         destination: destination.clone(),
         owner: owner.clone(),

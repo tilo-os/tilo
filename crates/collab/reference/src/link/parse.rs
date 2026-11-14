@@ -119,7 +119,7 @@ fn workspace_of(url: &str, entries: &WebEntries) -> Option<Link> {
     let path = path.strip_prefix('/')?;
     let mut segments = path.split('/').peekable();
     let scope = parse_scope(&mut segments, Context::Web(entry), false).ok()?;
-    matches!(scope, Scope::Room { .. }).then(|| Link {
+    matches!(scope, Scope::Workspace { .. }).then(|| Link {
         mode: Mode::Desktop,
         target: LinkTarget::new(scope),
         secrets: LinkSecrets::default(),
@@ -190,7 +190,7 @@ fn parse_scope<'a, I: Iterator<Item = &'a str>>(
         return Err(LinkError::BadScope);
     };
     let (slug, workspace) = parse_workspace(segments.next().ok_or(LinkError::BadWorkspace)?)?;
-    Ok(Scope::Room {
+    Ok(Scope::Workspace {
         host,
         id: workspace,
         slug,

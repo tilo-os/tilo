@@ -68,7 +68,7 @@ test('a desktop link to a document opens a window on it, not the app full tab', 
   const mount = {actions: () => [], invokeAction: () => ({state: 'completed'})};
   await openTarget({mount, navigation, mode: 'desktop', target: {app: 'so.tilo.notes', record: 'uuid:plan'}});
   assert.deepEqual(commands, [{effect: 'open-app', args: {app: 'record:so.tilo.notes:uuid:plan'}}]);
-  const scope = {kind: 'room', host: 'https://h.example', room: 'r'};
+  const scope = {kind: 'workspace', host: 'https://h.example', workspace: 'r'};
   const shown = await present({route: {mode: 'desktop', target: {scope, app: 'so.tilo.notes', record: 'uuid:plan'}},
     surface: {}, mountDesktop: async () => ({navigation: desktopNavigation([]).navigation})});
   assert.equal(shown.redirect, undefined, 'the desktop shows the document among the other windows');
@@ -187,7 +187,7 @@ test('an unbound desktop entry without a route is the person’s own desktop', (
 test('a bare entry opens the web host’s home workspace, its workspace learned on admission', () => {
   const link = {parse: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); }};
   const home = {name: 'Commons', host: {origin: 'https://rooms.example/'}, admission: 'https://rooms.example/'};
-  const scope = {kind: 'room', host: 'https://rooms.example', room: null};
+  const scope = {kind: 'workspace', host: 'https://rooms.example', workspace: null};
   assert.deepEqual(initialRoute({link, location: {hash: '', href: 'https://rooms.example/open/'}, mode: 'desktop', home}),
     {mode: 'desktop', target: {scope}});
   assert.deepEqual(initialRoute({link, location: {hash: '', href: 'https://rooms.example/open/app/'}, mode: 'app', home}),
@@ -230,7 +230,7 @@ test('the entry lays the desktop out as the console only when it says so', async
 
 test('the catalogue is never read before admission', async () => {
   const order = [];
-  const target = {scope: {kind: 'room', host: 'https://h.example', room: 'r'}, app: 'so.tilo.chat', record: '', resource: message};
+  const target = {scope: {kind: 'workspace', host: 'https://h.example', workspace: 'r'}, app: 'so.tilo.chat', record: '', resource: message};
   const runtime = runtimeFake({
     parseLink: () => JSON.stringify({mode: 'app', target}),
     formatLink: () => 'https://tilo.so/app/#/@h.example/w/r/so.tilo.chat/-/chat.message:1',
@@ -306,7 +306,7 @@ test('the home workspace opens through its host door under its listed name, and 
   // The page hears it is joining through the door, then opening once admitted.
   assert.deepEqual([...new Set(steps)], ['join', 'open']);
   assert.equal(steps.at(-1), 'open');
-  assert.deepEqual(formatted[0], {mode: 'desktop', target: {scope: {kind: 'room', host: 'https://rooms.example', room: 'WORKSPACE'}}});
+  assert.deepEqual(formatted[0], {mode: 'desktop', target: {scope: {kind: 'workspace', host: 'https://rooms.example', workspace: 'WORKSPACE'}}});
   assert.equal(replaced[0], 'https://rooms.example/open/#/@rooms.example/w/WORKSPACE');
   assert.equal(mounts[0].workspaceName, 'Commons');
   assert.equal(mounts[0].host, 'rooms.example');
@@ -349,7 +349,7 @@ test('a workspace no listing of the page names is mounted under the name it answ
 });
 
 test('a link whose document id is damaged opens its workspace and says what it did not use', async () => {
-  const scope = {kind: 'room', host: 'https://eu1.tilo.sh', room: 'WORKSPACE'};
+  const scope = {kind: 'workspace', host: 'https://eu1.tilo.sh', workspace: 'WORKSPACE'};
   const replaced = [];
   const runtime = runtimeFake({
     // The runtime's grammar names the workspace of a link whose document is damaged, and says so.
@@ -411,7 +411,7 @@ test('the page hears the peer the host let in before its desktop mounts, so a fa
 });
 
 test('a workspace on the site the page came from, or on its machines, is hosted by that site', () => {
-  const room = host => ({kind: 'room', host, room: 'R'});
+  const room = host => ({kind: 'workspace', host, workspace: 'R'});
   assert.equal(scopeHost(room('https://eu1.tilo.sh'), 'tilo.sh'), 'tilo.sh');
   assert.equal(scopeHost(room('https://tilo.sh'), 'tilo.sh'), 'tilo.sh');
   assert.equal(scopeHost(room('https://rooms.example'), 'tilo.sh'), 'rooms.example');
@@ -518,7 +518,7 @@ test('a sealed link admits through the site’s shelf and opens the workspace it
   assert.deepEqual(confirmed, [offer], 'the person is shown the invitation before it is joined');
   assert.equal(joined[0].origin, 'https://rooms.example');
   assert.equal(joined[0].invitation, 'OPENED');
-  assert.deepEqual(formatted[0], {mode: 'desktop', target: {scope: {kind: 'room', host: 'https://rooms.example', room: 'WORKSPACE'}}});
+  assert.deepEqual(formatted[0], {mode: 'desktop', target: {scope: {kind: 'workspace', host: 'https://rooms.example', workspace: 'WORKSPACE'}}});
   assert.equal(replaced[0], `${site}/#/@rooms.example/w/WORKSPACE`);
   page.router.stop();
 });
@@ -661,7 +661,7 @@ test('only a bare desktop entry under a home reopens the workspace the person la
   const chosen = {origin: 'https://acme.example', room: 'A'};
   const bare = {hash: '', href: 'https://tilo.example/'};
   assert.deepEqual(chosenRoute({location: bare, mode: 'desktop', home, chosen}),
-    {mode: 'desktop', target: {scope: {kind: 'room', host: 'https://acme.example', room: 'A'}}});
+    {mode: 'desktop', target: {scope: {kind: 'workspace', host: 'https://acme.example', workspace: 'A'}}});
   assert.equal(chosenRoute({location: {hash: '#/@rooms.example/w/X', href: 'https://tilo.example/#/@rooms.example/w/X'}, mode: 'desktop', home, chosen}), null);
   assert.equal(chosenRoute({location: bare, mode: 'app', home, chosen}), null);
   assert.equal(chosenRoute({location: bare, mode: 'desktop', home: null, chosen}), null);
@@ -704,16 +704,16 @@ test('a returning person’s bare entry opens the chosen workspace through their
   };
   const shown = await boot({mode: 'desktop', window: page.window, deps});
   assert.deepEqual(connected.map(({origin, room}) => [origin, room]), [['https://acme.example', 'A']]);
-  assert.deepEqual(page.calls.scopes.map(({link, ...seen}) => seen), [{scope: {kind: 'room', host: 'https://acme.example', room: 'A'}, entry: {base: 'https://tilo.example/', home}}]);
+  assert.deepEqual(page.calls.scopes.map(({link, ...seen}) => seen), [{scope: {kind: 'workspace', host: 'https://acme.example', workspace: 'A'}, entry: {base: 'https://tilo.example/', home}}]);
   assert.equal(typeof (await page.calls.scopes[0].link).format, 'function', 'and how its links read, once the runtime is in');
-  assert.deepEqual(shown.router.route.target.scope, {kind: 'room', host: 'https://acme.example', room: 'A'});
+  assert.deepEqual(shown.router.route.target.scope, {kind: 'workspace', host: 'https://acme.example', workspace: 'A'});
   shown.router.stop();
 });
 
 test('Back or Forward to another workspace loads it anew, never inside the workspace in front', async () => {
   const scopes = {
-    '#/@acme.example/w/A': {kind: 'room', host: 'https://acme.example', room: 'A'},
-    '#/@globex.example/w/G': {kind: 'room', host: 'https://globex.example', room: 'G'},
+    '#/@acme.example/w/A': {kind: 'workspace', host: 'https://acme.example', workspace: 'A'},
+    '#/@globex.example/w/G': {kind: 'workspace', host: 'https://globex.example', workspace: 'G'},
   };
   const page = workspacePage({href: 'https://tilo.example/#/@acme.example/w/A', hash: '#/@acme.example/w/A',
     parse: url => ({mode: 'desktop', target: {scope: scopes[new URL(url).hash]}})});
@@ -778,7 +778,7 @@ test('the home workspace sends reports to the channel its entry names, without h
   }};
   const home = {host: {origin: 'https://lounge.example'}, feedback: {channel: 'c_feedback'}};
   configureFeedback(peer, home, 'r1');
-  assert.deepEqual(asked, [{room: 'r1', provider: 'record:so.tilo.chat:', channel: 'c_feedback'}]);
+  assert.deepEqual(asked, [{workspace: 'r1', provider: 'record:so.tilo.chat:', channel: 'c_feedback'}]);
   const warn = console.warn;
   console.warn = () => {};
   settle(new Error('owner refused'));
@@ -822,7 +822,7 @@ test('reports from another workspace reach the home workspace’s channel throug
   await done;
   assert.deepEqual(homes, ['https://rooms.example'], 'the home workspace’s peer is asked for once');
   assert.deepEqual(through, [lounge], 'the desktop’s reports go through it');
-  assert.deepEqual(asked, [{room: 'LOUNGE', provider: 'record:so.tilo.chat:', channel: 'c_feedback'}],
+  assert.deepEqual(asked, [{workspace: 'LOUNGE', provider: 'record:so.tilo.chat:', channel: 'c_feedback'}],
     'to the home workspace’s own channel, not the room in front');
   shown.router.stop();
 });
@@ -846,15 +846,15 @@ test('a second workspace on the home’s host goes by no name or count of the ho
   const {listedAt} = await import('./workspaces.mjs');
   const home = {name: 'Lounge', host: {origin: 'https://lounge.example'}};
   const none = {getItem: () => null};
-  assert.equal(listedAt([home], {kind: 'room', host: 'https://lounge.example', room: 'r1'}, 'r1', none), home);
-  assert.equal(listedAt([home], {kind: 'room', host: 'https://lounge.example', room: 'second'}, null, none), null);
-  assert.equal(listedAt([home], {kind: 'room', host: 'https://lounge.example', room: null}, null, none), home);
-  assert.equal(listedAt([{...home, room: 'r1'}], {kind: 'room', host: 'https://lounge.example', room: 'r1'}, null, none).name, 'Lounge');
+  assert.equal(listedAt([home], {kind: 'workspace', host: 'https://lounge.example', workspace: 'r1'}, 'r1', none), home);
+  assert.equal(listedAt([home], {kind: 'workspace', host: 'https://lounge.example', workspace: 'second'}, null, none), null);
+  assert.equal(listedAt([home], {kind: 'workspace', host: 'https://lounge.example', workspace: null}, null, none), home);
+  assert.equal(listedAt([{...home, room: 'r1'}], {kind: 'workspace', host: 'https://lounge.example', workspace: 'r1'}, null, none).name, 'Lounge');
   assert.equal(listedAt([home], {kind: 'own'}, null, none), null);
 });
 
 test('the address names the app in front, and the view a link opened, as a link to it would', () => {
-  const scope = {kind: 'room', host: 'https://acme.example', room: 'A'};
+  const scope = {kind: 'workspace', host: 'https://acme.example', workspace: 'A'};
   assert.deepEqual(shownLink({scope}), {mode: 'desktop', target: {scope}});
   assert.deepEqual(shownLink({scope, app: 'so.tilo.chat'}), {mode: 'desktop', target: {scope, app: 'so.tilo.chat'}});
   assert.deepEqual(shownLink({scope, app: 'so.tilo.notes', record: 'n1'}),
@@ -865,7 +865,7 @@ test('the address names the app in front, and the view a link opened, as a link 
 });
 
 test('a link opened inside the desktop names its view in the address, and focus elsewhere takes it back', async () => {
-  const scope = {kind: 'room', host: 'https://acme.example', room: 'A'};
+  const scope = {kind: 'workspace', host: 'https://acme.example', workspace: 'A'};
   const opened = {scope, app: 'so.tilo.chat', record: 'c1', resource: message};
   const page = workspacePage({href: 'https://acme.example/open/#/@acme.example/w/A', hash: '#/@acme.example/w/A',
     parse: () => ({mode: 'desktop', target: {scope}})});
@@ -910,7 +910,7 @@ test('a link opened inside the desktop names its view in the address, and focus 
 });
 
 test('a link to an app’s workspace document nobody wrote yet opens the app; any other missing record is not there', async () => {
-  const scope = {kind: 'room', host: 'https://h.example', room: 'r'};
+  const scope = {kind: 'workspace', host: 'https://h.example', workspace: 'r'};
   const asked = [];
   const peer = {
     whenRecord: async (app, record, options) => {
@@ -931,7 +931,7 @@ test('a link to an app’s workspace document nobody wrote yet opens the app; an
 });
 
 test('an app whose widgets all render as HTML opens as HTML; any other on the canvas', async () => {
-  const scope = {kind: 'room', host: 'https://h.example', room: 'r'};
+  const scope = {kind: 'workspace', host: 'https://h.example', workspace: 'r'};
   const mountDesktop = async (_surface, options) => ({options});
   const notes = await present({route: {mode: 'app', target: {scope, app: 'so.tilo.notes'}}, mountDesktop});
   assert.equal(notes.mount.options.dom, true);

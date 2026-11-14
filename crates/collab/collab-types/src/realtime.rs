@@ -3,7 +3,7 @@
 //! transport-neutral application contract for active realtime-session
 //! handoff.
 //!
-//! Resume intents and lifecycle events contain semantic room/control state
+//! Resume intents and lifecycle events contain semantic channel/control state
 //! only. An `Accept` command may additionally carry bounded opaque
 //! target-local capture authorizations; they cross only verified local IPC and
 //! never enter continuation state or the device fabric. Capture objects,
@@ -59,7 +59,7 @@ pub const OPAQUE_CAPTURE_AUTHORIZATION_BYTES: usize = 32;
 #[serde(deny_unknown_fields)]
 pub struct RealtimeResumeIntent {
     pub provider: String,
-    pub room_id: String,
+    pub channel_id: String,
     pub semantic_position: Option<String>,
     pub media: RealtimeMediaFacets,
     pub controls: RealtimeControlIntent,
@@ -69,7 +69,7 @@ impl RealtimeResumeIntent {
     #[must_use]
     pub fn valid(&self) -> bool {
         portable_identifier(&self.provider, 128)
-            && portable_identifier(&self.room_id, 512)
+            && portable_identifier(&self.channel_id, 512)
             && self
                 .semantic_position
                 .as_deref()
@@ -225,7 +225,7 @@ mod tests {
             {
                 let safe = RealtimeResumeIntent {
                     provider: "tilo.chat".into(),
-                    room_id: "voice-42".into(),
+                    channel_id: "voice-42".into(),
                     semantic_position: Some("workspace-acme".into()),
                     media: RealtimeMediaFacets {
                         microphone: true,
@@ -234,13 +234,13 @@ mod tests {
                     controls: RealtimeControlIntent::default(),
                 };
                 assert!(safe.valid());
-                for room in [
+                for channel in [
                     "https://join.invalid/x",
                     "voice?token=secret",
                     "/run/pipewire-0",
                 ] {
                     let mut unsafe_intent = safe.clone();
-                    unsafe_intent.room_id = room.into();
+                    unsafe_intent.channel_id = channel.into();
                     assert!(!unsafe_intent.valid());
                 }
             }
@@ -300,7 +300,7 @@ mod tests {
                 let command = RealtimeCommand::Register {
                     intent: RealtimeResumeIntent {
                         provider: "tilo.chat".into(),
-                        room_id: "voice-42".into(),
+                        channel_id: "voice-42".into(),
                         semantic_position: Some("workspace-acme".into()),
                         media: RealtimeMediaFacets {
                             microphone: true,
@@ -347,7 +347,7 @@ mod tests {
                     event
                 );
 
-                let malformed = br#"{"kind":"register","intent":{"provider":"tilo.chat","room_id":"voice-42","semantic_position":null,"media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},"controls":{"microphone_muted":false,"camera_muted":false,"screen_share_paused":false,"share_audio_muted":false},"credential":"secret"}}"#;
+                let malformed = br#"{"kind":"register","intent":{"provider":"tilo.chat","channel_id":"voice-42","semantic_position":null,"media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},"controls":{"microphone_muted":false,"camera_muted":false,"screen_share_paused":false,"share_audio_muted":false},"credential":"secret"}}"#;
                 assert!(serde_json::from_slice::<RealtimeCommand>(malformed).is_err());
             }
         }

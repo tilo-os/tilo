@@ -492,7 +492,7 @@ mod tests {
     }
     fn destination() -> Destination {
         Destination {
-            room: "demo".into(),
+            workspace: "demo".into(),
             provider: "record:chat:feedback".into(),
             channel: "feedback".into(),
         }

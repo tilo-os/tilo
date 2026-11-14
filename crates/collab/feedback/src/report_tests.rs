@@ -234,7 +234,7 @@ fn the_submission_carries_structure_and_the_slow_trace_only_when_asked() {
     let submission = crate::Submission {
         id: "0123456789abcdef0123456789abcdef".into(),
         destination: crate::Destination {
-            room: "room".into(),
+            workspace: "demo".into(),
             provider: "record:so.tilo.chat:".into(),
             channel: "c_feedback".into(),
         },

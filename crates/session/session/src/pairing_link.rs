@@ -112,7 +112,7 @@ fn link(site: &str, origin: &str, room: &str, secret: &str) -> Result<String, St
     let id = room
         .parse()
         .map_err(|_| "that workspace is not one a link can name".to_owned())?;
-    let scope = Scope::Room {
+    let scope = Scope::Workspace {
         host,
         id,
         slug: None,

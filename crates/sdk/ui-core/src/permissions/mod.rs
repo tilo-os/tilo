@@ -128,7 +128,7 @@ impl PermissionScope {
     pub fn governance(action: &str) -> Self {
         Self::Action {
             node: TreePath::root()
-                .kind(policy::roles::ROOM_KIND)
+                .kind(policy::roles::WORKSPACE_KIND)
                 .action(action),
             kind: policy::roles::GOVERNANCE_KIND,
         }

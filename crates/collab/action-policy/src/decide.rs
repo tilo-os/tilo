@@ -138,7 +138,7 @@ impl Cap {
 
     /// What this cap answers for `kind` at `node` in the workspace it governs.
     fn answer(self, node: &TreePath, kind: ActionKind) -> Answer {
-        if node.id_at(Level::Kind) == Some(crate::roles::ROOM_KIND) {
+        if node.id_at(Level::Kind) == Some(crate::roles::WORKSPACE_KIND) {
             return match kind {
                 ActionKind::Read => Answer::Allow,
                 ActionKind::Undoable | ActionKind::Outside => self.governance,
@@ -480,7 +480,7 @@ impl<'g> Verdict<'g> {
                 "{} give {} on {} the answer \"{}\" (grant {})",
                 who(index),
                 self.kind.phrase(),
-                grant.node.readable(),
+                grant.node,
                 grant.answer,
                 grant.id
             ),
@@ -489,7 +489,7 @@ impl<'g> Verdict<'g> {
                     "{} do not cover {} on {}",
                     who(index),
                     self.kind.phrase(),
-                    self.node.readable()
+                    self.node
                 )
             }
         };

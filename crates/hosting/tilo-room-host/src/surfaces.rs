@@ -280,7 +280,7 @@ pub(crate) fn role_refusal(
     }
     Some(
         collab_types::ReceiptRefusal::NotGranted {
-            node: tilo_action_policy::TreePath::workspace(&standing.policy.workspace).readable(),
+            node: tilo_action_policy::TreePath::workspace(&standing.policy.workspace).to_string(),
             kind: tilo_action_policy::ActionKind::Undoable,
         }
         .to_string(),

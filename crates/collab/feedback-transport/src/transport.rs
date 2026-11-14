@@ -60,7 +60,7 @@ impl Enrollment {
         };
         Ok(Self {
             destination: Destination {
-                room: workspace.clone(),
+                workspace: workspace.clone(),
                 provider: destination.provider.clone(),
                 channel: destination.channel.clone(),
             },
@@ -91,8 +91,8 @@ impl Enrollment {
 
     fn pin(&self) -> Result<Pin, Error> {
         self.destination.validate()?;
-        if self.owner.workspace() != Some(self.destination.room.as_str())
-            || self.reporter.workspace() != Some(self.destination.room.as_str())
+        if self.owner.workspace() != Some(self.destination.workspace.as_str())
+            || self.reporter.workspace() != Some(self.destination.workspace.as_str())
         {
             return Err(Error::ReceiptMismatch);
         }
@@ -496,11 +496,11 @@ impl CanonicalDestination {
         signer: Box<dyn ReceiptSigner>,
     ) -> Result<Self, Error> {
         destination.validate()?;
-        if owner.workspace() != Some(destination.room.as_str())
+        if owner.workspace() != Some(destination.workspace.as_str())
             || owner.user_public_key().is_none()
             || owner.device_public_key().is_none()
             || owner != *signer.owner()
-            || source.namespace() != (destination::PACKAGE.into(), destination.room.clone())
+            || source.namespace() != (destination::PACKAGE.into(), destination.workspace.clone())
         {
             return Err(Error::ReceiptMismatch);
         }
@@ -603,7 +603,12 @@ impl CanonicalDestination {
     }
 
     fn current_report(&self, submission: &Submission) -> Result<(Receipt, String), Error> {
-        if self.source.namespace() != (destination::PACKAGE.into(), self.destination.room.clone()) {
+        if self.source.namespace()
+            != (
+                destination::PACKAGE.into(),
+                self.destination.workspace.clone(),
+            )
+        {
             return Err(Error::ReceiptMismatch);
         }
         self.source.current_report(submission)
@@ -628,7 +633,7 @@ impl CanonicalReceiptSource for CanonicalRecord {
                 let scope = ui::record::workspace_scope(doc);
                 if scope
                     .as_deref()
-                    .is_some_and(|scope| scope != submission.destination.room)
+                    .is_some_and(|scope| scope != submission.destination.workspace)
                     || (!self.record.is_package_primary() && scope.is_none())
                 {
                     return Err(Error::ReceiptMismatch);

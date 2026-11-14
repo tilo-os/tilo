@@ -58,7 +58,7 @@ function aboutLinks(about) {
  * anyone knows a host by, so a workspace on another port of the page's machine
  * (a local copy's workspace service beside its web entry) is that site too. */
 export function scopeHost(scope, site = globalThis.location?.host) {
-  if (scope.kind !== 'room') return null;
+  if (scope.kind !== 'workspace') return null;
   let url;
   try {
     url = new URL(scope.host);
@@ -130,9 +130,9 @@ export async function readEntry({mode, location, fetch = globalThis.fetch}) {
 export function configureFeedback(peer, home, admittedWorkspace = null, {homePeer} = {}) {
   const channel = home?.feedback?.channel;
   if (!peer?.workspace || typeof channel !== 'string') return;
-  const destination = workspace => ({room: workspace, provider: 'record:so.tilo.chat:', channel});
+  const destination = workspace => ({workspace, provider: 'record:so.tilo.chat:', channel});
   const warn = error => console.warn('feedback:', error?.message ?? error);
-  if (listedAt([home], {kind: 'room', host: peer.origin, room: peer.workspace}, admittedWorkspace)) {
+  if (listedAt([home], {kind: 'workspace', host: peer.origin, workspace: peer.workspace}, admittedWorkspace)) {
     peer.configureFeedback?.(destination(peer.workspace))?.catch(warn);
     return;
   }
@@ -181,7 +181,7 @@ export function grammar(runtime, entry) {
 export function homeRoute({location, mode, home = null}) {
   const bare = location.hash === '' || location.hash === '#';
   if (!bare || !home) return null;
-  const scope = {kind: 'room', host: new URL(home.host.origin).origin, room: home.room ?? null};
+  const scope = {kind: 'workspace', host: new URL(home.host.origin).origin, workspace: home.room ?? null};
   // `home.app` is the app in front: on the desktop among the workspace's
   // other apps, or full tab under an app entry. Without one, the desktop.
   const target = home.app ? {scope, app: home.app} : {scope};
@@ -194,15 +194,15 @@ export function homeRoute({location, mode, home = null}) {
 export function chosenRoute({location, mode, home = null, chosen = null}) {
   const bare = location.hash === '' || location.hash === '#';
   if (!bare || !home || mode !== 'desktop' || !chosen?.room) return null;
-  return {mode, target: {scope: {kind: 'room', host: new URL(chosen.origin).origin, room: chosen.room}}};
+  return {mode, target: {scope: {kind: 'workspace', host: new URL(chosen.origin).origin, workspace: chosen.room}}};
 }
 
 /** Whether `a` and `b` name the same workspace (or both the person's own desktop). */
 function sameScope(a, b) {
   if (a?.kind !== b?.kind) return false;
-  if (a.kind !== 'room') return true;
+  if (a.kind !== 'workspace') return true;
   const origin = host => { try { return new URL(host).origin; } catch { return host; } };
-  return origin(a.host) === origin(b.host) && (a.room ?? null) === (b.room ?? null);
+  return origin(a.host) === origin(b.host) && (a.workspace ?? null) === (b.workspace ?? null);
 }
 
 /** The route the page was opened with. A bare entry opens the web host's
@@ -362,11 +362,11 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // way in: from here on it is in it, as a link to that workspace says.
   const sealedAdmitted = Boolean(sealed && peer);
   if (sealedAdmitted) {
-    route = {mode: 'desktop', target: {scope: {kind: 'room', host: new URL(peer.origin).origin, room: peer.workspace}}};
+    route = {mode: 'desktop', target: {scope: {kind: 'workspace', host: new URL(peer.origin).origin, workspace: peer.workspace}}};
   }
   // A link that names no workspace is let in through its host's door: the workspace
   // the door admits to is that host's listed workspace.
-  const admittedWorkspace = peer && route.target.scope.kind === 'room' && (sealedAdmitted || !route.target.scope.room)
+  const admittedWorkspace = peer && route.target.scope.kind === 'workspace' && (sealedAdmitted || !route.target.scope.workspace)
     ? peer.workspace : null;
   configureFeedback(peer, entry.home, admittedWorkspace, {
     homePeer: entry.home && deps.homePeer
@@ -389,13 +389,13 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   followDisplayMode({runtime: await loaded, window});
   // The address names what opened, not the damaged part the page left out.
   if (damaged) window.history.replaceState(window.history.state, '', link.format(route));
-  if (peer && route.target.scope.kind === 'room' && (sealedAdmitted || !route.target.scope.room)) {
+  if (peer && route.target.scope.kind === 'workspace' && (sealedAdmitted || !route.target.scope.workspace)) {
     // The workspace is known now: show its canonical link, in place of the
     // address the link reached the page at. Not while the first screen of a
     // setup covers it (first-run.mjs): this workspace is not in front of
     // the person then, and a reload or Back must not take its link for one
     // they opened.
-    route = {...route, target: {...route.target, scope: {...route.target.scope, room: peer.workspace}}};
+    route = {...route, target: {...route.target, scope: {...route.target.scope, workspace: peer.workspace}}};
     if (window.document?.documentElement?.dataset?.firstRun === undefined) {
       window.history.replaceState(window.history.state, '', link.format(route));
     }

@@ -10,11 +10,7 @@ use crate::{
 
 /// The kind id of the workspace's own resource. Its actions are the workspace's
 /// governance: membership, roles, grants and settings.
-///
-/// Records and grants already name this kind, in paths and in resources of
-/// their own, so it keeps the spelling it was published under; the constant's
-/// name is the job, not the spelling.
-pub const ROOM_KIND: &str = "tilo.room";
+pub const WORKSPACE_KIND: &str = "tilo.workspace";
 
 /// The field holding comments, wherever a model keeps them. The Commenter
 /// preset covers it at any depth, so field edits and verbs published on it are
@@ -135,10 +131,10 @@ pub mod governance {
 /// answer that would need asking.
 pub const GOVERNANCE_KIND: crate::ActionKind = crate::ActionKind::Outside;
 
-/// The workspace's own resource: `workspace:<id>/kind:tilo.room`.
+/// The workspace's own resource: `workspace:<id>/kind:tilo.workspace`.
 #[must_use]
 pub fn workspace_resource(workspace: &str) -> TreePath {
-    TreePath::workspace(workspace).kind(ROOM_KIND)
+    TreePath::workspace(workspace).kind(WORKSPACE_KIND)
 }
 
 /// The node of assigning the named grant set `name` in `workspace`: a grant on
@@ -188,7 +184,7 @@ pub fn governance_action(workspace: &str, action: &str) -> TreePath {
     workspace_resource(workspace).action(action)
 }
 
-/// Every governance action of `workspace`: `workspace:<id>/kind:tilo.room/action:*`.
+/// Every governance action of `workspace`: `workspace:<id>/kind:tilo.workspace/action:*`.
 /// More specific than the workspace's resource, where the Editor's rule denies
 /// governance, so a grant here decides each governance action whatever the
 /// grantee's role says about the workspace's resource.
@@ -200,7 +196,7 @@ pub fn governance_actions(workspace: &str) -> TreePath {
 /// The id of the grant that makes `person` an administrator of a workspace.
 #[must_use]
 pub fn administrator_grant_id(person: &str) -> GrantId {
-    GrantId(format!("room-admin-v1:{person}"))
+    GrantId(format!("workspace-admin-v1:{person}"))
 }
 
 /// The grant that makes `person` an administrator of `workspace`, given by its
@@ -238,7 +234,7 @@ pub fn administrator_grant(workspace: &str, person: &str, granted_by: Grantee) -
 /// The id of the grant that lets an administrator moderate `person`'s workspace.
 #[must_use]
 pub fn administrator_moderation_grant_id(person: &str) -> GrantId {
-    GrantId(format!("room-admin-moderation-v1:{person}"))
+    GrantId(format!("workspace-admin-moderation-v1:{person}"))
 }
 
 /// The grant that lets `person`, an administrator of `workspace`, moderate it:

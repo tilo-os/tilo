@@ -1292,7 +1292,7 @@ test('feedback startup waits for owner admission and never joins another workspa
   let configured;
   runtime.peer.configureFeedback = value => { configured = JSON.parse(value); };
   runtime.peer.feedbackStatus = () => status;
-  const destination = {room: WORKSPACE, provider: 'record:so.tilo.chat:', channel: 'feedback'};
+  const destination = {workspace: WORKSPACE, provider: 'record:so.tilo.chat:', channel: 'feedback'};
   const waiting = peer.configureFeedback(destination);
   await settle();
   assert.deepEqual(configured, destination);
@@ -1301,7 +1301,7 @@ test('feedback startup waits for owner admission and never joins another workspa
   runtime.peer.emit();
   await waiting;
   assert.equal(runtime.peer.workspace, WORKSPACE);
-  await assert.rejects(peer.configureFeedback({...destination, room: 'another-room'}), /existing workspace/);
+  await assert.rejects(peer.configureFeedback({...destination, workspace: 'another-room'}), /existing workspace/);
   status = 'owner refused current certified admission';
   await assert.rejects(peer.configureFeedback(destination), /owner refused/);
 });

@@ -73,7 +73,7 @@ impl PairingLink {
                         \"Set up with your agent\" and copy the link it gives you."
                 .to_owned());
         }
-        let Scope::Room { host, id, .. } = link.target.scope.clone() else {
+        let Scope::Workspace { host, id, .. } = link.target.scope.clone() else {
             return Err(
                 "This link opens a person's own desktop, not a workspace. Ask the page \
                         for a login code for a workspace."

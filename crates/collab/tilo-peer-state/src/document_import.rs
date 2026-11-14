@@ -234,7 +234,7 @@ mod tests {
         ImportEntry {
             proposal: DocumentImportProposalV1::new(
                 &DocumentImportTerms {
-                    room: "3f2b1c00-0000-4000-8000-00000000000b".into(),
+                    workspace: "3f2b1c00-0000-4000-8000-00000000000b".into(),
                     proposal_id: [id; 32],
                     app: "so.tilo.notes".into(),
                     record: "uuid:0f2b1c00-0000-4000-8000-000000000001".into(),

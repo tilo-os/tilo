@@ -20,12 +20,9 @@ pub enum ModeJson {
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 pub enum ScopeJson {
     Own,
-    /// The workspace scope. Its tag and its id key stay `room`: that is the
-    /// grammar the page reads and writes and `tests/links.json` holds.
-    #[serde(rename = "room")]
+    /// The workspace scope.
     Workspace {
         host: String,
-        #[serde(rename = "room")]
         workspace: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         slug: Option<String>,
@@ -84,7 +81,7 @@ impl From<&LinkTarget> for TargetJson {
         Self {
             scope: match &target.scope {
                 Scope::Own => ScopeJson::Own,
-                Scope::Room { host, id, slug } => ScopeJson::Workspace {
+                Scope::Workspace { host, id, slug } => ScopeJson::Workspace {
                     host: host.as_str().to_owned(),
                     workspace: id.hyphenated().to_string(),
                     slug: slug.as_ref().map(|slug| slug.as_str().to_owned()),
@@ -132,7 +129,7 @@ impl TryFrom<TargetJson> for LinkTarget {
                 if parsed.hyphenated().to_string() != workspace {
                     return Err(LinkError::BadWorkspace);
                 }
-                Scope::Room {
+                Scope::Workspace {
                     host: HostOrigin::new(&host)?,
                     id: parsed,
                     slug: slug.as_deref().map(Slug::parse).transpose()?,

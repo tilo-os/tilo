@@ -1,8 +1,8 @@
-//! Signed, two-party proposal to bring a whole document into a room.
+//! Signed, two-party proposal to bring a whole document into a workspace.
 //!
-//! A member of a governed room proposes that a document, with its whole
+//! A member of a governed workspace proposes that a document, with its whole
 //! history, become a new record there. Its device signs the proposal; the
-//! room's owner accepts or declines it with a signed decision. The room's
+//! workspace's owner accepts or declines it with a signed decision. Its
 //! governor creates the record only for an accepted proposal, and only
 //! with the rights an empty creation needs, so the pair adds consent to
 //! record creation and never widens it.
@@ -29,8 +29,8 @@ const MAX_TITLE_BYTES: usize = 256;
 #[serde(deny_unknown_fields)]
 pub struct DocumentImportProposalV1 {
     pub version: u16,
-    /// The room the document would join.
-    pub room: String,
+    /// The workspace the document would join.
+    pub workspace: String,
     pub proposal_id: [u8; 32],
     /// The proposing device's key.
     pub proposer: Ed25519PublicKey,
@@ -50,7 +50,7 @@ pub struct DocumentImportProposalV1 {
 /// What a proposal names, before it is signed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocumentImportTerms {
-    pub room: String,
+    pub workspace: String,
     pub proposal_id: [u8; 32],
     pub app: String,
     pub record: String,
@@ -67,7 +67,7 @@ impl DocumentImportProposalV1 {
     ) -> Result<Self, DocumentImportError> {
         let mut proposal = Self {
             version: DOCUMENT_IMPORT_VERSION,
-            room: terms.room.clone(),
+            workspace: terms.workspace.clone(),
             proposal_id: terms.proposal_id,
             proposer: Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes()),
             app: terms.app.clone(),
@@ -90,7 +90,7 @@ impl DocumentImportProposalV1 {
         canonical_bytes(&(
             b"tilo.document-import.proposal.v1".as_slice(),
             self.version,
-            &self.room,
+            &self.workspace,
             self.proposal_id,
             self.proposer,
             &self.app,
@@ -115,7 +115,7 @@ impl DocumentImportProposalV1 {
         let label = |value: &str, max: usize| {
             !value.is_empty() && value.len() <= max && !value.chars().any(char::is_control)
         };
-        if !label(&self.room, 64)
+        if !label(&self.workspace, 64)
             || !label(&self.app, MAX_APP_BYTES)
             || !label(&self.record, MAX_RECORD_BYTES)
             || self.title.len() > MAX_TITLE_BYTES
@@ -197,7 +197,7 @@ impl DocumentImportDecisionV1 {
     /// Verify that this decision answers exactly `proposal` and is signed
     /// by its decider. An acceptance must come before the proposal expires;
     /// a decline may come at any time. Whether the decider may decide is
-    /// the room's to say.
+    /// the workspace's to say.
     pub fn verify(
         &self,
         proposal: &DocumentImportProposalV1,
@@ -250,7 +250,7 @@ mod tests {
 
     fn terms(document: &[u8]) -> DocumentImportTerms {
         DocumentImportTerms {
-            room: "3f2b1c00-0000-4000-8000-00000000000b".into(),
+            workspace: "3f2b1c00-0000-4000-8000-00000000000b".into(),
             proposal_id: [5; 32],
             app: "so.tilo.notes".into(),
             record: "uuid:0f2b1c00-0000-4000-8000-000000000001".into(),

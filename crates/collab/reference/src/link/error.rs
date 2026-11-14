@@ -74,9 +74,7 @@ impl LinkError {
             Self::MissingScope => "missing-scope",
             Self::NativeNeedsHost => "native-needs-host",
             Self::BadScope => "bad-scope",
-            // The code is read by the page and by the link corpus: it keeps
-            // its spelling while the Rust name follows the workspace.
-            Self::BadWorkspace => "bad-room",
+            Self::BadWorkspace => "bad-workspace",
             Self::BadHost => "bad-host",
             Self::BadSlug => "bad-slug",
             Self::BadApp => "bad-app",

@@ -17,10 +17,10 @@ pub enum Scope {
     Own,
     /// An invitation a site keeps, sealed, which names the workspace it admits into.
     Sealed,
-    /// A workspace of a host, or (no `room`) the workspace its door admits to.
-    Room {
+    /// A workspace of a host, or (no `workspace`) the workspace its door admits to.
+    Workspace {
         #[serde(default)]
-        room: Option<String>,
+        workspace: Option<String>,
     },
 }
 
@@ -132,12 +132,14 @@ pub fn way_in(link: &Link, here: &Here) -> Way {
     if link.malformed {
         return Way::Malformed;
     }
-    let room = match &link.scope {
+    let workspace = match &link.scope {
         Scope::Own => return Way::OwnDesktop,
         Scope::Sealed => return Way::SealedInvitation,
-        Scope::Room { room } => room.as_deref().filter(|room| !room.is_empty()),
+        Scope::Workspace { workspace } => workspace
+            .as_deref()
+            .filter(|workspace| !workspace.is_empty()),
     };
-    if room.is_none() {
+    if workspace.is_none() {
         // The workspace a bare entry names is the door's to say.
         return if here.door { Way::Door } else { Way::NoAccess };
     }
@@ -198,10 +200,10 @@ pub fn as_asked(asked: Option<&str>, admitted: Option<&str>) -> bool {
 mod tests {
     use super::*;
 
-    fn room(room: Option<&str>) -> Link {
+    fn at(workspace: Option<&str>) -> Link {
         Link {
-            scope: Scope::Room {
-                room: room.map(Into::into),
+            scope: Scope::Workspace {
+                workspace: workspace.map(Into::into),
             },
             malformed: false,
             invite: false,
@@ -228,7 +230,7 @@ mod tests {
             accounts: None,
             ..here(true, false, 0)
         };
-        let named = room(Some("r"));
+        let named = at(Some("r"));
         assert_eq!(
             way_in(
                 &Link {
@@ -309,17 +311,17 @@ mod tests {
     fn the_own_desktop_a_sealed_link_and_a_bare_entry_have_one_way_each() {
         let own = Link {
             scope: Scope::Own,
-            ..room(None)
+            ..at(None)
         };
         assert_eq!(way_in(&own, &Here::default()), Way::OwnDesktop);
         let sealed = Link {
             scope: Scope::Sealed,
             invite: true,
-            ..room(None)
+            ..at(None)
         };
         assert_eq!(way_in(&sealed, &Here::default()), Way::SealedInvitation);
         assert_eq!(
-            way_in(&room(None), &here(true, false, 1)),
+            way_in(&at(None), &here(true, false, 1)),
             Way::Door,
             "the door names the workspace"
         );
@@ -327,7 +329,7 @@ mod tests {
             way_in(
                 &Link {
                     invite: true,
-                    ..room(None)
+                    ..at(None)
                 },
                 &here(false, false, 1)
             ),
@@ -338,7 +340,7 @@ mod tests {
 
     #[test]
     fn a_member_connects_and_anyone_else_comes_back_as_the_person_or_asks_the_door() {
-        let named = room(Some("r"));
+        let named = at(Some("r"));
         assert_eq!(way_in(&named, &here(true, false, 1)), Way::Member);
         assert_eq!(way_in(&named, &here(true, false, 0)), Way::Door);
         assert_eq!(

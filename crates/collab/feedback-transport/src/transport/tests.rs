@@ -19,7 +19,7 @@ fn enrollment() -> Enrollment {
     let reporter = SigningKey::from_bytes(&[42; 32]);
     Enrollment {
         destination: Destination {
-            room: WORKSPACE.into(),
+            workspace: WORKSPACE.into(),
             provider: "record:so.tilo.chat:".into(),
             channel: "feedback".into(),
         },
@@ -759,7 +759,7 @@ tilo_test_env::scenario! {
                 .at_unix_time(0);
         assert!(viewer.authorize().is_err());
         let mut other = enrollment();
-        other.destination.room = "other".into();
+        other.destination.workspace = "other".into();
         assert!(other.authorize().is_err());
         // A workspace's owner holds everything; a member's grants can be refused.
         let mut blocked = enrollment();

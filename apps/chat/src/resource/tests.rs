@@ -180,7 +180,7 @@ fn reviewed_feedback_search_opens_the_report_and_triages_through_the_door() {
         .submission(
             "0123456789abcdef0123456789abcdef".into(),
             ui::feedback::Destination {
-                room: "workspace".into(),
+                workspace: "workspace".into(),
                 provider: "demo-chat".into(),
                 channel: channel.id,
             },
@@ -828,7 +828,7 @@ fn a_commenter_files_feedback_and_a_viewer_cannot() {
         ui::feedback::Submission {
             id: "0123456789abcdef0123456789abcdef".into(),
             destination: ui::feedback::Destination {
-                room: channel.1,
+                workspace: channel.1,
                 provider: "fixture-chat".into(),
                 channel: channel.0,
             },

@@ -547,7 +547,7 @@ impl BotRunner {
     /// Whether the program listens to the workspace's own governance.
     fn follows_governance(&self) -> bool {
         self.shortcut.triggers.iter().any(|trigger| {
-            matches!(trigger, TriggerSpec::RecordChanged { kind, .. } if kind == tilo_action_policy::roles::ROOM_KIND)
+            matches!(trigger, TriggerSpec::RecordChanged { kind, .. } if kind == tilo_action_policy::roles::WORKSPACE_KIND)
         })
     }
 
@@ -933,11 +933,15 @@ pub fn governance_events(
         events.push(tilo_automation::dispatch::RecordEvent {
             workspace: workspace.to_owned(),
             record: String::new(),
-            kind: tilo_action_policy::roles::ROOM_KIND.to_owned(),
+            kind: tilo_action_policy::roles::WORKSPACE_KIND.to_owned(),
             change,
             actor: tilo_actions::Acting::person(owner),
             did: tilo_actions::entry::Did::Verb(tilo_actions::entry::VerbCall::new(
-                tilo_actions::ActionKey::new(ROOM_APP, tilo_action_policy::roles::ROOM_KIND, verb),
+                tilo_actions::ActionKey::new(
+                    ROOM_APP,
+                    tilo_action_policy::roles::WORKSPACE_KIND,
+                    verb,
+                ),
                 args.iter().filter_map(|(key, value)| {
                     tilo_actions::entry::Scalar::from_json(value).map(|value| (key.clone(), value))
                 }),

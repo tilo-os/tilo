@@ -105,11 +105,11 @@ export function workspaceAt(workspaces, origin) {
  * the listed one's.
  */
 export function listedAt(workspaces, scope, admittedWorkspace = null, memberships = globalThis.localStorage) {
-  if (scope?.kind !== 'room') return null;
+  if (scope?.kind !== 'workspace') return null;
   const listed = workspaceAt(workspaces, scope.host);
   if (!listed) return null;
   const workspace = listed.room ?? admittedWorkspace ?? keptMembership(listed, memberships)?.room ?? null;
-  return scope.room == null || scope.room === workspace ? listed : null;
+  return scope.workspace == null || scope.workspace === workspace ? listed : null;
 }
 
 /** Host action ids that open one of the person's workspaces. */
@@ -122,7 +122,7 @@ function isHomeWorkspace({home, homeWorkspace = null, scope}) {
   const homeOrigin = home?.host?.origin ? originOf(home.host.origin) : null;
   return homeOrigin !== null && Boolean(scope?.host ?? scope?.origin)
     && originOf(scope.host ?? scope.origin) === homeOrigin
-    && (scope.room == null || scope.room === (home.room ?? homeWorkspace));
+    && (scope.workspace == null || scope.workspace === (home.room ?? homeWorkspace));
 }
 
 /**
@@ -136,7 +136,7 @@ function isHomeWorkspace({home, homeWorkspace = null, scope}) {
  * action id.
  */
 export function workspaceChoices({home = null, homeWorkspace = null, entered = [], current = null, own = false}) {
-  const here = current?.kind === 'room' ? current : null;
+  const here = current?.kind === 'workspace' ? current : null;
   const homeOrigin = home?.host?.origin ? originOf(home.host.origin) : null;
   const isHome = scope => isHomeWorkspace({home, homeWorkspace, scope});
   const choices = [];
@@ -148,7 +148,7 @@ export function workspaceChoices({home = null, homeWorkspace = null, entered = [
       room: home.room ?? null, home: true, own: false, unavailable: false});
   }
   for (const entry of entered) {
-    if (isHome(entry) || (here && originOf(here.host) === entry.origin && here.room === entry.room)) continue;
+    if (isHome({host: entry.origin, workspace: entry.room}) || (here && originOf(here.host) === entry.origin && here.workspace === entry.room)) continue;
     choices.push({id: `${OPEN_WORKSPACE}${entry.origin}/${entry.room}`, name: entry.name || new URL(entry.origin).host,
       origin: entry.origin, room: entry.room, home: false, own: false, unavailable: entry.unavailable});
   }
@@ -194,7 +194,7 @@ export function heldWorkspaces({entered = [], current = null} = {}) {
     const at = originOf(origin);
     held.push({workspace: room, key: `${OPEN_WORKSPACE}${at}/${room}`, name: name || new URL(at).host});
   };
-  if (current?.kind === 'room') add(current.host, current.room, current.name ?? null);
+  if (current?.kind === 'workspace') add(current.host, current.workspace, current.name ?? null);
   for (const entry of entered) add(entry?.origin, entry?.room, entry?.name ?? null);
   return held;
 }

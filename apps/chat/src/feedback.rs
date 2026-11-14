@@ -232,7 +232,7 @@ pub fn receipt_from_record(
         .map_err(|error| refused(error.to_string()))?;
     let (package, workspace) = store.app_and_home();
     if package != <crate::resource::ChatShell as ui::framework::ResourceApp>::ID
-        || workspace != actual_destination.room
+        || workspace != actual_destination.workspace
     {
         return Err(refused("feedback canonical store mismatch"));
     }
@@ -241,7 +241,7 @@ pub fn receipt_from_record(
             let scope = ui::record::workspace_scope(doc);
             if scope
                 .as_deref()
-                .is_some_and(|workspace| workspace != actual_destination.room)
+                .is_some_and(|workspace| workspace != actual_destination.workspace)
                 || (!record.is_package_primary() && scope.is_none())
             {
                 return Err(refused("feedback canonical workspace mismatch"));
@@ -280,7 +280,7 @@ mod tests {
             Submission {
                 id: "0123456789abcdef0123456789abcdef".into(),
                 destination: Destination {
-                    room: "room".into(),
+                    workspace: "room".into(),
                     provider: "demo-chat".into(),
                     channel: channel.id,
                 },
@@ -620,7 +620,7 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let mut owners = RecordOwners::new(temp.path().join("profile"));
             let store = owners
-                .open("so.tilo.chat", &submission.destination.room)
+                .open("so.tilo.chat", &submission.destination.workspace)
                 .unwrap();
             let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("chat.workspace"));
             store
@@ -672,7 +672,7 @@ mod tests {
                 .is_ok()
             );
             let memory = RecordStore::new(
-                ui::record::RecordSet::in_memory().with_home(&submission.destination.room),
+                ui::record::RecordSet::in_memory().with_home(&submission.destination.workspace),
             );
             memory.create_record(&checkout).unwrap();
             memory
@@ -698,7 +698,7 @@ mod tests {
             let store = owners
                 .open(
                     <crate::resource::ChatShell as ui::framework::ResourceApp>::ID,
-                    &submission.destination.room,
+                    &submission.destination.workspace,
                 )
                 .unwrap();
             let primary = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
@@ -722,7 +722,7 @@ mod tests {
                     .is_ok()
             );
             let mut elsewhere = submission.destination.clone();
-            elsewhere.room = "another-room".into();
+            elsewhere.workspace = "another-room".into();
             assert!(receipt_from_record(&store, &primary.id, &submission.id, &elsewhere).is_err());
             store
                 .with(&primary.id, |doc| {
@@ -768,7 +768,7 @@ mod tests {
                 crate::testing::item("messages", &message_id(&submission.id))
             );
             let mut elsewhere = submission.destination.clone();
-            elsewhere.room = "other-room".into();
+            elsewhere.workspace = "other-room".into();
             assert!(
                 durable_receipt(&doc, &submission.id, &elsewhere, &RecordSaveStatus::Saved).is_err()
             );

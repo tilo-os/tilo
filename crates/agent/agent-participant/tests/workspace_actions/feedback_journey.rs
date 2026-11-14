@@ -74,7 +74,7 @@ fn approved(route: &DocumentRoute) -> Submission {
         .submission(
             "0123456789abcdef0123456789abcdef".into(),
             Destination {
-                room: route.cluster_id.clone(),
+                workspace: route.cluster_id.clone(),
                 provider: record_provider(route),
                 channel: "feedback".into(),
             },
@@ -645,7 +645,10 @@ async fn resolved_status(browser: &mut Browser, submission: &Submission) -> serd
         if let ReceiptStatus::Completed { output } = result.status {
             let value = output.value.unwrap();
             if value["content"]["triage"][0]["update"]["status"] == "resolved" {
-                assert_eq!(value["record"]["workspaceId"], submission.destination.room);
+                assert_eq!(
+                    value["record"]["workspaceId"],
+                    submission.destination.workspace
+                );
                 assert_eq!(value["record"]["appId"], "so.tilo.chat");
                 assert_eq!(value["record"]["recordId"], "");
                 return value;
@@ -680,7 +683,7 @@ async fn owner_answer(
         correlation,
         query: FeedbackQuery {
             destination: FeedbackDestination {
-                workspace: submission.destination.room.clone(),
+                workspace: submission.destination.workspace.clone(),
                 provider: submission.destination.provider.clone(),
                 channel: submission.destination.channel.clone(),
             },
@@ -722,9 +725,9 @@ async fn assert_signed_canonical(
     let enrollment = Enrollment {
         destination: submission.destination.clone(),
         owner: Caller::authenticated(owner.user_public_key, owner.device_public_key)
-            .in_workspace(&submission.destination.room),
+            .in_workspace(&submission.destination.workspace),
         reporter: Caller::authenticated(reporter.user_public_key, reporter.device_public_key)
-            .in_workspace(&submission.destination.room),
+            .in_workspace(&submission.destination.workspace),
         permissions: {
             let standing: ui::permissions::Standing =
                 serde_json::from_value(admission.admission.standing).unwrap();

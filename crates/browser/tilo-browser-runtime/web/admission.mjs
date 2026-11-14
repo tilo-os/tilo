@@ -149,8 +149,8 @@ const REFUSED = {
  * (`wayInAfter`). Taking each way, and what the person is shown, are the page's.
  */
 export async function admit({scope, secrets = {}, tickets, home = null, runtime, deps, onProgress = () => {}}) {
-  const origin = scope.kind === 'room' ? scope.host : null;
-  const room = scope.kind === 'room' ? scope.room : null;
+  const origin = scope.kind === 'workspace' ? scope.host : null;
+  const room = scope.kind === 'workspace' ? scope.workspace : null;
   const listed = origin ? deps.workspaceAt?.(origin) ?? null : null;
   const pairing = secrets.pair ? parsePairSecret(secrets.pair) : null;
   const here = {
@@ -168,7 +168,7 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
     console.warn('admission: no door to ask at', origin, JSON.stringify({listed: Boolean(listed), entered: here.entered}));
   }
   const link = JSON.stringify({
-    scope: scope.kind === 'room' ? {kind: 'room', room: room ?? undefined} : {kind: scope.kind},
+    scope: scope.kind === 'workspace' ? {kind: 'workspace', workspace: room ?? undefined} : {kind: scope.kind},
     malformed: Boolean(secrets.malformed), invite: Boolean(secrets.invite), ticket: Boolean(secrets.ticket),
     pair: secrets.pair ? (pairing ? 'named' : 'damaged') : undefined,
   });

@@ -170,7 +170,7 @@ fn expected(app: &TestApp<NotebookApp>, page: &str, mode: Mode, view: Option<&st
     Link {
         mode,
         target: LinkTarget {
-            scope: Scope::Room {
+            scope: Scope::Workspace {
                 host: HostOrigin::new("https://host.example").unwrap(),
                 id: WORKSPACE.parse().unwrap(),
                 slug: None,

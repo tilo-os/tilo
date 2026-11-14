@@ -259,7 +259,7 @@ mod tests {
 
     fn destination() -> Destination {
         Destination {
-            room: "demo".into(),
+            workspace: "demo".into(),
             provider: "record:chat:feedback".into(),
             channel: "feedback".into(),
         }
@@ -336,7 +336,7 @@ mod tests {
         changed.feedback.text = "Different issue".into();
         assert!(matches!(outbox.queue(changed), Err(Error::Conflict)));
         let mut other = destination();
-        other.room = "personal".into();
+        other.workspace = "personal".into();
         assert!(matches!(
             outbox.confirm_durable_receipt(&other, receipt(&report)),
             Err(Error::ReceiptMismatch)

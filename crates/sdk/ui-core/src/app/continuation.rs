@@ -461,7 +461,7 @@ impl App {
         };
         if !view.valid()
             || route.app_id != view.app
-            || route.cluster_id.to_string() != view.room
+            || route.cluster_id.to_string() != view.workspace
             || self.continuation.private_instance != Some(view.instance)
         {
             return;

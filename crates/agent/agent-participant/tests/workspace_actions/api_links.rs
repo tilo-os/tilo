@@ -101,7 +101,7 @@ async fn an_agent_hands_over_the_link_to_the_record_it_changed() {
     let link = Link::parse(&url, &entries).unwrap_or_else(|error| panic!("{url}: {error}"));
     assert_eq!(link.mode, Mode::App, "{url}");
     assert!(link.secrets.is_empty(), "a link carries no secret: {url}");
-    let Scope::Room { host, id, .. } = &link.target.scope else {
+    let Scope::Workspace { host, id, .. } = &link.target.scope else {
         panic!("a link names its workspace: {url}");
     };
     assert_eq!(id.to_string(), workspace, "{url}");

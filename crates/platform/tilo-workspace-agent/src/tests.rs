@@ -247,9 +247,13 @@ fn a_bound_narrows_and_never_allows_an_outside_effect_unasked() {
         .apply(set_bound(
             &agent,
             vec![
-                rule("room:ws/app:so.tilo.chat", &["read", "undoable"], "allow"),
                 rule(
-                    "room:ws/app:so.tilo.file-explorer",
+                    "workspace:ws/app:so.tilo.chat",
+                    &["read", "undoable"],
+                    "allow",
+                ),
+                rule(
+                    "workspace:ws/app:so.tilo.file-explorer",
                     &["read", "outside"],
                     "ask",
                 ),
@@ -266,10 +270,10 @@ fn a_bound_narrows_and_never_allows_an_outside_effect_unasked() {
     );
 
     for bad in [
-        rule("room:ws", &["outside"], "allow"),
-        rule("room:ws", &["write"], "allow"),
-        rule("room:ws", &[], "allow"),
-        rule("room:ws", &["read"], "maybe"),
+        rule("workspace:ws", &["outside"], "allow"),
+        rule("workspace:ws", &["write"], "allow"),
+        rule("workspace:ws", &[], "allow"),
+        rule("workspace:ws", &["read"], "maybe"),
     ] {
         let refused = record
             .apply(set_bound(&agent, vec![bad.clone()]))
@@ -386,7 +390,7 @@ fn stored_agents_read_back_as_they_were() {
         .apply(set_bound(
             &reviewer,
             vec![Bound {
-                node: "room:ws/app:so.tilo.chat".to_owned(),
+                node: "workspace:ws/app:so.tilo.chat".to_owned(),
                 kinds: vec!["read".to_owned(), "undoable".to_owned()],
                 answer: "allow".to_owned(),
             }],
@@ -560,7 +564,7 @@ const GOLDEN: &str = r#"{
       "model": "anthropic/sonnet",
       "bound": [
         {
-          "node": "room:ws/app:so.tilo.notes",
+          "node": "workspace:ws/app:so.tilo.notes",
           "kinds": [
             "read",
             "undoable"
@@ -595,7 +599,7 @@ fn golden_state() -> WorkspaceAgents {
         .apply(set_bound(
             "claude",
             vec![Bound {
-                node: "room:ws/app:so.tilo.notes".to_owned(),
+                node: "workspace:ws/app:so.tilo.notes".to_owned(),
                 kinds: vec!["read".to_owned(), "undoable".to_owned()],
                 answer: "allow".to_owned(),
             }],

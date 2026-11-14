@@ -182,7 +182,7 @@ fn scope() -> impl Strategy<Value = Scope> {
             any::<u128>(),
             proptest::option::of("[a-z0-9][a-z0-9-]{0,20}[a-z0-9]"),
         )
-            .prop_map(|(host, bits, slug)| Scope::Room {
+            .prop_map(|(host, bits, slug)| Scope::Workspace {
                 host: HostOrigin::new(host).unwrap(),
                 id: uuid::Builder::from_random_bytes(bits.to_le_bytes()).into_uuid(),
                 slug: slug.map(|slug| Slug::parse(&slug).unwrap()),
@@ -292,7 +292,7 @@ fn a_link_with_a_damaged_document_opens_its_workspace_and_says_so() {
     let (link, damaged) = Link::parse_or_workspace(&url, &entries).unwrap();
     assert_eq!(damaged.map(|error| error.code()), Some("bad-record"));
     assert_eq!(link.mode, Mode::Desktop);
-    let Scope::Room { host, id, .. } = &link.target.scope else {
+    let Scope::Workspace { host, id, .. } = &link.target.scope else {
         panic!("the workspace: {link:?}")
     };
     assert_eq!(host.as_str(), "https://eu1.tilo.sh");
@@ -314,6 +314,6 @@ fn a_link_with_a_damaged_document_opens_its_workspace_and_says_so() {
         Link::parse_or_workspace(broken, &entries)
             .unwrap_err()
             .code(),
-        "bad-room"
+        "bad-workspace"
     );
 }

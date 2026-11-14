@@ -1494,7 +1494,7 @@ tilo_test_env::scenario! {
                 .iter()
                 .map(|rule| rule.node.to_string())
                 .collect::<Vec<_>>(),
-            ["room:*/app:so.tilo.mail/resource:*"]
+            ["workspace:*/app:so.tilo.mail/resource:*"]
         );
         assert!(crate::grant::unused_rules(&reads).is_empty());
         check(&reads, &host.catalog(), &NoShortcuts).unwrap();
@@ -2408,7 +2408,7 @@ tilo_test_env::scenario! {
         }
         // Defaults: `by` is anyone, empty lists are any change.
         let any: TriggerSpec =
-            serde_json::from_value(json!({"trigger": "record_changed", "kind": "tilo.room"})).unwrap();
+            serde_json::from_value(json!({"trigger": "record_changed", "kind": "tilo.workspace"})).unwrap();
         assert!(matches!(
             any,
             TriggerSpec::RecordChanged {

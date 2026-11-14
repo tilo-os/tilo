@@ -93,8 +93,6 @@ pub struct ConfirmationQuestion {
     /// The device that asks, as it is labelled to the person.
     pub device_label: String,
     /// The workspace the invocation runs in.
-    // Sent as `room`: a frame reaches peers on other builds, which read the key they know.
-    #[serde(rename = "room", alias = "workspace")]
     pub workspace: String,
     /// The run the invocation is a step of, by the title its agent gave it;
     /// empty when it named none.

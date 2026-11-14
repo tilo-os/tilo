@@ -107,7 +107,8 @@ pub(super) fn snapshot(
     {
         return Err(SemanticReadError::InvalidOwner);
     }
-    if ui::record::workspace_scope(&document).is_some_and(|workspace| workspace != destination.room)
+    if ui::record::workspace_scope(&document)
+        .is_some_and(|workspace| workspace != destination.workspace)
     {
         return Err(SemanticReadError::InvalidOwner);
     }
@@ -129,8 +130,8 @@ pub(super) fn schema() -> &'static serde_json::Value {
                     "digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},
                     "report":{"type":"string","minLength":1,"maxLength":512},
                     "destination":{"type":"object","additionalProperties":false,
-                        "required":["room","provider","channel"],"properties":{
-                            "room":{"type":"string","minLength":1,"maxLength":256},
+                        "required":["workspace","provider","channel"],"properties":{
+                            "workspace":{"type":"string","minLength":1,"maxLength":256},
                             "provider":{"type":"string","minLength":1,"maxLength":256},
                             "channel":{"type":"string","minLength":1,"maxLength":256}
                         }}

@@ -269,7 +269,7 @@ mod tests {
 
     fn successor() -> Successor {
         Successor {
-            room: "3f2b1c00-0000-4000-8000-0000000000f1".into(),
+            workspace: "3f2b1c00-0000-4000-8000-0000000000f1".into(),
             record: "uuid:arrived".into(),
             by: "person:ada".into(),
         }
@@ -474,7 +474,7 @@ mod owner_view_tests {
     fn view(app: &App, generation: u64, counter: u64) -> OwnerView {
         let route = &app.collaboration.manager.primary_route().unwrap().route;
         OwnerView {
-            room: route.cluster_id.to_string(),
+            workspace: route.cluster_id.to_string(),
             app: route.app_id.clone(),
             instance: 31,
             generation,

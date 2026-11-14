@@ -22,7 +22,7 @@ fn submission() -> ui::feedback::Submission {
     ui::feedback::Submission {
         id: "0123456789abcdef0123456789abcdef".into(),
         destination: ui::feedback::Destination {
-            room: "room".into(),
+            workspace: "room".into(),
             provider: "record:so.tilo.chat:".into(),
             channel: "c_feedback".into(),
         },

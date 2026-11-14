@@ -73,7 +73,7 @@ pub(crate) fn configure(
     let workspace = tilo_relay_protocol::WorkspaceId::parse(&destination.workspace)
         .ok_or("feedback workspace must be a uuid")?;
     Destination {
-        room: destination.workspace.clone(),
+        workspace: destination.workspace.clone(),
         provider: destination.provider.clone(),
         channel: destination.channel.clone(),
     }

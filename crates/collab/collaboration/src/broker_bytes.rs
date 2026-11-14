@@ -475,7 +475,7 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
         CollabEvent::Handoff { request } => {
             meter.add_product(1, std::mem::size_of_val(request));
             if let HandoffRequest::OwnerView { view } = request {
-                meter.string_capacity(&view.room);
+                meter.string_capacity(&view.workspace);
                 meter.string_capacity(&view.app);
                 meter.string_capacity(&view.source);
                 if let Some(metadata) = &view.projection {
@@ -483,7 +483,7 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
                 }
             }
             if let HandoffRequest::Retire { successor, .. } = request {
-                meter.string_capacity(&successor.room);
+                meter.string_capacity(&successor.workspace);
                 meter.string_capacity(&successor.record);
                 meter.string_capacity(&successor.by);
             }

@@ -300,7 +300,7 @@ tilo_test_env::scenario! {
     {
         let pattern = TreePath::workspace("r").any(Level::App);
         assert!(pattern.covers(&mail()));
-        assert!(!pattern.covers(&TreePath::workspace("r").kind(roles::ROOM_KIND)));
+        assert!(!pattern.covers(&TreePath::workspace("r").kind(roles::WORKSPACE_KIND)));
         assert!(pattern.covers(&TreePath::workspace("r").any(Level::App)));
         assert!(!mail().covers(&TreePath::workspace("r").any(Level::App)));
     }
@@ -858,30 +858,13 @@ tilo_test_env::scenario! {
         }
         assert_eq!(
             send().to_string(),
-            "room:r/app:mail/kind:mail.message/resource:m1/action:send"
+            "workspace:r/app:mail/kind:mail.message/resource:m1/action:send"
         );
-        assert_eq!(TreePath::workspace("r/1%").to_string(), "room:r%2F1%25");
+        assert_eq!(TreePath::workspace("r/1%").to_string(), "workspace:r%2F1%25");
         assert!("workspace".parse::<TreePath>().is_err());
         assert!("planet:x".parse::<TreePath>().is_err());
         assert!("workspace:".parse::<TreePath>().is_err());
         assert!("workspace:a%zz".parse::<TreePath>().is_err());
-        // A path written while the level was named for a workspace is the same
-        // path, and is written under the name every stored path keeps.
-        let stored: TreePath = "workspace:r/app:mail/kind:mail.message/resource:*/action:send"
-            .parse()
-            .expect("the stored path still parses");
-        assert_eq!(
-            stored,
-            TreePath::workspace("r")
-                .app("mail")
-                .kind("mail.message")
-                .any(Level::Resource)
-                .action("send")
-        );
-        assert_eq!(
-            stored.to_string(),
-            "room:r/app:mail/kind:mail.message/resource:*/action:send"
-        );
     }
 
     phase grants_round_trip_through_json;
@@ -894,7 +877,7 @@ tilo_test_env::scenario! {
         )
         .with_lifetime(Lifetime::Until(5));
         let json = serde_json::to_value(&grant).expect("serialises");
-        assert_eq!(json["node"], "room:r/app:mail/resource:*");
+        assert_eq!(json["node"], "workspace:r/app:mail/resource:*");
         assert_eq!(json["kinds"], serde_json::json!(["read", "undoable"]));
         assert_eq!(json["answer"], "ask");
         let back: Grant = serde_json::from_value(json).expect("deserialises");
@@ -905,63 +888,6 @@ tilo_test_env::scenario! {
             serde_json::from_str::<WorkspacePolicy>(&text).expect("deserialises"),
             workspace
         );
-    }
-
-    phase a_policy_is_written_under_the_names_a_policy_was_stored_under;
-    {
-        let policy = WorkspacePolicy::new("r", ALICE);
-        let written = serde_json::to_string(&policy).expect("serialises");
-        assert!(written.contains("\"room\":\"r\""), "{written}");
-        assert!(!written.contains("\"workspace\""), "{written}");
-        assert!(!written.contains("\"workspace:"), "{written}");
-        // A policy stored while the field and the node's level were named for the
-        // workspace reads as the same policy.
-        let stored = written
-            .replace("\"room\":", "\"workspace\":")
-            .replace("\"room:", "\"workspace:");
-        assert!(stored.contains("\"workspace\":\"r\""), "{stored}");
-        let read: WorkspacePolicy = serde_json::from_str(&stored).expect("reads the stored shape");
-        assert_eq!(read, policy);
-        assert_eq!(read.workspace, "r");
-        assert_eq!(read.owner.as_deref(), Some(ALICE));
-    }
-
-    phase a_grant_written_while_the_level_was_named_for_workspaces_still_decides;
-    {
-        // A grant written while the outermost level was named for a workspace.
-        let stored = serde_json::json!({
-            "id": "notes-read",
-            "grantee": {"member": {"person": ALICE}},
-            "node": "workspace:r/app:notes/kind:notes.notebook/resource:*",
-            "kinds": ["read", "undoable"],
-            "answer": "allow",
-            "lifetime": "until_revoked",
-            "granted_by": {"member": {"person": ALICE}},
-        });
-        let read: Grant = serde_json::from_value(stored).expect("the stored grant still loads");
-        assert_eq!(
-            read.node,
-            TreePath::workspace("r")
-                .app("notes")
-                .kind("notes.notebook")
-                .any(Level::Resource)
-        );
-        assert_eq!(
-            read.node.to_string(),
-            "room:r/app:notes/kind:notes.notebook/resource:*"
-        );
-        // It decides the same action as a grant written today would.
-        let grants = [read];
-        let action = TreePath::workspace("r")
-            .app("notes")
-            .kind("notes.notebook")
-            .resource("n1")
-            .action("set");
-        assert_eq!(
-            answer(&grants, &action, ActionKind::Undoable),
-            Answer::Allow
-        );
-        assert_eq!(answer(&grants, &action, ActionKind::Outside), Answer::Deny);
     }
 }
 
@@ -1033,7 +959,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             describe(&editor, &Ids),
             "workspace r: reading and undoable changes allowed, outside effects ask first. \
-         workspace r › tilo.room: undoable changes and outside effects not allowed. \
+         workspace r › tilo.workspace: undoable changes and outside effects not allowed. \
          workspace r › anywhere › moderation: undoable changes and outside effects not allowed."
         );
     }

@@ -1020,7 +1020,7 @@ mod tests {
             assert_eq!(
                 grant
                     .iter()
-                    .map(|rule| rule.node.readable())
+                    .map(|rule| rule.node.to_string())
                     .collect::<Vec<_>>(),
                 ["workspace:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"]
             );
@@ -1050,7 +1050,7 @@ mod tests {
                 &catalog,
             ));
             assert_eq!(
-                whole[0].node.readable(),
+                whole[0].node.to_string(),
                 "workspace:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"
             );
             // So does one whose field is chosen when it runs.

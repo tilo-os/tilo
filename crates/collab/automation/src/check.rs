@@ -130,7 +130,7 @@ pub fn check_bot(shortcut: &Shortcut, catalog: &ActionCatalog) -> Result<(), Vec
         if !derived.contains(rule) {
             errors.push(CheckError {
                 path: StepPath::root(),
-                kind: CheckErrorKind::UnusedRule(rule.node.readable()),
+                kind: CheckErrorKind::UnusedRule(rule.node.to_string()),
             });
         }
     }
@@ -138,7 +138,7 @@ pub fn check_bot(shortcut: &Shortcut, catalog: &ActionCatalog) -> Result<(), Vec
         if !shortcut.grant.contains(rule) {
             errors.push(CheckError {
                 path: StepPath::root(),
-                kind: CheckErrorKind::MissingRule(rule.node.readable()),
+                kind: CheckErrorKind::MissingRule(rule.node.to_string()),
             });
         }
     }

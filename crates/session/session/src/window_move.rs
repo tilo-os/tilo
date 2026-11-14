@@ -735,7 +735,7 @@ impl Moves {
             HandoffRequest::Retire {
                 token,
                 successor: Successor {
-                    room: crossing.to_id.clone(),
+                    workspace: crossing.to_id.clone(),
                     record: target,
                     by: shared.person.clone(),
                 },
@@ -825,7 +825,7 @@ impl Moves {
         let source = record.source.clone();
         let origin = arrived.origin.clone();
         let successor = Successor {
-            room: crossing.to_id.clone(),
+            workspace: crossing.to_id.clone(),
             record: arrived.target.id.as_str().to_owned(),
             by: shared.person.clone(),
         };
@@ -1605,7 +1605,7 @@ mod tests {
         desk.edit(&showing.id, "first draft, last words");
         desk.land();
         let successor = Successor {
-            room: desk.to_id.clone(),
+            workspace: desk.to_id.clone(),
             record: arrived.as_str().to_owned(),
             by: desk.session.shared.person.clone(),
         };

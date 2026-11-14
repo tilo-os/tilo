@@ -75,7 +75,7 @@ impl Destination {
             // report, never a second copy of this one.
             id: uuid::Uuid::new_v4().simple().to_string(),
             destination: FiledIn {
-                room: self.workspace.clone(),
+                workspace: self.workspace.clone(),
                 // Reports are filed by Chat, the app that keeps the channel.
                 provider: destination::PACKAGE.to_owned(),
                 channel: self.channel.clone(),
