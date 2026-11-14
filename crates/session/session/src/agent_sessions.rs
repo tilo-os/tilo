@@ -150,6 +150,7 @@ impl AgentSessions {
                 workspace: connection.workspace.clone(),
                 workspace_name: connection.workspace_name.clone(),
                 doing: connection.doing.clone(),
+                origin: connection.origin.clone(),
             })
             .collect()
     }
@@ -297,14 +298,24 @@ impl AgentSessions {
     pub(crate) fn readings(&self) -> Vec<Agent> {
         self.here()
             .into_iter()
-            .map(|present| Agent {
-                key: present.session.0,
-                name: present.name,
-                state: "running".to_owned(),
-                doing: present.workspace_name,
-                mark: String::new(),
-                unseen: 0,
-                seat: true,
+            .map(|present| {
+                // Where it works from is said beside its name, never inside it: two sessions of
+                // one client are told apart by it, whatever each is called.
+                let (device, device_name) = present
+                    .origin
+                    .map(|origin| (origin.id, origin.name))
+                    .unwrap_or_default();
+                Agent {
+                    key: present.session.0,
+                    name: present.name,
+                    state: "running".to_owned(),
+                    doing: present.workspace_name,
+                    mark: String::new(),
+                    unseen: 0,
+                    seat: true,
+                    device,
+                    device_name,
+                }
             })
             .collect()
     }
@@ -358,6 +369,8 @@ pub(crate) struct Present {
     pub(crate) workspace: String,
     pub(crate) workspace_name: String,
     pub(crate) doing: Option<Doing>,
+    /// The other device of the person's it works from: none for a program of this login.
+    pub(crate) origin: Option<tilo_actions::InvokerDevice>,
 }
 
 /// A step of an agent session, as its workspace says it beside its face.
@@ -425,6 +438,11 @@ pub(crate) struct Agent {
     pub unseen: i64,
     /// Whether the person may stop it here.
     pub seat: bool,
+    /// The other device of the person's it works from, as the door that let it in verified: its
+    /// key in hex. Empty for a program of this device.
+    pub device: String,
+    /// What that device is called, as its certificate labels it.
+    pub device_name: String,
 }
 
 #[cfg(test)]
@@ -511,6 +529,48 @@ mod tests {
             "taking the answer back ends the rest"
         );
         assert!(sessions.here().is_empty());
+    }
+
+    /// A session that came in from another of the person's devices is listed with that device
+    /// beside its name, and a program of this login with none: the name is the same either way.
+    #[test]
+    fn a_session_from_another_device_is_listed_with_that_device_beside_its_name() {
+        let sessions = AgentSessions::new();
+        let laptop = tilo_actions::InvokerDevice::certified([0x4c; 32], "Studio laptop");
+        let remote = sessions.joining(None, Some(laptop.clone()));
+        assert!(
+            sessions.readings().is_empty(),
+            "nothing shows before it is admitted"
+        );
+        admit(&sessions, &remote, "Claude Code #1");
+        let local = sessions.joining(None, None);
+        admit(&sessions, &local, "Claude Code #1");
+        let listed = sessions.readings();
+        let listed = |session: &AgentSessionId| {
+            listed
+                .iter()
+                .find(|agent| agent.key == session.as_str())
+                .map(|agent| {
+                    (
+                        agent.name.clone(),
+                        agent.device.clone(),
+                        agent.device_name.clone(),
+                    )
+                })
+        };
+        assert_eq!(
+            listed(&remote),
+            Some((
+                "Claude Code #1".to_owned(),
+                laptop.id,
+                "Studio laptop".to_owned()
+            ))
+        );
+        assert_eq!(
+            listed(&local),
+            Some(("Claude Code #1".to_owned(), String::new(), String::new())),
+            "a program of this login came from no other device"
+        );
     }
 
     /// A session's presence is found again by the key this device speaks for it under.

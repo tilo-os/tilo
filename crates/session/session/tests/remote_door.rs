@@ -337,6 +337,45 @@ fn agent_sessions(session: &Session) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+/// A device as the shell says it beside an agent session's name: its key in hex and what it is
+/// called. Both are empty for a program of this login, which came from no other device.
+type CameFrom = (String, String);
+
+/// The device `cert` certifies, as the shell says it of an agent session that came from it.
+fn device_of(cert: &DeviceCert) -> CameFrom {
+    (
+        hex::encode(cert.device_public_key),
+        cert.device_label.clone(),
+    )
+}
+
+/// Where each agent session the shell calls `name` came from, as `session:agents` says it
+/// beside the name: two sessions of one client are called the same and told apart by it.
+fn came_from(session: &Session, name: &str) -> Vec<CameFrom> {
+    let said = |agent: &Value, field: &str| agent[field].as_str().unwrap_or_default().to_owned();
+    let mut from: Vec<CameFrom> = agent_sessions(session)
+        .into_iter()
+        .filter(|agent| agent["seat"] == true && agent["name"] == name)
+        .map(|agent| (said(&agent, "device"), said(&agent, "device_name")))
+        .collect();
+    from.sort();
+    from
+}
+
+/// The device Notes was told the agent that took `taken` works from: the one the door verified,
+/// said beside the agent and nowhere else. Empty for an agent of this device.
+fn told_device(taken: &runtime_collab::Invocation) -> CameFrom {
+    let context: Value = serde_json::from_str(&taken.context_json).unwrap_or_default();
+    let said = |at: &str| {
+        context
+            .pointer(at)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    (said("/invoker/device/id"), said("/invoker/device/name"))
+}
+
 fn initialize() -> Value {
     json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
         "protocolVersion":"2025-06-18","capabilities":{},
@@ -406,6 +445,9 @@ fn an_agent_the_person_lets_in_works_here_as_their_agent_via_its_device_until_th
         "{introduced}"
     );
     b.pump(|b| b.shown() == [SHOWN.to_owned()]);
+    // The shell calls it as it calls any connection of that client, and says beside the name
+    // the device it came from, as the door verified it.
+    assert_eq!(came_from(&b.session, SHOWN), [device_of(&person.laptop.1)]);
 
     // The same tools as a program of this login, and the person's devices.
     agent.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}));
@@ -476,6 +518,9 @@ fn with_agents_from_other_devices_accepted_one_works_here_without_a_question() {
     );
     assert!(b.questions.pending().is_empty(), "nobody was asked");
     b.pump(|b| b.shown() == [SHOWN.to_owned()]);
+    // No sheet said where it came from, so the shell is where the person reads it: beside the
+    // name it shows the agent under.
+    assert_eq!(came_from(&b.session, SHOWN), [device_of(&person.laptop.1)]);
 
     // The setting lets in the person's own devices and nothing else: a device of another person,
     // and one the person removed, are refused.
@@ -498,6 +543,7 @@ fn with_agents_from_other_devices_accepted_one_works_here_without_a_question() {
     local.leave();
     b.pump(|b| b.questions.pending().is_empty());
     assert_eq!(b.shown(), [SHOWN.to_owned()]);
+    assert_eq!(came_from(&b.session, SHOWN), [device_of(&person.laptop.1)]);
 }
 
 /// This computer's own identity, as a desktop has one: a root in the person's record, the device
@@ -1399,6 +1445,11 @@ fn with_only_agents_from_other_devices_let_in_their_step_still_asks_the_person()
         "the step is the session's: {} under {session}",
         taken.context_json
     );
+    assert_eq!(
+        told_device(&taken),
+        device_of(&shell.laptop.1),
+        "Notes is told the device the agent works from"
+    );
     assert!(shell.asked().is_empty());
     agent.leave();
 }
@@ -1444,6 +1495,11 @@ fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_q
         "the step is the session's, as one the person allowed is: {} under {session}",
         taken.context_json
     );
+    assert_eq!(
+        told_device(&taken),
+        device_of(&shell.laptop.1),
+        "Notes is told the device the agent works from"
+    );
 
     // A program of this login is asked about, at the door and for its step.
     let local = Agent::over(UnixStream::connect(&shell.socket).unwrap(), None);
@@ -1476,11 +1532,21 @@ fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_q
         local.answers.try_recv().is_err(),
         "the program waits for the person"
     );
+    // It is the same client as the laptop's agent, and so a session of the same agent member:
+    // the shell calls both the same and tells them apart by the device beside the name. What
+    // the settings say of the session that came from the laptop they do not say of this one.
+    let mut both = [device_of(&shell.laptop.1), CameFrom::default()];
+    both.sort();
+    assert_eq!(came_from(&shell.session, SHOWN), both);
     // Deny.
     crate::common::press_sheet(&mut shell.session, PortalEffect::CANCEL.id, &json!({}));
     let denied = answer(&mut shell.session, &local);
     assert_eq!(denied["result"]["isError"], true, "{denied}");
     assert!(shell.asked().is_empty());
+    assert!(
+        shell.taken.try_recv().is_err(),
+        "nothing was opened for the program"
+    );
     local.leave();
 
     // A device of someone else's is refused at the door, the settings notwithstanding.
