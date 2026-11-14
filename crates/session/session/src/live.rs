@@ -896,9 +896,9 @@ impl Shared {
         if self.stand(workspace, standing) {
             tracing::warn!(%workspace, relay = %hex::encode(missed.relay), refused = missed.refused,
                 epoch,
-                "the live plane is not open: the device that relays this workspace did not take this device in");
+                "the live plane is not open: no device that relays this workspace took this device in");
         } else {
-            tracing::debug!(%workspace, "this workspace's relay was not reached");
+            tracing::debug!(%workspace, "no relay of this workspace was reached");
         }
     }
 
