@@ -119,6 +119,27 @@ pub struct DesktopEntry {
 }
 
 impl DesktopEntry {
+    /// The kind of app its first main category says it is, named the way Tilo's own apps
+    /// name theirs ("Network", "Multimedia"): `Categories=GNOME;GTK;Utility;` is a "Utility".
+    /// `None` when it lists no main category of the menu spec.
+    pub fn main_category(&self) -> Option<&'static str> {
+        self.categories
+            .iter()
+            .find_map(|category| match category.as_str() {
+                "AudioVideo" | "Audio" | "Video" => Some("Multimedia"),
+                "Development" => Some("Development"),
+                "Education" => Some("Education"),
+                "Game" => Some("Game"),
+                "Graphics" => Some("Graphics"),
+                "Network" => Some("Network"),
+                "Office" => Some("Office"),
+                "Science" => Some("Science"),
+                "Settings" | "System" => Some("System"),
+                "Utility" => Some("Utility"),
+                _ => None,
+            })
+    }
+
     /// What kind of app this is. `person_applications` is the person's own
     /// applications directory: an entry of theirs there is a program of theirs,
     /// not the system's.
@@ -519,6 +540,7 @@ X-Flatpak=com.spotify.Client
                 );
                 assert_eq!(e.startup_wm_class.as_deref(), Some("spotify"));
                 assert_eq!(e.categories, vec!["Audio", "Music", "Player", "AudioVideo"]);
+                assert_eq!(e.main_category(), Some("Multimedia"), "the kind search shows");
                 assert_eq!(e.mime_types, vec!["x-scheme-handler/spotify"]);
                 assert!(!e.terminal);
                 assert!(!e.no_display);

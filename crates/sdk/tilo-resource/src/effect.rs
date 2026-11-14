@@ -814,9 +814,27 @@ pub enum Answers {
 impl EffectDecl {
     /// The published action of this effect under `operation`, of the
     /// vocabulary `E` it is declared in.
+    ///
+    /// An effect whose fields are all optional runs when a person chooses
+    /// it, asked nothing: a field left out is `None`, which the effect gives
+    /// a meaning ("About"'s `open` left out switches the sheet). Asking
+    /// instead put the first field's help text in the search field. One
+    /// that takes an entry or content still asks for it.
     pub fn spec<E: Effect>(&self, operation: &'static str) -> ActionSpec {
         let build = encoder::<E>(operation, self.id, Bound::None);
-        self.spec_with(operation, self.params.clone(), build)
+        let spec = self.spec_with(operation, self.params.clone(), build);
+        let asks_words = matches!(
+            spec.input(),
+            tilo_actions::ActionInput::Prompted {
+                collects: tilo_actions::Collects::Words,
+                ..
+            }
+        );
+        if asks_words && !self.params.iter().any(|param| param.entry) {
+            spec.with_immediate_per_target()
+        } else {
+            spec
+        }
     }
 
     /// The published action of this effect, as the vocabulary `E` that

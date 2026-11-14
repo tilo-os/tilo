@@ -26,9 +26,9 @@ pub struct HostAppEntry {
     pub name: String,
     /// What kind of app it is ("Text Editor").
     pub generic_name: Option<String>,
-    pub comment: Option<String>,
     pub keywords: Vec<String>,
-    /// Its first category ("Graphics"), which picks the glyph its rows wear.
+    /// Its first main category, named as Tilo's own apps name theirs
+    /// ("Graphics"): the kind its rows say, and the glyph they wear.
     pub category: Option<String>,
     /// Where the machine got it: a Flatpak, or the system's own package.
     pub kind: HostAppKind,
@@ -43,6 +43,15 @@ pub enum HostAppKind {
     /// A distribution package, a locally dropped entry.
     #[default]
     System,
+}
+
+impl HostAppEntry {
+    /// What kind of app a row says it is, as a Tilo app's row does: its
+    /// category ("Network"), else what its entry calls it ("Text Editor").
+    #[must_use]
+    pub fn kind_of_app(&self) -> Option<String> {
+        self.category.clone().or_else(|| self.generic_name.clone())
+    }
 }
 
 impl HostAppKind {
@@ -146,7 +155,7 @@ impl Source for HostApps {
                     provider: self.id().into(),
                     id: app.desktop_id.clone(),
                     title: app.name.clone(),
-                    subtitle: app.generic_name.clone().or_else(|| app.comment.clone()),
+                    subtitle: app.kind_of_app(),
                     facts: vec![app.kind.label()],
                     score,
                     icon: None,
@@ -166,7 +175,6 @@ mod tests {
             desktop_id: "org.gnome.TextEditor.desktop".into(),
             name: "Text Editor".into(),
             generic_name: Some("Editor".into()),
-            comment: None,
             keywords: vec!["gedit".into()],
             category: None,
             kind: HostAppKind::System,
@@ -177,14 +185,14 @@ mod tests {
         HostAppEntry {
             desktop_id: "org.chromium.Chromium.desktop".into(),
             name: "Chromium Web Browser".into(),
-            comment: Some("Access the Internet".into()),
+            category: Some("Network".into()),
             kind: HostAppKind::Flatpak,
             ..HostAppEntry::default()
         }
     }
 
     tilo_test_env::scenario! {
-        fn a_host_app_is_found_says_where_it_came_from_and_can_be_left_out;
+        fn a_host_app_is_found_says_what_it_is_and_where_it_came_from_and_can_be_left_out;
 
         phase a_host_app_is_found_by_name_and_keyword_and_starts_through_the_host;
         {
@@ -209,8 +217,13 @@ mod tests {
                 .into_iter()
                 .next()
                 .expect("the browser is found");
-            assert_eq!(row.subtitle.as_deref(), Some("Access the Internet"));
+            assert_eq!(row.subtitle.as_deref(), Some("Network"), "its kind, as a Tilo app's");
             assert_eq!(row.facts, ["Flatpak".to_owned()]);
+            assert_eq!(
+                apps.query("text editor")[0].subtitle.as_deref(),
+                Some("Editor"),
+                "with no category, what its entry calls it"
+            );
             assert_eq!(
                 apps.query("text editor")[0].facts,
                 ["System".to_owned()],

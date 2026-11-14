@@ -1329,8 +1329,8 @@ impl SessionSearch {
                 tilo_desktop_search::providers::AppEntry {
                     id: format!("{}{}", host_apps::HOST_APP_PREFIX, app.desktop_id),
                     title: app.name.clone(),
-                    category: app.generic_name.clone(),
-                    description: app.comment,
+                    category: app.kind_of_app(),
+                    description: None,
                 }
             }))
             .collect()

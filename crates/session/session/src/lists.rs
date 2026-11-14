@@ -386,9 +386,8 @@ fn machine_search_apps(
             desktop_id: entry.id.clone(),
             name: entry.name.clone(),
             generic_name: entry.generic_name.clone(),
-            comment: entry.comment.clone(),
             keywords: entry.keywords.clone(),
-            category: entry.categories.first().cloned(),
+            category: entry.main_category().map(str::to_owned),
             kind: match entry.source {
                 desktop_entry::EntrySource::Flatpak { .. } => HostAppKind::Flatpak,
                 desktop_entry::EntrySource::Host => HostAppKind::System,

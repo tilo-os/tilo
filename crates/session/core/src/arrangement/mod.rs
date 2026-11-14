@@ -2061,6 +2061,44 @@ mod tests {
         );
     }
 
+    /// Search offers a person the layout's undo once, and none of the actions agents arrange
+    /// with: three windows' places were three identical "Stand a place at a point on the canvas"
+    /// rows under "theme".
+    #[test]
+    fn search_offers_people_no_arranging_internals() {
+        use tilo_desktop_search::Source as _;
+        use tilo_desktop_search::providers::{Published, PublishedActions};
+        let words: super::Words = std::rc::Rc::new(|_, _, fallback| fallback.to_owned());
+        let mut resources = super::resources(&words);
+        for key in ["1", "2", "3"] {
+            resources.push(super::place_actions(key, &words).into_iter().fold(
+                tilo_actions::ResourceSpec::new(key, super::PLACE_KIND, "Notes"),
+                tilo_actions::ResourceSpec::with_action,
+            ));
+        }
+        let published = Published(vec![PublishedActions::of("session", "", &resources)]);
+        let titles = |needle: &str| -> Vec<String> {
+            published
+                .query(needle)
+                .into_iter()
+                .map(|hit| hit.title)
+                .collect()
+        };
+        for needle in ["theme", "place", "canvas", "pin", "close a place"] {
+            assert_eq!(titles(needle), Vec::<String>::new(), "{needle}");
+        }
+        assert_eq!(
+            titles("undo"),
+            ["Undo the last layout change"],
+            "once, on the layout"
+        );
+        assert_eq!(
+            titles("redo"),
+            ["Redo the last layout change"],
+            "once, on the layout"
+        );
+    }
+
     /// A row text typed on the canvas would stand for: what it opens, and what it is.
     fn opening(resource: &str, title: &str, kind: ResourceKind) -> Hit {
         Hit {

@@ -5,7 +5,7 @@
 
 use serde_json::Value as Json;
 use tilo_actions::{
-    ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
+    ActionArgs, ActionContract, ActionParam, ActionSpec, Audience, EncodedAction, ExecutionMode,
     OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
 use tilo_desktop_model::{FloatCorner, FloatPlace, WorkspaceId};
@@ -27,9 +27,9 @@ fn action_word(words: &Words, id: &str, argument: Option<&str>, source: &str) ->
     words(&key, &[], source)
 }
 
-/// The person's layout actions, published as every other action is: a person's own drag, the
-/// palette, a script and an agent all change the layout through them, and the catalogue lists
-/// them. What is already arranged is published per place, strip and row by
+/// The person's layout actions, published as every other action is: a person's own drag, a
+/// script and an agent all change the layout through them, and the catalogue lists them for
+/// agents. What is already arranged is published per place, strip and row by
 /// [`Arrangement::resources`].
 #[must_use]
 pub fn resources(words: &Words) -> Vec<ResourceSpec> {
@@ -52,15 +52,20 @@ pub(super) fn arrangement_resource(words: &Words) -> ResourceSpec {
         .with_action(step_action(words, "redo", "Redo the last layout change"))
 }
 
-/// The record itself, whose actions step its history.
+/// The record itself, whose actions step its history by the record's address: a person is offered
+/// undo and redo once, on the layout.
 pub(super) fn record_resource(words: &Words) -> ResourceSpec {
     ResourceSpec::new(
         RECORD_RESOURCE,
         "shell",
         words("session-resource-layout-history", &[], "Layout history"),
     )
-    .with_action(step_action(words, "undo", "Undo the last layout change"))
-    .with_action(step_action(words, "redo", "Redo the last layout change"))
+    .with_action(
+        step_action(words, "undo", "Undo the last layout change").for_audience(Audience::Agents),
+    )
+    .with_action(
+        step_action(words, "redo", "Redo the last layout change").for_audience(Audience::Agents),
+    )
 }
 
 /// The resource a place's own actions are published on, for the package the session describes: no
@@ -720,7 +725,10 @@ fn step_action(words: &Words, id: &'static str, label: &str) -> ActionSpec {
     spec
 }
 
-/// An immediate effect action `id` that builds an [`ArrangementAction`].
+/// An immediate effect action `id` that builds an [`ArrangementAction`]. It is listed for agents and
+/// scripts, never for a person to pick: a person arranges by dragging and through the window bar,
+/// which submit it by address, and a place's actions name no place a listing could tell apart
+/// (three windows were three identical "Stand a place" rows in search).
 #[expect(
     clippy::expect_used,
     reason = "an arranging action always serializes to JSON"
@@ -749,7 +757,7 @@ pub(super) fn action(
         result: ResultSpec::None,
         ..ActionContract::default()
     };
-    spec
+    spec.for_audience(Audience::Agents)
 }
 
 pub(super) fn required(

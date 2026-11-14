@@ -691,6 +691,21 @@ tilo_test_env::scenario! {
             need(serde_json::json!({ "path": "/tmp/shelf.json" })),
             ActionKind::Outside
         );
+        // Every field optional: a person choosing it exports, asked nothing,
+        // never the path's help text as a line to type. A required field
+        // still asks.
+        assert!(matches!(
+            export.input(),
+            tilo_actions::ActionInput::Immediate(_)
+        ));
+        let show = CardEffect::specs()
+            .into_iter()
+            .find(|spec| spec.id == "show")
+            .unwrap();
+        assert!(matches!(
+            show.input(),
+            tilo_actions::ActionInput::Prompted { .. }
+        ));
     }
 
     phase an_effect_carries_the_tags_its_host_treats_it_by;
