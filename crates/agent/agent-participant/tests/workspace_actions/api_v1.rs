@@ -104,12 +104,32 @@ async fn receiver() -> (
     (url, received)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[test]
+fn a_key_works_through_the_api_on_a_relay_host() {
+    // The story runs a relay host, its API and the sessions for a whole workspace on one thread:
+    // the future it builds is deeper than the stack a test thread is given, so it runs on its own.
+    std::thread::Builder::new()
+        .name("api-v1".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .thread_stack_size(16 << 20)
+                .enable_all()
+                .build()
+                .expect("the API's runtime")
+                .block_on(a_backend_key_works_through_the_api_on_a_relay_host());
+        })
+        .expect("the API thread")
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one backend's story through the API, from its first workspace to deleting it"
 )]
-async fn a_key_works_through_the_api_on_a_relay_host() {
+async fn a_backend_key_works_through_the_api_on_a_relay_host() {
     let on_relay = api_on_relay(ISSUER).await;
     let api = Arc::clone(&on_relay.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);

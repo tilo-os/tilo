@@ -393,6 +393,13 @@ fn runs_of(page: &mut Browser, route: &DocumentRoute) -> Vec<tilo_actions::WorkG
         .collect()
 }
 
+/// The acting key a live presence row stands for: the board names a member by the publisher that
+/// spoke, and a narration names the member it acted as, an agent's spelling its kind
+/// (`agent:<publisher>`).
+fn agent_key(member: &collab_types::presence::Shown) -> String {
+    format!("agent:{}", member.publisher)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn both_routes_decide_every_callers_actions_alike() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -707,7 +714,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
             .collect();
         let all = agents.iter().all(|name| {
             seen.get(name)
-                .is_some_and(|member| narrated.contains(&member.publisher))
+                .is_some_and(|member| narrated.contains(&agent_key(member)))
         });
         if all || Instant::now() >= deadline {
             break (seen, narrated);
@@ -716,7 +723,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
     };
     for name in &agents {
         match seen.get(name) {
-            Some(member) if member.agent && narrated.contains(&member.publisher) => {}
+            Some(member) if member.agent && narrated.contains(&agent_key(member)) => {}
             other => differences.push(format!(
                 "{name}'s run is not seen live: present as {other:?}, narrated as {narrated:?}"
             )),
@@ -990,7 +997,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
             browser
                 .narrated
                 .iter()
-                .any(|(_, work)| work.actor.by.key() == agent.publisher)
+                .any(|(_, work)| work.actor.by.key() == agent_key(agent))
         });
         if agents.len() == 1
             && agents[0].label == "Claude Code"

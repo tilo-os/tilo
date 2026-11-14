@@ -190,7 +190,7 @@ fn an_agent_mount_and_a_person_mount_converge() {
 /// The record's identity alone, as a participant holds it before the
 /// creator's content arrives: the shortest prefix of the creator's history
 /// that names the record.
-fn identity_only(page: &Replica) -> Vec<u8> {
+fn identity_only(page: &Replica, app: &str) -> Vec<u8> {
     use automerge::{ROOT, ReadDoc as _};
     let changes = page
         .read(|doc| {
@@ -216,7 +216,7 @@ fn identity_only(page: &Replica) -> Vec<u8> {
                 });
             named.then(|| prefix.save())
         })
-        .expect("the creator's history names the record")
+        .unwrap_or_else(|| panic!("{app}: the creator's history names the record"))
 }
 
 fn joined(
@@ -280,7 +280,7 @@ fn only_the_creator_seeds_a_record() {
         // Joined before it: the identity alone, then the creator's document.
         // An app may also refuse to launch until the record is initialized
         // (Notes validates it): that writes nothing either.
-        let Some(mut early) = joined(&catalogue, &page, identity_only(&page)) else {
+        let Some(mut early) = joined(&catalogue, &page, identity_only(&page, app)) else {
             continue;
         };
         let whole = page.read(|doc| doc.clone().save()).unwrap();
