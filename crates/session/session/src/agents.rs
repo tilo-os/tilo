@@ -5,9 +5,10 @@
 //! broker admits an agent's session only for the keeper the record names
 //! ([`tilo_broker_core::services::AgentRoster`]). Nothing here keeps state of its own beyond the
 //! record this device has open: who works here is the record's.
-//! The agent door adds a member to that record between two passes, and tells its client it may
-//! join at once: the record is read again there ([`crate::Shared::mcp_member`]), so the broker
-//! lists a member before anyone is told to join as it.
+//! The MCP server adds a member to that record between two passes, and tells its client it may
+//! join at once: the member it added is listed for the broker there
+//! ([`crate::Shared::mcp_member`]) before anyone is told to join as it, and a pass that cannot
+//! read the record keeps that listing.
 //! The person who keeps an agent runs it: the pass hands the agents kept here to the session's
 //! launches ([`Kept`]), which start each one's process — the record is who works, and whose device
 //! runs them.
@@ -45,7 +46,7 @@ pub(crate) struct Kept {
 pub(crate) use crate::search::ListedAgent as Listed;
 
 /// Who keeps each of the workspaces' agents, and what each may spend today,
-/// as the session last read their records: every pass, and when its agent door added a member.
+/// as the session last read their records: every pass, and when its MCP server added a member.
 #[derive(Default)]
 pub(crate) struct Roster {
     listed: Mutex<BTreeMap<String, Vec<tilo_broker_core::services::ListedAgent>>>,
@@ -72,6 +73,21 @@ impl tilo_broker_core::services::AgentRoster for Roster {
     }
 }
 
+impl Roster {
+    /// List `agent` in `workspace` for the broker, as the workspace's record names it: the member
+    /// the MCP server just answered for, which the broker reads before the pass that reads the
+    /// record again.
+    fn list(&self, workspace: &str, agent: tilo_broker_core::services::ListedAgent) {
+        if let Ok(mut held) = self.listed.lock() {
+            let listed = held.entry(workspace.to_owned()).or_default();
+            match listed.iter_mut().find(|kept| kept.id == agent.id) {
+                Some(kept) => *kept = agent,
+                None => listed.push(agent),
+            }
+        }
+    }
+}
+
 /// The workspaces' agents, read from each workspace's record of them.
 pub(crate) struct Agents {
     roster: Arc<Roster>,
@@ -89,9 +105,17 @@ struct Opened {
     /// so its people's reads follow.
     policy: WorkspacePolicy,
     records: WorkspaceRecords,
-    /// `None` where the workspace holds no agents record: this reads one,
-    /// never writes one.
+    /// `None` until it opens: the workspace's agents record, opened once and kept.
     record: Option<WorkspaceRecord<Record>>,
+}
+
+/// What a workspace's record of its agents is to a reader this pass.
+enum Held {
+    /// The workspace holds no agents record: this reads one, never writes one.
+    None,
+    /// The record could not be opened or read now: what it says is not known this pass.
+    Unknown,
+    Open(WorkspaceRecord<Record>),
 }
 
 impl Agents {
@@ -127,28 +151,53 @@ impl Agents {
         workspaces: &[(String, WorkspacePolicy)],
     ) -> (Vec<Kept>, Vec<Listed>) {
         let day = ui::clock::today().to_string();
-        let mut listed: BTreeMap<String, Vec<_>> = BTreeMap::new();
-        let mut spend = BTreeMap::new();
+        // Who keeps each agent, as the broker reads them, started from what it read last: a
+        // workspace whose record cannot be read this pass keeps its listing, so a read that
+        // failed never says an agent it named before is gone.
+        let mut listed: BTreeMap<String, Vec<tilo_broker_core::services::ListedAgent>> = self
+            .roster
+            .listed
+            .lock()
+            .map(|held| held.clone())
+            .unwrap_or_default();
+        listed.retain(|workspace, _| workspaces.iter().any(|(held, _)| held == workspace));
+        // What each agent may spend, kept the same way: a workspace read this pass replaces it.
+        let mut spend: BTreeMap<(String, String), runtime_collab::TaskRunSpend> = self
+            .roster
+            .spend
+            .lock()
+            .map(|held| held.clone())
+            .unwrap_or_default();
+        spend.retain(|(workspace, _), _| workspaces.iter().any(|(held, _)| held == workspace));
         let mut kept = Vec::new();
         let mut every = Vec::new();
         for (workspace, policy) in workspaces {
-            let Some(record) = self.record(workspace, policy, person) else {
+            let record = match self.record(workspace, policy, person) {
+                Held::None => {
+                    listed.remove(workspace);
+                    spend.retain(|(held, _), _| held != workspace);
+                    continue;
+                }
+                // Not readable this pass: what it named stays listed.
+                Held::Unknown => continue,
+                Held::Open(record) => record,
+            };
+            let Some(state) = record.try_get() else {
                 continue;
             };
-            let state = record.get();
+            spend.retain(|(held, _), _| held != workspace);
+            let mut named = Vec::new();
             for agent in state.active() {
                 every.push(Listed {
                     workspace: workspace.clone(),
                     id: agent.id.0.clone(),
                     name: agent.name.clone(),
                 });
-                listed.entry(workspace.clone()).or_default().push(
-                    tilo_broker_core::services::ListedAgent {
-                        id: agent.id.0.clone(),
-                        name: agent.name.clone(),
-                        keeper: agent.keeper.clone(),
-                    },
-                );
+                named.push(tilo_broker_core::services::ListedAgent {
+                    id: agent.id.0.clone(),
+                    name: agent.name.clone(),
+                    keeper: agent.keeper.clone(),
+                });
                 spend.insert(
                     (workspace.clone(), agent.id.0.clone()),
                     runtime_collab::TaskRunSpend {
@@ -167,6 +216,7 @@ impl Agents {
                     });
                 }
             }
+            listed.insert(workspace.clone(), named);
         }
         if let Ok(mut held) = self.roster.listed.lock() {
             *held = listed;
@@ -193,7 +243,7 @@ impl Agents {
             let Some((_, policy)) = workspaces.iter().find(|(held, _)| held == workspace) else {
                 continue;
             };
-            let Some(record) = self.record(workspace, policy, person) else {
+            let Held::Open(record) = self.record(workspace, policy, person) else {
                 continue;
             };
             let counted =
@@ -216,7 +266,9 @@ impl Agents {
         policy: &WorkspacePolicy,
         person: &str,
     ) -> Option<(String, String)> {
-        let record = self.record(workspace, policy, person)?;
+        let Held::Open(record) = self.record(workspace, policy, person) else {
+            return None;
+        };
         let state = record.get();
         state
             .active()
@@ -226,12 +278,7 @@ impl Agents {
 
     /// The workspace's agents record, opened here where it is not, at the grants the pass read: a
     /// workspace that keeps none is given none, so one nobody set an agent up in costs no record.
-    fn record(
-        &self,
-        workspace: &str,
-        policy: &WorkspacePolicy,
-        person: &str,
-    ) -> Option<WorkspaceRecord<Record>> {
+    fn record(&self, workspace: &str, policy: &WorkspacePolicy, person: &str) -> Held {
         let mut open = self.open.borrow_mut();
         if open
             .get(workspace)
@@ -249,12 +296,13 @@ impl Agents {
         });
         if opened.record.is_none() {
             let id = collab_types::workspace_record_id(KIND);
-            let held = opened
-                .records
-                .holds_record(OWNER, &id, KIND)
-                .unwrap_or(false);
-            if !held {
-                return None;
+            match opened.records.holds_record(OWNER, &id, KIND) {
+                Ok(false) => return Held::None,
+                Ok(true) => {}
+                Err(error) => {
+                    tracing::warn!(%error, %workspace, "the workspace's agents are not read");
+                    return Held::Unknown;
+                }
             }
             let permissions = PermissionContext::from_standing(Standing::person(
                 policy.clone(),
@@ -269,7 +317,10 @@ impl Agents {
                 Some(self.wake.handle()),
             );
         }
-        opened.record.clone()
+        match &opened.record {
+            Some(record) => Held::Open(record.clone()),
+            None => Held::Unknown,
+        }
     }
 }
 
@@ -328,35 +379,28 @@ impl crate::Shared {
         }
     }
 
-    /// The person's agent member for the MCP client `client` in `workspace`, as the agent door
+    /// The person's agent member for the MCP client `client` in `workspace`, as the MCP server
     /// admits a connection ([`crate::mcp_server::Members`]): the one the workspace's record of its
-    /// agents lists, else a new one ([`crate::workspace_settings::Feeding::mcp_agent`]), answered
-    /// once the roster the broker reads lists it. The door tells the connection it may join on
-    /// this answer, and the connection joins the broker on a thread of its own, at once: a member
-    /// the record names since this call is one no pass has read, so the records are read again
-    /// here ([`Self::feed_agents`]) rather than on the pass that follows.
+    /// agents lists, else a new one ([`crate::workspace_settings::Feeding::mcp_agent`]), listed
+    /// for the broker as the record names it. The server tells the connection it may join on this
+    /// answer, and the connection joins the broker on a thread of its own, at once — before any
+    /// pass reads the record again — so the member is listed here, from what the record said.
     ///
     /// # Errors
-    /// The member could not be found or added, or the workspace's agents as this session reads
-    /// them still do not list it: the client is refused here, told so, and not at its join.
+    /// The member could not be found or added: the client is refused here, told so, and not at its
+    /// join.
     pub(crate) fn mcp_member(&self, workspace: &str, client: &str) -> Result<String, String> {
-        use tilo_broker_core::services::AgentRoster as _;
-        let agent = self
+        let (agent, name) = self
             .workspace_settings_feed()
             .mcp_agent(workspace, client)?;
-        let roster = self.agents.roster();
-        if roster.keeper(workspace, &agent).is_none() {
-            self.feed_agents();
-        }
-        if roster.keeper(workspace, &agent).is_none() {
-            tracing::warn!(
-                %workspace,
-                %agent,
-                %client,
-                "the workspace's agents as read here do not list a client's agent member"
-            );
-            return Err(tilo_sheets::word("mcp-server-unlisted"));
-        }
+        self.agents.roster().list(
+            workspace,
+            tilo_broker_core::services::ListedAgent {
+                id: agent.clone(),
+                name,
+                keeper: self.person.clone(),
+            },
+        );
         Ok(agent)
     }
 }
@@ -416,14 +460,14 @@ mod tests {
         session
     }
 
-    /// The agent door tells a connection it may join as soon as the session answers it the
+    /// The MCP server tells a connection it may join as soon as the session answers it the
     /// person's agent member for its client, and the connection joins the broker on a thread of
     /// its own, at once. So the answer itself lists the member where the broker reads who works
     /// in the workspace: a member this call added to the workspace's record is the person's in
     /// the broker's roster when the call returns, with no pass of the session in between. On a
     /// machine no agent worked on, that is the first client the person approves.
     #[test]
-    fn a_clients_agent_member_is_listed_for_the_broker_when_the_door_is_answered() {
+    fn a_clients_agent_member_is_listed_for_the_broker_when_the_mcp_server_answers() {
         let _settled = ui::motion::testing::settled();
         let _home = tilo_test_env::TestHome::new().expect("a home");
         let state = tempfile::tempdir().expect("a state directory");
@@ -434,8 +478,8 @@ mod tests {
             "nobody set an agent up in this workspace yet"
         );
 
-        // No pass of the session from here on: what the door is answered is all the broker has
-        // when the connection joins.
+        // Before any pass: what the MCP server answers is all the broker has when the
+        // connection joins.
         let member = session
             .shared
             .mcp_member(STUDIO, "claude-code")
@@ -450,11 +494,22 @@ mod tests {
         );
 
         // The same client again is the same member, found and still listed: no second one.
-        assert_eq!(session.shared.mcp_member(STUDIO, "claude-code"), Ok(member));
+        assert_eq!(
+            session.shared.mcp_member(STUDIO, "claude-code"),
+            Ok(member.clone())
+        );
         assert_eq!(
             roster.listed(STUDIO).len(),
             1,
             "one member for the client, whichever connection it comes in on"
         );
+
+        // The passes that follow read the record again and keep the one listing: the member the
+        // MCP server answered for stays the broker's, and no second row for it appears.
+        session.shared.feed_agents();
+        let listed = roster.listed(STUDIO);
+        assert_eq!(listed.len(), 1, "one member after the pass: {listed:?}");
+        assert_eq!(listed[0].id, member);
+        assert_eq!(listed[0].keeper, PERSON);
     }
 }

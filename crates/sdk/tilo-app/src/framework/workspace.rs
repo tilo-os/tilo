@@ -84,22 +84,28 @@ enum Applied {
 }
 
 impl<P: Resource> Shared<P> {
-    /// Follow the record when it moved. Whether it did.
-    fn refresh(&self) -> bool {
+    /// Follow the record when it moved. Whether it did; `None` when it could not be read now (its
+    /// store in use, or its document not readable yet), and the state is what was last read.
+    fn refresh_now(&self) -> Option<bool> {
         self.apply_waiting();
         let moved = match self.record.read(|doc| self.live.sync(doc)) {
             Some(Ok(moved)) => moved,
             Some(Err(error)) => {
                 tracing::warn!(kind = P::KIND, %error, "workspace record unreadable");
-                false
+                return None;
             }
-            None => false,
+            None => return None,
         };
         let _ = self.live.take_change();
         if moved {
             self.state.set(self.live.get());
         }
-        moved
+        Some(moved)
+    }
+
+    /// Follow the record when it moved. Whether it did.
+    fn refresh(&self) -> bool {
+        self.refresh_now().is_some_and(|moved| moved)
     }
 
     /// Apply the actions that wait for the record, in order, while it can
@@ -362,6 +368,14 @@ impl<P: Resource> WorkspaceRecord<P> {
     pub fn get(&self) -> Rc<P::State> {
         self.shared.refresh();
         self.shared.state.with(Rc::clone)
+    }
+
+    /// The current state, or `None` when the record could not be read now: the state is then what
+    /// was last read, not what the record says now. A caller that keeps what it last read asks
+    /// this rather than [`Self::get`].
+    pub fn try_get(&self) -> Option<Rc<P::State>> {
+        self.shared.refresh_now()?;
+        Some(self.shared.state.with(Rc::clone))
     }
 
     /// Increases whenever the state changes.

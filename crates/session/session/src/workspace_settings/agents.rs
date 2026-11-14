@@ -573,12 +573,12 @@ impl Agents {
         }
     }
 
-    /// Make an agent called `name` as the workspace lets the person, and
-    /// answer its id so the caller can admit it.
+    /// Make an agent called `name` as the workspace lets the person, and answer its id and the
+    /// name the record keeps for it, so the caller can list it and admit it.
     ///
     /// # Errors
-    /// The workspace's agents could not be opened here, no name was typed, or
-    /// Chat's grants refuse the change.
+    /// The workspace's agents could not be opened here, no name was typed, or Chat's grants refuse
+    /// the change.
     pub(crate) fn create(
         &self,
         workspace: Option<&Workspace>,
@@ -586,7 +586,7 @@ impl Agents {
         (name, mcp_client): (&str, Option<&str>),
         model: &str,
         colour: Option<u8>,
-    ) -> Result<String, String> {
+    ) -> Result<(String, String), String> {
         let record = self
             .record(workspace, person)
             .ok_or_else(|| t("workspace-settings-agents-unavailable"))?;
@@ -595,7 +595,7 @@ impl Agents {
         let id = record.get().free_id(name.as_str());
         record
             .invoke(&Record::CREATE_AGENT.with(actions::CreateAgent {
-                name,
+                name: name.clone(),
                 keeper: None,
                 id: Some(id.clone()),
                 model: (!model.is_empty()).then(|| model.to_owned()),
@@ -603,16 +603,17 @@ impl Agents {
                 mcp_client: mcp_client.map(str::to_owned),
             }))
             .map_err(|error| error.to_string())?;
-        Ok(id)
+        Ok((id, name.as_str().to_owned()))
     }
 
-    /// The active agent `person` keeps in `workspace` for the MCP client `client`.
+    /// The active agent `person` keeps in `workspace` for the MCP client `client`, with the name
+    /// the record keeps for it.
     pub(crate) fn of_client(
         &self,
         workspace: Option<&Workspace>,
         person: &UserId,
         client: &str,
-    ) -> Option<String> {
+    ) -> Option<(String, String)> {
         let record = self.record(workspace, person)?;
         let state = record.get();
         state
@@ -620,7 +621,7 @@ impl Agents {
             .find(|agent| {
                 same_person(&agent.keeper, person) && agent.mcp_client.as_deref() == Some(client)
             })
-            .map(|agent| agent.id.0.clone())
+            .map(|agent| (agent.id.0.clone(), agent.name.clone()))
     }
 
     /// Retire the agent `agent`: it takes no new work, and what it did stays

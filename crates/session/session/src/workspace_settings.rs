@@ -655,22 +655,27 @@ impl Feeding<'_> {
         self.tabs
             .agents
             .create(Some(&workspace), self.person, (name, None), model, colour)
+            .map(|(id, _)| id)
     }
 
-    /// The person's agent for the MCP client `client` in the workspace `workspace_id` names:
-    /// the one the workspace's record lists, else a new one. A client the person approved is one
-    /// agent member, whichever connection it comes in on.
+    /// The person's agent for the MCP client `client` in the workspace `workspace_id` names: the
+    /// one the workspace's record lists, else a new one, with the name the record keeps for it. A
+    /// client the person approved is one agent member, whichever connection it comes in on.
     ///
     /// # Errors
     /// The workspace is not open here, or Chat's grants refuse the record.
-    pub(crate) fn mcp_agent(&self, workspace_id: &str, client: &str) -> Result<String, String> {
+    pub(crate) fn mcp_agent(
+        &self,
+        workspace_id: &str,
+        client: &str,
+    ) -> Result<(String, String), String> {
         let workspace = self.workspace(Some(workspace_id))?;
-        if let Some(id) = self
+        if let Some(agent) = self
             .tabs
             .agents
             .of_client(Some(&workspace), self.person, client)
         {
-            return Ok(id);
+            return Ok(agent);
         }
         self.tabs.agents.create(
             Some(&workspace),
