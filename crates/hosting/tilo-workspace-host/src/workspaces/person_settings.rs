@@ -17,10 +17,12 @@
 //! operations refuse one.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use tilo_account_probe::{AccountTester as _, LiveAccountTester};
+use tilo_account_probe::{AccountTester as _, LiveAccountTester, LiveMailSession};
 use tilo_actions::remote::person_accounts::{AddMailAccount, MailAccount, MailAccounts};
+use tilo_actions::remote::person_accounts::{FetchMail, FetchedMail, MarkMail, SendMail};
 use tilo_actions::remote::person_models::{
     Assignment, ModelProviders, OfferedModel, ProviderView, SetAssignment, SetKey,
 };
@@ -83,6 +85,19 @@ impl Workspaces {
             person_accounts::REMOVE => {
                 let account = account_argument(request)?;
                 answer(&remove_mail(&root, &account))
+            }
+            person_accounts::FETCH => {
+                let asking: person_accounts::FetchMail = argument(request, "a folder to read")?;
+                answer(&fetch_mail(&root, asking).await)
+            }
+            person_accounts::SEND => {
+                let sending: person_accounts::SendMail = argument(request, "a message to send")?;
+                answer(&send_mail(&root, sending).await)
+            }
+            person_accounts::MARK => {
+                let marking: person_accounts::MarkMail =
+                    argument(request, "what changed about a message")?;
+                answer(&mark_mail(&root, marking).await)
             }
             _ => Err(ActionHostError::UnknownAction),
         }
@@ -209,6 +224,10 @@ fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
                     .is_some_and(|secret| !secret.password.is_empty()),
             })
             .collect(),
+        active: store
+            .active_id(&accounts::AccountTypeId::from(accounts::email::TYPE_ID))
+            .map(ToString::to_string)
+            .unwrap_or_default(),
     })
 }
 
@@ -248,14 +267,14 @@ async fn add_mail(root: &Path, adding: AddMailAccount) -> Result<MailAccount, St
         smtp_port: adding.outgoing_port,
         smtp_tls: true,
         auth: accounts::email::AuthMethod::Password,
-        import_pending: false,
+        // An account another mail program moved in arrives with its servers
+        // and its identities and no password: it is kept, waiting for the
+        // sign-in its person completes in Settings.
+        import_pending: adding.password.is_empty(),
         password: String::new(),
     };
     if let Some((_, problem)) = config.validate().first() {
         return Err(problem.clone());
-    }
-    if adding.password.is_empty() {
-        return Err("A mail account needs its password".into());
     }
     let mut account = accounts::Account::new(
         accounts::AccountId::from(config.email.clone()),
@@ -268,15 +287,16 @@ async fn add_mail(root: &Path, adding: AddMailAccount) -> Result<MailAccount, St
     }
     account.config = config.to_value().map_err(|error| error.to_string())?;
 
-    let checking = account.clone();
-    let secret = accounts::Secret::password(adding.password.clone());
-    tokio::task::spawn_blocking(move || LiveAccountTester.test(&checking, &secret))
-        .await
-        .map_err(|_| "the mail server check did not finish".to_string())??;
-
-    let mut vault = credentials(root)?;
-    vault.put(&account.id, &accounts::Secret::password(adding.password));
-    vault.try_save()?;
+    if !adding.password.is_empty() {
+        let checking = account.clone();
+        let secret = accounts::Secret::password(adding.password.clone());
+        tokio::task::spawn_blocking(move || LiveAccountTester.test(&checking, &secret))
+            .await
+            .map_err(|_| "the mail server check did not finish".to_string())??;
+        let mut vault = credentials(root)?;
+        vault.put(&account.id, &accounts::Secret::password(adding.password));
+        vault.try_save()?;
+    }
     let mut store = accounts::AccountStore::load_in(root);
     store.upsert(account.clone());
     store.save_in(root).map_err(|error| error.to_string())?;
@@ -300,6 +320,70 @@ fn remove_mail(root: &Path, account: &str) -> Result<MailAccounts, String> {
         vault.try_save()?;
     }
     mail_accounts(root)
+}
+
+/// The account `id` names, with the sign-in its vault keeps: what a page
+/// cannot read for itself, and what the host opens the server's session
+/// with.
+fn account_with_secret(
+    root: &Path,
+    id: &str,
+) -> Result<(accounts::Account, accounts::Secret), String> {
+    let store = accounts::AccountStore::load_in(root);
+    let account = store
+        .get(&accounts::AccountId::from(id.to_owned()))
+        .filter(|account| account.type_id.as_str() == accounts::email::TYPE_ID)
+        .cloned()
+        .ok_or_else(|| "That account is not kept here".to_owned())?;
+    let vault = credentials(root)?;
+    let secret = vault
+        .get(&account.id)
+        .ok_or_else(|| "That account has no sign-in yet".to_owned())?;
+    Ok((account, secret))
+}
+
+/// Read one folder of one account as its server holds it.
+async fn fetch_mail(root: &Path, asking: FetchMail) -> Result<FetchedMail, String> {
+    fetch_with(Arc::new(LiveMailSession), root, asking).await
+}
+
+/// Hand one message to its account's server.
+async fn send_mail(root: &Path, sending: SendMail) -> Result<(), String> {
+    send_with(Arc::new(LiveMailSession), root, sending).await
+}
+
+/// Tell one message's server what changed about it.
+async fn mark_mail(root: &Path, marking: MarkMail) -> Result<(), String> {
+    mark_with(Arc::new(LiveMailSession), root, marking).await
+}
+
+type Session = Arc<dyn tilo_account_probe::MailSession + Send + Sync>;
+
+/// [`fetch_mail`] through `session`, so a test asks a server it stands in
+/// for.
+async fn fetch_with(
+    session: Session,
+    root: &Path,
+    asking: FetchMail,
+) -> Result<FetchedMail, String> {
+    let (account, secret) = account_with_secret(root, &asking.account)?;
+    tokio::task::spawn_blocking(move || session.fetch(&account, &secret, &asking))
+        .await
+        .map_err(|_| "the mail session did not finish".to_string())?
+}
+
+async fn send_with(session: Session, root: &Path, sending: SendMail) -> Result<(), String> {
+    let (account, secret) = account_with_secret(root, &sending.account)?;
+    tokio::task::spawn_blocking(move || session.send(&account, &secret, &sending))
+        .await
+        .map_err(|_| "the mail session did not finish".to_string())?
+}
+
+async fn mark_with(session: Session, root: &Path, marking: MarkMail) -> Result<(), String> {
+    let (account, secret) = account_with_secret(root, &marking.account)?;
+    tokio::task::spawn_blocking(move || session.mark(&account, &secret, &marking))
+        .await
+        .map_err(|_| "the mail session did not finish".to_string())?
 }
 
 /// The providers the workspace keeps, their models and what runs where.
@@ -675,5 +759,227 @@ mod tests {
                 .get(&accounts::AccountId::from("ada@example.test"))
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod mail_session_tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::panic,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// A mail server that answers with the same folder and keeps what it was
+    /// told, so a test sees the host asked with the account's own sign-in.
+    #[derive(Default)]
+    struct Fixture {
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl tilo_account_probe::MailSession for Fixture {
+        fn fetch(
+            &self,
+            account: &accounts::Account,
+            secret: &accounts::Secret,
+            asking: &FetchMail,
+        ) -> Result<FetchedMail, String> {
+            self.asked.lock().unwrap().push(format!(
+                "fetch {} {} with {}",
+                account.id, asking.folder, secret.password
+            ));
+            Ok(FetchedMail {
+                account: asking.account.clone(),
+                folder: asking.folder.clone(),
+                uid_validity: 7,
+                has_older: true,
+                newest_uid: 42,
+                messages: vec![person_accounts_message()],
+                ..FetchedMail::default()
+            })
+        }
+
+        fn send(
+            &self,
+            account: &accounts::Account,
+            secret: &accounts::Secret,
+            sending: &SendMail,
+        ) -> Result<(), String> {
+            self.asked.lock().unwrap().push(format!(
+                "send {} to {} with {}",
+                account.id, sending.to, secret.password
+            ));
+            Ok(())
+        }
+
+        fn mark(
+            &self,
+            account: &accounts::Account,
+            secret: &accounts::Secret,
+            marking: &MarkMail,
+        ) -> Result<(), String> {
+            self.asked.lock().unwrap().push(format!(
+                "mark {} {} with {}",
+                account.id, marking.uid, secret.password
+            ));
+            Ok(())
+        }
+    }
+
+    fn person_accounts_message() -> tilo_actions::remote::person_accounts::FetchedMessage {
+        tilo_actions::remote::person_accounts::FetchedMessage {
+            uid: 42,
+            message_id: Some("42@example.test".into()),
+            from: tilo_actions::remote::person_accounts::MailAddress {
+                name: Some("Ada".into()),
+                email: "ada@example.test".into(),
+            },
+            subject: "Hello".into(),
+            body: "Hi".into(),
+            ..tilo_actions::remote::person_accounts::FetchedMessage::default()
+        }
+    }
+
+    /// A workspace that keeps an account and its sign-in answers a page's
+    /// reads, sends and changes with it, and refuses an account it does not
+    /// keep.
+    #[test]
+    fn a_page_reads_and_sends_through_the_accounts_the_workspace_keeps() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut account = accounts::Account::new(
+            accounts::AccountId::from("ada@example.test"),
+            accounts::email::TYPE_ID,
+        );
+        account.config = serde_json::json!({
+            "email": "ada@example.test",
+            "username": "ada@example.test",
+            "imap_host": "imap.example.test",
+            "imap_port": 993,
+            "smtp_host": "smtp.example.test",
+            "smtp_port": 465
+        });
+        let mut store = accounts::AccountStore::load_in(root);
+        store.upsert(account);
+        store.save_in(root).unwrap();
+        let mut vault = accounts::AccountCredentials::open_in(root).unwrap();
+        vault.put(
+            &accounts::AccountId::from("ada@example.test"),
+            &accounts::Secret::password("fixture-password"),
+        );
+        vault.try_save().unwrap();
+
+        let fixture = Arc::new(Fixture::default());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let listing = mail_accounts(root).unwrap();
+        assert_eq!(listing.accounts.len(), 1);
+        assert!(listing.accounts[0].has_secret);
+
+        let fetched = runtime
+            .block_on(fetch_with(
+                fixture.clone(),
+                root,
+                FetchMail {
+                    account: "ada@example.test".into(),
+                    folder: "inbox".into(),
+                    ..FetchMail::default()
+                },
+            ))
+            .unwrap();
+        assert_eq!(fetched.messages[0].subject, "Hello");
+        assert_eq!(fetched.newest_uid, 42);
+
+        runtime
+            .block_on(send_with(
+                fixture.clone(),
+                root,
+                SendMail {
+                    account: "ada@example.test".into(),
+                    to: "bob@example.test".into(),
+                    ..SendMail::default()
+                },
+            ))
+            .unwrap();
+        runtime
+            .block_on(mark_with(
+                fixture.clone(),
+                root,
+                MarkMail {
+                    account: "ada@example.test".into(),
+                    folder: "inbox".into(),
+                    uid: 42,
+                    uid_validity: 7,
+                    read: Some(true),
+                    ..MarkMail::default()
+                },
+            ))
+            .unwrap();
+
+        let asked = fixture.asked.lock().unwrap().clone();
+        assert_eq!(
+            asked,
+            vec![
+                "fetch ada@example.test inbox with fixture-password",
+                "send ada@example.test to bob@example.test with fixture-password",
+                "mark ada@example.test 42 with fixture-password",
+            ]
+        );
+
+        let unknown = runtime
+            .block_on(fetch_with(
+                fixture,
+                root,
+                FetchMail {
+                    account: "eve@example.test".into(),
+                    folder: "inbox".into(),
+                    ..FetchMail::default()
+                },
+            ))
+            .unwrap_err();
+        assert!(unknown.contains("not kept here"), "{unknown}");
+    }
+
+    /// An account kept without its sign-in reads nothing and sends nothing:
+    /// the host says so instead of opening a session with no password.
+    #[test]
+    fn an_account_without_its_sign_in_reaches_no_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut account = accounts::Account::new(
+            accounts::AccountId::from("ada@example.test"),
+            accounts::email::TYPE_ID,
+        );
+        account.config = serde_json::json!({
+            "email": "ada@example.test",
+            "username": "ada@example.test",
+            "imap_host": "imap.example.test"
+        });
+        let mut store = accounts::AccountStore::load_in(root);
+        store.upsert(account);
+        store.save_in(root).unwrap();
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let refused = runtime
+            .block_on(fetch_with(
+                Arc::new(Fixture::default()),
+                root,
+                FetchMail {
+                    account: "ada@example.test".into(),
+                    folder: "inbox".into(),
+                    ..FetchMail::default()
+                },
+            ))
+            .unwrap_err();
+        assert!(refused.contains("no sign-in"), "{refused}");
     }
 }

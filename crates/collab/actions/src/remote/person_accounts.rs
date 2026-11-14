@@ -7,6 +7,12 @@
 //! Nothing here carries a secret back: a reading names an account's address
 //! and its servers, never its password.
 //!
+//! A page that reaches no mail server reads and sends its mail through the
+//! same host: [`FETCH`] answers a folder as the server holds it, [`SEND`]
+//! hands a message to its server, and [`MARK`] tells a server what the
+//! reader changed about a message. The host opens each session with the
+//! secret its vault keeps, so nothing in this vocabulary carries one.
+//!
 //! The same actions answer a device that keeps its own accounts, so the page
 //! and the device read and change accounts through one vocabulary.
 
@@ -26,6 +32,15 @@ pub const ADD_MAIL: &str = "add-mail";
 /// Remove a mail account and its secret (`account`), answering the accounts
 /// that remain as a [`MailAccounts`].
 pub const REMOVE: &str = "remove";
+/// Fetch one folder of one account ([`FetchMail`]), answering what the
+/// server holds as a [`FetchedMail`].
+pub const FETCH: &str = "fetch";
+/// Send a message through an account ([`SendMail`]), answering nothing: the
+/// message left, or the reason it did not.
+pub const SEND: &str = "send";
+/// Tell one account's server what changed about a message ([`MarkMail`]):
+/// read, starred, moved or removed.
+pub const MARK: &str = "mark";
 
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
@@ -58,6 +73,10 @@ pub struct MailAccount {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MailAccounts {
     pub accounts: Vec<MailAccount>,
+    /// The account the person chose last, when the store names one; the
+    /// first account otherwise.
+    #[serde(default)]
+    pub active: String,
 }
 
 /// A mail account to add. The password travels here and nowhere back: the
@@ -101,6 +120,164 @@ const fn default_imaps_port() -> u16 {
 
 const fn default_submissions_port() -> u16 {
     465
+}
+
+/// One address as mail carries it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MailAddress {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub email: String,
+}
+
+/// A file a message carries beside its words.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MailAttachment {
+    pub filename: String,
+    /// The part's media type.
+    pub mime: String,
+    /// Its size in bytes.
+    pub size: u64,
+    /// The `Content-ID` of a part the message's HTML shows in place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_id: Option<String>,
+}
+
+/// One message as a server holds it, read by the host that keeps the
+/// account.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FetchedMessage {
+    /// The server's `UID`, which names the message within its folder.
+    pub uid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
+    pub from: MailAddress,
+    #[serde(default)]
+    pub to: Vec<MailAddress>,
+    #[serde(default)]
+    pub cc: Vec<MailAddress>,
+    pub subject: String,
+    /// The message as plain text.
+    pub body: String,
+    /// The `text/html` part, when the message really carried one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html_body: Option<String>,
+    #[serde(default)]
+    pub attachments: Vec<MailAttachment>,
+    /// When it was sent, in minutes since the Unix epoch.
+    pub minutes: i64,
+    pub read: bool,
+    pub starred: bool,
+}
+
+/// What the reader did to a message the server no longer reports as such.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MailFlag {
+    pub uid: u32,
+    pub read: bool,
+    pub starred: bool,
+}
+
+/// Ask one folder of one account, by its key (`inbox`, `sent`, …).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FetchMail {
+    /// The account's id, as [`LIST`] names it.
+    pub account: String,
+    /// The folder's key: `inbox`, `sent`, `drafts`, `archive`, `trash` or
+    /// `junk`.
+    pub folder: String,
+    /// The newest `UID` the reader already holds of this folder, and the
+    /// validity it was read under: what is newer is what arrived. Absent
+    /// for a folder read for the first time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_uid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_uid_validity: Option<u32>,
+}
+
+/// A folder as its server answered it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FetchedMail {
+    /// The account's id, as the request named it.
+    pub account: String,
+    /// The folder's key, as the request named it.
+    pub folder: String,
+    pub uid_validity: u32,
+    /// Whether the folder started over: its validity changed, so nothing
+    /// the reader held of it is there any more.
+    pub reset: bool,
+    /// Whether the server holds messages older than the ones answered.
+    pub has_older: bool,
+    /// The newest `UID` in the folder, which the next read continues after.
+    pub newest_uid: u32,
+    pub messages: Vec<FetchedMessage>,
+    /// The messages the reader already holds whose read or starred state
+    /// the server reports differently.
+    #[serde(default)]
+    pub flags: Vec<MailFlag>,
+}
+
+/// A message to send through one of the person's accounts. The host writes
+/// it as mail and hands it to the server; nothing of it comes back.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SendMail {
+    /// The account's id, as [`LIST`] names it.
+    pub account: String,
+    /// The name and address it is sent as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_name: Option<String>,
+    pub from_address: String,
+    /// Recipients, comma-separated.
+    pub to: String,
+    #[serde(default)]
+    pub cc: String,
+    /// Blind recipients: they receive it, and no copy carries their names.
+    #[serde(default)]
+    pub bcc: String,
+    pub subject: String,
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html_body: Option<String>,
+    /// The `Message-ID` to write, so a reply joins its conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
+    #[serde(default)]
+    pub references: Vec<String>,
+}
+
+/// What one message's server is told.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MarkMail {
+    /// The account's id, as [`LIST`] names it.
+    pub account: String,
+    /// The folder key the message was read in.
+    pub folder: String,
+    pub uid: u32,
+    pub uid_validity: u32,
+    /// Its read state, when that changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read: Option<bool>,
+    /// Its starred state, when that changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starred: Option<bool>,
+    /// The folder key it moves to, when it moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_folder: Option<String>,
+    /// Whether it is removed for good.
+    #[serde(default)]
+    pub delete: bool,
 }
 
 #[cfg(test)]
@@ -168,5 +345,69 @@ mod tests {
         .unwrap();
         assert_eq!(adding.incoming_port, 993);
         assert_eq!(adding.outgoing_port, 465);
+    }
+
+    /// A read folder says what arrived and which of the reader's messages
+    /// its server holds differently; a first read names no window.
+    #[test]
+    fn a_folder_read_names_its_window_and_answers_what_arrived() {
+        let asking: FetchMail = serde_json::from_value(serde_json::json!({
+            "account": "ada@example.com",
+            "folder": "inbox",
+        }))
+        .unwrap();
+        assert_eq!(asking.known_uid, None);
+        assert_eq!(asking.known_uid_validity, None);
+
+        let answered = FetchedMail {
+            account: "ada@example.com".into(),
+            folder: "inbox".into(),
+            uid_validity: 7,
+            reset: false,
+            has_older: true,
+            newest_uid: 42,
+            messages: vec![FetchedMessage {
+                uid: 42,
+                message_id: Some("42@example.com".into()),
+                from: MailAddress {
+                    name: Some("Ada".into()),
+                    email: "ada@example.com".into(),
+                },
+                subject: "Hello".into(),
+                body: "Hi".into(),
+                minutes: 100,
+                ..FetchedMessage::default()
+            }],
+            flags: vec![MailFlag {
+                uid: 41,
+                read: true,
+                starred: false,
+            }],
+        };
+        let json = serde_json::to_value(&answered).unwrap();
+        assert_eq!(json["newestUid"], serde_json::json!(42));
+        assert_eq!(json["messages"][0]["uid"], serde_json::json!(42));
+        assert_eq!(json["flags"][0]["read"], serde_json::json!(true));
+    }
+
+    /// A message to send names its account and whom it goes to, and its
+    /// blind recipients are a field of their own, never folded into a copy
+    /// header the server would show the others.
+    #[test]
+    fn a_message_to_send_carries_its_blind_recipients_apart() {
+        let sending: SendMail = serde_json::from_value(serde_json::json!({
+            "account": "ada@example.com",
+            "fromAddress": "ada@example.com",
+            "to": "bob@example.com",
+            "bcc": "carl@example.com",
+            "subject": "Hello",
+            "body": "Hi",
+        }))
+        .unwrap();
+        assert_eq!(sending.cc, "");
+        assert_eq!(sending.bcc, "carl@example.com");
+        assert!(sending.references.is_empty());
+        let printed = format!("{sending:?}");
+        assert!(printed.contains("ada@example.com"), "{printed}");
     }
 }

@@ -1,0 +1,594 @@
+//! Mail's engine, carried by the host that keeps the account.
+//!
+//! A page opens no sockets and holds no account secret, so its window does
+//! not reach a mail server itself. The host that runs the workspace keeps
+//! the person's accounts and their sign-ins, so it reads folders, sends and
+//! tells servers what changed through the `tilo.accounts` actions
+//! ([`person_accounts`]). This is the page's side of that: it takes the
+//! window's engine requests, asks the host, and answers the window with the
+//! same events a device's engine produces — so Mail behaves the same
+//! wherever it runs, and the account has one store.
+
+use std::sync::mpsc::{self, Receiver, Sender};
+
+use ui::tilo_actions::remote::{
+    InvokeArgument, person_accounts,
+    person_accounts::{FetchMail, FetchedMail, MailAccount, MailAccounts, MarkMail, SendMail},
+};
+use ui::{Arrival, InvocationCall, RemoteActions};
+
+use super::{EngineEvent, EngineHandle, EngineRequest};
+use crate::model::{Addr, Attachment, Folder, Message, MessageId, ServerPlace};
+use crate::sync::Synced;
+
+/// How long the page trusts what it read of the person's accounts before
+/// asking the host again: an account added in another tab shows here too.
+const ACCOUNTS_FRESH: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// One request asked of the host, and where its answer goes.
+struct Asked {
+    request: EngineRequest,
+    call: InvocationCall,
+}
+
+/// The page's end of the host's mail session.
+pub(crate) struct HostMail {
+    remote: RemoteActions,
+    requests: Receiver<EngineRequest>,
+    events: Sender<EngineEvent>,
+    asking: Vec<Asked>,
+    /// The accounts the host answered since the last read, with the one the
+    /// person chose last.
+    accounts: Option<MailAccounts>,
+    listing: Option<InvocationCall>,
+    listed_at: Option<ui::time::Instant>,
+}
+
+/// A window with the host's mail session as its engine: what the window
+/// posts is asked of the host, and what the host answers is the window's.
+pub(super) fn engine() -> (EngineHandle, HostMail) {
+    let (tx, requests) = mpsc::channel();
+    let (events, rx) = mpsc::channel();
+    let mut host = HostMail {
+        remote: RemoteActions::current(),
+        requests,
+        events,
+        asking: Vec::new(),
+        accounts: None,
+        listing: None,
+        listed_at: None,
+    };
+    host.ask_for_accounts();
+    (EngineHandle { tx, rx }, host)
+}
+
+impl HostMail {
+    fn ask_for_accounts(&mut self) {
+        self.listing = Some(self.remote.invoke(
+            person_accounts::target(person_accounts::LIST),
+            InvokeArgument::None,
+            None,
+        ));
+        self.listed_at = Some(ui::time::Instant::now());
+    }
+
+    /// The accounts the host answered since the last read.
+    pub(super) fn take_accounts(&mut self) -> Option<MailAccounts> {
+        self.accounts.take()
+    }
+
+    /// Take every request the window posted and every answer the host gave.
+    /// Whether anything changed.
+    pub(super) fn poll(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok(request) = self.requests.try_recv() {
+            changed = true;
+            if let Some((target, argument)) = asking(&request) {
+                let call = self.remote.invoke(target, argument, None);
+                self.asking.push(Asked { request, call });
+            } else {
+                // Nothing the host cannot do: what the window keeps itself
+                // is done, and nothing reaches a server.
+                let done = match &request {
+                    // The host keeps the sign-in, so the account is signed
+                    // in as soon as the window asks.
+                    EngineRequest::Connect {
+                        request_id,
+                        account,
+                    } => EngineEvent::Connected {
+                        request_id: *request_id,
+                        account_id: account.email.clone(),
+                    },
+                    EngineRequest::SaveDraft { .. } | EngineRequest::Watch { .. } => {
+                        EngineEvent::Completed {
+                            request_id: request.request_id(),
+                            kind: request.kind(),
+                        }
+                    }
+                    EngineRequest::Search {
+                        request_id,
+                        account,
+                        ..
+                    } => EngineEvent::Found {
+                        request_id: *request_id,
+                        account_id: account.email.clone(),
+                        messages: Vec::new(),
+                    },
+                    _ => EngineEvent::Error {
+                        request_id: request.request_id(),
+                        kind: request.kind(),
+                        context: "host".into(),
+                        message: "this window's host does not offer that".into(),
+                    },
+                };
+                let _ = self.events.send(done);
+            }
+        }
+        let mut still = Vec::new();
+        for asked in std::mem::take(&mut self.asking) {
+            match answered(&asked.call) {
+                Some(Ok(value)) => {
+                    changed = true;
+                    self.answer(&asked.request, value);
+                }
+                Some(Err(reason)) => {
+                    changed = true;
+                    let _ = self.events.send(EngineEvent::Error {
+                        request_id: asked.request.request_id(),
+                        kind: asked.request.kind(),
+                        context: "host".into(),
+                        message: reason,
+                    });
+                }
+                None => still.push(asked),
+            }
+        }
+        self.asking = still;
+        if let Some(listing) = &self.listing {
+            if let Some(outcome) = answered(listing) {
+                changed = true;
+                self.listing = None;
+                if let Ok(listed) = outcome
+                    && let Ok(accounts) = serde_json::from_value::<MailAccounts>(listed)
+                {
+                    self.accounts = Some(accounts);
+                }
+            }
+        } else if self
+            .listed_at
+            .is_none_or(|at| at + ACCOUNTS_FRESH <= ui::time::Instant::now())
+        {
+            self.ask_for_accounts();
+        }
+        changed
+    }
+
+    /// Answer one request with what the host said.
+    fn answer(&self, request: &EngineRequest, value: serde_json::Value) {
+        let event = match &request {
+            EngineRequest::Connect {
+                request_id,
+                account,
+            } => EngineEvent::Connected {
+                request_id: *request_id,
+                account_id: account.email.clone(),
+            },
+            EngineRequest::Fetch {
+                request_id,
+                account,
+                folder,
+                ..
+            } => match serde_json::from_value::<FetchedMail>(value) {
+                Ok(fetched) => EngineEvent::Fetched {
+                    request_id: *request_id,
+                    account_id: account.email.clone(),
+                    folder: Folder::from_key(&fetched.folder).unwrap_or(*folder),
+                    synced: synced(fetched, &account.email),
+                },
+                Err(error) => EngineEvent::Error {
+                    request_id: *request_id,
+                    kind: request.kind(),
+                    context: "host".into(),
+                    message: format!("the host's answer was not a folder: {error}"),
+                },
+            },
+            EngineRequest::Send { request_id, .. } => EngineEvent::Sent {
+                request_id: *request_id,
+                wire_bytes: 0,
+            },
+            EngineRequest::StoreFlag { request_id, .. }
+            | EngineRequest::Move { request_id, .. }
+            | EngineRequest::Purge { request_id, .. }
+            | EngineRequest::OAuthAuthorize { request_id, .. }
+            | EngineRequest::SaveDraft { request_id, .. }
+            | EngineRequest::Watch { request_id, .. }
+            | EngineRequest::Search { request_id, .. } => EngineEvent::Completed {
+                request_id: *request_id,
+                kind: request.kind(),
+            },
+        };
+        let _ = self.events.send(event);
+    }
+}
+
+/// What the host is asked for `request`, when it is the host's to do.
+fn asking(
+    request: &EngineRequest,
+) -> Option<(tilo_actions::remote::RemoteActionTarget, InvokeArgument)> {
+    let (action, argument) = match request {
+        EngineRequest::Connect { .. }
+        | EngineRequest::Watch { .. }
+        | EngineRequest::SaveDraft { .. }
+        | EngineRequest::Search { .. }
+        | EngineRequest::OAuthAuthorize { .. } => return None,
+        EngineRequest::Fetch {
+            account,
+            folder,
+            want,
+            ..
+        } => {
+            // A window that wants older mail asks the newest page again:
+            // what it holds is what it scrolls, and a page of mail older
+            // than the one on screen stays on the device that keeps it.
+            let known = match want {
+                crate::sync::Want::Latest { known } => *known,
+                crate::sync::Want::Older { .. } => None,
+            };
+            let asking = FetchMail {
+                account: account.email.clone(),
+                folder: folder.as_key().to_owned(),
+                known_uid: known.map(|window| window.newest),
+                known_uid_validity: known.map(|window| window.uid_validity),
+            };
+            (person_accounts::FETCH, map(&asking)?)
+        }
+        EngineRequest::StoreFlag {
+            account, message, ..
+        } => {
+            let at = message.server?;
+            let marking = MarkMail {
+                account: account.email.clone(),
+                folder: at.folder.as_key().to_owned(),
+                uid: at.uid,
+                uid_validity: at.uid_validity,
+                read: Some(message.read),
+                starred: Some(message.starred),
+                ..MarkMail::default()
+            };
+            (person_accounts::MARK, map(&marking)?)
+        }
+        EngineRequest::Move {
+            account,
+            message,
+            to,
+            ..
+        } => {
+            let at = message.server?;
+            let marking = MarkMail {
+                account: account.email.clone(),
+                folder: at.folder.as_key().to_owned(),
+                uid: at.uid,
+                uid_validity: at.uid_validity,
+                to_folder: Some(to.as_key().to_owned()),
+                ..MarkMail::default()
+            };
+            (person_accounts::MARK, map(&marking)?)
+        }
+        EngineRequest::Purge {
+            account, message, ..
+        } => {
+            let at = message.server?;
+            let marking = MarkMail {
+                account: account.email.clone(),
+                folder: at.folder.as_key().to_owned(),
+                uid: at.uid,
+                uid_validity: at.uid_validity,
+                delete: true,
+                ..MarkMail::default()
+            };
+            (person_accounts::MARK, map(&marking)?)
+        }
+        EngineRequest::Send { account, draft, .. } => {
+            if !draft.attachments.is_empty() {
+                return None;
+            }
+            let sending = SendMail {
+                account: account.email.clone(),
+                from_name: Some(account.display_name.clone()).filter(|name| !name.is_empty()),
+                from_address: draft
+                    .sender
+                    .as_ref()
+                    .map(|sender| sender.email.clone())
+                    .filter(|email| !email.is_empty())
+                    .unwrap_or_else(|| account.email.clone()),
+                to: draft.to.clone(),
+                cc: draft.cc.clone(),
+                bcc: draft.bcc.clone(),
+                subject: draft.subject.clone(),
+                body: draft.body.clone(),
+                html_body: draft.html_body.clone(),
+                message_id: draft.wire.message_id.clone(),
+                in_reply_to: draft.wire.in_reply_to.clone(),
+                references: draft.wire.references.clone(),
+            };
+            (person_accounts::SEND, map(&sending)?)
+        }
+    };
+    Some((person_accounts::target(action), argument))
+}
+
+fn map(argument: &impl serde::Serialize) -> Option<InvokeArgument> {
+    match serde_json::to_value(argument).ok()? {
+        serde_json::Value::Object(map) => Some(InvokeArgument::Json(map)),
+        _ => None,
+    }
+}
+
+/// What the host answered, once it has.
+fn answered(call: &InvocationCall) -> Option<Result<serde_json::Value, String>> {
+    use ui::tilo_actions::InvocationUpdate;
+    match call.get() {
+        Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => {
+            Some(Ok(output.value.unwrap_or(serde_json::Value::Null)))
+        }
+        Arrival::Ready(InvocationUpdate::Failed { error, .. }) => Some(Err(error.message)),
+        Arrival::Ready(InvocationUpdate::Cancelled { message, .. }) => {
+            Some(Err(message.unwrap_or_else(|| {
+                "the request to the host was cancelled".into()
+            })))
+        }
+        Arrival::Failed(error) => Some(Err(error.to_string())),
+        Arrival::Ready(_) | Arrival::Pending { .. } => None,
+    }
+}
+
+/// A folder the host read, as the window's engine reports one.
+fn synced(fetched: FetchedMail, account: &str) -> Synced {
+    let folder = Folder::from_key(&fetched.folder).unwrap_or_default();
+    let messages: Vec<Message> = fetched
+        .messages
+        .into_iter()
+        .map(|message| {
+            let at = ServerPlace {
+                folder,
+                uid: message.uid,
+                uid_validity: fetched.uid_validity,
+            };
+            Message {
+                id: message_id(&message),
+                rfc_message_id: message.message_id,
+                in_reply_to: message.in_reply_to,
+                from: Addr::new(message.from.name.unwrap_or_default(), message.from.email),
+                to: message
+                    .to
+                    .into_iter()
+                    .map(|address| Addr::new(address.name.unwrap_or_default(), address.email))
+                    .collect(),
+                cc: message
+                    .cc
+                    .into_iter()
+                    .map(|address| Addr::new(address.name.unwrap_or_default(), address.email))
+                    .collect(),
+                subject: message.subject,
+                body: message.body,
+                html_body: message.html_body,
+                attachments: message
+                    .attachments
+                    .into_iter()
+                    .map(|attachment| Attachment {
+                        filename: attachment.filename,
+                        mime: attachment.mime,
+                        size: attachment.size,
+                        hydrated: false,
+                        content_id: None,
+                        content: Vec::new(),
+                        kept: false,
+                        inline_id: attachment.inline_id,
+                    })
+                    .collect(),
+                timestamp_min: message.minutes,
+                read: message.read,
+                starred: message.starred,
+                folder,
+                labels: Vec::new(),
+                account: account.to_owned(),
+                server: Some(at),
+            }
+        })
+        .collect();
+    let window = messages
+        .iter()
+        .filter_map(|message| message.server.map(|at| at.uid))
+        .fold(None::<(u32, u32)>, |window, uid| match window {
+            None => Some((uid, uid)),
+            Some((oldest, newest)) => Some((oldest.min(uid), newest.max(uid))),
+        });
+    Synced {
+        uid_validity: fetched.uid_validity,
+        reset: fetched.reset,
+        messages,
+        flags: fetched
+            .flags
+            .into_iter()
+            .map(|flag| (flag.uid, flag.read, flag.starred))
+            .collect(),
+        window,
+        has_older: Some(fetched.has_older),
+        originals: Vec::new(),
+    }
+}
+
+/// The id the window keeps a message under: the same one a device derives
+/// from its `Message-ID`, so both windows agree on a message.
+fn message_id(message: &person_accounts::FetchedMessage) -> MessageId {
+    message
+        .message_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .map_or_else(uuid::Uuid::new_v4, crate::transport::stable_message_id)
+}
+
+/// The fields a window shows of one account the host keeps, without any
+/// secret: the host opens the sessions itself.
+pub(super) fn account(listed: &MailAccount) -> crate::account::Account {
+    let mut account = crate::account::Account::new(crate::model::AccountConfig {
+        display_name: listed.display_name.clone(),
+        email: listed.address.clone(),
+        username: listed.address.clone(),
+        imap_host: listed.incoming_host.clone(),
+        imap_port: listed.incoming_port,
+        imap_tls: true,
+        smtp_host: listed.outgoing_host.clone(),
+        smtp_port: listed.outgoing_port,
+        smtp_tls: true,
+        auth: crate::model::AuthMethod::Password,
+        import_pending: false,
+        password: String::new(),
+    });
+    account.id.clone_from(&listed.id);
+    account
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::panic,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use std::sync::Arc;
+
+    use serde_json::json;
+    use ui::tilo_actions::ActionOutput;
+    use ui::tilo_actions::remote::{
+        Caller, InvocationReceipt, Pending as HostPending, ReceiptStatus, TestHost,
+    };
+
+    use super::*;
+
+    fn host() -> TestHost {
+        TestHost::new().answering(|_, request| {
+            let value = match request.target.address.action.as_str() {
+                person_accounts::LIST => json!({
+                    "accounts": [{
+                        "id": "ada@example.test",
+                        "address": "ada@example.test",
+                        "displayName": "Ada",
+                        "incomingHost": "imap.example.test",
+                        "incomingPort": 993,
+                        "outgoingHost": "smtp.example.test",
+                        "outgoingPort": 465,
+                        "hasSecret": true
+                    }],
+                    "active": "ada@example.test"
+                }),
+                person_accounts::FETCH => json!({
+                    "account": "ada@example.test",
+                    "folder": "inbox",
+                    "uidValidity": 7,
+                    "reset": true,
+                    "hasOlder": false,
+                    "newestUid": 42,
+                    "messages": [{
+                        "uid": 42,
+                        "messageId": "42@example.test",
+                        "from": {"name": "Ada", "email": "ada@example.test"},
+                        "to": [{"email": "bob@example.test"}],
+                        "cc": [],
+                        "subject": "Hello",
+                        "body": "Hi",
+                        "minutes": 100,
+                        "read": false,
+                        "starred": false
+                    }],
+                    "flags": []
+                }),
+                _ => serde_json::Value::Null,
+            };
+            HostPending::ready(Ok(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Completed {
+                    output: ActionOutput {
+                        value: Some(value),
+                        resources: Vec::new(),
+                    },
+                },
+            }))
+        })
+    }
+
+    /// A page window's accounts and mail come from the host that keeps
+    /// them, and the window's engine events are the host's answers.
+    #[test]
+    fn a_window_reads_its_accounts_and_mail_through_the_host() {
+        let serving = Arc::new(host());
+        let _served = RemoteActions::enter(serving, Caller::local_person("ada"));
+        let (handle, mut mail) = engine();
+
+        assert!(mail.poll());
+        let listed = mail
+            .take_accounts()
+            .expect("the host answered its accounts");
+        let account = account(&listed.accounts[0]);
+        assert_eq!(account.id, "ada@example.test");
+        assert_eq!(account.config.email, "ada@example.test");
+        assert!(account.config.password.is_empty());
+
+        let config = account.config;
+        handle
+            .tx
+            .send(EngineRequest::connect(config.clone()))
+            .unwrap();
+        handle
+            .tx
+            .send(EngineRequest::fetch(config, Folder::Inbox))
+            .unwrap();
+        assert!(mail.poll());
+
+        let events: Vec<EngineEvent> = std::iter::from_fn(|| handle.rx.try_recv().ok()).collect();
+        assert!(matches!(
+            events.first(),
+            Some(EngineEvent::Connected { account_id, .. }) if account_id == "ada@example.test"
+        ));
+        let fetched = events
+            .iter()
+            .find_map(|event| match event {
+                EngineEvent::Fetched { folder, synced, .. } => Some((folder, synced)),
+                _ => None,
+            })
+            .expect("the host's folder read reaches the window");
+        assert_eq!(*fetched.0, Folder::Inbox);
+        assert!(fetched.1.reset);
+        assert_eq!(fetched.1.uid_validity, 7);
+        assert_eq!(fetched.1.messages[0].subject, "Hello");
+        assert_eq!(fetched.1.messages[0].from.email, "ada@example.test");
+        assert_eq!(fetched.1.messages[0].server.map(|at| at.uid), Some(42));
+    }
+
+    /// A send written in the page names the account and whom it goes to,
+    /// and carries no secret: the host signs in with the one it keeps.
+    #[test]
+    fn a_send_names_its_account_and_never_a_secret() {
+        let (target, argument) = asking(&EngineRequest::Send {
+            request_id: uuid::Uuid::new_v4(),
+            account: crate::model::AccountConfig {
+                email: "ada@example.test".into(),
+                ..crate::model::AccountConfig::default()
+            },
+            draft: Box::new(crate::model::Draft {
+                to: "bob@example.test".into(),
+                subject: "Hello".into(),
+                body: "Hi".into(),
+                ..crate::model::Draft::default()
+            }),
+        })
+        .expect("a send is the host's");
+        assert_eq!(target.address.action, person_accounts::SEND);
+        let InvokeArgument::Json(map) = argument else {
+            panic!("a send's arguments are a map");
+        };
+        assert!(!map.contains_key("password"), "{map:?}");
+        assert_eq!(map["to"], json!("bob@example.test"));
+    }
+}

@@ -25,6 +25,14 @@ rustls.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time"] }
 tokio-rustls.workspace = true
 serde_json.workspace = true
+# The vocabulary a host's mail actions carry: what a folder read answers and
+# what a send is told.
+tilo-actions = { path = "../../collab/actions" }
+futures-util.workspace = true
+# Message construction and MIME parsing, the versions Mail builds them with.
+mail-parser = "0.11.4"
+mail-builder = "0.4.4"
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs", "tokio1"] }
 # A deadline that is the same clock on every host, a page included.
 web-time = "1"
 

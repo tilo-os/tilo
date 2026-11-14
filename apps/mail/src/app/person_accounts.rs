@@ -200,3 +200,104 @@ fn keep_released_secrets(
         }
     }
 }
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl MailApp {
+    /// Take what the host answered about the person's accounts and the
+    /// window's asks, so the mailbox follows the store the host keeps.
+    pub(super) fn pump_host_mail(&mut self) {
+        let Some(host) = &mut self.host_mail else {
+            return;
+        };
+        let changed = host.poll();
+        if let Some(listed) = host.take_accounts() {
+            self.adopt_host_accounts(&listed);
+        }
+        if changed {
+            self.dirty = true;
+        }
+    }
+
+    /// The accounts stay where the host keeps them: this window shows what
+    /// it answered, and asks the host for everything that reaches a server.
+    fn adopt_host_accounts(
+        &mut self,
+        listed: &ui::tilo_actions::remote::person_accounts::MailAccounts,
+    ) {
+        let mut store = AccountStore::new();
+        for listed in &listed.accounts {
+            let mut account = super::host_mail::account(listed);
+            if let Some(previous) = self
+                .shared
+                .borrow()
+                .accounts
+                .accounts
+                .iter()
+                .find(|previous| previous.id == account.id)
+            {
+                account.collapsed = previous.collapsed;
+            }
+            store.accounts.push(account);
+        }
+        if let Some(active) = store
+            .accounts
+            .iter()
+            .position(|account| account.id == listed.active)
+        {
+            store.active = active;
+        }
+        let (changed, _removed) = {
+            let mut st = self.shared.borrow_mut();
+            let shown: Vec<(String, crate::model::AccountConfig)> = st
+                .accounts
+                .accounts
+                .iter()
+                .map(|account| (account.id.clone(), account.config.clone()))
+                .collect();
+            let same = shown.len() == store.accounts.len()
+                && shown.iter().zip(&store.accounts).all(|(shown, now)| {
+                    shown.0 == now.id
+                        && shown.1.email == now.config.email
+                        && shown.1.imap_host == now.config.imap_host
+                        && shown.1.smtp_host == now.config.smtp_host
+                });
+            let removed: Vec<String> = shown
+                .iter()
+                .filter(|(id, _)| !store.accounts.iter().any(|now| &now.id == id))
+                .map(|(id, _)| id.clone())
+                .collect();
+            if !same || !removed.is_empty() {
+                for id in &removed {
+                    let gone: Vec<MessageId> = st.mailbox.of_account(id).map(|m| m.id).collect();
+                    for message in gone {
+                        st.mailbox.purge(message);
+                    }
+                    self.state().store.forget(id);
+                    self.kept_loaded.remove(id);
+                }
+                if !removed.is_empty() {
+                    st.selected = None;
+                }
+                st.accounts = store;
+                st.dirty = true;
+            }
+            (!same || !removed.is_empty(), removed)
+        };
+        if !changed {
+            return;
+        }
+        let (cfg, folder) = {
+            let st = self.shared.borrow();
+            (st.accounts.active_config(), st.folder)
+        };
+        if cfg.email.is_empty() {
+            return;
+        }
+        if self.state().engine.is_some() {
+            self.state()
+                .post_engine(EngineRequest::connect(cfg.clone()));
+            self.state().post_engine(EngineRequest::fetch(cfg, folder));
+            self.connect_requested = true;
+        }
+    }
+}

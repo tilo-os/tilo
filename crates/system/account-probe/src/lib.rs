@@ -5,7 +5,11 @@
 //!
 //! They run wherever the account's server can be reached: on the device that
 //! keeps the account, and on the host a person's workspace runs on when the
-//! account is added from a page.
+//! account is added from a page. The host also carries the account's mail
+//! session there ([`mail`]): what a page's Mail reads, sends and changes.
+
+mod mail;
+pub use mail::{LiveMailSession, MailSession};
 
 use std::sync::Arc;
 use web_time::{Duration, Instant};

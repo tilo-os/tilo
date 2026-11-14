@@ -237,6 +237,10 @@ pub struct MailApp {
     unsend: bool,
     persisted_active_account: Option<String>,
     person_accounts: Option<(PersonRecord<PersonAccounts>, Option<u64>)>,
+    /// The host's mail session, when this window runs in a page: the host
+    /// that keeps the accounts reads and sends here.
+    #[cfg(any(target_arch = "wasm32", test))]
+    host_mail: Option<host_mail::HostMail>,
     custody: Option<crate::custody::SecretRelease>,
     sender_pictures_seen: Option<(u64, Vec<String>)>,
     preferences: Option<ui::framework::Setting<crate::resource::MailPreferences>>,
@@ -478,7 +482,12 @@ impl MailApp {
             crate::avatars::Avatars::new(),
         ));
         let content = content.unwrap_or_else(ContentStore::memory);
-        Self::assemble(shared, content, None, AccountsPersist::Disabled)
+        // The accounts live where the workspace runs, and so does the mail
+        // session: the host's answers are this window's engine events.
+        let (engine, host) = host_mail::engine();
+        let mut app = Self::assemble(shared, content, Some(engine), AccountsPersist::Disabled);
+        app.host_mail = Some(host);
+        app
     }
 
     pub(crate) fn for_past_version() -> Self {
@@ -603,6 +612,8 @@ impl MailApp {
             unsend: false,
             persisted_active_account: None,
             person_accounts: None,
+            #[cfg(any(target_arch = "wasm32", test))]
+            host_mail: None,
             custody: None,
             sender_pictures_seen: None,
             preferences: None,
@@ -2824,6 +2835,13 @@ impl MailApp {
         }
     }
 
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(
+            dead_code,
+            reason = "a page reads the accounts the host keeps, not a record of its own"
+        )
+    )]
     pub(crate) fn follow_person_accounts(&mut self, accounts: PersonRecord<PersonAccounts>) {
         let root = self.state().accounts_persist.root();
         if let Some(root) = root {
@@ -3690,6 +3708,8 @@ impl Widget for MailApp {
         dyn ui::undo::UndoControl
     );
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        #[cfg(any(target_arch = "wasm32", test))]
+        self.pump_host_mail();
         let (state, path) = ui::doc::document_ref(state, path);
         self.follow_document();
         self.process_intents();
@@ -5415,6 +5435,8 @@ impl MailApp {
 }
 
 mod checks;
+#[cfg(any(target_arch = "wasm32", test))]
+mod host_mail;
 mod person_accounts;
 mod server_outbox;
 pub(crate) use server_outbox::ServerOutbox;
