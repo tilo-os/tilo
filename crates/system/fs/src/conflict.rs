@@ -338,133 +338,171 @@ mod tests {
         Hash::from([b; 32])
     }
 
-    #[test]
-    fn concurrent_edits_produce_bound_conflict_copies_and_sequential_edits_do_not() {
-        // Phase `conflict_suffix_preserves_invalid_utf8_name_bytes`.
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn conflict_scans_find_racing_edits_and_nothing_else;
+
+        phase concurrent_edits_produce_bound_conflict_copies_and_sequential_edits_do_not;
         {
-            let original = [b'f', 0xff, b'o'];
-            let name = conflict_name(original, &h(7));
-            assert!(name.as_bytes().starts_with(&original));
-            assert!(
-                name.as_bytes()
-                    .ends_with(b".sync-conflict-07070707070707070707070707070707")
-            );
-            assert!(name.as_bytes().len() <= MAX_FILE_NAME_BYTES);
+            // Phase `conflict_suffix_preserves_invalid_utf8_name_bytes`.
+            {
+                let original = [b'f', 0xff, b'o'];
+                let name = conflict_name(original, &h(7));
+                assert!(name.as_bytes().starts_with(&original));
+                assert!(
+                    name.as_bytes()
+                        .ends_with(b".sync-conflict-07070707070707070707070707070707")
+                );
+                assert!(name.as_bytes().len() <= MAX_FILE_NAME_BYTES);
+            }
+            {
+                let mut a = Namespace::new("A").unwrap();
+                let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
+                let snap = a.save();
+                let mut b = Namespace::from_bytes("B", &snap).unwrap();
+                let bino = b.lookup(ROOT_INO, "doc").unwrap().ino.0;
+
+                a.set_content(ino, Some(&h(10)), 10, 5);
+                b.set_content(bino, Some(&h(20)), 20, 5);
+                a.merge_doc(&mut b).unwrap();
+
+                let conflicts = detect(&a);
+                assert_eq!(conflicts.len(), 1);
+                let loser = conflicts[0].loser;
+                assert!(loser == h(10) || loser == h(20));
+
+                assert!(materialize(&mut a, &conflicts[0], 99, 6));
+
+                let winner = a.entry_at("doc").unwrap().hash.unwrap();
+                assert_ne!(winner, loser);
+                let copy_name =
+                    String::from_utf8(conflict_name("doc", &loser).as_bytes().to_vec()).unwrap();
+                let copy = a.entry_at(&copy_name).expect("conflict copy");
+                assert_eq!(copy.hash, Some(loser));
+                assert!(detect(&a).is_empty(), "idempotent");
+            }
+            {
+                let mut a = Namespace::new("A").unwrap();
+                let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
+                let record_id = a.record_id_for(ino).unwrap();
+                let snap = a.save();
+                let mut b = Namespace::from_bytes("B", &snap).unwrap();
+                let bino = b.lookup(ROOT_INO, "doc").unwrap().ino.0;
+                let revision_a = fs_protocol::ContentRevisionV1 {
+                    schema_version: fs_protocol::CONTENT_REVISION_VERSION,
+                    record_id,
+                    version_id: fs_protocol::FileVersionId::new(),
+                    content_hash: Some(fs_protocol::ContentHash([10; 32])),
+                    byte_len: 10,
+                    metadata_hash: fs_protocol::ContentHash([11; 32]),
+                };
+                let revision_b = fs_protocol::ContentRevisionV1 {
+                    schema_version: fs_protocol::CONTENT_REVISION_VERSION,
+                    record_id,
+                    version_id: fs_protocol::FileVersionId::new(),
+                    content_hash: Some(fs_protocol::ContentHash([20; 32])),
+                    byte_len: 20,
+                    metadata_hash: fs_protocol::ContentHash([21; 32]),
+                };
+                assert!(a.set_content_revision(ino, &revision_a, 5));
+                assert!(b.set_content_revision(bino, &revision_b, 5));
+                a.merge_doc(&mut b).unwrap();
+
+                let winner = a.content_revision_for(ino).unwrap();
+                let loser = if winner == revision_a {
+                    revision_b
+                } else {
+                    revision_a
+                };
+                let conflicts = detect(&a);
+                assert_eq!(conflicts.len(), 1);
+                assert_eq!(conflicts[0].record_id, Some(record_id));
+                assert_eq!(conflicts[0].winner_version, Some(winner.version_id));
+                assert_eq!(conflicts[0].loser_version, Some(loser.version_id));
+                assert_eq!(
+                    conflicts[0].loser,
+                    Hash::from(loser.content_hash.unwrap().0)
+                );
+            }
+            {
+                let mut a = Namespace::new("A").unwrap();
+                let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
+                a.set_content(ino, Some(&h(2)), 2, 2);
+                a.set_content(ino, Some(&h(3)), 3, 3);
+                assert!(detect(&a).is_empty());
+            }
         }
+
+        phase deletes_resurrect_only_when_racing_an_edit;
+        {
+            {
+                // A deletes a file with no concurrent edit → no conflict copy.
+                let mut a = Namespace::new("A").unwrap();
+                let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
+                a.remove(ino);
+                assert!(detect(&a).is_empty(), "a clean delete must not resurrect");
+            }
+            {
+                // A deletes /doc while B edits its content concurrently.
+                let mut a = Namespace::new("A").unwrap();
+                let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
+                let snap = a.save();
+                let mut b = Namespace::from_bytes("B", &snap).unwrap();
+
+                a.remove(ino);
+                let bino = b.lookup(ROOT_INO, "doc").unwrap().ino.0;
+                b.set_content(bino, Some(&h(9)), 9, 5);
+
+                a.merge_doc(&mut b).unwrap();
+                a.resolve();
+
+                assert!(a.lookup(ROOT_INO, "doc").is_none(), "delete wins");
+                let conflicts = detect(&a);
+                let c = conflicts
+                    .iter()
+                    .find(|c| c.loser == h(9))
+                    .expect("B's concurrent edit must be surfaced");
+                materialize(&mut a, c, 9, 6);
+
+                let copy_name =
+                    String::from_utf8(conflict_name("doc", &h(9)).as_bytes().to_vec()).unwrap();
+                let copy = a.entry_at(&copy_name).expect("resurrected conflict copy");
+                assert_eq!(copy.hash, Some(h(9)));
+                assert!(detect(&a).is_empty(), "idempotent");
+            }
+        }
+
+        phase stepwise_scan_finds_what_one_walk_finds;
+        // A scan in steps, with the lock released between them, finds what
+        // one walk under one lock finds: both cases, in the same order.
         {
             let mut a = Namespace::new("A").unwrap();
-            let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
-            let snap = a.save();
-            let mut b = Namespace::from_bytes("B", &snap).unwrap();
-            let bino = b.lookup(ROOT_INO, "doc").unwrap().ino.0;
-
-            a.set_content(ino, Some(&h(10)), 10, 5);
-            b.set_content(bino, Some(&h(20)), 20, 5);
-            a.merge_doc(&mut b).unwrap();
-
-            let conflicts = detect(&a);
-            assert_eq!(conflicts.len(), 1);
-            let loser = conflicts[0].loser;
-            assert!(loser == h(10) || loser == h(20));
-
-            assert!(materialize(&mut a, &conflicts[0], 99, 6));
-
-            let winner = a.entry_at("doc").unwrap().hash.unwrap();
-            assert_ne!(winner, loser);
-            let copy_name =
-                String::from_utf8(conflict_name("doc", &loser).as_bytes().to_vec()).unwrap();
-            let copy = a.entry_at(&copy_name).expect("conflict copy");
-            assert_eq!(copy.hash, Some(loser));
-            assert!(detect(&a).is_empty(), "idempotent");
-        }
-        {
-            let mut a = Namespace::new("A").unwrap();
-            let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
-            let record_id = a.record_id_for(ino).unwrap();
-            let snap = a.save();
-            let mut b = Namespace::from_bytes("B", &snap).unwrap();
-            let bino = b.lookup(ROOT_INO, "doc").unwrap().ino.0;
-            let revision_a = fs_protocol::ContentRevisionV1 {
-                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                record_id,
-                version_id: fs_protocol::FileVersionId::new(),
-                content_hash: Some(fs_protocol::ContentHash([10; 32])),
-                byte_len: 10,
-                metadata_hash: fs_protocol::ContentHash([11; 32]),
-            };
-            let revision_b = fs_protocol::ContentRevisionV1 {
-                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                record_id,
-                version_id: fs_protocol::FileVersionId::new(),
-                content_hash: Some(fs_protocol::ContentHash([20; 32])),
-                byte_len: 20,
-                metadata_hash: fs_protocol::ContentHash([21; 32]),
-            };
-            assert!(a.set_content_revision(ino, &revision_a, 5));
-            assert!(b.set_content_revision(bino, &revision_b, 5));
-            a.merge_doc(&mut b).unwrap();
-
-            let winner = a.content_revision_for(ino).unwrap();
-            let loser = if winner == revision_a {
-                revision_b
-            } else {
-                revision_a
-            };
-            let conflicts = detect(&a);
-            assert_eq!(conflicts.len(), 1);
-            assert_eq!(conflicts[0].record_id, Some(record_id));
-            assert_eq!(conflicts[0].winner_version, Some(winner.version_id));
-            assert_eq!(conflicts[0].loser_version, Some(loser.version_id));
-            assert_eq!(
-                conflicts[0].loser,
-                Hash::from(loser.content_hash.unwrap().0)
-            );
-        }
-        {
-            let mut a = Namespace::new("A").unwrap();
-            let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
-            a.set_content(ino, Some(&h(2)), 2, 2);
-            a.set_content(ino, Some(&h(3)), 3, 3);
-            assert!(detect(&a).is_empty());
-        }
-    }
-
-    #[test]
-    fn deletes_resurrect_only_when_racing_an_edit() {
-        {
-            // A deletes a file with no concurrent edit → no conflict copy.
-            let mut a = Namespace::new("A").unwrap();
-            let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
-            a.remove(ino);
-            assert!(detect(&a).is_empty(), "a clean delete must not resurrect");
-        }
-        {
-            // A deletes /doc while B edits its content concurrently.
-            let mut a = Namespace::new("A").unwrap();
-            let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
-            let snap = a.save();
-            let mut b = Namespace::from_bytes("B", &snap).unwrap();
-
-            a.remove(ino);
-            let bino = b.lookup(ROOT_INO, "doc").unwrap().ino.0;
-            b.set_content(bino, Some(&h(9)), 9, 5);
-
+            for f in 0..3 * SCAN_STEP_NODES {
+                a.create_file(ROOT_INO, format!("f{f:04}"), Some(&h(1)), 1, 1)
+                    .unwrap();
+            }
+            let mut b = Namespace::from_bytes("B", &a.save()).unwrap();
+            let ino = |ns: &mut Namespace, name: &str| ns.lookup(ROOT_INO, name).unwrap().ino.0;
+            // An edit/edit conflict and a modify/delete race.
+            let (edited, deleted) = ("f0003", "f0150");
+            let (a_edited, b_edited) = (ino(&mut a, edited), ino(&mut b, edited));
+            let (a_deleted, b_deleted) = (ino(&mut a, deleted), ino(&mut b, deleted));
+            a.set_content(a_edited, Some(&h(10)), 10, 5);
+            b.set_content(b_edited, Some(&h(20)), 20, 5);
+            a.remove(a_deleted);
+            b.set_content(b_deleted, Some(&h(9)), 9, 5);
             a.merge_doc(&mut b).unwrap();
             a.resolve();
 
-            assert!(a.lookup(ROOT_INO, "doc").is_none(), "delete wins");
-            let conflicts = detect(&a);
-            let c = conflicts
-                .iter()
-                .find(|c| c.loser == h(9))
-                .expect("B's concurrent edit must be surfaced");
-            materialize(&mut a, c, 9, 6);
-
-            let copy_name =
-                String::from_utf8(conflict_name("doc", &h(9)).as_bytes().to_vec()).unwrap();
-            let copy = a.entry_at(&copy_name).expect("resurrected conflict copy");
-            assert_eq!(copy.hash, Some(h(9)));
-            assert!(detect(&a).is_empty(), "idempotent");
+            let expected = detect(&a);
+            assert_eq!(expected.len(), 2);
+            let a = Mutex::new(a);
+            let mut scan = NamespaceScan::new();
+            assert_eq!(summary(&scan.due(&a)), summary(&expected));
+            assert!(scan.last_pass().lock_holds > 3);
         }
     }
 
@@ -532,35 +570,5 @@ mod tests {
         assert!(scan.due(&a).is_empty());
         assert_eq!(scan.scans(), 3, "a materialised copy is no merge");
         assert!(detect(&a.lock_recover()).is_empty(), "exactly one copy");
-    }
-
-    /// A scan in steps, with the lock released between them, finds what
-    /// one walk under one lock finds: both cases, in the same order.
-    #[test]
-    fn stepwise_scan_finds_what_one_walk_finds() {
-        let mut a = Namespace::new("A").unwrap();
-        for f in 0..3 * SCAN_STEP_NODES {
-            a.create_file(ROOT_INO, format!("f{f:04}"), Some(&h(1)), 1, 1)
-                .unwrap();
-        }
-        let mut b = Namespace::from_bytes("B", &a.save()).unwrap();
-        let ino = |ns: &mut Namespace, name: &str| ns.lookup(ROOT_INO, name).unwrap().ino.0;
-        // An edit/edit conflict and a modify/delete race.
-        let (edited, deleted) = ("f0003", "f0150");
-        let (a_edited, b_edited) = (ino(&mut a, edited), ino(&mut b, edited));
-        let (a_deleted, b_deleted) = (ino(&mut a, deleted), ino(&mut b, deleted));
-        a.set_content(a_edited, Some(&h(10)), 10, 5);
-        b.set_content(b_edited, Some(&h(20)), 20, 5);
-        a.remove(a_deleted);
-        b.set_content(b_deleted, Some(&h(9)), 9, 5);
-        a.merge_doc(&mut b).unwrap();
-        a.resolve();
-
-        let expected = detect(&a);
-        assert_eq!(expected.len(), 2);
-        let a = Mutex::new(a);
-        let mut scan = NamespaceScan::new();
-        assert_eq!(summary(&scan.due(&a)), summary(&expected));
-        assert!(scan.last_pass().lock_holds > 3);
     }
 }

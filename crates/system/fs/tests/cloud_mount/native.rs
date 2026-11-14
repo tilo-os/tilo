@@ -162,213 +162,244 @@ impl CloudSource for NativeSource {
     }
 }
 
-#[test]
-fn describe_reports_cached_source_metadata_without_hydrating_office_files() {
-    use cloud_source_gdrive::{
-        GDrive,
-        fake::{FakeDrive, SOURCE_TOKEN},
-    };
-    use runtime_fs::cloud::{FileDescription, FileReply, FileRequest};
+tilo_test_env::scenario! {
+    fn native_documents_are_described_exported_and_cached_by_revision;
 
-    let server = FakeDrive::start();
-    let folder = server.put_native(
-        &server.root_id(),
-        "Work",
-        "application/vnd.google-apps.folder",
-    );
-    for kind in ["document", "spreadsheet", "presentation", "form"] {
-        server.put_native(
-            &folder,
-            kind,
-            &format!("application/vnd.google-apps.{kind}"),
+    phase describe_reports_cached_source_metadata_without_hydrating_office_files;
+    {
+        use cloud_source_gdrive::{
+            GDrive,
+            fake::{FakeDrive, SOURCE_TOKEN},
+        };
+        use runtime_fs::cloud::{FileDescription, FileReply, FileRequest};
+
+        let server = FakeDrive::start();
+        let folder = server.put_native(
+            &server.root_id(),
+            "Work",
+            "application/vnd.google-apps.folder",
         );
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let source = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
-    let volume = oauth_volume(Arc::new(source), dir.path());
-    volume.sync_once().unwrap();
-    write_file(&volume, "uploaded.docx", OFFICE_DOCX);
-    volume.upload_pending().unwrap();
-    volume.sync_once().unwrap();
-    // Reopen with persisted metadata but without a credential the provider accepts.
-    drop(volume);
-    let source = GDrive::new(server.config(), bearer("invalid-example-token")).unwrap();
-    let volume = oauth_volume(Arc::new(source), dir.path());
-    server.set_offline(true);
-    let before = server.stats();
-    for (kind, extension) in [
-        ("document", "docx"),
-        ("spreadsheet", "xlsx"),
-        ("presentation", "pptx"),
-    ] {
+        for kind in ["document", "spreadsheet", "presentation", "form"] {
+            server.put_native(
+                &folder,
+                kind,
+                &format!("application/vnd.google-apps.{kind}"),
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let source = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
+        let volume = oauth_volume(Arc::new(source), dir.path());
+        volume.sync_once().unwrap();
+        write_file(&volume, "uploaded.docx", OFFICE_DOCX);
+        volume.upload_pending().unwrap();
+        volume.sync_once().unwrap();
+        // Reopen with persisted metadata but without a credential the provider accepts.
+        drop(volume);
+        let source = GDrive::new(server.config(), bearer("invalid-example-token")).unwrap();
+        let volume = oauth_volume(Arc::new(source), dir.path());
+        server.set_offline(true);
+        let before = server.stats();
+        for (kind, extension) in [
+            ("document", "docx"),
+            ("spreadsheet", "xlsx"),
+            ("presentation", "pptx"),
+        ] {
+            assert_eq!(
+                volume.answer(&FileRequest::Describe {
+                    path: format!("Work/{kind}.{extension}"),
+                }),
+                Ok(FileReply::Description(FileDescription {
+                    source_mime: Some(format!("application/vnd.google-apps.{kind}")),
+                    converted: true,
+                    content_writable: false,
+                }))
+            );
+        }
         assert_eq!(
             volume.answer(&FileRequest::Describe {
-                path: format!("Work/{kind}.{extension}"),
+                path: "uploaded.docx".into(),
             }),
             Ok(FileReply::Description(FileDescription {
-                source_mime: Some(format!("application/vnd.google-apps.{kind}")),
-                converted: true,
+                source_mime: Some("application/octet-stream".into()),
+                converted: false,
+                content_writable: true,
+            }))
+        );
+        assert_eq!(
+            volume.answer(&FileRequest::Describe {
+                path: "Work/form".into(),
+            }),
+            Ok(FileReply::Description(FileDescription {
+                source_mime: Some("application/vnd.google-apps.form".into()),
+                converted: false,
                 content_writable: false,
             }))
         );
+        for path in [
+            "../uploaded.docx",
+            "Work/../uploaded.docx",
+            "Work/./document.docx",
+            "Work/document.docx/child",
+            "missing.docx",
+        ] {
+            assert!(
+                volume
+                    .answer(&FileRequest::Describe { path: path.into() })
+                    .is_err()
+            );
+        }
+        assert_eq!(server.stats(), before);
     }
-    assert_eq!(
-        volume.answer(&FileRequest::Describe {
-            path: "uploaded.docx".into(),
-        }),
-        Ok(FileReply::Description(FileDescription {
-            source_mime: Some("application/octet-stream".into()),
-            converted: false,
-            content_writable: true,
-        }))
-    );
-    assert_eq!(
-        volume.answer(&FileRequest::Describe {
-            path: "Work/form".into(),
-        }),
-        Ok(FileReply::Description(FileDescription {
-            source_mime: Some("application/vnd.google-apps.form".into()),
-            converted: false,
-            content_writable: false,
-        }))
-    );
-    for path in [
-        "../uploaded.docx",
-        "Work/../uploaded.docx",
-        "Work/./document.docx",
-        "Work/document.docx/child",
-        "missing.docx",
-    ] {
-        assert!(
-            volume
-                .answer(&FileRequest::Describe { path: path.into() })
-                .is_err()
+
+    phase unsupported_native_items_do_not_hide_ordinary_siblings_or_fabricate_links;
+    {
+        use cloud_source_gdrive::{
+            GDrive,
+            fake::{FakeDrive, SOURCE_TOKEN},
+        };
+        let server = FakeDrive::start();
+        server.put_native(
+            &server.root_id(),
+            "Form",
+            "application/vnd.google-apps.form",
         );
+        server.put_file(&server.root_id(), "ordinary.txt", b"ordinary bytes");
+        let dir = tempfile::tempdir().unwrap();
+        let source = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
+        let volume = oauth_volume(Arc::new(source), dir.path());
+        volume.sync_once().unwrap();
+        assert_eq!(names(&volume, ""), ["Form", "ordinary.txt"]);
+        assert_eq!(read_all(&volume, "ordinary.txt"), b"ordinary bytes");
+        let attr = volume.lookup(ROOT_INO, "Form").unwrap();
+        assert_eq!(attr.size, 0);
+        assert_eq!(volume.read_ino(attr.ino, 0, 100), Err(libc::EOPNOTSUPP));
     }
-    assert_eq!(server.stats(), before);
-}
 
-#[test]
-fn unsupported_native_items_do_not_hide_ordinary_siblings_or_fabricate_links() {
-    use cloud_source_gdrive::{
-        GDrive,
-        fake::{FakeDrive, SOURCE_TOKEN},
-    };
-    let server = FakeDrive::start();
-    server.put_native(
-        &server.root_id(),
-        "Form",
-        "application/vnd.google-apps.form",
-    );
-    server.put_file(&server.root_id(), "ordinary.txt", b"ordinary bytes");
-    let dir = tempfile::tempdir().unwrap();
-    let source = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
-    let volume = oauth_volume(Arc::new(source), dir.path());
-    volume.sync_once().unwrap();
-    assert_eq!(names(&volume, ""), ["Form", "ordinary.txt"]);
-    assert_eq!(read_all(&volume, "ordinary.txt"), b"ordinary bytes");
-    let attr = volume.lookup(ROOT_INO, "Form").unwrap();
-    assert_eq!(attr.size, 0);
-    assert_eq!(volume.read_ino(attr.ino, 0, 100), Err(libc::EOPNOTSUPP));
-}
+    phase incomplete_native_export_cannot_publish_a_size_or_poison_the_cache;
+    {
+        let source = Arc::new(NativeSource {
+            revision: AtomicU64::new(1),
+            sheet: AtomicBool::new(false),
+            exports: AtomicUsize::new(0),
+            incomplete: AtomicBool::new(true),
+            export_failure: AtomicUsize::new(0),
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let volume = oauth_volume(source.clone(), dir.path());
+        volume.sync_once().unwrap();
+        assert_eq!(volume.lookup(ROOT_INO, "Office.docx"), Err(libc::EIO));
+        source.incomplete.store(false, Ordering::SeqCst);
+        assert_eq!(read_all(&volume, "Office.docx"), OFFICE_DOCX);
+        assert_eq!(source.exports.load(Ordering::SeqCst), 2);
+    }
 
-#[test]
-fn incomplete_native_export_cannot_publish_a_size_or_poison_the_cache() {
-    let source = Arc::new(NativeSource {
-        revision: AtomicU64::new(1),
-        sheet: AtomicBool::new(false),
-        exports: AtomicUsize::new(0),
-        incomplete: AtomicBool::new(true),
-        export_failure: AtomicUsize::new(0),
-    });
-    let dir = tempfile::tempdir().unwrap();
-    let volume = oauth_volume(source.clone(), dir.path());
-    volume.sync_once().unwrap();
-    assert_eq!(volume.lookup(ROOT_INO, "Office.docx"), Err(libc::EIO));
-    source.incomplete.store(false, Ordering::SeqCst);
-    assert_eq!(read_all(&volume, "Office.docx"), OFFICE_DOCX);
-    assert_eq!(source.exports.load(Ordering::SeqCst), 2);
-}
-
-#[test]
-fn native_size_and_cache_follow_revision_and_export_format_across_restart() {
-    let source = Arc::new(NativeSource {
-        revision: AtomicU64::new(1),
-        sheet: AtomicBool::new(false),
-        exports: AtomicUsize::new(0),
-        incomplete: AtomicBool::new(false),
-        export_failure: AtomicUsize::new(0),
-    });
-    let dir = tempfile::tempdir().unwrap();
-    let volume = oauth_volume(source.clone(), dir.path());
-    volume.sync_once().unwrap();
-    let ino = volume.resolve("Office.docx").unwrap();
-    assert_eq!(volume.getattr(ino).unwrap().size, OFFICE_DOCX.len() as u64);
-    assert_eq!(read_all(&volume, "Office.docx"), OFFICE_DOCX);
-    assert_eq!(source.exports.load(Ordering::SeqCst), 1);
-    volume.shutdown();
-    drop(volume);
-    let volume = oauth_volume(source.clone(), dir.path());
-    assert_eq!(read_all(&volume, "Office.docx"), OFFICE_DOCX);
-    assert_eq!(
-        source.exports.load(Ordering::SeqCst),
-        1,
-        "complete export survives restart"
-    );
-    source.revision.store(2, Ordering::SeqCst);
-    volume.sync_once().unwrap();
-    assert_eq!(read_all(&volume, "Office.docx"), OFFICE_DOCX);
-    assert_eq!(
-        source.exports.load(Ordering::SeqCst),
-        2,
-        "new revision must re-export"
-    );
-    // A representation change invalidates bytes even without a revision change.
-    source.sheet.store(true, Ordering::SeqCst);
-    volume.sync_once().unwrap();
-    let attr = volume.lookup(ROOT_INO, "Office.xlsx").unwrap();
-    assert_eq!(attr.size, OFFICE_XLSX.len() as u64);
-    assert_eq!(
-        volume
-            .read_ino(attr.ino, 0, u32::try_from(attr.size).unwrap())
-            .unwrap(),
-        OFFICE_XLSX
-    );
-    assert_eq!(source.exports.load(Ordering::SeqCst), 3);
-    assert_eq!(volume.resolve("Office.docx"), Err(libc::ENOENT));
-}
-
-#[test]
-fn failed_native_exports_do_not_hide_siblings() {
-    for (failure, errno) in [(1, libc::EFBIG), (2, libc::EACCES), (3, libc::EIO)] {
+    phase native_size_and_cache_follow_revision_and_export_format_across_restart;
+    {
         let source = Arc::new(NativeSource {
             revision: AtomicU64::new(1),
             sheet: AtomicBool::new(false),
             exports: AtomicUsize::new(0),
             incomplete: AtomicBool::new(false),
-            export_failure: AtomicUsize::new(failure),
+            export_failure: AtomicUsize::new(0),
         });
         let dir = tempfile::tempdir().unwrap();
         let volume = oauth_volume(source.clone(), dir.path());
         volume.sync_once().unwrap();
-        let entries = volume.readdir(ROOT_INO).unwrap();
+        let ino = volume.resolve("Office.docx").unwrap();
+        assert_eq!(volume.getattr(ino).unwrap().size, OFFICE_DOCX.len() as u64);
+        assert_eq!(read_all(&volume, "Office.docx"), OFFICE_DOCX);
+        assert_eq!(source.exports.load(Ordering::SeqCst), 1);
+        volume.shutdown();
+        drop(volume);
+        let volume = oauth_volume(source.clone(), dir.path());
+        assert_eq!(read_all(&volume, "Office.docx"), OFFICE_DOCX);
         assert_eq!(
-            entries
-                .iter()
-                .map(|(name, _)| name.as_str())
-                .collect::<Vec<_>>(),
-            ["Office.docx", "ordinary.txt"]
+            source.exports.load(Ordering::SeqCst),
+            1,
+            "complete export survives restart"
         );
-        assert_eq!(source.exports.load(Ordering::SeqCst), 0);
-        assert_eq!(read_all(&volume, "ordinary.txt"), b"ordinary");
-        let ino = entries
-            .iter()
-            .find(|(name, _)| name == "Office.docx")
-            .unwrap()
-            .1
-            .ino;
-        assert_eq!(volume.getattr(ino), Err(errno));
-        assert_eq!(volume.read_ino(ino, 0, 100), Err(errno));
+        source.revision.store(2, Ordering::SeqCst);
+        volume.sync_once().unwrap();
+        assert_eq!(read_all(&volume, "Office.docx"), OFFICE_DOCX);
+        assert_eq!(
+            source.exports.load(Ordering::SeqCst),
+            2,
+            "new revision must re-export"
+        );
+        // A representation change invalidates bytes even without a revision change.
+        source.sheet.store(true, Ordering::SeqCst);
+        volume.sync_once().unwrap();
+        let attr = volume.lookup(ROOT_INO, "Office.xlsx").unwrap();
+        assert_eq!(attr.size, OFFICE_XLSX.len() as u64);
+        assert_eq!(
+            volume
+                .read_ino(attr.ino, 0, u32::try_from(attr.size).unwrap())
+                .unwrap(),
+            OFFICE_XLSX
+        );
+        assert_eq!(source.exports.load(Ordering::SeqCst), 3);
+        assert_eq!(volume.resolve("Office.docx"), Err(libc::ENOENT));
+    }
+
+    phase failed_native_exports_do_not_hide_siblings;
+    {
+        for (failure, errno) in [(1, libc::EFBIG), (2, libc::EACCES), (3, libc::EIO)] {
+            let source = Arc::new(NativeSource {
+                revision: AtomicU64::new(1),
+                sheet: AtomicBool::new(false),
+                exports: AtomicUsize::new(0),
+                incomplete: AtomicBool::new(false),
+                export_failure: AtomicUsize::new(failure),
+            });
+            let dir = tempfile::tempdir().unwrap();
+            let volume = oauth_volume(source.clone(), dir.path());
+            volume.sync_once().unwrap();
+            let entries = volume.readdir(ROOT_INO).unwrap();
+            assert_eq!(
+                entries
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>(),
+                ["Office.docx", "ordinary.txt"]
+            );
+            assert_eq!(source.exports.load(Ordering::SeqCst), 0);
+            assert_eq!(read_all(&volume, "ordinary.txt"), b"ordinary");
+            let ino = entries
+                .iter()
+                .find(|(name, _)| name == "Office.docx")
+                .unwrap()
+                .1
+                .ino;
+            assert_eq!(volume.getattr(ino), Err(errno));
+            assert_eq!(volume.read_ino(ino, 0, 100), Err(errno));
+        }
+    }
+
+    phase drawings_export_as_actual_svg;
+    {
+        use cloud_source_gdrive::{
+            GDrive,
+            fake::{FakeDrive, SOURCE_TOKEN},
+        };
+        let server = FakeDrive::start();
+        server.put_native(
+            &server.root_id(),
+            "Drawing",
+            "application/vnd.google-apps.drawing",
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let source = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
+        let volume = oauth_volume(Arc::new(source), dir.path());
+        volume.sync_once().unwrap();
+        assert_eq!(names(&volume, ""), ["Drawing.svg"]);
+        let bytes = read_all(&volume, "Drawing.svg");
+        let svg = std::str::from_utf8(&bytes).unwrap();
+        assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+        assert!(svg.trim_end().ends_with("</svg>"));
+        assert_eq!(
+            volume.lookup(ROOT_INO, "Drawing.svg").unwrap().size,
+            bytes.len() as u64
+        );
     }
 }
 
@@ -453,32 +484,5 @@ fn kernel_native_conversions_are_read_only_while_uploaded_office_files_are_writa
     assert_eq!(
         std::fs::read(mount.path().join("Uploaded.docx")).unwrap(),
         b"editable uploaded file"
-    );
-}
-
-#[test]
-fn drawings_export_as_actual_svg() {
-    use cloud_source_gdrive::{
-        GDrive,
-        fake::{FakeDrive, SOURCE_TOKEN},
-    };
-    let server = FakeDrive::start();
-    server.put_native(
-        &server.root_id(),
-        "Drawing",
-        "application/vnd.google-apps.drawing",
-    );
-    let dir = tempfile::tempdir().unwrap();
-    let source = GDrive::new(server.config(), bearer(SOURCE_TOKEN)).unwrap();
-    let volume = oauth_volume(Arc::new(source), dir.path());
-    volume.sync_once().unwrap();
-    assert_eq!(names(&volume, ""), ["Drawing.svg"]);
-    let bytes = read_all(&volume, "Drawing.svg");
-    let svg = std::str::from_utf8(&bytes).unwrap();
-    assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""));
-    assert!(svg.trim_end().ends_with("</svg>"));
-    assert_eq!(
-        volume.lookup(ROOT_INO, "Drawing.svg").unwrap().size,
-        bytes.len() as u64
     );
 }

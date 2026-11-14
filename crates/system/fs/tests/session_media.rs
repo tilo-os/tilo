@@ -93,27 +93,57 @@ impl Drop for Server {
 
 const PICTURE: &[u8] = b"\x89PNG\r\n\x1a\n a still, as the connector fetched it";
 
-#[test]
-fn a_session_s_media_server_keeps_what_the_connector_puts_for_the_window_to_read() {
-    let dir = tempfile::tempdir().expect("a scratch directory");
-    let server = Server::start(dir.path());
+tilo_test_env::scenario! {
+    fn the_sessions_media_server_keeps_content_and_replaces_a_stale_socket;
 
-    let connector = server.app("workspace-1", "so.tilo.lang.tube");
-    let kept = connector
-        .put(PICTURE, "image/png")
-        .expect("the connector keeps a picture as this device's content");
+    phase a_session_s_media_server_keeps_what_the_connector_puts_for_the_window_to_read;
+    {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let server = Server::start(dir.path());
 
-    let window = server.app("workspace-1", "so.tilo.lang.tube");
-    assert_eq!(
-        window
-            .read_all(&kept.hash)
-            .expect("the window reads the address"),
-        ReadOutcome::Ready {
-            bytes: PICTURE.to_vec(),
-            total_len: PICTURE.len() as u64,
-        },
-        "the picture the connector kept is the one the window draws"
-    );
+        let connector = server.app("workspace-1", "so.tilo.lang.tube");
+        let kept = connector
+            .put(PICTURE, "image/png")
+            .expect("the connector keeps a picture as this device's content");
+
+        let window = server.app("workspace-1", "so.tilo.lang.tube");
+        assert_eq!(
+            window
+                .read_all(&kept.hash)
+                .expect("the window reads the address"),
+            ReadOutcome::Ready {
+                bytes: PICTURE.to_vec(),
+                total_len: PICTURE.len() as u64,
+            },
+            "the picture the connector kept is the one the window draws"
+        );
+    }
+
+    phase a_server_replaces_a_socket_a_killed_session_left_behind;
+    {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let socket = dir.path().join("fs-blobs.sock");
+        {
+            let server = Server::start(dir.path());
+            drop(server);
+        }
+        assert!(
+            socket.exists(),
+            "the killed server's socket is what a later session finds"
+        );
+        let server = Server::start(dir.path());
+        let app = server.app("workspace-1", "so.tilo.lang.notes");
+        let kept = app
+            .put(b"kept after a restart", "image/png")
+            .expect("a put");
+        assert_eq!(
+            app.read_all(&kept.hash).expect("a read"),
+            ReadOutcome::Ready {
+                bytes: b"kept after a restart".to_vec(),
+                total_len: 20,
+            }
+        );
+    }
 }
 
 #[test]
@@ -148,30 +178,4 @@ fn session_store(socket: &Path, workspace: &str) -> Option<tilo_content::Content
     env.set("TILO_FS_BLOB_SOCKET", socket);
     tilo_content_device::set_session_workspaces(vec![workspace.to_owned()]);
     tilo_content_device::session(workspace)
-}
-
-#[test]
-fn a_server_replaces_a_socket_a_killed_session_left_behind() {
-    let dir = tempfile::tempdir().expect("a scratch directory");
-    let socket = dir.path().join("fs-blobs.sock");
-    {
-        let server = Server::start(dir.path());
-        drop(server);
-    }
-    assert!(
-        socket.exists(),
-        "the killed server's socket is what a later session finds"
-    );
-    let server = Server::start(dir.path());
-    let app = server.app("workspace-1", "so.tilo.lang.notes");
-    let kept = app
-        .put(b"kept after a restart", "image/png")
-        .expect("a put");
-    assert_eq!(
-        app.read_all(&kept.hash).expect("a read"),
-        ReadOutcome::Ready {
-            bytes: b"kept after a restart".to_vec(),
-            total_len: 20,
-        }
-    );
 }

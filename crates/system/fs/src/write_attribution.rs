@@ -152,75 +152,83 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_lease_names_its_paths_and_their_subtrees_until_it_ends() {
-        let leases = WriteAttributions::default();
-        leases
-            .grant(
-                vec!["/Reports".into(), "/notes.txt".into()],
-                scribe(),
-                Duration::from_secs(30),
-            )
-            .unwrap();
-        assert_eq!(leases.for_path("/Reports"), Some(scribe()));
-        assert_eq!(leases.for_path("/Reports/q3.txt"), Some(scribe()));
-        assert_eq!(leases.for_path("/notes.txt"), Some(scribe()));
-        assert_eq!(leases.for_path("/Reports2/q3.txt"), None, "a sibling");
-        assert_eq!(leases.for_path("/notes.txt.bak"), None);
-        assert_eq!(leases.for_path("/other.txt"), None);
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn a_write_lease_covers_its_paths_and_nothing_more;
 
-        leases
-            .grant(
-                vec!["/brief.txt".into()],
-                scribe(),
-                Duration::from_millis(1),
-            )
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(5));
-        assert_eq!(leases.for_path("/brief.txt"), None, "the lease ended");
-    }
+        phase a_lease_names_its_paths_and_their_subtrees_until_it_ends;
+        {
+            let leases = WriteAttributions::default();
+            leases
+                .grant(
+                    vec!["/Reports".into(), "/notes.txt".into()],
+                    scribe(),
+                    Duration::from_secs(30),
+                )
+                .unwrap();
+            assert_eq!(leases.for_path("/Reports"), Some(scribe()));
+            assert_eq!(leases.for_path("/Reports/q3.txt"), Some(scribe()));
+            assert_eq!(leases.for_path("/notes.txt"), Some(scribe()));
+            assert_eq!(leases.for_path("/Reports2/q3.txt"), None, "a sibling");
+            assert_eq!(leases.for_path("/notes.txt.bak"), None);
+            assert_eq!(leases.for_path("/other.txt"), None);
 
-    #[test]
-    fn a_lease_never_covers_the_whole_mount_or_escapes_it() {
-        let leases = WriteAttributions::default();
-        let ttl = Duration::from_secs(1);
-        for paths in [
-            vec![],
-            vec!["/".to_string()],
-            vec!["relative".to_string()],
-            vec!["/a/../b".to_string()],
-            vec!["/a//b".to_string()],
-        ] {
+            leases
+                .grant(
+                    vec!["/brief.txt".into()],
+                    scribe(),
+                    Duration::from_millis(1),
+                )
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(5));
+            assert_eq!(leases.for_path("/brief.txt"), None, "the lease ended");
+        }
+
+        phase a_lease_never_covers_the_whole_mount_or_escapes_it;
+        {
+            let leases = WriteAttributions::default();
+            let ttl = Duration::from_secs(1);
+            for paths in [
+                vec![],
+                vec!["/".to_string()],
+                vec!["relative".to_string()],
+                vec!["/a/../b".to_string()],
+                vec!["/a//b".to_string()],
+            ] {
+                assert_eq!(
+                    leases.grant(paths.clone(), scribe(), ttl),
+                    Err(WriteAttributionError::InvalidPaths),
+                    "{paths:?}"
+                );
+            }
+            let person = FileAttributionV1 {
+                actor: "ada".into(),
+                ..scribe()
+            };
             assert_eq!(
-                leases.grant(paths.clone(), scribe(), ttl),
-                Err(WriteAttributionError::InvalidPaths),
-                "{paths:?}"
+                leases.grant(vec!["/a".into()], person, ttl),
+                Err(WriteAttributionError::InvalidAttribution),
+                "only an agent is attributed"
+            );
+            assert_eq!(
+                leases.grant(vec!["/a".into()], scribe(), MAX_LEASE_TTL * 2),
+                Err(WriteAttributionError::InvalidDuration)
+            );
+            assert_eq!(
+                mount_relative(std::path::Path::new("/var/workspace"), "/var/workspace/a/b"),
+                Some("/a/b".into())
+            );
+            assert_eq!(
+                mount_relative(std::path::Path::new("/var/workspace"), "/etc/passwd"),
+                None
+            );
+            assert_eq!(
+                mount_relative(std::path::Path::new("/var/workspace"), "/var/workspace"),
+                None
             );
         }
-        let person = FileAttributionV1 {
-            actor: "ada".into(),
-            ..scribe()
-        };
-        assert_eq!(
-            leases.grant(vec!["/a".into()], person, ttl),
-            Err(WriteAttributionError::InvalidAttribution),
-            "only an agent is attributed"
-        );
-        assert_eq!(
-            leases.grant(vec!["/a".into()], scribe(), MAX_LEASE_TTL * 2),
-            Err(WriteAttributionError::InvalidDuration)
-        );
-        assert_eq!(
-            mount_relative(std::path::Path::new("/var/workspace"), "/var/workspace/a/b"),
-            Some("/a/b".into())
-        );
-        assert_eq!(
-            mount_relative(std::path::Path::new("/var/workspace"), "/etc/passwd"),
-            None
-        );
-        assert_eq!(
-            mount_relative(std::path::Path::new("/var/workspace"), "/var/workspace"),
-            None
-        );
     }
 }

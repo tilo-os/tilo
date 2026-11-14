@@ -1490,107 +1490,115 @@ mod tests {
         assert!(area.entry(&key(2)).is_some() && area.entry(&key(3)).is_some());
     }
 
-    #[test]
-    fn the_budget_drops_a_fetchable_entrys_bytes_and_keeps_where_they_came_from() {
-        let dir = tempfile::tempdir().unwrap();
-        let origin = "https://example.org/catalogue.csv";
-        let data = [9_u8; 100];
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_file_area_gives_up_bytes_in_order_and_finds_resident_chunks;
+
+        phase the_budget_drops_a_fetchable_entrys_bytes_and_keeps_where_they_came_from;
         {
-            let area = FileArea::open(dir.path(), 250).unwrap();
-            area.adopt_fetched(&key(1), &data, origin).unwrap();
-            area.adopt_bytes(&key(2), &data, Retention::Cached, &[])
-                .unwrap();
-            area.adopt_bytes(&key(3), &data, Retention::LocalOnly, &[])
-                .unwrap();
-            area.touch(&key(2));
-            area.adopt_bytes(&key(4), &data, Retention::Cached, &[])
-                .unwrap();
-            assert_eq!(area.evict_to_budget(&[]), 100);
-            let entry = area.entry(&key(1)).expect("the entry stays");
-            assert_eq!(
-                (entry.retention, entry.size, entry.resident),
-                (Retention::Fetchable, 100, 0),
-                "only its bytes went"
-            );
+            let dir = tempfile::tempdir().unwrap();
+            let origin = "https://example.org/catalogue.csv";
+            let data = [9_u8; 100];
+            {
+                let area = FileArea::open(dir.path(), 250).unwrap();
+                area.adopt_fetched(&key(1), &data, origin).unwrap();
+                area.adopt_bytes(&key(2), &data, Retention::Cached, &[])
+                    .unwrap();
+                area.adopt_bytes(&key(3), &data, Retention::LocalOnly, &[])
+                    .unwrap();
+                area.touch(&key(2));
+                area.adopt_bytes(&key(4), &data, Retention::Cached, &[])
+                    .unwrap();
+                assert_eq!(area.evict_to_budget(&[]), 100);
+                let entry = area.entry(&key(1)).expect("the entry stays");
+                assert_eq!(
+                    (entry.retention, entry.size, entry.resident),
+                    (Retention::Fetchable, 100, 0),
+                    "only its bytes went"
+                );
+                assert_eq!(area.origin(&key(1)).as_deref(), Some(origin));
+                assert!(area.entry(&key(2)).is_some() && area.entry(&key(4)).is_some());
+                assert_eq!(area.missing(&key(1), &(0..100)), vec![0..100]);
+            }
+            let area = FileArea::open(dir.path(), u64::MAX).unwrap();
+            assert_eq!(area.entry(&key(1)).map(|e| e.resident), Some(0));
             assert_eq!(area.origin(&key(1)).as_deref(), Some(origin));
-            assert!(area.entry(&key(2)).is_some() && area.entry(&key(4)).is_some());
-            assert_eq!(area.missing(&key(1), &(0..100)), vec![0..100]);
+            area.adopt_fetched(&key(1), &data, origin).unwrap();
+            assert!(area.entry(&key(1)).unwrap().complete());
+            assert_eq!(area.read_at(&key(1), 0, 100).unwrap(), data);
+            area.remove(&key(1)).unwrap();
+            assert_eq!(area.origin(&key(1)), None, "removed with its entry");
         }
-        let area = FileArea::open(dir.path(), u64::MAX).unwrap();
-        assert_eq!(area.entry(&key(1)).map(|e| e.resident), Some(0));
-        assert_eq!(area.origin(&key(1)).as_deref(), Some(origin));
-        area.adopt_fetched(&key(1), &data, origin).unwrap();
-        assert!(area.entry(&key(1)).unwrap().complete());
-        assert_eq!(area.read_at(&key(1), 0, 100).unwrap(), data);
-        area.remove(&key(1)).unwrap();
-        assert_eq!(area.origin(&key(1)), None, "removed with its entry");
-    }
 
-    #[test]
-    fn the_budget_gives_up_what_an_always_on_device_holds_first() {
-        let dir = tempfile::tempdir().unwrap();
-        let area = FileArea::open(dir.path(), u64::MAX).unwrap();
-        let data = [7_u8; 100];
-        let working_set: Vec<u8> = (10..10 + u8::try_from(WORKING_SET_ENTRIES).unwrap()).collect();
-        for n in (1..=4).chain(working_set.iter().copied()) {
-            area.adopt_bytes(&key(n), &data, Retention::Cached, &[])
+        phase the_budget_gives_up_what_an_always_on_device_holds_first;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let area = FileArea::open(dir.path(), u64::MAX).unwrap();
+            let data = [7_u8; 100];
+            let working_set: Vec<u8> = (10..10 + u8::try_from(WORKING_SET_ENTRIES).unwrap()).collect();
+            for n in (1..=4).chain(working_set.iter().copied()) {
+                area.adopt_bytes(&key(n), &data, Retention::Cached, &[])
+                    .unwrap();
+                area.touch(&key(n));
+            }
+            area.adopt_bytes(&key(5), &data, Retention::Pinned, &[])
                 .unwrap();
-            area.touch(&key(n));
+            area.adopt_bytes(&key(6), &data, Retention::LocalOnly, &[])
+                .unwrap();
+            let last = *working_set.last().unwrap();
+            area.set_held_elsewhere(Arc::new(move || {
+                [key(3), key(4), key(last), key(5), key(6)].into()
+            }));
+
+            let cached = 100 * (4 + WORKING_SET_ENTRIES as u64);
+            area.set_budget(cached - 200);
+            assert_eq!(area.evict_to_budget(&[]), 200);
+            assert!(area.entry(&key(3)).is_none() && area.entry(&key(4)).is_none());
+            assert!(
+                area.entry(&key(1)).is_some() && area.entry(&key(2)).is_some(),
+                "content only this device's cache may still hold outlives what the host keeps"
+            );
+            assert!(
+                area.entry(&key(last)).is_some(),
+                "the working set is not given up for being held elsewhere"
+            );
+
+            area.set_budget(0);
+            area.evict_to_budget(&[]);
+            assert!(
+                area.entry(&key(1)).is_none() && area.entry(&key(last)).is_none(),
+                "the budget is still met once nothing held elsewhere is left"
+            );
+            assert!(
+                area.entry(&key(5)).is_some() && area.entry(&key(6)).is_some(),
+                "being held elsewhere never makes pinned or local-only content evictable"
+            );
         }
-        area.adopt_bytes(&key(5), &data, Retention::Pinned, &[])
-            .unwrap();
-        area.adopt_bytes(&key(6), &data, Retention::LocalOnly, &[])
-            .unwrap();
-        let last = *working_set.last().unwrap();
-        area.set_held_elsewhere(Arc::new(move || {
-            [key(3), key(4), key(last), key(5), key(6)].into()
-        }));
 
-        let cached = 100 * (4 + WORKING_SET_ENTRIES as u64);
-        area.set_budget(cached - 200);
-        assert_eq!(area.evict_to_budget(&[]), 200);
-        assert!(area.entry(&key(3)).is_none() && area.entry(&key(4)).is_none());
-        assert!(
-            area.entry(&key(1)).is_some() && area.entry(&key(2)).is_some(),
-            "content only this device's cache may still hold outlives what the host keeps"
-        );
-        assert!(
-            area.entry(&key(last)).is_some(),
-            "the working set is not given up for being held elsewhere"
-        );
-
-        area.set_budget(0);
-        area.evict_to_budget(&[]);
-        assert!(
-            area.entry(&key(1)).is_none() && area.entry(&key(last)).is_none(),
-            "the budget is still met once nothing held elsewhere is left"
-        );
-        assert!(
-            area.entry(&key(5)).is_some() && area.entry(&key(6)).is_some(),
-            "being held elsewhere never makes pinned or local-only content evictable"
-        );
-    }
-
-    #[test]
-    fn chunks_are_found_where_they_are_resident() {
-        let dir = tempfile::tempdir().unwrap();
-        let area = FileArea::open(dir.path(), u64::MAX).unwrap();
-        let chunks = [([9_u8; 32], 0_u64, 40_u32), ([8_u8; 32], 40, 60)];
-        area.ensure(&key(1), 100, Retention::Cached, &chunks)
-            .unwrap();
-        assert!(area.find_chunk(&[9; 32]).is_none(), "not resident yet");
-        area.write_at(&key(1), 0, &[1; 40]).unwrap();
-        area.mark_resident(&key(1), &[0..40], false).unwrap();
-        let found = area.find_chunk(&[9; 32]).unwrap();
-        assert_eq!((found.key, found.offset, found.len), (key(1), 0, 40));
-        assert!(area.find_chunk(&[8; 32]).is_none());
-        area.remove(&key(1)).unwrap();
-        assert!(area.find_chunk(&[9; 32]).is_none());
-        let reopened = {
-            drop(area);
-            FileArea::open(dir.path(), u64::MAX).unwrap()
-        };
-        assert!(reopened.find_chunk(&[9; 32]).is_none());
+        phase chunks_are_found_where_they_are_resident;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let area = FileArea::open(dir.path(), u64::MAX).unwrap();
+            let chunks = [([9_u8; 32], 0_u64, 40_u32), ([8_u8; 32], 40, 60)];
+            area.ensure(&key(1), 100, Retention::Cached, &chunks)
+                .unwrap();
+            assert!(area.find_chunk(&[9; 32]).is_none(), "not resident yet");
+            area.write_at(&key(1), 0, &[1; 40]).unwrap();
+            area.mark_resident(&key(1), &[0..40], false).unwrap();
+            let found = area.find_chunk(&[9; 32]).unwrap();
+            assert_eq!((found.key, found.offset, found.len), (key(1), 0, 40));
+            assert!(area.find_chunk(&[8; 32]).is_none());
+            area.remove(&key(1)).unwrap();
+            assert!(area.find_chunk(&[9; 32]).is_none());
+            let reopened = {
+                drop(area);
+                FileArea::open(dir.path(), u64::MAX).unwrap()
+            };
+            assert!(reopened.find_chunk(&[9; 32]).is_none());
+        }
     }
 
     #[test]

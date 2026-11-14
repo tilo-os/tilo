@@ -115,83 +115,111 @@ mod tests {
     use super::*;
     use fs::workspace_authority::PersistedContentPeer;
 
-    #[test]
-    fn saved_signed_authority_resumes_without_a_raw_root_key() {
-        use fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
-        let dir = tempfile::tempdir().unwrap();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
-        let person = root.verifying_key().to_bytes();
-        let workspace = ticket(2).workspace_id();
-        let envelope =
-            WorkspaceAuthorityEnvelope::sign(workspace, 7, Vec::new(), false, &root).unwrap();
-        let existing = WorkspaceAuthority::open(
-            dir.path().join("workspace-authority.bin"),
-            workspace,
-            person,
-            person,
-            Vec::new(),
-        )
-        .unwrap();
-        existing.apply(envelope.clone()).unwrap();
-        drop(existing);
-        let resumed = owner_authority(dir.path(), workspace, person, Vec::new(), None)
-            .unwrap()
-            .unwrap();
-        assert_eq!(resumed.current(), Some(envelope));
-        assert!(!dir.path().join("user-identity").exists());
-        assert!(
-            owner_authority(
-                dir.path(),
-                ticket(3).workspace_id(),
-                person,
-                Vec::new(),
-                None
-            )
-            .is_err()
-        );
-        let other = ed25519_dalek::SigningKey::from_bytes(&[43; 32])
-            .verifying_key()
-            .to_bytes();
-        assert!(owner_authority(dir.path(), workspace, other, Vec::new(), None).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn a_saved_signed_authority_is_what_resumes_a_workspace;
 
-    #[test]
-    fn missing_or_invalid_authority_cannot_be_replaced_without_a_signer() {
-        let dir = tempfile::tempdir().unwrap();
-        let person = ed25519_dalek::SigningKey::from_bytes(&[42; 32])
-            .verifying_key()
-            .to_bytes();
-        assert!(
-            owner_authority(
-                dir.path(),
-                ticket(2).workspace_id(),
+        phase saved_signed_authority_resumes_without_a_raw_root_key;
+        {
+            use fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
+            let dir = tempfile::tempdir().unwrap();
+            let root = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+            let person = root.verifying_key().to_bytes();
+            let workspace = ticket(2).workspace_id();
+            let envelope =
+                WorkspaceAuthorityEnvelope::sign(workspace, 7, Vec::new(), false, &root).unwrap();
+            let existing = WorkspaceAuthority::open(
+                dir.path().join("workspace-authority.bin"),
+                workspace,
+                person,
                 person,
                 Vec::new(),
-                None
+            )
+            .unwrap();
+            existing.apply(envelope.clone()).unwrap();
+            drop(existing);
+            let resumed = owner_authority(dir.path(), workspace, person, Vec::new(), None)
+                .unwrap()
+                .unwrap();
+            assert_eq!(resumed.current(), Some(envelope));
+            assert!(!dir.path().join("user-identity").exists());
+            assert!(
+                owner_authority(
+                    dir.path(),
+                    ticket(3).workspace_id(),
+                    person,
+                    Vec::new(),
+                    None
+                )
+                .is_err()
+            );
+            let other = ed25519_dalek::SigningKey::from_bytes(&[43; 32])
+                .verifying_key()
+                .to_bytes();
+            assert!(owner_authority(dir.path(), workspace, other, Vec::new(), None).is_err());
+        }
+
+        phase missing_or_invalid_authority_cannot_be_replaced_without_a_signer;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let person = ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+                .verifying_key()
+                .to_bytes();
+            assert!(
+                owner_authority(
+                    dir.path(),
+                    ticket(2).workspace_id(),
+                    person,
+                    Vec::new(),
+                    None
+                )
+                .unwrap()
+                .is_none()
+            );
+            assert!(!dir.path().join("workspace-authority.bin").exists());
+            std::fs::write(
+                dir.path().join("workspace-authority.bin"),
+                b"invalid saved authority",
+            )
+            .unwrap();
+            assert!(
+                owner_authority(
+                    dir.path(),
+                    ticket(2).workspace_id(),
+                    person,
+                    Vec::new(),
+                    None
+                )
+                .is_err()
+            );
+            assert_eq!(
+                std::fs::read(dir.path().join("workspace-authority.bin")).unwrap(),
+                b"invalid saved authority"
+            );
+        }
+
+        phase a_saved_signed_authority_resumes_a_workspace_with_no_tree_yet;
+        {
+            use fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
+            let dir = tempfile::tempdir().unwrap();
+            let root = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+            let person = root.verifying_key().to_bytes();
+            let workspace = Ticket::workspace_id_for_topic(person);
+            let envelope =
+                WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), false, &root).unwrap();
+            WorkspaceAuthority::open(
+                dir.path().join("workspace-authority.bin"),
+                workspace,
+                person,
+                person,
+                Vec::new(),
             )
             .unwrap()
-            .is_none()
-        );
-        assert!(!dir.path().join("workspace-authority.bin").exists());
-        std::fs::write(
-            dir.path().join("workspace-authority.bin"),
-            b"invalid saved authority",
-        )
-        .unwrap();
-        assert!(
-            owner_authority(
-                dir.path(),
-                ticket(2).workspace_id(),
-                person,
-                Vec::new(),
-                None
-            )
-            .is_err()
-        );
-        assert_eq!(
-            std::fs::read(dir.path().join("workspace-authority.bin")).unwrap(),
-            b"invalid saved authority"
-        );
+            .apply(envelope)
+            .unwrap();
+            assert!(!dir.path().join("namespace.bin").exists());
+            inspect(dir.path()).unwrap().require_existing().unwrap();
+            assert_eq!(inspect(dir.path()).unwrap().discovered_workspace_id, None);
+        }
     }
 
     fn ticket(topic: u8) -> Ticket {
@@ -214,104 +242,84 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn a_saved_signed_authority_resumes_a_workspace_with_no_tree_yet() {
-        use fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
-        let dir = tempfile::tempdir().unwrap();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
-        let person = root.verifying_key().to_bytes();
-        let workspace = Ticket::workspace_id_for_topic(person);
-        let envelope =
-            WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), false, &root).unwrap();
-        WorkspaceAuthority::open(
-            dir.path().join("workspace-authority.bin"),
-            workspace,
-            person,
-            person,
-            Vec::new(),
-        )
-        .unwrap()
-        .apply(envelope)
-        .unwrap();
-        assert!(!dir.path().join("namespace.bin").exists());
-        inspect(dir.path()).unwrap().require_existing().unwrap();
-        assert_eq!(inspect(dir.path()).unwrap().discovered_workspace_id, None);
-    }
+    tilo_test_env::scenario! {
+        fn startup_inspection_binds_one_workspace_or_fails_closed;
 
-    #[test]
-    fn missing_workspace_is_not_initialized_and_old_ticket_is_not_recovery() {
-        let dir = tempfile::tempdir().unwrap();
-        let missing = dir.path().join("absent-cache");
-        assert!(inspect(&missing).unwrap().require_existing().is_err());
-        assert!(!missing.exists());
-        std::fs::write(
-            dir.path().join("workspace-ticket"),
-            ticket(1).encode().unwrap(),
-        )
-        .unwrap();
-        assert!(inspect(dir.path()).unwrap().require_existing().is_err());
-        assert!(!dir.path().join("namespace.bin").exists());
-    }
+        phase missing_workspace_is_not_initialized_and_old_ticket_is_not_recovery;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let missing = dir.path().join("absent-cache");
+            assert!(inspect(&missing).unwrap().require_existing().is_err());
+            assert!(!missing.exists());
+            std::fs::write(
+                dir.path().join("workspace-ticket"),
+                ticket(1).encode().unwrap(),
+            )
+            .unwrap();
+            assert!(inspect(dir.path()).unwrap().require_existing().is_err());
+            assert!(!dir.path().join("namespace.bin").exists());
+        }
 
-    #[test]
-    fn discovered_binding_is_resumeable_and_output_never_contains_ticket() {
-        let dir = tempfile::tempdir().unwrap();
-        let binding = ticket(2);
-        discover(dir.path(), &binding);
-        let status = inspect(dir.path()).unwrap();
-        status.require_existing().unwrap();
-        assert_eq!(status.discovered_workspace_id, Some(binding.workspace_id()));
-        let json = serde_json::to_string(&status).unwrap();
-        assert!(!json.contains(&binding.encode().unwrap()));
-        assert!(!dir.path().join("namespace.bin").exists());
-    }
+        phase discovered_binding_is_resumeable_and_output_never_contains_ticket;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let binding = ticket(2);
+            discover(dir.path(), &binding);
+            let status = inspect(dir.path()).unwrap();
+            status.require_existing().unwrap();
+            assert_eq!(status.discovered_workspace_id, Some(binding.workspace_id()));
+            let json = serde_json::to_string(&status).unwrap();
+            assert!(!json.contains(&binding.encode().unwrap()));
+            assert!(!dir.path().join("namespace.bin").exists());
+        }
 
-    #[test]
-    fn saved_namespace_cannot_be_rebound_to_another_workspace() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("namespace.bin"), b"existing durable state").unwrap();
-        std::fs::write(
-            dir.path().join("workspace-ticket"),
-            ticket(3).encode().unwrap(),
-        )
-        .unwrap();
-        inspect(dir.path()).unwrap().require_existing().unwrap();
-        discover(dir.path(), &ticket(4));
-        assert!(inspect(dir.path()).is_err());
-        assert_eq!(
-            std::fs::read(dir.path().join("namespace.bin")).unwrap(),
-            b"existing durable state"
-        );
-    }
+        phase saved_namespace_cannot_be_rebound_to_another_workspace;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("namespace.bin"), b"existing durable state").unwrap();
+            std::fs::write(
+                dir.path().join("workspace-ticket"),
+                ticket(3).encode().unwrap(),
+            )
+            .unwrap();
+            inspect(dir.path()).unwrap().require_existing().unwrap();
+            discover(dir.path(), &ticket(4));
+            assert!(inspect(dir.path()).is_err());
+            assert_eq!(
+                std::fs::read(dir.path().join("namespace.bin")).unwrap(),
+                b"existing durable state"
+            );
+        }
 
-    #[test]
-    fn malformed_and_ambiguous_bindings_fail_closed() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("workspace-ticket"), b"invalid").unwrap();
-        assert!(inspect(dir.path()).is_err());
-        std::fs::remove_file(dir.path().join("workspace-ticket")).unwrap();
-        let peers: Vec<_> = [ticket(5), ticket(6)]
-            .into_iter()
-            .map(|t| PersistedContentPeer {
-                endpoint: t.node,
-                ticket: Some(
-                    Ticket {
-                        node: iroh_base::EndpointAddr::new(
-                            iroh::SecretKey::from_bytes(&[8; 32]).public(),
-                        ),
-                        workspace: t.workspace,
-                    }
-                    .encode()
-                    .unwrap(),
-                ),
-                relay_service_id: None,
-            })
-            .collect();
-        std::fs::write(
-            dir.path().join("content-peers.json"),
-            serde_json::to_vec(&peers).unwrap(),
-        )
-        .unwrap();
-        assert!(inspect(dir.path()).is_err());
+        phase malformed_and_ambiguous_bindings_fail_closed;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("workspace-ticket"), b"invalid").unwrap();
+            assert!(inspect(dir.path()).is_err());
+            std::fs::remove_file(dir.path().join("workspace-ticket")).unwrap();
+            let peers: Vec<_> = [ticket(5), ticket(6)]
+                .into_iter()
+                .map(|t| PersistedContentPeer {
+                    endpoint: t.node,
+                    ticket: Some(
+                        Ticket {
+                            node: iroh_base::EndpointAddr::new(
+                                iroh::SecretKey::from_bytes(&[8; 32]).public(),
+                            ),
+                            workspace: t.workspace,
+                        }
+                        .encode()
+                        .unwrap(),
+                    ),
+                    relay_service_id: None,
+                })
+                .collect();
+            std::fs::write(
+                dir.path().join("content-peers.json"),
+                serde_json::to_vec(&peers).unwrap(),
+            )
+            .unwrap();
+            assert!(inspect(dir.path()).is_err());
+        }
     }
 }

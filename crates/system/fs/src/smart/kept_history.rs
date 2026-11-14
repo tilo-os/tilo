@@ -514,18 +514,69 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pairs_round_trip_with_their_age() {
-        let now = SystemTime::now();
-        let pairs = vec![pair(1, 2, 2, 60), pair(3, 4, 5, 3600)];
-        let decoded = decode(&encode(&pairs, now), now).unwrap();
-        assert_eq!(decoded, pairs);
-        let later = now + Duration::from_secs(600);
-        assert_eq!(
-            decode(&encode(&pairs, now), later).unwrap()[0].age,
-            Duration::from_secs(660),
-            "a pair ages while the device is off"
-        );
+    tilo_test_env::scenario! {
+        fn the_kept_history_file_round_trips_and_is_refused_when_damaged;
+
+        phase pairs_round_trip_with_their_age;
+        {
+            let now = SystemTime::now();
+            let pairs = vec![pair(1, 2, 2, 60), pair(3, 4, 5, 3600)];
+            let decoded = decode(&encode(&pairs, now), now).unwrap();
+            assert_eq!(decoded, pairs);
+            let later = now + Duration::from_secs(600);
+            assert_eq!(
+                decode(&encode(&pairs, now), later).unwrap()[0].age,
+                Duration::from_secs(660),
+                "a pair ages while the device is off"
+            );
+        }
+
+        phase a_torn_or_altered_file_is_refused_whole;
+        {
+            let now = SystemTime::now();
+            let bytes = encode(&[pair(1, 2, 2, 60), pair(3, 4, 2, 60)], now);
+            for cut in [0, 5, HEADER_BYTES, bytes.len() - 1] {
+                assert!(decode(&bytes[..cut], now).is_err(), "torn at {cut}");
+            }
+            for index in 0..bytes.len() {
+                let mut altered = bytes.clone();
+                altered[index] ^= 0x40;
+                assert!(decode(&altered, now).is_err(), "byte {index} flipped");
+            }
+            let mut longer = bytes.clone();
+            longer.push(0);
+            assert!(decode(&longer, now).is_err());
+            assert_eq!(decode(b"", now), Err(Corrupt::Truncated));
+            let mut other_version = bytes;
+            other_version[7] = b'2';
+            assert_eq!(decode(&other_version, now), Err(Corrupt::WrongMagic));
+        }
+
+        phase a_checksummed_file_with_an_impossible_pair_is_refused;
+        {
+            let now = SystemTime::now();
+            let mut bytes = encode(&[pair(1, 2, 2, 60)], now);
+            bytes.truncate(bytes.len() - CHECKSUM_BYTES);
+            bytes[HEADER_BYTES + 16..HEADER_BYTES + 32].copy_from_slice(record(1).0.as_bytes());
+            let checksum = blake3::hash(&bytes);
+            bytes.extend_from_slice(checksum.as_bytes());
+            assert_eq!(decode(&bytes, now), Err(Corrupt::BadEntry));
+        }
+
+        phase only_the_served_workspace_keeps_a_file;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let served = Uuid::from_u128(1);
+            let removed = Uuid::from_u128(2);
+            for workspace in [served, removed] {
+                let path = path_for(root.path(), workspace);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, b"x").unwrap();
+            }
+            forget_other_workspaces(&path_for(root.path(), served));
+            assert!(path_for(root.path(), served).exists());
+            assert!(!path_for(root.path(), removed).exists());
+        }
     }
 
     #[test]
@@ -551,52 +602,5 @@ mod tests {
             decode(&bytes, much_later).unwrap().is_empty(),
             "pairs older than the bound are dropped on load"
         );
-    }
-
-    #[test]
-    fn a_torn_or_altered_file_is_refused_whole() {
-        let now = SystemTime::now();
-        let bytes = encode(&[pair(1, 2, 2, 60), pair(3, 4, 2, 60)], now);
-        for cut in [0, 5, HEADER_BYTES, bytes.len() - 1] {
-            assert!(decode(&bytes[..cut], now).is_err(), "torn at {cut}");
-        }
-        for index in 0..bytes.len() {
-            let mut altered = bytes.clone();
-            altered[index] ^= 0x40;
-            assert!(decode(&altered, now).is_err(), "byte {index} flipped");
-        }
-        let mut longer = bytes.clone();
-        longer.push(0);
-        assert!(decode(&longer, now).is_err());
-        assert_eq!(decode(b"", now), Err(Corrupt::Truncated));
-        let mut other_version = bytes;
-        other_version[7] = b'2';
-        assert_eq!(decode(&other_version, now), Err(Corrupt::WrongMagic));
-    }
-
-    #[test]
-    fn a_checksummed_file_with_an_impossible_pair_is_refused() {
-        let now = SystemTime::now();
-        let mut bytes = encode(&[pair(1, 2, 2, 60)], now);
-        bytes.truncate(bytes.len() - CHECKSUM_BYTES);
-        bytes[HEADER_BYTES + 16..HEADER_BYTES + 32].copy_from_slice(record(1).0.as_bytes());
-        let checksum = blake3::hash(&bytes);
-        bytes.extend_from_slice(checksum.as_bytes());
-        assert_eq!(decode(&bytes, now), Err(Corrupt::BadEntry));
-    }
-
-    #[test]
-    fn only_the_served_workspace_keeps_a_file() {
-        let root = tempfile::tempdir().unwrap();
-        let served = Uuid::from_u128(1);
-        let removed = Uuid::from_u128(2);
-        for workspace in [served, removed] {
-            let path = path_for(root.path(), workspace);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, b"x").unwrap();
-        }
-        forget_other_workspaces(&path_for(root.path(), served));
-        assert!(path_for(root.path(), served).exists());
-        assert!(!path_for(root.path(), removed).exists());
     }
 }

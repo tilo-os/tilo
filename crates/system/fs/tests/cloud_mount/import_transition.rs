@@ -76,146 +76,257 @@ fn mode(root: &Path, mode: FilesMode) {
     store.save_in(root).unwrap();
 }
 
-#[test]
-fn preparation_rejects_configuration_not_owned_by_the_active_mount() {
-    let server = FakeDav::generic();
-    server.put("a.txt", b"original");
-    let mut account = serve(&server);
-    let mut store = accounts::AccountStore::load_in(account.config_root.path());
-    let original = store
-        .get(&accounts::AccountId::from("files-1"))
-        .unwrap()
-        .clone();
-    let mut changed = original.clone();
-    changed.config["server_url"] = "https://changed.example/".into();
-    store.upsert(changed);
-    store.save_in(account.config_root.path()).unwrap();
-    assert!(matches!(
-        account.service.request(
-            CloudRequest::PrepareImport {
-                account: "files-1".into()
-            },
-            tilo_test_env::hang_bound(),
-        ),
-        CloudResponse::Error(_)
-    ));
-    let ino = account.volume.resolve("a.txt").unwrap();
-    let writer = account.volume.open_file(ino, true, false).unwrap();
-    account.volume.write(writer, 0, b"retained").unwrap();
-    account.volume.release(writer).unwrap();
-    account.volume.upload_pending().unwrap();
-    assert_eq!(server.get("a.txt").unwrap(), b"retained");
-    store.upsert(original);
-    store.save_in(account.config_root.path()).unwrap();
-    account.service.shutdown();
-}
+tilo_test_env::scenario! {
+    fn an_import_transition_holds_the_mount_and_commits_or_restores_it;
 
-#[test]
-fn import_freeze_rejects_ordinary_mutations_and_new_writable_handles() {
-    let server = FakeDav::generic();
-    server.put("a.txt", b"original");
-    let dir = tempfile::tempdir().unwrap();
-    let mount = mount_volume(&server, dir.path());
-    let volume = &mount.volume;
-    volume.sync_once().unwrap();
-    let ino = volume.resolve("a.txt").unwrap();
-    let reader = volume.open_file(ino, false, false).unwrap();
-    volume.prepare_import().unwrap();
-    assert_eq!(volume.open_file(ino, true, false), Err(libc::EROFS));
-    assert_eq!(volume.write(reader, 0, b"changed"), Err(libc::EROFS));
-    assert_eq!(volume.truncate(ino, 0), Err(libc::EROFS));
-    assert_eq!(volume.create(ROOT_INO, "new.txt"), Err(libc::EROFS));
-    assert_eq!(volume.mkdir(ROOT_INO, "new"), Err(libc::EROFS));
-    assert_eq!(volume.unlink(ROOT_INO, "a.txt"), Err(libc::EROFS));
-    assert_eq!(
-        volume.rename(ROOT_INO, "a.txt", ROOT_INO, "b.txt"),
-        Err(libc::EROFS)
-    );
-    assert_eq!(volume.read(reader, 0, 8).unwrap(), b"original");
-    assert_eq!(server.get("a.txt").unwrap(), b"original");
-    volume.shutdown();
-}
+    phase preparation_rejects_configuration_not_owned_by_the_active_mount;
+    {
+        let server = FakeDav::generic();
+        server.put("a.txt", b"original");
+        let mut account = serve(&server);
+        let mut store = accounts::AccountStore::load_in(account.config_root.path());
+        let original = store
+            .get(&accounts::AccountId::from("files-1"))
+            .unwrap()
+            .clone();
+        let mut changed = original.clone();
+        changed.config["server_url"] = "https://changed.example/".into();
+        store.upsert(changed);
+        store.save_in(account.config_root.path()).unwrap();
+        assert!(matches!(
+            account.service.request(
+                CloudRequest::PrepareImport {
+                    account: "files-1".into()
+                },
+                tilo_test_env::hang_bound(),
+            ),
+            CloudResponse::Error(_)
+        ));
+        let ino = account.volume.resolve("a.txt").unwrap();
+        let writer = account.volume.open_file(ino, true, false).unwrap();
+        account.volume.write(writer, 0, b"retained").unwrap();
+        account.volume.release(writer).unwrap();
+        account.volume.upload_pending().unwrap();
+        assert_eq!(server.get("a.txt").unwrap(), b"retained");
+        store.upsert(original);
+        store.save_in(account.config_root.path()).unwrap();
+        account.service.shutdown();
+    }
 
-#[test]
-fn writable_handle_and_pending_queue_fail_without_losing_edits() {
-    let server = FakeDav::generic();
-    server.put("a.txt", b"original");
-    let mut account = serve(&server);
-    let ino = account.volume.resolve("a.txt").unwrap();
-    let writer = account.volume.open_file(ino, true, false).unwrap();
-    assert!(matches!(
-        account.service.request(
-            CloudRequest::PrepareImport {
-                account: "files-1".into()
-            },
-            tilo_test_env::hang_bound(),
-        ),
-        CloudResponse::Error(_)
-    ));
-    // The failed freeze must not leave even an existing staged handle read-only.
-    account.volume.write(writer, 0, b"modified").unwrap();
-    account.volume.release(writer).unwrap();
-    assert_eq!(account.volume.pending(), 1);
-    assert!(matches!(
-        account.service.request(
-            CloudRequest::PrepareImport {
-                account: "files-1".into()
-            },
-            tilo_test_env::hang_bound(),
-        ),
-        CloudResponse::Error(_)
-    ));
-    assert_eq!(account.volume.pending(), 1);
-    let writer = account.volume.open_file(ino, true, false).unwrap();
-    account.volume.write(writer, 0, b"retained").unwrap();
-    account.volume.release(writer).unwrap();
-    account.volume.upload_pending().unwrap();
-    assert_eq!(server.get("a.txt").unwrap(), b"retained");
-    let _ = prepare(&mut account.service);
-    account.service.shutdown();
-}
+    phase import_freeze_rejects_ordinary_mutations_and_new_writable_handles;
+    {
+        let server = FakeDav::generic();
+        server.put("a.txt", b"original");
+        let dir = tempfile::tempdir().unwrap();
+        let mount = mount_volume(&server, dir.path());
+        let volume = &mount.volume;
+        volume.sync_once().unwrap();
+        let ino = volume.resolve("a.txt").unwrap();
+        let reader = volume.open_file(ino, false, false).unwrap();
+        volume.prepare_import().unwrap();
+        assert_eq!(volume.open_file(ino, true, false), Err(libc::EROFS));
+        assert_eq!(volume.write(reader, 0, b"changed"), Err(libc::EROFS));
+        assert_eq!(volume.truncate(ino, 0), Err(libc::EROFS));
+        assert_eq!(volume.create(ROOT_INO, "new.txt"), Err(libc::EROFS));
+        assert_eq!(volume.mkdir(ROOT_INO, "new"), Err(libc::EROFS));
+        assert_eq!(volume.unlink(ROOT_INO, "a.txt"), Err(libc::EROFS));
+        assert_eq!(
+            volume.rename(ROOT_INO, "a.txt", ROOT_INO, "b.txt"),
+            Err(libc::EROFS)
+        );
+        assert_eq!(volume.read(reader, 0, 8).unwrap(), b"original");
+        assert_eq!(server.get("a.txt").unwrap(), b"original");
+        volume.shutdown();
+    }
 
-#[test]
-fn mode_commit_consumes_hold_and_preserves_the_cache_directory() {
-    let server = FakeDav::generic();
-    server.put("a.txt", b"original");
-    let mut account = serve(&server);
-    let token = prepare(&mut account.service);
-    assert_eq!(
-        account.service.request(
-            CloudRequest::BeginCommitImport {
+    phase writable_handle_and_pending_queue_fail_without_losing_edits;
+    {
+        let server = FakeDav::generic();
+        server.put("a.txt", b"original");
+        let mut account = serve(&server);
+        let ino = account.volume.resolve("a.txt").unwrap();
+        let writer = account.volume.open_file(ino, true, false).unwrap();
+        assert!(matches!(
+            account.service.request(
+                CloudRequest::PrepareImport {
+                    account: "files-1".into()
+                },
+                tilo_test_env::hang_bound(),
+            ),
+            CloudResponse::Error(_)
+        ));
+        // The failed freeze must not leave even an existing staged handle read-only.
+        account.volume.write(writer, 0, b"modified").unwrap();
+        account.volume.release(writer).unwrap();
+        assert_eq!(account.volume.pending(), 1);
+        assert!(matches!(
+            account.service.request(
+                CloudRequest::PrepareImport {
+                    account: "files-1".into()
+                },
+                tilo_test_env::hang_bound(),
+            ),
+            CloudResponse::Error(_)
+        ));
+        assert_eq!(account.volume.pending(), 1);
+        let writer = account.volume.open_file(ino, true, false).unwrap();
+        account.volume.write(writer, 0, b"retained").unwrap();
+        account.volume.release(writer).unwrap();
+        account.volume.upload_pending().unwrap();
+        assert_eq!(server.get("a.txt").unwrap(), b"retained");
+        let _ = prepare(&mut account.service);
+        account.service.shutdown();
+    }
+
+    phase mode_commit_consumes_hold_and_preserves_the_cache_directory;
+    {
+        let server = FakeDav::generic();
+        server.put("a.txt", b"original");
+        let mut account = serve(&server);
+        let token = prepare(&mut account.service);
+        assert_eq!(
+            account.service.request(
+                CloudRequest::BeginCommitImport {
+                    account: "files-1".into(),
+                    token: token.clone()
+                },
+                tilo_test_env::hang_bound(),
+            ),
+            CloudResponse::Done
+        );
+        assert!(account.service.mounted().is_empty());
+        assert!(account.launcher.volume("files-1").is_none());
+        account.service.reconcile();
+        assert!(
+            account.service.mounted().is_empty(),
+            "reconcile remounted a held account"
+        );
+        mode(account.config_root.path(), FilesMode::Import);
+        account.service.reconcile();
+        assert!(account.service.mounted().is_empty());
+        assert!(account.home.path().join("state").exists());
+        assert_eq!(
+            account.service.request(
+                CloudRequest::CompleteImport {
+                    account: "files-1".into(),
+                    token
+                },
+                tilo_test_env::hang_bound(),
+            ),
+            CloudResponse::Done
+        );
+        mode(account.config_root.path(), FilesMode::Sync);
+        account.service.reconcile();
+        assert_eq!(account.service.mounted().len(), 1);
+        account.service.shutdown();
+    }
+
+    phase interrupted_commit_has_explicit_recovery_before_and_after_metadata_save;
+    {
+        for saved in [false, true] {
+            let server = FakeDav::generic();
+            server.put("a.txt", b"original");
+            let mut account = serve(&server);
+            let token = prepare(&mut account.service);
+            let writer =
+                runtime_fs::cloud::import_writer_lock(account.config_root.path(), "files-1").unwrap();
+            assert_eq!(
+                account.service.request(
+                    CloudRequest::BeginCommitImport {
+                        account: "files-1".into(),
+                        token
+                    },
+                    tilo_test_env::hang_bound(),
+                ),
+                CloudResponse::Done
+            );
+            account.service.shutdown();
+            account.service = CloudService::new(
+                service_config(account.config_root.path(), account.home.path()),
+                Box::new(account.launcher.clone()),
+            );
+            account.service.reconcile();
+            assert!(account.service.mounted().is_empty());
+            let recover = CloudRequest::RecoverImport {
                 account: "files-1".into(),
-                token: token.clone()
-            },
-            tilo_test_env::hang_bound(),
-        ),
-        CloudResponse::Done
-    );
-    assert!(account.service.mounted().is_empty());
-    assert!(account.launcher.volume("files-1").is_none());
-    account.service.reconcile();
-    assert!(
-        account.service.mounted().is_empty(),
-        "reconcile remounted a held account"
-    );
-    mode(account.config_root.path(), FilesMode::Import);
-    account.service.reconcile();
-    assert!(account.service.mounted().is_empty());
-    assert!(account.home.path().join("state").exists());
-    assert_eq!(
-        account.service.request(
-            CloudRequest::CompleteImport {
-                account: "files-1".into(),
-                token
-            },
-            tilo_test_env::hang_bound(),
-        ),
-        CloudResponse::Done
-    );
-    mode(account.config_root.path(), FilesMode::Sync);
-    account.service.reconcile();
-    assert_eq!(account.service.mounted().len(), 1);
-    account.service.shutdown();
+            };
+            assert!(matches!(
+                account
+                    .service
+                    .request(recover.clone(), tilo_test_env::hang_bound()),
+                CloudResponse::Error(_)
+            ));
+            if saved {
+                mode(account.config_root.path(), FilesMode::Import);
+            }
+            drop(writer);
+            assert_eq!(
+                account
+                    .service
+                    .request(recover, tilo_test_env::hang_bound()),
+                CloudResponse::Done
+            );
+            assert_eq!(account.service.mounted().len(), usize::from(!saved));
+            if !saved {
+                let restored = account.launcher.volume("files-1").unwrap();
+                let ino = restored.resolve("a.txt").unwrap();
+                let writer = restored.open_file(ino, true, false).unwrap();
+                restored.write(writer, 0, b"retained").unwrap();
+                restored.release(writer).unwrap();
+                restored.upload_pending().unwrap();
+                assert_eq!(server.get("a.txt").unwrap(), b"retained");
+            }
+            account.service.shutdown();
+        }
+    }
+
+    phase import_tokens_are_bound_to_account_and_public_configuration;
+    {
+        let server = FakeDav::generic();
+        let mut account = serve(&server);
+        let token = prepare(&mut account.service);
+        assert!(matches!(
+            account.service.request(
+                CloudRequest::AbortImport {
+                    account: "another-account".into(),
+                    token: token.clone()
+                },
+                tilo_test_env::hang_bound(),
+            ),
+            CloudResponse::Error(_)
+        ));
+        let mut store = accounts::AccountStore::load_in(account.config_root.path());
+        let mut config = store
+            .get(&accounts::AccountId::from("files-1"))
+            .unwrap()
+            .clone();
+        config.display_name = "Changed".into();
+        store.upsert(config);
+        store.save_in(account.config_root.path()).unwrap();
+        assert!(matches!(
+            account.service.request(
+                CloudRequest::BeginCommitImport {
+                    account: "files-1".into(),
+                    token: token.clone()
+                },
+                tilo_test_env::hang_bound(),
+            ),
+            CloudResponse::Error(_)
+        ));
+        assert!(matches!(
+            account.service.request(
+                CloudRequest::AbortImport {
+                    account: "files-1".into(),
+                    token
+                },
+                tilo_test_env::hang_bound(),
+            ),
+            CloudResponse::Error(_)
+        ));
+        account.service.reconcile();
+        assert_eq!(account.service.mounted().len(), 1);
+        account.service.shutdown();
+    }
 }
 
 #[test]
@@ -283,111 +394,4 @@ fn failed_metadata_save_abort_restores_prior_pause_and_sync_state() {
         assert_eq!(server.get("a.txt").unwrap(), b"restored");
         account.service.shutdown();
     }
-}
-
-#[test]
-fn interrupted_commit_has_explicit_recovery_before_and_after_metadata_save() {
-    for saved in [false, true] {
-        let server = FakeDav::generic();
-        server.put("a.txt", b"original");
-        let mut account = serve(&server);
-        let token = prepare(&mut account.service);
-        let writer =
-            runtime_fs::cloud::import_writer_lock(account.config_root.path(), "files-1").unwrap();
-        assert_eq!(
-            account.service.request(
-                CloudRequest::BeginCommitImport {
-                    account: "files-1".into(),
-                    token
-                },
-                tilo_test_env::hang_bound(),
-            ),
-            CloudResponse::Done
-        );
-        account.service.shutdown();
-        account.service = CloudService::new(
-            service_config(account.config_root.path(), account.home.path()),
-            Box::new(account.launcher.clone()),
-        );
-        account.service.reconcile();
-        assert!(account.service.mounted().is_empty());
-        let recover = CloudRequest::RecoverImport {
-            account: "files-1".into(),
-        };
-        assert!(matches!(
-            account
-                .service
-                .request(recover.clone(), tilo_test_env::hang_bound()),
-            CloudResponse::Error(_)
-        ));
-        if saved {
-            mode(account.config_root.path(), FilesMode::Import);
-        }
-        drop(writer);
-        assert_eq!(
-            account
-                .service
-                .request(recover, tilo_test_env::hang_bound()),
-            CloudResponse::Done
-        );
-        assert_eq!(account.service.mounted().len(), usize::from(!saved));
-        if !saved {
-            let restored = account.launcher.volume("files-1").unwrap();
-            let ino = restored.resolve("a.txt").unwrap();
-            let writer = restored.open_file(ino, true, false).unwrap();
-            restored.write(writer, 0, b"retained").unwrap();
-            restored.release(writer).unwrap();
-            restored.upload_pending().unwrap();
-            assert_eq!(server.get("a.txt").unwrap(), b"retained");
-        }
-        account.service.shutdown();
-    }
-}
-
-#[test]
-fn import_tokens_are_bound_to_account_and_public_configuration() {
-    let server = FakeDav::generic();
-    let mut account = serve(&server);
-    let token = prepare(&mut account.service);
-    assert!(matches!(
-        account.service.request(
-            CloudRequest::AbortImport {
-                account: "another-account".into(),
-                token: token.clone()
-            },
-            tilo_test_env::hang_bound(),
-        ),
-        CloudResponse::Error(_)
-    ));
-    let mut store = accounts::AccountStore::load_in(account.config_root.path());
-    let mut config = store
-        .get(&accounts::AccountId::from("files-1"))
-        .unwrap()
-        .clone();
-    config.display_name = "Changed".into();
-    store.upsert(config);
-    store.save_in(account.config_root.path()).unwrap();
-    assert!(matches!(
-        account.service.request(
-            CloudRequest::BeginCommitImport {
-                account: "files-1".into(),
-                token: token.clone()
-            },
-            tilo_test_env::hang_bound(),
-        ),
-        CloudResponse::Error(_)
-    ));
-    assert!(matches!(
-        account.service.request(
-            CloudRequest::AbortImport {
-                account: "files-1".into(),
-                token
-            },
-            tilo_test_env::hang_bound(),
-        ),
-        CloudResponse::Error(_)
-    ));
-    account.service.reconcile();
-    assert_eq!(account.service.mounted().len(), 1);
-    account.service.shutdown();
 }

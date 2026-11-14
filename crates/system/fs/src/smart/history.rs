@@ -465,252 +465,260 @@ mod tests {
         history.predict(DIR, *files.last().unwrap(), siblings)
     }
 
-    #[test]
-    fn natural_order_reads_numbers_by_value() {
-        assert_eq!(
-            names_in_natural_order(&["page-10.pdf", "page-2.pdf", "page-1.pdf", "Page-3.pdf"]),
-            ["page-1.pdf", "page-2.pdf", "Page-3.pdf", "page-10.pdf"]
-        );
-        assert_eq!(
-            names_in_natural_order(&["IMG_0100.jpg", "IMG_0099.jpg", "IMG_99.jpg"]),
-            ["IMG_0099.jpg", "IMG_99.jpg", "IMG_0100.jpg"],
-            "leading zeros tie on value and fall back to the bytes"
-        );
-        assert_eq!(
-            names_in_natural_order(&["b", "a10", "a9b", "a9", "a"]),
-            ["a", "a9", "a9b", "a10", "b"]
-        );
-        assert_eq!(natural_cmp(b"x", b"x"), Ordering::Equal);
-        assert_ne!(
-            natural_cmp(b"X", b"x"),
-            Ordering::Equal,
-            "the order is total"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_sequence_of_opens_predicts_the_files_ahead_in_natural_order;
 
-    #[test]
-    fn a_cold_open_predicts_the_next_two_files() {
-        let siblings = [10, 11, 12, 13, 14];
-        let mut history = AccessHistory::new();
-        let prediction = open_in_turn(&mut history, Instant::now(), &[11], &siblings);
-        assert_eq!(prediction.siblings, [12, 13]);
-        assert!(prediction.together.is_empty());
-    }
-
-    #[test]
-    fn a_sequence_predicts_further_ahead_the_longer_it_runs() {
-        let siblings: Vec<u64> = (100..112).collect();
-        let start = Instant::now();
-        let mut history = AccessHistory::new();
-        assert_eq!(
-            open_in_turn(&mut history, start, &[100, 101], &siblings).siblings,
-            [102, 103],
-            "1, 2 → 3, 4"
-        );
-        let mut history = AccessHistory::new();
-        assert_eq!(
-            open_in_turn(&mut history, start, &[100, 101, 102], &siblings).siblings,
-            [103, 104, 105, 106]
-        );
-        let mut history = AccessHistory::new();
-        assert_eq!(
-            open_in_turn(&mut history, start, &[108, 109, 110], &siblings).siblings,
-            [111],
-            "a run's lookahead stops at the last file"
-        );
-        let mut history = AccessHistory::new();
-        assert_eq!(
-            open_in_turn(&mut history, start, &[111], &siblings).siblings,
-            [110, 109],
-            "a cold open of the last file looks back"
-        );
-        let mut history = AccessHistory::new();
-        assert_eq!(
-            open_in_turn(&mut history, start, &[110], &siblings).siblings,
-            [111, 109]
-        );
-    }
-
-    #[test]
-    fn a_backwards_sequence_predicts_backwards() {
-        let siblings: Vec<u64> = (100..112).collect();
-        let mut history = AccessHistory::new();
-        assert_eq!(
-            open_in_turn(&mut history, Instant::now(), &[106, 105, 104], &siblings).siblings,
-            [103, 102, 101, 100]
-        );
-    }
-
-    #[test]
-    fn jumps_stale_opens_and_other_directories_break_a_sequence() {
-        let siblings: Vec<u64> = (100..112).collect();
-        let start = Instant::now();
-        let mut history = AccessHistory::new();
-        assert_eq!(
-            open_in_turn(&mut history, start, &[100, 101, 105], &siblings).siblings,
-            [106, 107],
-            "a jump ends the run"
-        );
-
-        let mut history = AccessHistory::new();
-        history.record(DIR, 100, start);
-        let later = start + SEQUENCE_GAP + Duration::from_secs(1);
-        history.record(DIR, 101, later);
-        history.record(DIR, 102, later + Duration::from_secs(1));
-        assert_eq!(
-            history.predict(DIR, 102, &siblings).siblings,
-            [103, 104],
-            "an open long ago is not part of the run"
-        );
-
-        let mut history = AccessHistory::new();
-        for (offset, (dir, file)) in [(DIR, 100), (2, 500), (DIR, 101), (2, 501), (DIR, 102)]
-            .into_iter()
-            .enumerate()
+        phase natural_order_reads_numbers_by_value;
         {
-            history.record(dir, file, start + Duration::from_secs(offset as u64));
-        }
-        assert_eq!(
-            history.predict(DIR, 102, &siblings).siblings,
-            [103, 104, 105, 106],
-            "opens elsewhere in between do not break the run"
-        );
-
-        let mut history = AccessHistory::new();
-        for (offset, (dir, file)) in [(DIR, 100), (DIR, 101), (2, 500), (DIR, 101), (DIR, 102)]
-            .into_iter()
-            .enumerate()
-        {
-            history.record(dir, file, start + Duration::from_secs(offset as u64));
-        }
-        assert_eq!(
-            history.predict(DIR, 102, &siblings).siblings,
-            [103, 104, 105, 106],
-            "a reopen of the same file is one open"
-        );
-    }
-
-    #[test]
-    fn files_opened_together_on_two_occasions_predict_each_other() {
-        let start = Instant::now();
-        let mut history = AccessHistory::new();
-        history.record(DIR, 7, start);
-        history.record(2, 900, start + Duration::from_secs(20));
-        assert!(
-            history.predict(DIR, 7, &[7]).together.is_empty(),
-            "one occasion is not a habit"
-        );
-        history.record(DIR, 7, start + Duration::from_secs(40));
-        history.record(2, 900, start + Duration::from_secs(50));
-        assert!(history.predict(DIR, 7, &[7]).together.is_empty());
-
-        // The next afternoon, the report alone is enough to predict the
-        // figure, and the figure the report.
-        let later = start + Duration::from_secs(6 * 3600);
-        history.record(DIR, 7, later);
-        history.record(2, 900, later + Duration::from_secs(30));
-        history.record(3, 42, later + TOGETHER_WINDOW * 2);
-        history.record(DIR, 7, later + TOGETHER_WINDOW * 4);
-        assert_eq!(history.predict(DIR, 7, &[7]).together, [900]);
-        assert_eq!(history.predict(2, 900, &[900]).together, [7]);
-        assert!(
-            history.predict(3, 42, &[42]).together.is_empty(),
-            "a file opened alone pairs with nothing"
-        );
-    }
-
-    #[test]
-    fn co_access_partners_already_predicted_as_siblings_are_not_repeated() {
-        let siblings = [1, 2, 3];
-        let start = Instant::now();
-        let mut history = AccessHistory::new();
-        for occasion in 0..2_u64 {
-            let at = start + Duration::from_secs(occasion * 3600);
-            history.record(DIR, 1, at);
-            history.record(DIR, 2, at + Duration::from_secs(5));
-        }
-        history.record(DIR, 1, start + Duration::from_secs(3 * 3600));
-        let prediction = history.predict(DIR, 1, &siblings);
-        assert_eq!(prediction.siblings, [2, 3]);
-        assert!(prediction.together.is_empty());
-    }
-
-    #[test]
-    fn restored_pairs_predict_and_keep_counting_occasions() {
-        let start = Instant::now();
-        let mut earlier = AccessHistory::new();
-        for occasion in 0..2_u64 {
-            let at = start + Duration::from_secs(occasion * 3600);
-            earlier.record(DIR, 1, at);
-            earlier.record(2, 9, at + Duration::from_secs(5));
-        }
-        earlier.record(3, 5, start + Duration::from_secs(7200));
-        earlier.record(3, 6, start + Duration::from_secs(7201));
-        let now = start + Duration::from_secs(7300);
-        let kept = earlier.pairs(now);
-        assert_eq!(kept.len(), 2);
-
-        let mut later = AccessHistory::new();
-        let restart = Instant::now();
-        for pair in kept {
-            let week = Duration::from_secs(7 * 24 * 3600);
-            later.restore_pair(
-                PairRecord {
-                    age: pair.age + week,
-                    ..pair
-                },
-                restart,
+            assert_eq!(
+                names_in_natural_order(&["page-10.pdf", "page-2.pdf", "page-1.pdf", "Page-3.pdf"]),
+                ["page-1.pdf", "page-2.pdf", "Page-3.pdf", "page-10.pdf"]
+            );
+            assert_eq!(
+                names_in_natural_order(&["IMG_0100.jpg", "IMG_0099.jpg", "IMG_99.jpg"]),
+                ["IMG_0099.jpg", "IMG_99.jpg", "IMG_0100.jpg"],
+                "leading zeros tie on value and fall back to the bytes"
+            );
+            assert_eq!(
+                names_in_natural_order(&["b", "a10", "a9b", "a9", "a"]),
+                ["a", "a9", "a9b", "a10", "b"]
+            );
+            assert_eq!(natural_cmp(b"x", b"x"), Ordering::Equal);
+            assert_ne!(
+                natural_cmp(b"X", b"x"),
+                Ordering::Equal,
+                "the order is total"
             );
         }
-        later.record(DIR, 1, restart);
-        assert_eq!(later.predict(DIR, 1, &[1]).together, [9]);
-        assert!(
-            later.predict(3, 5, &[5]).together.is_empty(),
-            "one occasion before the restart is not yet a habit"
-        );
-        later.record(3, 5, restart + Duration::from_secs(10));
-        later.record(3, 6, restart + Duration::from_secs(11));
-        assert_eq!(
-            later.predict(3, 5, &[5]).together,
-            [6],
-            "but it counts towards one after"
-        );
-        let ages: Vec<Duration> = later
-            .pairs(restart)
-            .into_iter()
-            .filter(|pair| (pair.a, pair.b) == (1, 9))
-            .map(|pair| pair.age)
-            .collect();
-        assert_eq!(ages.len(), 1);
-        assert!(
-            ages[0] >= Duration::from_secs(7 * 24 * 3600),
-            "a restored pair keeps its age: {ages:?}"
-        );
-    }
 
-    #[test]
-    fn the_revision_moves_only_when_pairs_change() {
-        let start = Instant::now();
-        let mut history = AccessHistory::new();
-        let revision = history.revision();
-        history.record(DIR, 1, start);
-        assert_eq!(history.revision(), revision, "an open alone pairs nothing");
-        history.record(DIR, 2, start + Duration::from_secs(1));
-        assert_ne!(history.revision(), revision);
-        let revision = history.revision();
-        history.clear();
-        assert_ne!(history.revision(), revision);
-        assert!(history.pairs(start).is_empty());
-    }
-
-    #[test]
-    fn the_history_is_bounded() {
-        let start = Instant::now();
-        let mut history = AccessHistory::new();
-        for file in 0..(MAX_PAIRS as u64 * 2) {
-            history.record(DIR, file, start + Duration::from_millis(file));
+        phase a_cold_open_predicts_the_next_two_files;
+        {
+            let siblings = [10, 11, 12, 13, 14];
+            let mut history = AccessHistory::new();
+            let prediction = open_in_turn(&mut history, Instant::now(), &[11], &siblings);
+            assert_eq!(prediction.siblings, [12, 13]);
+            assert!(prediction.together.is_empty());
         }
-        assert!(history.recent.len() <= HISTORY_LEN);
-        assert!(history.together.len() <= MAX_PAIRS);
+
+        phase a_sequence_predicts_further_ahead_the_longer_it_runs;
+        {
+            let siblings: Vec<u64> = (100..112).collect();
+            let start = Instant::now();
+            let mut history = AccessHistory::new();
+            assert_eq!(
+                open_in_turn(&mut history, start, &[100, 101], &siblings).siblings,
+                [102, 103],
+                "1, 2 → 3, 4"
+            );
+            let mut history = AccessHistory::new();
+            assert_eq!(
+                open_in_turn(&mut history, start, &[100, 101, 102], &siblings).siblings,
+                [103, 104, 105, 106]
+            );
+            let mut history = AccessHistory::new();
+            assert_eq!(
+                open_in_turn(&mut history, start, &[108, 109, 110], &siblings).siblings,
+                [111],
+                "a run's lookahead stops at the last file"
+            );
+            let mut history = AccessHistory::new();
+            assert_eq!(
+                open_in_turn(&mut history, start, &[111], &siblings).siblings,
+                [110, 109],
+                "a cold open of the last file looks back"
+            );
+            let mut history = AccessHistory::new();
+            assert_eq!(
+                open_in_turn(&mut history, start, &[110], &siblings).siblings,
+                [111, 109]
+            );
+        }
+
+        phase a_backwards_sequence_predicts_backwards;
+        {
+            let siblings: Vec<u64> = (100..112).collect();
+            let mut history = AccessHistory::new();
+            assert_eq!(
+                open_in_turn(&mut history, Instant::now(), &[106, 105, 104], &siblings).siblings,
+                [103, 102, 101, 100]
+            );
+        }
+
+        phase jumps_stale_opens_and_other_directories_break_a_sequence;
+        {
+            let siblings: Vec<u64> = (100..112).collect();
+            let start = Instant::now();
+            let mut history = AccessHistory::new();
+            assert_eq!(
+                open_in_turn(&mut history, start, &[100, 101, 105], &siblings).siblings,
+                [106, 107],
+                "a jump ends the run"
+            );
+
+            let mut history = AccessHistory::new();
+            history.record(DIR, 100, start);
+            let later = start + SEQUENCE_GAP + Duration::from_secs(1);
+            history.record(DIR, 101, later);
+            history.record(DIR, 102, later + Duration::from_secs(1));
+            assert_eq!(
+                history.predict(DIR, 102, &siblings).siblings,
+                [103, 104],
+                "an open long ago is not part of the run"
+            );
+
+            let mut history = AccessHistory::new();
+            for (offset, (dir, file)) in [(DIR, 100), (2, 500), (DIR, 101), (2, 501), (DIR, 102)]
+                .into_iter()
+                .enumerate()
+            {
+                history.record(dir, file, start + Duration::from_secs(offset as u64));
+            }
+            assert_eq!(
+                history.predict(DIR, 102, &siblings).siblings,
+                [103, 104, 105, 106],
+                "opens elsewhere in between do not break the run"
+            );
+
+            let mut history = AccessHistory::new();
+            for (offset, (dir, file)) in [(DIR, 100), (DIR, 101), (2, 500), (DIR, 101), (DIR, 102)]
+                .into_iter()
+                .enumerate()
+            {
+                history.record(dir, file, start + Duration::from_secs(offset as u64));
+            }
+            assert_eq!(
+                history.predict(DIR, 102, &siblings).siblings,
+                [103, 104, 105, 106],
+                "a reopen of the same file is one open"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn files_opened_together_predict_each_other_within_bounds;
+
+        phase files_opened_together_on_two_occasions_predict_each_other;
+        {
+            let start = Instant::now();
+            let mut history = AccessHistory::new();
+            history.record(DIR, 7, start);
+            history.record(2, 900, start + Duration::from_secs(20));
+            assert!(
+                history.predict(DIR, 7, &[7]).together.is_empty(),
+                "one occasion is not a habit"
+            );
+            history.record(DIR, 7, start + Duration::from_secs(40));
+            history.record(2, 900, start + Duration::from_secs(50));
+            assert!(history.predict(DIR, 7, &[7]).together.is_empty());
+
+            // The next afternoon, the report alone is enough to predict the
+            // figure, and the figure the report.
+            let later = start + Duration::from_secs(6 * 3600);
+            history.record(DIR, 7, later);
+            history.record(2, 900, later + Duration::from_secs(30));
+            history.record(3, 42, later + TOGETHER_WINDOW * 2);
+            history.record(DIR, 7, later + TOGETHER_WINDOW * 4);
+            assert_eq!(history.predict(DIR, 7, &[7]).together, [900]);
+            assert_eq!(history.predict(2, 900, &[900]).together, [7]);
+            assert!(
+                history.predict(3, 42, &[42]).together.is_empty(),
+                "a file opened alone pairs with nothing"
+            );
+        }
+
+        phase co_access_partners_already_predicted_as_siblings_are_not_repeated;
+        {
+            let siblings = [1, 2, 3];
+            let start = Instant::now();
+            let mut history = AccessHistory::new();
+            for occasion in 0..2_u64 {
+                let at = start + Duration::from_secs(occasion * 3600);
+                history.record(DIR, 1, at);
+                history.record(DIR, 2, at + Duration::from_secs(5));
+            }
+            history.record(DIR, 1, start + Duration::from_secs(3 * 3600));
+            let prediction = history.predict(DIR, 1, &siblings);
+            assert_eq!(prediction.siblings, [2, 3]);
+            assert!(prediction.together.is_empty());
+        }
+
+        phase restored_pairs_predict_and_keep_counting_occasions;
+        {
+            let start = Instant::now();
+            let mut earlier = AccessHistory::new();
+            for occasion in 0..2_u64 {
+                let at = start + Duration::from_secs(occasion * 3600);
+                earlier.record(DIR, 1, at);
+                earlier.record(2, 9, at + Duration::from_secs(5));
+            }
+            earlier.record(3, 5, start + Duration::from_secs(7200));
+            earlier.record(3, 6, start + Duration::from_secs(7201));
+            let now = start + Duration::from_secs(7300);
+            let kept = earlier.pairs(now);
+            assert_eq!(kept.len(), 2);
+
+            let mut later = AccessHistory::new();
+            let restart = Instant::now();
+            for pair in kept {
+                let week = Duration::from_secs(7 * 24 * 3600);
+                later.restore_pair(
+                    PairRecord {
+                        age: pair.age + week,
+                        ..pair
+                    },
+                    restart,
+                );
+            }
+            later.record(DIR, 1, restart);
+            assert_eq!(later.predict(DIR, 1, &[1]).together, [9]);
+            assert!(
+                later.predict(3, 5, &[5]).together.is_empty(),
+                "one occasion before the restart is not yet a habit"
+            );
+            later.record(3, 5, restart + Duration::from_secs(10));
+            later.record(3, 6, restart + Duration::from_secs(11));
+            assert_eq!(
+                later.predict(3, 5, &[5]).together,
+                [6],
+                "but it counts towards one after"
+            );
+            let ages: Vec<Duration> = later
+                .pairs(restart)
+                .into_iter()
+                .filter(|pair| (pair.a, pair.b) == (1, 9))
+                .map(|pair| pair.age)
+                .collect();
+            assert_eq!(ages.len(), 1);
+            assert!(
+                ages[0] >= Duration::from_secs(7 * 24 * 3600),
+                "a restored pair keeps its age: {ages:?}"
+            );
+        }
+
+        phase the_revision_moves_only_when_pairs_change;
+        {
+            let start = Instant::now();
+            let mut history = AccessHistory::new();
+            let revision = history.revision();
+            history.record(DIR, 1, start);
+            assert_eq!(history.revision(), revision, "an open alone pairs nothing");
+            history.record(DIR, 2, start + Duration::from_secs(1));
+            assert_ne!(history.revision(), revision);
+            let revision = history.revision();
+            history.clear();
+            assert_ne!(history.revision(), revision);
+            assert!(history.pairs(start).is_empty());
+        }
+
+        phase the_history_is_bounded;
+        {
+            let start = Instant::now();
+            let mut history = AccessHistory::new();
+            for file in 0..(MAX_PAIRS as u64 * 2) {
+                history.record(DIR, file, start + Duration::from_millis(file));
+            }
+            assert!(history.recent.len() <= HISTORY_LEN);
+            assert!(history.together.len() <= MAX_PAIRS);
+        }
     }
 }

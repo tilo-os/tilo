@@ -2406,267 +2406,367 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn host_files_unit_runs_the_primary_launch_check() {
-        // The host package's user unit, so a renamed flag fails here, not at login.
-        let unit = std::fs::read_to_string(os_file("dist/session/tilo-files-workspace.service"))
-            .expect("the host Files unit must exist");
-        let exec: Vec<&str> = unit
-            .lines()
-            .find_map(|line| line.strip_prefix("ExecStart="))
-            .expect("ExecStart=")
-            .split_whitespace()
-            .collect();
-        assert_eq!(
-            exec[0], "/usr/bin/fs",
-            "unexpected ExecStart binary: {exec:?}"
-        );
-        let cli = Cli::try_parse_from(std::iter::once("fs").chain(exec[1..].iter().copied()))
-            .expect("the host Files unit command line must parse");
-        assert!(
-            matches!(cli.command, Command::ServePrimary(_)),
-            "the host unit must pass the saved-state and authority check before serving"
-        );
-        // The unit starts only for a cache the person already prepared.
-        let condition: Vec<&str> = unit
-            .lines()
-            .find_map(|line| line.strip_prefix("ExecCondition="))
-            .expect("ExecCondition=")
-            .split_whitespace()
-            .collect();
-        let cli = Cli::try_parse_from(std::iter::once("fs").chain(condition[1..].iter().copied()))
-            .expect("the host Files unit condition must parse");
-        assert!(
-            matches!(
-                cli.command,
-                Command::WorkspaceStatus {
-                    require_existing: true,
-                    ..
-                }
-            ),
-            "the host unit must not start for an unprepared cache"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "each phase keeps one former test's body verbatim"
+        )]
+        fn the_shipped_units_launch_and_serve_with_their_seeded_capability_lists;
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn shipped_units_serve_with_a_seeded_enforced_capability_list() {
+        phase host_files_unit_runs_the_primary_launch_check;
         {
-            let unit = std::fs::read_to_string(os_file("os/usr/lib/systemd/system/fs.service"))
-                .expect("the shipped fs.service must exist");
-            assert!(
-                unit.lines().any(|line| line.trim() == "Restart=always"),
-                "a daemon-owned rebind must be restarted by the shipped service"
+            // The host package's user unit, so a renamed flag fails here, not at login.
+            let unit = std::fs::read_to_string(os_file("dist/session/tilo-files-workspace.service"))
+                .expect("the host Files unit must exist");
+            let exec: Vec<&str> = unit
+                .lines()
+                .find_map(|line| line.strip_prefix("ExecStart="))
+                .expect("ExecStart=")
+                .split_whitespace()
+                .collect();
+            assert_eq!(
+                exec[0], "/usr/bin/fs",
+                "unexpected ExecStart binary: {exec:?}"
             );
+            let cli = Cli::try_parse_from(std::iter::once("fs").chain(exec[1..].iter().copied()))
+                .expect("the host Files unit command line must parse");
             assert!(
-                service_exec_start()
-                    .windows(2)
-                    .any(|pair| { pair[0].ends_with("fs") && pair[1] == "serve" }),
-                "the shipped unit must enter the serve startup path that consumes persisted tickets"
+                matches!(cli.command, Command::ServePrimary(_)),
+                "the host unit must pass the saved-state and authority check before serving"
+            );
+            // The unit starts only for a cache the person already prepared.
+            let condition: Vec<&str> = unit
+                .lines()
+                .find_map(|line| line.strip_prefix("ExecCondition="))
+                .expect("ExecCondition=")
+                .split_whitespace()
+                .collect();
+            let cli = Cli::try_parse_from(std::iter::once("fs").chain(condition[1..].iter().copied()))
+                .expect("the host Files unit condition must parse");
+            assert!(
+                matches!(
+                    cli.command,
+                    Command::WorkspaceStatus {
+                        require_existing: true,
+                        ..
+                    }
+                ),
+                "the host unit must not start for an unprepared cache"
             );
         }
+
+        phase shipped_units_serve_with_a_seeded_enforced_capability_list;
         {
-            // The exact line fs.service runs, so a bad flag fails here, not on boot.
-            let argv = service_exec_start();
-            assert_eq!(
-                argv[0], "/usr/bin/fs",
-                "unexpected ExecStart binary: {argv:?}"
-            );
-            let cli =
-                Cli::try_parse_from(std::iter::once("fs".to_string()).chain(argv[1..].to_vec()))
-                    .expect("fs.service command line must parse");
-            match cli.command {
-                Command::Serve {
-                    mount_point,
-                    cache_dir,
-                    seed,
-                    ..
-                } => {
-                    assert_eq!(mount_point, PathBuf::from("/var/workspace"));
-                    assert_eq!(cache_dir, Some(PathBuf::from("/var/cache/quick-fs")));
-                    assert!(seed.is_none());
+            {
+                let unit = std::fs::read_to_string(os_file("os/usr/lib/systemd/system/fs.service"))
+                    .expect("the shipped fs.service must exist");
+                assert!(
+                    unit.lines().any(|line| line.trim() == "Restart=always"),
+                    "a daemon-owned rebind must be restarted by the shipped service"
+                );
+                assert!(
+                    service_exec_start()
+                        .windows(2)
+                        .any(|pair| { pair[0].ends_with("fs") && pair[1] == "serve" }),
+                    "the shipped unit must enter the serve startup path that consumes persisted tickets"
+                );
+            }
+            {
+                // The exact line fs.service runs, so a bad flag fails here, not on boot.
+                let argv = service_exec_start();
+                assert_eq!(
+                    argv[0], "/usr/bin/fs",
+                    "unexpected ExecStart binary: {argv:?}"
+                );
+                let cli =
+                    Cli::try_parse_from(std::iter::once("fs".to_string()).chain(argv[1..].to_vec()))
+                        .expect("fs.service command line must parse");
+                match cli.command {
+                    Command::Serve {
+                        mount_point,
+                        cache_dir,
+                        seed,
+                        ..
+                    } => {
+                        assert_eq!(mount_point, PathBuf::from("/var/workspace"));
+                        assert_eq!(cache_dir, Some(PathBuf::from("/var/cache/quick-fs")));
+                        assert!(seed.is_none());
+                    }
+                    _ => panic!("expected serve subcommand"),
                 }
-                _ => panic!("expected serve subcommand"),
+            }
+            {
+                let argv = service_exec_start();
+                let cli =
+                    Cli::try_parse_from(std::iter::once("fs".to_string()).chain(argv[1..].to_vec()))
+                        .expect("fs.service command line must parse");
+                let Command::Serve { acl, .. } = cli.command else {
+                    panic!("expected serve");
+                };
+                assert_eq!(
+                    acl.acl.as_deref(),
+                    Some(Path::new("/var/lib/tilo/fs-capabilities.json")),
+                    "fs.service must pass --acl or the shipped mount enforces nothing"
+                );
+                assert!(
+                    !acl.acl_once,
+                    "the shipped mount must re-read its capability list; /var/workspace is mounted once \
+                 at boot, so a list read only at mount time can never carry a later grant"
+                );
+                assert_eq!(
+                    acl.members,
+                    vec!["person:local".to_string()],
+                    "the shipped list is written against a member, because the mount's own identity \
+                 is the device key minted on first boot, which no shipped file could name in advance"
+                );
+            }
+            {
+                let conf = std::fs::read_to_string(os_file("os/usr/lib/tmpfiles.d/tilo.conf"))
+                    .expect("the shipped tmpfiles snippet must exist");
+                let seeding = conf
+                    .lines()
+                    .find(|l| l.starts_with("C ") && l.contains("/var/lib/tilo/fs-capabilities.json"))
+                    .unwrap_or_else(|| {
+                        panic!("no tmpfiles line creates /var/lib/tilo/fs-capabilities.json:\n{conf}")
+                    });
+                assert!(
+                    seeding.contains("/usr/share/tilo/fs-capabilities.json"),
+                    "the seed must come from the shipped default: {seeding}"
+                );
+
+                let containerfile = std::fs::read_to_string(os_file("os/Containerfile"))
+                    .expect("the production Containerfile must exist");
+                assert!(
+                    containerfile.lines().any(|l| l.starts_with("COPY ")
+                        && l.contains("/usr/share/tilo/fs-capabilities.json")),
+                    "os/Containerfile must ship the default capability list that tmpfiles.d seeds from"
+                );
+            }
+            {
+                use fs::Access;
+
+                let path = os_file("os/usr/share/tilo/fs-capabilities.json");
+                let identity: IdentityKey = [0x5A; 32]; // stands in for the per-start node key
+                let file =
+                    CapabilityFile::load(&path, identity, vec![parse_member("person:local").unwrap()])
+                        .expect("the shipped default capability list must load");
+
+                let handle = file.handle();
+                assert!(
+                    handle.permits(&identity, "/", Access::Read),
+                    "the shipped default must let the local session read its own workspace"
+                );
+                assert!(
+                    handle.permits(&identity, "/notes/today.md", Access::Write),
+                    "the shipped default must let the local session write its own workspace"
+                );
+
+                // The grant is the principal's, not the mount's — a mount not presenting `person:local` gets nothing, which narrows a peer-joined mount.
+                let outsider = CapabilityFile::load(&path, identity, Vec::new())
+                    .expect("loads")
+                    .handle();
+                assert!(
+                    !outsider.permits(&identity, "/notes/today.md", Access::Read),
+                    "the shipped list must grant its named principal, not whoever mounts"
+                );
             }
         }
-        {
-            let argv = service_exec_start();
-            let cli =
-                Cli::try_parse_from(std::iter::once("fs".to_string()).chain(argv[1..].to_vec()))
-                    .expect("fs.service command line must parse");
-            let Command::Serve { acl, .. } = cli.command else {
-                panic!("expected serve");
-            };
-            assert_eq!(
-                acl.acl.as_deref(),
-                Some(Path::new("/var/lib/tilo/fs-capabilities.json")),
-                "fs.service must pass --acl or the shipped mount enforces nothing"
-            );
-            assert!(
-                !acl.acl_once,
-                "the shipped mount must re-read its capability list; /var/workspace is mounted once \
-                 at boot, so a list read only at mount time can never carry a later grant"
-            );
-            assert_eq!(
-                acl.members,
-                vec!["person:local".to_string()],
-                "the shipped list is written against a member, because the mount's own identity \
-                 is the device key minted on first boot, which no shipped file could name in advance"
-            );
-        }
-        {
-            let conf = std::fs::read_to_string(os_file("os/usr/lib/tmpfiles.d/tilo.conf"))
-                .expect("the shipped tmpfiles snippet must exist");
-            let seeding = conf
-                .lines()
-                .find(|l| l.starts_with("C ") && l.contains("/var/lib/tilo/fs-capabilities.json"))
-                .unwrap_or_else(|| {
-                    panic!("no tmpfiles line creates /var/lib/tilo/fs-capabilities.json:\n{conf}")
-                });
-            assert!(
-                seeding.contains("/usr/share/tilo/fs-capabilities.json"),
-                "the seed must come from the shipped default: {seeding}"
-            );
 
-            let containerfile = std::fs::read_to_string(os_file("os/Containerfile"))
-                .expect("the production Containerfile must exist");
-            assert!(
-                containerfile.lines().any(|l| l.starts_with("COPY ")
-                    && l.contains("/usr/share/tilo/fs-capabilities.json")),
-                "os/Containerfile must ship the default capability list that tmpfiles.d seeds from"
-            );
-        }
+        phase every_capability_list_an_image_ever_seeded_still_mounts_with_its_grant;
+        // tmpfiles' `C` never overwrites, so a machine keeps the capability list of the image it was
+        // installed with across every update. Each version the image ever seeded must still mount with
+        // the grant it gave, through the same loader fs.service uses.
         {
             use fs::Access;
 
-            let path = os_file("os/usr/share/tilo/fs-capabilities.json");
-            let identity: IdentityKey = [0x5A; 32]; // stands in for the per-start node key
-            let file =
-                CapabilityFile::load(&path, identity, vec![parse_member("person:local").unwrap()])
-                    .expect("the shipped default capability list must load");
-
-            let handle = file.handle();
+            let history = os_file("os/tests/seeded-state/var/lib/tilo/fs-capabilities.json");
+            let mut versions: Vec<_> = std::fs::read_dir(&history)
+                .expect("the seeded capability list history must exist")
+                .map(|entry| entry.expect("history entry").path())
+                .collect();
+            versions.sort();
             assert!(
-                handle.permits(&identity, "/", Access::Read),
-                "the shipped default must let the local session read its own workspace"
+                !versions.is_empty(),
+                "the history must hold the list the image ships today: {versions:?}"
             );
-            assert!(
-                handle.permits(&identity, "/notes/today.md", Access::Write),
-                "the shipped default must let the local session write its own workspace"
-            );
-
-            // The grant is the principal's, not the mount's — a mount not presenting `person:local` gets nothing, which narrows a peer-joined mount.
-            let outsider = CapabilityFile::load(&path, identity, Vec::new())
-                .expect("loads")
-                .handle();
-            assert!(
-                !outsider.permits(&identity, "/notes/today.md", Access::Read),
-                "the shipped list must grant its named principal, not whoever mounts"
-            );
-        }
-    }
-
-    /// tmpfiles' `C` never overwrites, so a machine keeps the capability list of the image it was
-    /// installed with across every update. Each version the image ever seeded must still mount with
-    /// the grant it gave, through the same loader fs.service uses.
-    #[test]
-    fn every_capability_list_an_image_ever_seeded_still_mounts_with_its_grant() {
-        use fs::Access;
-
-        let history = os_file("os/tests/seeded-state/var/lib/tilo/fs-capabilities.json");
-        let mut versions: Vec<_> = std::fs::read_dir(&history)
-            .expect("the seeded capability list history must exist")
-            .map(|entry| entry.expect("history entry").path())
-            .collect();
-        versions.sort();
-        assert!(
-            !versions.is_empty(),
-            "the history must hold the list the image ships today: {versions:?}"
-        );
-        let identity: IdentityKey = [0x5A; 32];
-        for path in &versions {
-            let local = vec![parse_member("person:local").unwrap()];
-            let file = CapabilityFile::load(path, identity, local).unwrap_or_else(|error| {
-                panic!(
-                    "{} must still load on an upgraded machine: {error}",
+            let identity: IdentityKey = [0x5A; 32];
+            for path in &versions {
+                let local = vec![parse_member("person:local").unwrap()];
+                let file = CapabilityFile::load(path, identity, local).unwrap_or_else(|error| {
+                    panic!(
+                        "{} must still load on an upgraded machine: {error}",
+                        path.display()
+                    )
+                });
+                let handle = file.handle();
+                assert!(
+                    handle.permits(&identity, "/notes/today.md", Access::Write),
+                    "{} must still let the local session write its workspace",
                     path.display()
-                )
-            });
-            let handle = file.handle();
-            assert!(
-                handle.permits(&identity, "/notes/today.md", Access::Write),
-                "{} must still let the local session write its workspace",
-                path.display()
-            );
-            let outsider = CapabilityFile::load(path, identity, Vec::new())
-                .expect("loads")
-                .handle();
-            assert!(
-                !outsider.permits(&identity, "/notes/today.md", Access::Read),
-                "{} must grant only its named principal",
-                path.display()
-            );
+                );
+                let outsider = CapabilityFile::load(path, identity, Vec::new())
+                    .expect("loads")
+                    .handle();
+                assert!(
+                    !outsider.permits(&identity, "/notes/today.md", Access::Read),
+                    "{} must grant only its named principal",
+                    path.display()
+                );
+            }
         }
     }
 
-    #[test]
-    fn cli_parses_mount_lines_members_and_persisted_tickets() {
+    tilo_test_env::scenario! {
+        fn the_command_line_parses_mounts_and_binds_acl_flags;
+
+        phase cli_parses_mount_lines_members_and_persisted_tickets;
         {
-            let cli = Cli::try_parse_from([
-                "fs",
-                "mount",
-                "--mount-point",
-                "/var/workspace",
-                "--ticket",
-                "deadbeef",
-                "--cache-dir",
-                "/var/cache/quick-fs",
-            ])
-            .expect("mount command line must parse");
-            assert!(matches!(cli.command, Command::Mount { .. }));
-        }
-        {
-            assert_eq!(
-                parse_member("person:local").unwrap(),
-                MemberId::Person("local".into())
-            );
-            assert_eq!(
-                parse_member("agent:helper").unwrap(),
-                MemberId::Agent("helper".into())
-            );
-            assert!(parse_member("wizard:merlin").is_err());
-            assert!(parse_member("noseparator").is_err());
-        }
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let owner =
-                iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x81; 32]).public());
-            let nas =
-                iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x82; 32]).public());
-            let ticket = Ticket {
-                node: owner,
-                workspace: [0x83; 32],
+            {
+                let cli = Cli::try_parse_from([
+                    "fs",
+                    "mount",
+                    "--mount-point",
+                    "/var/workspace",
+                    "--ticket",
+                    "deadbeef",
+                    "--cache-dir",
+                    "/var/cache/quick-fs",
+                ])
+                .expect("mount command line must parse");
+                assert!(matches!(cli.command, Command::Mount { .. }));
             }
-            .encode()
-            .unwrap();
-            let peers = vec![fs::workspace_authority::PersistedContentPeer {
-                endpoint: nas,
-                ticket: Some(ticket),
-                relay_service_id: None,
-            }];
-            tilo_files::native::atomic::write(
-                &fs::workspace_authority::content_peers_path(temp.path()),
-                &serde_json::to_vec(&peers).unwrap(),
-            )
-            .unwrap();
-            let selected = persisted_remote_workspace_ticket(Some(temp.path()))
-                .unwrap()
-                .expect("NAS ticket is retained for the next fs.service start");
-            assert_eq!(selected.workspace, [0x83; 32]);
-            assert_ne!(selected.node.id, peers[0].endpoint.id);
+            {
+                assert_eq!(
+                    parse_member("person:local").unwrap(),
+                    MemberId::Person("local".into())
+                );
+                assert_eq!(
+                    parse_member("agent:helper").unwrap(),
+                    MemberId::Agent("helper".into())
+                );
+                assert!(parse_member("wizard:merlin").is_err());
+                assert!(parse_member("noseparator").is_err());
+            }
+            {
+                let temp = tempfile::tempdir().unwrap();
+                let owner =
+                    iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x81; 32]).public());
+                let nas =
+                    iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x82; 32]).public());
+                let ticket = Ticket {
+                    node: owner,
+                    workspace: [0x83; 32],
+                }
+                .encode()
+                .unwrap();
+                let peers = vec![fs::workspace_authority::PersistedContentPeer {
+                    endpoint: nas,
+                    ticket: Some(ticket),
+                    relay_service_id: None,
+                }];
+                tilo_files::native::atomic::write(
+                    &fs::workspace_authority::content_peers_path(temp.path()),
+                    &serde_json::to_vec(&peers).unwrap(),
+                )
+                .unwrap();
+                let selected = persisted_remote_workspace_ticket(Some(temp.path()))
+                    .unwrap()
+                    .expect("NAS ticket is retained for the next fs.service start");
+                assert_eq!(selected.workspace, [0x83; 32]);
+                assert_ne!(selected.node.id, peers[0].endpoint.id);
+            }
+        }
+
+        phase acl_flags_bind_an_enforced_list_or_refuse_the_mount;
+        {
+            {
+                let resolved =
+                    resolve_acl(&acl_args_from(&[]), NODE_KEY).expect("no ACL is not an error");
+                assert!(
+                    resolved.is_none(),
+                    "omitting --acl must leave the mount unbound, not bind an empty ACL"
+                );
+            }
+            {
+                let args = acl_args_from(&["--acl", "/nonexistent/tilo-caps-does-not-exist.json"]);
+                let err = resolve_acl(&args, NODE_KEY)
+                    .expect_err("a missing capability list must abort the mount, not fall back");
+                assert!(
+                    format!("{err:#}").contains("could not be read"),
+                    "expected a read failure, got: {err:#}"
+                );
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("caps.json");
+                std::fs::write(&path, b"{ not json ]").unwrap();
+                let args = acl_args_from(&["--acl", path.to_str().unwrap()]);
+                let err = resolve_acl(&args, NODE_KEY)
+                    .expect_err("a malformed capability list must abort the mount");
+                assert!(
+                    format!("{err:#}").contains("not the governor's file authority"),
+                    "expected a parse failure, got: {err:#}"
+                );
+            }
+            {
+                use fs::Access;
+
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("caps.json");
+                std::fs::write(&path, br#"{"capabilities":[]}"#).unwrap();
+                let args = acl_args_from(&["--acl", path.to_str().unwrap()]);
+                let caps = resolve_acl(&args, NODE_KEY)
+                    .expect("an empty list is valid")
+                    .expect("--acl was given, so an ACL must be bound");
+                let (acl, identity) = (caps.handle(), caps.identity());
+                assert_eq!(identity, NODE_KEY, "identity defaults to this node's key");
+                assert!(!acl.permits(&identity, "/", Access::Read));
+                assert!(!acl.permits(&identity, "/anything", Access::Write));
+            }
+            {
+                use collab_types::{Access as CapAccess, CapOverride, Effect, Scope};
+                use fs::Access;
+
+                let who = [0x0A; 32];
+                let caps = vec![CapOverride::new(
+                    tilo_action_policy::Grantee::person(hex::encode(who)),
+                    Scope::FsPath("/w/docs".into()),
+                    Effect::Grant,
+                    CapAccess::Read,
+                )];
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("caps.json");
+                std::fs::write(
+                    &path,
+                    serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
+                )
+                .unwrap();
+
+                let args = acl_args_from(&[
+                    "--acl",
+                    path.to_str().unwrap(),
+                    "--identity",
+                    &hex::encode(who),
+                ]);
+                let caps = resolve_acl(&args, NODE_KEY).unwrap().unwrap();
+                let (acl, identity) = (caps.handle(), caps.identity());
+                assert_eq!(identity, who, "--identity overrides the node key");
+                assert!(acl.permits(&who, "/w/docs/a.md", Access::Read));
+                assert!(!acl.permits(&who, "/w/docs/a.md", Access::Write));
+                assert!(!acl.permits(&who, "/w/other", Access::Read));
+            }
+            {
+                let args = acl_args_from(&["--identity", &hex::encode([0x0A; 32])]);
+                assert!(resolve_acl(&args, NODE_KEY).is_err());
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("caps.json");
+                std::fs::write(&path, br#"{"capabilities":[]}"#).unwrap();
+                let args = acl_args_from(&["--acl", path.to_str().unwrap(), "--identity", "abcd"]);
+                let err = resolve_acl(&args, NODE_KEY).expect_err("a 2-byte identity is not a key");
+                assert!(format!("{err:#}").contains("32 bytes"), "got: {err:#}");
+            }
         }
     }
 
@@ -2679,98 +2779,6 @@ mod tests {
         match cli.command {
             Command::Serve { acl, .. } => acl,
             _ => panic!("expected serve"),
-        }
-    }
-
-    #[test]
-    fn acl_flags_bind_an_enforced_list_or_refuse_the_mount() {
-        {
-            let resolved =
-                resolve_acl(&acl_args_from(&[]), NODE_KEY).expect("no ACL is not an error");
-            assert!(
-                resolved.is_none(),
-                "omitting --acl must leave the mount unbound, not bind an empty ACL"
-            );
-        }
-        {
-            let args = acl_args_from(&["--acl", "/nonexistent/tilo-caps-does-not-exist.json"]);
-            let err = resolve_acl(&args, NODE_KEY)
-                .expect_err("a missing capability list must abort the mount, not fall back");
-            assert!(
-                format!("{err:#}").contains("could not be read"),
-                "expected a read failure, got: {err:#}"
-            );
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("caps.json");
-            std::fs::write(&path, b"{ not json ]").unwrap();
-            let args = acl_args_from(&["--acl", path.to_str().unwrap()]);
-            let err = resolve_acl(&args, NODE_KEY)
-                .expect_err("a malformed capability list must abort the mount");
-            assert!(
-                format!("{err:#}").contains("not the governor's file authority"),
-                "expected a parse failure, got: {err:#}"
-            );
-        }
-        {
-            use fs::Access;
-
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("caps.json");
-            std::fs::write(&path, br#"{"capabilities":[]}"#).unwrap();
-            let args = acl_args_from(&["--acl", path.to_str().unwrap()]);
-            let caps = resolve_acl(&args, NODE_KEY)
-                .expect("an empty list is valid")
-                .expect("--acl was given, so an ACL must be bound");
-            let (acl, identity) = (caps.handle(), caps.identity());
-            assert_eq!(identity, NODE_KEY, "identity defaults to this node's key");
-            assert!(!acl.permits(&identity, "/", Access::Read));
-            assert!(!acl.permits(&identity, "/anything", Access::Write));
-        }
-        {
-            use collab_types::{Access as CapAccess, CapOverride, Effect, Scope};
-            use fs::Access;
-
-            let who = [0x0A; 32];
-            let caps = vec![CapOverride::new(
-                tilo_action_policy::Grantee::person(hex::encode(who)),
-                Scope::FsPath("/w/docs".into()),
-                Effect::Grant,
-                CapAccess::Read,
-            )];
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("caps.json");
-            std::fs::write(
-                &path,
-                serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
-            )
-            .unwrap();
-
-            let args = acl_args_from(&[
-                "--acl",
-                path.to_str().unwrap(),
-                "--identity",
-                &hex::encode(who),
-            ]);
-            let caps = resolve_acl(&args, NODE_KEY).unwrap().unwrap();
-            let (acl, identity) = (caps.handle(), caps.identity());
-            assert_eq!(identity, who, "--identity overrides the node key");
-            assert!(acl.permits(&who, "/w/docs/a.md", Access::Read));
-            assert!(!acl.permits(&who, "/w/docs/a.md", Access::Write));
-            assert!(!acl.permits(&who, "/w/other", Access::Read));
-        }
-        {
-            let args = acl_args_from(&["--identity", &hex::encode([0x0A; 32])]);
-            assert!(resolve_acl(&args, NODE_KEY).is_err());
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("caps.json");
-            std::fs::write(&path, br#"{"capabilities":[]}"#).unwrap();
-            let args = acl_args_from(&["--acl", path.to_str().unwrap(), "--identity", "abcd"]);
-            let err = resolve_acl(&args, NODE_KEY).expect_err("a 2-byte identity is not a key");
-            assert!(format!("{err:#}").contains("32 bytes"), "got: {err:#}");
         }
     }
 

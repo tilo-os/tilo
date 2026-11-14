@@ -753,44 +753,99 @@ mod tests {
         record
     }
 
-    /// Whoever subscribes learns which records changed, by any writer: a
-    /// put, a batch, an unpin clearing transfers. Nothing is kept for
-    /// nobody, and a write that changes nothing is no change.
-    #[test]
-    fn a_subscriber_learns_which_records_changed() {
-        let dir = TempDir::new().unwrap();
-        let mut registry = AvailabilityRegistry::open(dir.path().join("a.json")).unwrap();
-        let (first, second) = (FileRecordId::new(), FileRecordId::new());
-        registry.put(file(first, FileVersionId::new())).unwrap();
-        assert!(
-            registry.take_changed_records().is_empty(),
-            "nothing is kept while nobody subscribes"
-        );
+    tilo_test_env::scenario! {
+        fn the_availability_registry_tells_subscribers_and_follows_pins;
 
-        let mut changes = registry.subscribe_changes();
-        let mut record = registry.get(first).unwrap().clone();
-        registry.put(record.clone()).unwrap();
-        assert!(!changes.has_changed().unwrap(), "an identical write");
-        record.transfer.last_error = Some(TransferError {
-            message: fs_protocol::NO_PEER_DELIVERED_ERROR.into(),
-            occurred_at_ms: 3,
-        });
-        registry.put(record).unwrap();
-        assert!(changes.has_changed().unwrap());
-        changes.borrow_and_update();
-        assert_eq!(registry.take_changed_records(), BTreeSet::from([first]));
+        phase a_subscriber_learns_which_records_changed;
+        // Whoever subscribes learns which records changed, by any writer: a
+        // put, a batch, an unpin clearing transfers. Nothing is kept for
+        // nobody, and a write that changes nothing is no change.
+        {
+            let dir = TempDir::new().unwrap();
+            let mut registry = AvailabilityRegistry::open(dir.path().join("a.json")).unwrap();
+            let (first, second) = (FileRecordId::new(), FileRecordId::new());
+            registry.put(file(first, FileVersionId::new())).unwrap();
+            assert!(
+                registry.take_changed_records().is_empty(),
+                "nothing is kept while nobody subscribes"
+            );
 
-        registry
-            .batch(|registry| {
-                let _ = registry.put(file(second, FileVersionId::new()));
-            })
-            .unwrap();
-        assert!(changes.has_changed().unwrap());
-        assert_eq!(registry.take_changed_records(), BTreeSet::from([second]));
+            let mut changes = registry.subscribe_changes();
+            let mut record = registry.get(first).unwrap().clone();
+            registry.put(record.clone()).unwrap();
+            assert!(!changes.has_changed().unwrap(), "an identical write");
+            record.transfer.last_error = Some(TransferError {
+                message: fs_protocol::NO_PEER_DELIVERED_ERROR.into(),
+                occurred_at_ms: 3,
+            });
+            registry.put(record).unwrap();
+            assert!(changes.has_changed().unwrap());
+            changes.borrow_and_update();
+            assert_eq!(registry.take_changed_records(), BTreeSet::from([first]));
 
-        assert!(registry.clear_automatic_transfer_subtree(first).unwrap());
-        assert_eq!(registry.take_changed_records(), BTreeSet::from([first]));
-        assert!(registry.take_changed_records().is_empty());
+            registry
+                .batch(|registry| {
+                    let _ = registry.put(file(second, FileVersionId::new()));
+                })
+                .unwrap();
+            assert!(changes.has_changed().unwrap());
+            assert_eq!(registry.take_changed_records(), BTreeSet::from([second]));
+
+            assert!(registry.clear_automatic_transfer_subtree(first).unwrap());
+            assert_eq!(registry.take_changed_records(), BTreeSet::from([first]));
+            assert!(registry.take_changed_records().is_empty());
+        }
+
+        phase pins_follow_descendants_moves_and_namespace_reconciliation;
+        {
+            {
+                let temp = TempDir::new().unwrap();
+                let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
+                let pinned_dir = FileRecordId::new();
+                let other_dir = FileRecordId::new();
+                let child = FileRecordId::new();
+
+                let mut directory = RecordAvailability::new(pinned_dir, RecordKind::Directory);
+                directory.policy = AvailabilityPolicy::Pinned;
+                registry.put(directory).unwrap();
+                registry
+                    .put(RecordAvailability::new(other_dir, RecordKind::Directory))
+                    .unwrap();
+
+                let mut child_record = file(child, FileVersionId::new());
+                child_record.parent = Some(pinned_dir);
+                registry.put(child_record.clone()).unwrap();
+                assert_eq!(
+                    registry.effective_policy(child).unwrap(),
+                    Some(AvailabilityPolicy::Pinned)
+                );
+
+                child_record.parent = Some(other_dir);
+                registry.put(child_record).unwrap();
+                assert_eq!(
+                    registry.effective_policy(child).unwrap(),
+                    Some(AvailabilityPolicy::Automatic)
+                );
+            }
+            {
+                let temp = TempDir::new().unwrap();
+                let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
+                assert!(!registry.has_pinned_policy());
+
+                let id = FileRecordId::new();
+                let mut record = file(id, FileVersionId::new());
+                registry.put(record.clone()).unwrap();
+                assert!(!registry.has_pinned_policy());
+
+                record.policy = AvailabilityPolicy::Pinned;
+                registry.put(record.clone()).unwrap();
+                assert!(registry.has_pinned_policy());
+
+                record.policy = AvailabilityPolicy::Automatic;
+                registry.put(record).unwrap();
+                assert!(!registry.has_pinned_policy());
+            }
+        }
     }
 
     #[test]
@@ -874,106 +929,121 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pins_follow_descendants_moves_and_namespace_reconciliation() {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_availability_projection_round_trips_and_is_bounded;
+
+        phase projection_round_trips_every_ui_dimension;
         {
-            let temp = TempDir::new().unwrap();
-            let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
-            let pinned_dir = FileRecordId::new();
-            let other_dir = FileRecordId::new();
-            let child = FileRecordId::new();
+            {
+                let record = rich_record();
+                let projection = record.projection_with_policy(AvailabilityPolicy::Pinned);
+                let bytes = projection.to_xattr_bytes().unwrap();
 
-            let mut directory = RecordAvailability::new(pinned_dir, RecordKind::Directory);
-            directory.policy = AvailabilityPolicy::Pinned;
-            registry.put(directory).unwrap();
-            registry
-                .put(RecordAvailability::new(other_dir, RecordKind::Directory))
-                .unwrap();
+                assert!(bytes.len() <= MAX_AVAILABILITY_XATTR_BYTES);
+                assert_eq!(
+                    AvailabilityProjectionV1::parse_xattr(&bytes).unwrap(),
+                    projection
+                );
+                assert_eq!(projection.schema_version, AVAILABILITY_PROJECTION_VERSION);
+                assert_eq!(projection.record_id, record.record_id);
+                assert_eq!(projection.residency, record.residency);
+                assert_eq!(projection.transfer.phase, TransferPhase::Downloading);
+                assert_eq!(projection.policy, AvailabilityPolicy::Pinned);
+                assert_eq!(
+                    projection.replicas,
+                    ProjectedReplicaEvidence::Known {
+                        reachable: 2,
+                        durable: 1
+                    }
+                );
+                assert_eq!(projection.freshness.replicas_observed_at_ms, Some(7_900));
+            }
+            {
+                let mut record = rich_record();
+                let old_version = FileVersionId::new();
+                record.replicas.acknowledged_version = Some(old_version);
+                let projection = record.projection();
+                assert_eq!(projection.replicas, ProjectedReplicaEvidence::Unknown);
 
-            let mut child_record = file(child, FileVersionId::new());
-            child_record.parent = Some(pinned_dir);
-            registry.put(child_record.clone()).unwrap();
-            assert_eq!(
-                registry.effective_policy(child).unwrap(),
-                Some(AvailabilityPolicy::Pinned)
-            );
+                record.replicas.acknowledged_version = record.current_version;
+                record.freshness.replicas_observed_at_ms = None;
+                let projection = record.projection();
+                assert_eq!(projection.replicas, ProjectedReplicaEvidence::Unknown);
 
-            child_record.parent = Some(other_dir);
-            registry.put(child_record).unwrap();
-            assert_eq!(
-                registry.effective_policy(child).unwrap(),
-                Some(AvailabilityPolicy::Automatic)
-            );
+                record.freshness.replicas_observed_at_ms = Some(9_000);
+                record.replicas.reachable = 0;
+                record.replicas.durable = 0;
+                let projection = record.projection();
+                assert_eq!(
+                    projection.replicas,
+                    ProjectedReplicaEvidence::Known {
+                        reachable: 0,
+                        durable: 0
+                    }
+                );
+            }
         }
+
+        phase projection_bounds_errors_and_rejects_inconsistent_values;
         {
-            let temp = TempDir::new().unwrap();
-            let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
-            assert!(!registry.has_pinned_policy());
+            {
+                let mut record = rich_record();
+                record.transfer.last_error.as_mut().unwrap().message = "é".repeat(300);
+                let projection = record.projection();
+                let message = projection.transfer.last_error.as_deref().unwrap();
+                assert!(message.len() <= MAX_PROJECTED_ERROR_BYTES);
+                assert!(message.is_char_boundary(message.len()));
+                assert!(projection.transfer.error_truncated);
+                assert!(projection.to_xattr_bytes().unwrap().len() <= MAX_AVAILABILITY_XATTR_BYTES);
+            }
+            {
+                assert!(matches!(
+                    AvailabilityProjectionV1::parse_xattr(&vec![
+                        b' ';
+                        MAX_AVAILABILITY_XATTR_BYTES + 1
+                    ]),
+                    Err(ProjectionError::TooLarge { .. })
+                ));
 
-            let id = FileRecordId::new();
-            let mut record = file(id, FileVersionId::new());
-            registry.put(record.clone()).unwrap();
-            assert!(!registry.has_pinned_policy());
+                let mut projection = rich_record().projection();
+                projection.schema_version = AVAILABILITY_PROJECTION_VERSION + 1;
+                let bytes = serde_json::to_vec(&projection).unwrap();
+                assert!(matches!(
+                    AvailabilityProjectionV1::parse_xattr(&bytes),
+                    Err(ProjectionError::UnsupportedVersion(_))
+                ));
 
-            record.policy = AvailabilityPolicy::Pinned;
-            registry.put(record.clone()).unwrap();
-            assert!(registry.has_pinned_policy());
+                let mut projection = rich_record().projection();
+                projection.transfer.progress = Some(TransferProgress {
+                    completed_bytes: 2,
+                    total_bytes: Some(1),
+                });
+                let bytes = serde_json::to_vec(&projection).unwrap();
+                assert!(matches!(
+                    AvailabilityProjectionV1::parse_xattr(&bytes),
+                    Err(ProjectionError::InvalidProgress)
+                ));
 
-            record.policy = AvailabilityPolicy::Automatic;
-            registry.put(record).unwrap();
-            assert!(!registry.has_pinned_policy());
-        }
-    }
+                let mut projection = rich_record().projection();
+                projection.transfer.last_error = None;
+                let bytes = serde_json::to_vec(&projection).unwrap();
+                assert!(matches!(
+                    AvailabilityProjectionV1::parse_xattr(&bytes),
+                    Err(ProjectionError::InvalidTransferError)
+                ));
 
-    #[test]
-    fn projection_round_trips_every_ui_dimension() {
-        {
-            let record = rich_record();
-            let projection = record.projection_with_policy(AvailabilityPolicy::Pinned);
-            let bytes = projection.to_xattr_bytes().unwrap();
-
-            assert!(bytes.len() <= MAX_AVAILABILITY_XATTR_BYTES);
-            assert_eq!(
-                AvailabilityProjectionV1::parse_xattr(&bytes).unwrap(),
-                projection
-            );
-            assert_eq!(projection.schema_version, AVAILABILITY_PROJECTION_VERSION);
-            assert_eq!(projection.record_id, record.record_id);
-            assert_eq!(projection.residency, record.residency);
-            assert_eq!(projection.transfer.phase, TransferPhase::Downloading);
-            assert_eq!(projection.policy, AvailabilityPolicy::Pinned);
-            assert_eq!(
-                projection.replicas,
-                ProjectedReplicaEvidence::Known {
-                    reachable: 2,
-                    durable: 1
-                }
-            );
-            assert_eq!(projection.freshness.replicas_observed_at_ms, Some(7_900));
-        }
-        {
-            let mut record = rich_record();
-            let old_version = FileVersionId::new();
-            record.replicas.acknowledged_version = Some(old_version);
-            let projection = record.projection();
-            assert_eq!(projection.replicas, ProjectedReplicaEvidence::Unknown);
-
-            record.replicas.acknowledged_version = record.current_version;
-            record.freshness.replicas_observed_at_ms = None;
-            let projection = record.projection();
-            assert_eq!(projection.replicas, ProjectedReplicaEvidence::Unknown);
-
-            record.freshness.replicas_observed_at_ms = Some(9_000);
-            record.replicas.reachable = 0;
-            record.replicas.durable = 0;
-            let projection = record.projection();
-            assert_eq!(
-                projection.replicas,
-                ProjectedReplicaEvidence::Known {
-                    reachable: 0,
-                    durable: 0
-                }
-            );
+                let mut projection = rich_record().projection();
+                projection.current_version = None;
+                let bytes = serde_json::to_vec(&projection).unwrap();
+                assert!(matches!(
+                    AvailabilityProjectionV1::parse_xattr(&bytes),
+                    Err(ProjectionError::InvalidReplicaEvidence)
+                ));
+            }
         }
     }
 
@@ -1013,64 +1083,6 @@ mod tests {
                 replicas_observed_at_ms: Some(7_900),
             },
             retained_versions: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn projection_bounds_errors_and_rejects_inconsistent_values() {
-        {
-            let mut record = rich_record();
-            record.transfer.last_error.as_mut().unwrap().message = "é".repeat(300);
-            let projection = record.projection();
-            let message = projection.transfer.last_error.as_deref().unwrap();
-            assert!(message.len() <= MAX_PROJECTED_ERROR_BYTES);
-            assert!(message.is_char_boundary(message.len()));
-            assert!(projection.transfer.error_truncated);
-            assert!(projection.to_xattr_bytes().unwrap().len() <= MAX_AVAILABILITY_XATTR_BYTES);
-        }
-        {
-            assert!(matches!(
-                AvailabilityProjectionV1::parse_xattr(&vec![
-                    b' ';
-                    MAX_AVAILABILITY_XATTR_BYTES + 1
-                ]),
-                Err(ProjectionError::TooLarge { .. })
-            ));
-
-            let mut projection = rich_record().projection();
-            projection.schema_version = AVAILABILITY_PROJECTION_VERSION + 1;
-            let bytes = serde_json::to_vec(&projection).unwrap();
-            assert!(matches!(
-                AvailabilityProjectionV1::parse_xattr(&bytes),
-                Err(ProjectionError::UnsupportedVersion(_))
-            ));
-
-            let mut projection = rich_record().projection();
-            projection.transfer.progress = Some(TransferProgress {
-                completed_bytes: 2,
-                total_bytes: Some(1),
-            });
-            let bytes = serde_json::to_vec(&projection).unwrap();
-            assert!(matches!(
-                AvailabilityProjectionV1::parse_xattr(&bytes),
-                Err(ProjectionError::InvalidProgress)
-            ));
-
-            let mut projection = rich_record().projection();
-            projection.transfer.last_error = None;
-            let bytes = serde_json::to_vec(&projection).unwrap();
-            assert!(matches!(
-                AvailabilityProjectionV1::parse_xattr(&bytes),
-                Err(ProjectionError::InvalidTransferError)
-            ));
-
-            let mut projection = rich_record().projection();
-            projection.current_version = None;
-            let bytes = serde_json::to_vec(&projection).unwrap();
-            assert!(matches!(
-                AvailabilityProjectionV1::parse_xattr(&bytes),
-                Err(ProjectionError::InvalidReplicaEvidence)
-            ));
         }
     }
 }

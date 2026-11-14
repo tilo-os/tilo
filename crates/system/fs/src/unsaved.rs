@@ -305,78 +305,82 @@ mod tests {
         UnsavedEntry::describe(key.into(), None, Some("/a".into()), None, bytes, 7, None)
     }
 
-    #[test]
-    fn unsaved_bytes_stage_whole_and_torn_or_escaping_keys_are_refused() {
+    tilo_test_env::scenario! {
+        fn unsaved_content_is_staged_whole_or_refused;
+
+        phase unsaved_bytes_stage_whole_and_torn_or_escaping_keys_are_refused;
+        {
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let store = UnsavedStore::open(dir.path().join("unsaved")).unwrap();
+                store.stage(&entry("k1", b"first"), b"first").unwrap();
+                store.stage(&entry("k1", b"second!"), b"second!").unwrap();
+                let (loaded, damaged) = store.load_all();
+                assert!(damaged.is_empty());
+                assert_eq!(loaded.len(), 1);
+                assert_eq!(loaded[0].bytes, b"second!");
+                assert!(store.contains("k1"));
+                store.remove("k1").unwrap();
+                assert!(!store.contains("k1"));
+                assert!(store.load_all().0.is_empty());
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let store = UnsavedStore::open(dir.path()).unwrap();
+                store
+                    .stage(&entry("k2", b"described"), b"described")
+                    .unwrap();
+                std::fs::write(dir.path().join("k2.bytes"), b"other bytes").unwrap();
+                let (loaded, damaged) = store.load_all();
+                assert!(loaded.is_empty());
+                assert_eq!(damaged.len(), 1);
+            }
+            {
+                let dir = tempfile::tempdir().unwrap();
+                let store = UnsavedStore::open(dir.path()).unwrap();
+                assert!(store.stage(&entry("../x", b""), b"").is_err());
+                assert!(store.remove("a/b").is_err());
+            }
+        }
+
+        phase a_staged_file_round_trips_like_staged_bytes;
         {
             let dir = tempfile::tempdir().unwrap();
             let store = UnsavedStore::open(dir.path().join("unsaved")).unwrap();
-            store.stage(&entry("k1", b"first"), b"first").unwrap();
-            store.stage(&entry("k1", b"second!"), b"second!").unwrap();
-            let (loaded, damaged) = store.load_all();
-            assert!(damaged.is_empty());
-            assert_eq!(loaded.len(), 1);
-            assert_eq!(loaded[0].bytes, b"second!");
-            assert!(store.contains("k1"));
-            store.remove("k1").unwrap();
-            assert!(!store.contains("k1"));
-            assert!(store.load_all().0.is_empty());
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let store = UnsavedStore::open(dir.path()).unwrap();
-            store
-                .stage(&entry("k2", b"described"), b"described")
-                .unwrap();
-            std::fs::write(dir.path().join("k2.bytes"), b"other bytes").unwrap();
-            let (loaded, damaged) = store.load_all();
-            assert!(loaded.is_empty());
-            assert_eq!(damaged.len(), 1);
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let store = UnsavedStore::open(dir.path()).unwrap();
-            assert!(store.stage(&entry("../x", b""), b"").is_err());
-            assert!(store.remove("a/b").is_err());
-        }
-    }
-
-    #[test]
-    fn a_staged_file_round_trips_like_staged_bytes() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = UnsavedStore::open(dir.path().join("unsaved")).unwrap();
-        let source = dir.path().join("stage-file");
-        let bytes: Vec<u8> = (0..3_000_000_u32).map(|i| (i % 251) as u8).collect();
-        std::fs::write(&source, &bytes).unwrap();
-        let described = UnsavedEntry::describe_file(
-            "k3".into(),
-            None,
-            Some("/big".into()),
-            None,
-            &source,
-            7,
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            described,
-            UnsavedEntry::describe(
+            let source = dir.path().join("stage-file");
+            let bytes: Vec<u8> = (0..3_000_000_u32).map(|i| (i % 251) as u8).collect();
+            std::fs::write(&source, &bytes).unwrap();
+            let described = UnsavedEntry::describe_file(
                 "k3".into(),
                 None,
                 Some("/big".into()),
                 None,
-                &bytes,
+                &source,
                 7,
-                None
-            ),
-            "a file is described exactly as its bytes are"
-        );
-        store.stage_file(&described, &source).unwrap();
-        let (loaded, damaged) = store.load_all();
-        assert!(damaged.is_empty());
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].bytes, bytes);
-        // A source that changed since it was described is refused.
-        std::fs::write(&source, b"shorter").unwrap();
-        assert!(store.stage_file(&described, &source).is_err());
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                described,
+                UnsavedEntry::describe(
+                    "k3".into(),
+                    None,
+                    Some("/big".into()),
+                    None,
+                    &bytes,
+                    7,
+                    None
+                ),
+                "a file is described exactly as its bytes are"
+            );
+            store.stage_file(&described, &source).unwrap();
+            let (loaded, damaged) = store.load_all();
+            assert!(damaged.is_empty());
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded[0].bytes, bytes);
+            // A source that changed since it was described is refused.
+            std::fs::write(&source, b"shorter").unwrap();
+            assert!(store.stage_file(&described, &source).is_err());
+        }
     }
 }

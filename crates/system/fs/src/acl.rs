@@ -534,405 +534,409 @@ mod tests {
     const ALICE: IdentityKey = [1u8; 32];
     const BOB: IdentityKey = [2u8; 32];
 
-    #[test]
-    fn normal_files_mount_scope_preserves_policy_and_deny_bias() {
-        let grant = CapOverride::grant(
-            alice(),
-            Scope::FsPath("/var/workspace".into()),
-            CapAccess::Write,
-        );
-        let mut restriction = grant.clone();
-        restriction.scope = Scope::FsPath("/var/workspace/private".into());
-        restriction.effect = Effect::Restrict;
-        restriction.access = CapAccess::Read;
-        let caps = vec![grant, restriction];
-        let original = caps.clone();
-        let acl = WorkspaceAcl::from_capabilities(ALICE, &caps, &[], Some(0));
-        for path in ["/", "/notes.md", "/private/notes.md"] {
-            for (verb, access) in [
-                (CapAccess::Read, Access::Read),
-                (CapAccess::Write, Access::Write),
-            ] {
-                let mounted = format!("/var/workspace{}", if path == "/" { "" } else { path });
-                let expected = decide_capability(
-                    &peer_acting(&ALICE),
-                    &ResourceRef::FsPath(mounted),
-                    verb,
-                    &caps,
-                    Some(0),
-                ) == CapDecision::Allow;
-                assert_eq!(acl.permits(&ALICE, path, access), expected);
-                assert_eq!(acl.permits_peer(&ALICE, path, access), expected);
-            }
-        }
-        assert_eq!(caps, original, "signed policy is not rewritten");
-        assert!(!acl.permits_peer(&BOB, "/", Access::Read));
-        for outside in ["/", "/etc/passwd", "/var/workspace-other/notes.md"] {
-            assert_ne!(
-                decide_capability(
-                    &peer_acting(&ALICE),
-                    &ResourceRef::FsPath(outside.into()),
-                    CapAccess::Read,
-                    &caps,
-                    Some(0),
-                ),
-                CapDecision::Allow,
-                "no host-root permission was granted"
-            );
-        }
-        let mut ancestor = caps[1].clone();
-        ancestor.scope = Scope::FsPath("/var".into());
-        let restricted =
-            WorkspaceAcl::from_capabilities(ALICE, &[caps[0].clone(), ancestor], &[], Some(0));
-        assert!(restricted.permits(&ALICE, "/notes.md", Access::Read));
-        assert!(!restricted.permits(&ALICE, "/notes.md", Access::Write));
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "each phase keeps one former test's body verbatim"
+        )]
+        fn the_acl_decides_reads_writes_visibility_and_peers_fail_closed;
 
-    #[test]
-    fn normal_files_subtree_visibility_expiry_and_revocation_remain_scoped() {
-        let grant = CapOverride::grant(
-            alice(),
-            Scope::FsPath("/var/workspace/team/documents".into()),
-            CapAccess::Read,
-        )
-        .with_expiry(20);
-        let acl =
-            WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&grant), &[], Some(10));
-        assert!(!acl.permits(&ALICE, "/", Access::Read));
-        assert!(acl.visible(&ALICE, "/team"));
-        assert!(acl.permits_peer(&ALICE, "/team/documents/a.txt", Access::Read));
-        assert!(!acl.permits_peer(&ALICE, "/team/documents-secret/a.txt", Access::Read));
-        assert!(!acl.visible(&ALICE, "/other"));
-        assert!(acl.reads_anything(&ALICE));
-        assert!(!acl.reads_anything(&BOB));
-        let expired =
-            WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&grant), &[], Some(21));
-        assert!(!expired.visible(&ALICE, "/team"));
-        assert!(!expired.reads_anything(&ALICE));
-        let handle = AclHandle::new(acl);
-        handle.replace(WorkspaceAcl::from_capabilities(ALICE, &[], &[], Some(10)));
-        assert!(!handle.permits(&ALICE, "/team/documents/a.txt", Access::Read));
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn permits_follows_grants_restrictions_and_capabilities_by_path_component() {
+        phase normal_files_mount_scope_preserves_policy_and_deny_bias;
         {
-            let acl = WorkspaceAcl::new();
-            assert!(!acl.permits(&ALICE, "/anything", Access::Read));
-            assert!(!acl.permits(&ALICE, "/", Access::Write));
-        }
-        {
-            let mut acl = WorkspaceAcl::new();
-            acl.grant_read(ALICE, "/docs");
-            assert!(acl.permits(&ALICE, "/docs", Access::Read));
-            assert!(acl.permits(&ALICE, "/docs/report.md", Access::Read));
-            assert!(!acl.permits(&ALICE, "/docs", Access::Write));
-            assert!(!acl.permits(&BOB, "/docs/report.md", Access::Read));
-        }
-        {
-            let mut acl = WorkspaceAcl::new();
-            acl.grant_read(ALICE, "/doc");
-            assert!(acl.permits(&ALICE, "/doc/a", Access::Read));
-            assert!(acl.permits(&ALICE, "/doc", Access::Read));
-            assert!(!acl.permits(&ALICE, "/document", Access::Read));
-        }
-        {
-            let mut acl = WorkspaceAcl::new();
-            acl.grant_read_write(ALICE, "/");
-            assert!(acl.permits(&ALICE, "/x/y/z", Access::Read));
-            assert!(acl.permits(&ALICE, "/x/y/z", Access::Write));
-        }
-        {
-            use collab_types::{Access as CapAccess, Effect, Scope};
-
-            let mut direct = WorkspaceAcl::new();
-            direct.grant_read(ALICE, "/w/docs");
-
-            let cap = CapOverride::new(
+            let grant = CapOverride::grant(
                 alice(),
-                Scope::FsPath("/w/docs".into()),
-                Effect::Grant,
-                CapAccess::Read,
-            );
-            let capacl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
-
-            for path in [
-                "/w/docs",
-                "/w/docs/a",
-                "/w/docs/a/b.txt",
-                "/w/docsSECRET",
-                "/w/docs2",
-                "/w",
-                "/",
-                "/other",
-            ] {
-                assert_eq!(
-                    direct.permits(&ALICE, path, Access::Read),
-                    capacl.permits(&ALICE, path, Access::Read),
-                    "direct entry and capability disagree on read of {path}"
-                );
-            }
-            assert!(direct.permits(&ALICE, "/w/docs/a/b.txt", Access::Read));
-            assert!(!direct.permits(&ALICE, "/w/docsSECRET", Access::Read));
-            assert!(capacl.permits(&ALICE, "/w/docs/a/b.txt", Access::Read));
-            assert!(!capacl.permits(&ALICE, "/w/docsSECRET", Access::Read));
-        }
-        {
-            use collab_types::{Access as CapAccess, Effect, Scope};
-
-            let caps = vec![
-                CapOverride::new(
-                    alice(),
-                    Scope::FsPath("/w".into()),
-                    Effect::Grant,
-                    CapAccess::Write,
-                ),
-                CapOverride::new(
-                    alice(),
-                    Scope::FsPath("/w/readonly".into()),
-                    Effect::Restrict,
-                    CapAccess::Read,
-                ),
-            ];
-            let acl = WorkspaceAcl::from_capabilities(ALICE, &caps, &[], Some(0));
-
-            assert!(acl.permits(&ALICE, "/w/notes.txt", Access::Write));
-            assert!(acl.permits(&ALICE, "/w/readonly/x.txt", Access::Read));
-            assert!(
-                !acl.permits(&ALICE, "/w/readonly/x.txt", Access::Write),
-                "the Restrict on /w/readonly must survive the broader /w Grant"
-            );
-        }
-        {
-            use collab_types::{Access as CapAccess, Effect, Scope};
-            use tilo_action_policy::Role;
-
-            // A role entry reaches through the workspace's policy, which a published list
-            // resolves into its members: what a mount enforces names members.
-            let cap = CapOverride::new(
-                Grantee::Role(Role::Viewer),
-                Scope::FsPath("/w/team".into()),
-                Effect::Grant,
+                Scope::FsPath("/var/workspace".into()),
                 CapAccess::Write,
             );
-            let role_only = WorkspaceAcl::from_capabilities(
-                ALICE,
-                std::slice::from_ref(&cap),
-                &[MemberId::person(hex::encode(ALICE))],
-                Some(0),
-            );
-            let expanded = CapOverride::new(
-                alice(),
-                Scope::FsPath("/w/team".into()),
-                Effect::Grant,
-                CapAccess::Write,
-            );
-            let member = WorkspaceAcl::from_capabilities(
-                ALICE,
-                std::slice::from_ref(&expanded),
-                &[MemberId::person(hex::encode(ALICE))],
-                Some(0),
-            );
-            let outsider = WorkspaceAcl::from_capabilities(BOB, &[expanded], &[], Some(0));
-
-            assert!(
-                !role_only.permits(&ALICE, "/w/team/plan.md", Access::Read),
-                "a role entry says nothing to a mount, which has no roster"
-            );
-            assert!(member.permits(&ALICE, "/w/team/plan.md", Access::Write));
-            assert!(!outsider.permits(&BOB, "/w/team/plan.md", Access::Read));
-        }
-    }
-
-    #[test]
-    fn the_visible_view_is_each_grant_plus_its_ancestors() {
-        {
-            use collab_types::{Access as CapAccess, Effect, Scope};
-
-            let cap = CapOverride::new(
-                alice(),
-                Scope::FsPath("/w/docs".into()),
-                Effect::Grant,
-                CapAccess::Read,
-            );
-            let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
-
-            for present in ["/", "/w", "/w/docs", "/w/docs/a", "/w/docs/a/b.txt"] {
-                assert!(
-                    acl.visible(&ALICE, present),
-                    "{present} must be part of the view"
-                );
-            }
-            for absent in [
-                "/w/other",
-                "/w/other/private.md",
-                "/w/docsSECRET",
-                "/elsewhere",
-            ] {
-                assert!(
-                    !acl.visible(&ALICE, absent),
-                    "{absent} must be absent from the view, not merely denied"
-                );
-            }
-        }
-        {
-            let acl = WorkspaceAcl::new();
-            assert!(acl.visible(&ALICE, "/"), "the mount root always exists");
-            assert!(!acl.visible(&ALICE, "/anything"));
-            assert!(!acl.visible(&ALICE, "/w/docs"));
-        }
-        {
-            use collab_types::{Access as CapAccess, Effect, Scope};
-
-            let caps = vec![
-                CapOverride::new(
-                    alice(),
-                    Scope::FsPath("/w".into()),
-                    Effect::Grant,
-                    CapAccess::Write,
-                ),
-                CapOverride::new(
-                    alice(),
-                    Scope::FsPath("/w/readonly".into()),
-                    Effect::Restrict,
-                    CapAccess::Read,
-                ),
-            ];
+            let mut restriction = grant.clone();
+            restriction.scope = Scope::FsPath("/var/workspace/private".into());
+            restriction.effect = Effect::Restrict;
+            restriction.access = CapAccess::Read;
+            let caps = vec![grant, restriction];
+            let original = caps.clone();
             let acl = WorkspaceAcl::from_capabilities(ALICE, &caps, &[], Some(0));
-
-            assert!(acl.visible(&ALICE, "/w/readonly/x.txt"));
-            assert!(acl.permits(&ALICE, "/w/readonly/x.txt", Access::Read));
-            assert!(!acl.permits(&ALICE, "/w/readonly/x.txt", Access::Write));
-            for path in ["/w", "/w/notes.txt", "/w/readonly", "/w/sub/deep.txt"] {
-                assert!(
-                    acl.visible(&ALICE, path),
-                    "{path} is inside the write grant and must be in the view"
+            for path in ["/", "/notes.md", "/private/notes.md"] {
+                for (verb, access) in [
+                    (CapAccess::Read, Access::Read),
+                    (CapAccess::Write, Access::Write),
+                ] {
+                    let mounted = format!("/var/workspace{}", if path == "/" { "" } else { path });
+                    let expected = decide_capability(
+                        &peer_acting(&ALICE),
+                        &ResourceRef::FsPath(mounted),
+                        verb,
+                        &caps,
+                        Some(0),
+                    ) == CapDecision::Allow;
+                    assert_eq!(acl.permits(&ALICE, path, access), expected);
+                    assert_eq!(acl.permits_peer(&ALICE, path, access), expected);
+                }
+            }
+            assert_eq!(caps, original, "signed policy is not rewritten");
+            assert!(!acl.permits_peer(&BOB, "/", Access::Read));
+            for outside in ["/", "/etc/passwd", "/var/workspace-other/notes.md"] {
+                assert_ne!(
+                    decide_capability(
+                        &peer_acting(&ALICE),
+                        &ResourceRef::FsPath(outside.into()),
+                        CapAccess::Read,
+                        &caps,
+                        Some(0),
+                    ),
+                    CapDecision::Allow,
+                    "no host-root permission was granted"
                 );
             }
+            let mut ancestor = caps[1].clone();
+            ancestor.scope = Scope::FsPath("/var".into());
+            let restricted =
+                WorkspaceAcl::from_capabilities(ALICE, &[caps[0].clone(), ancestor], &[], Some(0));
+            assert!(restricted.permits(&ALICE, "/notes.md", Access::Read));
+            assert!(!restricted.permits(&ALICE, "/notes.md", Access::Write));
         }
-        {
-            use collab_types::{Access as CapAccess, Effect, Expiry, Scope};
 
-            let cap = CapOverride::new(
+        phase normal_files_subtree_visibility_expiry_and_revocation_remain_scoped;
+        {
+            let grant = CapOverride::grant(
                 alice(),
-                Scope::FsPath("/w/docs".into()),
-                Effect::Grant,
+                Scope::FsPath("/var/workspace/team/documents".into()),
                 CapAccess::Read,
             )
-            .expiring(Expiry::AtUnix(500));
-
-            let live =
-                WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&cap), &[], Some(499));
-            assert!(live.visible(&ALICE, "/w"), "while live, the trail exists");
-
-            let lapsed = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(501));
-            assert!(!lapsed.visible(&ALICE, "/w/docs"));
-            assert!(!lapsed.visible(&ALICE, "/w"));
-        }
-        {
-            use collab_types::{Access as CapAccess, Effect, Scope};
-
-            let cap = CapOverride::new(
-                alice(),
-                Scope::FsPath("/w/inbox".into()),
-                Effect::Grant,
-                CapAccess::Write,
-            );
-            let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
-            assert!(acl.visible(&ALICE, "/w"));
-            assert!(acl.visible(&ALICE, "/w/inbox/note.md"));
-            assert!(!acl.visible(&ALICE, "/w/outbox"));
-        }
-        {
-            let mut acl = WorkspaceAcl::new();
-            acl.grant_read(ALICE, "/w/docs");
-            assert!(acl.visible(&ALICE, "/w"));
-            assert!(acl.visible(&ALICE, "/w/docs/report.md"));
-            assert!(!acl.visible(&ALICE, "/w/other"));
-            assert!(!acl.visible(&BOB, "/w"));
-        }
-    }
-
-    #[test]
-    fn peers_are_decided_only_by_the_workspace_capability_list() {
-        {
-            use collab_types::{Access as CapAccess, Effect, Scope};
-
-            let cap = CapOverride::new(
-                bob(),
-                Scope::FsPath("/docs".into()),
-                Effect::Grant,
-                CapAccess::Read,
-            );
-            let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
-            assert!(acl.permits_peer(&BOB, "/docs/report.md", Access::Read));
-            assert!(acl.reads_anything(&BOB));
-            assert!(!acl.permits_peer(&BOB, "/docs/report.md", Access::Write));
-            assert!(!acl.permits_peer(&BOB, "/secrets", Access::Read));
-        }
-        {
-            use collab_types::{Access as CapAccess, Effect, Scope};
-
-            let cap = CapOverride::new(
-                alice(),
-                Scope::FsPath("/".into()),
-                Effect::Grant,
-                CapAccess::Read,
-            );
-            let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
-            assert!(acl.reads_anything(&ALICE), "the bound identity still reads");
+            .with_expiry(20);
+            let acl =
+                WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&grant), &[], Some(10));
+            assert!(!acl.permits(&ALICE, "/", Access::Read));
+            assert!(acl.visible(&ALICE, "/team"));
+            assert!(acl.permits_peer(&ALICE, "/team/documents/a.txt", Access::Read));
+            assert!(!acl.permits_peer(&ALICE, "/team/documents-secret/a.txt", Access::Read));
+            assert!(!acl.visible(&ALICE, "/other"));
+            assert!(acl.reads_anything(&ALICE));
             assert!(!acl.reads_anything(&BOB));
-            assert!(!acl.permits_peer(&BOB, "/", Access::Read));
-            assert!(
-                !WorkspaceAcl::new().reads_anything(&BOB),
-                "an empty ACL admits nobody"
-            );
+            let expired =
+                WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&grant), &[], Some(21));
+            assert!(!expired.visible(&ALICE, "/team"));
+            assert!(!expired.reads_anything(&ALICE));
+            let handle = AclHandle::new(acl);
+            handle.replace(WorkspaceAcl::from_capabilities(ALICE, &[], &[], Some(10)));
+            assert!(!handle.permits(&ALICE, "/team/documents/a.txt", Access::Read));
         }
+
+        phase permits_follows_grants_restrictions_and_capabilities_by_path_component;
         {
-            use collab_types::{Access as CapAccess, Effect, Scope};
+            {
+                let acl = WorkspaceAcl::new();
+                assert!(!acl.permits(&ALICE, "/anything", Access::Read));
+                assert!(!acl.permits(&ALICE, "/", Access::Write));
+            }
+            {
+                let mut acl = WorkspaceAcl::new();
+                acl.grant_read(ALICE, "/docs");
+                assert!(acl.permits(&ALICE, "/docs", Access::Read));
+                assert!(acl.permits(&ALICE, "/docs/report.md", Access::Read));
+                assert!(!acl.permits(&ALICE, "/docs", Access::Write));
+                assert!(!acl.permits(&BOB, "/docs/report.md", Access::Read));
+            }
+            {
+                let mut acl = WorkspaceAcl::new();
+                acl.grant_read(ALICE, "/doc");
+                assert!(acl.permits(&ALICE, "/doc/a", Access::Read));
+                assert!(acl.permits(&ALICE, "/doc", Access::Read));
+                assert!(!acl.permits(&ALICE, "/document", Access::Read));
+            }
+            {
+                let mut acl = WorkspaceAcl::new();
+                acl.grant_read_write(ALICE, "/");
+                assert!(acl.permits(&ALICE, "/x/y/z", Access::Read));
+                assert!(acl.permits(&ALICE, "/x/y/z", Access::Write));
+            }
+            {
+                use collab_types::{Access as CapAccess, Effect, Scope};
 
-            let cap = CapOverride::new(
-                bob(),
-                Scope::FsPath("/docs".into()),
-                Effect::Grant,
-                CapAccess::Read,
-            );
-            let handle =
-                AclHandle::new(WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0)));
-            assert!(handle.reads_anything(&BOB));
-            assert!(handle.permits_peer(&BOB, "/docs/report.md", Access::Read));
+                let mut direct = WorkspaceAcl::new();
+                direct.grant_read(ALICE, "/w/docs");
 
-            handle.replace(WorkspaceAcl::new());
-            assert!(!handle.reads_anything(&BOB));
-            assert!(!handle.permits_peer(&BOB, "/docs/report.md", Access::Read));
+                let cap = CapOverride::new(
+                    alice(),
+                    Scope::FsPath("/w/docs".into()),
+                    Effect::Grant,
+                    CapAccess::Read,
+                );
+                let capacl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
+
+                for path in [
+                    "/w/docs",
+                    "/w/docs/a",
+                    "/w/docs/a/b.txt",
+                    "/w/docsSECRET",
+                    "/w/docs2",
+                    "/w",
+                    "/",
+                    "/other",
+                ] {
+                    assert_eq!(
+                        direct.permits(&ALICE, path, Access::Read),
+                        capacl.permits(&ALICE, path, Access::Read),
+                        "direct entry and capability disagree on read of {path}"
+                    );
+                }
+                assert!(direct.permits(&ALICE, "/w/docs/a/b.txt", Access::Read));
+                assert!(!direct.permits(&ALICE, "/w/docsSECRET", Access::Read));
+                assert!(capacl.permits(&ALICE, "/w/docs/a/b.txt", Access::Read));
+                assert!(!capacl.permits(&ALICE, "/w/docsSECRET", Access::Read));
+            }
+            {
+                use collab_types::{Access as CapAccess, Effect, Scope};
+
+                let caps = vec![
+                    CapOverride::new(
+                        alice(),
+                        Scope::FsPath("/w".into()),
+                        Effect::Grant,
+                        CapAccess::Write,
+                    ),
+                    CapOverride::new(
+                        alice(),
+                        Scope::FsPath("/w/readonly".into()),
+                        Effect::Restrict,
+                        CapAccess::Read,
+                    ),
+                ];
+                let acl = WorkspaceAcl::from_capabilities(ALICE, &caps, &[], Some(0));
+
+                assert!(acl.permits(&ALICE, "/w/notes.txt", Access::Write));
+                assert!(acl.permits(&ALICE, "/w/readonly/x.txt", Access::Read));
+                assert!(
+                    !acl.permits(&ALICE, "/w/readonly/x.txt", Access::Write),
+                    "the Restrict on /w/readonly must survive the broader /w Grant"
+                );
+            }
+            {
+                use collab_types::{Access as CapAccess, Effect, Scope};
+                use tilo_action_policy::Role;
+
+                // A role entry reaches through the workspace's policy, which a published list
+                // resolves into its members: what a mount enforces names members.
+                let cap = CapOverride::new(
+                    Grantee::Role(Role::Viewer),
+                    Scope::FsPath("/w/team".into()),
+                    Effect::Grant,
+                    CapAccess::Write,
+                );
+                let role_only = WorkspaceAcl::from_capabilities(
+                    ALICE,
+                    std::slice::from_ref(&cap),
+                    &[MemberId::person(hex::encode(ALICE))],
+                    Some(0),
+                );
+                let expanded = CapOverride::new(
+                    alice(),
+                    Scope::FsPath("/w/team".into()),
+                    Effect::Grant,
+                    CapAccess::Write,
+                );
+                let member = WorkspaceAcl::from_capabilities(
+                    ALICE,
+                    std::slice::from_ref(&expanded),
+                    &[MemberId::person(hex::encode(ALICE))],
+                    Some(0),
+                );
+                let outsider = WorkspaceAcl::from_capabilities(BOB, &[expanded], &[], Some(0));
+
+                assert!(
+                    !role_only.permits(&ALICE, "/w/team/plan.md", Access::Read),
+                    "a role entry says nothing to a mount, which has no roster"
+                );
+                assert!(member.permits(&ALICE, "/w/team/plan.md", Access::Write));
+                assert!(!outsider.permits(&BOB, "/w/team/plan.md", Access::Read));
+            }
         }
-        {
-            use collab_types::{Access as CapAccess, Effect, Scope};
 
-            // The mount acts for another member it proves: `/` is reached through that
-            // member's capability, and by nobody the mount does not act for.
-            let cap = CapOverride::new(
-                Grantee::person("local"),
-                Scope::FsPath("/".into()),
-                Effect::Grant,
-                CapAccess::Read,
-            );
-            let acl = WorkspaceAcl::from_capabilities(
-                ALICE,
-                &[cap],
-                &[MemberId::person("local")],
-                Some(0),
-            );
-            assert!(
-                acl.permits(&ALICE, "/x", Access::Read),
-                "the mount holds it"
-            );
-            assert!(!acl.reads_anything(&BOB), "a caller does not");
-            assert!(!acl.permits_peer(&BOB, "/x", Access::Read));
+        phase the_visible_view_is_each_grant_plus_its_ancestors;
+        {
+            {
+                use collab_types::{Access as CapAccess, Effect, Scope};
+
+                let cap = CapOverride::new(
+                    alice(),
+                    Scope::FsPath("/w/docs".into()),
+                    Effect::Grant,
+                    CapAccess::Read,
+                );
+                let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
+
+                for present in ["/", "/w", "/w/docs", "/w/docs/a", "/w/docs/a/b.txt"] {
+                    assert!(
+                        acl.visible(&ALICE, present),
+                        "{present} must be part of the view"
+                    );
+                }
+                for absent in [
+                    "/w/other",
+                    "/w/other/private.md",
+                    "/w/docsSECRET",
+                    "/elsewhere",
+                ] {
+                    assert!(
+                        !acl.visible(&ALICE, absent),
+                        "{absent} must be absent from the view, not merely denied"
+                    );
+                }
+            }
+            {
+                let acl = WorkspaceAcl::new();
+                assert!(acl.visible(&ALICE, "/"), "the mount root always exists");
+                assert!(!acl.visible(&ALICE, "/anything"));
+                assert!(!acl.visible(&ALICE, "/w/docs"));
+            }
+            {
+                use collab_types::{Access as CapAccess, Effect, Scope};
+
+                let caps = vec![
+                    CapOverride::new(
+                        alice(),
+                        Scope::FsPath("/w".into()),
+                        Effect::Grant,
+                        CapAccess::Write,
+                    ),
+                    CapOverride::new(
+                        alice(),
+                        Scope::FsPath("/w/readonly".into()),
+                        Effect::Restrict,
+                        CapAccess::Read,
+                    ),
+                ];
+                let acl = WorkspaceAcl::from_capabilities(ALICE, &caps, &[], Some(0));
+
+                assert!(acl.visible(&ALICE, "/w/readonly/x.txt"));
+                assert!(acl.permits(&ALICE, "/w/readonly/x.txt", Access::Read));
+                assert!(!acl.permits(&ALICE, "/w/readonly/x.txt", Access::Write));
+                for path in ["/w", "/w/notes.txt", "/w/readonly", "/w/sub/deep.txt"] {
+                    assert!(
+                        acl.visible(&ALICE, path),
+                        "{path} is inside the write grant and must be in the view"
+                    );
+                }
+            }
+            {
+                use collab_types::{Access as CapAccess, Effect, Expiry, Scope};
+
+                let cap = CapOverride::new(
+                    alice(),
+                    Scope::FsPath("/w/docs".into()),
+                    Effect::Grant,
+                    CapAccess::Read,
+                )
+                .expiring(Expiry::AtUnix(500));
+
+                let live =
+                    WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&cap), &[], Some(499));
+                assert!(live.visible(&ALICE, "/w"), "while live, the trail exists");
+
+                let lapsed = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(501));
+                assert!(!lapsed.visible(&ALICE, "/w/docs"));
+                assert!(!lapsed.visible(&ALICE, "/w"));
+            }
+            {
+                use collab_types::{Access as CapAccess, Effect, Scope};
+
+                let cap = CapOverride::new(
+                    alice(),
+                    Scope::FsPath("/w/inbox".into()),
+                    Effect::Grant,
+                    CapAccess::Write,
+                );
+                let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
+                assert!(acl.visible(&ALICE, "/w"));
+                assert!(acl.visible(&ALICE, "/w/inbox/note.md"));
+                assert!(!acl.visible(&ALICE, "/w/outbox"));
+            }
+            {
+                let mut acl = WorkspaceAcl::new();
+                acl.grant_read(ALICE, "/w/docs");
+                assert!(acl.visible(&ALICE, "/w"));
+                assert!(acl.visible(&ALICE, "/w/docs/report.md"));
+                assert!(!acl.visible(&ALICE, "/w/other"));
+                assert!(!acl.visible(&BOB, "/w"));
+            }
+        }
+
+        phase peers_are_decided_only_by_the_workspace_capability_list;
+        {
+            {
+                use collab_types::{Access as CapAccess, Effect, Scope};
+
+                let cap = CapOverride::new(
+                    bob(),
+                    Scope::FsPath("/docs".into()),
+                    Effect::Grant,
+                    CapAccess::Read,
+                );
+                let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
+                assert!(acl.permits_peer(&BOB, "/docs/report.md", Access::Read));
+                assert!(acl.reads_anything(&BOB));
+                assert!(!acl.permits_peer(&BOB, "/docs/report.md", Access::Write));
+                assert!(!acl.permits_peer(&BOB, "/secrets", Access::Read));
+            }
+            {
+                use collab_types::{Access as CapAccess, Effect, Scope};
+
+                let cap = CapOverride::new(
+                    alice(),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    CapAccess::Read,
+                );
+                let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
+                assert!(acl.reads_anything(&ALICE), "the bound identity still reads");
+                assert!(!acl.reads_anything(&BOB));
+                assert!(!acl.permits_peer(&BOB, "/", Access::Read));
+                assert!(
+                    !WorkspaceAcl::new().reads_anything(&BOB),
+                    "an empty ACL admits nobody"
+                );
+            }
+            {
+                use collab_types::{Access as CapAccess, Effect, Scope};
+
+                let cap = CapOverride::new(
+                    bob(),
+                    Scope::FsPath("/docs".into()),
+                    Effect::Grant,
+                    CapAccess::Read,
+                );
+                let handle =
+                    AclHandle::new(WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0)));
+                assert!(handle.reads_anything(&BOB));
+                assert!(handle.permits_peer(&BOB, "/docs/report.md", Access::Read));
+
+                handle.replace(WorkspaceAcl::new());
+                assert!(!handle.reads_anything(&BOB));
+                assert!(!handle.permits_peer(&BOB, "/docs/report.md", Access::Read));
+            }
+            {
+                use collab_types::{Access as CapAccess, Effect, Scope};
+
+                // The mount acts for another member it proves: `/` is reached through that
+                // member's capability, and by nobody the mount does not act for.
+                let cap = CapOverride::new(
+                    Grantee::person("local"),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    CapAccess::Read,
+                );
+                let acl = WorkspaceAcl::from_capabilities(
+                    ALICE,
+                    &[cap],
+                    &[MemberId::person("local")],
+                    Some(0),
+                );
+                assert!(
+                    acl.permits(&ALICE, "/x", Access::Read),
+                    "the mount holds it"
+                );
+                assert!(!acl.reads_anything(&BOB), "a caller does not");
+                assert!(!acl.permits_peer(&BOB, "/x", Access::Read));
+            }
         }
     }
 }

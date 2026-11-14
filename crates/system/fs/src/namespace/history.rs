@@ -669,197 +669,201 @@ mod tests {
         Namespace::new("history").unwrap()
     }
 
-    #[test]
-    fn versions_append_once_and_heads_follow_the_graph() {
-        let mut namespace = history();
-        let record = FileRecordId::new();
-        let root = version(record, vec![], FileProvenance::Create, 1);
-        assert!(namespace.append_version(root.clone()).unwrap());
-        assert!(
-            !namespace.append_version(root.clone()).unwrap(),
-            "exact replay"
-        );
-        let left = version(record, vec![root.id], FileProvenance::Edit, 2);
-        let right = version(record, vec![root.id], FileProvenance::Edit, 3);
-        assert_eq!(
-            namespace
-                .append_versions(&[left.clone(), right.clone()])
-                .unwrap(),
-            vec![true, true]
-        );
+    tilo_test_env::scenario! {
+        fn the_version_history_keeps_every_version_and_conflict_once;
 
-        let snapshot = namespace.record_history(record).unwrap();
-        assert_eq!(
-            snapshot.versions,
-            vec![root.clone(), left.clone(), right.clone()]
-        );
-        let mut expected_heads = vec![left.id, right.id];
-        expected_heads.sort();
-        assert_eq!(snapshot.heads, expected_heads);
-        assert_eq!(
-            namespace.record_history_heads(record),
-            expected_heads,
-            "a version no other supersedes heads the record"
-        );
-
-        // The same id bound to different content is refused, and the record
-        // keeps what it had.
-        let mut collision = version(record, vec![], FileProvenance::Edit, 9);
-        collision.id = root.id;
-        let error = namespace.append_version(collision).unwrap_err();
-        assert!(
-            matches!(error, HistoryError::VersionIdCollision(_)),
-            "{error:?}"
-        );
-        assert_eq!(namespace.record_history(record).unwrap(), snapshot);
-
-        let other = FileRecordId::new();
-        let good = version(other, vec![], FileProvenance::Create, 1);
-        let mut collision = version(other, vec![], FileProvenance::Edit, 2);
-        collision.id = good.id;
-        assert!(matches!(
-            namespace.append_versions(&[good, collision]),
-            Err(HistoryError::VersionIdCollision(_))
-        ));
-        assert!(namespace.record_history(other).is_none());
-    }
-
-    #[test]
-    fn a_version_arriving_before_its_parent_is_kept() {
-        let mut namespace = history();
-        let record = FileRecordId::new();
-        let root = version(record, vec![], FileProvenance::Create, 1);
-        let child = version(record, vec![root.id], FileProvenance::Edit, 2);
-        assert!(namespace.append_version(child.clone()).unwrap());
-        assert_eq!(namespace.record_history_heads(record), vec![child.id]);
-        assert!(namespace.append_version(root.clone()).unwrap());
-        assert_eq!(namespace.record_history_heads(record), vec![child.id]);
-        assert_eq!(
-            namespace.record_history(record).unwrap().versions,
-            vec![root, child]
-        );
-    }
-
-    #[test]
-    fn a_peer_that_takes_the_document_changes_has_the_versions() {
-        let mut here = history();
-        let record = FileRecordId::new();
-        let root = version(record, vec![], FileProvenance::Create, 1);
-        let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
-        here.append_versions(&[root.clone(), edit.clone()]).unwrap();
-
-        let mut there = history();
-        there
-            .apply_incremental(&here.changes_since(&[]))
-            .expect("the versions travel as the document's changes");
-        assert_eq!(
-            there.record_history(record).unwrap().versions,
-            vec![root.clone(), edit.clone()]
-        );
-        assert_eq!(there.record_history_heads(record), vec![edit.id]);
-
-        let (found, heads) = there.record_version(record, root.id);
-        assert_eq!(found, Some(root));
-        assert_eq!(heads, vec![edit.id]);
-    }
-
-    #[test]
-    fn conflicts_are_recorded_once_and_resolved_by_their_version() {
-        let mut namespace = history();
-        let record = FileRecordId::new();
-        let root = version(record, vec![], FileProvenance::Create, 1);
-        let left = version(record, vec![root.id], FileProvenance::Edit, 2);
-        let right = version(record, vec![root.id], FileProvenance::Edit, 3);
-        namespace
-            .append_versions(&[root, left.clone(), right.clone()])
-            .unwrap();
-        let conflict = FileConflictV1 {
-            id: Uuid::new_v4(),
-            record_id: record,
-            versions: vec![left.id, right.id],
-            status: ConflictStatus::Open,
-            resolution: None,
-        };
-        assert!(namespace.record_history_conflict(&conflict).unwrap());
-        assert!(
-            !namespace.record_history_conflict(&conflict).unwrap(),
-            "exact replay"
-        );
-        let error = namespace
-            .record_history_conflict(&FileConflictV1 {
-                versions: vec![left.id, FileVersionId::new()],
-                ..conflict.clone()
-            })
-            .unwrap_err();
-        assert!(
-            matches!(error, HistoryError::UnknownConflictVersion(_)),
-            "{error:?}"
-        );
-
-        let result = version(
-            record,
-            vec![left.id, right.id],
-            FileProvenance::ConflictResolution,
-            4,
-        );
-        namespace.append_version(result.clone()).unwrap();
-        let resolution = ConflictResolution {
-            strategy: ConflictStrategy::KeepCurrent,
-            result: result.id,
-            actor: result.actor,
-            timestamp_ms: result.timestamp_ms,
-        };
-        assert!(
-            namespace
-                .resolve_history_conflict(record, conflict.id, &resolution)
-                .unwrap()
-        );
-        assert!(
-            !namespace
-                .resolve_history_conflict(record, conflict.id, &resolution)
-                .unwrap(),
-            "exact replay"
-        );
-        let stored = namespace.record_history(record).unwrap().conflicts[0].clone();
-        assert_eq!(stored.status, ConflictStatus::Resolved);
-        assert_eq!(
-            stored
-                .resolution
-                .as_ref()
-                .map(|resolution| resolution.result),
-            Some(result.id)
-        );
-    }
-
-    #[test]
-    fn the_projection_is_bounded_and_round_trips() {
-        let mut namespace = history();
-        let record = FileRecordId::new();
-        let mut parent = None;
-        for timestamp in 0..20 {
-            let item = version(
-                record,
-                parent.into_iter().collect(),
-                if timestamp == 0 {
-                    FileProvenance::Create
-                } else {
-                    FileProvenance::Edit
-                },
-                timestamp,
+        phase versions_append_once_and_heads_follow_the_graph;
+        {
+            let mut namespace = history();
+            let record = FileRecordId::new();
+            let root = version(record, vec![], FileProvenance::Create, 1);
+            assert!(namespace.append_version(root.clone()).unwrap());
+            assert!(
+                !namespace.append_version(root.clone()).unwrap(),
+                "exact replay"
             );
-            parent = Some(item.id);
-            namespace.append_version(item).unwrap();
+            let left = version(record, vec![root.id], FileProvenance::Edit, 2);
+            let right = version(record, vec![root.id], FileProvenance::Edit, 3);
+            assert_eq!(
+                namespace
+                    .append_versions(&[left.clone(), right.clone()])
+                    .unwrap(),
+                vec![true, true]
+            );
+
+            let snapshot = namespace.record_history(record).unwrap();
+            assert_eq!(
+                snapshot.versions,
+                vec![root.clone(), left.clone(), right.clone()]
+            );
+            let mut expected_heads = vec![left.id, right.id];
+            expected_heads.sort();
+            assert_eq!(snapshot.heads, expected_heads);
+            assert_eq!(
+                namespace.record_history_heads(record),
+                expected_heads,
+                "a version no other supersedes heads the record"
+            );
+
+            // The same id bound to different content is refused, and the record
+            // keeps what it had.
+            let mut collision = version(record, vec![], FileProvenance::Edit, 9);
+            collision.id = root.id;
+            let error = namespace.append_version(collision).unwrap_err();
+            assert!(
+                matches!(error, HistoryError::VersionIdCollision(_)),
+                "{error:?}"
+            );
+            assert_eq!(namespace.record_history(record).unwrap(), snapshot);
+
+            let other = FileRecordId::new();
+            let good = version(other, vec![], FileProvenance::Create, 1);
+            let mut collision = version(other, vec![], FileProvenance::Edit, 2);
+            collision.id = good.id;
+            assert!(matches!(
+                namespace.append_versions(&[good, collision]),
+                Err(HistoryError::VersionIdCollision(_))
+            ));
+            assert!(namespace.record_history(other).is_none());
         }
-        let projection = namespace.record_history_projection(record).unwrap();
-        assert_eq!(projection.total_versions, 20);
-        assert!(projection.versions_truncated);
-        assert_eq!(projection.versions.len(), MAX_PROJECTED_VERSIONS);
-        assert_eq!(projection.versions.first().unwrap().timestamp_ms, 8);
-        let bytes = projection.to_xattr_bytes().unwrap();
-        assert!(bytes.len() <= fs_protocol::projection::MAX_HISTORY_PROJECTION_BYTES);
-        assert_eq!(
-            HistoryProjectionV1::parse_xattr(&bytes).unwrap(),
-            projection
-        );
+
+        phase a_version_arriving_before_its_parent_is_kept;
+        {
+            let mut namespace = history();
+            let record = FileRecordId::new();
+            let root = version(record, vec![], FileProvenance::Create, 1);
+            let child = version(record, vec![root.id], FileProvenance::Edit, 2);
+            assert!(namespace.append_version(child.clone()).unwrap());
+            assert_eq!(namespace.record_history_heads(record), vec![child.id]);
+            assert!(namespace.append_version(root.clone()).unwrap());
+            assert_eq!(namespace.record_history_heads(record), vec![child.id]);
+            assert_eq!(
+                namespace.record_history(record).unwrap().versions,
+                vec![root, child]
+            );
+        }
+
+        phase a_peer_that_takes_the_document_changes_has_the_versions;
+        {
+            let mut here = history();
+            let record = FileRecordId::new();
+            let root = version(record, vec![], FileProvenance::Create, 1);
+            let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
+            here.append_versions(&[root.clone(), edit.clone()]).unwrap();
+
+            let mut there = history();
+            there
+                .apply_incremental(&here.changes_since(&[]))
+                .expect("the versions travel as the document's changes");
+            assert_eq!(
+                there.record_history(record).unwrap().versions,
+                vec![root.clone(), edit.clone()]
+            );
+            assert_eq!(there.record_history_heads(record), vec![edit.id]);
+
+            let (found, heads) = there.record_version(record, root.id);
+            assert_eq!(found, Some(root));
+            assert_eq!(heads, vec![edit.id]);
+        }
+
+        phase conflicts_are_recorded_once_and_resolved_by_their_version;
+        {
+            let mut namespace = history();
+            let record = FileRecordId::new();
+            let root = version(record, vec![], FileProvenance::Create, 1);
+            let left = version(record, vec![root.id], FileProvenance::Edit, 2);
+            let right = version(record, vec![root.id], FileProvenance::Edit, 3);
+            namespace
+                .append_versions(&[root, left.clone(), right.clone()])
+                .unwrap();
+            let conflict = FileConflictV1 {
+                id: Uuid::new_v4(),
+                record_id: record,
+                versions: vec![left.id, right.id],
+                status: ConflictStatus::Open,
+                resolution: None,
+            };
+            assert!(namespace.record_history_conflict(&conflict).unwrap());
+            assert!(
+                !namespace.record_history_conflict(&conflict).unwrap(),
+                "exact replay"
+            );
+            let error = namespace
+                .record_history_conflict(&FileConflictV1 {
+                    versions: vec![left.id, FileVersionId::new()],
+                    ..conflict.clone()
+                })
+                .unwrap_err();
+            assert!(
+                matches!(error, HistoryError::UnknownConflictVersion(_)),
+                "{error:?}"
+            );
+
+            let result = version(
+                record,
+                vec![left.id, right.id],
+                FileProvenance::ConflictResolution,
+                4,
+            );
+            namespace.append_version(result.clone()).unwrap();
+            let resolution = ConflictResolution {
+                strategy: ConflictStrategy::KeepCurrent,
+                result: result.id,
+                actor: result.actor,
+                timestamp_ms: result.timestamp_ms,
+            };
+            assert!(
+                namespace
+                    .resolve_history_conflict(record, conflict.id, &resolution)
+                    .unwrap()
+            );
+            assert!(
+                !namespace
+                    .resolve_history_conflict(record, conflict.id, &resolution)
+                    .unwrap(),
+                "exact replay"
+            );
+            let stored = namespace.record_history(record).unwrap().conflicts[0].clone();
+            assert_eq!(stored.status, ConflictStatus::Resolved);
+            assert_eq!(
+                stored
+                    .resolution
+                    .as_ref()
+                    .map(|resolution| resolution.result),
+                Some(result.id)
+            );
+        }
+
+        phase the_projection_is_bounded_and_round_trips;
+        {
+            let mut namespace = history();
+            let record = FileRecordId::new();
+            let mut parent = None;
+            for timestamp in 0..20 {
+                let item = version(
+                    record,
+                    parent.into_iter().collect(),
+                    if timestamp == 0 {
+                        FileProvenance::Create
+                    } else {
+                        FileProvenance::Edit
+                    },
+                    timestamp,
+                );
+                parent = Some(item.id);
+                namespace.append_version(item).unwrap();
+            }
+            let projection = namespace.record_history_projection(record).unwrap();
+            assert_eq!(projection.total_versions, 20);
+            assert!(projection.versions_truncated);
+            assert_eq!(projection.versions.len(), MAX_PROJECTED_VERSIONS);
+            assert_eq!(projection.versions.first().unwrap().timestamp_ms, 8);
+            let bytes = projection.to_xattr_bytes().unwrap();
+            assert!(bytes.len() <= fs_protocol::projection::MAX_HISTORY_PROJECTION_BYTES);
+            assert_eq!(
+                HistoryProjectionV1::parse_xattr(&bytes).unwrap(),
+                projection
+            );
+        }
     }
 }

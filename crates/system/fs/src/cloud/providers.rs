@@ -198,79 +198,83 @@ mod tests {
         account
     }
 
-    #[test]
-    fn every_cloud_type_mounts_with_its_default_configuration() {
-        for (type_id, key) in [
-            (GOOGLE_DRIVE, provider::GOOGLE_DRIVE),
-            (ONEDRIVE, provider::ONEDRIVE),
-            (DROPBOX, provider::DROPBOX),
-            (ICLOUD_DRIVE, provider::ICLOUD_DRIVE),
-        ] {
-            let spec = spec_for(&account(type_id, serde_json::json!({}))).expect(type_id);
-            assert_eq!(spec.provider, key);
-            assert!(is_file_account(&account(type_id, serde_json::json!({}))));
+    tilo_test_env::scenario! {
+        fn an_account_resolves_to_its_providers_mount_spec;
+
+        phase every_cloud_type_mounts_with_its_default_configuration;
+        {
+            for (type_id, key) in [
+                (GOOGLE_DRIVE, provider::GOOGLE_DRIVE),
+                (ONEDRIVE, provider::ONEDRIVE),
+                (DROPBOX, provider::DROPBOX),
+                (ICLOUD_DRIVE, provider::ICLOUD_DRIVE),
+            ] {
+                let spec = spec_for(&account(type_id, serde_json::json!({}))).expect(type_id);
+                assert_eq!(spec.provider, key);
+                assert!(is_file_account(&account(type_id, serde_json::json!({}))));
+            }
         }
-    }
 
-    #[test]
-    fn a_resolved_configuration_is_used_as_stored() {
-        let mount = cloud_source_onedrive::Mount {
-            api: "https://graph.microsoft.com/v1.0/".into(),
-            drive_id: "drive-1".into(),
-            drive_type: cloud_source_onedrive::graph::DriveType::Personal,
-            drive_root: "root-1".into(),
-            root: "root-1".into(),
-            upload_chunk: cloud_source_onedrive::DEFAULT_UPLOAD_CHUNK,
-        };
-        let spec = spec_for(&account(
-            ONEDRIVE,
-            serde_json::json!({ MOUNT_CONFIG_KEY: mount }),
-        ))
-        .unwrap();
-        assert_eq!(
-            serde_json::from_value::<cloud_source_onedrive::Mount>(spec.config).unwrap(),
-            mount
-        );
-        let mut dropbox = cloud_source_dropbox::DropboxConfig::new("");
-        dropbox.path_root = Some("1000".into());
-        let spec = spec_for(&account(
-            DROPBOX,
-            serde_json::json!({ MOUNT_CONFIG_KEY: dropbox }),
-        ))
-        .unwrap();
-        assert_eq!(
-            serde_json::from_value::<cloud_source_dropbox::DropboxConfig>(spec.config)
-                .unwrap()
-                .path_root
-                .as_deref(),
-            Some("1000")
-        );
-    }
-
-    #[test]
-    fn credentials_are_never_sent_to_a_plain_http_remote_endpoint() {
-        let drive = cloud_source_gdrive::DriveConfig::my_drive().with_api("http://drive.example/");
-        assert!(
-            spec_for(&account(
-                GOOGLE_DRIVE,
-                serde_json::json!({ MOUNT_CONFIG_KEY: drive })
+        phase a_resolved_configuration_is_used_as_stored;
+        {
+            let mount = cloud_source_onedrive::Mount {
+                api: "https://graph.microsoft.com/v1.0/".into(),
+                drive_id: "drive-1".into(),
+                drive_type: cloud_source_onedrive::graph::DriveType::Personal,
+                drive_root: "root-1".into(),
+                root: "root-1".into(),
+                upload_chunk: cloud_source_onedrive::DEFAULT_UPLOAD_CHUNK,
+            };
+            let spec = spec_for(&account(
+                ONEDRIVE,
+                serde_json::json!({ MOUNT_CONFIG_KEY: mount }),
             ))
-            .is_none()
-        );
-        let local = cloud_source_gdrive::DriveConfig::my_drive().with_api("http://127.0.0.1:9/");
-        assert!(
-            spec_for(&account(
-                GOOGLE_DRIVE,
-                serde_json::json!({ MOUNT_CONFIG_KEY: local })
-            ))
-            .is_some()
-        );
-        assert!(
-            spec_for(&account(
+            .unwrap();
+            assert_eq!(
+                serde_json::from_value::<cloud_source_onedrive::Mount>(spec.config).unwrap(),
+                mount
+            );
+            let mut dropbox = cloud_source_dropbox::DropboxConfig::new("");
+            dropbox.path_root = Some("1000".into());
+            let spec = spec_for(&account(
                 DROPBOX,
-                serde_json::json!({ MOUNT_CONFIG_KEY: "not a configuration" })
+                serde_json::json!({ MOUNT_CONFIG_KEY: dropbox }),
             ))
-            .is_none()
-        );
+            .unwrap();
+            assert_eq!(
+                serde_json::from_value::<cloud_source_dropbox::DropboxConfig>(spec.config)
+                    .unwrap()
+                    .path_root
+                    .as_deref(),
+                Some("1000")
+            );
+        }
+
+        phase credentials_are_never_sent_to_a_plain_http_remote_endpoint;
+        {
+            let drive = cloud_source_gdrive::DriveConfig::my_drive().with_api("http://drive.example/");
+            assert!(
+                spec_for(&account(
+                    GOOGLE_DRIVE,
+                    serde_json::json!({ MOUNT_CONFIG_KEY: drive })
+                ))
+                .is_none()
+            );
+            let local = cloud_source_gdrive::DriveConfig::my_drive().with_api("http://127.0.0.1:9/");
+            assert!(
+                spec_for(&account(
+                    GOOGLE_DRIVE,
+                    serde_json::json!({ MOUNT_CONFIG_KEY: local })
+                ))
+                .is_some()
+            );
+            assert!(
+                spec_for(&account(
+                    DROPBOX,
+                    serde_json::json!({ MOUNT_CONFIG_KEY: "not a configuration" })
+                ))
+                .is_none()
+            );
+        }
     }
 }
