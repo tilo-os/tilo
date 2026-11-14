@@ -845,8 +845,7 @@ impl tilo_actions::remote::ResourceSearch for Notes {
                 })
         };
         for row in rows.iter().filter(|row| !owned(row)) {
-            // Every word, as the one search reads a query: not the rows
-            // matching the most of it.
+            // Every word, as the one search reads a query: not the rows matching the most of it.
             let score = page::word_score(row, &words);
             if score < words.len() {
                 continue;
@@ -865,6 +864,7 @@ impl tilo_actions::remote::ResourceSearch for Notes {
                     ),
                     arguments: serde_json::Map::new(),
                     app: Some(APP.to_owned()),
+                    provider: None,
                 },
             ));
         }

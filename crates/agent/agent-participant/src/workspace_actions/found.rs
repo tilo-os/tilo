@@ -111,6 +111,7 @@ impl Worker {
             open: None,
             arguments: serde_json::Map::new(),
             app: Some(route.app_id.clone()),
+            provider: Some(record_provider(route)),
         })
     }
 

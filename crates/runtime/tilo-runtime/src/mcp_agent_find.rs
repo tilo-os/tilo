@@ -203,6 +203,22 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 provider.clone(),
             ));
         }
+        // A hit that says its record is found there, and named by it where
+        // the app has several records: two PDFs publish their documents
+        // under one id, and the first record's would answer for both.
+        if let Some(own) = &found.provider
+            && let Some(at) = providers.iter().position(|(_, provider)| provider == own)
+        {
+            let (name, provider) = providers.remove(at);
+            let several = providers.iter().any(|(other, _)| *other == name);
+            let (path, kind) = self.ls_path(&provider, found).await?;
+            let app = if several {
+                format!("{name}@{provider}")
+            } else {
+                name
+            };
+            return Some((format!("{app}/{path}"), kind));
+        }
         for (name, provider) in providers {
             let Some((path, kind)) = self.ls_path(&provider, found).await else {
                 continue;
@@ -210,6 +226,47 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             return Some((format!("{name}/{path}"), kind));
         }
         None
+    }
+
+    /// The app's other records, where it keeps one per file (a PDF each): a line and a row for
+    /// each, by the path that names it (`pdf-viewer@record:…`) and what it holds. Listing the
+    /// app shows the record it acts in; these are the rest, so none of them goes unseen.
+    pub(super) async fn other_records(
+        &self,
+        parsed: &ParsedPath,
+        resolved: &Resolved,
+        (lines, rows): (&mut Vec<String>, &mut Vec<Value>),
+    ) {
+        if !parsed.segments.is_empty() || parsed.app.contains('@') {
+            return;
+        }
+        let Ok((_, running)) = self.providers().await else {
+            return;
+        };
+        let name = app_names(std::slice::from_ref(&resolved.app_id)).join("");
+        for (provider, entry) in &running {
+            if entry["app_id"].as_str() != Some(resolved.app_id.as_str())
+                || *provider == resolved.provider
+                || !tilo_actions::remote::is_record_provider(provider)
+            {
+                continue;
+            }
+            let mut levels = Levels::new();
+            // A record that holds nothing yet is no item of the app's.
+            let Some(label) = self
+                .level(provider, "", &mut levels)
+                .await
+                .ok()
+                .and_then(|top| top.children.first().map(|node| node.label.clone()))
+                .filter(|label| !label.is_empty())
+            else {
+                continue;
+            };
+            let path = format!("{name}@{provider}");
+            lines.push(format!("{path}/  {label}"));
+            rows.push(json!({"path": path, "name": label, "label": label,
+                "kind": resolved.app_id, "has_children": true, "actions": []}));
+        }
     }
 
     /// Whether `node` is the resource `found` names: the same id, or the
