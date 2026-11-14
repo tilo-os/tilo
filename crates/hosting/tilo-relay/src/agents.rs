@@ -649,6 +649,8 @@ struct RelayRecordsLink {
     feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     shell: Option<Arc<dyn WorkspaceShell>>,
     stores: Arc<WorkspaceStores>,
+    /// The links to the workspaces' files the host's web origin serves.
+    content_links: Arc<crate::content_links::ContentLinks>,
     /// Where a person is asked about an action run for them.
     certification: CertificationProtocol,
 }
@@ -708,6 +710,15 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
             .runtime
             .block_on(self.workspaces.as_ref()?.workspace_identity(workspace))?;
         self.stores.get(&identity).ok()
+    }
+
+    fn content_link(
+        &self,
+        _workspace: WorkspaceId,
+        store: tilo_content::ContentStore,
+        link: &tilo_actions::remote::ContentLinkAsk,
+    ) -> Option<tilo_actions::remote::ContentLink> {
+        Some(self.content_links.mint(store, link.clone()))
     }
 
     fn feedback_reviewer(&self) -> Option<Arc<dyn FeedbackReviewer>> {
@@ -938,6 +949,7 @@ fn attach_records(
             web_entry,
             feedback_reviewer,
             stores: relay.content(),
+            content_links: relay.content_links(),
             certification: relay.web_context().certification.clone(),
             host_device: HostDevice {
                 endpoint: HostEndpoint::iroh(relay.node_addr(), host_cert.clone()),

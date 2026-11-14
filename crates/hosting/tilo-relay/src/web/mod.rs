@@ -10,6 +10,7 @@
 //! No owner loop runs here: every handler is async and awaits the relay's
 //! own locks; workspace I/O already runs on the blocking pool.
 
+mod content;
 mod envelopes;
 mod fetch;
 pub mod install;
@@ -154,6 +155,8 @@ struct Web {
     /// tokens its pages' sessions take for it.
     fetch: Option<tilo_net::proxy::host::FetchProxy>,
     grants: Arc<fetch::Grants>,
+    /// The links to the workspaces' files this host serves.
+    content_links: Arc<crate::content_links::ContentLinks>,
     /// The live plane: the one account of who is here.
     presence: Arc<plane::Authority>,
     /// The page errors the door logs.
@@ -404,6 +407,7 @@ impl Relay {
             )),
             fetch: fetch.proxy,
             grants: Arc::default(),
+            content_links: self.content_links(),
             presence: plane.authority(),
             page_errors: page_errors::PageErrors::default(),
             // A link is read days after it was made, so what it names waits on
@@ -619,17 +623,32 @@ where
         .await;
 }
 
-/// A response body: whole bytes, or what the fetch proxy relays.
+/// A response body: whole bytes, what the fetch proxy relays, or what is
+/// read for it as it is sent (a link to a workspace's files).
 pub(crate) enum Body {
     Full(Option<Bytes>),
     Proxied(tilo_net::proxy::host::ProxyBody),
+    Streamed(tokio::sync::mpsc::Receiver<Result<Bytes, String>>),
 }
+
+/// Why a body broke off: the browser then sees an error rather than a short
+/// body that reads as whole.
+#[derive(Debug)]
+pub(crate) struct BodyError(String);
+
+impl std::fmt::Display for BodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for BodyError {}
 
 impl http_body::Body for Body {
     type Data = Bytes;
-    /// Only a relayed body fails: it breaks off at the proxy's bounds, so
-    /// the page sees an error rather than a short body that reads as whole.
-    type Error = tilo_net::proxy::host::ProxyBodyError;
+    /// A relayed body breaks off at the proxy's bounds; a streamed one where
+    /// its bytes could not be read.
+    type Error = BodyError;
 
     fn poll_frame(
         self: Pin<&mut Self>,
@@ -639,7 +658,12 @@ impl http_body::Body for Body {
             Self::Full(bytes) => {
                 Poll::Ready(bytes.take().map(|bytes| Ok(http_body::Frame::data(bytes))))
             }
-            Self::Proxied(body) => Pin::new(body).poll_frame(cx),
+            Self::Proxied(body) => Pin::new(body)
+                .poll_frame(cx)
+                .map_err(|error| BodyError(error.to_string())),
+            Self::Streamed(pieces) => pieces.poll_recv(cx).map(|piece| {
+                piece.map(|piece| piece.map(http_body::Frame::data).map_err(BodyError))
+            }),
         }
     }
 }
@@ -861,6 +885,24 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
         .is_some_and(|route| route == protocol::FETCH_PATH)
     {
         return fetch::handle(web, request).await;
+    }
+    // A link to a workspace's files is fetched by the browser itself.
+    if let Some(link) = request
+        .uri()
+        .path()
+        .strip_prefix(API_PREFIX)
+        .and_then(|route| route.strip_prefix(crate::content_links::ROUTE))
+    {
+        let link = link.to_owned();
+        let origin = request.headers().get(header::ORIGIN).cloned();
+        let mut response = content::handle(web, request.method(), &link).await;
+        cors(
+            &web.allowed_origins,
+            ALLOWED_HEADERS,
+            origin.as_ref(),
+            &mut response,
+        );
+        return response;
     }
     // A sealed invitation is fetched and taken back with their own methods,
     // so the shelf answers before the POST-only gate.

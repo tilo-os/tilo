@@ -46,6 +46,19 @@ test('a closed dialog and what it holds are not mirrored, and come back when it 
   bridge.update(dialog(true));
   assert.deepEqual(names(),['Desk']);
 });
+test('a control that carries files out is the one draggable element the pointer reaches',()=>{
+  const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
+  bridge.update(snapshot({role:'ListItem',name:'plan.md',carries_out:'0f3a'}));
+  const element=root.children[0];
+  assert.equal(element.draggable,true);
+  assert.equal(element.dataset.tiloCarries,'0f3a');
+  assert.equal(element.style.pointerEvents,'auto','the drag starts from it');
+  bridge.update(snapshot({role:'ListItem',name:'plan.md'}));
+  assert.equal(root.children[0],element);
+  assert.equal(element.draggable,false);
+  assert.equal(element.dataset.tiloCarries,undefined);
+  assert.equal(element.style.pointerEvents,'none','the pointer is the canvas\'s again');
+});
 test('removed label does not persist on a stable node',()=>{
   const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
   bridge.update(snapshot({role:'Group',name:'Old'}));bridge.update(snapshot({role:'Group'}));

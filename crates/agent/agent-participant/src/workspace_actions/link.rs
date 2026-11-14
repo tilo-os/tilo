@@ -175,6 +175,18 @@ pub trait WorkspaceRecordsLink: Send + Sync {
     fn workspace_content(&self, _workspace: WorkspaceId) -> Option<tilo_content::ContentStore> {
         None
     }
+    /// A link the host's web origin serves `link`'s files at, out of
+    /// `store` (`workspace`'s), for a little while
+    /// ([`tilo_actions::remote::ContentLink`]): the caller was found to read
+    /// the workspace already. Absence: this host serves no such links.
+    fn content_link(
+        &self,
+        _workspace: WorkspaceId,
+        _store: tilo_content::ContentStore,
+        _link: &tilo_actions::remote::ContentLinkAsk,
+    ) -> Option<tilo_actions::remote::ContentLink> {
+        None
+    }
     /// The model the host looks over its reporters' reviews with, when it
     /// lends one ([`FeedbackReviewer`]). Absence leaves reviews to the
     /// reporters' own devices.

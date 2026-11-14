@@ -678,5 +678,3 @@ files-tree-open = Öffnen
 files-tree-open-detail = Die Datei in der App öffnen, die sie liest
 files-tree-download = Herunterladen
 files-tree-download-folder = Als ZIP herunterladen
-files-tree-save-title = Auf diesem Computer speichern
-files-tree-save = Speichern

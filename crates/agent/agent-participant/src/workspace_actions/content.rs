@@ -304,6 +304,41 @@ impl WorkspaceActions {
         answer.map(respond)
     }
 
+    /// Answer `caller`'s request for a link to content of the host's
+    /// workspace `workspace_id`: anyone who may read it, as the service's
+    /// thread reads their standing.
+    pub(super) fn content_link(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        correlation: u64,
+        link: tilo_actions::remote::ContentLinkAsk,
+    ) -> Pending<RemoteActionMessage> {
+        let respond = move |result| RemoteActionMessage::ContentLinkResponse {
+            correlation,
+            result,
+        };
+        if !self.authorized(caller) && !super::speaks_for_a_member(caller) {
+            return Pending::ready(respond(Err(ActionHostError::NotPermitted)));
+        }
+        if let Err(reason) = link.check() {
+            return Pending::ready(respond(Err(ActionHostError::InvalidRequest { reason })));
+        }
+        let (done, answer) = pending();
+        let job = Job::ContentLink {
+            workspace_id,
+            caller: caller.clone(),
+            link,
+            done,
+        };
+        if let Err(Job::ContentLink { done, .. }) = self.submit(job) {
+            done.complete(Err(ActionHostError::Unavailable {
+                reason: "the host's workspace actions are not running".into(),
+            }));
+        }
+        answer.map(respond)
+    }
+
     /// `workspace_id`'s store, once the service's thread found it.
     fn known_store(&self, workspace_id: WorkspaceId) -> Option<ContentStore> {
         self.shared
@@ -367,6 +402,30 @@ impl Worker {
                     reason: CONTENT_GETS_UNAVAILABLE.into(),
                 })?;
         ContentGetAnswer::new(piece(&store, content, offset, length)?)
+    }
+
+    /// A link to `link`'s files in `workspace_id`'s store, where `caller`
+    /// may read the workspace.
+    pub(super) fn content_link(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        link: &tilo_actions::remote::ContentLinkAsk,
+    ) -> Result<tilo_actions::remote::ContentLink, ActionHostError> {
+        if !self.may_across(workspace_id, caller, ActionKind::Read) {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let unavailable = || ActionHostError::Unavailable {
+            reason: tilo_actions::remote::CONTENT_LINKS_UNAVAILABLE.into(),
+        };
+        let store = self
+            .workspace_content(workspace_id)
+            .ok_or_else(unavailable)?;
+        self.shared
+            .link
+            .get()
+            .and_then(|host| host.content_link(workspace_id, store, link))
+            .ok_or_else(unavailable)
     }
 
     /// `replica`, a record of the workspace `workspace` names, lent the

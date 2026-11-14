@@ -166,6 +166,13 @@ enum Job {
         length: u64,
         done: Completer<Result<tilo_actions::remote::ContentGetAnswer, ActionHostError>>,
     },
+    /// A link to content of a workspace, for a caller who may read it.
+    ContentLink {
+        workspace_id: WorkspaceId,
+        caller: Caller,
+        link: tilo_actions::remote::ContentLinkAsk,
+        done: Completer<Result<tilo_actions::remote::ContentLink, ActionHostError>>,
+    },
     /// A search of what a workspace holds.
     Search {
         workspace_id: WorkspaceId,
@@ -203,6 +210,7 @@ impl Job {
             Self::Arrived { .. } => "arrived",
             Self::Content { .. } => "content",
             Self::ContentGet { .. } => "content-get",
+            Self::ContentLink { .. } => "content-link",
             Self::Search { .. } => "search",
             Self::Changes { .. } => "changes",
             Self::Joined(_) => "joined",
@@ -217,6 +225,7 @@ impl Job {
             | Self::Invoke { workspace_id, .. }
             | Self::Content { workspace_id, .. }
             | Self::ContentGet { workspace_id, .. }
+            | Self::ContentLink { workspace_id, .. }
             | Self::Search { workspace_id, .. }
             | Self::Changes { workspace_id, .. }
             | Self::Arrived { workspace_id, .. } => Some(*workspace_id),
@@ -238,6 +247,7 @@ impl Job {
             | Self::Ran(_)
             | Self::Content { .. }
             | Self::ContentGet { .. }
+            | Self::ContentLink { .. }
             | Self::Arrived { .. }
             | Self::Joined(_)
             | Self::Forget(_) => Keys::Joined,
@@ -490,6 +500,9 @@ impl WorkspaceActions {
                 offset,
                 length,
             } => self.content_get(workspace_id, caller, correlation, (content, offset, length)),
+            RemoteActionMessage::ContentLinkRequest { correlation, link } => {
+                self.content_link(workspace_id, caller, correlation, link)
+            }
             RemoteActionMessage::SearchRequest {
                 correlation,
                 needle,
@@ -542,6 +555,7 @@ impl WorkspaceActions {
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
+            | RemoteActionMessage::ContentLinkResponse { .. }
             | RemoteActionMessage::SearchResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
@@ -698,6 +712,7 @@ impl HostActions {
             RemoteActionMessage::FeedbackRequest { .. }
             | RemoteActionMessage::ContentPutRequest { .. }
             | RemoteActionMessage::ContentGetRequest { .. }
+            | RemoteActionMessage::ContentLinkRequest { .. }
             | RemoteActionMessage::SearchRequest { .. }
             | RemoteActionMessage::ChangesRequest { .. } => false,
             RemoteActionMessage::CatalogueRequest { query, .. } => {
@@ -723,6 +738,7 @@ impl HostActions {
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
+            | RemoteActionMessage::ContentLinkResponse { .. }
             | RemoteActionMessage::SearchResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
@@ -1669,6 +1685,12 @@ impl Worker {
                     &content,
                     (offset, length),
                 )),
+                Job::ContentLink {
+                    workspace_id,
+                    caller,
+                    link,
+                    done,
+                } => done.complete(self.content_link(workspace_id, &caller, &link)),
             }
         }
         // What a job that answers no invocation wrote (a run it records), or

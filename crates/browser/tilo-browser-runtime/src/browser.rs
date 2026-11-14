@@ -247,6 +247,11 @@ struct Config {
     /// beside the workspace; absent on the person's own desktop.
     #[serde(default)]
     host: Option<String>,
+    /// The origin of the workspace host's web listener (`https://eu1.tilo.sh`),
+    /// where it serves the links to the workspace's files a page saves and
+    /// drags out ([`carry_out`]); absent for a page with no host.
+    #[serde(default)]
+    host_origin: Option<String>,
     /// The deployment's About links (`{notify, source, community}`, from
     /// the web host's `entry.json`); one left empty is not offered.
     #[serde(default)]
@@ -631,6 +636,8 @@ pub(crate) struct Desktop {
     /// The workspace's files, as the page copies dropped and uploaded files into them; `None`
     /// for a page in no workspace.
     files: Option<Rc<crate::page_files::WorkspaceFiles>>,
+    /// The way the workspace's files leave the page onto the computer: saved, or dragged out.
+    pub(crate) carrying: carry_out::Carrying,
 }
 
 impl Desktop {
@@ -1445,6 +1452,7 @@ fn present_desktop(
         files.as_ref(),
         asks.reveals(),
     )?;
+    let carrying = carrying_of(config, &shared);
     Ok(Presentation {
         root: Root::Desktop(Box::new(shell)),
         stores: Rc::clone(&shared.stores),
@@ -1481,9 +1489,20 @@ fn present_desktop(
             told_runs: RefCell::default(),
             offered: uploads::Offered::default(),
             files,
+            carrying,
         }),
         waiting: None,
     })
+}
+
+/// How the workspace's files leave the page from this desktop: through the host of the workspace
+/// it shows, at the origin the page reached that host at.
+fn carrying_of(config: &Config, shared: &crate::desktop::Shared) -> carry_out::Carrying {
+    carry_out::Carrying::new(
+        shared.clone(),
+        config.workspace.clone(),
+        config.host_origin.clone(),
+    )
 }
 
 /// The page's desktop shell over the mounted surface: its chrome, sheets and roster, fed from what
@@ -3299,6 +3318,7 @@ impl Mount {
 mod agent_notices;
 mod app_window;
 mod attention;
+mod carry_out;
 use app_window::AppPage;
 use app_window::present_component;
 mod desktop_exports;

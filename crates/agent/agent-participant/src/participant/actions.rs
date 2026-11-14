@@ -173,9 +173,18 @@ impl AgentParticipant {
                     }),
                 }
             }
+            RemoteActionMessage::ContentLinkRequest { correlation, .. } => {
+                RemoteActionMessage::ContentLinkResponse {
+                    correlation,
+                    result: Err(ActionHostError::Unavailable {
+                        reason: tilo_actions::remote::CONTENT_LINKS_UNAVAILABLE.into(),
+                    }),
+                }
+            }
             RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
+            | RemoteActionMessage::ContentLinkResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::RecordReading { .. }
             | RemoteActionMessage::RetiredRecordRequest

@@ -1016,6 +1016,9 @@ pub struct ListRow {
     leading_tooltip: Option<String>,
     tooltip: Option<String>,
     description: Option<String>,
+    /// The files the row can be dragged out of the window with
+    /// ([`crate::carry_out`]), by their offer's key.
+    carries_out: Option<String>,
     status: Option<(StatusKind, String)>,
     change: Option<Changed>,
     struck: bool,
@@ -1104,6 +1107,7 @@ impl ListRow {
             shared_leading: None,
             shared_after_trailing: None,
             leading_tooltip: None,
+            carries_out: None,
             tooltip: None,
             description: None,
             status: None,
@@ -1337,6 +1341,15 @@ impl ListRow {
     #[must_use]
     pub fn mark(mut self, icon: Icon) -> Self {
         self.mark = Some(icon);
+        self
+    }
+
+    /// The row can be dragged out of the window, onto the computer's desktop
+    /// or file manager, with the files offered under `key`
+    /// ([`crate::carry_out::Offers::offer`]).
+    #[must_use]
+    pub fn carries_out(mut self, key: impl Into<String>) -> Self {
+        self.carries_out = Some(key.into());
         self
     }
 
@@ -3017,6 +3030,9 @@ impl Widget for ListRow {
         }
         if let Some(description) = &self.description {
             node.description = Some(description.clone());
+        }
+        if let Some(key) = &self.carries_out {
+            node = node.with_carries_out(key.clone());
         }
         let rects = self.action_slots();
         for ((child, index), rect) in node

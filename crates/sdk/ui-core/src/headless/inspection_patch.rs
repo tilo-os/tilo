@@ -231,6 +231,7 @@ fn access_own_eq(a: &AccessNode, b: &AccessNode) -> bool {
         role_description,
         item,
         action,
+        carries_out,
     } = a;
     *role == b.role
         && *semantic_key == b.semantic_key
@@ -251,6 +252,7 @@ fn access_own_eq(a: &AccessNode, b: &AccessNode) -> bool {
         && *role_description == b.role_description
         && *item == b.item
         && *action == b.action
+        && *carries_out == b.carries_out
 }
 
 fn inspection_own_eq(a: &InspectionNode, b: &InspectionNode) -> bool {

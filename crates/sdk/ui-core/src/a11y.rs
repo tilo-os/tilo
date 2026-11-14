@@ -394,6 +394,11 @@ pub struct AccessNode {
     /// written as [`tilo_actions::ActionAddress`] writes an address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
+    /// The files of the workspace this control can be dragged out of the window with, by the key
+    /// [`crate::carry_out::Offers::offer`] gave them: a page makes its element draggable onto the
+    /// computer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carries_out: Option<String>,
 }
 
 /// A widget's [`AccessNode`] with its synthetic children shared rather than owned, from
@@ -452,7 +457,15 @@ impl AccessNode {
             role_description: None,
             item: None,
             action: None,
+            carries_out: None,
         }
+    }
+
+    /// Say this control can be dragged out of the window with the files offered under `key`
+    /// ([`Self::carries_out`]).
+    pub fn with_carries_out(mut self, key: impl Into<String>) -> Self {
+        self.carries_out = Some(key.into()).filter(|key| !key.is_empty());
+        self
     }
 
     /// Say what this control does ([`Self::action`]): the identity of the app action it runs, or of the

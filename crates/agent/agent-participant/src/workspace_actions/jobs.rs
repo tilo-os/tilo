@@ -17,6 +17,7 @@ impl Job {
             | Self::Invoke { workspace_id, .. }
             | Self::Content { workspace_id, .. }
             | Self::ContentGet { workspace_id, .. }
+            | Self::ContentLink { workspace_id, .. }
             | Self::Search { workspace_id, .. }
             | Self::Changes { workspace_id, .. }
             | Self::Arrived { workspace_id, .. }

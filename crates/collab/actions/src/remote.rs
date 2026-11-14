@@ -47,6 +47,7 @@ mod catalogue;
 mod changes;
 mod confirmation;
 mod content_get;
+mod content_link;
 mod content_put;
 pub mod crash_records;
 pub mod downloaded_apps;
@@ -91,6 +92,10 @@ pub use catalogue::{
 };
 pub use changes::{CHANGE_FEED_UNAVAILABLE, ChangeFeed, ChangePage, RecordChanged};
 pub use content_get::{CONTENT_GETS_UNAVAILABLE, ContentGetAnswer, ContentGets, ContentPiece};
+pub use content_link::{
+    CONTENT_LINK_TTL_SECS, CONTENT_LINKS_UNAVAILABLE, ContentLink, ContentLinkAsk, ContentLinkFile,
+    MAX_CONTENT_LINK_FILES,
+};
 pub use content_put::{
     CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPutAnswer, ContentPutStep, ContentPuts,
     HostedContentPuts, MAX_CONTENT_PUT_CHUNK, MAX_HOSTED_CONTENT_PUTS, MAX_OPEN_CONTENT_PUTS,
@@ -1100,6 +1105,18 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<ChangePage, ActionHostError>,
     },
+    /// Ask the device for a link its web origin serves the content of
+    /// `link.files` at, for a little while ([`ContentLink`]): what a page
+    /// drags a file out by, and saves a large one through.
+    ContentLinkRequest {
+        correlation: u64,
+        link: ContentLinkAsk,
+    },
+    /// Answer to [`Self::ContentLinkRequest`] with the same correlation.
+    ContentLinkResponse {
+        correlation: u64,
+        result: Result<ContentLink, ActionHostError>,
+    },
 }
 
 /// One record a reader asks for over the action door: alone, or `joined`
@@ -1162,6 +1179,7 @@ impl RemoteActionMessage {
                 | Self::ConfirmationRequest { .. }
                 | Self::ContentPutRequest { .. }
                 | Self::ContentGetRequest { .. }
+                | Self::ContentLinkRequest { .. }
                 | Self::Confirm { .. }
                 | Self::SearchRequest { .. }
                 | Self::ChangesRequest { .. }
@@ -1193,6 +1211,7 @@ fn not_kept(message: &RemoteActionMessage) -> Option<RemoteActionMessage> {
         RemoteActionMessage::FeedbackRequest { .. } => "canonical feedback service unavailable",
         RemoteActionMessage::ContentPutRequest { .. } => CONTENT_PUTS_UNAVAILABLE,
         RemoteActionMessage::ContentGetRequest { .. } => CONTENT_GETS_UNAVAILABLE,
+        RemoteActionMessage::ContentLinkRequest { .. } => CONTENT_LINKS_UNAVAILABLE,
         _ => return None,
     };
     refuse(
@@ -1338,7 +1357,8 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         // What a stateless host keeps none of, it refuses.
         RemoteActionMessage::FeedbackRequest { .. }
         | RemoteActionMessage::ContentPutRequest { .. }
-        | RemoteActionMessage::ContentGetRequest { .. } => Pending::ready(not_kept(&message)?),
+        | RemoteActionMessage::ContentGetRequest { .. }
+        | RemoteActionMessage::ContentLinkRequest { .. } => Pending::ready(not_kept(&message)?),
         RemoteActionMessage::CatalogueRequest { correlation, query } => host
             .query(caller, query)
             .map(move |result| RemoteActionMessage::CatalogueResponse {
@@ -1412,6 +1432,7 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         | RemoteActionMessage::RetiredResourceReading { .. }
         | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::ContentGetResponse { .. }
+        | RemoteActionMessage::ContentLinkResponse { .. }
         | RemoteActionMessage::ConfirmResponse { .. }
         | RemoteActionMessage::SearchResponse { .. }
         | RemoteActionMessage::ChangesResponse { .. }
@@ -1475,6 +1496,12 @@ pub fn refuse(
                 result: Err(error),
             }
         }
+        RemoteActionMessage::ContentLinkRequest { correlation, .. } => {
+            RemoteActionMessage::ContentLinkResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
         RemoteActionMessage::Confirm { correlation, .. } => RemoteActionMessage::ConfirmResponse {
             correlation: *correlation,
             result: Err(error),
@@ -1504,6 +1531,7 @@ pub fn refuse(
         | RemoteActionMessage::RetiredResourceReading { .. }
         | RemoteActionMessage::ContentPutResponse { .. }
         | RemoteActionMessage::ContentGetResponse { .. }
+        | RemoteActionMessage::ContentLinkResponse { .. }
         | RemoteActionMessage::ConfirmResponse { .. }
         | RemoteActionMessage::SearchResponse { .. }
         | RemoteActionMessage::ChangesResponse { .. }

@@ -195,6 +195,9 @@ pub struct Relay {
     workspaces: Option<crate::workspaces::Workspaces>,
     /// What this host keeps for each workspace it serves.
     content: Arc<tilo_content::WorkspaceStores>,
+    /// The links to its workspaces' files its web origin serves.
+    #[cfg(feature = "web")]
+    content_links: Arc<crate::content_links::ContentLinks>,
     /// This device's part in the channels of the workspaces it governs:
     /// absent when its certificate does not let it own workspaces, and so it
     /// holds no channel keys.
@@ -723,6 +726,8 @@ impl Relay {
             web,
             workspaces: governed,
             content,
+            #[cfg(feature = "web")]
+            content_links: Arc::default(),
             _workspace_keys: workspace_keys,
             packet_server: packet_relay,
         })
@@ -904,6 +909,13 @@ impl Relay {
     #[must_use]
     pub fn content(&self) -> Arc<tilo_content::WorkspaceStores> {
         Arc::clone(&self.content)
+    }
+
+    /// The links to its workspaces' files this host's web origin serves.
+    #[cfg(feature = "web")]
+    #[must_use]
+    pub fn content_links(&self) -> Arc<crate::content_links::ContentLinks> {
+        Arc::clone(&self.content_links)
     }
 
     /// Where this relay keeps its state.

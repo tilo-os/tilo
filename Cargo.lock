@@ -5004,7 +5004,6 @@ dependencies = [
  "chrono",
  "cloud-source",
  "collab-types",
- "crc32fast",
  "ed25519-dalek 3.0.0",
  "file-explorer",
  "fs-content",
@@ -20957,8 +20956,10 @@ dependencies = [
  "chat",
  "clap",
  "collab-types",
+ "crc32fast",
  "discord",
  "ed25519-dalek 3.0.0",
+ "fs-content",
  "fs-protocol",
  "futures",
  "getrandom 0.3.4",
@@ -21044,6 +21045,7 @@ dependencies = [
  "uuid",
  "workspace-hack",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

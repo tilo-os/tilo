@@ -731,6 +731,7 @@ impl AppBrokerState {
             // device's workspace content through it.
             | RemoteActionMessage::ContentPutRequest { .. }
             | RemoteActionMessage::ContentGetRequest { .. }
+            | RemoteActionMessage::ContentLinkRequest { .. }
             // Nor does it search or follow another device's workspace
             // through it: those are an agent's and the person's.
             | RemoteActionMessage::SearchRequest { .. }
@@ -748,6 +749,7 @@ impl AppBrokerState {
             | RemoteActionMessage::RetiredResourceReading { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
+            | RemoteActionMessage::ContentLinkResponse { .. }
             | RemoteActionMessage::SearchResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => Some(person.clone()),

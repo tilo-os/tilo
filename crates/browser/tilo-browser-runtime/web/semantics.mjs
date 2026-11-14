@@ -500,6 +500,15 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
         if(element.getAttribute('autocomplete')!==autocomplete)element.setAttribute('autocomplete',autocomplete);
       }
       if(node.live)element.setAttribute('aria-live',node.live.toLowerCase());else element.removeAttribute('aria-live');
+      // A control that carries the workspace's files out of the window is
+      // the one element the pointer reaches: a browser drags a file onto the
+      // computer only from a real element (carry-out.mjs).
+      const carries=node.carries_out;
+      if(carries){
+        element.draggable=true;element.dataset.tiloCarries=carries;element.style.pointerEvents='auto';element.style.touchAction='none';
+      }else if(element.dataset.tiloCarries!==undefined){
+        element.draggable=false;delete element.dataset.tiloCarries;element.style.pointerEvents='none';element.style.touchAction='';
+      }
       }
       // A secret is never in the tree; a page's own password field holds
       // what the person typed, which the tree must not wipe.

@@ -16,9 +16,9 @@ use std::time::Duration;
 use collab_types::WorkspaceId;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ChangePage, Completer,
-    ConfirmedInvocation, ContentGetAnswer, ContentPutAnswer, Found, InvocationReceipt,
-    InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionFrame,
-    RemoteActionMessage, UpdateMark, pending, serve,
+    ConfirmedInvocation, ContentGetAnswer, ContentLink, ContentLinkAsk, ContentPutAnswer, Found,
+    InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus,
+    RemoteActionFrame, RemoteActionMessage, UpdateMark, pending, serve,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
@@ -120,6 +120,7 @@ struct Waiting {
     followed_order: std::collections::VecDeque<InvocationId>,
     puts: HashMap<u64, Asked<Answered<ContentPutAnswer>>>,
     gets: HashMap<u64, Asked<Answered<ContentGetAnswer>>>,
+    links: HashMap<u64, Asked<Answered<ContentLink>>>,
     confirms: HashMap<u64, Asked<Answered<ConfirmedInvocation>>>,
     searches: HashMap<u64, Asked<Answered<Vec<Found>>>>,
     changes: HashMap<u64, Asked<Answered<ChangePage>>>,
@@ -178,6 +179,9 @@ impl Waiting {
         for (_, asked) in self.gets.drain() {
             give.push(giving(asked, Err(error.clone())));
         }
+        for (_, asked) in self.links.drain() {
+            give.push(giving(asked, Err(error.clone())));
+        }
         for (_, asked) in self.confirms.drain() {
             give.push(giving(asked, Err(error.clone())));
         }
@@ -208,6 +212,9 @@ impl Waiting {
             give.push(giving(asked, Err(late())));
         }
         for asked in expired(&mut self.gets, now) {
+            give.push(giving(asked, Err(late())));
+        }
+        for asked in expired(&mut self.links, now) {
             give.push(giving(asked, Err(late())));
         }
         for asked in expired(&mut self.confirms, now) {
@@ -260,6 +267,7 @@ impl Waiting {
             && self.cancels.is_empty()
             && self.puts.is_empty()
             && self.gets.is_empty()
+            && self.links.is_empty()
             && self.confirms.is_empty()
             && self.searches.is_empty()
             && self.changes.is_empty()
@@ -317,6 +325,14 @@ impl Waiting {
                 result,
             } => {
                 if let Some(asked) = self.gets.remove(&correlation) {
+                    give.push(giving(asked, result));
+                }
+            }
+            RemoteActionMessage::ContentLinkResponse {
+                correlation,
+                result,
+            } => {
+                if let Some(asked) = self.links.remove(&correlation) {
                     give.push(giving(asked, result));
                 }
             }
@@ -422,6 +438,29 @@ impl SessionActions {
             .send(RemoteActionMessage::ContentPutRequest { correlation, step })
         {
             let asked = self.0.waiting.lock_recover().puts.remove(&correlation);
+            if let Some(asked) = asked {
+                asked.answer.complete(Err(error));
+            }
+        }
+        answered
+    }
+
+    /// Ask the device for a link its web origin serves `link`'s files at
+    /// ([`ContentLink`]): its answer, once it comes, or why none came within
+    /// [`REPLY_DEADLINE`].
+    pub fn content_link(&self, link: ContentLinkAsk) -> Pending<Answered<ContentLink>> {
+        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
+        let (answer, answered) = pending();
+        self.0
+            .waiting
+            .lock_recover()
+            .links
+            .insert(correlation, Asked::new(answer));
+        if let Err(error) = self
+            .0
+            .send(RemoteActionMessage::ContentLinkRequest { correlation, link })
+        {
+            let asked = self.0.waiting.lock_recover().links.remove(&correlation);
             if let Some(asked) = asked {
                 asked.answer.complete(Err(error));
             }

@@ -73,6 +73,8 @@ pub mod certification;
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod content;
+#[cfg(feature = "web")]
+pub mod content_links;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod daemon;
 #[cfg(feature = "web")]

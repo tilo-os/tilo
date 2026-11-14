@@ -227,6 +227,11 @@ tilo-fs = { path = "../../system/fs" }
 # A workspace's files as the record that carries them: the relay reads a
 # governed workspace's tree to learn which content its files are made of.
 fs-protocol = { path = "../../system/fs-protocol" }
+# A file the folder mount wrote is a manifest of chunks: a link to it reads
+# the manifest to stream its chunks in order.
+fs-content = { path = "../../system/fs-content" }
+# The checksum each member of a folder's zip carries.
+crc32fast.workspace = true
 # The scope of a room's document media, which an offloaded action's inputs
 # and outputs are.
 runtime-fs = { path = "../../runtime/runtime-fs" }
@@ -260,6 +265,8 @@ getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# A folder's link streams a zip: the tests read it back as a file manager does.
+zip.workspace = true
 # The TLS tests write a PEM pair and read it back.
 rcgen.workspace = true
 # The room host's fixtures: a certified test host and the devices around it.

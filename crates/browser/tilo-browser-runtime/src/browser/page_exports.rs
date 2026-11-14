@@ -341,6 +341,36 @@ pub fn desktop_upload(id: u64, files: &JsValue, progress: js_sys::Function) -> R
     })
 }
 
+/// What a drag of the semantic control that carries `key` out of the page names
+/// (`AccessNode::carries_out`): `{url, mime, name}` once the workspace's host answered with a
+/// link to its files, else `null`, having asked for one, so a drag a moment later finds it. The
+/// page asks as the pointer comes near the control and again as a drag starts.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn desktop_carry_out(id: u64, key: &str) -> Result<JsValue, JsValue> {
+    with_mount_quietly(id, |m| {
+        let Some(link) = m
+            .desktop
+            .as_ref()
+            .and_then(|desktop| desktop.carrying.link(key))
+        else {
+            return Ok(JsValue::NULL);
+        };
+        let out = js_sys::Object::new();
+        for (field, value) in [
+            ("url", link.url.as_str()),
+            ("mime", link.mime),
+            ("name", &link.name),
+        ] {
+            js_sys::Reflect::set(&out, &field.into(), &value.into())?;
+        }
+        Ok(out.into())
+    })
+}
+
 /// Image URLs the application asked for, as `[{loader, url, maxDimension}]`.
 /// The page fetches and decodes each with the browser's own image decoders,
 /// no larger than `maxDimension` on either side, and hands the pixels back

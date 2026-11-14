@@ -679,5 +679,3 @@ files-tree-open = Open
 files-tree-open-detail = Open the file in the app that reads it
 files-tree-download = Download
 files-tree-download-folder = Download as zip
-files-tree-save-title = Save to this computer
-files-tree-save = Save

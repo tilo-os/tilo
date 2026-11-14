@@ -21,6 +21,7 @@ import {createPresentedSource} from './panorama.mjs';
 import {createSemanticPresentation} from './semantic-presentation.mjs';
 import {createViewPresenter,VIEW_CSS} from './view-present.mjs';
 import {createDomInput} from './dom-input.mjs';
+import {createCarryOut} from './carry-out.mjs';
 export {createPanorama} from './panorama.mjs';
 import {createNativeCatalogueBridge, invokeMembershipAction} from './native-catalogue.mjs';
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
@@ -325,6 +326,9 @@ export async function mountDesktop(target,options={}) {
   if(options.models)config.models={endpoint:options.models.endpoint,sessionToken:options.models.sessionToken,profileId:options.models.profileId,modelId:options.models.modelId};
   // Administration is opt-in and never borrows the inference session token.
   if(options.providerManagement)config.providerManagement={endpoint:options.providerManagement.endpoint,sessionToken:options.providerManagement.sessionToken};
+  // Where the workspace's host serves the links to its files the page saves
+  // and drags out (carry-out.mjs).
+  if(typeof options.peer?.origin==='string')config.hostOrigin=options.peer.origin;
   delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.onAttention;delete config.signal;delete config.loadAsset;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;delete config.dom;delete config.onDomFrame;
   // The desktop shows its invite sheet when the page configures one: what it
   // makes links through, as `mountDesktop({invite})` hands it over.
@@ -369,6 +373,12 @@ export async function mountDesktop(target,options={}) {
     keyup:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keyup(...args);},
     blur:owner=>{inputScope.capture();if(active())semanticKeys?.blur(owner);},
   },inputScope,domInput?{holdsSelection:domInput.holdsSelection}:undefined);
+  // A control that carries the workspace's files drags out of the page from
+  // its element in the mirror; the pointer it takes goes on to the canvas.
+  const carryOut=createCarryOut({root:accessibility,canvas,link:key=>{
+    if(id===undefined||closed||!runtime.desktop_carry_out)return null;
+    try{return runtime.desktop_carry_out(id,key);}catch(error){report({carryOut:String(error)});return null;}
+  }});
   const listeners=new AbortController();const on=(node,type,fn,opts={})=>node.addEventListener(type,fn,{...opts,signal:listeners.signal});
   // A person holding a selection of the HTML layer's text keeps it: the
   // copy shortcut is the browser's, which copies it.
@@ -612,7 +622,7 @@ export async function mountDesktop(target,options={}) {
       capture.close();semanticPresentation.close();
       crashListeners.delete(onCrash);
       if(globalThis.__tiloForgetCrashedWindow===forgetCrashed)delete globalThis.__tiloForgetCrashedWindow;
-      nativeCatalogue.dispose();media?.close();livePointer?.();livePointer=null;here?.stop();here=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
+      nativeCatalogue.dispose();media?.close();livePointer?.();livePointer=null;here?.stop();here=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();semantic.close();carryOut.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=Array.from(runtime.close(id));
       surface.remove();
     },
