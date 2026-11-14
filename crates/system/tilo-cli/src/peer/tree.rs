@@ -219,6 +219,12 @@ impl Sync {
             .link
             .send(Cmd::OpenRecordAt(self.workspace, self.route.clone()));
         let _ = self.link.send(Cmd::OpenRoute(self.route.clone()));
+        // And on the workspace's plane, whose host answers what it holds.
+        let _ = self.link.engine().open_record(
+            &self.workspace.to_string(),
+            &self.route.app_id,
+            &self.route.record,
+        );
     }
 
     fn take(&self, event: Event) {
@@ -229,6 +235,13 @@ impl Sync {
             }
             Event::RecordContent { ws, frame, .. } if ws == self.workspace => {
                 self.content.piece(&frame);
+            }
+            // The host sent all it holds of the tree, none when the workspace has none yet:
+            // this device's first change founds it.
+            Event::RecordOpened {
+                route: Some(route), ..
+            } if route == self.route => {
+                self.standing.lock_recover().opened = true;
             }
             _ => {}
         }

@@ -117,6 +117,10 @@ pub(crate) fn show(
     mount: bool,
     read_only: bool,
 ) -> std::io::Result<Showing> {
+    // A mount a peer that ended left behind answers ENOTCONN, which no
+    // folder can be made at.
+    #[cfg(target_os = "linux")]
+    tilo_fs::fuse_session::clear_stale_mount(at)?;
     std::fs::create_dir_all(at)?;
     #[cfg(target_os = "linux")]
     if mount

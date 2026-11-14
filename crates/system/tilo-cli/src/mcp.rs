@@ -258,6 +258,16 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
         &key.verifying_key().to_bytes(),
     );
     if hold {
+        // The peer's log (its standard error, kept beside the device): what it could not do,
+        // and more with `RUST_LOG`.
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+            )
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .try_init();
         let home = tilo_paths::home().ok_or_else(|| anyhow::anyhow!("HOME is missing"))?;
         return held::hold(&place.map_err(anyhow::Error::msg)?, shared(device), home);
     }
