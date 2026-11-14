@@ -90,11 +90,17 @@ impl Origin {
         }
     }
 
-    /// The door's own number, which the agents it admitted are stopped by.
-    pub(super) fn door(&self) -> Option<u64> {
+    /// The environment's server a connection came in by, as its agent session is recorded:
+    /// the server's number, which the sessions it admitted are stopped by, and the
+    /// environment's id and name, which the shell lists beside a session's name.
+    pub(super) fn entered(&self) -> Option<crate::agent_sessions::Entered> {
         match self {
             Self::Host => None,
-            Self::Environment(environment) => Some(environment.door),
+            Self::Environment(environment) => Some(crate::agent_sessions::Entered {
+                door: environment.door,
+                id: environment.id.clone(),
+                name: environment.name.clone(),
+            }),
         }
     }
 }
