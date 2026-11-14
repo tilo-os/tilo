@@ -811,70 +811,78 @@ mod tests {
         );
     }
 
+    /// What a page waits on is the window's row while it waits, with the
+    /// prompt's two answers bound to it; dismissed in the prompt, the row and
+    /// the prompt both go. A page's question asks nothing more: the question
+    /// is bound. A site's sign-in asks for the name and the password, and is
+    /// cancelled here with nothing typed in it.
     #[test]
-    fn a_pages_question_is_answered_through_its_row() {
-        let mut app = TestApp::<BrowserShell>::capture(Some("page-dialog")).unwrap();
-        app.settle();
-        let published = app.harness().resources();
-        let question = find(&published, crate::page_dialogs::ROW)
-            .expect("the question the page waits on is a row");
-        assert_eq!(question.label, "shop.example.org asks");
-        let ids: Vec<&str> = question.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, ["accept-page-dialog", "dismiss-page-dialog"]);
-        assert!(
-            question.actions.iter().all(|a| a.params().is_empty()),
-            "a confirm asks nothing more: the question is bound"
-        );
-        assert!(
+    fn what_a_page_waits_on_is_answered_through_its_row() {
+        struct Case {
+            scenario: &'static str,
+            row: &'static str,
+            label: &'static str,
+            /// The row's two answers, and what each still asks for.
+            answers: [(&'static str, &'static [&'static str]); 2],
+        }
+        let cases = [
+            Case {
+                scenario: "page-dialog",
+                row: crate::page_dialogs::ROW,
+                label: "shop.example.org asks",
+                answers: [("accept-page-dialog", &[]), ("dismiss-page-dialog", &[])],
+            },
+            Case {
+                scenario: "page-sign-in",
+                row: crate::page_sign_in::ROW,
+                label: "Sign in to staging.example.org",
+                answers: [
+                    ("answer-page-sign-in", &["username", "password"]),
+                    ("cancel-page-sign-in", &[]),
+                ],
+            },
+        ];
+        for case in cases {
+            let Case { scenario, row, .. } = case;
+            let mut app = TestApp::<BrowserShell>::capture(Some(scenario)).unwrap();
+            app.settle();
+            let published = app.harness().resources();
+            let waiting = find(&published, row)
+                .unwrap_or_else(|| panic!("{scenario}: what the page waits on is a row"));
+            assert_eq!(waiting.label, case.label, "{scenario}");
+            let answers: Vec<(&str, Vec<&str>)> = waiting
+                .actions
+                .iter()
+                .map(|action| {
+                    let asks = action.params().iter().map(|param| &*param.name);
+                    (action.id.as_str(), asks.collect())
+                })
+                .collect();
+            let expected: Vec<(&str, Vec<&str>)> = case
+                .answers
+                .iter()
+                .map(|(id, asks)| (*id, asks.to_vec()))
+                .collect();
+            assert_eq!(answers, expected, "{scenario}: the row's answers");
+            assert!(
+                app.harness().targets().contains_key(row),
+                "{scenario}: the prompt stands over the page"
+            );
+
+            // A person dismisses it in the prompt, and the row goes with it.
             app.harness()
-                .targets()
-                .contains_key(crate::page_dialogs::ROW),
-            "the dialog stands over the page"
-        );
-
-        app.harness()
-            .click_named(&format!("{}.secondary", crate::page_dialogs::ROW))
-            .unwrap();
-        app.settle();
-        assert!(find(&app.harness().resources(), crate::page_dialogs::ROW).is_none());
-        assert!(
-            !app.harness()
-                .targets()
-                .contains_key(crate::page_dialogs::ROW)
-        );
-    }
-
-    /// A site's sign-in is the window's row while its request waits, with
-    /// the prompt's two answers bound to it and nothing typed in it;
-    /// cancelled in the prompt, both go.
-    #[test]
-    fn a_sites_sign_in_is_answered_through_its_row() {
-        let mut app = TestApp::<BrowserShell>::capture(Some("page-sign-in")).unwrap();
-        app.settle();
-        let published = app.harness().resources();
-        let sign_in = find(&published, crate::page_sign_in::ROW)
-            .expect("the sign-in a request waits on is a row");
-        assert_eq!(sign_in.label, "Sign in to staging.example.org");
-        let ids: Vec<&str> = sign_in.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, ["answer-page-sign-in", "cancel-page-sign-in"]);
-        assert!(
-            app.harness()
-                .targets()
-                .contains_key(crate::page_sign_in::ROW),
-            "the prompt stands over the page"
-        );
-
-        // A person cancels in the prompt, and the row goes with it.
-        app.harness()
-            .click_named(&format!("{}.secondary", crate::page_sign_in::ROW))
-            .unwrap();
-        app.settle();
-        assert!(find(&app.harness().resources(), crate::page_sign_in::ROW).is_none());
-        assert!(
-            !app.harness()
-                .targets()
-                .contains_key(crate::page_sign_in::ROW)
-        );
+                .click_named(&format!("{row}.secondary"))
+                .unwrap();
+            app.settle();
+            assert!(
+                find(&app.harness().resources(), row).is_none(),
+                "{scenario}: the row is gone"
+            );
+            assert!(
+                !app.harness().targets().contains_key(row),
+                "{scenario}: the prompt is gone"
+            );
+        }
     }
 
     #[test]
@@ -1056,32 +1064,6 @@ mod tests {
         reached
     }
 
-    #[test]
-    fn a_window_with_a_loaded_page_offers_an_agent_read_page() {
-        let url = "https://github.com/ada";
-        for arguments in [&[ui::webview::VISITOR_WINDOW_FLAG, url][..], &[url][..]] {
-            let engine = ui::webview::test_engine::TestEngine::new();
-            crate::browser_widget::test_window_engine::install(engine.clone());
-            let mut app = TestApp::<BrowserShell>::launched(arguments).expect("Browser opens");
-            engine.push_event(ui::webview::WebViewEvent::LoadFinished);
-            app.settle();
-            let reached = reachable_by_an_agent(&mut app);
-            for action in [
-                "read-page",
-                "capture-page",
-                "find-page-element",
-                "click-page",
-            ] {
-                assert!(
-                    reached
-                        .iter()
-                        .any(|(resource, id)| resource == "browser.page" && id == action),
-                    "{arguments:?}: {action} on browser.page is not offered to an agent: {reached:?}"
-                );
-            }
-        }
-    }
-
     /// [`reachable_by_an_agent`] from the top of the directory, as an agent's door walks it: the
     /// rows the window's directory starts with, then what each listed resource holds. A row an
     /// agent is not shown hides everything below it, the window's own row included.
@@ -1132,11 +1114,13 @@ mod tests {
         (reached, top)
     }
 
-    /// An agent at the door lists a Browser window from the top: the window's own row, then the
-    /// page on it. The page's actions reach it only when every row above the page is one an agent
-    /// is shown.
+    /// A window with a loaded page offers an agent the page's actions both ways an agent walks to
+    /// them. From the window's own row: reading, capturing, finding and clicking. And from the top
+    /// of the directory, as an agent at the door lists a Browser window: the window's own row,
+    /// then the page on it, whose actions reach it only when every row above the page is one an
+    /// agent is shown.
     #[test]
-    fn an_agent_reaches_the_page_from_the_top_of_the_windows_directory() {
+    fn an_agent_reaches_a_loaded_pages_actions_from_the_windows_row_and_from_the_top() {
         let url = "https://github.com/ada";
         for arguments in [&[ui::webview::VISITOR_WINDOW_FLAG, url][..], &[url][..]] {
             let engine = ui::webview::test_engine::TestEngine::new();
@@ -1144,6 +1128,20 @@ mod tests {
             let mut app = TestApp::<BrowserShell>::launched(arguments).expect("Browser opens");
             engine.push_event(ui::webview::WebViewEvent::LoadFinished);
             app.settle();
+            let reached = reachable_by_an_agent(&mut app);
+            for action in [
+                "read-page",
+                "capture-page",
+                "find-page-element",
+                "click-page",
+            ] {
+                assert!(
+                    reached
+                        .iter()
+                        .any(|(resource, id)| resource == "browser.page" && id == action),
+                    "{arguments:?}: {action} on browser.page is not offered to an agent: {reached:?}"
+                );
+            }
             let (reached, top) = reachable_from_the_top(&mut app);
             for action in ["read-page", "navigate"] {
                 assert!(
