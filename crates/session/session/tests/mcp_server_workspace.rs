@@ -41,6 +41,7 @@ use tilo_runtime::remote_door::{ALPN, PersonalDevices, open};
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;
+use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -130,6 +131,8 @@ impl Inside {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
+            // The environment's program ends with the test, however the test ends.
+            .dies_with_the_test()
             .spawn_locked()
             .unwrap();
         let stdout = child.stdout.take().unwrap();

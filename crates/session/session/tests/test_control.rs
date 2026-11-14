@@ -31,6 +31,7 @@ use tilo_desktop_model::{
 };
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
+use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use crate::common::{CANVAS, HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
@@ -230,8 +231,10 @@ impl StartedSession {
             .env_remove("DISPLAY")
             .env_remove("TILO_MCP_SERVER")
             // A stop of the whole group, as a session is stopped in a terminal or
-            // by a script, reaches it through this group.
+            // by a script, reaches it through this group; and one of the test itself ends it
+            // where the test ends without running a destructor.
             .process_group(0)
+            .dies_with_the_test()
             .stdout(std::process::Stdio::piped())
             .spawn_locked()
             .expect("tilo-session starts");

@@ -50,6 +50,7 @@ use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::directory::{ListingAction, Status};
+use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -155,7 +156,9 @@ impl Room {
             )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::inherit())
+            // The room service a test hosts ends with the test, however the test ends.
+            .dies_with_the_test();
         // eu1 keeps a wait list at its door. The list is what a door taking people by invitation
         // offers those it turns away: the image refuses to start an open door with one.
         if admission == "invite" {

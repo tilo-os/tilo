@@ -226,6 +226,47 @@ pub trait SpawnUnderEnvLock {
     fn status_locked(&mut self) -> io::Result<std::process::ExitStatus>;
 }
 
+/// A program a test starts ends with the test that started it.
+///
+/// A test's process can end without running a destructor: the runner kills a test that ran past
+/// its bound. A program the test started in a process group of its own is out of that kill's
+/// reach, so it keeps running for the rest of the run, holding its sockets and whatever it serves.
+/// The kernel's parent-death signal ends it when the test's process ends, whichever way it ends.
+pub trait DiesWithTheTest {
+    /// Make the program end when the process that runs it ends, however that happens.
+    ///
+    /// The signal is the one a stop of the program's own group sends (SIGTERM), so a session ends
+    /// the way a session ends: it puts away its sockets and files and ends its apps, rather than
+    /// being cut off where its destructors would not run either. A program whose answer the test
+    /// waits for (`output`, `status`) ends with it already; this is for the ones a test leaves
+    /// running, and start them from the thread that runs the test, as the signal is delivered
+    /// when that thread ends.
+    fn dies_with_the_test(&mut self) -> &mut Self;
+}
+
+#[cfg(target_os = "linux")]
+impl DiesWithTheTest for std::process::Command {
+    fn dies_with_the_test(&mut self) -> &mut Self {
+        use std::os::unix::process::CommandExt as _;
+        // The process that runs the test. A child forked as that process is being killed finds a
+        // different parent, and the signal it would have been sent is already behind it.
+        let test_process = i32::try_from(std::process::id()).unwrap_or(0);
+        // SAFETY: `pre_exec` runs between fork and exec in the child, where the only work done is
+        // a `prctl`, a `getppid` and `_exit`, all async-signal-safe.
+        unsafe {
+            self.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if libc::getppid() != test_process {
+                    libc::_exit(0);
+                }
+                Ok(())
+            })
+        }
+    }
+}
+
 impl SpawnUnderEnvLock for std::process::Command {
     fn spawn_locked(&mut self) -> io::Result<std::process::Child> {
         let _env = lock();
@@ -528,6 +569,32 @@ mod tests {
 
     const KEY: &str = "TILO_TEST_ENV_SELFTEST";
     const OTHER: &str = "TILO_TEST_ENV_SELFTEST_OTHER";
+
+    /// A program a test leaves running ends when the thread that started it does. The signal
+    /// stands in for the destructor a test the runner killed never runs; checked here on its own,
+    /// where the test is still alive to see the program end.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_program_a_test_starts_ends_with_the_test() {
+        use std::os::unix::process::ExitStatusExt as _;
+        use std::process::Command;
+        use std::thread;
+
+        let started = thread::spawn(|| {
+            let mut command = Command::new("sleep");
+            command.arg("60").dies_with_the_test();
+            command.spawn().expect("a program to outlive its test")
+        });
+        let mut program = started.join().expect("the thread that started it");
+        // A pidfd says the process ended; the wait then reaps it and says how.
+        exited("the program a test started", program.id());
+        let status = program.wait().expect("the program's end");
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGTERM),
+            "it ends on the signal a stop of its group sends: {status:?}"
+        );
+    }
 
     fn read(key: &str) -> Option<String> {
         env::var(key).ok()

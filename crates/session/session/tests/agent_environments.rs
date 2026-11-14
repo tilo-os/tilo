@@ -35,6 +35,7 @@ use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::{Dialog, PortalEffect};
+use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use crate::common::{HEIGHT, WIDTH};
@@ -201,7 +202,10 @@ fn start(role: &str, vars: &[(&str, String)], inherit: bool) -> Child {
             "-q",
         ])
         .env(ROLE, role)
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::inherit())
+        // The environment's program ends with the test, however the test ends: a program the
+        // test's own output reaches must not outlive the run either.
+        .dies_with_the_test();
     for (name, value) in vars {
         command.env(name, value);
     }

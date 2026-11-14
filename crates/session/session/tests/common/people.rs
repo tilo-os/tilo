@@ -49,6 +49,7 @@ use test_http::{Reply, Responder};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_relay_protocol::directory::{DoorJoin, Listing, door_path};
 use tilo_relay_protocol::workspaces::Role;
+use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
@@ -1337,6 +1338,10 @@ impl Device {
             .env_remove("DISPLAY")
             // A stop of the whole group reaches it, as a session is stopped.
             .process_group(0)
+            // And a test that ends without its destructors — the runner killing it for running
+            // past its bound, above all — ends the session with it rather than leaving a session
+            // of its own running on the machine.
+            .dies_with_the_test()
             .stdout(Stdio::piped())
             .stderr(Stdio::from(log.try_clone().expect("the log's own handle")));
         if let Some(invitation) = invitation {

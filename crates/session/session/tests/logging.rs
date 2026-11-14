@@ -16,6 +16,7 @@ use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
+use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// A private (`0700`) directory the session serves its sockets in.
@@ -65,8 +66,10 @@ fn session_log(rust_log: &str) -> Vec<String> {
         .env_remove("WAYLAND_DISPLAY")
         .env_remove("DISPLAY")
         .env_remove("TILO_MCP_SERVER")
-        // A stop of the whole group, as a script stops a session, reaches it through this group.
+        // A stop of the whole group, as a script stops a session, reaches it through this
+        // group; and one of the test itself ends it where the test runs no destructor.
         .process_group(0)
+        .dies_with_the_test()
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn_locked()
