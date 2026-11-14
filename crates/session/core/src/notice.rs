@@ -76,7 +76,7 @@ pub struct Notice {
     pub body: String,
     /// Where choosing it lands, where it opens something ([`Self::opens`]).
     pub place: Option<Place>,
-    /// What it is about, where the desk leads it with the glyph for that rather than the app's own
+    /// What it is about, where the layout leads it with the glyph for that rather than the app's own
     /// mark ([`Self::about`]): the system's bell for the machine's own news, which is the default.
     pub leading: NotificationIconKind,
     /// `(key, label)` pairs, as a notification's actions.
@@ -197,8 +197,8 @@ impl Notice {
         }
     }
 
-    /// The row a host's own desk shows for it, where the host keeps the person's notifications on a
-    /// desk of its own: what choosing it does comes back through [`Notices::take_chosen`].
+    /// The row a host's own layout shows for it, where the host keeps the person's notifications on a
+    /// layout of its own: what choosing it does comes back through [`Notices::take_chosen`].
     #[must_use]
     pub fn shown(&self) -> Notification {
         let mut shown = Notification::new(self.title.clone(), self.body.clone())

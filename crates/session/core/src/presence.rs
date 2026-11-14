@@ -4,7 +4,7 @@
 //! Whom a view follows is the follower's own word on their live presence, which every roster reads;
 //! this keeps only what a view must not repeat — which of that person's places it already brought
 //! forward. Where the pointers are, and what arrives beside them, is the same for both hosts, so the
-//! page and the native desk draw the plane's members by one rule.
+//! page and the native shell draw the plane's members by one rule.
 
 use collab_types::presence::Shown;
 use tilo_live::presence::{KEEPALIVE_MS, Tile, tile};
@@ -124,12 +124,12 @@ pub enum Target {
     App(String),
 }
 
-/// Where one person here is, as the host reads them off its own desk.
+/// Where one person here is, as the host reads them off its own shell.
 #[derive(Clone, Copy, Debug)]
 pub struct Place<'a> {
     /// The device they are here as.
     pub id: &'a str,
-    /// The window of this desk that shows their record, when it shows one.
+    /// The window of this shell that shows their record, when it shows one.
     pub tab: Option<u64>,
     /// The app they work in, when their screen says it.
     pub app: Option<&'a str>,
@@ -357,7 +357,7 @@ mod tests {
             5_000.0,
             EffectiveMotion::default(),
         );
-        assert!(elsewhere.drawn.is_empty(), "the desk does not show tab 9");
+        assert!(elsewhere.drawn.is_empty(), "the shell does not show tab 9");
     }
 
     /// Their window comes forward once; the same place said again moves nothing, and a change of place moves it again.

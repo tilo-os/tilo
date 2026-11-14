@@ -26,7 +26,7 @@ struct Desktop {
     started: Mutex<Vec<String>>,
     /// Whether its steps are a task agent's steps of its run.
     for_tasks: bool,
-    /// Whether its steps are a turn's (the session's own, as a session's desk publishes them).
+    /// Whether its steps are a turn's (the session's own, as a session's shell publishes them).
     for_turns: bool,
 }
 
@@ -331,11 +331,11 @@ async fn a_door_connection_takes_a_host_step_through_its_run() {
 async fn a_door_connection_takes_a_session_step_in_its_run_though_it_works_no_turn() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let desk = Arc::new(Desktop {
+            let shell = Arc::new(Desktop {
                 for_turns: true,
                 ..Desktop::default()
             });
-            let f = Fixture::with_services(None, vec![desk.clone()]);
+            let f = Fixture::with_services(None, vec![shell.clone()]);
             let agent = admit(&f);
             let host = f.state.task_run_host(&agent.presentation()).unwrap();
             let caller = connection(&host);
@@ -353,7 +353,7 @@ async fn a_door_connection_takes_a_session_step_in_its_run_though_it_works_no_tu
                 "{receipt:?}"
             );
             assert_eq!(
-                desk.started.lock().unwrap().as_slice(),
+                shell.started.lock().unwrap().as_slice(),
                 [format!("agent:{}", agent.delegation.agent_id)]
             );
             for run in f.native.runs.lock().unwrap().iter_mut() {
@@ -366,7 +366,7 @@ async fn a_door_connection_takes_a_session_step_in_its_run_though_it_works_no_tu
                     .expect("answered")
                     .is_err()
             );
-            assert_eq!(desk.started.lock().unwrap().len(), 1);
+            assert_eq!(shell.started.lock().unwrap().len(), 1);
             drop(f);
         })
         .await;
@@ -529,15 +529,15 @@ async fn a_run_changes_a_record_as_its_task_agent_while_it_goes() {
         .await;
 }
 
-/// The desk's sheet, as a test answers it: what it was asked, and what it took back.
+/// The shell's sheet, as a test answers it: what it was asked, and what it took back.
 #[derive(Default)]
-struct Desk {
+struct Shell {
     asked: Mutex<Vec<crate::app_actions::AppActionConsentRequest>>,
     answers: Mutex<Vec<tokio::sync::oneshot::Sender<crate::app_actions::AppActionAnswer>>>,
     withdrawn: Mutex<Vec<String>>,
 }
 
-impl crate::app_actions::AppActionConsentPrompter for Desk {
+impl crate::app_actions::AppActionConsentPrompter for Shell {
     fn ask(
         &self,
         request: crate::app_actions::AppActionConsentRequest,
@@ -553,7 +553,7 @@ impl crate::app_actions::AppActionConsentPrompter for Desk {
     }
 }
 
-impl Desk {
+impl Shell {
     /// The question the sheet shows next, once it is up.
     async fn shown(&self, count: usize) -> crate::app_actions::AppActionConsentRequest {
         for _ in 0..500 {
@@ -577,14 +577,14 @@ impl Desk {
     }
 }
 
-/// A door's run whose person asks first about Notes: the question goes to the desk's sheet.
-fn asking_on_the_desk(f: &Fixture, agent: &DoorAgent) -> Arc<Desk> {
+/// A door's run whose person asks first about Notes: the question goes to the shell's sheet.
+fn asking_on_the_shell(f: &Fixture, agent: &DoorAgent) -> Arc<Shell> {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
     f.native
         .asks_on_host
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    let desk = Arc::new(Desk::default());
-    f.state.set_app_action_consent(desk.clone());
+    let shell = Arc::new(Shell::default());
+    f.state.set_app_action_consent(shell.clone());
     put_grant(
         f,
         agent_answers::grant(
@@ -598,7 +598,7 @@ fn asking_on_the_desk(f: &Fixture, agent: &DoorAgent) -> Arc<Desk> {
             tilo_action_policy::Grantee::person(hex::encode(f.native.certificate.user_public_key)),
         ),
     );
-    desk
+    shell
 }
 
 /// The question the run holds now.
@@ -620,16 +620,16 @@ fn went_on(receipt: &tilo_actions::remote::InvocationReceipt) -> bool {
     )
 }
 
-/// A step the door's run asks first about is put to its person on the desk's sheet, not on a
+/// A step the door's run asks first about is put to its person on the shell's sheet, not on a
 /// Tasks issue: the connection is told it needs confirming, asks, waits while the sheet is up,
 /// and the person allowing it once lets exactly that step go on, as the run's.
 #[tokio::test(flavor = "current_thread")]
-async fn a_door_runs_question_is_asked_on_the_desk_and_allowed_once() {
+async fn a_door_runs_question_is_asked_on_the_shell_and_allowed_once() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
             let agent = admit(&f);
-            let desk = asking_on_the_desk(&f, &agent);
+            let shell = asking_on_the_shell(&f, &agent);
             let (_target, stream) = notes_target(&f).await;
             let host = f.state.task_run_host(&agent.presentation()).unwrap();
             let caller = connection(&host);
@@ -643,7 +643,7 @@ async fn a_door_runs_question_is_asked_on_the_desk_and_allowed_once() {
                 tilo_actions::remote::ActionHostError::confirmation_required()
             );
             let asking = host.confirm(&caller, &append_request(71));
-            let shown = desk.shown(1).await;
+            let shown = shell.shown(1).await;
             assert!(
                 shown.handle.starts_with("run-question:"),
                 "{}",
@@ -657,7 +657,7 @@ async fn a_door_runs_question_is_asked_on_the_desk_and_allowed_once() {
                 ),
                 "the run holds its question while the person is asked"
             );
-            desk.answer(crate::app_actions::AppActionConsent::Once);
+            shell.answer(crate::app_actions::AppActionConsent::Once);
             let confirmed = asking.await.expect("answered").unwrap();
             let mut again = append_request(71);
             confirmed.apply(&mut again);
@@ -693,13 +693,13 @@ async fn a_door_runs_question_the_person_denies_refuses_the_step() {
         .run_until(async {
             let f = Fixture::new();
             let agent = admit(&f);
-            let desk = asking_on_the_desk(&f, &agent);
+            let shell = asking_on_the_shell(&f, &agent);
             let (_target, _stream) = notes_target(&f).await;
             let host = f.state.task_run_host(&agent.presentation()).unwrap();
             let caller = connection(&host);
             let asking = host.confirm(&caller, &append_request(81));
-            desk.shown(1).await;
-            desk.answer(crate::app_actions::AppActionConsent::Deny);
+            shell.shown(1).await;
+            shell.answer(crate::app_actions::AppActionConsent::Deny);
             let refused = asking.await.expect("answered").unwrap_err();
             assert!(
                 matches!(&refused, tilo_actions::remote::ActionHostError::Refused { reason }
@@ -721,13 +721,13 @@ async fn always_allowing_a_door_runs_question_covers_its_next_step() {
         .run_until(async {
             let f = Fixture::new();
             let agent = admit(&f);
-            let desk = asking_on_the_desk(&f, &agent);
+            let shell = asking_on_the_shell(&f, &agent);
             let (_target, stream) = notes_target(&f).await;
             let host = f.state.task_run_host(&agent.presentation()).unwrap();
             let caller = connection(&host);
             let asking = host.confirm(&caller, &append_request(91));
-            desk.shown(1).await;
-            desk.answer(crate::app_actions::AppActionConsent::Always);
+            shell.shown(1).await;
+            shell.answer(crate::app_actions::AppActionConsent::Always);
             let confirmed = asking.await.expect("answered").unwrap();
             let mut again = append_request(91);
             confirmed.apply(&mut again);
@@ -745,7 +745,7 @@ async fn always_allowing_a_door_runs_question_covers_its_next_step() {
                 .unwrap();
             assert!(went_on(&next), "the next step is not asked about: {next:?}");
             stream.next().await.unwrap();
-            assert_eq!(desk.asked.lock().unwrap().len(), 1, "asked once");
+            assert_eq!(shell.asked.lock().unwrap().len(), 1, "asked once");
             drop(f);
         })
         .await;
@@ -759,24 +759,24 @@ async fn a_door_runs_question_is_withdrawn_when_its_agent_leaves_or_its_run_ends
         .run_until(async {
             let f = Fixture::new();
             let agent = admit(&f);
-            let desk = asking_on_the_desk(&f, &agent);
+            let shell = asking_on_the_shell(&f, &agent);
             let (_target, _stream) = notes_target(&f).await;
             let host = f.state.task_run_host(&agent.presentation()).unwrap();
             let caller = connection(&host);
             let asking = host.confirm(&caller, &append_request(101));
-            let shown = desk.shown(1).await;
+            let shown = shell.shown(1).await;
             drop(asking);
             for _ in 0..500 {
-                if !desk.withdrawn.lock().unwrap().is_empty() {
+                if !shell.withdrawn.lock().unwrap().is_empty() {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            assert_eq!(*desk.withdrawn.lock().unwrap(), [shown.handle]);
+            assert_eq!(*shell.withdrawn.lock().unwrap(), [shown.handle]);
             assert!(question_on_run(&f).is_none(), "the question left the run");
 
             let asking = host.confirm(&caller, &append_request(102));
-            desk.shown(2).await;
+            shell.shown(2).await;
             for run in f.native.runs.lock().unwrap().iter_mut() {
                 run.active = false;
             }
@@ -787,7 +787,7 @@ async fn a_door_runs_question_is_withdrawn_when_its_agent_leaves_or_its_run_ends
                     if reason.contains("withdrawn")),
                 "{refused:?}"
             );
-            assert_eq!(desk.withdrawn.lock().unwrap().len(), 2);
+            assert_eq!(shell.withdrawn.lock().unwrap().len(), 2);
             drop(f);
         })
         .await;

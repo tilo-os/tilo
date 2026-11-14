@@ -312,7 +312,7 @@ pub type Topic = tilo_desktop_model::WorkspaceId;
 pub type RosterDevice = (EndpointId, Option<u64>);
 
 /// The topic a workspace's plane numbers itself by: the workspace's id, and
-/// nothing for a desk that shows no workspace.
+/// nothing for a layout that shows no workspace.
 #[must_use]
 pub fn topic_of(workspace: tilo_desktop_model::WorkspaceId) -> Topic {
     workspace

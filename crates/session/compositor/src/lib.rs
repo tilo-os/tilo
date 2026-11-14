@@ -489,7 +489,7 @@ impl Compositor {
     /// A compositor in a window of the desktop it runs inside (see [`backend::nested`]), the window
     /// [`backend::NestedBackend::open_window`] opened.
     /// The caller opens the window: a session opens it before it builds anything else, so the one
-    /// connection its desktop was handed goes to the window and not to whatever the desk starts.
+    /// connection its desktop was handed goes to the window and not to whatever the shell starts.
     pub fn nested(
         policy: Box<dyn WindowPolicy>,
         config: &NestedConfig,
@@ -535,7 +535,7 @@ impl Compositor {
         self.recorder.begin_tick(Instant::now());
     }
 
-    /// The session's own share of the turn before the frame: the desk, the apps and the overlays it
+    /// The session's own share of the turn before the frame: the shell, the apps and the overlays it
     /// laid out.
     pub fn mark_pump(&mut self, took: Duration) {
         self.recorder.mark_pump(took);
@@ -546,12 +546,12 @@ impl Compositor {
         self.recorder.mark_testctl(took);
     }
 
-    /// The workspace in front changed: its frames are timed until the desk rests.
+    /// The workspace in front changed: its frames are timed until the shell rests.
     pub fn workspace_switched(&mut self) {
         self.data.state.workspace_switched();
     }
 
-    /// Whether the workspace switch in flight still owes the desk's motion.
+    /// Whether the workspace switch in flight still owes the shell's motion.
     pub fn set_switch_holding(&mut self, holding: bool) {
         self.data.state.set_switch_holding(holding);
     }
@@ -603,7 +603,7 @@ impl Compositor {
     /// Answer the clients until it is time to build the frame a display owes: what arrives while
     /// it waits joins that frame instead of each arrival taking a turn of its own. `arrived` runs
     /// after each wait, for what a host serves at once rather than after the frame: input a tool
-    /// hands the desk, which joins the frame as a device's own input does, or an app someone is
+    /// hands the shell, which joins the frame as a device's own input does, or an app someone is
     /// waiting on, whose start then runs beside that frame.
     ///
     /// # Errors
@@ -1116,7 +1116,7 @@ impl Compositor {
         self.data.state.insert_dictation(field, text)
     }
 
-    /// Where the focused text field's caret stands in the desk, in logical coordinates, from the
+    /// Where the focused text field's caret stands in the shell, in logical coordinates, from the
     /// cursor rectangle its client reported; `None` when no field takes text or it never said where
     /// its caret is.
     #[must_use]
@@ -1836,7 +1836,7 @@ impl Compositor {
         if !changes.is_empty() {
             self.configure_outputs(&changes)?;
         }
-        // Which display is primary is told to the desk after the outputs are as the configuration
+        // Which display is primary is told to the shell after the outputs are as the configuration
         // asked, so it is resolved against the displays that are lit now.
         self.data.state.set_primary_output(config.primary.clone());
         Ok(())
@@ -1961,7 +1961,7 @@ impl Compositor {
     }
 
     /// Where the mapped window whose [`WindowInfo::id`] is `id` stands in the layout:
-    /// `(x, y, width, height)` of the content, which is what a tool driving the desk aims at.
+    /// `(x, y, width, height)` of the content, which is what a tool driving the shell aims at.
     /// `None` for a window that is not mapped or not placed on a display.
     #[must_use]
     pub fn window_rect(&self, id: u64) -> Option<(i32, i32, i32, i32)> {
@@ -1977,7 +1977,7 @@ impl Compositor {
     }
 
     /// The foreign-toplevel identifier of the mapped window whose [`WindowInfo::id`] is `id` : what
-    /// a capture names a window by, and how what the desk knows of a window reaches what it shows.
+    /// a capture names a window by, and how what the shell knows of a window reaches what it shows.
     #[must_use]
     pub fn capture_identifier(&self, id: u64) -> Option<String> {
         self.data
@@ -2062,8 +2062,8 @@ impl Compositor {
         // A surface drawing the translucent material fills it with the opaque stand-in of what lies
         // below it, and gets the blurred pixels in place of them: the pass draws and blurs that
         // backdrop before the frame is shown, and the surfaces just handed one draw their material
-        // in this same turn. Presenting the stand-in would flash a flat card over the desk, which a
-        // still desk would keep until the next input.
+        // in this same turn. Presenting the stand-in would flash a flat card over the shell, which a
+        // still shell would keep until the next input.
         for index in self.data.backend.serve_backdrops(&mut self.data.state) {
             if let Some(host) = self.data.state.hosts.get_mut(index) {
                 drew |= host.prepare_frame();
@@ -2091,8 +2091,8 @@ impl Compositor {
             self.data.state.mark_redraw_all();
         }
         // What the surfaces draw over the windows, by the window each part is of: a floating window
-        // stands over the ones beneath it whole, so they are drawn around what the desk covers them
-        // with for it, and a press there is the desk's.
+        // stands over the ones beneath it whole, so they are drawn around what the shell covers them
+        // with for it, and a press there is the shell's.
         let mut covers = std::collections::BTreeMap::new();
         for host in &self.data.state.hosts {
             for (window, (x, y, width, height)) in host.drawn_over_windows() {
@@ -2252,7 +2252,7 @@ impl Compositor {
     /// shared window is named.
     ///
     /// # Errors
-    /// No such window is open on this desk.
+    /// No such window is open on this shell.
     pub fn seat_aim_window(&mut self, seat: Seat, identifier: &str) -> Result<Aim, String> {
         self.data.state.seat_aim_window(seat, identifier)
     }
@@ -2385,7 +2385,7 @@ impl Compositor {
     }
 
     /// The areas the layer surfaces on `output` keep for themselves at its edges, as logical
-    /// rectangles `(x, y, w, h)` : what the desktop keeps windows and the desk itself out of (the
+    /// rectangles `(x, y, w, h)` : what the desktop keeps windows and the shell itself out of (the
     /// bar's height along the top).
     pub fn reserved(&self, output: &str) -> Vec<(i32, i32, i32, i32)> {
         self.data

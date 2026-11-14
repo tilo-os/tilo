@@ -1579,7 +1579,7 @@ mod tests {
             );
             assert!(
                 membership_command(&envelope(WORKSPACE, "grant", None)).is_err(),
-                "a grant is the governance's, not the desk's own"
+                "a grant is the governance's, not the shell's own"
             );
         }
 
@@ -1596,7 +1596,7 @@ mod tests {
                 actions
                     .iter()
                     .all(|action| action.action != "grant" && action.action != "revoke"),
-                "a grant is the workspace's governance, never the desk's own copy of it"
+                "a grant is the workspace's governance, never the shell's own copy of it"
             );
             // The changes to the workspace's governance are the governance resource a
             // client names without a catalogue page.

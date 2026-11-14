@@ -1395,7 +1395,7 @@ impl SpeakerConsentScope {
     }
 }
 
-/// "Join 'Living room' as the right speaker?" or "Let the desk use this
+/// "Join 'Living room' as the right speaker?" or "Let the office use this
 /// microphone to calibrate 'Living room'?" on the asked device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpeakerConsentView {

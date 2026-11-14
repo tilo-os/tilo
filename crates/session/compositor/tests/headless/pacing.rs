@@ -37,7 +37,7 @@ tilo_test_env::scenario! {
         let shown = compositor.frames_presented();
         assert_eq!(shown, 1, "the window's first frame is on the display");
 
-        // Marking an app private changes what the desk a picture stands on draws.
+        // Marking an app private changes what the shell a picture stands on draws.
         client.show(200, 100, [0, 0, 255, 255]);
         pump(&mut compositor, &mut [&mut client], |compositor, _| {
             compositor.owes_frame()
@@ -141,7 +141,7 @@ tilo_test_env::scenario! {
         compositor.draw_frame().expect("a frame");
         let shown = compositor.frames_presented();
 
-        // The desk changed: the frame that shows it waits for the blank.
+        // The shell changed: the frame that shows it waits for the blank.
         client.show(200, 100, [0, 0, 255, 255]);
         pump(&mut compositor, &mut [&mut client], |compositor, _| {
             compositor.owes_frame()

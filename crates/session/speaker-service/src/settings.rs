@@ -952,7 +952,7 @@ mod tests {
         phase member_specs_reject_node_shaped_outputs;
         {
             let member = |output: &str| SpeakerMemberSpec {
-                device: "desk".into(),
+                device: "office".into(),
                 output: output.into(),
                 role: SpeakerRoleSpec::Left,
             };
@@ -979,13 +979,13 @@ mod tests {
         }
     }
 
-    /// A desk leading a stereo pair with a shelf that has said yes.
+    /// A office leading a stereo pair with a shelf that has said yes.
     fn pair() -> SpeakerSnapshot {
         let device = |id: &str| SpeakerDeviceInfo {
             id: id.into(),
             label: id.into(),
             online: true,
-            local: id == "desk",
+            local: id == "office",
             can_join: true,
             outputs: vec![SpeakerEndpointInfo {
                 selector: "0a".repeat(16),
@@ -1005,14 +1005,14 @@ mod tests {
         };
         SpeakerSnapshot {
             media_enabled: true,
-            devices: vec![device("desk"), device("shelf")],
+            devices: vec![device("office"), device("shelf")],
             groups: vec![SpeakerGroupInfo {
                 id: "cd".repeat(16),
                 name: "Living room".into(),
-                leader_label: "desk".into(),
+                leader_label: "office".into(),
                 led_here: true,
                 members: vec![
-                    member("desk", SpeakerRoleSpec::Left),
+                    member("office", SpeakerRoleSpec::Left),
                     member("shelf", SpeakerRoleSpec::Right),
                 ],
                 playback: None,

@@ -80,7 +80,7 @@ impl WindowFrame {
 
     /// A window whose host paints it whole — its card, the lift under it and the edge around it, in
     /// the host's own colours: the compositor only shapes its corners to the host's card and draws
-    /// nothing around it. The desk's tiles are drawn this way.
+    /// nothing around it. The shell's tiles are drawn this way.
     #[must_use]
     pub const fn corners(radius: f64) -> Self {
         Self {

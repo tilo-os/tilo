@@ -2,7 +2,7 @@
 //! its own instead of by the window policy.
 //!
 //! The session's own surfaces are ordinary toolkit apps and ordinary
-//! Wayland clients: the desk below the windows, the bar and its panels
+//! Wayland clients: the shell below the windows, the bar and its panels
 //! above them. Each asks for a layer and an edge of an output to hang from;
 //! the compositor places it there, draws it with the other clients' buffers
 //! and sends it the input that lands on it. Only clients the session
@@ -396,7 +396,7 @@ impl State {
             self.layers.settling.remove(&namespace);
             self.mark_redraw_all();
         }
-        // Frames of a surface the session hid change nothing on the desk and take no keyboard: it
+        // Frames of a surface the session hid change nothing on the shell and take no keyboard: it
         // stands there for the opening that shows it.
         if self
             .layers

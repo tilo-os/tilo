@@ -1,7 +1,7 @@
 //! How long one person's change takes to reach the other person in the same
 //! workspace: from the moment the sender's page publishes it to the moment the
 //! other page's state holds it. A message in a conversation, and a window one
-//! person opens on the workspace's shared desk. Two pages reach one host over
+//! person opens on the workspace's shared layout. Two pages reach one host over
 //! its live plane on loopback, as two browsers in a workspace do; nothing of
 //! either page's frames is in it. This is the carrier, the host, and the state
 //! each page holds.
@@ -187,16 +187,16 @@ async fn a_message_reaches_the_other_page_without_waiting_for_a_poll() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_window_opened_on_the_shared_desk_reaches_the_other_person() {
+async fn a_window_opened_on_the_shared_layout_reaches_the_other_person() {
     let pages = Pages::start().await;
     let (a, b) = (&pages.a, &pages.b);
-    // Both people show the workspace, so both hold its desk's record and the
+    // Both people show the workspace, so both hold its layout's record and the
     // keys it is sealed under: what a page showing a workspace does as it opens.
     for peer in [a, b] {
-        peer.send(Cmd::OpenRoute(desk())).unwrap();
-        crate::support::wait_keyed(peer, &desk()).await;
+        peer.send(Cmd::OpenRoute(layout())).unwrap();
+        crate::support::wait_keyed(peer, &layout()).await;
     }
-    let before = desk_of(b);
+    let before = layout_of(b);
     assert!(
         before.tree.workspaces.iter().all(|workspace| {
             workspace
@@ -205,40 +205,40 @@ async fn a_window_opened_on_the_shared_desk_reaches_the_other_person() {
                 .flat_map(|strip| &strip.window_groups)
                 .all(|group| group.tabs.is_empty())
         }),
-        "Bob's desk shows the workspace as it is: no window of Ada's on it yet"
+        "Bob's layout shows the workspace as it is: no window of Ada's on it yet"
     );
 
-    // Ada opens one window after another on the workspace's shared desk: what
+    // Ada opens one window after another on the workspace's shared layout: what
     // her page publishes when a person opens an app there.
     let mut took = Vec::new();
     for (index, (window, tab)) in WINDOWS.into_iter().enumerate() {
         let label = format!("Notes {}", index + 1);
         let opened = Instant::now();
         a.write(
-            desk(),
+            layout(),
             &window_opened(a, &pages.ada_person, "so.tilo.notes", &label, (window, tab)),
         )
         .unwrap();
         took.push(
-            arrival(opened, &format!("Ada's {label:?} on Bob's desk"), || {
-                shows(&desk_of(b), tab).then_some(())
+            arrival(opened, &format!("Ada's {label:?} on Bob's layout"), || {
+                shows(&layout_of(b), tab).then_some(())
             })
             .await,
         );
-        // The next window is opened on the desk as the workspace holds it here,
+        // The next window is opened on the layout as the workspace holds it here,
         // so her own page holds this one before she opens the next.
         let echoed = Instant::now();
         arrival(echoed, &format!("Ada's own page to hold {label:?}"), || {
-            shows(&desk_of(a), tab).then_some(())
+            shows(&layout_of(a), tab).then_some(())
         })
         .await;
     }
     took.sort();
     let p50 = took[took.len() / 2];
-    eprintln!("a window on the shared desk reaches the other person: {took:?}, p50 {p50:?}");
+    eprintln!("a window on the shared layout reaches the other person: {took:?}, p50 {p50:?}");
     assert!(
         p50 < BUDGET,
-        "a window took {p50:?} (p50) to reach the other person's desk: {took:?}"
+        "a window took {p50:?} (p50) to reach the other person's layout: {took:?}"
     );
     for peer in [a, b] {
         peer.close();
@@ -247,7 +247,7 @@ async fn a_window_opened_on_the_shared_desk_reaches_the_other_person() {
 }
 
 /// The route of the workspace's shared desktop.
-fn desk() -> DocumentRoute {
+fn layout() -> DocumentRoute {
     DocumentRoute {
         app_id: DESKTOP_APP.into(),
         cluster_id: crate::support::WORKSPACE.into(),
@@ -255,17 +255,18 @@ fn desk() -> DocumentRoute {
     }
 }
 
-/// The desk `peer` holds of the workspace as its model reads it, when it holds
+/// The layout `peer` holds of the workspace as its model reads it, when it holds
 /// the record at all.
-fn desk_of(peer: &Link) -> SharedDesktop {
-    crate::support::record_of(peer, &desk())
+fn layout_of(peer: &Link) -> SharedDesktop {
+    crate::support::record_of(peer, &layout())
         .and_then(|doc| tilo_desktop_model::shared_record::read(&doc, None))
         .unwrap_or_default()
 }
 
-/// Whether `desk` shows the window `tab`.
-fn shows(desk: &SharedDesktop, tab: u64) -> bool {
-    desk.tree
+/// Whether `layout` shows the window `tab`.
+fn shows(layout: &SharedDesktop, tab: u64) -> bool {
+    layout
+        .tree
         .workspaces
         .iter()
         .flat_map(|workspace| &workspace.strips)
@@ -275,13 +276,13 @@ fn shows(desk: &SharedDesktop, tab: u64) -> bool {
 }
 
 /// The strip the windows this test opens stand in, and each window and its tab:
-/// a desk of one workspace has one strip, and every window in it is its own.
+/// a layout of one workspace has one strip, and every window in it is its own.
 const STRIP: StripId = StripId(1);
 const WINDOWS: [(u64, u64); 5] = [(100, 2), (102, 4), (104, 6), (106, 8), (108, 10)];
 
 /// The change Ada's page publishes when she opens `app`, under `label`, on the
-/// workspace's shared desk as the window `(window, tab)`, in the shape a
-/// workspace's record holds: the desk as this device holds it with her window in
+/// workspace's shared layout as the window `(window, tab)`, in the shape a
+/// workspace's record holds: the layout as this device holds it with her window in
 /// it, written by her.
 fn window_opened(
     peer: &Link,
@@ -290,22 +291,23 @@ fn window_opened(
     label: &str,
     (window, tab): (u64, u64),
 ) -> DocumentMutation {
-    let mut doc = crate::support::record_of(peer, &desk()).unwrap_or_default();
+    let mut doc = crate::support::record_of(peer, &layout()).unwrap_or_default();
     doc.set_actor(automerge::ActorId::from(person.as_bytes().to_vec()));
     let heads = doc.get_heads();
-    let mut desk = tilo_desktop_model::shared_record::read(&doc, None).unwrap_or_default();
+    let mut layout = tilo_desktop_model::shared_record::read(&doc, None).unwrap_or_default();
     let identity = tilo_desktop_model::WorkspaceId::parse(crate::support::WORKSPACE).unwrap();
-    if !desk
+    if !layout
         .tree
         .workspaces
         .iter()
         .any(|held| held.id() == identity)
     {
-        desk.tree
+        layout
+            .tree
             .workspaces
             .push(Workspace::new(identity, "Workspace".to_owned()));
     }
-    let workspace = desk
+    let workspace = layout
         .tree
         .workspaces
         .iter_mut()
@@ -337,8 +339,8 @@ fn window_opened(
         maximized: false,
         focus_history: Vec::new(),
     });
-    desk.authors.insert(tab, person.to_owned());
-    tilo_desktop_model::shared_record::write(&mut doc, &desk).expect("the desk is writable");
+    layout.authors.insert(tab, person.to_owned());
+    tilo_desktop_model::shared_record::write(&mut doc, &layout).expect("the layout is writable");
     tilo_desktop_model::shared_record::commit_change(
         &mut doc,
         person,

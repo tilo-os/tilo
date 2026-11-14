@@ -18,7 +18,7 @@ use tilo_desktop_model::Layout;
 pub type WorkspaceAction = (TreePath, ActionKind);
 
 /// Whether the workspace `workspace` of `tree` lets `person` do `required`,
-/// at `now` (Unix seconds). A desk that holds no such workspace admits
+/// at `now` (Unix seconds). A layout that holds no such workspace admits
 /// nothing: there is no policy here to ask.
 pub fn allows(
     tree: &Layout,

@@ -595,7 +595,7 @@ struct HostLog {
     /// shortcuts.
     taken: Vec<(u32, bool)>,
     /// The text field the surface draws, when it draws one: what it declares and where its caret
-    /// stands on the desk.
+    /// stands on the shell.
     field: Option<HostTextInput>,
     /// What the input method did with the field, in order.
     ime: Vec<HostIme>,
@@ -1570,7 +1570,7 @@ const IN_PICTURE: [(u32, u32); 4] = [(15, 40), (60, 60), (105, 40), (60, 80)];
 const IN_WINDOW: (u32, u32) = (320, 240);
 
 /// A window the session keeps private is a placeholder wherever a hosted surface pictures it, on
-/// the person's own display too: the desk a picture stands on is what a screenshot, a recording and
+/// the person's own display too: the shell a picture stands on is what a screenshot, a recording and
 /// a share show.
 #[test]
 fn a_private_window_is_pictured_as_the_placeholder_its_captures_show() {
@@ -1620,7 +1620,7 @@ fn a_private_window_is_pictured_as_the_placeholder_its_captures_show() {
         );
     }
 
-    // A copy of the desk shows the window and its picture as that same placeholder: no secret
+    // A copy of the shell shows the window and its picture as that same placeholder: no secret
     // leaves with it.
     let copy = compositor
         .read_back_region("HEADLESS-1", (0, 0, 640, 480))
@@ -1690,8 +1690,8 @@ fn a_picture_of_an_app_that_holds_secrets_is_its_placeholder() {
     assert_eq!(copy.pixel(IN_WINDOW.0, IN_WINDOW.1), Some(placeholder));
 }
 
-/// A private window that closed still stands on the desk while the desktop
-/// animates it away: a copy of the desk shows its placeholder until then,
+/// A private window that closed still stands on the shell while the desktop
+/// animates it away: a copy of the shell shows its placeholder until then,
 /// never the frame it drew last.
 #[test]
 fn a_private_window_that_closed_is_a_placeholder_in_copies() {
@@ -1738,7 +1738,7 @@ fn a_private_window_that_closed_is_a_placeholder_in_copies() {
         "not what it stands on either: a capture says something is withheld"
     );
 
-    // Once the desktop lets it go, nothing of it is on the desk at all.
+    // Once the desktop lets it go, nothing of it is on the shell at all.
     let info = compositor.closing_windows()[0].0.id;
     compositor.release_snapshot(info);
     compositor.draw_frame().expect("a frame");

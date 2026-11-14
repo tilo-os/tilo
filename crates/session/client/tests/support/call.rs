@@ -37,7 +37,7 @@ pub const BOTH: Directions = Directions {
 };
 
 /// An endpoint whose key is the device's own, as a device dials with: relays
-/// on, as a page and a desk reach a host they were handed a link to. An
+/// on, as a page and a layout reach a host they were handed a link to. An
 /// endpoint bound with relays off could redeem an invitation only while links
 /// carried a direct address of the host's own network; a link names what a
 /// stranger can dial instead — the host's relay and its public addresses. The

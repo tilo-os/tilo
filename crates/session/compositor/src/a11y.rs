@@ -29,7 +29,7 @@ pub const LENS_MAX: (i32, i32) = (420, 280);
 /// The largest share of an output the lens covers.
 pub const LENS_SHARE: f64 = 0.7;
 /// How long a visual alert stays on screen: lit at first, then fading. Short enough not to get in
-/// the way, long enough to be noticed from across a desk.
+/// the way, long enough to be noticed from across a room.
 pub const FLASH: Duration = Duration::from_millis(450);
 
 /// The step between frames while the alert fades.

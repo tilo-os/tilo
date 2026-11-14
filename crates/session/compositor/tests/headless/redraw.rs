@@ -3,7 +3,7 @@
 
 use super::*;
 
-/// A floating stack whose windows a test places, as a desk's strip pans them.
+/// A floating stack whose windows a test places, as a shell's strip pans them.
 #[derive(Default)]
 struct Movable {
     at: Rc<RefCell<Option<Point<i32, Logical>>>>,
@@ -47,12 +47,12 @@ impl WindowPolicy for Movable {
     }
 }
 
-/// Draw the frames a change to the desk is shown by, and rest it.
+/// Draw the frames a change to the shell is shown by, and rest it.
 ///
 /// A frame asks the policy for its places, so the one that finds a move is the one that owes the
 /// frame showing it. When the display is due, that frame draws the move in the same pass; when it
 /// is not, the output keeps owing it until the next blank the display builds, which is the frame
-/// after. So both are drawn here: a desk rests after them whatever pace the machine ran at.
+/// after. So both are drawn here: a shell rests after them whatever pace the machine ran at.
 fn settle(compositor: &mut Compositor) {
     compositor
         .draw_frame()
@@ -60,7 +60,7 @@ fn settle(compositor: &mut Compositor) {
     compositor
         .draw_frame()
         .expect("the frame the display paces the change to");
-    assert!(!compositor.owes_frame(), "the desk draws what it owes");
+    assert!(!compositor.owes_frame(), "the shell draws what it owes");
 }
 
 tilo_test_env::scenario! {
@@ -137,7 +137,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_window_counts_the_frames_its_client_draws;
-    // Each window's client commits are counted against that window: a desk that draws nothing keeps
+    // Each window's client commits are counted against that window: a shell that draws nothing keeps
     // every count, and an app that draws moves its own and no one else's. What a tool reads to prove a
     // window is still, or to count an app's frames in a real session.
     {
@@ -158,7 +158,7 @@ tilo_test_env::scenario! {
         let drawing_frames = compositor.window_frames(drawing_id);
         assert!(quiet_frames > 0, "its first frame is counted");
 
-        // The desk draws again with neither client drawing: no window's count moves.
+        // The shell draws again with neither client drawing: no window's count moves.
         settle(&mut compositor);
         assert_eq!(
             compositor.window_frames(id_of(&compositor, "quiet")),

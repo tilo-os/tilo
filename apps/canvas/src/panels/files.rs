@@ -1,9 +1,9 @@
-//! The file desk: carries out what a person asks of Files (open an artwork
-//! or an SVG, save the artwork, save a copy, export a picture) through the
-//! system's file chooser, and says how it went beside the title.
+//! What a person asks of Files, carried out through the system's file
+//! chooser: open an artwork or an SVG, save the artwork, save a copy, export a
+//! picture, saying how it went beside the title.
 //!
 //! It wraps the window's content and asks nothing of it: the controls set
-//! [`Tools::files`], the desk takes the request on its next frame, and
+//! [`Tools::files`], the chooser takes the request on its next frame, and
 //! what a file brings in lands as one of the artwork's actions.
 //!
 //! Every chooser works by contents, so Files works where files have no
@@ -68,7 +68,7 @@ enum Drawing {
     Svg(Box<export::SvgDrawing>),
 }
 
-pub struct FileDesk {
+pub struct FileChooser {
     content: Element,
     tools: Tools,
     /// The recent artworks record and this device's id, in a live window.
@@ -85,7 +85,7 @@ pub struct FileDesk {
     text: Option<TextRenderer>,
 }
 
-impl FileDesk {
+impl FileChooser {
     pub fn new(
         content: Element,
         tools: Tools,
@@ -715,7 +715,7 @@ fn open_svg(name: &str, bytes: &[u8]) -> Result<Vec<Invoke<Artwork>>, String> {
     Ok(vec![new, Artwork::DRAW.with(draw)])
 }
 
-impl ui::widget::Decorator for FileDesk {
+impl ui::widget::Decorator for FileChooser {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -727,7 +727,7 @@ impl ui::widget::Decorator for FileDesk {
     }
 
     fn concrete_type_name(&self) -> &'static str {
-        "FileDesk"
+        "FileChooser"
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {

@@ -1,4 +1,4 @@
-//! How a window is framed: the desk's card, its own frame, or none at all
+//! How a window is framed: the shell's card, its own frame, or none at all
 //! when it fills a display and its content is what the display shows.
 
 use super::*;
@@ -47,7 +47,7 @@ fn a_window_framed_square_is_drawn_as_its_buffer_is() {
 #[test]
 fn a_window_that_fills_the_display_is_drawn_as_its_buffer_is() {
     let mut compositor = headless(Box::new(StackPolicy));
-    // The desk's card: a window standing on the desktop has round corners.
+    // The shell's card: a window standing on the desktop has round corners.
     compositor.set_window_frame(WindowFrame::default());
     let mut client = mapped_client(&mut compositor, "video", (200, 100), [255, 0, 0, 255]);
     compositor.draw_frame().expect("a frame");
@@ -55,7 +55,7 @@ fn a_window_that_fills_the_display_is_drawn_as_its_buffer_is() {
     let corner = frame.pixel(221, 191).expect("a corner pixel");
     assert!(
         corner[0] < 90,
-        "a window on the desk keeps its card: {corner:?}"
+        "a window on the shell keeps its card: {corner:?}"
     );
 
     // A player takes the display: what it draws is what the display shows,

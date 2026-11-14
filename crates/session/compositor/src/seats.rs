@@ -419,7 +419,7 @@ impl State {
         let rect = self
             .space
             .element_geometry(window)
-            .ok_or_else(|| format!("the window {identifier:?} is not on the desk"))?;
+            .ok_or_else(|| format!("the window {identifier:?} is not on the shell"))?;
         let info = window
             .toplevel()
             .map(|toplevel| crate::state::window_info(&self.display, &self.icons, toplevel));

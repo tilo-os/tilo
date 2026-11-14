@@ -2,7 +2,7 @@
 //! This module is the decision half: it takes the person's input preferences ([`InputConfig`]) plus
 //! what one libinput device can actually do, and produces the exact `config_*` values to apply.
 //! [`super::libinput`] holds the thin applier that pushes them onto a real libinput device.
-//! libinput defaults tapping to *off* because it can't tell a laptop touchpad from a desk drawing
+//! libinput defaults tapping to *off* because it can't tell a laptop touchpad from a drawing tablet
 //! tablet, and a spurious click from a resting palm is worse than a missing one. On a laptop that
 //! reasoning inverts (a trackpad requiring physical depression per click is the most-reported "this
 //! feels broken" first impression), so the default here is on, with palm detection and

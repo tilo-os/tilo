@@ -572,7 +572,7 @@ tilo_test_env::scenario! {
         let (mapped, _) = session.compositor.windows().remove(0);
         session.set_class(window, "thunderbird", "Thunderbird");
         session.set_title(window, "Inbox - Thunderbird");
-        // The two properties arrive as two separate changes; the desk names the window once it has
+        // The two properties arrive as two separate changes; the shell names the window once it has
         // both, so wait for both.
         session.pump(|session| {
             session
@@ -590,7 +590,7 @@ tilo_test_env::scenario! {
             .expect("identity");
         assert_eq!(identity.instance.as_deref(), Some("thunderbird"));
         assert_eq!(identity.class.as_deref(), Some("Thunderbird"));
-        // The desk names the tab by what the client says now, not by what it said when its window
+        // The shell names the tab by what the client says now, not by what it said when its window
         // mapped.
         let (renamed, _) = session.compositor.windows().remove(0);
         assert_eq!(renamed.id, mapped.id);

@@ -90,7 +90,7 @@ impl State {
     }
 
     /// Whether the lock client has drawn: a buffer is on the surface the outputs show, so what they
-    /// show is the lock screen's own rather than the desk's last frame.
+    /// show is the lock screen's own rather than the shell's last frame.
     pub(crate) fn lock_drawn(&self) -> bool {
         self.lock.surfaces.iter().any(|(_, surface)| {
             with_renderer_surface_state(surface.wl_surface(), |state| state.buffer().is_some())

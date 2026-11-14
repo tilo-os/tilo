@@ -643,7 +643,7 @@ impl AppBrokerState {
     /// `[actions] invoke` and is then decided for the app, which holds no
     /// role and has only what the workspace grants it. Sharing what an app
     /// shows is the workspace's invitation, which only its person makes: the
-    /// app asks the desk for it as that person
+    /// app asks the shell for it as that person
     /// ([`app_admission::invitation_request`]), under their part in the workspace; so is showing
     /// them how an agent or a computer connects as them ([`app_admission::connect_request`]).
     pub(crate) fn app_door(

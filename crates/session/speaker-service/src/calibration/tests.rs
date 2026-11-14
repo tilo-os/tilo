@@ -77,14 +77,14 @@ fn pair() -> SpeakerGroup {
     SpeakerGroup {
         id: SpeakerGroupId([3; 16]),
         name: "Living room".into(),
-        leader: id("desk"),
+        leader: id("office"),
         members: vec![
-            member("desk", StereoSide::Left),
+            member("office", StereoSide::Left),
             member("shelf", StereoSide::Right),
         ],
         stamp: FabricStamp {
             counter: 1,
-            device: id("desk"),
+            device: id("office"),
         },
     }
 }
@@ -104,7 +104,7 @@ struct Harness {
     cancelled: Arc<Mutex<bool>>,
 }
 
-/// Desk and shelf measured from the phone on the sofa, with desk's and
+/// Office and shelf measured from the phone on the sofa, with office's and
 /// shelf's own microphones listening too.
 fn start(script: Script, consents: [MicrophoneConsent; 3], now: Instant) -> Harness {
     start_group(&pair(), script, consents, now)
@@ -133,7 +133,7 @@ fn start_group(
         group,
         &labels,
         vec![
-            run_microphone("desk", consents[0]),
+            run_microphone("office", consents[0]),
             run_microphone("shelf", consents[1]),
             run_microphone("phone", consents[2]),
         ],
@@ -160,11 +160,11 @@ fn start_group(
 
 const ALL_GIVEN: [MicrophoneConsent; 3] = [MicrophoneConsent::Given; 3];
 
-/// Desk's output takes 20 ms, shelf's 45 ms; the sofa is 2.7 m from desk
+/// Office's output takes 20 ms, shelf's 45 ms; the sofa is 2.7 m from office
 /// and 2 m from shelf.
 fn living_room() -> Script {
     VecDeque::from([
-        // Desk plays: its own microphone, shelf's, the phone on the sofa.
+        // Office plays: its own microphone, shelf's, the phone on the sofa.
         vec![heard(20.3, -1.0), heard(31.0, -12.0), heard(28.0, -6.0)],
         vec![heard(56.0, -13.0), heard(45.3, -2.0), heard(51.0, -9.0)],
     ])
@@ -188,11 +188,11 @@ tilo_test_env::scenario! {
         {
             let asked = harness.requests.lock().unwrap().clone();
             assert_eq!(asked.len(), 1);
-            assert_eq!(asked[0].member, id("desk"));
+            assert_eq!(asked[0].member, id("office"));
             assert_eq!(
                 asked[0].microphones,
                 vec![
-                    (id("desk"), microphone("desk")),
+                    (id("office"), microphone("office")),
                     (id("shelf"), microphone("shelf")),
                     (id("phone"), microphone("phone")),
                 ],
@@ -206,20 +206,20 @@ tilo_test_env::scenario! {
         assert_ne!(asked[0].sweep, asked[1].sweep, "every sweep has its own id");
         assert!(*harness.cancelled.lock().unwrap(), "clock sync is released");
 
-        // Arrivals at the sofa decide: desk waits 23 ms for shelf and is cut
+        // Arrivals at the sofa decide: office waits 23 ms for shelf and is cut
         // 3 dB to match it.
         let after = run.after().unwrap();
         assert_eq!(after[0].delay_ns, 23_000_000);
         assert_eq!(after[0].gain_mb, -300);
         assert_eq!(after[1].delay_ns, 0);
         assert_eq!(after[1].gain_mb, 0);
-        let MemberProgress::Measured(desk) = &run.progress()[0] else {
+        let MemberProgress::Measured(office) = &run.progress()[0] else {
             panic!("{:?}", run.progress()[0]);
         };
-        assert_eq!(desk.arrival_ns, 28_000_000);
-        assert_eq!(desk.heard_by, 3);
-        assert_eq!(desk.output_latency_ns, Some(20_300_000));
-        assert_eq!(desk.acoustic_ns, Some(7_700_000));
+        assert_eq!(office.arrival_ns, 28_000_000);
+        assert_eq!(office.heard_by, 3);
+        assert_eq!(office.output_latency_ns, Some(20_300_000));
+        assert_eq!(office.acoustic_ns, Some(7_700_000));
         assert_eq!(
             run.microphone_progress(),
             &[
@@ -281,10 +281,10 @@ tilo_test_env::scenario! {
                 rejected: 1
             }
         );
-        let MemberProgress::Measured(desk) = &harness.run.progress()[0] else {
+        let MemberProgress::Measured(office) = &harness.run.progress()[0] else {
             panic!("{:?}", harness.run.progress()[0]);
         };
-        assert_eq!(desk.arrival_ns, 28_000_000, "the other seat readings stand");
+        assert_eq!(office.arrival_ns, 28_000_000, "the other seat readings stand");
     }
 
     phase a_pair_s_seat_readings_stand_even_when_the_others_disagree;
@@ -394,7 +394,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             asked[0].microphones,
             vec![
-                (id("desk"), microphone("desk")),
+                (id("office"), microphone("office")),
                 (id("phone"), microphone("phone")),
             ]
         );

@@ -319,7 +319,7 @@ tilo_test_env::scenario! {
         compositor.draw_frame().expect("a frame");
         let frame = compositor.screenshot("HEADLESS-1").unwrap();
         assert_eq!(frame.pixel(320, 10), Some([255, 0, 0, 255]), "the bar");
-        assert_eq!(frame.pixel(320, 200), Some(BACKGROUND), "the desk below it");
+        assert_eq!(frame.pixel(320, 200), Some(BACKGROUND), "the shell below it");
         assert_eq!(
             compositor.reserved("HEADLESS-1"),
             vec![(0, 0, 640, 32)],
@@ -346,10 +346,10 @@ tilo_test_env::scenario! {
         assert_eq!(frame.pixel(320, 10), Some([255, 0, 0, 255]), "the bar wins");
     }
 
-    phase a_desk_on_the_background_layer_is_drawn_below_the_windows;
+    phase a_shell_on_the_background_layer_is_drawn_below_the_windows;
     {
         let mut compositor = headless();
-        let mut desk = layer_client(
+        let mut shell = layer_client(
             &mut compositor,
             zwlr_layer_shell_v1::Layer::Background,
             zwlr_layer_surface_v1::Anchor::Top
@@ -360,8 +360,8 @@ tilo_test_env::scenario! {
             0,
             [0, 255, 0, 255],
         );
-        assert_eq!(desk.seen.configured, Some((640, 480)));
-        pump(&mut compositor, &mut [&mut desk], |_, _| true);
+        assert_eq!(shell.seen.configured, Some((640, 480)));
+        pump(&mut compositor, &mut [&mut shell], |_, _| true);
         compositor.draw_frame().expect("a frame");
         let frame = compositor.screenshot("HEADLESS-1").unwrap();
         assert_eq!(frame.pixel(320, 240), Some([0, 255, 0, 255]));
@@ -377,7 +377,7 @@ tilo_test_env::scenario! {
         window.show(&surface, 200, 100, [0, 0, 255, 255]);
         pump(
             &mut compositor,
-            &mut [&mut desk, &mut window],
+            &mut [&mut shell, &mut window],
             |compositor, _| !compositor.windows().is_empty(),
         );
         compositor.draw_frame().expect("a frame");
@@ -388,7 +388,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             frame.pixel(x + w / 2, y + h / 2),
             Some([0, 0, 255, 255]),
-            "the window is above the desk"
+            "the window is above the shell"
         );
     }
 
@@ -430,7 +430,7 @@ tilo_test_env::scenario! {
         assert!(bar.seen.pointer_inside);
         assert_eq!(bar.seen.buttons, vec![(BTN_LEFT, true), (BTN_LEFT, false)]);
 
-        // Off the bar the pointer leaves it, even over the desk.
+        // Off the bar the pointer leaves it, even over the shell.
 
         compositor
             .input(InputEvent::PointerMotion { x: 300.0, y: 300.0 })

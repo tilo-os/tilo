@@ -61,7 +61,7 @@ impl AppBrokerState {
         ),
         confirmed: bool,
     ) -> Result<TurnStep, ActionHostError> {
-        // A connection's own run (an agent door's) asks its person on the desk's sheet, as its
+        // A connection's own run (an agent door's) asks its person on the shell's sheet, as its
         // app actions do; a turn of an issue's run has no sheet a session step could ask on.
         let door_run = run.is_some();
         let (_, run) = self.turn_step_run(caller, workspace, (run, turn))?;

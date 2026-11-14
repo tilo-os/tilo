@@ -688,7 +688,7 @@ fn recent_list(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
                             .push(caption(&sides(art.width, art.height)))
                             .push(caption(&here)),
                     ));
-                // The file desk opens it in this window and clears the request.
+                // The file chooser opens it in this window and clears the request.
                 list = list.push(Box::new(
                     ui::widget::ControlRow::new(content)
                         .choosing(&files, Some(FileRequest::OpenWorkspace(artwork.uri())))
@@ -722,7 +722,7 @@ fn recent_list(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
                             .push(caption(&sides(recent.width, recent.height)))
                             .push(caption(&place)),
                     ));
-                // Choosing the row asks Files for it; the file desk takes the
+                // Choosing the row asks Files for it; the file chooser takes the
                 // request and clears it.
                 list = list.push(Box::new(
                     ui::widget::ControlRow::new(content)

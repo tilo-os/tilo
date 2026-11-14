@@ -44,7 +44,7 @@ pub struct Ask {
 
 /// How far from an output's edge the pointer resting there counts as at it: a bar or dock
 /// pinned to a hiding edge is reached for by coming within this of that edge. The reach pad
-/// the desk's own widgets use, so a glove and a mouse reach the same distance.
+/// the shell's own widgets use, so a glove and a mouse reach the same distance.
 #[must_use]
 pub fn reach_pad() -> f64 {
     f64::from(ui::tokens::Spacing::BASE.s2)

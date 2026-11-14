@@ -1,10 +1,10 @@
-//! The person's arrangement as the desk they share with the workspace: what is
-//! open where, read off the desk itself, kept in the desk's own record
+//! The person's arrangement as the layout they share with the workspace: what is
+//! open where, read off the layout itself, kept in the layout's own record
 //! ([`tilo_desktop_model::shared_record`]) with history and undo, so every member
 //! of the workspace reads the same one. A place's view and its pin are the
 //! window's own ([`tilo_desktop_model::Tab`]).
-//! Each arranging action ([`ArrangementAction`]) is one change of the desk,
-//! attributed to whoever asked for it and undone as that one step; what the desk
+//! Each arranging action ([`ArrangementAction`]) is one change of the layout,
+//! attributed to whoever asked for it and undone as that one step; what the layout
 //! changes on its own is a change like any other.
 //! One rule is fixed (shell.md §1): nothing moves or takes focus under an ongoing
 //! gesture or while the person types. An action that arrives then waits here and
@@ -26,7 +26,7 @@ use tilo_desktop_model::{
 };
 use tilo_desktop_surface::DesktopHandle;
 
-use crate::desk::Desk;
+use crate::layout::LayoutDocument;
 
 mod readings;
 pub use readings::*;
@@ -145,7 +145,7 @@ pub enum ArrangementAction {
     },
     /// Resize the strip `strip` to `permille` of its row's width.
     Resize { strip: u64, permille: u32 },
-    /// Maximize the strip `strip` (`maximized`), so it stands alone as the window the desk is,
+    /// Maximize the strip `strip` (`maximized`), so it stands alone as the window the layout is,
     /// or restore it beside its row's other windows.
     Maximize { strip: u64, maximized: bool },
     /// Close the place `place` ; its window goes with it.
@@ -250,7 +250,7 @@ pub enum ArrangementAction {
     RetryQuery { place: u64 },
 }
 
-/// Where a place made on the desk now goes: the workspace in front, its row, and the ids the
+/// Where a place made on the layout now goes: the workspace in front, its row, and the ids the
 /// place's own strip and the place take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Surface {
@@ -541,16 +541,16 @@ pub fn source_words() -> Words {
     Rc::new(|_, _, source| source.to_owned())
 }
 
-/// Where a host keeps a desk's layout: the document its changes are written in, and the history a
+/// Where a host keeps a layout: the document its changes are written in, and the history a
 /// step of it is taken back from. The session keeps the workspace's layout, which every member
-/// shows; a page keeps its own copy of the desk.
+/// shows; a page keeps its own copy of the layout.
 pub trait Layouts {
     /// Take back (`redo` false) or bring back `person`'s last step of the layout.
     fn step(&self, person: &str, redo: bool) -> Stepped;
     /// The last step of the layout `person` can take back, as who made it and what it did.
     fn last_step(&self, person: &str) -> Option<(String, String)>;
-    /// Note that `asked` made `action` of the desk `before`, which made it `tree`, and that the
-    /// windows in `shows` show the records they name: what the change the desk now makes is named
+    /// Note that `asked` made `action` of the layout `before`, which made it `tree`, and that the
+    /// windows in `shows` show the records they name: what the change the layout now makes is named
     /// by.
     fn acted(
         &self,
@@ -570,11 +570,11 @@ pub enum Stepped {
     None,
     /// The step was taken, and the host shows what it came to itself.
     Taken,
-    /// The step was taken, and this is the desk it left.
-    Desk(Box<Layout>),
+    /// The step was taken, and this is the layout it left.
+    Layout(Box<Layout>),
 }
 
-impl Layouts for Desk {
+impl Layouts for LayoutDocument {
     fn step(&self, person: &str, redo: bool) -> Stepped {
         let stepped = if redo {
             self.redo(person)
@@ -582,13 +582,13 @@ impl Layouts for Desk {
             self.undo(person)
         };
         match stepped.then(|| self.tree()).flatten() {
-            Some(tree) => Stepped::Desk(Box::new(tree)),
+            Some(tree) => Stepped::Layout(Box::new(tree)),
             None => Stepped::None,
         }
     }
 
     fn last_step(&self, person: &str) -> Option<(String, String)> {
-        Desk::last_step(self, person)
+        LayoutDocument::last_step(self, person)
     }
 
     fn acted(
@@ -616,10 +616,9 @@ impl Layouts for Desk {
 pub struct Arrangement {
     /// The person whose record it is.
     person: String,
-    /// The desk itself: what the arrangement reads, and whose change every arranging action is.
+    /// The shell itself: what the arrangement reads, and whose change every arranging action is.
     handle: DesktopHandle,
-    /// Where the desk's layout is kept: the record the workspace shares, whose own changes are its
-    /// history.
+    /// Where the layout is kept: the record the workspace shares, whose own changes are its history.
     layouts: Rc<dyn Layouts>,
     /// What the host calls a window, by [`Names`].
     names: Names,
@@ -632,7 +631,7 @@ pub struct Arrangement {
     /// ends.
     waiting: RefCell<VecDeque<(String, ArrangementAction)>>,
     /// The queries the canvas stood while their app answers them, by the key each place shows it
-    /// under (`session.arrangement_query`, shell.md §8): a query is no part of the desk's record
+    /// under (`session.arrangement_query`, shell.md §8): a query is no part of the layout's record
     /// — a place still shows one while it runs — so the session keeps it here, in step with the
     /// place that shows it.
     queries: RefCell<BTreeMap<String, ArrangementQueryReading>>,
@@ -643,9 +642,9 @@ pub struct Arrangement {
 }
 
 impl Arrangement {
-    /// `person` 's arrangement of `handle` 's desk, whose layout `layouts` keeps, naming windows
+    /// `person` 's arrangement of `handle` 's layout, which `layouts` keeps, naming windows
     /// through `names` and what it publishes through `words`. A host brings over whatever an older
-    /// build kept of the arrangement before it makes one: what it holds is the desk.
+    /// build kept of the arrangement before it makes one: what it holds is the layout.
     #[must_use]
     pub fn new(
         person: &str,
@@ -674,22 +673,22 @@ impl Arrangement {
         Rc::clone(&self.catalog)
     }
 
-    /// The surface the desk shows at `(x, y)` as a place made there stands: the
+    /// The surface the layout shows at `(x, y)` as a place made there stands: the
     /// workspace in front, its row, and the ids its strip and place take. Every id is
     /// this device's. A workspace with no row yet — one just joined, whose first window
     /// makes its row — is given a row here, so a person who joined a workspace can
     /// place something in it.
     /// # Errors
-    /// The desk has no workspace in front.
+    /// The layout has no workspace in front.
     pub fn surface_at(&self) -> Result<Surface, String> {
         self.surface_at_strip(None)
     }
 
     /// The surface a place made in `strip` stands on: the strip's own workspace and row
-    /// when it names one on the desk, so the place joins that strip as a tab; the
+    /// when it names one on the layout, so the place joins that strip as a tab; the
     /// workspace and row in front otherwise. The place's id is minted here.
     /// # Errors
-    /// The desk has no workspace in front, or `strip` is not a strip on this desk.
+    /// The layout has no workspace in front, or `strip` is not a strip on this layout.
     pub fn surface_at_strip(&self, strip: Option<u64>) -> Result<Surface, String> {
         self.surface_on(None, strip)
     }
@@ -699,8 +698,8 @@ impl Arrangement {
     /// choosing rather than the one in front. `workspace` `None` is the workspace in front.
     ///
     /// # Errors
-    /// The desk has no such workspace, no workspace in front, or `strip` is not a strip on
-    /// this desk.
+    /// The layout has no such workspace, no workspace in front, or `strip` is not a strip on
+    /// this layout.
     fn surface_on(
         &self,
         workspace: Option<WorkspaceId>,
@@ -732,10 +731,10 @@ impl Arrangement {
                     .workspaces
                     .iter()
                     .find(|held| held.id() == asked)
-                    .ok_or("that workspace is not on this desk")?,
+                    .ok_or("that workspace is not on this layout")?,
                 None => tree
                     .active_workspace()
-                    .ok_or("the desk has no workspace in front")?,
+                    .ok_or("the layout has no workspace in front")?,
             };
             let row = tree
                 .active_strip
@@ -762,9 +761,9 @@ impl Arrangement {
         })
     }
 
-    /// A row for the workspace `workspace` that holds none: the desk's own first row of it, named
+    /// A row for the workspace `workspace` that holds none: the layout's own first row of it, named
     /// `Main` , which its first window stands in — as a workspace made here starts. Made before the
-    /// place, so the record the place is put in is one the desk shows.
+    /// place, so the record the place is put in is one the layout shows.
     fn make_row(&self, workspace: WorkspaceId) -> Result<StripId, String> {
         let id = StripId(self.handle.mint_id());
         let mut tree = self.handle.read(Clone::clone);
@@ -776,7 +775,7 @@ impl Arrangement {
             return Err("the workspace in front went while a place was made".to_owned());
         };
         if let Some(row) = held.strips.first() {
-            // Another part of the desk made it first: its row stands.
+            // Another part of the layout made it first: its row stands.
             return Ok(row.id);
         }
         held.strips.push(Strip::new(id, ""));
@@ -792,7 +791,7 @@ impl Arrangement {
     /// [`ArrangementAction::Place`] — one attributed, undoable change of the
     /// person's record (shell.md §8). `view` empty shows the resource's primary
     /// view. `strip` names the strip the found resource joins as a tab (a strip
-    /// id on the desk), else it takes a strip of its own.
+    /// id on the layout), else it takes a strip of its own.
     ///
     /// The hits are the search's answer, which a host whose sources read a disk,
     /// a mailbox or a service asks for off the loop and passes here when it
@@ -904,7 +903,7 @@ impl Arrangement {
 
     /// The place `place` shows what `answer` says, when the app the query asked has answered:    /// exactly one match of its type re-points the place at that resource (one arranging step, so
     /// Undo puts the query back); several or none leave the query standing with what it found or
-    /// did not. The desk is unchanged by this call alone: the re-point is one [Show] step.
+    /// did not. The layout is unchanged by this call alone: the re-point is one [Show] step.
     ///
     /// Returns the resource the place now shows, when it re-pointed, so a caller says so.
     fn answer_query(
@@ -1066,7 +1065,7 @@ impl Arrangement {
     /// Returns the place's id, or `None` when the workspace already held one.
     ///
     /// # Errors
-    /// The workspace is not on this desk, or `resource` names nothing published.
+    /// The workspace is not on this layout, or `resource` names nothing published.
     pub fn place_root(
         &mut self,
         asked: &str,
@@ -1115,13 +1114,13 @@ impl Arrangement {
     /// The system's `open` (`docs/designs/app-language/one-app-model.md` §3): stand `resource`
     /// with its view `view` (empty for its primary one) beside the place that shows `beside`'s
     /// resource — the conversation of the turn that asked — or beside the place in front when
-    /// `beside` names nothing. A resource already standing on the desk is brought forward instead,
+    /// `beside` names nothing. A resource already standing on the layout is brought forward instead,
     /// so opening what is shown raises it rather than standing a second place.
     ///
-    /// Returns the place's id, or `None` when the desk already held one and brought it forward.
+    /// Returns the place's id, or `None` when the layout already held one and brought it forward.
     ///
     /// # Errors
-    /// The desk has no workspace in front, or `resource` names nothing published.
+    /// The layout has no workspace in front, or `resource` names nothing published.
     pub(crate) fn open_place(
         &mut self,
         asked: &str,
@@ -1199,7 +1198,7 @@ impl Arrangement {
 
     /// The arrangement as a shell's views read it: every workspace, row, strip and place, each by
     /// its key, laid out as the shell's arrangement type holds it. This is what the session
-    /// publishes on its door for a shell to draw, read off the desk as it stands.
+    /// publishes on its door for a shell to draw, read off the layout as it stands.
     #[must_use]
     pub fn reading(&self) -> Reading {
         let records = self.records();
@@ -1264,16 +1263,16 @@ impl Arrangement {
         self.query_held.borrow().get(&place.to_string()).cloned()
     }
 
-    /// The record each window shows, by tab, as the desk keeps it: what a place put on a record was
+    /// The record each window shows, by tab, as the layout keeps it: what a place put on a record was
     /// placed on, and what a window took up.
     fn records(&self) -> BTreeMap<TabId, String> {
         self.layouts.shown()
     }
 
-    /// Every record a place of the desk shows, by the id of the workspace (a hex device key) the
+    /// Every record a place of the layout shows, by the id of the workspace (a hex device key) the
     /// place stands in: what the outside services keeping those records in step are due for. A
     /// workspace's places and the records of the apps' windows there are all of them, on every
-    /// workspace of the desk, not only the one in front.
+    /// workspace of the layout, not only the one in front.
     #[must_use]
     pub fn records_by_workspace(&self) -> BTreeMap<String, std::collections::BTreeSet<String>> {
         let records = self.records();
@@ -1335,7 +1334,7 @@ impl Arrangement {
         ]
     }
 
-    /// Where what it publishes stands ([`Published::revision`]): what it publishes and the desk's
+    /// Where what it publishes stands ([`Published::revision`]): what it publishes and the layout's
     /// own revision, so a place, strip or row that came, went or was renamed changes it.
     #[must_use]
     pub fn revision(&self) -> u64 {
@@ -1409,7 +1408,7 @@ impl Arrangement {
         self.write(&person, action)
     }
 
-    /// Make each window the person floated or put back on the desk since the last call their own
+    /// Make each window the person floated or put back on the layout since the last call their own
     /// arranging action: [`ArrangementAction::Float`] or [`ArrangementAction::Snap`].
     ///
     /// # Errors
@@ -1436,7 +1435,7 @@ impl Arrangement {
     }
 
     /// Undo `person` 's last change of the arrangement: one step of the layout's own history, taken
-    /// back in the desk it was made in. Whether there was one.
+    /// back in the layout it was made in. Whether there was one.
     pub fn undo(&mut self, person: &str) -> bool {
         self.show(self.layouts.step(person, false))
     }
@@ -1451,17 +1450,17 @@ impl Arrangement {
         match stepped {
             Stepped::None => false,
             Stepped::Taken => true,
-            Stepped::Desk(tree) => {
+            Stepped::Layout(tree) => {
                 self.handle.replace_tree(*tree);
                 true
             }
         }
     }
 
-    /// Make `action` one change of the desk, attributed to `asked` as its undo step: what the
-    /// arrangement is, made where the desk is.
+    /// Make `action` one change of the layout, attributed to `asked` as its undo step: what the
+    /// arrangement is, made where the layout is.
     fn write(&self, asked: &str, action: &ArrangementAction) -> Result<(), String> {
-        // An agent arranges the person's desk like the person does, except where they pinned
+        // An agent arranges the person's layout like the person does, except where they pinned
         // something: a pinned place is theirs to move (shell.md §5's default, "not what they
         // pinned").
         let by_the_person = asked == self.person;
@@ -1473,8 +1472,8 @@ impl Arrangement {
         }
         self.handle.replace_tree(tree.clone());
         // The place a resource was put on shows that resource from now on,
-        // and the desk keeps it beside the window it came with.
-        // A place that shows another resource from now on says so in the desk's own record map,
+        // and the layout keeps it beside the window it came with.
+        // A place that shows another resource from now on says so in the layout's own record map,
         // so a restart opens the place on what it shows, as a place put on the canvas does.
         let shows: Vec<(TabId, String)> = match action {
             ArrangementAction::Place {
@@ -1485,7 +1484,7 @@ impl Arrangement {
             } => vec![(*place, resource.clone())],
             _ => Vec::new(),
         };
-        // The desk is the record the workspace shares, and its own changes are its history: the
+        // The layout is the record the workspace shares, and its own changes are its history: the
         // change this action made says who asked for it and what they did, and is one step of the
         // person's to take back.
         self.layouts.acted(&before, &tree, asked, action, &shows);
@@ -1493,7 +1492,7 @@ impl Arrangement {
     }
 }
 
-/// What `action`, asked for by `asked`, is: who asked and what they did, as the change of the desk
+/// What `action`, asked for by `asked`, is: who asked and what they did, as the change of the layout
 /// it makes names it.
 pub fn step_context(asked: &str, action: &ArrangementAction) -> tilo_actions::ActionContext {
     tilo_actions::ActionContext {
@@ -1571,7 +1570,7 @@ fn change(
         ),
         ArrangementAction::Float { place, float } => float_place(tree, *place, *float),
         // Resolved into the `Place` (or `Activate`) it makes before it reaches the record, where
-        // the desk's ids and the place it stands beside are known.
+        // the layout's ids and the place it stands beside are known.
         ArrangementAction::Open { .. } => {
             Err("an open is resolved into the place it makes before it reaches the record".into())
         }
@@ -1590,7 +1589,7 @@ fn change(
     }
 }
 
-/// Give the strip `strip` the width `permille` of the workspace asks for. Whether the desk
+/// Give the strip `strip` the width `permille` of the workspace asks for. Whether the layout
 /// changed.
 fn resize(tree: &mut Layout, strip: GroupId, permille: u32) -> bool {
     let Some(group) = group_mut(tree, strip) else {
@@ -1603,7 +1602,7 @@ fn resize(tree: &mut Layout, strip: GroupId, permille: u32) -> bool {
 }
 
 /// Maximize the strip `strip` (`maximized`), or restore it beside its row's other windows.
-/// Whether the desk changed.
+/// Whether the layout changed.
 fn maximize(tree: &mut Layout, strip: GroupId, maximized: bool) -> Result<bool, String> {
     let group =
         group_mut(tree, strip).ok_or_else(|| "that strip is not in the arrangement".to_owned())?;
@@ -1612,7 +1611,7 @@ fn maximize(tree: &mut Layout, strip: GroupId, maximized: bool) -> Result<bool, 
     Ok(changed)
 }
 
-/// Close the place `place`; its window goes with it. Whether the desk changed.
+/// Close the place `place`; its window goes with it. Whether the layout changed.
 fn close(tree: &mut Layout, place: u64) -> Result<bool, String> {
     if tree.close_tab(place).is_some() {
         Ok(true)
@@ -1622,7 +1621,7 @@ fn close(tree: &mut Layout, place: u64) -> Result<bool, String> {
 }
 
 /// Bring the place `place` in front of the strip it stands in, as choosing its tab does. Whether
-/// the desk changed.
+/// the layout changed.
 fn activate(tree: &mut Layout, place: u64) -> Result<bool, String> {
     let Some(held) = group_holding(tree, place) else {
         return Err("that place is not in the arrangement".into());
@@ -1635,7 +1634,7 @@ fn activate(tree: &mut Layout, place: u64) -> Result<bool, String> {
 }
 
 /// Pin the place `place` (`pinned`), so an agent's arrangement leaves it alone, or unpin it.
-/// Whether the desk changed.
+/// Whether the layout changed.
 fn pin(tree: &mut Layout, place: u64, pinned: bool) -> Result<bool, String> {
     let Some(tab) = group_holding(tree, place)
         .and_then(|held| held.tabs.iter_mut().find(|tab| tab.id == place))
@@ -1647,7 +1646,7 @@ fn pin(tree: &mut Layout, place: u64, pinned: bool) -> Result<bool, String> {
     Ok(changed)
 }
 
-/// Move the place `place` to `(x, y)` on its workspace's canvas. Whether the desk changed.
+/// Move the place `place` to `(x, y)` on its workspace's canvas. Whether the layout changed.
 fn position(tree: &mut Layout, place: u64, x: i32, y: i32) -> Result<bool, String> {
     let Some((workspace, row, group, _)) = locate(tree, place) else {
         return Err("that place is not in the arrangement".into());
@@ -1688,7 +1687,7 @@ fn float_place(tree: &mut Layout, place: u64, float: FloatPlace) -> Result<bool,
 
 /// Snap the floating place `place` back among its workspace's windows,
 /// moving it into `row` before `before` when a drop named one; left out, it
-/// returns to the strip it stands in, unchanged. Whether the desk changed.
+/// returns to the strip it stands in, unchanged. Whether the layout changed.
 fn snap_back(
     tree: &mut Layout,
     place: u64,
@@ -1808,7 +1807,7 @@ fn move_place(
     let tab = source.tabs.remove(at);
     if source.tabs.is_empty() {
         from_strip.window_groups.remove(group);
-        // The window left the desk with its last place: its place and float go with it.
+        // The window left the layout with its last place: its place and float go with it.
         held.forget_gone_places();
     }
     let holds = |group: &WindowGroup| {
@@ -1876,9 +1875,9 @@ struct Placed<'a> {
 
 /// Stand `asked` on the canvas as one of its published views: a window of the
 /// resource's app, at the place it asked for (shell.md §8). A `strip` that
-/// names a strip already on the desk puts the place in it as a tab, in front,
+/// names a strip already on the layout puts the place in it as a tab, in front,
 /// rather than in a strip of its own: how a person, an agent and the REPL open
-/// something as a tab of the strip they are in. Whether the desk changed.
+/// something as a tab of the strip they are in. Whether the layout changed.
 fn place_at(
     tree: &mut Layout,
     catalog: &Rc<RefCell<Catalog>>,
@@ -1893,12 +1892,12 @@ fn place_at(
         .get(resource)
         .cloned()
         .ok_or_else(|| format!("nothing published is `{resource}`"))?;
-    let taken = "that workspace is not on this desk, or that place is taken";
+    let taken = "that workspace is not on this layout, or that place is taken";
     if locate(tree, asked.place).is_some() {
         return Err(taken.into());
     }
     // The strip the place would take for its own is this workspace's, or a new one: a strip another
-    // workspace holds is no strip of this desk for this place. A strip on this desk is joined as a
+    // workspace holds is no strip of this layout for this place. A strip on this layout is joined as a
     // tab below, whichever workspace and row it stands in.
     let on_desk = tree.workspaces.iter().any(|held| {
         held.strips.iter().any(|strip| {
@@ -1939,7 +1938,7 @@ fn place_at(
         view,
         pinned: false,
     };
-    // A strip already on the desk takes the place as a tab, in front: the window it is stands in
+    // A strip already on the layout takes the place as a tab, in front: the window it is stands in
     // front showing the place just added. A strip the caller named is found wherever it stands, so
     // a place named into another row's strip joins that strip rather than taking its id.
     let held_elsewhere = workspace.strips.iter().enumerate().find_map(|(at, strip)| {
@@ -2003,7 +2002,7 @@ fn place_at(
 /// The place `place` shows the resource `resource` through `view` (empty for its primary one),
 /// keeping its id, its strip and its place on the canvas. What a canvas query's place becomes
 /// when the app answered it: the same place, now the found resource, so Undo puts the query
-/// back. Whether the desk changed; a place already showing that resource through that view is
+/// back. Whether the layout changed; a place already showing that resource through that view is
 /// no change.
 fn show_at(
     tree: &mut Layout,
@@ -2028,7 +2027,7 @@ fn show_at(
     };
     let view = target.chosen_view(view);
     // The window the place is shows the resource from now on: its app, the record `Place` writes
-    // for it (`Desk::record_action`'s `shows`), and the view it shows it through. Everything
+    // for it (`LayoutDocument::record_action`'s `shows`), and the view it shows it through. Everything
     // else the place keeps — its id, its strip, its place on the canvas, whether it is pinned.
     let window = Tab {
         id: place,
@@ -2061,7 +2060,7 @@ fn float_new(
     }
 }
 
-/// Take `window` into the group `group` already on the workspace's desk, as its tab in front: a
+/// Take `window` into the group `group` already on the workspace's layout, as its tab in front: a
 /// place of this workspace's, whichever row it stands in.
 fn join_strip(
     workspace: &mut tilo_desktop_model::Workspace,
@@ -2111,7 +2110,7 @@ pub fn verb(action: &ArrangementAction) -> &'static str {
         ArrangementAction::Snap { .. } => "snap-back",
         ArrangementAction::Show { .. } => "show",
         ArrangementAction::RetryQuery { .. } => "retry",
-        // Refused before it is stepped: it names no change of the desk.
+        // Refused before it is stepped: it names no change of the layout.
         ArrangementAction::RetiredOpenInto { .. } => "retired",
     }
 }
@@ -2360,11 +2359,11 @@ fn strip_actions(key: &str) -> Vec<ActionSpec> {
         ),
         action(
             "maximize-strip",
-            "Maximize a strip, so it stands alone as the window the desk is",
+            "Maximize a strip, so it stands alone as the window the layout is",
             vec![optional(
                 "on",
                 ParamType::Boolean,
-                "Whether it fills the desk",
+                "Whether it fills the layout",
             )],
             move |args| ArrangementAction::Maximize {
                 strip: count_of(&maximized),

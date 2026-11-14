@@ -112,15 +112,15 @@ pub(crate) struct TextInput {
     /// keyboard, rather than from a device.
     reinjected: bool,
     /// A key the person pressed reached the focused field, and that field has not yet committed
-    /// where the key left its caret: the field it was then, and how long the desk waits for it.
+    /// where the key left its caret: the field it was then, and how long the shell waits for it.
     caret_wait: Option<CaretWait>,
 }
 
-/// How long the desk waits for the field a key reached to say where its caret stands before it
+/// How long the shell waits for the field a key reached to say where its caret stands before it
 /// places a surface at the old one: a frame or two, and a little more for an app that was busy.
 const CARET_WAIT: Duration = Duration::from_millis(250);
 
-/// The field a key reached, and when the desk began waiting for its commit.
+/// The field a key reached, and when the shell began waiting for its commit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CaretWait {
     /// The text field's id and the revision of what its client had committed, or `None` when no
@@ -141,17 +141,17 @@ struct HostField {
     activated: bool,
 }
 
-/// Where the caret an input method places its composition at stands in the desk, in the protocol's
+/// Where the caret an input method places its composition at stands in the shell, in the protocol's
 /// integers.
 fn caret_rect(input: HostTextInput) -> Rectangle<i32, Logical> {
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "a caret on the desk, far from i32 limits"
+        reason = "a caret on the shell, far from i32 limits"
     )]
     let at = (input.x.round() as i32, input.y.round() as i32);
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "a caret on the desk, far from i32 limits"
+        reason = "a caret on the shell, far from i32 limits"
     )]
     let size = (
         input.width.max(0.0).round() as i32,
@@ -228,7 +228,7 @@ impl State {
 
     /// The hosted surface whose field the person types into now: the topmost one that holds the
     /// keyboard and has a field with the focus, while the session is not locked. A surface that
-    /// keeps its field focused under another that took the keys (the desk's search under the
+    /// keeps its field focused under another that took the keys (the shell's search under the
     /// clipboard opened over it) is not typed into until it has them back.
     fn host_text_input(&self) -> Option<(usize, HostTextInput)> {
         if self.locked() {
@@ -443,7 +443,7 @@ impl State {
         sensitive
     }
 
-    /// Where the focused field's caret stands in the desk, in logical coordinates: the cursor
+    /// Where the focused field's caret stands in the shell, in logical coordinates: the cursor
     /// rectangle its client last committed, placed on the surface it types into. `None` when no
     /// field takes text, it never reported one, or its window is not on screen.
     pub(crate) fn text_caret(&self) -> Option<TextCaret> {
@@ -520,7 +520,7 @@ impl State {
         settled
     }
 
-    /// Where `surface` stands in the desk: a window of the space, or a popup on one — a field the
+    /// Where `surface` stands in the shell: a window of the space, or a popup on one — a field the
     /// person types into may live in either.
     fn window_geometry(&self, surface: &WlSurface) -> Option<Rectangle<i32, Logical>> {
         for window in self.space.elements() {
@@ -543,7 +543,7 @@ impl State {
     }
 }
 
-/// Where a text field's caret stands, in the desk's logical coordinates.
+/// Where a text field's caret stands, in the shell's logical coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextCaret {
     pub x: f64,

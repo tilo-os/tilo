@@ -101,7 +101,7 @@ fn host_scale(reported: f64, configured: f64) -> f64 {
 /// else.
 /// A session started in a window is handed the desktop as `WAYLAND_SOCKET` : one connected socket,
 /// which a client takes once (`wl_display_connect` removes the variable). A session that builds its
-/// desk first — the surface apps' renderers ask Vulkan for an adapter, and Mesa's device-select
+/// up its shell first — the surface apps' renderers ask Vulkan for an adapter, and Mesa's device-select
 /// layer connects to the desktop to pick it — leaves the window a connection that is already spent,
 /// and the window then opens on no desktop at all. So the window is opened first, while the
 /// handover is still there, and handed over ([`NestedBackend::start`]).

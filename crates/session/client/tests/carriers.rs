@@ -129,7 +129,7 @@ impl Ada {
                 certify(
                     &host,
                     user,
-                    "Browser on Ada's desk",
+                    "Browser on Ada's layout",
                     [0; 16],
                     &key,
                     |code| {

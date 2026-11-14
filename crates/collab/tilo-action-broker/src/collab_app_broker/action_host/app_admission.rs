@@ -1,6 +1,6 @@
 //! What an app may reach the door with as the person using it, besides what it owns: the
 //! view lookup that mints a link to its own record, the reference actions that show another
-//! resource, and the desk's invitation into the workspace it shows. None of them grants
+//! resource, and the shell's invitation into the workspace it shows. None of them grants
 //! anything, so the person's own part decides them, where invoking another app's action is
 //! decided for the app.
 //!
@@ -38,10 +38,10 @@ pub(super) fn reference_request(request: &tilo_actions::remote::InvokeRequest) -
             && application_provider(&request.target.provider).is_some())
 }
 
-/// Whether `request` asks the session's desk for its invitation into the workspace — the sheet
+/// Whether `request` asks the session's shell for its invitation into the workspace — the sheet
 /// where a link is made (`show-invite`) and the link itself (`issue-invitation`) — so an app
 /// sharing what it shows offers the same sheet and the same invitation, decided by the person's
-/// part there. It reaches nothing else of the desk — the surface up, the workspace in front, the
+/// part there. It reaches nothing else of the shell — the surface up, the workspace in front, the
 /// agents — and grants nothing: the invitation admits whoever redeems it, as the person's own
 /// would.
 pub(super) fn invitation_request(request: &tilo_actions::remote::InvokeRequest) -> bool {
@@ -52,7 +52,7 @@ pub(super) fn invitation_request(request: &tilo_actions::remote::InvokeRequest) 
         && (action == session_actions::ISSUE_INVITATION || action == session_actions::SHOW_INVITE)
 }
 
-/// Whether `request` asks the session's desk to show how an agent or a computer connects as the
+/// Whether `request` asks the session's shell to show how an agent or a computer connects as the
 /// person (`show-connect`), or for the link another of their own devices joins with
 /// (`show-pair-device`): what their own card opens, shown to them on their own screen. An app
 /// listing what acts as the person offers adding to it this way; it grants nothing, and the person
@@ -148,11 +148,11 @@ mod invitation_request_tests {
     use tilo_actions::remote::session_actions;
     use tilo_actions::remote::{ActionHostError, Caller, Pending, RemoteActionMessage, pending};
 
-    struct Desk {
+    struct Shell {
         started: Mutex<Vec<String>>,
     }
 
-    impl HostStepServices for Desk {
+    impl HostStepServices for Shell {
         fn provider(&self) -> &'static str {
             session_actions::PROVIDER
         }
@@ -233,30 +233,30 @@ mod invitation_request_tests {
     }
 
     tilo_test_env::scenario! {
-        fn an_apps_invitation_request_reaches_only_the_desk;
+        fn an_apps_invitation_request_reaches_only_the_shell;
 
-        phase an_app_asks_the_desk_for_the_invitation_and_nothing_else;
+        phase an_app_asks_the_shell_for_the_invitation_and_nothing_else;
         {
-            let desk = |action: &str| {
+            let shell = |action: &str| {
                 request(
                     tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
                     session_actions::INVITE_RESOURCE,
                     action,
                 )
             };
-            assert!(super::invitation_request(&desk(
+            assert!(super::invitation_request(&shell(
                 session_actions::ISSUE_INVITATION
             )));
             assert!(
-                super::invitation_request(&desk(session_actions::SHOW_INVITE)),
+                super::invitation_request(&shell(session_actions::SHOW_INVITE)),
                 "the sheet an app shares through is the person's own invite sheet"
             );
             assert!(
-                super::connect_request(&desk(session_actions::SHOW_CONNECT)),
+                super::connect_request(&shell(session_actions::SHOW_CONNECT)),
                 "an app offers the person's own connect setup"
             );
             assert!(
-                super::connect_request(&desk(session_actions::SHOW_PAIR_DEVICE)),
+                super::connect_request(&shell(session_actions::SHOW_PAIR_DEVICE)),
                 "an app offers the person's own code for another of their devices"
             );
             for other in [
@@ -266,8 +266,8 @@ mod invitation_request_tests {
                 "show-surface",
             ] {
                 assert!(
-                    !super::invitation_request(&desk(other)) && !super::connect_request(&desk(other)),
-                    "the desk's `{other}` is the person's own"
+                    !super::invitation_request(&shell(other)) && !super::connect_request(&shell(other)),
+                    "the shell's `{other}` is the person's own"
                 );
             }
             assert!(
@@ -276,7 +276,7 @@ mod invitation_request_tests {
                     session_actions::INVITE_RESOURCE,
                     session_actions::ISSUE_INVITATION,
                 )),
-                "an invitation is the desk's, not a resource's"
+                "an invitation is the shell's, not a resource's"
             );
             assert!(
                 !super::invitation_request(&request(
@@ -284,13 +284,13 @@ mod invitation_request_tests {
                     "session:chrome",
                     session_actions::ISSUE_INVITATION,
                 )),
-                "and it is the desk's resource that offers it"
+                "and it is the shell's resource that offers it"
             );
         }
 
         phase an_apps_invitation_is_refused_for_a_member_who_may_only_read;
-        // An app sharing what it shows asks the desk for the invitation as the person using it: the
-        // workspace's own grants decide, so a member who may only read is refused, and the desk is
+        // An app sharing what it shows asks the shell for the invitation as the person using it: the
+        // workspace's own grants decide, so a member who may only read is refused, and the shell is
         // never asked to make one.
         {
             let owner = hex::encode([7; 32]);
@@ -301,13 +301,13 @@ mod invitation_request_tests {
             let workspace_id = workspace.id().to_string();
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
-            let desk = Arc::new(Desk {
+            let shell = Arc::new(Shell {
                 started: Mutex::default(),
             });
             let (state, _bridge) = AppBrokerState::test_state(
                 Some(tree.shared().authority()),
                 crate::services::HostServices {
-                    host_steps: vec![desk.clone()],
+                    host_steps: vec![shell.clone()],
                     ..Default::default()
                 },
             );
@@ -316,7 +316,7 @@ mod invitation_request_tests {
             let door = |person: &Caller| {
                 state
                     .app_door(person, app, &RemoteActionMessage::Invoke(ask.clone()))
-                    .expect("the app reaches the desk's invitation as the person")
+                    .expect("the app reaches the shell's invitation as the person")
             };
             let invoke = |caller: &Caller| {
                 state
@@ -334,12 +334,12 @@ mod invitation_request_tests {
                 Err(ActionHostError::NotPermitted),
                 "a viewer makes no invitation"
             );
-            assert!(desk.started.lock().unwrap().is_empty());
+            assert!(shell.started.lock().unwrap().is_empty());
 
             let owning = Caller::local_person(owner).in_workspace(workspace_id);
             invoke(&door(&owning)).expect("the owner makes one");
             assert_eq!(
-                *desk.started.lock().unwrap(),
+                *shell.started.lock().unwrap(),
                 [session_actions::ISSUE_INVITATION]
             );
         }

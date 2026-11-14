@@ -609,7 +609,7 @@ pub struct HostTextInput {
     /// The field's purpose, as `text-input-v3` names it: text, a name, an email, a URL, digits, a
     /// password, a terminal.
     pub purpose: u32,
-    /// Where its caret stands, in the desk's logical coordinates: the candidate window and the
+    /// Where its caret stands, in the shell's logical coordinates: the candidate window and the
     /// composition go under it.
     pub x: f64,
     pub y: f64,
@@ -680,7 +680,7 @@ pub trait SurfaceHost {
     fn pointer_button(&mut self, button: u32, pressed: bool);
 
     /// A pointer button was pressed at this logical point, somewhere other than this surface (a
-    /// window, the desk, another surface): an open popover closes.
+    /// window, the shell, another surface): an open popover closes.
     fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {}
 
     /// What the surface's owner closes when the pointer is pressed somewhere other than this
@@ -729,7 +729,7 @@ pub trait SurfaceHost {
 
     /// Other clients' windows this surface pictures (thumbnails, cards), bottom first: the host
     /// draws their live buffers there, in front of this surface's layers. A window the session
-    /// keeps private is drawn as the placeholder a capture of it shows instead, since the desk a
+    /// keeps private is drawn as the placeholder a capture of it shows instead, since the shell a
     /// picture stands on is what a screenshot, a recording and a share show.
     fn window_pictures(&self) -> Vec<WindowPicture> {
         Vec::new()

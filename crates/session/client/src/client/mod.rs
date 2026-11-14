@@ -17,7 +17,7 @@ use crate::Enrolled;
 use crate::plane::{Cmd, Device, Event, Outbox, Topic, Transport, topic_of};
 use crate::presence::OwnPresence;
 
-pub use gate::Desk;
+pub use gate::Shell;
 pub use presence::Presence;
 
 mod gate;
@@ -69,9 +69,9 @@ pub struct Client {
     user: Option<[u8; 32]>,
     /// What became of the enrollments asked for since the last call.
     enrolled: std::sync::mpsc::Receiver<Enrolled>,
-    /// The desk this session shows, which the workspace gate reads every message from another
+    /// The shell this session shows, which the workspace gate reads every message from another
     /// member against: `None` until the session hands it over.
-    desk: RefCell<Option<Rc<dyn Desk>>>,
+    shell: RefCell<Option<Rc<dyn Shell>>>,
     /// What this host keeps of the plane beside the boards.
     host: RefCell<Option<Rc<dyn Host>>>,
     /// The certificates each of the person's other devices was heard with, by its publisher.
@@ -140,7 +140,7 @@ impl Client {
             arrived,
             user: device.person,
             enrolled,
-            desk: RefCell::new(None),
+            shell: RefCell::new(None),
             host: RefCell::new(None),
             siblings: RefCell::new(std::collections::BTreeMap::new()),
             host_hints: RefCell::new(std::collections::BTreeMap::new()),
@@ -153,10 +153,10 @@ impl Client {
         }
     }
 
-    /// Hand the workspace gate the desk this session shows: whose workspaces' policies hold every
+    /// Hand the workspace gate the shell this session shows: whose workspaces' policies hold every
     /// member's messages to what the workspace grants them.
-    pub fn attach_desk(&self, desk: Rc<dyn Desk>) {
-        self.desk.borrow_mut().replace(desk);
+    pub fn attach_shell(&self, shell: Rc<dyn Shell>) {
+        self.shell.borrow_mut().replace(shell);
     }
 
     /// Hand this client its host: what the host keeps of the plane beside the boards.
@@ -213,7 +213,7 @@ impl Client {
     }
 
     /// Follow the workspaces a host names itself — a page's mounts, each showing one — as
-    /// [`Self::follow_desktop`] follows a desk's: take part in each of `live`, leave the ones gone,
+    /// [`Self::follow_desktop`] follows a layout's: take part in each of `live`, leave the ones gone,
     /// and remember `active` as the one in front. Whether that changed anything.
     pub fn follow_workspaces(&self, live: &[(Topic, String)], active: Option<Topic>) -> bool {
         let outgoing = &self.outgoing;

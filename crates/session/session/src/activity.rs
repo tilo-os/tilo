@@ -1500,7 +1500,7 @@ mod tests {
             let kept = held.entry(workspace.id()).or_insert_with(|| {
                 let doc = || {
                     let mut doc = ui::automerge::AutoCommit::new();
-                    doc.set_actor(tilo_session_core::desk::actor_of_person("ada"));
+                    doc.set_actor(tilo_session_core::layout::actor_of_person("ada"));
                     doc
                 };
                 Kept {
@@ -2027,7 +2027,7 @@ mod tests {
         use ui::state::UndoLog;
 
         let mut doc = ui::automerge::AutoCommit::new();
-        doc.set_actor(tilo_session_core::desk::actor_of_person("ada"));
+        doc.set_actor(tilo_session_core::layout::actor_of_person("ada"));
         let mut log = UndoLog::new(&mut doc);
         let before = doc.base_heads();
         // The person opens a window: one change of the workspace's layout.

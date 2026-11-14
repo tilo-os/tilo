@@ -108,7 +108,7 @@ async fn arrive(
 /// A post of a few lines, as people write them: text that saves smaller than it is written.
 fn post_text(post: usize) -> String {
     const WORDS: [&str; 12] = [
-        "lounge", "record", "window", "desk", "share", "relay", "sync", "music", "photos",
+        "lounge", "record", "window", "layout", "share", "relay", "sync", "music", "photos",
         "terminal", "people", "notes",
     ];
     (0..150)

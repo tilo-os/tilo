@@ -1,19 +1,19 @@
 //! The gate every message from another member passes: the workspace it arrived in decides, by its
 //! own policy, what the member may say there.
 //! The table of what each message is lives in [`crate::gate`]; here is where the question is asked
-//! — with the sender's person, the desk the session shows, and the workspace's policy — and what a
-//! refusal says.
+//! — with the sender's person, the workspaces the session shows, and each workspace's policy — and
+//! what a refusal says.
 
 use crate::gate::{self, WorkspaceAction};
 use crate::plane::Event;
 
 use super::Client;
 
-/// The desk a session shows, as the gate reads it: the workspaces whose policies hold every
+/// The shell a session shows, as the gate reads it: its workspaces' policies hold every
 /// message from another member to what the workspace grants them.
-pub trait Desk {
-    /// Whether the workspace `workspace` of this desk lets `person` do `required` at `now` (Unix
-    /// seconds). A desk that holds no such workspace admits nothing.
+pub trait Shell {
+    /// Whether the workspace `workspace` of this shell lets `person` do `required` at `now` (Unix
+    /// seconds). A shell that holds no such workspace admits nothing.
     fn allows(&self, workspace: &str, person: &str, required: &WorkspaceAction, now: u64) -> bool;
 }
 
@@ -40,9 +40,9 @@ impl Client {
         let Some(person) = person else {
             return Some("the device is not known here".to_owned());
         };
-        let desk = self.desk.borrow().clone()?;
+        let shell = self.shell.borrow().clone()?;
         let now = tilo_clock::unix_now();
-        if desk.allows(&workspace, &person, &required, now) {
+        if shell.allows(&workspace, &person, &required, now) {
             return None;
         }
         Some(format!(

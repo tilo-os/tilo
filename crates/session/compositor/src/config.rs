@@ -60,7 +60,7 @@ pub struct DisplayConfig {
     /// Night light's colour temperature in kelvin while it is on (see
     /// [`crate::Compositor::set_night_light`]); the session decides when (a switch, a schedule).
     pub night_light: Option<u32>,
-    /// The connector the person made primary (`DP-2`): the display their desk's full bar, their new
+    /// The connector the person made primary (`DP-2`): the display their shell's full bar, their new
     /// windows and the sheets they open go to while it is lit. A connector that is not lit, or not
     /// connected at all, names no primary and the first display stands in, so the choice waits for
     /// the monitor to come back instead of being lost.

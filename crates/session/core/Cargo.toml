@@ -1,6 +1,6 @@
 [package]
 name = "tilo-session-core"
-description = "The session's roles that every host runs: the desk's own document and, as they move here, the arrangement it holds."
+description = "The session's roles that every host runs: the layout's own document and, as they move here, the arrangement it holds."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -18,7 +18,7 @@ tilo-actions = { path = "../../collab/actions" }
 # What a file uploaded through the session is, and so the app it lands in.
 tilo-content-types = { path = "../../system/content-types" }
 tilo-desktop-model = { path = "../desktop-model" }
-# The desk as the surfaces draw it and the person arranges it: the handle the arrangement changes
+# The layout as the surfaces draw it and the person arranges it: the handle the arrangement changes
 # and the search text typed on the canvas places through.
 tilo-desktop-search = { path = "../desktop-search" }
 tilo-desktop-surface = { path = "../desktop-surface", default-features = false }

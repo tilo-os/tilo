@@ -85,23 +85,23 @@ impl AppBrokerState {
             // Every way the seat's own action is refused says which one it was: the person is
             // shown a refusal, and what the session logged is what anyone can look at afterwards.
             let refused = |why: &str| {
-                tracing::warn!(why, "a person's action at their desk was refused");
+                tracing::warn!(why, "a person's action at their shell was refused");
                 ActionHostError::NotPermitted
             };
             if !self.is_accepting() || request.on_behalf_of.is_some() || caller.is_foreign_device()
             {
                 return Err(refused(
-                    "this desk's broker is not serving the person at it",
+                    "this shell's broker is not serving the person at it",
                 ));
             }
             let person = caller
                 .acting()
                 .person_id()
-                .ok_or_else(|| refused("the caller is not a person at this desk"))?;
+                .ok_or_else(|| refused("the caller is not a person at this shell"))?;
             let workspace = caller
                 .workspace()
                 .ok_or_else(|| ActionHostError::Unavailable {
-                    reason: "no workspace is in front on this desk yet".into(),
+                    reason: "no workspace is in front on this shell yet".into(),
                 })?;
             // The identity this device signs in with in a workspace is read where it is kept, so a
             // session that has not been told it yet answers `unavailable`, never "not allowed": the
@@ -113,7 +113,7 @@ impl AppBrokerState {
                 .services
                 .local_person
                 .as_ref()
-                .ok_or_else(|| refused("this desk has no native identity to act under"))?
+                .ok_or_else(|| refused("this shell has no native identity to act under"))?
                 .certificate_when_named(workspace, person)
                 .map_err(|error| {
                     tracing::warn!(%error, "this device's identity is not ready for an action yet");
@@ -130,14 +130,14 @@ impl AppBrokerState {
                     .is_some_and(|key| key != &certificate.device_public_key)
             {
                 return Err(refused(
-                    "the caller's keys are not the desk's certificate's",
+                    "the caller's keys are not the shell's certificate's",
                 ));
             }
             self.current_native_person(workspace, &certificate)
                 .map_err(|error| {
                     tracing::warn!(
                         %error,
-                        "a person's action at their desk was refused: the certificate is not current"
+                        "a person's action at their shell was refused: the certificate is not current"
                     );
                     ActionHostError::NotPermitted
                 })?;
@@ -149,11 +149,11 @@ impl AppBrokerState {
                 .map_err(|error| {
                     tracing::warn!(
                         %error,
-                        "a person's action at their desk was refused: the policy clock"
+                        "a person's action at their shell was refused: the policy clock"
                     );
                     ActionHostError::NotPermitted
                 })?
-                .ok_or_else(|| refused("this desk's policy clock has no time to decide at"))?;
+                .ok_or_else(|| refused("this shell's policy clock has no time to decide at"))?;
             Ok(InvocationCaller::NativePerson {
                 invocation: request.invocation,
                 workspace: workspace.into(),

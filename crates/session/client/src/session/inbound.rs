@@ -96,7 +96,7 @@ impl Task {
 
     /// The host says `workspace_id`'s owner deleted it: it is gone for good.
     /// The session stops following it, and says so (`workspace-deleted`) for
-    /// the page or desk to forget it; a session holding nothing else ends
+    /// the page or layout to forget it; a session holding nothing else ends
     /// there, as a refusal ends one.
     fn workspace_deleted(&mut self, workspace_id: WorkspaceId) {
         self.workspaces.remove(&workspace_id);

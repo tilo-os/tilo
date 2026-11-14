@@ -12,7 +12,7 @@
 //! compositor draws each window's live buffer there, scaled to fit, in
 //! front of that surface's layers — and a window a capture may not show
 //! ([`crate::capture::protect`]) as the same placeholder a capture draws of
-//! it, since a picture stands on the desk every capture and share sees too.
+//! it, since a picture stands on the shell every capture and share sees too.
 //! Neither changes where input lands: a window takes the pointer where it
 //! stands.
 //!
@@ -130,7 +130,7 @@ pub type FrameElement<R> =
 /// nothing of the CPU renderer's shape handling.
 ///
 /// `clip` is what it may cover: the corners it cuts are the element's own, wherever the clip leaves
-/// them, and the buffer is cropped to the clip rather than squeezed into it — a window the desk's
+/// them, and the buffer is cropped to the clip rather than squeezed into it — a window the shell's
 /// card takes a bite out of keeps its corners and its scale.
 #[derive(Debug)]
 pub struct RoundedElement<E> {

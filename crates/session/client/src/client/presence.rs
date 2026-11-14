@@ -10,7 +10,7 @@ use tilo_clock::time::Instant;
 
 use collab_types::presence::{Payload, Presence as Frame, ShellPresence, Shown};
 use iroh_base::EndpointId;
-use tilo_desktop_model::WorkspaceId as DeskWorkspaceId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_live::presence;
 use tilo_live::presence::Board;
 
@@ -39,7 +39,7 @@ impl Where {
 pub struct Presence {
     plane: RefCell<Plane>,
     own: RefCell<OwnPresence>,
-    /// Where this person is on this desk, as the surfaces here read it: the pointer over the tile
+    /// Where this person is on this layout, as the surfaces here read it: the pointer over the tile
     /// it is on, and their screen as a shell. Said with the rest of their word, and said again only
     /// when it moves.
     says: RefCell<Where>,
@@ -149,7 +149,7 @@ impl Presence {
         self.follow_asked.set(false);
     }
 
-    /// Where this person is on this desk now: their `pointer` over the tile it is on, and their
+    /// Where this person is on this layout now: their `pointer` over the tile it is on, and their
     /// `shell` as the others' surfaces draw it. Said with the rest of their word, and said again
     /// only when one of them moved. Whether that changed anything.
     pub fn set_where(
@@ -239,14 +239,14 @@ impl Presence {
         }
         for (ws, id) in joining {
             joined(&id, ws);
-            if DeskWorkspaceId::parse(&id).is_some() {
+            if WorkspaceId::parse(&id).is_some() {
                 self.say_into(&id);
             }
             changed = true;
         }
         for (ws, id) in leaving {
             // The members take this device down where it was.
-            if let Some(workspace) = DeskWorkspaceId::parse(&id) {
+            if let Some(workspace) = WorkspaceId::parse(&id) {
                 self.say_frames(workspace, &[(0, Frame::desktop(&id, Payload::Left))]);
             }
             left(ws);
@@ -280,10 +280,10 @@ impl Presence {
     /// as a host that shows one workspace at a time asks with its own timer. Whether anything left.
     pub fn due_in(&self, workspace: &str) -> bool {
         let now = now_ms();
-        let Some((desk, frames)) = self.plane.borrow_mut().due_in(workspace, now) else {
+        let Some((layout, frames)) = self.plane.borrow_mut().due_in(workspace, now) else {
             return false;
         };
-        self.say_frames(desk, &frames);
+        self.say_frames(layout, &frames);
         true
     }
 
@@ -513,10 +513,10 @@ impl Presence {
     fn say_own(&self) {
         let word = self.own_word();
         let now = now_ms();
-        let Some((desk, frames)) = self.plane.borrow_mut().say_in_front(&word, now) else {
+        let Some((layout, frames)) = self.plane.borrow_mut().say_in_front(&word, now) else {
             return;
         };
-        self.say_frames(desk, &frames);
+        self.say_frames(layout, &frames);
     }
 
     /// Say this device's whole word in `workspace`, on joining it: a device that came into a
@@ -524,7 +524,7 @@ impl Presence {
     fn say_into(&self, workspace: &str) {
         let word = self.own_word();
         let now = now_ms();
-        let (desk, frames) = {
+        let (layout, frames) = {
             let mut plane = self.plane.borrow_mut();
             let Some(held) = plane
                 .workspaces
@@ -534,12 +534,12 @@ impl Presence {
                 return;
             };
             held.board.say(&word);
-            (DeskWorkspaceId::parse(&held.id), held.board.flush(now))
+            (WorkspaceId::parse(&held.id), held.board.flush(now))
         };
-        let Some(desk) = desk else {
+        let Some(layout) = layout else {
             return;
         };
-        self.say_frames(desk, &frames);
+        self.say_frames(layout, &frames);
     }
 
     /// Take what the workspace in front's board owes now: what changed since its last burst, the
@@ -554,10 +554,10 @@ impl Presence {
             let due = plane.due_in_front(now);
             (due, plane.front_revision() != before)
         };
-        let Some((desk, frames)) = due else {
+        let Some((layout, frames)) = due else {
             return (false, forgot);
         };
-        self.say_frames(desk, &frames);
+        self.say_frames(layout, &frames);
         (true, forgot)
     }
 
@@ -577,7 +577,7 @@ impl Presence {
     /// Say `frames` on `ws`'s presence track, each as the object the board numbered: one object per
     /// frame, sealed with the workspace scope's keys. Nothing while this session says presence
     /// nowhere: presence is ephemeral, and the next change says where its sender is.
-    fn say_frames(&self, ws: DeskWorkspaceId, frames: &[(u32, Frame)]) {
+    fn say_frames(&self, ws: WorkspaceId, frames: &[(u32, Frame)]) {
         self.said
             .borrow_mut()
             .extend(frames.iter().map(|(_, frame)| frame.clone()));

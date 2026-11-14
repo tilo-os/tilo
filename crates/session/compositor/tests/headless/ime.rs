@@ -1,6 +1,6 @@
 //! An engine composing for the session: it holds the seat's keyboard, the field the person types
 //! into hears what it composes — a client's field or one the session draws itself — its candidate
-//! window stands where the caret does, and the desk's chords still work while it composes.
+//! window stands where the caret does, and the shell's chords still work while it composes.
 
 use super::*;
 
@@ -225,7 +225,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_desks_chords_still_work_while_an_engine_composes;
+    phase the_shells_chords_still_work_while_an_engine_composes;
     {
         let mut compositor = headless(Box::new(StackPolicy));
         let chords = Rc::new(RefCell::new(HostLog::default()));
@@ -246,7 +246,7 @@ tilo_test_env::scenario! {
         engine.grab_keyboard();
         pump(&mut compositor, &mut [&mut engine], |_, _| true);
 
-        // The desk's own chords answer wherever the keyboard is, and the engine holds it: a chord is
+        // The shell's own chords answer wherever the keyboard is, and the engine holds it: a chord is
         // the session's before it is the engine's.
         press_keys(&mut compositor, &[KEY_LEFTMETA, KEY_X]);
         pump(&mut compositor, &mut [&mut engine], |_, _| {
@@ -255,7 +255,7 @@ tilo_test_env::scenario! {
         assert_eq!(chords.borrow().taken, vec![(KEY_X, false)]);
         assert!(
             !engine.seen.grab_keys.iter().any(|(key, _)| *key == KEY_X),
-            "the desk took the chord: {:?}",
+            "the shell took the chord: {:?}",
             engine.seen.grab_keys
         );
         assert!(

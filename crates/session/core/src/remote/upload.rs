@@ -274,8 +274,8 @@ impl Landed {
     }
 }
 
-/// The request that shows `landed` on `workspace`'s shared desk: its app's `open` on the record,
-/// which the workspace's host answers by adding a window for it beside the work on the desk, as
+/// The request that shows `landed` on `workspace`'s shared layout: its app's `open` on the record,
+/// which the workspace's host answers by adding a window for it beside the work on the layout, as
 /// it does for an agent's work. Everyone in the workspace sees it arrive; nobody's view moves.
 #[must_use]
 pub fn show_request(workspace: &str, landed: &Landed) -> InvokeRequest {

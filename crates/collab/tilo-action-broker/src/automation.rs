@@ -1321,7 +1321,7 @@ mod tests {
 
         phase a_workspace_publishes_its_library_and_one_run_per_shortcut;
         {
-            let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Desk");
+            let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Office");
             workspace.shortcuts.push(SavedShortcut::encode(&shortcut(serde_json::json!({
                 "id": "tidy",
                 "name": "Tidy",
@@ -1441,14 +1441,14 @@ mod tests {
         phase stopping_names_one_shortcuts_runs_or_every_run_going_in_the_workspace;
         {
             let runs = RunningRuns::default();
-            let tidy = going("desk", "tidy", "Tidy");
-            let sweep = going("desk", "sweep", "Sweep");
+            let tidy = going("office", "tidy", "Tidy");
+            let sweep = going("office", "sweep", "Sweep");
             let elsewhere = going("study", "tidy", "Tidy");
             for run in [&tidy, &sweep, &elsewhere] {
                 runs.register(run.clone());
             }
             runs.moved(tidy.run, "1");
-            let stopped = runs.stop("desk", &StopRequest::Shortcut("tidy".into()), "asked");
+            let stopped = runs.stop("office", &StopRequest::Shortcut("tidy".into()), "asked");
             assert_eq!(stopped.len(), 1);
             assert_eq!(stopped[0].shortcut, "tidy");
             assert_eq!(stopped[0].at.as_deref(), Some("1"));
@@ -1458,19 +1458,19 @@ mod tests {
 
             // Stopping everything names what is still going, not the run already
             // told to stop.
-            let all = runs.stop("desk", &StopRequest::All, "asked");
+            let all = runs.stop("office", &StopRequest::All, "asked");
             assert_eq!(all.len(), 1);
             assert_eq!(all[0].shortcut, "sweep");
             assert!(runs.stopped(sweep.run).is_some());
             assert!(runs.stopped(tidy.run).is_some());
             // Asking again stops nothing new: a run is told once.
             assert!(
-                runs.stop("desk", &StopRequest::All, "asked again")
+                runs.stop("office", &StopRequest::All, "asked again")
                     .is_empty()
             );
-            assert_eq!(runs.going("desk").len(), 2);
+            assert_eq!(runs.going("office").len(), 2);
             runs.leave(tidy.run);
-            assert_eq!(runs.going("desk").len(), 1);
+            assert_eq!(runs.going("office").len(), 1);
         }
 
         phase a_run_is_told_the_shortcuts_going_above_it_and_the_ones_beside_it_are_not;
@@ -1478,37 +1478,37 @@ mod tests {
             let runs = RunningRuns::default();
             // `outer` is going on its own group, as a run with nothing above it
             // does; the run its step calls is stamped with that group.
-            let outer = going("desk", "outer", "Outer");
+            let outer = going("office", "outer", "Outer");
             let group = outer.run.0.to_string();
             runs.register(outer.clone());
             // The call inside it: its own id is running, and so is `outer`'s.
             assert_eq!(
-                runs.above("desk", Some(&group), "inner"),
+                runs.above("office", Some(&group), "inner"),
                 ["outer", "inner"]
             );
             // Another workspace's outer run above the same group is somebody else's.
             runs.register(going("study", "other", "Other"));
             assert_eq!(
-                runs.above("desk", Some(&group), "inner"),
+                runs.above("office", Some(&group), "inner"),
                 ["outer", "inner"]
             );
             // A run a person started has no parent naming another run, so it is
             // told only of itself: two runs side by side do not block each other.
-            assert_eq!(runs.above("desk", None, "beside"), ["beside"]);
-            assert_eq!(runs.above("desk", Some("elsewhere"), "beside"), ["beside"]);
+            assert_eq!(runs.above("office", None, "beside"), ["beside"]);
+            assert_eq!(runs.above("office", Some("elsewhere"), "beside"), ["beside"]);
             // Once the outer run is over, a run its group names has nothing
             // above it.
             runs.leave(outer.run);
-            assert_eq!(runs.above("desk", Some(&group), "inner"), ["inner"]);
+            assert_eq!(runs.above("office", Some(&group), "inner"), ["inner"]);
         }
 
         phase a_stop_says_which_runs_it_reached_and_where_each_had_got_to;
         {
             let runs = RunningRuns::default();
-            let tidy = going("desk", "tidy", "Tidy");
+            let tidy = going("office", "tidy", "Tidy");
             runs.register(tidy.clone());
             runs.moved(tidy.run, "then.2");
-            let output = stopped_output(&runs.stop("desk", &StopRequest::All, "asked"));
+            let output = stopped_output(&runs.stop("office", &StopRequest::All, "asked"));
             assert_eq!(
                 output.value,
                 Some(serde_json::json!([{

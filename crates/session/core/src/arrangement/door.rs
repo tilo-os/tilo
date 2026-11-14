@@ -200,7 +200,7 @@ impl Door {
         )))
     }
 
-    /// The system's `open` is resolved here, where the desk's ids and its places are: it becomes
+    /// The system's `open` is resolved here, where the layout's ids and its places are: it becomes
     /// the `Place` it makes beside its anchor, or the `Activate` that brings what is open forward,
     /// and the record only ever holds ids. `None` for any other action.
     fn opened(
@@ -260,7 +260,7 @@ impl Door {
         })
     }
 
-    /// [`Self::invoke`] with `actor` as the one who asks: the name their step of the desk's history
+    /// [`Self::invoke`] with `actor` as the one who asks: the name their step of the layout's history
     /// carries, and whose gesture an action that is not the person's waits for.
     ///
     /// # Errors
@@ -277,7 +277,7 @@ impl Door {
     /// A `place` that names no workspace, row, strip or id of its own stands on the
     /// surface in front, in a strip of its own, under ids minted here: what a reference
     /// activated in a view asks for (shell.md §3). They go into the action itself,
-    /// never back through the arguments: a desk's ids span all of `u64`, which an
+    /// never back through the arguments: a layout's ids span all of `u64`, which an
     /// integer argument does not.
     fn place_at_surface(
         &self,

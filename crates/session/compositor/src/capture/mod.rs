@@ -852,7 +852,7 @@ where
             }
         }
     }
-    // A window that closed still stands on the desk while the desktop animates it away, drawn from
+    // A window that closed still stands on the shell while the desktop animates it away, drawn from
     // the last frame it drew: a protected one is covered until the desktop lets it go.
     for closing in &state.closing {
         if !state

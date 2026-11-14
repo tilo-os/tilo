@@ -1,7 +1,7 @@
 //! What a hosted surface publishes, and the one door the session reaches
 //! every hosted surface through.
 //!
-//! Each surface (the desk, the chrome, quick settings, the banners, …) is
+//! Each surface (the shell, the chrome, quick settings, the banners, …) is
 //! an ordinary widget tree or app with its own published resources and
 //! actions. [`Doors`] gathers them: a caller of the action protocol (a
 //! person's key, the palette, an agent, a test) names an action by address
@@ -58,7 +58,7 @@ impl<'a> Look<'a> {
     /// `workspace`.
     ///
     /// # Errors
-    /// No picture can be made here, the window is not on the desk (any more),
+    /// No picture can be made here, the window is not on the layout (any more),
     /// or it could not be drawn or kept.
     pub fn window(&mut self, window: u64, workspace: &str) -> Result<Shot, String> {
         match &mut self.picture {
@@ -432,7 +432,7 @@ impl Doors {
     }
 
     /// Every control the offered surfaces show by name, frontmost surface first — the sheet over
-    /// the bar, the bar over the desk — each where it stands: what a test or a tool lists and then
+    /// the bar, the bar over the shell — each where it stands: what a test or a tool lists and then
     /// presses. Two controls that go by one name, as each window's sidebar toggle does, are both
     /// listed, so the one a person sees is found where they see it; a press by name reaches the
     /// frontmost surface's ([`Self::press_action`]).

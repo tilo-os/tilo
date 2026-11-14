@@ -1,4 +1,4 @@
-//! The person's arrangement as a shell reads it: the reading's types, the desk `reading_of`
+//! The person's arrangement as a shell reads it: the reading's types, the layout `reading_of`
 //! turns into one, and the catalogue of what a place shows ([`Catalog`]).
 
 use std::collections::BTreeMap;
@@ -8,17 +8,17 @@ use tilo_actions::ResourceSpec;
 use tilo_desktop_model::{GroupId, Layout, Tab, TabId, TileContent};
 
 use super::{Names, Target};
-/// A workspace the person's desk shows, as their arrangement names it.
+/// A workspace the person's layout shows, as their arrangement names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrangementWorkspaceReading {
     pub key: String,
     pub name: String,
-    /// Whether it is the workspace in front: a desk holds several and shows one, so a shell draws
+    /// Whether it is the workspace in front: a layout holds several and shows one, so a shell draws
     /// the rows of this one and no other.
     pub current: bool,
 }
 
-/// A row of the desk, as the person's arrangement names it.
+/// A row of the layout, as the person's arrangement names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrangementRowReading {
     pub key: String,
@@ -29,7 +29,7 @@ pub struct ArrangementRowReading {
     pub current: bool,
 }
 
-/// A strip of the desk, as the person's arrangement names it.
+/// A strip of the layout, as the person's arrangement names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrangementStripReading {
     pub key: String,
@@ -66,7 +66,7 @@ pub struct ArrangementStripReading {
     pub shell: String,
 }
 
-/// A place of the desk, as the person's arrangement names it.
+/// A place of the layout, as the person's arrangement names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrangementPlaceReading {
     pub key: String,
@@ -86,7 +86,7 @@ pub struct ArrangementPlaceReading {
 }
 
 /// The person's arrangement as a shell's views read it, by key: every workspace, its rows, every
-/// window group and every window, each as the desk has it.
+/// window group and every window, each as the layout has it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrangementReading {
     /// The person at this device, by their name.
@@ -216,8 +216,8 @@ fn collect_targets(resource: &ResourceSpec, out: &mut BTreeMap<String, Target>) 
 /// made by, so a person running a shell of their own reads what this one made and it reads theirs.
 const SHELL: &str = "so.tilo.shell.strips";
 
-/// The desk `tree` as the person's arrangement, by key: every workspace, its rows, every window
-/// group and every window, each as the desk has it, with what each window shows (`records`) and
+/// The layout `tree` as the person's arrangement, by key: every workspace, its rows, every window
+/// group and every window, each as the layout has it, with what each window shows (`records`) and
 /// what the resource it shows is called (`catalog`).
 pub(super) fn reading_of(
     tree: &Layout,
@@ -230,7 +230,7 @@ pub(super) fn reading_of(
         reading.workspaces.push(WorkspaceReading {
             key: workspace.id().to_string(),
             name: tilo_desktop_surface::names::workspace(&workspace.name),
-            // A desk holds every workspace the person is in and shows one: the shell draws the
+            // A layout holds every workspace the person is in and shows one: the shell draws the
             // rows of the one in front, so the reading says which that is.
             current: workspace.id() == tree.active,
         });
@@ -319,7 +319,7 @@ pub(super) fn place_reading(
     }
 }
 
-/// The app a window belongs to, as the desk names it: the app's id, or a placeholder's own label
+/// The app a window belongs to, as the layout names it: the app's id, or a placeholder's own label
 /// for an app this device does not have.
 pub(super) fn shown_app(tile: &TileContent) -> String {
     match tile {

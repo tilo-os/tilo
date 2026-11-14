@@ -17,7 +17,7 @@ path = "tests/it.rs"
 [dependencies]
 # The answer to a command, which a page awaits and a program waits on.
 oneshot.workspace = true
-# The desk's model: the workspaces a participant takes part in, and the windows presence places
+# The layout's model: the workspaces a participant takes part in, and the windows presence places
 # people in.
 tilo-desktop-model = { path = "../desktop-model" }
 # The toolkit's clock and presence vocabulary, which a participant's face is drawn with on every

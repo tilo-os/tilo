@@ -2,11 +2,11 @@
 //! the person joined, and the enrollment that brings a joined workspace's state
 //! here.
 //! A workspace's state — its people, what its apps recorded, its history — is held
-//! by the peer-state engine beside the desk ([`NativeWorkspaceOwner`]), in a file of
+//! by the peer-state engine beside the layout ([`NativeWorkspaceOwner`]), in a file of
 //! its own under this device's state ([`FILE`]). Joining redeems the invitation its
 //! door answered with ([`tilo_peer_state::owner::enroll::prepare_and_complete`]),
 //! and a late joiner reads the whole history, not only what is recorded from now
-//! on. The engine keeps which workspaces are on the desk ([`Shown`]), because an enrollment
+//! on. The engine keeps which workspaces are on the layout ([`Shown`]), because an enrollment
 //! installs into the workspace made for it.
 
 // The page's session constructs no engine: it wires its workspaces with its own host, so only a
@@ -111,7 +111,7 @@ pub struct Issued {
     pub expires_at_ns: u64,
 }
 
-/// The workspaces on this device's desk: an enrollment installs into the workspace made for it.
+/// The workspaces on this device's layout: an enrollment installs into the workspace made for it.
 #[derive(Default)]
 pub struct Shown(std::sync::Mutex<BTreeSet<WorkspaceId>>);
 
@@ -127,7 +127,7 @@ impl FileHost for Shown {
         self.0.lock_recover().contains(&workspace)
     }
 
-    /// A workspace this device lets go of leaves its desk with the record that drops it.
+    /// A workspace this device lets go of leaves its layout with the record that drops it.
     fn publish(
         &self,
         _next: &tilo_peer_state::owner::NativeAuthorityStorage,
@@ -211,10 +211,10 @@ pub struct Engine {
     /// workspace's hosts send only once asked is asked for here, and the plane is gone while this
     /// is `None` .
     link: std::sync::Mutex<Option<Arc<workspace_keys::KeyLink>>>,
-    /// The desk's workspaces this device could not found here: founding one is asked for again only
-    /// by a later session, not by every pass over the desk.
+    /// The layout's workspaces this device could not found here: founding one is asked for again only
+    /// by a later session, not by every pass over the layout.
     unfounded: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
-    /// The desk's workspaces being founded now: a pass that comes while one is signed founds it
+    /// The layout's workspaces being founded now: a pass that comes while one is signed founds it
     /// no second time.
     founding: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
     /// This device's workspaces as its other devices reach them, when it keeps a state directory to
@@ -404,7 +404,7 @@ impl Engine {
         }
     }
 
-    /// Open this device's workspaces under `state`, with the workspaces the desk
+    /// Open this device's workspaces under `state`, with the workspaces the layout
     /// already holds. A session that keeps no state (a screenshot, a test without a
     /// state directory) holds no workspace.
     /// # Errors
@@ -1177,7 +1177,7 @@ impl Engine {
 
     /// Who the workspace has in it, as its governance tells it: every person it was shared with, by
     /// the name it knows them by and the part they take in it. A joined workspace brings its people
-    /// with it, so this is how the desk knows them before any of them is here.
+    /// with it, so this is how the layout knows them before any of them is here.
     pub fn people(&self, workspace: &str) -> Result<Vec<Member>, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         self.owner.with_current(workspace, |view| {
@@ -1681,11 +1681,11 @@ impl Engine {
         .map_err(|error| error.to_string())
     }
 
-    /// Found `workspace` — made on this desk under `name` — when this device made it
+    /// Found `workspace` — made on this layout under `name` — when this device made it
     /// and nothing here holds it yet: who is in it, who may invite and what its apps record become
     /// the workspace's own, hosted here. `endpoint` is where other devices reach this one, which
     /// the workspace's record keeps as its host's address. A workspace this device may not own, or
-    /// one that could not be published, stays the desk's own.
+    /// one that could not be published, stays the layout's own.
     #[cfg(target_os = "linux")]
     pub async fn found(
         &self,
@@ -1813,7 +1813,7 @@ impl Engine {
         })
     }
 
-    /// Put the workspace a join is installing into on this device's desk: an enrollment only
+    /// Put the workspace a join is installing into on this device's layout: an enrollment only
     /// installs into the workspace made for it, and says so before the host is asked.
     pub fn bind(&self, workspace: WorkspaceId) {
         self.shown.0.lock_recover().insert(workspace);
@@ -2017,7 +2017,7 @@ mod tests {
         Engine::open(identity, Some(state), Vec::new(), Arc::new(Kept)).expect("an engine")
     }
 
-    /// Where a desk's own host is reached: its device's endpoint.
+    /// Where a layout's own host is reached: its device's endpoint.
     fn endpoint(identity: &HostIdentity) -> iroh_base::EndpointAddr {
         iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&identity.device_cert.device_public_key)
@@ -2026,20 +2026,20 @@ mod tests {
     }
 
     #[test]
-    fn a_desk_workspace_is_founded_under_the_identity_the_desk_made() {
+    fn a_layout_workspace_is_founded_under_the_identity_the_layout_made() {
         let state = tempfile::tempdir().expect("a state directory");
         let (identity, person) = identity(DeviceCapabilities::member());
         let at = endpoint(&identity);
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
 
-        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
-        // Again, as every pass over the desk does: one workspace, still the one the desk made.
-        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
+        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
+        // Again, as every pass over the layout does: one workspace, still the one the layout made.
+        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
 
         assert!(
             engine.holds(workspace),
-            "a workspace made on the desk is held here"
+            "a workspace made on the layout is held here"
         );
         assert_eq!(engine.workspaces(), vec![workspace]);
         assert_eq!(
@@ -2103,7 +2103,7 @@ mod tests {
         let host = identity.device_cert.device_public_key;
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
+        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
 
         let hint = engine
             .owner
@@ -2130,7 +2130,7 @@ mod tests {
             .expect("a device endpoint");
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
+        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
         let named = || {
             engine
                 .owner
@@ -2179,7 +2179,7 @@ mod tests {
         let host = identity.device_cert.device_public_key;
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
+        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
 
         let hints = engine.host_hints();
         assert_eq!(hints.len(), 1, "one hint for the one workspace held");
@@ -2198,11 +2198,11 @@ mod tests {
         let (identity, _) = identity(DeviceCapabilities::member());
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Desk", None));
+        pollster::block_on(engine.found(workspace, "Office", None));
 
         assert!(
             engine.holds(workspace),
-            "a session with nowhere other devices reach it founds its desk's workspace"
+            "a session with nowhere other devices reach it founds its layout's workspace"
         );
         assert!(
             engine
@@ -2223,7 +2223,7 @@ mod tests {
         let at = endpoint(&identity);
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
+        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
 
         assert!(
             engine.may_delete(workspace),
@@ -2262,7 +2262,7 @@ mod tests {
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
 
-        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
+        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
 
         assert!(!engine.holds(workspace));
         assert!(!engine.may_invite(&workspace.to_string()));
@@ -2288,7 +2288,7 @@ mod tests {
         .expect("the group's keys");
         {
             let engine = engine(state.path(), laptop);
-            pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
+            pollster::block_on(engine.found(workspace, "Office", Some(&at)));
             engine.hand_keys(workspace, keys.clone());
             pollster::block_on(engine.write_record(
                 workspace,

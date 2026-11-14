@@ -135,8 +135,8 @@ fn shelf_route(session: [u8; 16]) -> [u8; 16] {
 fn pair_members() -> Vec<MemberSpec> {
     vec![
         MemberSpec {
-            device: id("desk"),
-            output: output("desk"),
+            device: id("office"),
+            output: output("office"),
             role: LEFT,
         },
         MemberSpec {
@@ -147,47 +147,51 @@ fn pair_members() -> Vec<MemberSpec> {
     ]
 }
 
-/// Desk leads a stereo pair with shelf; returns the fabric with both
+/// Office leads a stereo pair with shelf; returns the fabric with both
 /// published and the group id, before shelf has answered.
 fn invited_pair(
-    desk: &mut Device,
+    office: &mut Device,
     shelf: &mut Device,
     now: Instant,
 ) -> (DeviceFabric, SpeakerGroupId, Vec<Egress>) {
     let mut fabric = DeviceFabric::default();
-    desk.publish(&mut fabric);
+    office.publish(&mut fabric);
     shelf.publish(&mut fabric);
     let group = SpeakerGroupId([4; 16]);
-    let invites = desk
+    let invites = office
         .core
         .create_group(
             &fabric,
-            &desk.id(),
+            &office.id(),
             group,
             "Living room",
             &pair_members(),
             now,
         )
         .unwrap();
-    desk.publish(&mut fabric);
+    office.publish(&mut fabric);
     (fabric, group, invites)
 }
 
-/// Desk and shelf form a consented stereo pair.
+/// Office and shelf form a consented stereo pair.
 fn joined_pair(
-    desk: &mut Device,
+    office: &mut Device,
     shelf: &mut Device,
     now: Instant,
 ) -> (DeviceFabric, SpeakerGroupId) {
-    let (mut fabric, group, invites) = invited_pair(desk, shelf, now);
+    let (mut fabric, group, invites) = invited_pair(office, shelf, now);
     assert_eq!(invites.len(), 1);
-    assert!(shelf.handle(&fabric, &invites[0], "desk", now).is_empty());
+    assert!(shelf.handle(&fabric, &invites[0], "office", now).is_empty());
     let decision = shelf
         .core
         .resolve_consent(&fabric, &shelf.id(), group, true, &stamp("shelf"))
         .unwrap();
     shelf.publish(&mut fabric);
-    assert!(desk.handle(&fabric, &decision[0], "shelf", now).is_empty());
+    assert!(
+        office
+            .handle(&fabric, &decision[0], "shelf", now)
+            .is_empty()
+    );
     (fabric, group)
 }
 
@@ -201,8 +205,8 @@ tilo_test_env::scenario! {
     phase a_new_group_asks_only_remote_members_and_the_member_sees_one_prompt;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (fabric, group, invites) = invited_pair(&mut desk, &mut shelf, now);
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (fabric, group, invites) = invited_pair(&mut office, &mut shelf, now);
         assert_eq!(
             invites,
             vec![egress(
@@ -222,12 +226,12 @@ tilo_test_env::scenario! {
                 SpeakerMemberStatus::AwaitingConsent
             ]
         );
-        shelf.handle(&fabric, &invites[0], "desk", now);
+        shelf.handle(&fabric, &invites[0], "office", now);
         let view = shelf.core.view(&fabric, &shelf.id(), &|_| None);
         assert_eq!(view.consents.len(), 1);
         let consent = &view.consents[0];
         assert_eq!(consent.name, "Living room");
-        assert_eq!(consent.leader_label, "desk");
+        assert_eq!(consent.leader_label, "office");
         assert_eq!(consent.scope, SpeakerConsentScope::Play(RIGHT));
         assert_eq!(consent.endpoint_label.as_deref(), Some("shelf speakers"));
         assert_eq!(consent.prompt(), "Join Living room as the right speaker?");
@@ -236,8 +240,8 @@ tilo_test_env::scenario! {
     phase approving_authors_a_membership_that_makes_the_member_ready;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (fabric, group) = joined_pair(&mut desk, &mut shelf, now);
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (fabric, group) = joined_pair(&mut office, &mut shelf, now);
         assert_eq!(
             fabric.speaker_member_states(fabric.speaker_group(group).unwrap()),
             vec![SpeakerMemberStatus::Ready, SpeakerMemberStatus::Ready]
@@ -251,8 +255,8 @@ tilo_test_env::scenario! {
         );
         // A consented member is not asked again.
         assert!(
-            desk.core
-                .pump(&fabric, &desk.id(), true, now + INVITE_RETRY)
+            office.core
+                .pump(&fabric, &office.id(), true, now + INVITE_RETRY)
                 .is_empty()
         );
     }
@@ -260,8 +264,8 @@ tilo_test_env::scenario! {
     phase a_forged_invite_that_the_leader_never_published_cannot_be_approved;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (fabric, group, _) = invited_pair(&mut desk, &mut shelf, now);
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (fabric, group, _) = invited_pair(&mut office, &mut shelf, now);
         let forged = egress(
             &id("shelf"),
             PersonalFabricAction::SpeakerGroupInvite {
@@ -271,7 +275,7 @@ tilo_test_env::scenario! {
                 role: LEFT,
             },
         );
-        shelf.handle(&fabric, &forged, "desk", now);
+        shelf.handle(&fabric, &forged, "office", now);
         assert!(
             shelf
                 .core
@@ -291,22 +295,22 @@ tilo_test_env::scenario! {
     phase declining_stops_the_leader_asking_until_the_group_is_edited;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (fabric, group, invites) = invited_pair(&mut desk, &mut shelf, now);
-        shelf.handle(&fabric, &invites[0], "desk", now);
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (fabric, group, invites) = invited_pair(&mut office, &mut shelf, now);
+        shelf.handle(&fabric, &invites[0], "office", now);
         let decision = shelf
             .core
             .resolve_consent(&fabric, &shelf.id(), group, false, &stamp("shelf"))
             .unwrap();
-        desk.handle(&fabric, &decision[0], "shelf", now);
+        office.handle(&fabric, &decision[0], "shelf", now);
         assert!(
-            desk.core
-                .pump(&fabric, &desk.id(), true, now + INVITE_RETRY * 3)
+            office.core
+                .pump(&fabric, &office.id(), true, now + INVITE_RETRY * 3)
                 .is_empty()
         );
-        let edited = desk
+        let edited = office
             .core
-            .update_group(&fabric, &desk.id(), group, "Lounge", &pair_members(), now)
+            .update_group(&fabric, &office.id(), group, "Lounge", &pair_members(), now)
             .unwrap();
         assert!(
             edited
@@ -318,12 +322,12 @@ tilo_test_env::scenario! {
     phase an_unanswered_invite_is_repeated_while_the_member_is_online;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (fabric, _, _) = invited_pair(&mut desk, &mut shelf, now);
-        assert!(desk.core.pump(&fabric, &desk.id(), true, now).is_empty());
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (fabric, _, _) = invited_pair(&mut office, &mut shelf, now);
+        assert!(office.core.pump(&fabric, &office.id(), true, now).is_empty());
         assert_eq!(
-            desk.core
-                .pump(&fabric, &desk.id(), true, now + INVITE_RETRY)
+            office.core
+                .pump(&fabric, &office.id(), true, now + INVITE_RETRY)
                 .len(),
             1
         );
@@ -332,9 +336,9 @@ tilo_test_env::scenario! {
     phase a_stale_prompt_expires;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (fabric, group, invites) = invited_pair(&mut desk, &mut shelf, now);
-        shelf.handle(&fabric, &invites[0], "desk", now);
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (fabric, group, invites) = invited_pair(&mut office, &mut shelf, now);
+        shelf.handle(&fabric, &invites[0], "office", now);
         shelf.core.pump(
             &fabric,
             &shelf.id(),
@@ -360,12 +364,12 @@ tilo_test_env::scenario! {
     phase any_of_your_devices_can_play_to_a_consented_group;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf, mut phone) = (
-            Device::new("desk"),
+        let (mut office, mut shelf, mut phone) = (
+            Device::new("office"),
             Device::new("shelf"),
             Device::new("phone"),
         );
-        let (mut fabric, group) = joined_pair(&mut desk, &mut shelf, now);
+        let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
         phone.publish(&mut fabric);
         let session = [3; 16];
         let offers = phone
@@ -381,8 +385,8 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(offers.len(), 2);
         for offer in &offers {
-            let (member, from) = if offer.target == desk.id() {
-                (&mut desk, "desk")
+            let (member, from) = if offer.target == office.id() {
+                (&mut office, "office")
             } else {
                 (&mut shelf, "shelf")
             };
@@ -415,7 +419,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             channels,
             vec![
-                ("desk".into(), ChannelRole::Left, Some([9; 16])),
+                ("office".into(), ChannelRole::Left, Some([9; 16])),
                 ("shelf".into(), ChannelRole::Right, Some([9; 16])),
             ]
         );
@@ -428,7 +432,7 @@ tilo_test_env::scenario! {
         assert!(
             shelf
                 .core
-                .grant(&fabric, &shelf.id(), shelf_route(session), &desk.id())
+                .grant(&fabric, &shelf.id(), shelf_route(session), &office.id())
                 .is_none()
         );
     }
@@ -436,13 +440,13 @@ tilo_test_env::scenario! {
     phase the_leader_plays_its_own_output_locally_without_asking_itself;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (fabric, group) = joined_pair(&mut desk, &mut shelf, now);
-        let offers = desk
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (fabric, group) = joined_pair(&mut office, &mut shelf, now);
+        let offers = office
             .core
             .start_session(
                 &fabric,
-                &desk.id(),
+                &office.id(),
                 group,
                 GroupAudioSource::MediaSession("movie".into()),
                 [5; 16],
@@ -451,17 +455,17 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(offers.len(), 1);
         assert_eq!(offers[0].target, shelf.id());
-        let plan = &desk.core.playback_plans()[0];
+        let plan = &office.core.playback_plans()[0];
         assert_eq!(plan.members.len(), 1, "shelf has not admitted yet");
-        assert_eq!(plan.members[0].device, desk.id());
+        assert_eq!(plan.members[0].device, office.id());
         assert_eq!(plan.members[0].authorization, None);
     }
 
     phase a_member_without_consent_refuses_a_session;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (fabric, group, _) = invited_pair(&mut desk, &mut shelf, now);
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (fabric, group, _) = invited_pair(&mut office, &mut shelf, now);
         let offer = egress(
             &shelf.id(),
             PersonalFabricAction::SpeakerGroupSessionOffer {
@@ -469,11 +473,11 @@ tilo_test_env::scenario! {
                 group,
             },
         );
-        let reply = shelf.handle(&fabric, &offer, "desk", now);
+        let reply = shelf.handle(&fabric, &offer, "office", now);
         assert_eq!(
             reply,
             vec![egress(
-                &desk.id(),
+                &office.id(),
                 PersonalFabricAction::SpeakerGroupSessionDecision {
                     session_id: [6; 16],
                     group,
@@ -487,11 +491,11 @@ tilo_test_env::scenario! {
     phase a_source_going_offline_ends_the_members_session;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (mut fabric, group) = joined_pair(&mut desk, &mut shelf, now);
-        let session = admitted_session(&mut desk, &mut shelf, &fabric, group, now);
-        desk.online = false;
-        desk.publish(&mut fabric);
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
+        let session = admitted_session(&mut office, &mut shelf, &fabric, group, now);
+        office.online = false;
+        office.publish(&mut fabric);
         shelf.core.pump(&fabric, &shelf.id(), true, now);
         assert!(!shelf.core.inbound.contains_key(&session));
         // Consent itself survives a leader going offline.
@@ -501,21 +505,21 @@ tilo_test_env::scenario! {
     phase a_member_that_never_answers_is_dropped_from_the_session;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (fabric, group) = joined_pair(&mut desk, &mut shelf, now);
-        desk.core
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (fabric, group) = joined_pair(&mut office, &mut shelf, now);
+        office.core
             .start_session(
                 &fabric,
-                &desk.id(),
+                &office.id(),
                 group,
                 GroupAudioSource::PickerToken(1),
                 [2; 16],
                 now,
             )
             .unwrap();
-        let out = desk
+        let out = office
             .core
-            .pump(&fabric, &desk.id(), true, now + ADMISSION_TIMEOUT);
+            .pump(&fabric, &office.id(), true, now + ADMISSION_TIMEOUT);
         assert!(out.contains(&egress(
             &shelf.id(),
             PersonalFabricAction::SpeakerGroupSessionStop {
@@ -523,16 +527,16 @@ tilo_test_env::scenario! {
                 authorization: None,
             }
         )));
-        assert_eq!(desk.core.playback_plans()[0].members.len(), 1);
+        assert_eq!(office.core.playback_plans()[0].members.len(), 1);
     }
 
     phase a_late_admission_for_an_ended_session_is_revoked;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (fabric, group) = joined_pair(&mut desk, &mut shelf, now);
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (fabric, group) = joined_pair(&mut office, &mut shelf, now);
         let late = egress(
-            &desk.id(),
+            &office.id(),
             PersonalFabricAction::SpeakerGroupSessionDecision {
                 session_id: [1; 16],
                 group,
@@ -540,7 +544,7 @@ tilo_test_env::scenario! {
             },
         );
         assert_eq!(
-            desk.handle(&fabric, &late, "shelf", now),
+            office.handle(&fabric, &late, "shelf", now),
             vec![egress(
                 &shelf.id(),
                 PersonalFabricAction::SpeakerGroupSessionStop {
@@ -554,9 +558,9 @@ tilo_test_env::scenario! {
     phase a_session_stop_from_anyone_but_the_source_is_ignored;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (fabric, group) = joined_pair(&mut desk, &mut shelf, now);
-        let session = admitted_session(&mut desk, &mut shelf, &fabric, group, now);
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (fabric, group) = joined_pair(&mut office, &mut shelf, now);
+        let session = admitted_session(&mut office, &mut shelf, &fabric, group, now);
         let stop = egress(
             &shelf.id(),
             PersonalFabricAction::SpeakerGroupSessionStop {
@@ -566,19 +570,19 @@ tilo_test_env::scenario! {
         );
         shelf.handle(&fabric, &stop, "phone", now);
         assert!(shelf.core.inbound.contains_key(&session));
-        shelf.handle(&fabric, &stop, "desk", now);
+        shelf.handle(&fabric, &stop, "office", now);
         assert!(!shelf.core.inbound.contains_key(&session));
     }
 
     phase only_certified_devices_that_can_join_are_admitted;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
         let mut fabric = DeviceFabric::default();
-        desk.publish(&mut fabric);
-        let stranger = desk.core.create_group(
+        office.publish(&mut fabric);
+        let stranger = office.core.create_group(
             &fabric,
-            &desk.id(),
+            &office.id(),
             SpeakerGroupId([1; 16]),
             "Living room",
             &pair_members(),
@@ -588,10 +592,10 @@ tilo_test_env::scenario! {
         shelf.audio_group = false;
         shelf.publish(&mut fabric);
         assert!(
-            desk.core
+            office.core
                 .create_group(
                     &fabric,
-                    &desk.id(),
+                    &office.id(),
                     SpeakerGroupId([1; 16]),
                     "Living room",
                     &pair_members(),
@@ -605,10 +609,10 @@ tilo_test_env::scenario! {
         shelf.audio_group = true;
         shelf.publish(&mut fabric);
         assert!(
-            desk.core
+            office.core
                 .create_group(
                     &fabric,
-                    &desk.id(),
+                    &office.id(),
                     SpeakerGroupId([1; 16]),
                     "Living room",
                     &missing,
@@ -621,27 +625,27 @@ tilo_test_env::scenario! {
 }
 
 fn admitted_session(
-    desk: &mut Device,
+    office: &mut Device,
     shelf: &mut Device,
     fabric: &DeviceFabric,
     group: SpeakerGroupId,
     now: Instant,
 ) -> [u8; 16] {
     let session = [8; 16];
-    let offers = desk
+    let offers = office
         .core
         .start_session(
             fabric,
-            &desk.id(),
+            &office.id(),
             group,
             GroupAudioSource::PickerToken(1),
             session,
             now,
         )
         .unwrap();
-    let decision = shelf.handle(fabric, &offers[0], "desk", now);
-    desk.handle(fabric, &decision[0], "shelf", now);
-    assert_eq!(desk.core.playback_plans()[0].members.len(), 2);
+    let decision = shelf.handle(fabric, &offers[0], "office", now);
+    office.handle(fabric, &decision[0], "shelf", now);
+    assert_eq!(office.core.playback_plans()[0].members.len(), 2);
     shelf_route(session)
 }
 
@@ -655,16 +659,16 @@ tilo_test_env::scenario! {
     phase leaving_withdraws_consent_ends_sessions_and_silences_invites;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (mut fabric, group) = joined_pair(&mut desk, &mut shelf, now);
-        let session = admitted_session(&mut desk, &mut shelf, &fabric, group, now);
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
+        let session = admitted_session(&mut office, &mut shelf, &fabric, group, now);
         let out = shelf.core.leave(group).unwrap();
         assert!(out.contains(&egress(
-            &desk.id(),
+            &office.id(),
             PersonalFabricAction::SpeakerGroupLeave { group }
         )));
         assert!(out.contains(&egress(
-            &desk.id(),
+            &office.id(),
             PersonalFabricAction::SpeakerGroupSessionStop {
                 session_id: session,
                 authorization: Some([9; 16]),
@@ -673,17 +677,17 @@ tilo_test_env::scenario! {
         assert!(
             shelf
                 .core
-                .grant(&fabric, &shelf.id(), session, &desk.id())
+                .grant(&fabric, &shelf.id(), session, &office.id())
                 .is_none()
         );
         shelf.publish(&mut fabric);
         for item in &out {
-            desk.handle(&fabric, item, "shelf", now);
+            office.handle(&fabric, item, "shelf", now);
         }
-        assert_eq!(desk.core.playback_plans()[0].members.len(), 1);
+        assert_eq!(office.core.playback_plans()[0].members.len(), 1);
         assert!(
-            desk.core
-                .pump(&fabric, &desk.id(), true, now + INVITE_RETRY * 2)
+            office.core
+                .pump(&fabric, &office.id(), true, now + INVITE_RETRY * 2)
                 .is_empty(),
             "a member that left is not nagged"
         );
@@ -692,21 +696,21 @@ tilo_test_env::scenario! {
     phase deleting_a_group_releases_members_and_they_drop_their_consent;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (mut fabric, group) = joined_pair(&mut desk, &mut shelf, now);
-        let session = admitted_session(&mut desk, &mut shelf, &fabric, group, now);
-        let out = desk.core.delete_group(group).unwrap();
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
+        let session = admitted_session(&mut office, &mut shelf, &fabric, group, now);
+        let out = office.core.delete_group(group).unwrap();
         assert!(out.contains(&egress(
             &shelf.id(),
             PersonalFabricAction::SpeakerGroupLeave { group }
         )));
-        assert!(desk.core.playback_plans().is_empty());
-        desk.publish(&mut fabric);
+        assert!(office.core.playback_plans().is_empty());
+        office.publish(&mut fabric);
         // Even if the leave message is lost, the member notices the group is
         // gone from its leader's snapshot.
         let teardown = shelf.core.pump(&fabric, &shelf.id(), true, now);
         assert!(teardown.contains(&egress(
-            &desk.id(),
+            &office.id(),
             PersonalFabricAction::SpeakerGroupSessionStop {
                 session_id: session,
                 authorization: Some([9; 16]),
@@ -718,21 +722,21 @@ tilo_test_env::scenario! {
     phase changing_a_members_role_voids_its_consent_and_asks_again;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (mut fabric, group) = joined_pair(&mut desk, &mut shelf, now);
-        let session = admitted_session(&mut desk, &mut shelf, &fabric, group, now);
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
+        let session = admitted_session(&mut office, &mut shelf, &fabric, group, now);
         let mut swapped = pair_members();
         swapped[0].role = RIGHT;
         swapped[1].role = LEFT;
-        let out = desk
+        let out = office
             .core
-            .update_group(&fabric, &desk.id(), group, "Living room", &swapped, now)
+            .update_group(&fabric, &office.id(), group, "Living room", &swapped, now)
             .unwrap();
         assert!(out.iter().any(|item| matches!(
             item.action,
             PersonalFabricAction::SpeakerGroupInvite { role: LEFT, .. }
         )));
-        desk.publish(&mut fabric);
+        office.publish(&mut fabric);
         assert_eq!(
             fabric.speaker_member_states(fabric.speaker_group(group).unwrap()),
             vec![
@@ -748,17 +752,17 @@ tilo_test_env::scenario! {
     phase a_calibration_trim_keeps_consent;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (mut fabric, group) = joined_pair(&mut desk, &mut shelf, now);
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
         let trim = SpeakerTrim {
             delay_ns: 2_500_000,
             gain_mb: -150,
             eq: Vec::new(),
         };
-        desk.core
+        office.core
             .set_trims(group, &[(shelf.id(), output("shelf"), trim.clone())])
             .unwrap();
-        desk.publish(&mut fabric);
+        office.publish(&mut fabric);
         let published = fabric.speaker_group(group).unwrap();
         assert_eq!(published.member(&shelf.id()).unwrap().trim, trim);
         assert_eq!(
@@ -766,7 +770,7 @@ tilo_test_env::scenario! {
             vec![SpeakerMemberStatus::Ready, SpeakerMemberStatus::Ready]
         );
         assert!(
-            desk.core
+            office.core
                 .set_trims(
                     group,
                     &[(
@@ -785,23 +789,23 @@ tilo_test_env::scenario! {
     phase disabling_media_continuity_tears_everything_down;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (fabric, group) = joined_pair(&mut desk, &mut shelf, now);
-        let session = admitted_session(&mut desk, &mut shelf, &fabric, group, now);
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (fabric, group) = joined_pair(&mut office, &mut shelf, now);
+        let session = admitted_session(&mut office, &mut shelf, &fabric, group, now);
         let out = shelf.core.pump(&fabric, &shelf.id(), false, now);
         assert!(out.contains(&egress(
-            &desk.id(),
+            &office.id(),
             PersonalFabricAction::SpeakerGroupSessionStop {
                 session_id: session,
                 authorization: Some([9; 16]),
             }
         )));
         assert!(out.contains(&egress(
-            &desk.id(),
+            &office.id(),
             PersonalFabricAction::SpeakerGroupLeave { group }
         )));
         assert!(shelf.core.memberships.iter().flatten().next().is_none());
-        let leader = desk.core.pump(&fabric, &desk.id(), false, now);
+        let leader = office.core.pump(&fabric, &office.id(), false, now);
         assert!(leader.contains(&egress(
             &shelf.id(),
             PersonalFabricAction::SpeakerGroupSessionStop {
@@ -809,7 +813,7 @@ tilo_test_env::scenario! {
                 authorization: Some([9; 16]),
             }
         )));
-        assert!(desk.core.playback_plans().is_empty());
+        assert!(office.core.playback_plans().is_empty());
     }
 }
 
@@ -819,13 +823,13 @@ tilo_test_env::scenario! {
     phase a_surround_set_resolves_member_channels_for_grants;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf, mut sub) = (
-            Device::new("desk"),
+        let (mut office, mut shelf, mut sub) = (
+            Device::new("office"),
             Device::new("shelf"),
             Device::new("sub"),
         );
         let mut fabric = DeviceFabric::default();
-        desk.publish(&mut fabric);
+        office.publish(&mut fabric);
         shelf.publish(&mut fabric);
         sub.publish(&mut fabric);
         let mut members = pair_members();
@@ -835,13 +839,13 @@ tilo_test_env::scenario! {
             role: SpeakerRole::Surround(SurroundChannel::Lfe),
         });
         let group = SpeakerGroupId([2; 16]);
-        let invites = desk
+        let invites = office
             .core
-            .create_group(&fabric, &desk.id(), group, "Cinema", &members, now)
+            .create_group(&fabric, &office.id(), group, "Cinema", &members, now)
             .unwrap();
-        desk.publish(&mut fabric);
+        office.publish(&mut fabric);
         let to_sub = invites.iter().find(|item| item.target == sub.id()).unwrap();
-        sub.handle(&fabric, to_sub, "desk", now);
+        sub.handle(&fabric, to_sub, "office", now);
         sub.core
             .resolve_consent(&fabric, &sub.id(), group, true, &stamp("sub"))
             .unwrap();
@@ -853,10 +857,10 @@ tilo_test_env::scenario! {
                 group,
             },
         );
-        sub.handle(&fabric, &offer, "desk", now);
+        sub.handle(&fabric, &offer, "office", now);
         let grant = sub
             .core
-            .grant(&fabric, &sub.id(), [4; 16], &desk.id())
+            .grant(&fabric, &sub.id(), [4; 16], &office.id())
             .unwrap();
         assert_eq!(grant.channel, ChannelRole::Lfe);
     }
@@ -888,7 +892,7 @@ tilo_test_env::scenario! {
             }],
             ..media::audio::AudioGraph::default()
         };
-        let endpoints = endpoints_from_graph(&id("desk"), &graph);
+        let endpoints = endpoints_from_graph(&id("office"), &graph);
         assert_eq!(endpoints.len(), 2);
         assert_eq!(endpoints[0].kind, AudioEndpointKind::Output);
         assert_eq!(endpoints[0].label, "Speakers");
@@ -901,14 +905,14 @@ tilo_test_env::scenario! {
     phase admitted_sessions_become_send_local_and_receive_routes;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (fabric, group) = joined_pair(&mut desk, &mut shelf, now);
-        let route = admitted_session(&mut desk, &mut shelf, &fabric, group, now);
-        let leader = desk.core.route_specs(&fabric, &desk.id());
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (fabric, group) = joined_pair(&mut office, &mut shelf, now);
+        let route = admitted_session(&mut office, &mut shelf, &fabric, group, now);
+        let leader = office.core.route_specs(&fabric, &office.id());
         assert_eq!(leader.len(), 2);
         assert!(leader.iter().any(|spec| matches!(
             spec,
-            RouteSpec::Local { channel: ChannelRole::Left, output: out, .. } if *out == output("desk")
+            RouteSpec::Local { channel: ChannelRole::Left, output: out, .. } if *out == output("office")
         )));
         assert!(leader.contains(&RouteSpec::Send {
             route,
@@ -921,14 +925,14 @@ tilo_test_env::scenario! {
             member,
             vec![RouteSpec::Receive {
                 route,
-                source: desk.id(),
+                source: office.id(),
                 authorization: [9; 16],
                 output: output("shelf"),
                 channel: ChannelRole::Right,
                 trim: SpeakerTrim::default(),
             }]
         );
-        assert!(shelf.core.admits(route, &desk.id()));
+        assert!(shelf.core.admits(route, &office.id()));
         assert!(!shelf.core.admits(route, &id("phone")));
     }
 
@@ -936,7 +940,7 @@ tilo_test_env::scenario! {
     {
         let spec = |route: u8, delay_ns| RouteSpec::Receive {
             route: [route; 16],
-            source: id("desk"),
+            source: id("office"),
             authorization: [9; 16],
             output: output("shelf"),
             channel: ChannelRole::Right,
@@ -956,13 +960,13 @@ tilo_test_env::scenario! {
     phase a_route_the_audio_path_lost_ends_its_member_session;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (fabric, group) = joined_pair(&mut desk, &mut shelf, now);
-        let route = admitted_session(&mut desk, &mut shelf, &fabric, group, now);
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (fabric, group) = joined_pair(&mut office, &mut shelf, now);
+        let route = admitted_session(&mut office, &mut shelf, &fabric, group, now);
         assert_eq!(
             shelf.core.route_lost(route),
             vec![egress(
-                &desk.id(),
+                &office.id(),
                 PersonalFabricAction::SpeakerGroupSessionStop {
                     session_id: route,
                     authorization: Some([9; 16]),
@@ -970,7 +974,7 @@ tilo_test_env::scenario! {
             )]
         );
         assert_eq!(
-            desk.core.route_lost(route),
+            office.core.route_lost(route),
             vec![egress(
                 &shelf.id(),
                 PersonalFabricAction::SpeakerGroupSessionStop {
@@ -979,7 +983,7 @@ tilo_test_env::scenario! {
                 }
             )]
         );
-        assert_eq!(desk.core.playback_plans()[0].members.len(), 1);
+        assert_eq!(office.core.playback_plans()[0].members.len(), 1);
     }
 }
 
@@ -993,12 +997,12 @@ tilo_test_env::scenario! {
     phase only_the_leader_can_ask_a_consented_member_for_a_sweep;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf) = (Device::new("desk"), Device::new("shelf"));
-        let (fabric, group) = joined_pair(&mut desk, &mut shelf, now);
+        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
+        let (fabric, group) = joined_pair(&mut office, &mut shelf, now);
         assert_eq!(
             shelf
                 .core
-                .sweep_output(&fabric, &shelf.id(), &desk.id(), group),
+                .sweep_output(&fabric, &shelf.id(), &office.id(), group),
             Some(output("shelf"))
         );
         assert_eq!(
@@ -1011,7 +1015,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             shelf
                 .core
-                .sweep_output(&fabric, &shelf.id(), &desk.id(), group),
+                .sweep_output(&fabric, &shelf.id(), &office.id(), group),
             None
         );
     }
@@ -1019,38 +1023,38 @@ tilo_test_env::scenario! {
     phase a_declined_microphone_is_not_asked_again_until_the_prompt_expires;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf, mut phone) = (
-            Device::new("desk"),
+        let (mut office, mut shelf, mut phone) = (
+            Device::new("office"),
             Device::new("shelf"),
             Device::new("phone"),
         );
-        let (mut fabric, group) = joined_pair(&mut desk, &mut shelf, now);
+        let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
         phone.publish(&mut fabric);
         let published = fabric.speaker_group(group).unwrap().clone();
         let asked = [(phone.id(), microphone("phone"))];
-        let invites = desk.core.invite_listeners(&published, &asked, now);
-        phone.handle(&fabric, &invites[0], "desk", now);
+        let invites = office.core.invite_listeners(&published, &asked, now);
+        phone.handle(&fabric, &invites[0], "office", now);
         let decision = phone
             .core
             .resolve_listen_consent(&fabric, &phone.id(), group, false, &stamp("phone"))
             .unwrap();
-        desk.handle(&fabric, &decision[0], "phone", now);
+        office.handle(&fabric, &decision[0], "phone", now);
         assert_eq!(
-            candidate_state(&desk, &fabric, group, "phone", now),
+            candidate_state(&office, &fabric, group, "phone", now),
             ListenerState::Declined
         );
         assert!(
-            desk.core
+            office.core
                 .invite_listeners(&published, &asked, now)
                 .is_empty()
         );
         let later = now + CONSENT_TTL;
         assert_eq!(
-            candidate_state(&desk, &fabric, group, "phone", later),
+            candidate_state(&office, &fabric, group, "phone", later),
             ListenerState::NotAsked
         );
         assert_eq!(
-            desk.core.invite_listeners(&published, &asked, later).len(),
+            office.core.invite_listeners(&published, &asked, later).len(),
             1
         );
     }
@@ -1058,21 +1062,21 @@ tilo_test_env::scenario! {
     phase microphone_consent_ends_with_the_group_and_with_media_continuity;
     {
         let now = Instant::now();
-        let (mut desk, mut shelf, mut phone) = (
-            Device::new("desk"),
+        let (mut office, mut shelf, mut phone) = (
+            Device::new("office"),
             Device::new("shelf"),
             Device::new("phone"),
         );
-        let (mut fabric, group) = joined_pair(&mut desk, &mut shelf, now);
+        let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
         phone.publish(&mut fabric);
         let published = fabric.speaker_group(group).unwrap().clone();
-        let consent = |phone: &mut Device, desk: &mut Device, fabric: &mut DeviceFabric, at| {
+        let consent = |phone: &mut Device, office: &mut Device, fabric: &mut DeviceFabric, at| {
             let invites =
-                desk.core
+                office.core
                     .invite_listeners(&published, &[(phone.id(), microphone("phone"))], at);
             assert_eq!(invites.len(), 1);
             for invite in &invites {
-                phone.handle(fabric, invite, "desk", now);
+                phone.handle(fabric, invite, "office", now);
             }
             phone
                 .core
@@ -1080,10 +1084,10 @@ tilo_test_env::scenario! {
                 .unwrap();
             phone.publish(fabric);
         };
-        consent(&mut phone, &mut desk, &mut fabric, now);
+        consent(&mut phone, &mut office, &mut fabric, now);
         let stopped = phone.core.pump(&fabric, &phone.id(), false, now);
         assert!(stopped.iter().any(|item| {
-            item.target == desk.id()
+            item.target == office.id()
                 && item.action
                     == PersonalFabricAction::SpeakerListenDecision {
                         group,
@@ -1092,28 +1096,29 @@ tilo_test_env::scenario! {
         }));
         assert!(phone.core.listeners.iter().flatten().next().is_none());
 
-        consent(&mut phone, &mut desk, &mut fabric, now + CONSENT_TTL);
-        let released = desk.core.delete_group(group).unwrap();
-        desk.publish(&mut fabric);
+        consent(&mut phone, &mut office, &mut fabric, now + CONSENT_TTL);
+        let released = office.core.delete_group(group).unwrap();
+        office.publish(&mut fabric);
         let leave = released
             .iter()
             .find(|item| item.target == phone.id())
             .expect("the listening device is released too");
-        phone.handle(&fabric, leave, "desk", now);
+        phone.handle(&fabric, leave, "office", now);
         assert!(phone.core.listeners.iter().flatten().next().is_none());
     }
 }
 
 fn candidate_state(
-    desk: &Device,
+    office: &Device,
     fabric: &DeviceFabric,
     group: SpeakerGroupId,
     device: &str,
     now: Instant,
 ) -> ListenerState {
     let published = fabric.speaker_group(group).unwrap();
-    desk.core
-        .listener_candidates(fabric, &desk.id(), published, now)
+    office
+        .core
+        .listener_candidates(fabric, &office.id(), published, now)
         .into_iter()
         .find(|candidate| candidate.device == id(device))
         .unwrap()
@@ -1127,33 +1132,34 @@ fn candidate_state(
 )]
 fn a_microphone_listens_only_after_its_own_device_consents() {
     let now = Instant::now();
-    let (mut desk, mut shelf, mut phone) = (
-        Device::new("desk"),
+    let (mut office, mut shelf, mut phone) = (
+        Device::new("office"),
         Device::new("shelf"),
         Device::new("phone"),
     );
-    let (mut fabric, group) = joined_pair(&mut desk, &mut shelf, now);
+    let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
     phone.publish(&mut fabric);
     let published = fabric.speaker_group(group).unwrap().clone();
-    let candidates = desk
+    let candidates = office
         .core
-        .listener_candidates(&fabric, &desk.id(), &published, now);
-    assert_eq!(candidates[0].device, desk.id(), "this device comes first");
+        .listener_candidates(&fabric, &office.id(), &published, now);
+    assert_eq!(candidates[0].device, office.id(), "this device comes first");
     assert!(candidates[0].local);
     assert_eq!(candidates[0].state, ListenerState::Ready);
     assert_eq!(
-        candidate_state(&desk, &fabric, group, "phone", now),
+        candidate_state(&office, &fabric, group, "phone", now),
         ListenerState::NotAsked
     );
     // Playing in the group is not consent to listen.
     assert_eq!(
-        candidate_state(&desk, &fabric, group, "shelf", now),
+        candidate_state(&office, &fabric, group, "shelf", now),
         ListenerState::NotAsked
     );
 
-    let invites = desk
-        .core
-        .invite_listeners(&published, &[(phone.id(), microphone("phone"))], now);
+    let invites =
+        office
+            .core
+            .invite_listeners(&published, &[(phone.id(), microphone("phone"))], now);
     assert_eq!(
         invites,
         vec![Egress {
@@ -1166,22 +1172,25 @@ fn a_microphone_listens_only_after_its_own_device_consents() {
         }]
     );
     assert!(
-        desk.core
+        office
+            .core
             .invite_listeners(&published, &[(phone.id(), microphone("phone"))], now)
             .is_empty(),
         "asked once"
     );
     assert_eq!(
-        candidate_state(&desk, &fabric, group, "phone", now),
+        candidate_state(&office, &fabric, group, "phone", now),
         ListenerState::AwaitingConsent
     );
 
-    assert!(phone.handle(&fabric, &invites[0], "desk", now).is_empty());
-    assert!(
-        !phone
-            .core
-            .may_listen(&fabric, &phone.id(), &desk.id(), group, microphone("phone"))
-    );
+    assert!(phone.handle(&fabric, &invites[0], "office", now).is_empty());
+    assert!(!phone.core.may_listen(
+        &fabric,
+        &phone.id(),
+        &office.id(),
+        group,
+        microphone("phone")
+    ));
     let view = phone.core.view(&fabric, &phone.id(), &|_| None);
     assert_eq!(view.consents.len(), 1);
     assert_eq!(view.consents[0].scope, SpeakerConsentScope::Listen);
@@ -1191,7 +1200,7 @@ fn a_microphone_listens_only_after_its_own_device_consents() {
     );
     assert_eq!(
         view.consents[0].prompt(),
-        "Let desk use this microphone for Living room?"
+        "Let office use this microphone for Living room?"
     );
 
     let decision = phone
@@ -1199,16 +1208,22 @@ fn a_microphone_listens_only_after_its_own_device_consents() {
         .resolve_listen_consent(&fabric, &phone.id(), group, true, &stamp("phone"))
         .unwrap();
     phone.publish(&mut fabric);
-    assert!(desk.handle(&fabric, &decision[0], "phone", now).is_empty());
+    assert!(
+        office
+            .handle(&fabric, &decision[0], "phone", now)
+            .is_empty()
+    );
     assert_eq!(
-        candidate_state(&desk, &fabric, group, "phone", now),
+        candidate_state(&office, &fabric, group, "phone", now),
         ListenerState::Ready
     );
-    assert!(
-        phone
-            .core
-            .may_listen(&fabric, &phone.id(), &desk.id(), group, microphone("phone"))
-    );
+    assert!(phone.core.may_listen(
+        &fabric,
+        &phone.id(),
+        &office.id(),
+        group,
+        microphone("phone")
+    ));
     // Only the leader may ask, and only for the exact microphone.
     assert!(!phone.core.may_listen(
         &fabric,
@@ -1220,7 +1235,7 @@ fn a_microphone_listens_only_after_its_own_device_consents() {
     assert!(
         !phone
             .core
-            .may_listen(&fabric, &phone.id(), &desk.id(), group, output("phone"))
+            .may_listen(&fabric, &phone.id(), &office.id(), group, output("phone"))
     );
     let memberships = phone.core.view(&fabric, &phone.id(), &|_| None).memberships;
     assert_eq!(memberships.len(), 1);
@@ -1235,9 +1250,11 @@ fn a_microphone_listens_only_after_its_own_device_consents() {
             accepted: false
         }
     );
-    assert!(
-        !phone
-            .core
-            .may_listen(&fabric, &phone.id(), &desk.id(), group, microphone("phone"))
-    );
+    assert!(!phone.core.may_listen(
+        &fabric,
+        &phone.id(),
+        &office.id(),
+        group,
+        microphone("phone")
+    ));
 }

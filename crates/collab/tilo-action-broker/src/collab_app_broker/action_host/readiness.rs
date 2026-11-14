@@ -1,6 +1,6 @@
 //! What a decision here waits for when the session has not said it yet.
 //!
-//! A desk opens a workspace in one pass and claims it in the same; the copy of the desk the broker
+//! A shell opens a workspace in one pass and claims it in the same; the copy of the shell the broker
 //! decides against is published on the way. An action that arrives before the pass has said whose
 //! the workspace is waits for that pass rather than being refused for a workspace that is about to
 //! be the person's own.
@@ -16,14 +16,14 @@ use tilo_actions::remote::{APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX}
 use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
 use tilo_desktop_model::Workspace;
 
-/// How long an action waits for the desk to say who the workspace it names is whose, when the desk
-/// has not said yet: a desk claims the workspace it has just opened in the pass that shows it, and
+/// How long an action waits for the shell to say who the workspace it names is whose, when the shell
+/// has not said yet: a shell claims the workspace it has just opened in the pass that shows it, and
 /// a pass takes milliseconds once the session runs.
 const WORKSPACE_OWNER_WAIT: Duration = Duration::from_secs(5);
 
 impl AppBrokerState {
-    /// `workspace_id` as the desk names its owner, waiting at most [`WORKSPACE_OWNER_WAIT`] for the
-    /// desk to say whose it is, and `None` when it never does: a workspace joined through a door
+    /// `workspace_id` as the shell names its owner, waiting at most [`WORKSPACE_OWNER_WAIT`] for the
+    /// shell to say whose it is, and `None` when it never does: a workspace joined through a door
     /// whose host has not said whose it is here is nobody's, and stays so.
     pub(super) fn workspace_naming_its_owner(
         &self,
@@ -44,7 +44,7 @@ impl AppBrokerState {
                 }
                 sample = Some((workspace, actor));
             }
-            // The desk's publications, the identity store and the device fleet all announce.
+            // The shell's publications, the identity store and the device fleet all announce.
             tilo_identity_host::policy_change::wait_for_a_change(Some(slice));
         }
         sample
@@ -72,9 +72,9 @@ impl AppBrokerState {
         else {
             return Ok(None);
         };
-        // A desk claims a workspace it has just opened in the pass that shows it, and says so on
+        // A shell claims a workspace it has just opened in the pass that shows it, and says so on
         // the way. An action arriving in the moment before waits for that pass — the person is
-        // never refused in a workspace that is about to be theirs — and decides on the desk's
+        // never refused in a workspace that is about to be theirs — and decides on the shell's
         // next word.
         if workspace.owner().is_none()
             && let Some((named, actor)) = self.workspace_naming_its_owner(caller, workspace_id)

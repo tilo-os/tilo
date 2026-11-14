@@ -127,6 +127,6 @@ pub struct Enrolled {
     pub name: Option<String>,
     /// `Ok` once this device holds the workspace and takes part in it.
     pub result: Result<(), EnrollFailure>,
-    /// The entry was for a workspace already on this desk.
+    /// The entry was for a workspace already on this layout.
     pub held: bool,
 }

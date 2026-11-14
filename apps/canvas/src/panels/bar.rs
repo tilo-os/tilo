@@ -32,10 +32,10 @@ pub(crate) const ZOOM_ACTUAL: &str = "canvas.zoom-actual";
 pub(crate) const TOOLS: &str = "canvas.tools";
 
 /// How the artwork menu's commands are told from the bar's own actions: the
-/// value the file desk carries out follows ([`Tools::menu`]).
+/// value the file chooser carries out follows ([`Tools::menu`]).
 const CARRY_OUT: &str = "canvas.carry-out.";
 
-/// The artwork menu's commands, by the value the file desk carries out, and
+/// The artwork menu's commands, by the value the file chooser carries out, and
 /// the words each says.
 const COMMANDS: [(&str, &str); 7] = [
     ("new", "canvas-menu-new"),

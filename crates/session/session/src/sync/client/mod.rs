@@ -29,9 +29,9 @@ use tilo_desktop_surface::DesktopHandle;
 use tilo_live::live::Track;
 #[cfg(target_os = "linux")]
 use tilo_live::plane::Heard;
-#[cfg(target_os = "linux")]
-use tilo_session_client::client::Desk as GateDesk;
 use tilo_session_client::client::Host;
+#[cfg(target_os = "linux")]
+use tilo_session_client::client::Shell as GateShell;
 #[cfg(target_os = "linux")]
 use tilo_session_client::gate::WorkspaceAction;
 use tilo_session_client::{Client as SessionClient, Device, OwnPresence, Transport};
@@ -1152,7 +1152,7 @@ struct DeskGate {
 }
 
 #[cfg(target_os = "linux")]
-impl GateDesk for DeskGate {
+impl GateShell for DeskGate {
     fn allows(&self, workspace: &str, person: &str, required: &WorkspaceAction, now: u64) -> bool {
         self.desk
             .read(|tree| tilo_session_client::gate::allows(tree, workspace, person, required, now))
@@ -1681,7 +1681,7 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub fn attach_desk(&self, desk: DesktopHandle) {
         self.inner
-            .attach_desk(Rc::new(DeskGate { desk: desk.clone() }));
+            .attach_shell(Rc::new(DeskGate { desk: desk.clone() }));
         *self.hosting.seat.desk.borrow_mut() = Some(desk);
     }
 

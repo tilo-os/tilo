@@ -11,7 +11,7 @@
 //! host itself mints. What it asks about are the records people use — Chat's
 //! and the shared desktop's — and what it checks is what a person sees: the
 //! records' keys arrive, Chat's history opens, Chat's composer is there, the
-//! desk shows the members' windows, and a second page sees the first page's
+//! layout shows the members' windows, and a second page sees the first page's
 //! pointer.
 //!
 //! It runs only when the operator names the state volume, so an ordinary
@@ -585,14 +585,15 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
         history.len()
     );
 
-    // 3. The desk: the members' windows, as the shared desktop record holds
+    // 3. The layout: the members' windows, as the shared desktop record holds
     // them, read through the desktop model the window draws.
-    let desk = crate::support::record_of(&page, &desktop)
+    let layout = crate::support::record_of(&page, &desktop)
         .and_then(|doc| tilo_desktop_model::shared_record::read(&doc, None));
-    let windows: Vec<String> = desk
+    let windows: Vec<String> = layout
         .as_ref()
-        .map(|desk| {
-            desk.tree
+        .map(|layout| {
+            layout
+                .tree
                 .workspaces
                 .iter()
                 .flat_map(|workspace| workspace.strips.iter())
@@ -601,10 +602,10 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
                 .collect()
         })
         .unwrap_or_default();
-    println!("CHECK desk: {} window(s) {windows:?}", windows.len());
+    println!("CHECK layout: {} window(s) {windows:?}", windows.len());
 
     // 4. A second page, another person the workspace never saw, sees the
-    // first page's pointer on the desk.
+    // first page's pointer on the layout.
     let other = person("Second visitor").await;
     let second_invitation = lounge.invite(&other);
     let second = fresh_page(&lounge, &other, &second_invitation).await;
@@ -943,7 +944,7 @@ fn gather_presence(
 }
 
 /// Where `page` holds another member's pointer over `tab`, read off the board
-/// the page keeps: the frames it heard, merged, placed over the tile the desk
+/// the page keeps: the frames it heard, merged, placed over the tile the layout
 /// shows `tab` in.
 fn pointer_on(
     heard: &[([u8; 32], Vec<u8>)],

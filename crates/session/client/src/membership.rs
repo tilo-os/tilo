@@ -14,14 +14,14 @@ use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
-/// The desk a participant shows, as a workspace's governance writes into it: the workspaces it
-/// lists, and the policy each of them carries.
+/// The workspaces a participant shows, as a workspace's governance writes into them: the ones it
+/// lists, and the policy each carries.
 pub trait Workspaces {
-    /// Read the desk's workspaces, change them with `edit`, and put them back when it says it
+    /// Read the workspaces, change them with `edit`, and put them back when it says it
     /// changed something.
     ///
     /// # Errors
-    /// What `edit` refused, which leaves the desk as it was.
+    /// What `edit` refused, which leaves the layout as it was.
     fn edit(
         &self,
         edit: &mut dyn FnMut(&mut [Workspace]) -> Result<bool, String>,
@@ -182,7 +182,7 @@ impl<'a> Membership<'a> {
 }
 
 /// Write the people `policy` — the workspace's governance — names into `workspace` : the part each
-/// of them takes there, when each was admitted, the owner aside, whom the desk's policy names on
+/// of them takes there, when each was admitted, the owner aside, whom the layout's policy names on
 /// its own, and the grants it makes, which are the ones the broker decides a person's and an app's
 /// actions against here: a grant governs from the device it was written on, and one taken back is
 /// gone here as it is everywhere. Whether anything changed.

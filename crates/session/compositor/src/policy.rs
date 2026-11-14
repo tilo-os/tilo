@@ -144,7 +144,7 @@ pub trait WindowPolicy {
     /// it never maps: whatever place it was given goes.
     fn withdrawn(&mut self, _window: &WindowInfo) {}
 
-    /// Whether `window` floats over the desk as a card an app draws: framed square, in front of the
+    /// Whether `window` floats over the shell as a card an app draws: framed square, in front of the
     /// windows, and taking no focus.
     fn overlay(&self, _window: &WindowInfo) -> bool {
         false

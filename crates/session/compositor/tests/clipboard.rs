@@ -212,7 +212,7 @@ fn setup() -> (Compositor, TestClient) {
     (compositor, client)
 }
 
-/// A surface of the session's own that holds the keyboard, as the desk's search does.
+/// A surface of the session's own that holds the keyboard, as the shell's search does.
 struct Typed;
 
 impl SurfaceHost for Typed {
@@ -279,7 +279,7 @@ fn a_clients_copy_is_read_as_its_bytes_arrive_and_secrets_are_kept_out() {
     let (mut compositor, mut client) = setup();
     let before = compositor.selection_changes(Selection::Clipboard);
 
-    // The desk's search takes the keys before the app's copy reaches the compositor: the copy,
+    // The shell's search takes the keys before the app's copy reaches the compositor: the copy,
     // made while the app had them, is still taken.
     compositor.add_host(Rc::new(RefCell::new(Typed)));
     compositor

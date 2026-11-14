@@ -229,8 +229,8 @@ pub struct State {
     pub(crate) frame: crate::window_frame::WindowFrame,
     /// The frames of the windows that are framed differently, by id.
     pub(crate) window_frames: std::collections::HashMap<u64, crate::window_frame::WindowFrame>,
-    /// The cards the desk draws in front of the windows, by the window each one is the card of:
-    /// the desk draws a floating window's bar and its lift around it, and the window beneath the
+    /// The cards the shell draws in front of the windows, by the window each one is the card of:
+    /// the shell draws a floating window's bar and its lift around it, and the window beneath the
     /// card is drawn around it, as a window under a floating one is.
     pub(crate) covers: std::collections::BTreeMap<u64, smithay::utils::Rectangle<i32, Logical>>,
     /// How many layers each hosted surface drew in the last frame, by its index in `hosts`: what a
@@ -302,11 +302,11 @@ pub struct State {
     pub(crate) key_latency: tilo_frame_metrics::key_latency::KeyLatency,
     /// The workspace switch in flight, and its `WORKSPACE-SWITCH` line.
     pub(crate) switch_latency: tilo_frame_metrics::switch_latency::SwitchLatency,
-    /// Whether the switch in flight still owes frames: the person is watching the desk move. The
+    /// Whether the switch in flight still owes frames: the person is watching the shell move. The
     /// session says, frame by frame.
     pub(crate) switch_holding: AtomicBool,
     /// The frames each window's client committed, by window id: a window still shows the same count,
-    /// and one whose app is drawing moves. A tool reads it to prove a desk is quiet or to count an
+    /// and one whose app is drawing moves. A tool reads it to prove a shell is quiet or to count an
     /// app's frames in a real session. The entry goes with the window.
     pub(crate) committed: std::collections::HashMap<u64, u64>,
     /// The serial of the next frame drawn. Frames are retired in order, so a presenter says how far
@@ -778,8 +778,8 @@ impl State {
     }
 
     /// The window a logical point lands on, with where it stands: the frontmost one that is
-    /// visible there. What a desk draws over the windows hides what it lies on, and a point on it
-    /// belongs to the desk, so the window beneath it is passed over the way a window behind another
+    /// visible there. What a shell draws over the windows hides what it lies on, and a point on it
+    /// belongs to the shell, so the window beneath it is passed over the way a window behind another
     /// is.
     pub(crate) fn window_at(
         &self,
@@ -799,7 +799,7 @@ impl State {
             {
                 return Some((window.clone(), location));
             }
-            // What the desk covers them with for this window is over the windows behind it, from
+            // What the shell covers them with for this window is over the windows behind it, from
             // here on.
             if let Some(info) = describe(self, window)
                 && let Some(cover) = self.covers.get(&info.id)
@@ -822,7 +822,7 @@ impl State {
                 .rposition(|host| host.above_lock() && host.accepts_pointer(point.x, point.y));
         }
         // A layer surface over the windows (quick settings, a panel's popover) is drawn over every
-        // hosted surface, so the pointer on it is its own, as on the desk under it.
+        // hosted surface, so the pointer on it is its own, as on the shell under it.
         if self.layer_surface_under(point, true).is_some() {
             return None;
         }
@@ -1408,7 +1408,7 @@ impl State {
     }
 
     /// Give the window with `id` the keyboard, for a seat's keys: it is not raised and stays
-    /// inactive, so the person's desk looks as it did.
+    /// inactive, so the person's shell looks as it did.
     pub(crate) fn focus_window_id(&mut self, id: u64, serial: Serial) {
         let surface = self.mapped_window(id).and_then(surface_of);
         self.set_keyboard_focus(surface, serial);
@@ -1577,7 +1577,7 @@ impl State {
             self.space.refresh();
             self.mark_redraw_all();
         }
-        // A window floating over the desk stands in front of the strips' windows, a focused or
+        // A window floating over the shell stands in front of the strips' windows, a focused or
         // maximized one included; the dialogs stay in front of the windows they belong to, and a
         // card an app draws stays in front of them all.
         let floats: Vec<_> = self
@@ -1833,7 +1833,7 @@ impl State {
     }
 
     /// The rectangle the mapped window `id` holds in the layout: where its content is drawn, which
-    /// is what a tool driving the desk aims at. `None` for a window that is not mapped, or is not
+    /// is what a tool driving the shell aims at. `None` for a window that is not mapped, or is not
     /// placed on a display at all.
     pub(crate) fn window_rect(&self, id: u64) -> Option<(i32, i32, i32, i32)> {
         let rect = self.space.element_geometry(self.mapped_window(id)?)?;
@@ -1841,7 +1841,7 @@ impl State {
     }
 
     /// The frames the window `id` 's client committed since it opened: a window that shows the same
-    /// thing keeps its count, so a desk that draws nothing between two reads has not moved.
+    /// thing keeps its count, so a shell that draws nothing between two reads has not moved.
     pub(crate) fn committed_frames(&self, id: u64) -> u64 {
         self.committed.get(&id).copied().unwrap_or(0)
     }
@@ -2378,7 +2378,7 @@ impl State {
     }
 
     /// Judge the pings in flight. Returns whether the set of windows whose app is not responding
-    /// changed, so the desk repaints.
+    /// changed, so the shell repaints.
     pub(crate) fn advance_app_liveness_at(&mut self, now: Instant) -> bool {
         let mut watches = std::mem::take(&mut self.app_watches);
         watches.judge(|id| self.pongs_of(id), now);
@@ -2519,8 +2519,8 @@ impl State {
         self.switch_latency.chord(Instant::now());
     }
 
-    /// Whether the switch in flight still owes the desk's motion: its frames belong to the switch
-    /// until the desk rests.
+    /// Whether the switch in flight still owes the shell's motion: its frames belong to the switch
+    /// until the shell rests.
     pub(crate) fn set_switch_holding(&self, holding: bool) {
         self.switch_holding.store(holding, Ordering::Relaxed);
     }

@@ -73,7 +73,7 @@ impl Region {
 /// clipped to `clip`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowPicture {
-    /// The window, by its id in the desk.
+    /// The window, by its id in the layout.
     pub window: u64,
     /// Where the picture rests, logical `(x, y, width, height)`.
     pub rect: (f64, f64, f64, f64),

@@ -146,7 +146,7 @@ async fn through_the_door(
 /// each time it lands and takes what that read gives, so a landing whose read
 /// is refused leaves the chat as it was until the record lands again. The
 /// guest opens the chat's head and its newest part's route as it enters, as
-/// a Chat window on the desk does, and the chat must read whole by the
+/// a Chat window on the layout does, and the chat must read whole by the
 /// landing after which nothing more arrives.
 async fn chat_read_by_guest(
     page: &Link,

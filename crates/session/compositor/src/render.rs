@@ -374,7 +374,7 @@ where
         }
     }
     let mut elements = Vec::new();
-    // What the desks draw over the windows: one a window in front of another stands on lies over it,
+    // What the shells draw over the windows: one a window in front of another stands on lies over it,
     // so everything behind is drawn around it.
     let mut covers: Vec<Rectangle<i32, Physical>> = Vec::new();
     for (front, window) in stack.into_iter().enumerate() {
@@ -389,7 +389,7 @@ where
         };
         let effect = state.effect_of(window);
         let framing = state.framing(window);
-        // What this window still shows through: what the desks cover it with for the windows in
+        // What this window still shows through: what the shells cover it with for the windows in
         // front of it.
         let visible = outside(bounds, &covers);
         // Its own cover is over the windows behind it, from here on.
@@ -529,7 +529,7 @@ where
     )
 }
 
-/// The scene `output` shows, front first, in its physical pixels: the desk,
+/// The scene `output` shows, front first, in its physical pixels: the shell,
 /// the windows and the layers above and below them.
 fn scene_elements<R>(
     renderer: &mut R,
@@ -617,7 +617,7 @@ where
             .collect(),
     ));
     hosted(renderer, &mut elements, true);
-    // The layer surfaces below the windows: the desk.
+    // The layer surfaces below the windows: the shell.
     elements.extend(state.layer_elements(renderer, output, false, geometry, output_scale));
     elements
 }
@@ -711,7 +711,7 @@ const ALERT_EDGE: [f32; 3] = [0.246, 0.393, 0.752];
 
 /// How wide the alert's edge is, in logical pixels: a band along each edge,
 /// narrow enough to leave the screen's content alone and wide enough to see
-/// from across a desk.
+/// from across a room.
 const ALERT_EDGE_WIDTH: f64 = 3.5;
 
 /// The width of the alert's edge in the physical pixels of an output drawn at `scale` : never

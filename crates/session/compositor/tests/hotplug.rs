@@ -1,6 +1,6 @@
 //! An output that appears and disappears while the compositor runs, as a connector plugged into a
 //! running session does: it is lit and placed beside the outputs already there, clients are told it
-//! is there, the desk is told the monitors it now has, and pulling it out takes it away again and
+//! is there, the shell is told the monitors it now has, and pulling it out takes it away again and
 //! closes the hole it left.
 
 #![cfg(target_os = "linux")]
@@ -32,7 +32,7 @@ type Told = (Vec<(LayoutRect, String)>, Option<String>);
 /// An output's name and the rectangle it covers in the layout, when it has a place there.
 type Placed = (String, Option<(i32, i32, i32, i32)>);
 
-/// A policy that keeps the monitors it is last told of: the desk is told them whenever the outputs
+/// A policy that keeps the monitors it is last told of: the shell is told them whenever the outputs
 /// change.
 struct Monitors(Rc<RefCell<Told>>);
 
@@ -179,10 +179,10 @@ fn told_primary(told: &Rc<RefCell<Told>>) -> Option<String> {
 }
 
 tilo_test_env::scenario! {
-    /// Displays that come and go while the desk runs.
+    /// Displays that come and go while the shell runs.
     fn displays_plugged_and_unplugged_keep_the_layout_the_primary_and_their_scale;
 
-    phase an_output_plugged_in_while_the_desk_runs_is_lit_beside_the_others_and_told_to_the_desk;
+    phase an_output_plugged_in_while_the_shell_runs_is_lit_beside_the_others_and_told_to_the_shell;
     {
         let told = Rc::new(RefCell::new(Told::default()));
         let mut compositor = one_output(&told);
@@ -197,7 +197,7 @@ tilo_test_env::scenario! {
         );
 
         // A connector appears mid-run, asking for no place of its own: a second screen shows it beside
-        // the one already there, never over it, where the desk would take it for a mirror of that one
+        // the one already there, never over it, where the shell would take it for a mirror of that one
         // and give it nothing.
         compositor
             .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
@@ -219,7 +219,7 @@ tilo_test_env::scenario! {
                 ((0, 0, 640, 480), "HEADLESS-1".to_owned()),
                 ((640, 0, 1280, 720), "HEADLESS-2".to_owned()),
             ],
-            "the desk is told the monitors it now has"
+            "the shell is told the monitors it now has"
         );
         pump(&mut compositor, &mut client, |seen| {
             seen.globals
@@ -236,7 +236,7 @@ tilo_test_env::scenario! {
         assert_eq!(shot.pixel(1279, 719), Some(BACKGROUND));
     }
 
-    phase an_output_unplugged_while_the_desk_runs_leaves_the_lit_set_and_the_layout;
+    phase an_output_unplugged_while_the_shell_runs_leaves_the_lit_set_and_the_layout;
     {
         let told = Rc::new(RefCell::new(Told::default()));
         let mut compositor = one_output(&told);
@@ -269,7 +269,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             monitors,
             [((0, 0, 640, 480), "HEADLESS-1".to_owned())],
-            "the desk is told the monitor set it has now"
+            "the shell is told the monitor set it has now"
         );
         assert!(
             compositor.screenshot("HEADLESS-2").is_err(),
@@ -302,7 +302,7 @@ tilo_test_env::scenario! {
             "the second screen is to the right"
         );
 
-        // The one on the left goes: the one left sits where the pointer and the desk look, not 640
+        // The one on the left goes: the one left sits where the pointer and the shell look, not 640
         // pixels into an empty layout.
         compositor.remove_output("HEADLESS-1").expect("unplug");
         assert_eq!(
@@ -313,7 +313,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             monitors,
             [((0, 0, 1280, 720), "HEADLESS-2".to_owned())],
-            "the desk follows it to where it now is"
+            "the shell follows it to where it now is"
         );
         assert!(compositor.output_lit("HEADLESS-2"));
 
@@ -365,8 +365,8 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_primary_chosen_in_settings_is_told_to_the_desk_and_returns_with_its_display;
-    // The display the person made primary is the one the desk is told is primary, and the choice waits
+    phase the_primary_chosen_in_settings_is_told_to_the_shell_and_returns_with_its_display;
+    // The display the person made primary is the one the shell is told is primary, and the choice waits
     // for the display to come back rather than falling to whichever output is lit.
     {
         let told = Rc::new(RefCell::new(Told::default()));
@@ -382,7 +382,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             told_primary(&told).as_deref(),
             Some("HEADLESS-2"),
-            "the desk is told the display the person chose"
+            "the shell is told the display the person chose"
         );
 
         // The cable is pulled: the other display stands in, and the choice is kept for the one that
@@ -404,7 +404,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_display_turned_off_is_never_the_primary_one;
-    // A display turned off is never the primary one: the desk is told of none while the chosen display
+    // A display turned off is never the primary one: the shell is told of none while the chosen display
     // is dark.
     {
         let told = Rc::new(RefCell::new(Told::default()));
@@ -450,13 +450,13 @@ tilo_test_env::scenario! {
         assert_eq!(
             rects(&compositor),
             [("eDP-1".to_owned(), Some((0, 0, 1440, 900)))],
-            "a dense 4K panel runs at 200%, so the desk gets a 1440x900 desktop \
+            "a dense 4K panel runs at 200%, so the shell gets a 1440x900 desktop \
          rather than a 2880x1800 one with tiny text"
         );
         assert_eq!(
             told_monitors(&told),
             [((0, 0, 1440, 900), "eDP-1".to_owned())],
-            "the desk is told the logical size the person works in"
+            "the shell is told the logical size the person works in"
         );
 
         // A 24" 1080p monitor beside it: ~92 dpi stays at 100%, so a monitor that was readable before

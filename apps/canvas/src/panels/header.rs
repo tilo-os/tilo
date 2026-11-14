@@ -691,7 +691,7 @@ fn menu(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
             )
         }));
         options.extend(rest.iter().map(entry));
-        // The choice is view state the file desk carries out.
+        // The choice is view state the file chooser carries out.
         let mut menu = Dropdown::from_state(Vec::new(), &tools.menu)
             .as_menu(Icon::Menu)
             .with_id("canvas-menu")

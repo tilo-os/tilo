@@ -1,9 +1,9 @@
-//! The desk a page keeps: one automerge document, whose own change history is what happened to the
-//! desk, who did it and when.
-//! A native session keeps no such document: its desk is the workspaces' layout records, which every
-//! member shows ([`tilo_desktop_model::shared_record`]).
-//! The desk is no second copy anywhere: the tree a host draws is a projection of this document, a
-//! pass that finds the desk changed writes one change of it, and a version restored from the
+//! The layout a page keeps: one automerge document, whose own change history is what happened to the
+//! layout, who did it and when.
+//! A native session keeps no such document: the workspaces' shared records hold its layout, and every
+//! member shows them ([`tilo_desktop_model::shared_record`]).
+//! The layout is no second copy anywhere: the tree a host draws is a projection of this document, a
+//! pass that finds the layout changed writes one change of it, and a version restored from the
 //! history is another change on top. What is written is the form that opens again — a running
 //! window's surface id names a buffer of the compositor that mapped it, so a tab is written as the
 //! app to launch. Writing is away from the frame that changed it: a drag writes once, when over.
@@ -22,13 +22,13 @@ use tilo_desktop_model::{Layout, STATE_SCHEMA_VERSION, TabId, desktop_doc, share
 use ui::permissions::MemberId;
 use ui::state::UndoLog;
 
-/// How long a drag or a burst of switches waits for its last frame before how the desk looks is
+/// How long a drag or a burst of switches waits for its last frame before how the layout looks is
 /// written.
 const DRAG_QUIET: Duration = Duration::from_secs(2);
 
-/// Where a host keeps the desk's document: its bytes, written off the frame that changed them.
+/// Where a host keeps the layout's document: its bytes, written off the frame that changed them.
 pub trait Store {
-    /// Keep `bytes` where this device keeps its desk.
+    /// Keep `bytes` where this device keeps the layout's document.
     fn keep(&self, bytes: Vec<u8>);
 }
 
@@ -45,7 +45,7 @@ pub fn relaunchable(desktop: &Layout) -> Layout {
                 }
                 // A window whose app could not be told apart from any other — the compositor named
                 // none — is kept as a tab with no app to open it: nothing would ever come back into
-                // it, and the tab would wait on the desk for good. What cannot open again is not
+                // it, and the tab would wait on the layout for good. What cannot open again is not
                 // kept.
                 group.tabs.retain(|tab| {
                     !matches!(&tab.tile, tilo_desktop_model::TileContent::LocalApp { app_id, .. }
@@ -66,28 +66,28 @@ pub fn relaunchable(desktop: &Layout) -> Layout {
     desktop
 }
 
-/// The actor `person` writes the desk's changes as: their handle itself, so a change of the desk
+/// The actor `person` writes the layout's changes as: their handle itself, so a change of the layout
 /// reads as theirs here without anything else naming it (`ui::history_source::actor_handle`).
 pub fn actor_of_person(person: &str) -> automerge::ActorId {
     automerge::ActorId::from(person.as_bytes())
 }
 
-/// The desk's document as this device keeps it, and how the person here changed it.
-pub struct Desk {
+/// The layout's document as this device keeps it, and how the person here changed it.
+pub struct LayoutDocument {
     doc: Rc<RefCell<AutoCommit>>,
-    /// The desk's history as this host drives it: each change of the desk is one step of the
+    /// The layout's history as this host drives it: each change of the layout is one step of the
     /// person's, and the next undo takes back all of the last one.
     undo: RefCell<UndoLog>,
-    /// The person here, whose the desk is: their changes are theirs to take back.
+    /// The person here, whose the layout is: their changes are theirs to take back.
     person: String,
     /// Where the document is kept; a host without anywhere to keep it keeps it in memory alone.
     store: Option<Rc<dyn Store>>,
-    /// When how the desk looks was last written, so a drag or a burst of switches stays one change.
+    /// When how the layout looks was last written, so a drag or a burst of switches stays one change.
     looks_at: Cell<Option<Instant>>,
 }
 
-impl Desk {
-    /// The desk `document` holds, whose changes are written by `person` and kept through `store`.
+impl LayoutDocument {
+    /// The layout `document` holds, whose changes are written by `person` and kept through `store`.
     pub fn new(document: AutoCommit, person: &str, store: Option<Rc<dyn Store>>) -> Self {
         let mut document = document;
         document.set_actor(actor_of_person(person));
@@ -101,14 +101,14 @@ impl Desk {
         }
     }
 
-    /// The desk the document holds, as this host draws it, and `None` on a document that holds no
-    /// workspace yet. The record each window of the desk shows, by tab, as the document keeps it: a
+    /// The layout the document holds, as this host draws it, and `None` on a document that holds no
+    /// workspace yet. The record each window of the layout shows, by tab, as the document keeps it: a
     /// window placed on a record names it there, so the place shows the record it was placed on.
     pub fn records(&self) -> Vec<(TabId, String)> {
         desktop_doc::records(&self.doc.borrow())
     }
 
-    /// The desk the document holds.
+    /// The layout the document holds.
     pub fn tree(&self) -> Option<Layout> {
         let doc = self.doc.borrow();
         let mut tree = Layout::default();
@@ -117,12 +117,12 @@ impl Desk {
         (!tree.workspaces.is_empty()).then_some(tree)
     }
 
-    /// Record `desktop` as it stands, at `time` (seconds since the epoch): one change of the desk,
+    /// Record `desktop` as it stands, at `time` (seconds since the epoch): one change of the layout,
     /// kept. `records` names the record each window shows and `authors` who made each strip and
-    /// opened each window, where the host keeps either. Whether the desk changed at all.
-    /// Only how the person shows the desk — a drag, a switch — is written once the drag or the
+    /// opened each window, where the host keeps either. Whether the layout changed at all.
+    /// Only how the person shows the layout — a drag, a switch — is written once the drag or the
     /// burst of switches is over: a resize writes the view on every frame, and those are not
-    /// changes of the desk.
+    /// changes of the layout.
     pub fn record(
         &self,
         desktop: &Layout,
@@ -133,7 +133,7 @@ impl Desk {
         self.write(desktop, time, true, None, records, authors)
     }
 
-    /// [`Self::record`], and write even how the desk looks now: what ends the session, which the
+    /// [`Self::record`], and write even how the layout looks now: what ends the session, which the
     /// next one starts from.
     pub fn record_now(
         &self,
@@ -145,10 +145,10 @@ impl Desk {
         self.write(desktop, time, false, None, records, authors)
     }
 
-    /// Record `desktop` as it stands as `asked`'s arranging action: one change of the desk whose own
+    /// Record `desktop` as it stands as `asked`'s arranging action: one change of the layout whose own
     /// entry says who asked and what they did, so the history names it and the step is the person's
-    /// to take back. It is a change of the desk and never a frame of a drag: an action asked for is
-    /// written as it is made. Whether the desk changed at all.
+    /// to take back. It is a change of the layout and never a frame of a drag: an action asked for is
+    /// written as it is made. Whether the layout changed at all.
     pub fn record_action(
         &self,
         desktop: &Layout,
@@ -159,8 +159,8 @@ impl Desk {
         self.write(desktop, time, false, Some(asked), records, None)
     }
 
-    /// Record how this device shows `desktop` alone: a host whose workspace holds the desk itself
-    /// keeps only the view here, so a reload opens the desk as the workspace has it. Whether
+    /// Record how this device shows `desktop` alone: a host whose workspace holds the layout itself
+    /// keeps only the view here, so a reload opens the layout as the workspace has it. Whether
     /// anything was written.
     pub fn record_view(&self, desktop: &Layout, time: i64) -> bool {
         let mut doc = self.doc.borrow_mut();
@@ -185,11 +185,11 @@ impl Desk {
     ) -> bool {
         let mut doc = self.doc.borrow_mut();
         let before = doc.get_heads();
-        // A document with no desk holds one after this change: the desk is being opened, here or as
+        // A document with no layout holds one after this change: the layout is being opened, here or as
         // it arrived from the workspace, and that is no change of the person's to take back.
         let opened = !desktop_doc::holds(&*doc);
         let looks_only = desktop_doc::seed_of_the_view(&mut doc, &relaunchable(desktop));
-        // What each window shows is the desk's, not how this device shows it, and it is written like
+        // What each window shows is the layout's, not how this device shows it, and it is written like
         // the view is: what a window opened is no step of the person's on its own, and an action
         // that places a resource is a step because it was asked for. A window's record arrives with
         // the window, so a write that knows one binding is no authority over the others.
@@ -207,11 +207,11 @@ impl Desk {
             return false;
         }
         shared_record::commit_change(&mut doc, &self.person, time, asked);
-        // One change of the desk is one step of the person's: what they did here is theirs to take
+        // One change of the layout is one step of the person's: what they did here is theirs to take
         // back, whichever of their agents asked; so is a change asked for that only moves the view,
         // a width or a maximization, which is a step like any other when an action asks for it. How
-        // the desk looks alone, unasked, is no step: those changes ride with the change before or
-        // after them. Nor is the desk as it was opened.
+        // the layout looks alone, unasked, is no step: those changes ride with the change before or
+        // after them. Nor is the layout as it was opened.
         if !opened && (asked.is_some() || !looks_only) {
             self.undo.borrow_mut().record_committed_action_authored(
                 &mut doc,
@@ -228,7 +228,7 @@ impl Desk {
         true
     }
 
-    /// Take the desk `document` holds — the workspace's, as it arrived — for this device's.
+    /// Take the layout `document` holds — the workspace's, as it arrived — for this device's.
     pub fn replace(&self, document: AutoCommit) {
         let mut current = self.doc.borrow_mut();
         *current = document;
@@ -242,12 +242,12 @@ impl Desk {
         }
     }
 
-    /// Take back `person`'s last change of the desk. Whether there was one.
+    /// Take back `person`'s last change of the layout. Whether there was one.
     pub fn undo(&self, person: &str) -> bool {
         self.rewind(|undo, doc| undo.undo_as(doc, Some(&user(person)), None, None).is_some())
     }
 
-    /// Bring back the last change of the desk `person` took back.
+    /// Bring back the last change of the layout `person` took back.
     pub fn redo(&self, person: &str) -> bool {
         self.rewind(|undo, doc| undo.redo_as(doc, Some(&user(person)), None, None).is_some())
     }
@@ -264,14 +264,14 @@ impl Desk {
         stepped
     }
 
-    /// The last step of the desk's history, as who made it and what it did: what the history names
+    /// The last step of the layout's history, as who made it and what it did: what the history names
     /// it by.
     pub fn last_step(&self, person: &str) -> Option<(String, String)> {
         use tilo_actions::Did;
         let doc = self.doc.borrow();
         let entry = self.undo.borrow().next_undo_as(&doc, Some(&user(person)))?;
         let step = entry.step?;
-        // Who asked for it: the invoker the step records, else the person whose desk it is.
+        // Who asked for it: the invoker the step records, else the person whose layout it is.
         let who = step
             .invoker
             .map_or_else(|| person.to_owned(), |invoker| invoker.key());
@@ -282,7 +282,7 @@ impl Desk {
         Some((who, what))
     }
 
-    /// Whether how the desk looks was kept so lately that what is written now is still one drag or
+    /// Whether how the layout looks was kept so lately that what is written now is still one drag or
     /// one burst of switches.
     fn looks_kept_recently(&self) -> bool {
         self.looks_at
@@ -290,12 +290,12 @@ impl Desk {
             .is_some_and(|at| at.elapsed() < DRAG_QUIET)
     }
 
-    /// The document, for a reader that lists what happened to the desk.
+    /// The document, for a reader that lists what happened to the layout.
     pub fn document(&self) -> AutoCommit {
         self.doc.borrow().clone()
     }
 
-    /// The document itself, for a host that writes one change of the desk its own way — an
+    /// The document itself, for a host that writes one change of the layout its own way — an
     /// arranging command it received. Whoever holds it commits the change and keeps it.
     pub fn document_mut(&self) -> std::cell::RefMut<'_, AutoCommit> {
         self.doc.borrow_mut()

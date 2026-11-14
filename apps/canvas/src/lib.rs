@@ -155,7 +155,7 @@ impl ResourceApp for App {
             layers = layers.push(sheet);
         }
         Box::new(panels::layout::ViewportMode::new(
-            panels::files::FileDesk::new(
+            panels::files::FileChooser::new(
                 Box::new(layers),
                 tools,
                 recents,

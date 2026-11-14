@@ -8,7 +8,7 @@ use collab_types::presence::{
 };
 use iroh_base::EndpointId;
 use neighbour_wire::NeighbourMsg;
-use tilo_desktop_model::WorkspaceId as DeskWorkspaceId;
+use tilo_desktop_model::WorkspaceId;
 use tilo_live::presence;
 use tilo_live::presence::{Board, Device};
 use tilo_relay_protocol::live::{LiveAnchor, LiveRecord};
@@ -221,18 +221,18 @@ impl Plane {
         &mut self,
         word: &presence::Own,
         now_ms: f64,
-    ) -> Option<(DeskWorkspaceId, Vec<(u32, Presence)>)> {
+    ) -> Option<(WorkspaceId, Vec<(u32, Presence)>)> {
         let workspace = self.front_mut()?;
         workspace.board.say(word);
-        let desk = DeskWorkspaceId::parse(&workspace.id)?;
-        Some((desk, workspace.board.flush(now_ms)))
+        let layout = WorkspaceId::parse(&workspace.id)?;
+        Some((layout, workspace.board.flush(now_ms)))
     }
 
     /// Take what the workspace in front's board owes at `now_ms`.
-    pub fn due_in_front(&mut self, now_ms: f64) -> Option<(DeskWorkspaceId, Vec<(u32, Presence)>)> {
+    pub fn due_in_front(&mut self, now_ms: f64) -> Option<(WorkspaceId, Vec<(u32, Presence)>)> {
         let workspace = self.front_mut()?;
-        let desk = DeskWorkspaceId::parse(&workspace.id)?;
-        Some((desk, workspace.board.due(now_ms)?))
+        let layout = WorkspaceId::parse(&workspace.id)?;
+        Some((layout, workspace.board.due(now_ms)?))
     }
 
     /// How many times what is known in the workspace in front changed: a pass reads it around
@@ -250,13 +250,13 @@ impl Plane {
         &mut self,
         workspace: &str,
         now_ms: f64,
-    ) -> Option<(DeskWorkspaceId, Vec<(u32, Presence)>)> {
+    ) -> Option<(WorkspaceId, Vec<(u32, Presence)>)> {
         let held = self
             .workspaces
             .iter_mut()
             .find(|held| held.id == workspace)?;
-        let desk = DeskWorkspaceId::parse(&held.id)?;
-        Some((desk, held.board.due(now_ms)?))
+        let layout = WorkspaceId::parse(&held.id)?;
+        Some((layout, held.board.due(now_ms)?))
     }
 
     /// When `workspace`'s board next owes a word, on the clock presence is heard on.
