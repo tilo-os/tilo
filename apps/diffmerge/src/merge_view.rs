@@ -904,7 +904,7 @@ impl MergeView {
         }
     }
 
-    fn draw_merged_band(&mut self, ctx: &mut PaintCtx<'_>) {
+    fn draw_merged_band(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx) {
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let m = self.metrics;
@@ -959,9 +959,13 @@ impl MergeView {
 
         let merged_body = Rect::new(merged.x0, header.y1, merged.x1, merged.y1);
         self.merged_editor.control_mut().set_rect(merged_body);
-        self.merged_editor
-            .control_mut()
-            .draw_embedded(ctx.scene, ctx.transform, ctx.text, theme);
+        self.merged_editor.control_mut().draw_embedded(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            presence,
+        );
     }
 }
 
@@ -1004,7 +1008,7 @@ impl Widget for MergeView {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         self.action_hits.clear();
         self.source_hits.clear();
@@ -1074,7 +1078,7 @@ impl Widget for MergeView {
             theme.tokens.colors.surfaces.content,
         );
 
-        self.draw_merged_band(&mut ctx);
+        self.draw_merged_band(&mut ctx, presence);
         self.dirty = false;
     }
 

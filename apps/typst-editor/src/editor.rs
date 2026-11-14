@@ -14,6 +14,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use ui::framework::{Dispatcher, TextControl};
+use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Path;
@@ -277,6 +278,7 @@ impl SourceEditor {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         diags: &[Diagnostic],
     ) {
         let focused = self.focused;
@@ -309,7 +311,7 @@ impl SourceEditor {
         let pointer = self.hover.filter(|p| self.rect.contains(*p));
         self.control_mut().set_pointer(pointer);
         self.control_mut()
-            .draw_embedded(scene, transform, tr, theme);
+            .draw_embedded(scene, transform, tr, theme, presence);
     }
 
     /// The editor's damage since the frame on screen, as part of `owner`, the
@@ -484,6 +486,7 @@ mod tests {
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),
                 &Theme::dark(),
+                &PresenceCtx::empty(),
                 &[warn, err],
             );
             let severities: Vec<Severity> = ed
@@ -517,7 +520,14 @@ mod tests {
         .iter()
         .enumerate()
         {
-            editor.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, theme, &[]);
+            editor.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut tr,
+                theme,
+                &PresenceCtx::empty(),
+                &[],
+            );
             let input = editor.control().inner();
             let line = input.body_line_height();
             let gutter = editor.control().gutter_width();

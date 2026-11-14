@@ -446,17 +446,19 @@ impl CodeEditor {
         self.inner.byte_at_point(point)
     }
 
-    /// A monolithic host that owns its own layout calls [`set_rect`] then this each frame.
+    /// A monolithic host that owns its own layout calls [`set_rect`] then this each frame,
+    /// with the presence it draws for: `presence` names the person, so their own writes are not
+    /// tinted as someone else's.
     pub fn draw_embedded(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
     ) {
-        let presence = PresenceCtx::default();
         self.inner
-            .draw_child(scene, transform, text_renderer, theme, &presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.draw_diagnostics(scene, transform, theme);
     }
 
@@ -1424,6 +1426,76 @@ mod tests {
             no_gutter_offset_when_gutter_disabled();
             scaled_gutter_and_wrapped_rows_share_the_shaped_editor_geometry();
             wrapper_layout_uses_theme_scale_with_a_stale_renderer_and_reverses_to_normal();
+        }
+
+        phase an_embedded_editor_does_not_tint_the_persons_own_writes;
+        {
+            fn own_writes_are_not_tinted() {
+                use crate::permissions::MemberId;
+                use automerge::ObjType;
+                use automerge::marks::{ExpandMark, Mark};
+                use automerge::transaction::Transactable as _;
+
+                let theme = Theme::dark();
+                let own = MemberId::person("me");
+                let mut doc = AutoCommit::new();
+                let text = doc
+                    .put_object(&automerge::ROOT, "text", ObjType::Text)
+                    .expect("a text object");
+                doc.splice_text(&text, 0, 0, "the person's own words")
+                    .expect("its words");
+                doc.mark(
+                    &text,
+                    Mark::new("author".to_owned(), automerge::ScalarValue::Str("me".into()), 0, 22),
+                    ExpandMark::None,
+                )
+                .expect("the run is theirs");
+                let mut editor = CodeEditor::local();
+                editor.bind_text(text);
+                editor.pull(&mut doc);
+                editor.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+                assert_eq!(
+                    editor.inner().authored_runs(),
+                    [(0..22, "me".to_string())],
+                    "the editor knows who wrote the text"
+                );
+
+                let mut mine = PresenceCtx::empty();
+                mine.set_own_identity([own.clone()]);
+                let draw = |editor: &mut CodeEditor, presence: &PresenceCtx| {
+                    let mut renderer = TextRenderer::new();
+                    let mut scene = Scene::new();
+                    editor.draw_embedded(
+                        &mut scene,
+                        Affine::IDENTITY,
+                        &mut renderer,
+                        &theme,
+                        presence,
+                    );
+                    scene
+                };
+                let own_frame = draw(&mut editor, &mine);
+                let peer_frame = draw(&mut editor, &PresenceCtx::empty());
+                let tint = theme
+                    .tokens
+                    .colors
+                    .presence
+                    .of_rgb(mine.color_for(&own))
+                    .multiply_alpha(0.20)
+                    .premultiply()
+                    .to_rgba8()
+                    .to_u32();
+                assert!(
+                    peer_frame.encoding().draw_data.contains(&tint),
+                    "a run of someone the presence does not name is tinted in their colour"
+                );
+                assert!(
+                    !own_frame.encoding().draw_data.contains(&tint),
+                    "the person's own run is not tinted as someone else's"
+                );
+            }
+
+            own_writes_are_not_tinted();
         }
     }
 

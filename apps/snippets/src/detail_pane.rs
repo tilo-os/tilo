@@ -484,7 +484,7 @@ impl Widget for BodyWell {
         transform: Affine,
         text: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
             return;
@@ -499,9 +499,13 @@ impl Widget for BodyWell {
         );
         let mut core = self.core.borrow_mut();
         core.body.control_mut().set_rect(self.rect);
-        core.body
-            .control_mut()
-            .draw_embedded(scene, transform, text, &theme.on_ground(ground));
+        core.body.control_mut().draw_embedded(
+            scene,
+            transform,
+            text,
+            &theme.on_ground(ground),
+            presence,
+        );
     }
 
     fn needs_redraw(&self) -> bool {

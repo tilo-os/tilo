@@ -1314,7 +1314,7 @@ impl Widget for TypstApp {
 
         if self.editor_rect.area() > 0.0 {
             self.editor
-                .draw(scene, t, tr, theme, self.diagnostics.diags());
+                .draw(scene, t, tr, theme, presence, self.diagnostics.diags());
         }
         if self.preview_rect.area() > 0.0 {
             self.preview
