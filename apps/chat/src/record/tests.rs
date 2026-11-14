@@ -2140,6 +2140,7 @@ fn a_moved_message_shows_its_author_there_at_its_time_and_stays_the_movers() {
         handle: Some("jane".into()),
         source: "Slack".into(),
         url: None,
+        reference: None,
         created_ms: Some(1_741_000_000_000),
         updated_ms: None,
     };

@@ -205,14 +205,25 @@ impl People {
             return Byline {
                 actor: None,
                 name: origin.author.clone(),
-                text: crate::copy_catalogue::t_args(
-                    "byline-moved",
-                    &[
-                        ("name", origin.author.clone().into()),
-                        ("source", origin.source.clone().into()),
-                        ("date", day.into()),
-                    ],
-                ),
+                text: match origin.reference.as_deref() {
+                    Some(reference) => crate::copy_catalogue::t_args(
+                        "byline-moved-named",
+                        &[
+                            ("name", origin.author.clone().into()),
+                            ("source", origin.source.clone().into()),
+                            ("reference", reference.to_owned().into()),
+                            ("date", day.into()),
+                        ],
+                    ),
+                    None => crate::copy_catalogue::t_args(
+                        "byline-moved",
+                        &[
+                            ("name", origin.author.clone().into()),
+                            ("source", origin.source.clone().into()),
+                            ("date", day.into()),
+                        ],
+                    ),
+                },
                 at_ms,
             };
         }
@@ -529,6 +540,7 @@ mod byline_tests {
             handle: Some("jane".into()),
             source: "Jira".into(),
             url: None,
+            reference: None,
             created_ms: Some(1_741_000_000_000),
             updated_ms: None,
         };
@@ -546,6 +558,16 @@ mod byline_tests {
         );
         assert!(moved.text.contains("2025"), "{}", moved.text);
         assert_eq!(moved.at_ms, 1_741_000_000_000);
+        let named = tilo_resource::Origin {
+            reference: Some("ENG-12".into()),
+            ..origin
+        };
+        let named = people.byline("agent:grant-a8a42b74", "", 0, Some(&named));
+        assert!(
+            named.text.starts_with("Jane Doe in Jira (ENG-12), "),
+            "the name it had there reads beside the tool: {}",
+            named.text
+        );
 
         let agent = people.byline(
             "agent:grant-a8a42b74",

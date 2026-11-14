@@ -34,6 +34,10 @@ pub struct Origin {
     /// Its page there.
     #[serde(default)]
     pub url: Option<String>,
+    /// How it is named there, when the tool gives it a name of its own
+    /// (`ENG-12`, `#431`): what people who knew it there look for.
+    #[serde(default)]
+    pub reference: Option<String>,
     /// When it was written there, in milliseconds since the epoch.
     #[serde(default)]
     pub created_ms: Option<i64>,
@@ -57,6 +61,7 @@ impl Origin {
             handle: optional(self.handle),
             source: trim(self.source),
             url: optional(self.url),
+            reference: optional(self.reference),
             created_ms: self.created_ms,
             updated_ms: self.updated_ms,
         };
@@ -71,6 +76,7 @@ impl Origin {
             origin.handle.as_ref(),
             Some(&origin.source),
             origin.url.as_ref(),
+            origin.reference.as_ref(),
         ];
         if texts
             .into_iter()

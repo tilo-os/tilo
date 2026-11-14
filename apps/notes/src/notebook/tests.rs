@@ -1119,6 +1119,7 @@ fn a_moved_note_keeps_its_origin_and_who_moved_it() {
         handle: Some("jane".into()),
         source: "Notion".into(),
         url: Some("https://docs.example.com/doc/handbook".into()),
+        reference: None,
         created_ms: Some(1_741_000_000_000),
         updated_ms: None,
     };

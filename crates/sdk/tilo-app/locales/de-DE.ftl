@@ -95,5 +95,7 @@ tilo-feedback-draft = Feedback
 ## Who wrote an item and when
 # An item moved from another tool: its author there, the tool, and the day it was written there.
 byline-moved = { $name } in { $source }, { $date }
+# Ein verschobenes Element, das dort einen eigenen Namen hat (ENG-12).
+byline-moved-named = { $name } in { $source } ({ $reference }), { $date }
 # An item written here: its author and the day.
 byline-here = { $name }, { $date }

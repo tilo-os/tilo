@@ -957,6 +957,7 @@ fn origin(author: &str, created_ms: i64) -> tilo_resource::Origin {
         handle: Some("jane".to_owned()),
         source: "Jira".to_owned(),
         url: Some("https://tracker.example.com/acme/issues/12".to_owned()),
+        reference: Some("ACME-12".to_owned()),
         created_ms: Some(created_ms),
         updated_ms: Some(created_ms.saturating_add(1_000)),
     }
