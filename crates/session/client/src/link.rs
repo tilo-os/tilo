@@ -122,6 +122,9 @@ pub struct PeerStatus {
     pub device: [u8; 32],
     /// Bumped on every change.
     pub generation: u64,
+    /// How many connections this session has had: what a request refused on
+    /// one connection waits to pass before it is asked again.
+    pub connections: u64,
     /// This page's key state, one line per workspace, certificate and
     /// route, for diagnostics.
     pub key_state: String,
@@ -157,6 +160,7 @@ impl PeerStatus {
             outgoing_pending: 0,
             device,
             generation: 0,
+            connections: 0,
             key_state: String::new(),
             workspace_members: BTreeMap::new(),
             workspace_devices: BTreeMap::new(),
@@ -645,6 +649,22 @@ impl tilo_session_core::remote::RemoteSession for Asking {
 
     fn on_change(&self, wake: Wake) {
         self.reports.listen(&self.events, wake);
+    }
+
+    fn carrying(&self) -> bool {
+        self.reports
+            .read(|status| status.phase == TransportPhase::Connected)
+    }
+
+    fn connections(&self) -> u64 {
+        self.reports.read(|status| status.connections)
+    }
+
+    fn connect_again(&self) {
+        // The host no longer takes this connection as the device's: the session
+        // dials again, and what waited for it is asked on the connection that
+        // carries.
+        let _ = self.outbox.send(Cmd::Reconnect);
     }
 }
 

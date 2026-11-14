@@ -827,16 +827,12 @@ async fn the_first_call_after_tilo_login_is_the_agents() {
     drop(login);
     let person = person_of(&root);
     let runs = agent_runs(&peer, &host, &person, &["run-a"]);
-    // The agent's first call, once the peer is back in the workspace.
+    // The agent's first call, made while the peer is still finding its way
+    // back into the workspace: it waits for the connection, and nothing lists
+    // the workspace first.
     let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let (opened, failed) = tool(&runs[0], "tilo_do", json!({"path": "notes#open"})).await;
-        if !failed {
-            break;
-        }
-        assert!(Instant::now() < deadline, "notes#open: {opened}");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    let (opened, failed) = tool(&runs[0], "tilo_do", json!({"path": "notes#open"})).await;
+    assert!(!failed, "the first call after the login: {opened}");
     agents_note_reaches(&mut tab, &runs[0], &person, "The first note").await;
 
     // Whatever else drops the peer's connection, it comes back as the agent's run.

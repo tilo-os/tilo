@@ -14,17 +14,23 @@ pub enum UnavailableReason {
     InvalidRequest,
     /// Durable admission has not been installed. Never a terminal result.
     AdmissionUnavailable,
+    /// The frame came from a connection that is no longer the device's current
+    /// one: a newer connection of it took over, and this one is on its way out.
+    /// Never a terminal result either: the same request works on the connection
+    /// that took over.
+    Superseded,
 }
 
 impl UnavailableReason {
     /// Every reason, for exhaustive mappings and their tests.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Offline,
         Self::UnsupportedPeer,
         Self::Backpressure,
         Self::NotAuthorised,
         Self::InvalidRequest,
         Self::AdmissionUnavailable,
+        Self::Superseded,
     ];
 
     /// Stable token that leads the free-form `reason` of a v1
@@ -39,6 +45,7 @@ impl UnavailableReason {
             Self::NotAuthorised => "not-authorised",
             Self::InvalidRequest => "invalid-request",
             Self::AdmissionUnavailable => "admission-unavailable",
+            Self::Superseded => "superseded",
         }
     }
 

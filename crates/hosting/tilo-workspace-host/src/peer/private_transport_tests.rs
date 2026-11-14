@@ -846,7 +846,7 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
     };
     assert_eq!(
         UnavailableReason::from_wire_reason(&reason),
-        Some(UnavailableReason::NotAuthorised),
+        Some(UnavailableReason::Superseded),
         "{reason}"
     );
     assert!(brx.try_recv().is_err(), "nothing reached the target");

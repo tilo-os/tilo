@@ -502,7 +502,7 @@ pub(crate) fn restart_of(tool: Tool) -> String {
 /// tells the person, in their own tab, that it is there.
 pub(crate) fn first_act(agent: &Agent) -> String {
     format!(
-        "Call the tilo_ls tool — that first call is what enters the person's workspace — then do \
+        "Start with the tilo_ls tool, which lists what is in their workspace, then do \
          one visible thing so they see you working: \
          tilo_do with {{\"path\": \"notes#open\"}}, then tilo_do with \
          {{\"path\": \"notes#new-note\", \"args\": {{\"title\": \"Hello from {}\"}}}}. Their tab \
@@ -588,8 +588,8 @@ fn next_steps(agent: &Agent, tools: &Tools, tilo: &Path) -> String {
         ));
     }
     steps.push(format!(
-        "Call the tilo_ls tool — that first call is what enters the person's workspace — and tell \
-         them what you can do in Tilo: {WHAT_TILO_DOES}."
+        "Call the tilo_ls tool to see what is in their workspace, and tell them what you can do \
+         in Tilo: {WHAT_TILO_DOES}."
     ));
     steps.push(format!(
         "Then do one visible thing so they see you working: tilo_do with \
@@ -1116,7 +1116,7 @@ mod tests {
         // thing it does for the person.
         {
             let said = first_act(&agent::named("codex"));
-            assert!(said.starts_with("Call the tilo_ls tool"), "{said}");
+            assert!(said.starts_with("Start with the tilo_ls tool"), "{said}");
             assert!(said.contains("notes#new-note"), "{said}");
             assert!(said.contains("Hello from Codex"), "{said}");
         }

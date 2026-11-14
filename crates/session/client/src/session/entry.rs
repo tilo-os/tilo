@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use crate::Entry;
 
 use super::{Command, Exit, MAX_BACKOFF, NOT_ADMITTED, Task, TransportPhase};
+use tilo_session_core::remote::NOT_CONNECTED;
 
 /// Where the host's answer to another entry goes ([`Cmd::Enter`]).
 pub(super) type EntryCompletion =
@@ -170,9 +171,7 @@ impl Task {
         client: Option<&tilo_relay_session::RelayClient>,
     ) {
         let Some(entrance) = client.and_then(tilo_relay_session::RelayClient::entrance) else {
-            let _ = done.send(Err(LinkError::Unavailable(
-                "not connected to the host".to_owned(),
-            )));
+            let _ = done.send(Err(LinkError::Unavailable(NOT_CONNECTED.to_owned())));
             return;
         };
         let (cert, signer) = (self.config.cert.clone(), self.signer.clone());

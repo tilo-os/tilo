@@ -51,7 +51,9 @@ type Asks<T> = HashMap<u64, Asked<Result<T, ActionHostError>>>;
 
 impl SessionActions {
     /// Send the request `message` makes of a fresh correlation, its answer awaited in the map
-    /// `asks` picks: refused at once when the session cannot carry it.
+    /// `asks` picks: a session that cannot carry it now asks it again once the connection that
+    /// is the device's does (`Inner::ask`), and a failure it cannot ask again is answered at
+    /// once.
     fn ask<T: Send + 'static>(
         &self,
         asks: fn(&mut Waiting) -> &mut Asks<T>,
@@ -62,13 +64,15 @@ impl SessionActions {
             .next_correlation
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (answer, answered) = pending();
-        asks(&mut self.0.waiting.lock_recover()).insert(correlation, Asked::new(answer));
-        if let Err(error) = self.0.send(message(correlation)) {
+        let message = message(correlation);
+        asks(&mut self.0.waiting.lock_recover())
+            .insert(correlation, Asked::new(answer, message.clone()));
+        self.0.ask(message, |error| {
             let asked = asks(&mut self.0.waiting.lock_recover()).remove(&correlation);
             if let Some(asked) = asked {
                 asked.answer.complete(Err(error));
             }
-        }
+        });
         answered
     }
 }

@@ -25,7 +25,7 @@ use crate::{
     PeerStatus, Reports, TransportPhase, content::Kept,
 };
 use std::time::Duration;
-use tilo_session_core::remote::Heard;
+use tilo_session_core::remote::{Heard, NOT_CONNECTED};
 
 use tilo_relay_client::{CoeditPayload, DeviceSigner};
 use tilo_relay_protocol::Envelope;
@@ -1087,6 +1087,7 @@ impl Task {
     fn connected(&self) {
         self.reports.change(|status| {
             status.phase = TransportPhase::Connected;
+            status.connections = status.connections.wrapping_add(1);
             status.authenticated = true;
             status.attempt = 0;
             status.last_contact_at_ms = Some(tilo_clock::unix_now_ms());
@@ -1350,7 +1351,7 @@ impl Task {
             self.reports.emit(&Event::Remote(Heard::Undeliverable {
                 workspace_id,
                 to,
-                reason: "not connected to the host".into(),
+                reason: NOT_CONNECTED.into(),
             }));
             return;
         };
@@ -1775,7 +1776,7 @@ impl Task {
         client: Option<&RelayClient>,
     ) {
         let Some(client) = client else {
-            let _ = done.send(Err("not connected to the host".into()));
+            let _ = done.send(Err(NOT_CONNECTED.into()));
             return;
         };
         let request_id = self.workspaces_next;

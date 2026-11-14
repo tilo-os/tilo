@@ -4,6 +4,7 @@
 
 use super::{Envelope, RelayClient, Task};
 use tilo_relay_protocol::WorkspaceId;
+use tilo_session_core::remote::NOT_CONNECTED;
 
 impl Task {
     pub(super) fn voice_calls(
@@ -17,7 +18,7 @@ impl Task {
             self.reports
                 .emit(&crate::Event::Voice(crate::VoiceEvent::Calls {
                     ws: workspace_id,
-                    result: Err("not connected to the host".into()),
+                    result: Err(NOT_CONNECTED.into()),
                 }));
             true
         }
@@ -43,7 +44,7 @@ impl Task {
                 .emit(&crate::Event::Voice(crate::VoiceEvent::CallResult {
                     ws: workspace_id,
                     request,
-                    result: Err("not connected to the host".into()),
+                    result: Err(NOT_CONNECTED.into()),
                 }));
             true
         }

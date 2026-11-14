@@ -40,6 +40,39 @@ const SWEEP: Duration = Duration::from_millis(500);
 /// An answer sooner than this with nothing new is a device that does not hold.
 const HELD: Duration = Duration::from_secs(5);
 
+/// How long a request the session could not carry waits before it is asked
+/// again: long enough for the connection that answers it to be up.
+const ASK_AGAIN_AFTER: Duration = Duration::from_millis(250);
+
+/// The most times one set of waiting requests is asked again. A session that
+/// loses its connection more often than this is not one to keep a caller's
+/// request for: the request is answered, and the caller asks again.
+const ASKED_AGAIN_AT_MOST: u8 = 3;
+
+/// Why a session says it could not carry a request: it holds no connection to
+/// its host right now. A connection that comes back carries what waited for it.
+pub const NOT_CONNECTED: &str = "not connected to the host";
+
+/// The token that leads the refusal of a request whose connection is no longer
+/// the device's (`UnavailableReason::Superseded` on the wire): a newer
+/// connection of the same device took over, so what it asked is asked again on
+/// that one.
+const SUPERSEDED: &str = "superseded";
+
+/// Whether the refusal `reason` says the connection that carried the request
+/// is no longer the device's.
+fn superseded(reason: &str) -> bool {
+    let token = reason.split_once(':').map_or(reason, |(token, _)| token);
+    token.trim() == SUPERSEDED
+}
+
+/// Whether a refused request is asked again instead of answered: the session
+/// could not carry it, and nothing ran, so the same request works once a
+/// connection that is the device's carries it.
+fn worth_asking_again(reason: &str) -> bool {
+    reason == NOT_CONNECTED || superseded(reason)
+}
+
 /// What a host's session heard for the asks here, since the last call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Heard {
@@ -74,6 +107,24 @@ pub trait RemoteSession: Send + Sync {
     fn take_heard(&self) -> Vec<Heard>;
     /// Call `wake` whenever the session heard something or its state changed.
     fn on_change(&self, wake: Arc<dyn Fn() + Send + Sync>);
+
+    /// Whether the session carries its requests now: it holds a connection to
+    /// its host. A request it could not carry is asked again once it does.
+    fn carrying(&self) -> bool {
+        true
+    }
+
+    /// How many connections the session has had ([`Heard`]'s refusals name the
+    /// one they came from): a request refused on one connection is asked again
+    /// on a later one, never on the same.
+    fn connections(&self) -> u64 {
+        0
+    }
+
+    /// Connect again, for a connection the host no longer treats as this
+    /// device's: a newer connection of the same device took over, and this one
+    /// is on its way out.
+    fn connect_again(&self) {}
 }
 
 /// One device's actions in one workspace, asked through the session: the last clone dropped stops
@@ -87,18 +138,33 @@ struct Inner {
     device: [u8; 32],
     waiting: Mutex<Waiting>,
     next_correlation: AtomicU64,
+    /// What the session could not carry, and when to ask it again.
+    again: Mutex<Again>,
+}
+
+/// The waiting requests of a connection the session could not carry, as they
+/// are asked again on the connection that does.
+#[derive(Default)]
+struct Again {
+    /// The connection they were refused on, and when to look for a later one.
+    refused_on: Option<(u64, Instant)>,
+    /// How many times they were asked again.
+    times: u8,
 }
 
 /// A request waiting for its answer, and when it gives up.
 struct Asked<T> {
     answer: Completer<T>,
     until: Instant,
+    /// The message it asks, for one the session could not carry and asks again.
+    again: RemoteActionMessage,
 }
 
 impl<T> Asked<T> {
-    fn new(answer: Completer<T>) -> Self {
+    fn new(answer: Completer<T>, again: RemoteActionMessage) -> Self {
         Self {
             answer,
+            again,
             until: Instant::now()
                 .checked_add(REPLY_DEADLINE)
                 .unwrap_or_else(Instant::now),
@@ -273,6 +339,38 @@ impl Waiting {
             && self.changes.is_empty()
     }
 
+    /// What every request still waiting asks: what is asked again on the
+    /// connection that carries, after the one it was asked on did not.
+    fn asked_again(&self) -> Vec<RemoteActionMessage> {
+        let mut again = Vec::new();
+        again.extend(self.catalogues.values().map(|asked| asked.again.clone()));
+        again.extend(self.puts.values().map(|asked| asked.again.clone()));
+        again.extend(self.gets.values().map(|asked| asked.again.clone()));
+        again.extend(self.links.values().map(|asked| asked.again.clone()));
+        again.extend(self.confirms.values().map(|asked| asked.again.clone()));
+        again.extend(self.searches.values().map(|asked| asked.again.clone()));
+        again.extend(self.changes.values().map(|asked| asked.again.clone()));
+        again.extend(
+            self.receipts
+                .values()
+                .flatten()
+                .map(|asked| asked.again.clone()),
+        );
+        again.extend(
+            self.cancels
+                .values()
+                .flatten()
+                .map(|asked| asked.again.clone()),
+        );
+        again.extend(
+            self.updates
+                .values()
+                .flatten()
+                .map(|asked| asked.again.clone()),
+        );
+        again
+    }
+
     /// The requests `message` answers.
     fn answer(&mut self, message: RemoteActionMessage, give: &mut Vec<Give>) {
         match message {
@@ -428,20 +526,18 @@ impl SessionActions {
     ) -> Pending<Answered<ContentPutAnswer>> {
         let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
         let (answer, answered) = pending();
+        let message = RemoteActionMessage::ContentPutRequest { correlation, step };
         self.0
             .waiting
             .lock_recover()
             .puts
-            .insert(correlation, Asked::new(answer));
-        if let Err(error) = self
-            .0
-            .send(RemoteActionMessage::ContentPutRequest { correlation, step })
-        {
+            .insert(correlation, Asked::new(answer, message.clone()));
+        self.0.ask(message, |error| {
             let asked = self.0.waiting.lock_recover().puts.remove(&correlation);
             if let Some(asked) = asked {
                 asked.answer.complete(Err(error));
             }
-        }
+        });
         answered
     }
 
@@ -451,20 +547,18 @@ impl SessionActions {
     pub fn content_link(&self, link: ContentLinkAsk) -> Pending<Answered<ContentLink>> {
         let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
         let (answer, answered) = pending();
+        let message = RemoteActionMessage::ContentLinkRequest { correlation, link };
         self.0
             .waiting
             .lock_recover()
             .links
-            .insert(correlation, Asked::new(answer));
-        if let Err(error) = self
-            .0
-            .send(RemoteActionMessage::ContentLinkRequest { correlation, link })
-        {
+            .insert(correlation, Asked::new(answer, message.clone()));
+        self.0.ask(message, |error| {
             let asked = self.0.waiting.lock_recover().links.remove(&correlation);
             if let Some(asked) = asked {
                 asked.answer.complete(Err(error));
             }
-        }
+        });
         answered
     }
 
@@ -483,19 +577,20 @@ impl SessionActions {
     fn get_piece(&self, content: &str, offset: u64, length: u64) -> Answered<ContentGetAnswer> {
         let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
         let (answer, answered) = pending();
-        self.0
-            .waiting
-            .lock_recover()
-            .gets
-            .insert(correlation, Asked::new(answer));
-        let request = RemoteActionMessage::ContentGetRequest {
+        let message = RemoteActionMessage::ContentGetRequest {
             correlation,
             content: content.to_owned(),
             offset,
             length,
         };
-        if let Err(error) = self.0.send(request) {
-            self.0.waiting.lock_recover().gets.remove(&correlation);
+        self.0
+            .waiting
+            .lock_recover()
+            .gets
+            .insert(correlation, Asked::new(answer, message.clone()));
+        let mut failed = None;
+        self.0.ask(message, |error| failed = Some(error));
+        if let Some(error) = failed {
             return Err(error);
         }
         in_time(answered).unwrap_or_else(|| Err(unavailable("the device did not answer in time")))
@@ -515,6 +610,7 @@ impl SessionActions {
             device,
             waiting: Mutex::default(),
             next_correlation: AtomicU64::new(1),
+            again: Mutex::default(),
         });
         let woken = Arc::downgrade(&inner);
         session.on_change(Arc::new(move || {
@@ -530,20 +626,23 @@ impl SessionActions {
     #[cfg(not(target_arch = "wasm32"))]
     fn ask_state(&self, id: &InvocationId) -> Option<InvocationState> {
         let (answer, answered) = pending();
+        let message = RemoteActionMessage::Observe {
+            invocation: *id,
+            wait_ms: None,
+            seen: None,
+        };
         self.0
             .waiting
             .lock_recover()
             .updates
             .entry(*id)
             .or_default()
-            .push(Asked::new(answer));
-        self.0
-            .send(RemoteActionMessage::Observe {
-                invocation: *id,
-                wait_ms: None,
-                seen: None,
-            })
-            .ok()?;
+            .push(Asked::new(answer, message.clone()));
+        let mut failed = None;
+        self.0.ask(message, |error| failed = Some(error));
+        if failed.is_some() {
+            return None;
+        }
         answered
             .wait_timeout(REPLY_DEADLINE)
             .ok()
@@ -583,7 +682,8 @@ fn sweep(inner: Weak<Inner>) {
     });
 }
 
-/// Answer what waited past its deadline; whether the actions still exist.
+/// Answer what waited past its deadline, and ask again what the session could
+/// not carry; whether the actions still exist.
 fn expire(inner: &Weak<Inner>) -> bool {
     let Some(inner) = inner.upgrade() else {
         return false;
@@ -599,6 +699,7 @@ fn expire(inner: &Weak<Inner>) -> bool {
     for give in give {
         give();
     }
+    inner.ask_again_if_due();
     true
 }
 
@@ -623,15 +724,78 @@ impl Inner {
                     to,
                     reason,
                 } if workspace_id == self.workspace_id && to == self.device => {
-                    self.waiting
-                        .lock_recover()
-                        .fail_all(&unavailable(reason), &mut give);
+                    // A connection that is not the device's any more, or none at
+                    // all, ran nothing: what waits is asked again on the
+                    // connection that is. Any other refusal is the answer.
+                    // The connection it was refused on counts first: the one it
+                    // is asked again on is a later one.
+                    let kept = worth_asking_again(&reason) && self.refused();
+                    if superseded(&reason) {
+                        self.session.connect_again();
+                    }
+                    if !kept {
+                        self.waiting
+                            .lock_recover()
+                            .fail_all(&unavailable(reason), &mut give);
+                    }
                 }
                 _ => {}
             }
         }
         for give in give {
             give();
+        }
+        self.ask_again_if_due();
+    }
+
+    /// The session could not carry what waits: ask it again once a connection
+    /// later than the one that refused it carries. `false` when it was asked
+    /// again as often as it may be, so the refusal is the answer.
+    fn refused(&self) -> bool {
+        let mut again = self.again.lock_recover();
+        if again.refused_on.is_some() {
+            return true;
+        }
+        if again.times >= ASKED_AGAIN_AT_MOST {
+            return false;
+        }
+        let due = Instant::now()
+            .checked_add(ASK_AGAIN_AFTER)
+            .unwrap_or_else(Instant::now);
+        again.refused_on = Some((self.session.connections(), due));
+        true
+    }
+
+    /// Ask what waits again, once a connection later than the one that refused
+    /// it carries the session.
+    fn ask_again_if_due(&self) {
+        {
+            let mut again = self.again.lock_recover();
+            let Some((refused_on, not_before)) = again.refused_on else {
+                return;
+            };
+            if Instant::now() < not_before
+                || again.times >= ASKED_AGAIN_AT_MOST
+                || !self.session.carrying()
+                || self.session.connections() <= refused_on
+            {
+                return;
+            }
+            again.refused_on = None;
+            again.times = again.times.saturating_add(1);
+        }
+        let asked = self.waiting.lock_recover().asked_again();
+        for message in asked {
+            let Err(error) = self.send(message) else {
+                continue;
+            };
+            // The connection that carries now would not take them either: the
+            // refusal stands, and this is the answer.
+            let mut give = Vec::new();
+            self.waiting.lock_recover().fail_all(&error, &mut give);
+            for give in give {
+                give();
+            }
         }
     }
 
@@ -675,6 +839,22 @@ impl Inner {
             .send_remote_action(self.workspace_id, self.device, frame)
             .map_err(|error| unavailable(format!("the session is closed: {error}")))
     }
+
+    /// Ask the device `message`, `asked` waiting for its answer. A session that
+    /// cannot carry it now asks it again once a connection that carries does
+    /// (`refused`); any other failure is `fail`ed at once.
+    fn ask(&self, message: RemoteActionMessage, fail: impl FnOnce(ActionHostError)) {
+        match self.send(message) {
+            Ok(()) => {}
+            Err(error @ ActionHostError::Unavailable { .. }) => {
+                // Asked again as often as it may be: the refusal is the answer.
+                if !self.refused() {
+                    fail(error);
+                }
+            }
+            Err(error) => fail(error),
+        }
+    }
 }
 
 impl ActionHost for SessionActions {
@@ -705,15 +885,13 @@ impl ActionHost for SessionActions {
     fn query(&self, _caller: &Caller, query: CatalogueQuery) -> Pending<Answered<CataloguePage>> {
         let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
         let (answer, answered) = pending();
+        let message = RemoteActionMessage::CatalogueRequest { correlation, query };
         self.0
             .waiting
             .lock_recover()
             .catalogues
-            .insert(correlation, Asked::new(answer));
-        if let Err(error) = self
-            .0
-            .send(RemoteActionMessage::CatalogueRequest { correlation, query })
-        {
+            .insert(correlation, Asked::new(answer, message.clone()));
+        self.0.ask(message, |error| {
             let asked = self
                 .0
                 .waiting
@@ -723,7 +901,7 @@ impl ActionHost for SessionActions {
             if let Some(asked) = asked {
                 asked.answer.complete(Err(error));
             }
-        }
+        });
         answered
     }
 
@@ -734,19 +912,20 @@ impl ActionHost for SessionActions {
     ) -> Pending<Answered<InvocationReceipt>> {
         let invocation = request.invocation;
         let (answer, answered) = pending();
+        let message = RemoteActionMessage::Invoke(request);
         self.0
             .waiting
             .lock_recover()
             .receipts
             .entry(invocation)
             .or_default()
-            .push(Asked::new(answer));
-        if let Err(error) = self.0.send(RemoteActionMessage::Invoke(request)) {
+            .push(Asked::new(answer, message.clone()));
+        self.0.ask(message, |error| {
             let asked = self.0.waiting.lock_recover().receipts.remove(&invocation);
             for asked in asked.unwrap_or_default() {
                 asked.answer.complete(Err(error.clone()));
             }
-        }
+        });
         // What the device accepted and still runs is followed from here.
         let inner = Arc::downgrade(&self.0);
         answered.map(move |receipt| {
@@ -808,11 +987,17 @@ impl ActionHost for SessionActions {
         followed.asked = Some(Instant::now());
         let seen = UpdateMark::of(&followed.state.update);
         let (answer, answered) = pending();
+        let wait_ms = u32::try_from(MAX_REMOTE_WAIT.as_millis()).unwrap_or(u32::MAX);
+        let message = RemoteActionMessage::Observe {
+            invocation: *id,
+            wait_ms: Some(wait_ms),
+            seen: Some(seen),
+        };
         waiting
             .updates
             .entry(*id)
             .or_default()
-            .push(Asked::new(answer));
+            .push(Asked::new(answer, message.clone()));
         drop(waiting);
         let inner = Arc::downgrade(&self.0);
         let invocation = *id;
@@ -821,36 +1006,31 @@ impl ActionHost for SessionActions {
                 inner.followed(invocation, seen, state.flatten());
             }
         });
-        let wait_ms = u32::try_from(MAX_REMOTE_WAIT.as_millis()).unwrap_or(u32::MAX);
-        let sent = self.0.send(RemoteActionMessage::Observe {
-            invocation,
-            wait_ms: Some(wait_ms),
-            seen: Some(seen),
-        });
-        if sent.is_err() {
-            let asked = self.0.waiting.lock_recover().updates.remove(id);
+        self.0.ask(message, |_| {
+            let asked = self.0.waiting.lock_recover().updates.remove(&invocation);
             for asked in asked.unwrap_or_default() {
                 asked.answer.complete(None);
             }
-        }
+        });
         Some(change)
     }
 
     fn cancel(&self, _caller: &Caller, id: &InvocationId) -> Pending<Answered<()>> {
         let (answer, answered) = pending();
+        let message = RemoteActionMessage::Cancel { invocation: *id };
         self.0
             .waiting
             .lock_recover()
             .cancels
             .entry(*id)
             .or_default()
-            .push(Asked::new(answer));
-        if let Err(error) = self.0.send(RemoteActionMessage::Cancel { invocation: *id }) {
+            .push(Asked::new(answer, message.clone()));
+        self.0.ask(message, |error| {
             let asked = self.0.waiting.lock_recover().cancels.remove(id);
             for asked in asked.unwrap_or_default() {
                 asked.answer.complete(Err(error.clone()));
             }
-        }
+        });
         answered
     }
 
@@ -863,20 +1043,21 @@ impl ActionHost for SessionActions {
     ) -> Pending<Answered<ConfirmedInvocation>> {
         let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
         let (answer, answered) = pending();
+        let message = RemoteActionMessage::Confirm {
+            correlation,
+            request: Box::new(request.clone()),
+        };
         self.0
             .waiting
             .lock_recover()
             .confirms
-            .insert(correlation, Asked::new(answer));
-        if let Err(error) = self.0.send(RemoteActionMessage::Confirm {
-            correlation,
-            request: Box::new(request.clone()),
-        }) {
+            .insert(correlation, Asked::new(answer, message.clone()));
+        self.0.ask(message, |error| {
             let asked = self.0.waiting.lock_recover().confirms.remove(&correlation);
             if let Some(asked) = asked {
                 asked.answer.complete(Err(error));
             }
-        }
+        });
         answered
     }
 }
@@ -1025,6 +1206,19 @@ mod tests {
                 wake();
             }
         }
+
+        /// Say the session could not carry a frame to this device, and why.
+        fn undeliverable(&self, reason: &str) {
+            self.heard.lock_recover().push(Heard::Undeliverable {
+                workspace_id: WorkspaceId::from_u128(1),
+                to: DEVICE,
+                reason: reason.to_owned(),
+            });
+            let wake = self.wake.lock_recover().clone();
+            if let Some(wake) = wake {
+                wake();
+            }
+        }
     }
 
     impl RemoteSession for Device {
@@ -1093,6 +1287,88 @@ mod tests {
             .expect("the device answers")
             .expect("the device takes it");
         assert_eq!(receipt.status, ReceiptStatus::Accepted, "{receipt:?}");
+    }
+
+    /// A session whose connection the device no longer has: what it asks there
+    /// is refused as superseded, and it answers on the connection it dials
+    /// again.
+    struct SupersededOnce {
+        device: Arc<Device>,
+        /// The connection the session is on, whether the host takes frames on
+        /// it, and how many times the session dialled again.
+        connections: Mutex<(u64, bool, usize)>,
+    }
+
+    impl SupersededOnce {
+        fn new(device: Arc<Device>) -> Arc<Self> {
+            Arc::new(Self {
+                device,
+                connections: Mutex::new((1, false, 0)),
+            })
+        }
+    }
+
+    impl RemoteSession for SupersededOnce {
+        fn send_remote_action(
+            &self,
+            workspace_id: WorkspaceId,
+            to: [u8; 32],
+            frame: Vec<u8>,
+        ) -> Result<(), String> {
+            if self.connections.lock_recover().1 {
+                return self.device.send_remote_action(workspace_id, to, frame);
+            }
+            self.device
+                .undeliverable("superseded: a newer connection of this device took over");
+            Ok(())
+        }
+
+        fn take_heard(&self) -> Vec<Heard> {
+            self.device.take_heard()
+        }
+
+        fn on_change(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+            self.device.on_change(wake);
+        }
+
+        fn connections(&self) -> u64 {
+            self.connections.lock_recover().0
+        }
+
+        fn connect_again(&self) {
+            let mut connections = self.connections.lock_recover();
+            connections.0 = connections.0.saturating_add(1);
+            connections.1 = true;
+            connections.2 = connections.2.saturating_add(1);
+        }
+    }
+
+    /// A request asked on a connection the device no longer has is the
+    /// session's to ask again, not the caller's to retry: the connection that
+    /// carries answers it, and the caller never hears the first refusal.
+    #[test]
+    fn a_request_refused_on_a_superseded_connection_is_asked_again_on_the_next() {
+        let invocation = InvocationId::new();
+        let device = Device::new(invocation, false);
+        let session = SupersededOnce::new(Arc::clone(&device));
+        let actions = SessionActions::new(
+            Arc::clone(&session) as Arc<dyn RemoteSession>,
+            WorkspaceId::from_u128(1),
+            DEVICE,
+        );
+        let receipt = actions
+            .invoke(&caller(), write(invocation))
+            .wait_timeout(Duration::from_secs(5))
+            .ok()
+            .flatten()
+            .expect("answered, not refused")
+            .expect("asked again on the connection that carries");
+        assert_eq!(receipt.status, ReceiptStatus::Accepted, "{receipt:?}");
+        assert_eq!(
+            session.connections.lock_recover().2,
+            1,
+            "the session dialled again rather than leaving the caller to retry"
+        );
     }
 
     /// A write the device answered accepted (still being saved) after its caller stopped

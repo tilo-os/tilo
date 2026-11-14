@@ -71,9 +71,13 @@ pub(super) async fn handle_remote_action(
             "workspace membership is unreadable",
         );
     };
-    if action_peer_admitted(&wr, peer, session).is_err()
-        || !current_session(&wr, peer, session.outbound)
-    {
+    if !current_session(&wr, peer, session.outbound) {
+        // A newer connection of the same device took over: this one is on its
+        // way out, and what it asks is asked again by the connection that
+        // carries the device now.
+        return refuse(U::Superseded, "a newer connection of this device took over");
+    }
+    if action_peer_admitted(&wr, peer, session).is_err() {
         return refuse(U::NotAuthorised, "sender may not act in the workspace");
     }
     // A browser environment's device answers the page actions the relay hands

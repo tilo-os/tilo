@@ -5,6 +5,7 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_session::RelayClient;
 
 use super::Task;
+use tilo_session_core::remote::NOT_CONNECTED;
 
 /// Where whether the session is now the agent's run goes ([`crate::Cmd::AgentRun`]).
 pub(super) type AgentRunCompletion = crate::Answer<Result<(), String>>;
@@ -20,7 +21,7 @@ impl Task {
         // A session is one agent's run: the host refuses another, so the first is the one kept.
         self.agent_run.get_or_insert_with(|| label.clone());
         let Some(client) = client else {
-            let _ = done.send(Err("not connected to the host".into()));
+            let _ = done.send(Err(NOT_CONNECTED.into()));
             return true;
         };
         let request_id = self.agent_runs_next;
