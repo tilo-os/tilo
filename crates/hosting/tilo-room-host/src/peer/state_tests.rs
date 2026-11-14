@@ -1479,10 +1479,26 @@ async fn replay_capture_waits_for_owner_capacity_and_can_be_cancelled() {
             })
             .unwrap();
         reached.await.unwrap();
+        // The last read of the backlog waits at a barrier of its own until
+        // the capture was looked at: the backlog cannot drain in the moment
+        // between the capture completing and this test reading that it did,
+        // however late this thread is scheduled. A capture that waited its
+        // turn behind the backlog would wait behind that barrier too, and
+        // never complete.
+        let (backlog, _held) =
+            crate::store::test_barrier::install(fixture.store.root(), "hold-backlog");
         let mut queued = Vec::new();
-        for _ in 0..32 {
+        for _ in 0..31 {
             queued.push(owner.read(1, |_| Ok(())).unwrap());
         }
+        queued.push(
+            owner
+                .read(1, |state| {
+                    crate::store::test_barrier::pause(state.store.root(), "hold-backlog");
+                    Ok(())
+                })
+                .unwrap(),
+        );
         let subscribing = fixture.clone();
         let mut task = tokio::spawn(async move { subscribing.subscribe_ticket().await });
         assert!(
@@ -1510,6 +1526,7 @@ async fn replay_capture_waits_for_owner_capacity_and_can_be_cancelled() {
             );
             drop(ticket);
         }
+        drop(backlog);
         for receipt in queued {
             crate::persistence::receipt(receipt).await.unwrap();
         }
