@@ -2264,9 +2264,6 @@ impl Session {
     ) -> Result<ResourceOperationStart, DoorError> {
         let empty = serde_json::Map::new();
         let arguments = arguments.as_object().unwrap_or(&empty);
-        if let Ok(mut arrangement) = self.shared.arrangement.try_borrow_mut() {
-            let _ = &mut arrangement;
-        }
         self.shared.doors.invoke_as(
             actor,
             &ActionAddress::new(resource, action),

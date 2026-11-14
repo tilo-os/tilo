@@ -674,6 +674,25 @@ pub fn write(
     Ok(changed)
 }
 
+/// Stand the containers every entry of the record is kept in, empty, where `doc` holds none yet: a
+/// change that takes back the entries a later change wrote leaves them standing.
+///
+/// # Errors
+/// The document refused a write.
+pub fn found(doc: &mut AutoCommit) -> Result<(), automerge::AutomergeError> {
+    for key in [WORKSPACES, STRIPS, GROUPS, WINDOWS] {
+        let held = At {
+            doc: &*doc,
+            heads: None,
+        }
+        .containers(key);
+        if held.is_empty() {
+            doc.put_object(ROOT, key, ObjType::Map)?;
+        }
+    }
+    Ok(())
+}
+
 /// `value` written as the field `key` of `obj`: the document is the only
 /// thing that can refuse a value made of JSON.
 fn write_json(

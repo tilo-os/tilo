@@ -91,6 +91,13 @@ fn record_workspace(
     Some((workspace, desktop))
 }
 
+/// The layout `doc` holds of the workspace `identity`.
+pub fn layout_of(doc: &AutoCommit, identity: WorkspaceId) -> Option<Workspace> {
+    super::read(doc, None)
+        .and_then(|desktop| record_workspace(desktop, identity))
+        .map(|(record, _)| record)
+}
+
 /// Who writes a device's layout: the person at it, and which ids it mints.
 pub struct Writer<'a> {
     /// The person id of whoever sits at this device; what it makes is
