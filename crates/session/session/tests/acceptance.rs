@@ -113,12 +113,15 @@ fn step_2_the_repl_connects_and_lists_the_sessions_resources() {
         "the session's own resources are listed: {apps}"
     );
 
-    // The session's own: the arrangement it arranges, the session it shows.
+    // The session's own: the layout it arranges — listed by the word a person reads it by, with
+    // its placing among its actions — and the session it shows.
     let (listing, failed) = repl.call(&mut session, "tilo_ls", &json!({"path": "session"}));
     assert!(!failed, "{listing}");
     assert!(
-        listing.contains("shell:arrangement") || listing.contains("arrangement"),
-        "the arrangement is among them: {listing}"
+        listing
+            .lines()
+            .any(|line| line.starts_with("Layout") && line.contains("session.place")),
+        "the layout is among them, with its placing: {listing}"
     );
     // A listing names the roots of what the session publishes: the session is a row of its own,
     // by the kind its resource is, and what it holds is read a level down.

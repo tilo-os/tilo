@@ -4,9 +4,11 @@
 //!
 //! The shell keeps those choices in its own record (`records: .own`), one document opened through
 //! the store every app's own record of the person's is opened through, and carried on the
-//! person's own cluster. This proves the file half of it: a session that sets four choices and
-//! ends, and a session started after it on the same device, reads all four back. It fails on a
-//! build that starts the shell on an empty record every time, which is what it did before.
+//! person's own cluster. Where a note stands on the canvas is not the shell's: it is the
+//! workspace's layout, kept in the workspace's own record. This proves the file half of both: a
+//! session that sets three choices and places a note, and ends, and a session started after it on
+//! the same device, reads all three back and shows the note where it stood, at its size. It fails
+//! on a build that starts the shell on an empty record every time, or the canvas anew.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -44,7 +46,8 @@ fn person_dir() -> &'static Path {
     })
 }
 
-/// A headless session showing the shell over the seeded apps, on this device's own state, with its
+/// A headless session showing the shell over the seeded apps, on this device's own state — a device
+/// that holds its workspaces, as a person's own does (`state` is a seated one) — with its
 /// agent door and the test's own program admitted to act as the person: two calls on one test are
 /// two sessions of the same device, as a restart is.
 fn session(root: &Path, state: &Path) -> Session {
@@ -124,31 +127,40 @@ fn place(session: &mut Session, resource: &str) -> u64 {
     place
 }
 
-/// Whether the arrangement holds a place for the resource `record`, by its published id.
-fn placed(session: &Session, record: &str) -> bool {
-    session
-        .arrangement()
-        .borrow()
-        .reading()
-        .places
+/// Where the canvas stands the resource `record` (by its published id): its point and size, once the
+/// arrangement holds a place for it.
+fn placed(session: &Session, record: &str) -> Option<(i64, i64, i64, i64)> {
+    let reading = session.arrangement().borrow().reading();
+    let place = reading.places.iter().find(|place| place.record == record)?;
+    let strip = reading
+        .strips
         .iter()
-        .any(|place| place.record == record)
+        .find(|strip| strip.key == place.strip)?;
+    Some((
+        strip.canvas_x,
+        strip.canvas_y,
+        strip.canvas_width,
+        strip.canvas_height,
+    ))
 }
 
 // The shell's record is the person's: the choices a person makes of their shell — the style,
-// where the dock rides and the style's own setting — are the
-// same after the session ends and a new one starts on this device.
+// where the dock rides and the style's own setting — are the same after the session ends and a new
+// one starts on this device, and the note they placed on the canvas stands at the same point and
+// size, kept in the workspace's own layout.
 //
 // It fails on a build that starts the shell on an empty record: the second session draws the
-// shipped defaults, and none of the four is there.
+// shipped defaults, and none of the three is there; and on one that starts the canvas anew.
 #[test]
 fn the_shell_choices_survive_the_session_ending() {
     let _settled = ui::motion::testing::settled();
     let _person = person_dir();
-    let state = tempfile::tempdir().expect("a state directory for this device");
-    let (note, before) = {
+    // This device's own state, holding its workspaces: the identity is minted in its home, so its
+    // engine opens and the canvas is the workspace's layout.
+    let state = crate::common::seated_state();
+    let (note, stood, before) = {
         let root = crate::common::private_home();
-        let mut session = session(root.path(), state.path());
+        let mut session = session(root.path(), &state);
         crate::common::until(&mut session, "the shell's parts", |session| {
             crate::common::on_screen(session, "Notifications").is_some()
         });
@@ -170,16 +182,22 @@ fn the_shell_choices_survive_the_session_ending() {
         let note = note(&session, NOTE);
         place(&mut session, &note);
         crate::common::until(&mut session, "the note on the canvas", |session| {
-            placed(session, &note)
+            placed(session, &note).is_some()
         });
+        let stood = placed(&session, &note).expect("the note on the canvas");
+        assert_eq!(
+            stood,
+            (80, 60, 720, 620),
+            "the note stands where it was placed, at its size"
+        );
         // The record's file on this device is where the person's choices are kept.
         let path = session
             .shell_record_path()
             .expect("the shell keeps its record on this device")
             .to_path_buf();
-        // The four choices, as the shell holds them now, before the session ends. The dock's edge
-        // is a choice, kept as the case it names; the grid is a flag; the style a view reference;
-        // and the note a place in the arrangement.
+        // The three choices, as the shell holds them now, before the session ends. The dock's
+        // edge is a choice, kept as the case it names; the grid is a flag; the style a view
+        // reference. The note is a place in the workspace's layout, not a choice of the shell's.
         let held = Choices {
             dock_edge: session.shell_setting("dock_edge"),
             frames_snap: session.shell_setting("frames_snap"),
@@ -208,12 +226,12 @@ fn the_shell_choices_survive_the_session_ending() {
             "the record's file is written: {}",
             path.display()
         );
-        (note, held)
+        (note, stood, held)
     };
 
     // A new session on the same device: what a restart is.
     let root = crate::common::private_home();
-    let mut next = session(root.path(), state.path());
+    let mut next = session(root.path(), &state);
     crate::common::until(&mut next, "the shell's record drawn", |session| {
         session.shell_setting("style").is_some()
     });
@@ -236,10 +254,16 @@ fn the_shell_choices_survive_the_session_ending() {
         Some(serde_json::Value::String("so.tilo.shell:desktop".into())),
         "the desktop style is still the one shown"
     );
-    // Where the note stands is the workspace's layout, kept in the workspace's own records rather
-    // than in the shell's: a session with no workspace held (as this one) starts its layout anew,
-    // and the layout's own tests prove it survives where a workspace holds it.
-    drop(note);
+    // Where the note stands is the workspace's layout, kept in the workspace's own record: the new
+    // session shows it at the same point and size.
+    crate::common::until(&mut next, "the note back on the canvas", |session| {
+        placed(session, &note).is_some()
+    });
+    assert_eq!(
+        placed(&next, &note),
+        Some(stood),
+        "the note stands at the same point and size after the restart"
+    );
 }
 
 /// The shell's shell choices a test reads across a restart: the dock's edge, whether the Frames

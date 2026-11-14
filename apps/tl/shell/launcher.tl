@@ -115,15 +115,12 @@ action open_first(query: Text) {
     } else { session.search(query: query) }
 }
 
-/// One installed app: its name, what it is for, and the glyph it shows. A press opens it,
+/// One installed app: its name, its package id (what typing finds it by besides the name), and the
+/// glyph it shows. A press opens it,
 /// through the app's own `open` the dock's press and an agent's step run, so the launcher opens
 /// what it lists the one way.
 view app_row(a: device.App) {
-    ui.ListRow(
-        a.name,
-        secondary: if a.description != "" { a.description } else { a.key },
-        icon: a.icon,
-    ) {
+    ui.ListRow(a.name, secondary: a.key, icon: a.icon) {
         on activate: session.open_app(app: a.key)
     }
 }
