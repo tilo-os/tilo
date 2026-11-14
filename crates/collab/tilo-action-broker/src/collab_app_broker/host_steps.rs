@@ -569,9 +569,39 @@ impl AppBrokerState {
             }
             Ok(policy)
         })?;
+        // A step a run takes is the run's agent's, working on the run's issue, as the same agent's
+        // app action in the run is (`BrokerActor::admit_published_in`): the run host's connection
+        // is the agent's own, and a kept agent's connection works no single issue of its own.
+        let working;
+        let actor = match run {
+            Some(run)
+                if policy.is_agent()
+                    && policy.issue().is_none()
+                    && policy
+                        .id()
+                        .strip_prefix("agent:")
+                        .unwrap_or_else(|| policy.id())
+                        == run.agent() =>
+            {
+                working = policy.clone().working_on(run.issue());
+                &working
+            }
+            _ => &policy,
+        };
+        // The turn the step answers, on its actor: a run host's connection carries none on its
+        // caller, so the actor decided from it has none, and the session stands what a turn's
+        // step shows beside the turn its actor is on. A step of no turn keeps its actor as it is.
+        let on_turn;
+        let actor = match turn {
+            Some(turn) if actor.turn() != Some(turn) => {
+                on_turn = actor.clone().on_turn(Some(turn.clone()));
+                &on_turn
+            }
+            _ => actor,
+        };
         let step = HostStepRequest {
             workspace: workspace_id,
-            actor: &policy,
+            actor,
             address,
             argument: run_argument.as_deref(),
             task_run: run.map(|run| run as &dyn tilo_broker_core::steps::TaskRun),
@@ -1110,6 +1140,7 @@ mod identity_admin_tests {
             identity_admin::STEPS
                 .into_iter()
                 .map(|step| tilo_actions::ActionDescriptor {
+                    did: None,
                     state: tilo_actions::ActionState::default(),
                     semantic_identity: None,
                     address: tilo_actions::ActionAddress::new(identity_admin::RESOURCE, step),
@@ -1825,6 +1856,7 @@ mod settings_records_tests {
         fn descriptor(&self, privileged: bool) -> tilo_actions::ActionDescriptor {
             let now = self.minutes.lock().unwrap().to_string();
             tilo_actions::ActionDescriptor {
+                did: None,
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 address: tilo_actions::ActionAddress::new(RESOURCE, "field-edit"),

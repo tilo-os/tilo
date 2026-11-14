@@ -326,6 +326,10 @@ d-i2mhsb3h = Home
     .w-projects = Projects
     .w-no-tasks-here = No tasks here
 
+d-q4eq7oqv = To do
+    .w-new-task = New task
+    .w-nothing-to-do = Nothing to do
+
 d-doqleehr = Task item
     .w-what-to-do = What to do
     .w-anything-worth-remembering-about-it = Anything worth remembering about it.

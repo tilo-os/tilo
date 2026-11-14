@@ -518,6 +518,7 @@ tilo_test_env::scenario! {
                     y: 0,
                     width: 2,
                     height: 3,
+                    hugs: false,
                 },
             )],
         );

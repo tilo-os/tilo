@@ -65,16 +65,81 @@ impl Core {
         let Some(declared) = pkg.meta.types.iter().find(|t| t.id == ty) else {
             return trap(format!("query: type `{ty}` is not declared"));
         };
+        // When a resource last changed, for a type that declares no filter of that name: read
+        // from each found resource's last version, after the type's own filters.
+        let mut changed: Option<String> = None;
+        if !declared
+            .search
+            .filters
+            .iter()
+            .any(|f| f.key == tilolang::agent::CHANGED)
+        {
+            query.terms.retain(|term| {
+                if term.key.as_deref() == Some(tilolang::agent::CHANGED) {
+                    changed = Some(term.value.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        if let Some(when) = changed {
+            let found = self.query_import_typed(&ty, &query, declared, &pkg, &info, scope)?;
+            return self.changed_within(found, &when);
+        }
+        self.query_import_typed(&ty, &query, declared, &pkg, &info, scope)
+    }
+
+    /// The resources of `found` whose last version falls in `when` (`-7d`, `today`), as a
+    /// filter writes a time.
+    fn changed_within(&self, found: Value, when: &str) -> HResult<Value> {
+        let Value::List(items) = found else {
+            return trap(format!(
+                "query: `{}:` filters a list of resources, not {}",
+                tilolang::agent::CHANGED,
+                found.kind_name()
+            ));
+        };
+        let clock = self.program_clock_value()?;
+        let mut kept = Vec::with_capacity(items.len());
+        for item in items {
+            let Value::Ref(r) = &item else {
+                return trap("query: the list holds something other than resources");
+            };
+            let last = self
+                .store
+                .borrow()
+                .version_end(&r.target, true)
+                .map_err(|e| e.to_string())?;
+            if let Some(last) = last
+                && crate::query::time_holds(when, &last.at, &clock)?
+            {
+                kept.push(item);
+            }
+        }
+        Ok(Value::List(kept))
+    }
+
+    /// [`Self::query_import`] once its terms are read: the type's own filters and order.
+    fn query_import_typed(
+        &self,
+        ty: &str,
+        query: &Query,
+        declared: &TypeMeta,
+        pkg: &crate::registry::Package,
+        info: &crate::registry::TypeInfo,
+        scope: i32,
+    ) -> HResult<Value> {
         let clock = self.query_clock()?;
         let viewer = self.looking().ok();
-        let resolved = resolve(&query, declared, &pkg.meta.enums, &clock, viewer.as_deref())?;
+        let resolved = resolve(query, declared, &pkg.meta.enums, &clock, viewer.as_deref())?;
         // A view that asked by the time (`is:today`, `received:-7d`) runs again when what it
         // read of it moves on, and only then: at the value the store keeps that lies closest
         // after now, or at the person's next midnight for the day.
         let next = self
             .store
             .borrow()
-            .next_clock_change(&ty, &resolved.clock)
+            .next_clock_change(&ty.to_owned(), &resolved.clock)
             .map_err(|e| e.to_string())?;
         clock.instants(next);
         self.note_time(clock.changes_at());
@@ -85,7 +150,7 @@ impl Core {
                 return Ok(held);
             }
         }
-        let Some(pred) = crate::colls::field_reads(&resolved.pred, &info) else {
+        let Some(pred) = crate::colls::field_reads(&resolved.pred, info) else {
             return trap(format!(
                 "query: {} cannot be read as its filters ask",
                 declared.name
@@ -94,7 +159,7 @@ impl Core {
         match self.val(scope)? {
             Value::Coll(coll) => Ok(Value::Coll(Rc::new(coll.queried(pred, resolved.order)))),
             Value::List(items) => self.query_list(items, &pred, resolved.order.as_ref()),
-            Value::Opt(None) | Value::Unit => self.query_all(&ty, &pred, resolved.order.as_ref()),
+            Value::Opt(None) | Value::Unit => self.query_all(ty, &pred, resolved.order.as_ref()),
             other => trap(format!(
                 "query: `in:` is a collection or a list of resources, not {}",
                 other.kind_name()

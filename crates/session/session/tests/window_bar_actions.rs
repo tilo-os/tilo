@@ -78,8 +78,11 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
             crate::common::preset_menu(session).is_none() && on_screen(session, "Dock").is_some()
         });
     } else {
+        // The canvas's bar keeps no switch (`canvas.md` §7): the canvas standing under it says
+        // the Frames desk is shown.
         until(session, &format!("the {preset} desk"), |session| {
             crate::common::preset_menu(session).as_deref() == Some(&format!("Showing {preset}"))
+                || (preset == "Frames" && crate::common::canvas_shown(session))
         });
     }
 }

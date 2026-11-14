@@ -69,6 +69,13 @@ workspaces-unreadable-body = The list of your own workspaces that this computer 
 ## The desk this device saved could not be opened: the person's own desk is
 ## still on disk and this session starts empty, so it is never written over.
 
+## The shell's own record this device kept could not be opened: the person's
+## desk choices are still on disk and this session starts from the shell's
+## defaults, so their own record is never written over.
+desk-record-not-opened-app-name = Desktop
+desk-record-not-opened-title = Your desk settings were not opened
+desk-record-not-opened-detail = They could not be read this time ({ $reason }). They have not been changed: this session starts from the shell's defaults and keeps nothing of them, so your own settings cannot be written over.
+
 ## The desk from the version before this one, which was not brought over: it
 ## is still on disk, untouched, and this session has its own desk instead.
 

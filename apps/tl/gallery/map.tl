@@ -19,6 +19,20 @@ view places(p: Places) {
                 ui.Text("Another, beside it.", role: .caption, secondary: true)
             }
         }
+        ui.MapPin(name: "Content", x: 620, y: 40, width: 320, height: 200) {
+            ui.Place(name: "Groceries — Notes", fill) {
+                controls: {
+                    ui.Button("Close", icon: .x, icon_only: true, role: .plain)
+                }
+                body: {
+                    ui.Text(
+                        "A resource's view on the canvas: no frame, its handle on hover.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                }
+            }
+        }
         ui.MapPin(name: "Window", x: 80, y: 300, width: 360, height: 200) {
             ui.WindowFrame(name: "A window", focused: true, fill) {
                 controls: {

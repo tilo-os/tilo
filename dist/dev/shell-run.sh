@@ -28,15 +28,24 @@
 # mount, its secret store and the scratch directory go with it.
 #
 # Usage:
-#   dist/dev/shell-run.sh [--no-build] [--size WxH] [--no-apps] [--dev-rust-views]
+#   dist/dev/shell-run.sh [--no-build] [--profile P] [--size WxH] [--scale S] [--no-apps]
+#                         [--dev-rust-views]
 #
 # Options:
-#   --no-build    use the binaries already in target/debug
+#   --no-build    use the binaries already built (target/debug, or the --profile's)
+#   --profile P   run the session and its tools from the build profile P: `debug` (the default,
+#                 built here) or `nested`, the optimised development build
+#                 `dist/dev/nested-session-build.sh` makes into target/nested (release without
+#                 LTO, with the development overrides the test-control socket needs). What a
+#                 person feels — frame times, a pan's cost — is measured on `nested`: a debug
+#                 build's frames are the unoptimised code's, not the product's
 #   --no-apps     start without the seeded apps, as a bare session does
 #   --size WxH    the headless output's mode in pixels, or a window's size in the host's
 #                 logical pixels (both default 1280x800). A window draws at the desktop's own
 #                 scale, fractional included, and follows it when moved to another screen
-#   --window      show the session in a window on this Wayland desktop, drawn on its GPU
+#   --scale S     the headless output's scale (default 1): `--size 2560x1600 --scale 2` is
+#                 the same 1280x800 desk as a HiDPI panel draws it
+#   --window     show the session in a window on this Wayland desktop, drawn on its GPU
 #   --model-record FILE  give the person this model provider (`tilo-model-gateway
 #                 provision-provider --record` JSON) once the session is up
 #   --dev-rust-views  seed a Rust app's sample resources and views too (Tube's channels and
@@ -72,15 +81,19 @@ tl_apps=(shell discussion notes tasks chat mail tube)
 rust_apps=(chat agent)
 build=1
 size=1280x800
+scale=
 apps=(--seed-apps)
 rust_views=0
 window=0
 model_record=
+profile=debug
 while (($#)); do
     case $1 in
         --no-build) build=0; shift ;;
+        --profile) profile=${2:?--profile needs debug or nested}; shift 2 ;;
         --no-apps) apps=(); rust_views=0; shift ;;
         --size) size=${2:?--size needs WxH}; shift 2 ;;
+        --scale) scale=${2:?--scale needs a number}; shift 2 ;;
         --dev-rust-views) rust_views=1; shift ;;
         --window) window=1; shift ;;
         --model-record) model_record=${2:?--model-record needs FILE}; shift 2 ;;
@@ -89,15 +102,30 @@ while (($#)); do
     esac
 done
 
-bin=$repo_root/target/debug
-if ((build)); then
-    say "building tilo-session, tilolang, tilo-control, tilo-launcher, tilo-install, tilo-app-package, nested-session-bus and tilo-runtime-bundle"
+case $profile in
+    debug | nested) ;;
+    *) die "unknown profile $profile (debug or nested)" ;;
+esac
+((rust_views)) && [[ $profile != debug ]] && die "--dev-rust-views is a debug build's"
+bin=$repo_root/target/$profile
+if ((build)) && [[ $profile == nested ]]; then
+    # The optimised development build is the nested session's own: its host programs, its thin
+    # apps (the Rust apps this session installs) and its tilolang host, from one script, so the
+    # build a session is measured on is the one a nested session runs.
+    say "building the nested profile (dist/dev/nested-session-build.sh)"
+    TILO_NESTED_APPS="${rust_apps[*]}" "$repo_root/dist/dev/nested-session-build.sh"
+elif ((build)); then
+    say "building tilo-session, tilo-quick-settings, tilolang, tilo-control, tilo-launcher, tilo-install, tilo-app-package, nested-session-bus and tilo-runtime-bundle"
     # A shot of a Rust app's view on the canvas builds the session with Tube's sample
     # resources and views linked (`--dev-rust-views`, development builds only).
     session_features=()
     ((rust_views)) && session_features=(--features dev-rust-views)
+    # Quick settings is a surface app the session starts beside itself: built here, it is found
+    # beside the session before the system's own, which is another tree's build and reads
+    # another shape of the session's readings.
     (cd "$repo_root" && cargo build --locked -p tilo-session --bin tilo-session \
         "${session_features[@]}" \
+        -p tilo-quick-settings --bin tilo-quick-settings \
         -p tilolang-cli --bin tilolang -p tilo-control --bin tilo-control \
         -p launcher --bin tilo-launcher -p install --bin tilo-install \
         -p tilo-app-package-cli --bin tilo-app-package \
@@ -117,7 +145,7 @@ if ((build)); then
     # (dist/dev/build-provenance.sh).
     "$repo_root/dist/dev/build-provenance.sh" write "$bin"
 fi
-for tool in tilo-session tilolang tilo-control tilo-launcher tilo-install tilo-app-package nested-session-bus tilo-runtime-bundle fs tilo-model-gateway; do
+for tool in tilo-session tilo-quick-settings tilolang tilo-control tilo-launcher tilo-install tilo-app-package nested-session-bus tilo-runtime-bundle fs tilo-model-gateway; do
     [[ -x $bin/$tool ]] || die "no $bin/$tool (run without --no-build)"
 done
 # The thin-app build every Tilo runtime here is made of: `dist/dev/nested-session-build.sh`
@@ -288,9 +316,16 @@ say "the apps run on $app_runtime"
 tilolang_version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' \
     "$repo_root/apps/tilolang/tilo-runtime.toml")
 [[ -n $tilolang_version ]] || die "apps/tilolang/tilo-runtime.toml provides no tilolang version"
+# Beside it, the tilolang host (crates/platform/tilolang-host), which runs a workspace's tilolang
+# apps by one author as instances, as `nested-session.sh` bakes it: without it every tilolang
+# app's window and every agent program finds no host to run in. `nested-session-build.sh` builds
+# it without the toolkit, so it runs on the app runtime's loader and libraries alone.
+tilolang_host_bin=$repo_root/target/nested-session/bin/tilolang-host
+[[ -f $tilolang_host_bin ]] || die "no tilolang host at $tilolang_host_bin: run dist/dev/nested-session-build.sh"
 say "baking the tilolang runtime bundle $tilolang_version"
 "$bin/tilo-runtime-bundle" build --binaries-only --version "$tilolang_version" \
     --out "$runtimes/$tilolang_version" --include-bin "$tilolang_bin" \
+    --include-bin "$tilolang_host_bin" \
     --identity "$identity" >/dev/null
 tilolang_runtime=tilolang/$tilolang_version
 
@@ -439,6 +474,7 @@ start_gateway
 # wait until it printed its control socket, which it does last. It runs on the
 # private bus, which goes when the session does.
 backend=(--backend headless --size "$size")
+[[ -n $scale ]] && backend+=(--scale "$scale")
 host_client=()
 start_session() {
     env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
@@ -501,12 +537,15 @@ fi
 start_session --shell screen --admit-repl "$bin/tilolang" "${apps[@]}"
 # The door is announced once the session's own doors are up, which can be after its control
 # socket: wait for it as for the socket, while the session lives.
+# A debug build serves it where `TILO_MCP_SERVER` names; an optimised one at the seat's own
+# path in this session's runtime directory, which it announces the same way.
 tries=600
-until grep -q "^TILO_MCP_SERVER=$door\$" "$log"; do
+until grep -q "^TILO_MCP_SERVER=$runtime/" "$log"; do
     kill -0 "$session_pid" 2>/dev/null || { tail -40 "$log" >&2; die "the session ended before serving its agent door"; }
     ((tries--)) || { tail -40 "$log" >&2; die "the session serves no agent door"; }
     sleep 0.1
 done
+door=$(sed -n "s|^TILO_MCP_SERVER=\($runtime/.*\)\$|\1|p" "$log" | tail -1)
 
 if [[ -n $model_record ]]; then
     env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \

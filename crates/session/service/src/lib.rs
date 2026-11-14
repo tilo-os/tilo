@@ -229,6 +229,14 @@ pub trait Service {
         Vec::new()
     }
 
+    /// The app's record this service runs over, when it keeps one that belongs in a workspace:
+    /// the record the app's own windows open there. The session keeps the document in the
+    /// workspace's copy, so the service, the app's windows, an agent and the person's other
+    /// devices change one record. `None` for a service that keeps none.
+    fn workspace_record(&self) -> Option<WorkspaceRecord> {
+        None
+    }
+
     /// Publish the package `share` names, which the session runs itself (the shell), with the
     /// records an app's are: its roots are made, and what its parts write into the document
     /// it keeps them in (`share.records`) is published to every connection from then on.
@@ -334,6 +342,18 @@ pub struct HistoryRecord {
     pub kind: String,
     /// The document, as it stands: what the activity's history reads.
     pub document: tilo_resource::Doc,
+}
+
+/// An app's record a service runs over that belongs in a workspace, as
+/// [`Service::workspace_record`] hands it over.
+pub struct WorkspaceRecord {
+    /// The app the record is of, as its package names it (`so.tilo.lang.tasks`).
+    pub app: String,
+    /// The record's id in its app, as the workspace names it: empty for the workspace's record
+    /// of the app, the person's own record of it for an app that keeps each member's apart.
+    pub id: String,
+    /// The document the service runs over: the one the session keeps in the workspace.
+    pub document: std::rc::Rc<std::cell::RefCell<tilo_resource::Doc>>,
 }
 
 /// `resource` offering every action of the vocabulary `E`.
@@ -502,6 +522,16 @@ impl Services {
         self.started
             .iter()
             .flat_map(|service| service.records())
+            .collect()
+    }
+
+    /// Every app's record the services run over that belongs in a workspace; see
+    /// [`Service::workspace_record`].
+    #[must_use]
+    pub fn workspace_records(&self) -> Vec<WorkspaceRecord> {
+        self.started
+            .iter()
+            .filter_map(|service| service.workspace_record())
             .collect()
     }
 

@@ -659,6 +659,11 @@ name = "dy"
 required = false
 type = "int"
 
+[[resources.verbs.params]]
+name = "beside"
+required = false
+type = "text"
+
 [[resources.verbs]]
 id = "place-found"
 kind = "undoable"
@@ -685,6 +690,36 @@ type = "int"
 
 [[resources.verbs.params]]
 name = "y"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "width"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "height"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "seen_x"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "seen_y"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "seen_width"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "seen_height"
 required = false
 type = "int"
 
@@ -881,11 +916,30 @@ kind = "undoable"
 
 [[resources.verbs.params]]
 name = "x"
-required = true
+required = false
 type = "int"
 
 [[resources.verbs.params]]
 name = "y"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "beside"
+required = false
+type = "text"
+
+[[resources.verbs]]
+id = "size"
+kind = "undoable"
+
+[[resources.verbs.params]]
+name = "width"
+required = true
+type = "int"
+
+[[resources.verbs.params]]
+name = "height"
 required = true
 type = "int"
 

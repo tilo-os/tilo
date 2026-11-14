@@ -145,6 +145,21 @@ enum Command {
         x2: f64,
         y2: f64,
         steps: Option<u32>,
+        /// The button held through the drag (`left`, `right` or `middle`); the left one when
+        /// `None`.
+        button: Option<String>,
+    },
+    /// A mouse wheel turned at `(x, y)`, `dy` notches up (positive) and `dx` across, with the
+    /// modifiers held while it turns: Ctrl and a wheel zoom a canvas.
+    Wheel {
+        x: f64,
+        y: f64,
+        dx: f64,
+        dy: f64,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+        logo: bool,
     },
     Key {
         key: String,
@@ -341,26 +356,8 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
             let y = next_f64(&mut iter, "click-at X Y requires Y")?;
             Command::ClickAt { x, y }
         }
-        "drag" => {
-            let x1 = next_f64(&mut iter, "drag X1 Y1 X2 Y2 [STEPS]")?;
-            let y1 = next_f64(&mut iter, "drag X1 Y1 X2 Y2 [STEPS]")?;
-            let x2 = next_f64(&mut iter, "drag X1 Y1 X2 Y2 [STEPS]")?;
-            let y2 = next_f64(&mut iter, "drag X1 Y1 X2 Y2 [STEPS]")?;
-            let steps = iter
-                .next()
-                .map(|s| {
-                    s.parse::<u32>()
-                        .map_err(|e| ParseError::Usage(format!("drag STEPS must be u32 ({e})")))
-                })
-                .transpose()?;
-            Command::Drag {
-                x1,
-                y1,
-                x2,
-                y2,
-                steps,
-            }
-        }
+        "drag" => parse_drag(&mut iter)?,
+        "wheel" => parse_wheel(&mut iter)?,
         "swipe" | "pinch" => parse_gesture(op, &mut iter)?,
         "key" => {
             let key = iter
@@ -409,6 +406,78 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
     };
 
     Ok(Invocation { socket, command })
+}
+
+/// Parse `drag X1 Y1 X2 Y2 [STEPS] [--button left|right|middle]`.
+fn parse_drag<'a>(iter: &mut impl Iterator<Item = &'a String>) -> Result<Command, ParseError> {
+    let x1 = next_f64(iter, "drag X1 Y1 X2 Y2 [STEPS] [--button B]")?;
+    let y1 = next_f64(iter, "drag X1 Y1 X2 Y2 [STEPS] [--button B]")?;
+    let x2 = next_f64(iter, "drag X1 Y1 X2 Y2 [STEPS] [--button B]")?;
+    let y2 = next_f64(iter, "drag X1 Y1 X2 Y2 [STEPS] [--button B]")?;
+    let mut steps = None;
+    let mut button = None;
+    while let Some(arg) = iter.next() {
+        if arg == "--button" {
+            let name = iter.next().ok_or_else(|| {
+                ParseError::Usage("drag --button takes left, right or middle".to_string())
+            })?;
+            if !matches!(name.as_str(), "left" | "right" | "middle") {
+                return Err(ParseError::Usage(format!(
+                    "drag --button is left, right or middle, not `{name}`"
+                )));
+            }
+            button = Some(name.clone());
+        } else {
+            steps = Some(
+                arg.parse::<u32>()
+                    .map_err(|e| ParseError::Usage(format!("drag STEPS must be u32 ({e})")))?,
+            );
+        }
+    }
+    Ok(Command::Drag {
+        x1,
+        y1,
+        x2,
+        y2,
+        steps,
+        button,
+    })
+}
+
+/// Parse `wheel X Y DY [DX] [--with FLAGS]`.
+fn parse_wheel<'a>(iter: &mut impl Iterator<Item = &'a String>) -> Result<Command, ParseError> {
+    const USAGE: &str = "wheel X Y DY [DX] [--with FLAGS]";
+    let x = next_f64(iter, USAGE)?;
+    let y = next_f64(iter, USAGE)?;
+    let dy = next_f64(iter, USAGE)?;
+    let mut dx = 0.0;
+    let mut flags = (false, false, false, false);
+    while let Some(arg) = iter.next() {
+        if arg == "--with" {
+            let given = iter.next().ok_or_else(|| {
+                ParseError::Usage(
+                    "wheel --with takes a comma-separated subset of ctrl,shift,alt,logo"
+                        .to_string(),
+                )
+            })?;
+            flags = parse_modifier_flags(given)?;
+        } else {
+            dx = arg
+                .parse::<f64>()
+                .map_err(|e| ParseError::Usage(format!("wheel DX must be a number ({e})")))?;
+        }
+    }
+    let (ctrl, shift, alt, logo) = flags;
+    Ok(Command::Wheel {
+        x,
+        y,
+        dx,
+        dy,
+        ctrl,
+        shift,
+        alt,
+        logo,
+    })
 }
 
 /// Parse `read APP [ITEM] [--json]`.
@@ -1127,18 +1196,18 @@ fn with_wait(value: &mut serde_json::Value, wait_ms: Option<u64>) {
     }
 }
 
-fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
+/// The wire payload of a pointer command the other subcommands do not share: a drag with its
+/// button, a wheel with its modifiers.
+fn pointer_to_wire(cmd: &Command) -> serde_json::Value {
     use serde_json::json;
-    let value = match cmd {
-        Command::ListTargets => json!({ "op": "list_targets" }),
-        Command::Click { name } => json!({ "op": "click_named", "name": name }),
-        Command::ClickAt { x, y } => json!({ "op": "click_at", "x": x, "y": y }),
+    match cmd {
         Command::Drag {
             x1,
             y1,
             x2,
             y2,
             steps,
+            button,
         } => {
             let mut v = json!({
                 "op": "drag",
@@ -1147,13 +1216,48 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
                 "x_to": x2,
                 "y_to": y2,
             });
-            if let Some(s) = steps
-                && let Some(obj) = v.as_object_mut()
-            {
-                obj.insert("steps".to_string(), json!(s));
+            if let Some(obj) = v.as_object_mut() {
+                if let Some(s) = steps {
+                    obj.insert("steps".to_string(), json!(s));
+                }
+                if let Some(button) = button {
+                    obj.insert("button".to_string(), json!(button));
+                }
             }
             v
         }
+        Command::Wheel {
+            x,
+            y,
+            dx,
+            dy,
+            ctrl,
+            shift,
+            alt,
+            logo,
+        } => json!({
+            "op": "scroll",
+            "unit": "notch",
+            "x": x,
+            "y": y,
+            "dx": dx,
+            "dy": dy,
+            "ctrl": ctrl,
+            "shift": shift,
+            "alt": alt,
+            "logo": logo,
+        }),
+        _ => serde_json::Value::Null,
+    }
+}
+
+fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
+    use serde_json::json;
+    let value = match cmd {
+        Command::ListTargets => json!({ "op": "list_targets" }),
+        Command::Click { name } => json!({ "op": "click_named", "name": name }),
+        Command::ClickAt { x, y } => json!({ "op": "click_at", "x": x, "y": y }),
+        Command::Drag { .. } | Command::Wheel { .. } => pointer_to_wire(cmd),
         Command::Key { key } => json!({ "op": "key", "key": key }),
         Command::Type { text } => json!({ "op": "type", "text": text }),
         Command::Modifiers {
@@ -1412,6 +1516,7 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
         Command::Click { .. }
         | Command::ClickAt { .. }
         | Command::Drag { .. }
+        | Command::Wheel { .. }
         | Command::Swipe { .. }
         | Command::Pinch { .. }
         | Command::Key { .. }
@@ -1553,7 +1658,11 @@ fn print_usage() {
          \x20 list-targets                  print every target as `NAME  (X, Y, W, H)`\n\
          \x20 click NAME                    click_named\n\
          \x20 click-at X Y                  click_at\n\
-         \x20 drag X1 Y1 X2 Y2 [STEPS]      drag\n\
+         \x20 drag X1 Y1 X2 Y2 [STEPS] [--button left|right|middle]\n\
+         \x20                               drag with that button held (left by default)\n\
+         \x20 wheel X Y DY [DX] [--with FLAGS]\n\
+         \x20                               turn the wheel at X Y, DY notches up, holding\n\
+         \x20                               FLAGS (ctrl,shift,alt,logo) while it turns\n\
          \x20 swipe FINGERS DX DY [STEPS]   touchpad swipe through the shell's gesture tracker\n\
          \x20 pinch FINGERS SCALE [STEPS]   touchpad pinch to an absolute scale\n\
          \x20 key KEY                       key (named like `Enter`, or single char)\n\
@@ -2027,6 +2136,55 @@ mod tests {
         );
     }
 
+    /// The canvas's camera from a script: a wheel at a point with the modifiers held while it
+    /// turns (Ctrl and a wheel zoom), and a drag with the middle button held (it pans).
+    #[test]
+    fn a_wheel_with_modifiers_and_a_middle_drag_parse_and_go_on_the_wire() {
+        let parse = |argv: &[&str]| {
+            let argv: Vec<String> = argv.iter().map(|s| (*s).to_string()).collect();
+            parse_args(&argv).unwrap().command
+        };
+        let wheel = parse(&["wheel", "640", "400", "2", "--with", "ctrl"]);
+        assert_eq!(
+            wheel,
+            Command::Wheel {
+                x: 640.0,
+                y: 400.0,
+                dx: 0.0,
+                dy: 2.0,
+                ctrl: true,
+                shift: false,
+                alt: false,
+                logo: false,
+            }
+        );
+        let v: serde_json::Value = serde_json::from_str(&command_to_wire(&wheel).unwrap()).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "op": "scroll", "unit": "notch", "x": 640.0, "y": 400.0, "dx": 0.0, "dy": 2.0,
+                "ctrl": true, "shift": false, "alt": false, "logo": false,
+            })
+        );
+        assert!(matches!(
+            parse(&["wheel", "1", "2", "-1", "3"]),
+            Command::Wheel { dx, dy, ctrl: false, .. }
+                if (dx - 3.0).abs() < f64::EPSILON && (dy + 1.0).abs() < f64::EPSILON
+        ));
+        let drag = parse(&["drag", "0", "0", "10", "20", "6", "--button", "middle"]);
+        let v: serde_json::Value = serde_json::from_str(&command_to_wire(&drag).unwrap()).unwrap();
+        assert_eq!(v["button"], "middle");
+        assert_eq!(v["steps"], 6);
+        let argv: Vec<String> = ["drag", "0", "0", "1", "1", "--button", "thumb"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        assert!(
+            parse_args(&argv).is_err(),
+            "a button the pointer has not is refused"
+        );
+    }
+
     #[test]
     fn subcommands_and_modifier_flags_parse_into_their_values() {
         let dump = |pretty| Command::StateDump {
@@ -2039,6 +2197,7 @@ mod tests {
             x2: 100.0,
             y2: 100.0,
             steps,
+            button: None,
         };
         let modifiers = |ctrl, shift| Command::Modifiers {
             ctrl,
@@ -2562,6 +2721,7 @@ mod tests {
             x2: 100.0,
             y2: 100.0,
             steps,
+            button: None,
         };
         let v = wire(&drag(None));
         assert_eq!(v["op"], "drag");

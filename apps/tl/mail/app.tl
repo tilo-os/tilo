@@ -146,6 +146,8 @@ default view mailboxes for Account
 
 default view inbox for Mailbox
 
+place view all_inboxes for Mail
+
 default view editor for Draft
 
 row view thread_row for Thread
@@ -715,14 +717,31 @@ view unified(m: Mail) {
             }
             overview: {
                 // The list shows `a`'s mail, so what the account's server says of itself is
-                // said over it, and `Try again` asks the server that account reads from. The
-                // notice keeps its own gutter, so the list stands under it with none between.
-                stack(fill, gap: .none) {
-                    account_notice(a)
-                    thread_list(shown, fill)
-                }
+                // said over it, and `Try again` asks the server that account reads from.
+                account_threads(a, shown)
             }
         }
+    }
+}
+
+/// The person's mail standing on its own, as a place shows it: every account's inbox in one
+/// list of conversations, newest first, with none of the window's sidebar or bar around it. The
+/// mail window shows the same list under its places (`unified`).
+view all_inboxes(m: Mail) {
+    if let a = m.accounts.first() {
+        account_threads(a, a.threads.matching("is:inbox"))
+    } else {
+        ui.EmptyState("Add a mail account in Settings", icon: .mail)
+    }
+}
+
+/// Conversations of the account `a` as a list, under what its server says of itself, and
+/// `Try again` asks the server that account reads from. The notice keeps its own gutter, so the
+/// list stands under it with none between.
+view account_threads(a: Account, shown: List<Thread>) {
+    stack(fill, gap: .none) {
+        account_notice(a)
+        thread_list(shown, fill)
     }
 }
 
@@ -778,10 +797,7 @@ view mailboxes(a: Account) {
             }
         }
         overview: {
-            stack(fill, gap: .none) {
-                account_notice(a)
-                thread_list(shown, fill)
-            }
+            account_threads(a, shown)
         }
     }
 }
@@ -792,10 +808,7 @@ view mailboxes(a: Account) {
 view inbox(b: Mailbox) {
     let m = root Mail
     if let a = m.accounts.find(x -> x.mailboxes.any(y -> y.id() == b.id())) {
-        stack(fill, gap: .none) {
-            account_notice(a)
-            thread_list(in_mailbox(a, b), fill)
-        }
+        account_threads(a, in_mailbox(a, b))
     } else {
         ui.EmptyState("Nothing here", icon: .inbox)
     }

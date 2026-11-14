@@ -473,12 +473,10 @@ impl Session {
             let agents = Rc::clone(&agents);
             let sends = sends.clone();
             Rc::new(move |text: &str| {
-                let Some((workspace, policy)) = handle.read(|tree| {
+                let (workspace, policy) = handle.read(|tree| {
                     tree.active_workspace()
                         .map(|held| (held.id().to_string(), held.policy.clone()))
-                }) else {
-                    return false;
-                };
+                })?;
                 let to = crate::agents::agent_recipient(agents.kept(&workspace, &policy, &person));
                 let arguments = serde_json::json!({
                     "to": [to],
@@ -486,17 +484,32 @@ impl Session {
                     "workspace": workspace,
                 });
                 let serde_json::Value::Object(arguments) = arguments else {
-                    return false;
+                    return None;
                 };
-                match sends.send(None, &arguments) {
-                    Ok(_) => true,
+                match sends.ask(&arguments) {
+                    Ok(number) => Some(number),
                     Err(error) => {
                         tracing::warn!(%error, "the canvas's ask was not sent");
-                        false
+                        None
                     }
                 }
             })
         };
+        // Which message Chat posted for each ask, as soon as it answered: a step the agent takes in
+        // the turn before the turn's view stands goes where the person asked (canvas.md §3).
+        {
+            let search = Rc::clone(&session_search);
+            let sends = sends.clone();
+            arrangement.borrow().know_posted(Rc::new(move |sent: u64| {
+                if sends.posted(sent).is_none()
+                    && let Some(search) = search.get()
+                {
+                    // What Chat answered the asks' sends, once they settled.
+                    search.poll_answers();
+                }
+                sends.posted(sent)
+            }));
+        }
         doors.add(Rc::new(RefCell::new(arrangement::Door::new(
             Rc::clone(&arrangement),
             Rc::new(move || underway.get()),
@@ -930,6 +943,7 @@ impl Session {
                     desk(),
                     wells,
                     presentation.theme.clone(),
+                    options.state.as_deref(),
                 )
                 .map_err(|why| {
                     Error::Backend(tilo_compositor::BackendError(format!(
@@ -1355,6 +1369,8 @@ impl Session {
             .borrow_mut()
             .add(Box::new(crate::conversations::TurnSummonses::new(
                 Rc::clone(&conversations),
+                sends.clone(),
+                Rc::clone(&arrangement),
             )));
         services
             .borrow_mut()
@@ -2311,6 +2327,37 @@ impl Session {
             actor,
             &ActionAddress::new(resource, action),
             arguments,
+            &mut crate::look::look(&mut self.compositor, Some(&self.content)),
+        )
+    }
+
+    /// Invoke `action` of `resource` as `actor` taking a step of the turn the message `message` of
+    /// `conversation` asked: what the arrangement stands it beside is filled in exactly as the agent
+    /// door fills it for a step the broker hands it in that turn.
+    ///
+    /// # Errors
+    /// Why the action names nothing published, or why it could not be made.
+    pub fn invoke_in_turn(
+        &mut self,
+        actor: &str,
+        (conversation, message): (&str, &str),
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        let empty = serde_json::Map::new();
+        let address = ActionAddress::new(resource, action);
+        let turn = tilo_action_policy::turn::Turn::new(conversation, message);
+        let beside = crate::mcp_server::service_steps::turn_beside(Some(&turn));
+        let arguments = crate::mcp_server::service_steps::with_turn_beside(
+            &address,
+            arguments.as_object().unwrap_or(&empty),
+            &beside,
+        );
+        self.shared.doors.invoke_as(
+            actor,
+            &address,
+            &arguments,
             &mut crate::look::look(&mut self.compositor, Some(&self.content)),
         )
     }

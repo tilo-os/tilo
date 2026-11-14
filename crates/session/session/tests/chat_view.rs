@@ -37,17 +37,17 @@ const TYPED: &str = "looks good";
 /// test hooks at `root`, the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
     let program = std::env::current_exe().expect("this test's program");
-    let apps = crate::common::seeded_apps();
+    let mut services = crate::common::seeded_apps();
+    services.push(Box::new(
+        tilo_session::dev_rust_views::RustApps::new().unwrap(),
+    ));
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: crate::common::PERSON.to_owned(),
             shell: true,
             collab: false,
-            services: vec![
-                Box::new(apps),
-                Box::new(tilo_session::dev_rust_views::RustApps::new().unwrap()),
-            ],
+            services,
             questions: Some(tilo_service::Questions::new()),
             action_plane: ActionPlane::At(root.join("plane.sock")),
             mcp_server: Some(root.join("agent.sock")),
@@ -64,7 +64,7 @@ fn session(root: &std::path::Path) -> Session {
     .expect("session");
     crate::common::show_preset(&mut session, "so.tilo.shell:frames");
     crate::common::until(&mut session, "the canvas", |session| {
-        crate::common::on_screen(session, crate::common::CANVAS_ENTRY).is_some()
+        crate::common::on_screen(session, crate::common::CANVAS).is_some()
     });
     session
 }
