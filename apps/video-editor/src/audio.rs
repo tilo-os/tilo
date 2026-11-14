@@ -1001,196 +1001,320 @@ mod tests {
         p
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
-    fn audio_blocks_read_their_span_at_the_clip_rate() {
-        // A block must read the span of source it *covers*, not one displaced from
-        // it: the clip sits away from the timeline origin and sources from a
-        // non-zero in-point, so this asserts the real timeline to source map.
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "merged scenario: each former test is a labelled case block with its own fixture"
+        )]
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_mixer_reads_spans_and_sums_tracks;
+
+        phase audio_blocks_read_their_span_at_the_clip_rate;
         {
-            let (start, in_point, len) = (1.0, 3.0, 5.0);
-            let p = placed_project(start, in_point, len);
-            let n = (in_point + len) as usize * SAMPLE_RATE as usize;
-            let mut src = RampSource { len: n };
+            // A block must read the span of source it *covers*, not one displaced from
+            // it: the clip sits away from the timeline origin and sources from a
+            // non-zero in-point, so this asserts the real timeline to source map.
+            {
+                let (start, in_point, len) = (1.0, 3.0, 5.0);
+                let p = placed_project(start, in_point, len);
+                let n = (in_point + len) as usize * SAMPLE_RATE as usize;
+                let mut src = RampSource { len: n };
 
-            let frames = SAMPLE_RATE as usize / 30;
-            let at = start + 1.0;
-            let block = mix_block(&p, at, frames, &mut src);
-            let (a, b) = span_of(&block, n);
+                let frames = SAMPLE_RATE as usize / 30;
+                let at = start + 1.0;
+                let block = mix_block(&p, at, frames, &mut src);
+                let (a, b) = span_of(&block, n);
 
-            let want = (in_point + 1.0) * f64::from(SAMPLE_RATE);
-            let off = a - want;
-            assert!(
-                off.abs() < 2.0,
-                "a block at timeline {at}s of a clip placed at {start}s from in-point \
+                let want = (in_point + 1.0) * f64::from(SAMPLE_RATE);
+                let off = a - want;
+                assert!(
+                    off.abs() < 2.0,
+                    "a block at timeline {at}s of a clip placed at {start}s from in-point \
              {in_point}s must start at source frame {want}, got {a} — {off:+.0} frames \
              out. Half a block is {:+.0}, which is the read-at-the-midpoint bug.",
-                frames as f64 / 2.0,
-            );
-            assert!(
-                (b - (want + frames as f64 - 1.0)).abs() < 2.0,
-                "and ends at source frame {}, got {b}",
-                want + frames as f64 - 1.0,
-            );
-        }
-        // Consecutive blocks have to abut, or the export gains or loses samples
-        // every frame and drifts away from the picture.
-        {
-            let (start, in_point, len) = (1.0, 3.0, 5.0);
-            let p = placed_project(start, in_point, len);
-            let n = (in_point + len) as usize * SAMPLE_RATE as usize;
-            let mut src = RampSource { len: n };
+                    frames as f64 / 2.0,
+                );
+                assert!(
+                    (b - (want + frames as f64 - 1.0)).abs() < 2.0,
+                    "and ends at source frame {}, got {b}",
+                    want + frames as f64 - 1.0,
+                );
+            }
+            // Consecutive blocks have to abut, or the export gains or loses samples
+            // every frame and drifts away from the picture.
+            {
+                let (start, in_point, len) = (1.0, 3.0, 5.0);
+                let p = placed_project(start, in_point, len);
+                let n = (in_point + len) as usize * SAMPLE_RATE as usize;
+                let mut src = RampSource { len: n };
 
-            let frames = SAMPLE_RATE as usize / 30;
-            let step = frames as f64 / f64::from(SAMPLE_RATE);
-            let mut previous_end: Option<f64> = None;
-            for i in 0..30 {
-                let at = start + 0.5 + f64::from(i) * step;
-                let (a, b) = span_of(&mix_block(&p, at, frames, &mut src), n);
-                if let Some(end) = previous_end {
-                    assert!(
-                        (a - end - 1.0).abs() < 2.0,
-                        "block {i} starts at source frame {a}; the one before it ended at \
+                let frames = SAMPLE_RATE as usize / 30;
+                let step = frames as f64 / f64::from(SAMPLE_RATE);
+                let mut previous_end: Option<f64> = None;
+                for i in 0..30 {
+                    let at = start + 0.5 + f64::from(i) * step;
+                    let (a, b) = span_of(&mix_block(&p, at, frames, &mut src), n);
+                    if let Some(end) = previous_end {
+                        assert!(
+                            (a - end - 1.0).abs() < 2.0,
+                            "block {i} starts at source frame {a}; the one before it ended at \
                      {end}, so the two are {:+.0} frames apart instead of adjacent",
-                        a - end - 1.0,
+                            a - end - 1.0,
+                        );
+                    }
+                    previous_end = Some(b);
+                }
+            }
+            {
+                let (p, _) = speed_project(1.0, false, 10.0);
+                let mut src = RampSource {
+                    len: 10 * SAMPLE_RATE as usize,
+                };
+                let block = mix_block(&p, 0.0, 1000, &mut src);
+                let (a, b) = span_of(&block, src.len);
+                assert!(a.abs() < 1.0, "starts at source frame 0, got {a}");
+                assert!((b - 999.0).abs() < 2.0, "and ends at frame 999, got {b}");
+            }
+            {
+                let (p, _) = speed_project(2.0, false, 10.0);
+                let mut src = RampSource {
+                    len: 10 * SAMPLE_RATE as usize,
+                };
+                let block = mix_block(&p, 0.0, 1000, &mut src);
+                let (a, b) = span_of(&block, src.len);
+                assert!(a.abs() < 2.0, "still starts at the in-point, got {a}");
+                assert!(
+                    (b - 1998.0).abs() < 4.0,
+                    "a 1000-frame block at 2x reads ~2000 source frames, got {b}",
+                );
+            }
+            {
+                let (p, _) = speed_project(0.5, false, 10.0);
+                let mut src = RampSource {
+                    len: 10 * SAMPLE_RATE as usize,
+                };
+                let block = mix_block(&p, 0.0, 1000, &mut src);
+                let (a, b) = span_of(&block, src.len);
+                assert!(a.abs() < 2.0, "starts at the in-point, got {a}");
+                assert!(
+                    (b - 499.5).abs() < 4.0,
+                    "a 1000-frame block at 0.5x reads ~500 source frames, got {b}",
+                );
+            }
+            {
+                let (p, _) = speed_project(1.0, true, 10.0);
+                let mut src = RampSource {
+                    len: 10 * SAMPLE_RATE as usize,
+                };
+                let block = mix_block(&p, 2.0, 1000, &mut src);
+                let (a, b) = span_of(&block, src.len);
+                assert!(
+                    a > b,
+                    "a reversed clip's block runs from later source to earlier: {a} → {b}"
+                );
+                assert!(
+                    (a - b - 999.0).abs() < 6.0,
+                    "and covers a block's worth of it: {a} → {b}",
+                );
+                let head = mix_block(&p, 0.0, 64, &mut src);
+                let (h, _) = span_of(&head, src.len);
+                let end = 10.0 * f64::from(SAMPLE_RATE);
+                assert!(
+                    (h - end).abs() < 200.0,
+                    "the first timeline frame of a reversed clip is the source's last, got {h}",
+                );
+            }
+            {
+                // Invented samples must lie between their neighbours: zeroes would
+                // show as a block full of holes.
+                let (p, _) = speed_project(0.25, false, 10.0);
+                let mut src = RampSource {
+                    len: 10 * SAMPLE_RATE as usize,
+                };
+                let block = mix_block(&p, 0.0, 400, &mut src);
+                assert!(
+                    block.iter().all(|s| s.is_finite()),
+                    "no NaNs or infinities out of the resampler",
+                );
+                let mono = block
+                    .chunks(CHANNELS)
+                    .zip(block.chunks(CHANNELS).skip(1))
+                    .all(|(a, b)| b[0] >= a[0] - 1e-6);
+                assert!(
+                    mono,
+                    "a slowed ramp is still a ramp, not a staircase with gaps"
+                );
+                let zeros = block.iter().filter(|s| **s == 0.0).count();
+                assert!(
+                    zeros < 8,
+                    "a slowed block is not mostly silence, got {zeros} zero samples"
+                );
+            }
+            {
+                // The same timeline instant reads different source at different rates.
+                let mut src = RampSource {
+                    len: 60 * SAMPLE_RATE as usize,
+                };
+                let (slow, _) = speed_project(1.0, false, 30.0);
+                let (fast, _) = speed_project(3.0, false, 30.0);
+                let n = src.len;
+                let (a, _) = span_of(&mix_block(&slow, 4.0, 256, &mut src), n);
+                let (b, _) = span_of(&mix_block(&fast, 4.0, 256, &mut src), n);
+                assert!(
+                    (b - a * 3.0).abs() < a * 0.02,
+                    "at 3x, four timeline seconds in is twelve source seconds in: {a} vs {b}",
+                );
+            }
+            {
+                let (mut p, _) = speed_project(1.0, false, 10.0);
+                let cid = p.clips[0].id;
+                {
+                    let c = p.clip_mut(cid).unwrap();
+                    c.set_key_at(
+                        crate::param::Param::Volume,
+                        0.0,
+                        0.0,
+                        crate::param::Interp::Linear,
+                    );
+                    c.set_key_at(
+                        crate::param::Param::Volume,
+                        8.0,
+                        1.0,
+                        crate::param::Interp::Linear,
                     );
                 }
-                previous_end = Some(b);
+                let plan = |t: f64| plan_audio(&p, t)[0].gain;
+                let early = plan(1.0);
+                let mid = plan(4.0);
+                let late = plan(7.0);
+                assert!(
+                    early < mid && mid < late,
+                    "the curve rises: {early} {mid} {late}"
+                );
+                assert!(
+                    (mid - 0.5).abs() < 0.02,
+                    "and is linear through the middle: {mid}"
+                );
             }
         }
+
+        phase mixer_sums_scales_and_silences_by_track_state;
         {
-            let (p, _) = speed_project(1.0, false, 10.0);
-            let mut src = RampSource {
-                len: 10 * SAMPLE_RATE as usize,
-            };
-            let block = mix_block(&p, 0.0, 1000, &mut src);
-            let (a, b) = span_of(&block, src.len);
-            assert!(a.abs() < 1.0, "starts at source frame 0, got {a}");
-            assert!((b - 999.0).abs() < 2.0, "and ends at frame 999, got {b}");
-        }
-        {
-            let (p, _) = speed_project(2.0, false, 10.0);
-            let mut src = RampSource {
-                len: 10 * SAMPLE_RATE as usize,
-            };
-            let block = mix_block(&p, 0.0, 1000, &mut src);
-            let (a, b) = span_of(&block, src.len);
-            assert!(a.abs() < 2.0, "still starts at the in-point, got {a}");
-            assert!(
-                (b - 1998.0).abs() < 4.0,
-                "a 1000-frame block at 2x reads ~2000 source frames, got {b}",
-            );
-        }
-        {
-            let (p, _) = speed_project(0.5, false, 10.0);
-            let mut src = RampSource {
-                len: 10 * SAMPLE_RATE as usize,
-            };
-            let block = mix_block(&p, 0.0, 1000, &mut src);
-            let (a, b) = span_of(&block, src.len);
-            assert!(a.abs() < 2.0, "starts at the in-point, got {a}");
-            assert!(
-                (b - 499.5).abs() < 4.0,
-                "a 1000-frame block at 0.5x reads ~500 source frames, got {b}",
-            );
-        }
-        {
-            let (p, _) = speed_project(1.0, true, 10.0);
-            let mut src = RampSource {
-                len: 10 * SAMPLE_RATE as usize,
-            };
-            let block = mix_block(&p, 2.0, 1000, &mut src);
-            let (a, b) = span_of(&block, src.len);
-            assert!(
-                a > b,
-                "a reversed clip's block runs from later source to earlier: {a} → {b}"
-            );
-            assert!(
-                (a - b - 999.0).abs() < 6.0,
-                "and covers a block's worth of it: {a} → {b}",
-            );
-            let head = mix_block(&p, 0.0, 64, &mut src);
-            let (h, _) = span_of(&head, src.len);
-            let end = 10.0 * f64::from(SAMPLE_RATE);
-            assert!(
-                (h - end).abs() < 200.0,
-                "the first timeline frame of a reversed clip is the source's last, got {h}",
-            );
-        }
-        {
-            // Invented samples must lie between their neighbours: zeroes would
-            // show as a block full of holes.
-            let (p, _) = speed_project(0.25, false, 10.0);
-            let mut src = RampSource {
-                len: 10 * SAMPLE_RATE as usize,
-            };
-            let block = mix_block(&p, 0.0, 400, &mut src);
-            assert!(
-                block.iter().all(|s| s.is_finite()),
-                "no NaNs or infinities out of the resampler",
-            );
-            let mono = block
-                .chunks(CHANNELS)
-                .zip(block.chunks(CHANNELS).skip(1))
-                .all(|(a, b)| b[0] >= a[0] - 1e-6);
-            assert!(
-                mono,
-                "a slowed ramp is still a ramp, not a staircase with gaps"
-            );
-            let zeros = block.iter().filter(|s| **s == 0.0).count();
-            assert!(
-                zeros < 8,
-                "a slowed block is not mostly silence, got {zeros} zero samples"
-            );
-        }
-        {
-            // The same timeline instant reads different source at different rates.
-            let mut src = RampSource {
-                len: 60 * SAMPLE_RATE as usize,
-            };
-            let (slow, _) = speed_project(1.0, false, 30.0);
-            let (fast, _) = speed_project(3.0, false, 30.0);
-            let n = src.len;
-            let (a, _) = span_of(&mix_block(&slow, 4.0, 256, &mut src), n);
-            let (b, _) = span_of(&mix_block(&fast, 4.0, 256, &mut src), n);
-            assert!(
-                (b - a * 3.0).abs() < a * 0.02,
-                "at 3x, four timeline seconds in is twelve source seconds in: {a} vs {b}",
-            );
-        }
-        {
-            let (mut p, _) = speed_project(1.0, false, 10.0);
-            let cid = p.clips[0].id;
             {
-                let c = p.clip_mut(cid).unwrap();
-                c.set_key_at(
-                    crate::param::Param::Volume,
-                    0.0,
-                    0.0,
-                    crate::param::Interp::Linear,
-                );
-                c.set_key_at(
-                    crate::param::Param::Volume,
-                    8.0,
-                    1.0,
-                    crate::param::Interp::Linear,
+                let (p, _, _, _) = project_with_audio();
+                let (m1, m2) = (p.media[0].id, p.media[1].id);
+                let mut src = constant(&[(m1, 0.2), (m2, 0.3)]);
+                let block = mix_block(&p, 1.0, 64, &mut src);
+                assert_eq!(block.len(), 64 * CHANNELS);
+                assert!(
+                    (block[0] - 0.5).abs() < 1e-6,
+                    "two clips playing at once are heard at once: {}",
+                    block[0],
                 );
             }
-            let plan = |t: f64| plan_audio(&p, t)[0].gain;
-            let early = plan(1.0);
-            let mid = plan(4.0);
-            let late = plan(7.0);
-            assert!(
-                early < mid && mid < late,
-                "the curve rises: {early} {mid} {late}"
-            );
-            assert!(
-                (mid - 0.5).abs() < 0.02,
-                "and is linear through the middle: {mid}"
-            );
+            {
+                let (mut p, _, _, _) = project_with_audio();
+                let (m1, m2) = (p.media[0].id, p.media[1].id);
+                let c1 = p.clips[0].id;
+                p.clip_mut(c1).unwrap().volume = 0.5;
+                let mut src = constant(&[(m1, 0.4), (m2, 0.0)]);
+                let block = mix_block(&p, 1.0, 16, &mut src);
+                assert!(
+                    (block[0] - 0.2).abs() < 1e-6,
+                    "half volume halves it: {}",
+                    block[0]
+                );
+            }
+            {
+                let (mut p, _, _, _) = project_with_audio();
+                let (m1, m2) = (p.media[0].id, p.media[1].id);
+                p.clip_mut(p.clips[0].id).unwrap().fade_in = 4.0;
+                let mut src = constant(&[(m1, 1.0), (m2, 0.0)]);
+                let head = mix_block(&p, 0.0, 16, &mut src)[0];
+                let mid = mix_block(&p, 2.0, 16, &mut src)[0];
+                let after = mix_block(&p, 6.0, 16, &mut src)[0];
+                assert!(
+                    head < mid && mid < after,
+                    "the ramp climbs: {head} {mid} {after}"
+                );
+                assert!((after - 1.0).abs() < 1e-6, "and reaches full past the fade");
+            }
+            {
+                let (mut p, a1, a2, _) = project_with_audio();
+                let (m1, m2) = (p.media[0].id, p.media[1].id);
+                let mut src = constant(&[(m1, 0.25), (m2, 0.5)]);
+                assert!((mix_block(&p, 1.0, 16, &mut src)[0] - 0.75).abs() < 1e-6);
+
+                let i1 = p.tracks.iter().position(|t| t.id == a1).unwrap();
+                let i2 = p.tracks.iter().position(|t| t.id == a2).unwrap();
+                p.tracks[i1].muted = true;
+                assert!(
+                    (mix_block(&p, 1.0, 16, &mut src)[0] - 0.5).abs() < 1e-6,
+                    "a muted track contributes nothing",
+                );
+
+                p.tracks[i1].muted = false;
+                p.tracks[i1].solo = true;
+                assert!(
+                    (mix_block(&p, 1.0, 16, &mut src)[0] - 0.25).abs() < 1e-6,
+                    "soloing one track silences the other",
+                );
+
+                p.tracks[i2].solo = true;
+                p.tracks[i2].muted = true;
+                assert!(
+                    (mix_block(&p, 1.0, 16, &mut src)[0] - 0.25).abs() < 1e-6,
+                    "a muted track stays silent even when soloed",
+                );
+            }
+            {
+                let (mut p, _, _, _) = project_with_audio();
+                let (m1, m2) = (p.media[0].id, p.media[1].id);
+                let idx = p
+                    .tracks
+                    .iter()
+                    .position(|t| t.kind == TrackKind::Audio)
+                    .unwrap();
+                p.tracks[idx].kind = TrackKind::Video;
+                let mut src = constant(&[(m1, 0.25), (m2, 0.5)]);
+                assert!(
+                    (mix_block(&p, 1.0, 16, &mut src)[0] - 0.5).abs() < 1e-6,
+                    "only audio lanes are mixed",
+                );
+            }
+            {
+                // A plain cast would wrap +1.2 round to a large negative sample: an
+                // audible crack at exactly the loudest moment.
+                let (p, _, _, _) = project_with_audio();
+                let (m1, m2) = (p.media[0].id, p.media[1].id);
+                let mut src = constant(&[(m1, 0.8), (m2, 0.8)]);
+                let block = mix_block(&p, 1.0, 8, &mut src);
+                assert!(
+                    block.iter().all(|s| (-1.0..=1.0).contains(s)),
+                    "the mix stays in range: {block:?}",
+                );
+                assert!((block[0] - 1.0).abs() < 1e-6, "and saturates at full scale");
+                let pcm = to_s16le(&block);
+                let first = i16::from_le_bytes([pcm[0], pcm[1]]);
+                assert!(
+                    first > 32_000,
+                    "full scale encodes as a large positive: {first}"
+                );
+            }
+            {
+                let (p, _, _, _) = project_with_audio();
+                let (m1, m2) = (p.media[0].id, p.media[1].id);
+                let mut src = constant(&[(m1, -1.0), (m2, 0.0)]);
+                let pcm = to_s16le(&mix_block(&p, 1.0, 4, &mut src));
+                let v = i16::from_le_bytes([pcm[0], pcm[1]]);
+                assert_eq!(
+                    v, -32767,
+                    "the negative limit is representable, not wrapped"
+                );
+            }
         }
     }
 
@@ -1430,126 +1554,6 @@ mod tests {
                 Arc::strong_count(&tap),
                 1,
                 "a dropped monitor leaves no thread still feeding a sink",
-            );
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
-    fn mixer_sums_scales_and_silences_by_track_state() {
-        {
-            let (p, _, _, _) = project_with_audio();
-            let (m1, m2) = (p.media[0].id, p.media[1].id);
-            let mut src = constant(&[(m1, 0.2), (m2, 0.3)]);
-            let block = mix_block(&p, 1.0, 64, &mut src);
-            assert_eq!(block.len(), 64 * CHANNELS);
-            assert!(
-                (block[0] - 0.5).abs() < 1e-6,
-                "two clips playing at once are heard at once: {}",
-                block[0],
-            );
-        }
-        {
-            let (mut p, _, _, _) = project_with_audio();
-            let (m1, m2) = (p.media[0].id, p.media[1].id);
-            let c1 = p.clips[0].id;
-            p.clip_mut(c1).unwrap().volume = 0.5;
-            let mut src = constant(&[(m1, 0.4), (m2, 0.0)]);
-            let block = mix_block(&p, 1.0, 16, &mut src);
-            assert!(
-                (block[0] - 0.2).abs() < 1e-6,
-                "half volume halves it: {}",
-                block[0]
-            );
-        }
-        {
-            let (mut p, _, _, _) = project_with_audio();
-            let (m1, m2) = (p.media[0].id, p.media[1].id);
-            p.clip_mut(p.clips[0].id).unwrap().fade_in = 4.0;
-            let mut src = constant(&[(m1, 1.0), (m2, 0.0)]);
-            let head = mix_block(&p, 0.0, 16, &mut src)[0];
-            let mid = mix_block(&p, 2.0, 16, &mut src)[0];
-            let after = mix_block(&p, 6.0, 16, &mut src)[0];
-            assert!(
-                head < mid && mid < after,
-                "the ramp climbs: {head} {mid} {after}"
-            );
-            assert!((after - 1.0).abs() < 1e-6, "and reaches full past the fade");
-        }
-        {
-            let (mut p, a1, a2, _) = project_with_audio();
-            let (m1, m2) = (p.media[0].id, p.media[1].id);
-            let mut src = constant(&[(m1, 0.25), (m2, 0.5)]);
-            assert!((mix_block(&p, 1.0, 16, &mut src)[0] - 0.75).abs() < 1e-6);
-
-            let i1 = p.tracks.iter().position(|t| t.id == a1).unwrap();
-            let i2 = p.tracks.iter().position(|t| t.id == a2).unwrap();
-            p.tracks[i1].muted = true;
-            assert!(
-                (mix_block(&p, 1.0, 16, &mut src)[0] - 0.5).abs() < 1e-6,
-                "a muted track contributes nothing",
-            );
-
-            p.tracks[i1].muted = false;
-            p.tracks[i1].solo = true;
-            assert!(
-                (mix_block(&p, 1.0, 16, &mut src)[0] - 0.25).abs() < 1e-6,
-                "soloing one track silences the other",
-            );
-
-            p.tracks[i2].solo = true;
-            p.tracks[i2].muted = true;
-            assert!(
-                (mix_block(&p, 1.0, 16, &mut src)[0] - 0.25).abs() < 1e-6,
-                "a muted track stays silent even when soloed",
-            );
-        }
-        {
-            let (mut p, _, _, _) = project_with_audio();
-            let (m1, m2) = (p.media[0].id, p.media[1].id);
-            let idx = p
-                .tracks
-                .iter()
-                .position(|t| t.kind == TrackKind::Audio)
-                .unwrap();
-            p.tracks[idx].kind = TrackKind::Video;
-            let mut src = constant(&[(m1, 0.25), (m2, 0.5)]);
-            assert!(
-                (mix_block(&p, 1.0, 16, &mut src)[0] - 0.5).abs() < 1e-6,
-                "only audio lanes are mixed",
-            );
-        }
-        {
-            // A plain cast would wrap +1.2 round to a large negative sample: an
-            // audible crack at exactly the loudest moment.
-            let (p, _, _, _) = project_with_audio();
-            let (m1, m2) = (p.media[0].id, p.media[1].id);
-            let mut src = constant(&[(m1, 0.8), (m2, 0.8)]);
-            let block = mix_block(&p, 1.0, 8, &mut src);
-            assert!(
-                block.iter().all(|s| (-1.0..=1.0).contains(s)),
-                "the mix stays in range: {block:?}",
-            );
-            assert!((block[0] - 1.0).abs() < 1e-6, "and saturates at full scale");
-            let pcm = to_s16le(&block);
-            let first = i16::from_le_bytes([pcm[0], pcm[1]]);
-            assert!(
-                first > 32_000,
-                "full scale encodes as a large positive: {first}"
-            );
-        }
-        {
-            let (p, _, _, _) = project_with_audio();
-            let (m1, m2) = (p.media[0].id, p.media[1].id);
-            let mut src = constant(&[(m1, -1.0), (m2, 0.0)]);
-            let pcm = to_s16le(&mix_block(&p, 1.0, 4, &mut src));
-            let v = i16::from_le_bytes([pcm[0], pcm[1]]);
-            assert_eq!(
-                v, -32767,
-                "the negative limit is representable, not wrapped"
             );
         }
     }

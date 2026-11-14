@@ -410,159 +410,167 @@ mod tests {
         UserId(s.to_string())
     }
 
-    #[test]
-    fn presence_keys_and_times_round_trip_exactly() {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn presence_keys_round_trip_and_the_publisher_is_fair;
+
+        phase presence_keys_and_times_round_trip_exactly;
         {
-            let clip = Uuid::parse_str("6f1e2d3c-4b5a-4968-8778-695a4b3c2d1e").unwrap();
+            {
+                let clip = Uuid::parse_str("6f1e2d3c-4b5a-4968-8778-695a4b3c2d1e").unwrap();
 
-            let by_hand = PresenceKey::Widget {
-                path: vec![
-                    PathSegment::Field("ve_clip".to_string()),
-                    PathSegment::Field("6f1e2d3c-4b5a-4968-8778-695a4b3c2d1e".to_string()),
-                ],
-            };
-            assert_eq!(by_hand, clip_key(clip));
+                let by_hand = PresenceKey::Widget {
+                    path: vec![
+                        PathSegment::Field("ve_clip".to_string()),
+                        PathSegment::Field("6f1e2d3c-4b5a-4968-8778-695a4b3c2d1e".to_string()),
+                    ],
+                };
+                assert_eq!(by_hand, clip_key(clip));
 
-            let timeline = PresenceKey::Widget {
-                path: vec![PathSegment::Field("ve_timeline".to_string())],
-            };
-            assert_eq!(timeline, timeline_key());
+                let timeline = PresenceKey::Widget {
+                    path: vec![PathSegment::Field("ve_timeline".to_string())],
+                };
+                assert_eq!(timeline, timeline_key());
 
-            let field = PresenceKey::Widget {
-                path: vec![
-                    PathSegment::Field("ve_field".to_string()),
-                    PathSegment::Field("title_words".to_string()),
-                    PathSegment::Field("6f1e2d3c-4b5a-4968-8778-695a4b3c2d1e".to_string()),
-                ],
-            };
-            assert_eq!(field, field_key(FIELD_TITLE_WORDS, clip));
-        }
-        {
-            let recipe = external_driver_recipe();
-            for tag in [TIMELINE, CLIP, FIELD, FIELD_TITLE_WORDS] {
-                assert!(recipe.contains(tag), "the recipe never mentions {tag:?}");
+                let field = PresenceKey::Widget {
+                    path: vec![
+                        PathSegment::Field("ve_field".to_string()),
+                        PathSegment::Field("title_words".to_string()),
+                        PathSegment::Field("6f1e2d3c-4b5a-4968-8778-695a4b3c2d1e".to_string()),
+                    ],
+                };
+                assert_eq!(field, field_key(FIELD_TITLE_WORDS, clip));
             }
-            assert!(
-                recipe.contains("so.tilo.video-editor"),
-                "the recipe has to name the app id a driver announces as",
-            );
-            assert!(
-                recipe.contains("milliseconds"),
-                "a driver that guesses the time unit publishes a playhead in the \
-             wrong place, so the recipe must state it",
-            );
-        }
-        {
-            let clip = Uuid::new_v4();
-            assert_eq!(clip_of(&clip_key(clip)), Some(clip));
-            // A key for another kind of object never reads back as a clip.
-            assert_eq!(clip_of(&field_key(FIELD_TITLE_WORDS, clip)), None);
-            // Nor does the timeline, which names no object at all.
-            assert_eq!(clip_of(&timeline_key()), None);
-            let foreign = PresenceKey::Widget {
-                path: vec![
-                    PathSegment::Field("wp_block".to_string()),
-                    PathSegment::Field(clip.to_string()),
-                ],
-            };
-            assert_eq!(clip_of(&foreign), None);
-            // Nor a well-tagged key carrying something that is not a uuid.
-            let malformed = PresenceKey::Widget {
-                path: vec![
-                    PathSegment::Field(CLIP.to_string()),
-                    PathSegment::Field("not-a-uuid".to_string()),
-                ],
-            };
-            assert_eq!(clip_of(&malformed), None);
-        }
-        {
-            for t in [0.0, 0.001, 1.0, 12.5, 23.456, 3600.0] {
+            {
+                let recipe = external_driver_recipe();
+                for tag in [TIMELINE, CLIP, FIELD, FIELD_TITLE_WORDS] {
+                    assert!(recipe.contains(tag), "the recipe never mentions {tag:?}");
+                }
                 assert!(
-                    (seconds(ticks(t)) - t).abs() < 1e-9,
-                    "{t}s came back as {}s",
-                    seconds(ticks(t)),
+                    recipe.contains("so.tilo.video-editor"),
+                    "the recipe has to name the app id a driver announces as",
+                );
+                assert!(
+                    recipe.contains("milliseconds"),
+                    "a driver that guesses the time unit publishes a playhead in the \
+             wrong place, so the recipe must state it",
                 );
             }
-            // A negative time clamps here rather than wrapping to an enormous one.
-            assert_eq!(ticks(-5.0), 0);
-            assert_eq!(ticks(f64::NAN), 0);
-            assert_eq!(ticks(f64::NEG_INFINITY), 0);
-        }
-    }
-
-    #[test]
-    fn presence_publisher_emits_every_facet_fairly() {
-        {
-            let (key, payload) = point_frame(None, 12.5);
-            assert_eq!(key, timeline_key());
-            assert_eq!(payload, PresencePayload::Caret { pos: 12_500 });
-
-            let clip = Uuid::new_v4();
-            let (key, payload) = point_frame(Some((FIELD_TITLE_WORDS, clip, 4)), 12.5);
-            assert_eq!(key, field_key(FIELD_TITLE_WORDS, clip));
-            assert_eq!(
-                payload,
-                PresencePayload::Caret { pos: 4 },
-                "while typing, the point is the text caret, not the playhead",
-            );
-        }
-        {
-            let clip = Uuid::new_v4();
-            let (key, _) = range_frame(Some((clip, 2.0, 6.0)));
-            assert_eq!(key, clip_key(clip));
-
-            let (key, payload) = range_frame(None);
-            assert_eq!(key, timeline_key(), "the empty range is not on any clip");
-            assert_eq!(payload, PresencePayload::Selection { start: 0, end: 0 });
-
-            // Both frames to one receiver, in order: the clip ends up with no peer.
-            let mut ctx = PresenceCtx::empty();
-            let (k, p) = range_frame(Some((clip, 2.0, 6.0)));
-            ctx.apply_remote_presence("ada".into(), k, p);
-            assert_eq!(peer_clips(&ctx).len(), 1, "selected");
-            let (k, p) = range_frame(None);
-            ctx.apply_remote_presence("ada".into(), k, p);
-            assert!(peer_clips(&ctx).is_empty(), "and deselected again");
-        }
-        {
-            let clip = Uuid::new_v4();
-            let local = LocalPresence::default();
-            let facets = || [point_frame(None, 12.5), range_frame(Some((clip, 2.0, 6.0)))];
-
-            let first = local.next(facets()).expect("a first frame");
-            let second = local.next(facets()).expect("a second frame");
-            assert_ne!(first, second, "the second poll offers the other facet");
-
-            let published = [first, second.clone()];
-            assert!(
-                published.iter().any(|(k, _)| *k == timeline_key()),
-                "the playhead was never published: {published:?}",
-            );
-            assert!(
-                published.iter().any(|(k, _)| *k == clip_key(clip)),
-                "the selection was never published: {published:?}",
-            );
-
-            let third = local.next(facets());
-            assert_eq!(third, Some(second.clone()));
-            assert_eq!(local.next(facets()), Some(second));
-        }
-        {
-            let clip = Uuid::new_v4();
-            let local = LocalPresence::default();
-            let mut saw_selection = false;
-            for frame in 0..8 {
-                // A playhead moving every frame, and a selection that never does.
-                let t = 1.0 + f64::from(frame) * 0.25;
-                let out = local.next([point_frame(None, t), range_frame(Some((clip, 2.0, 6.0)))]);
-                if out.map(|(k, _)| k) == Some(clip_key(clip)) {
-                    saw_selection = true;
-                }
+            {
+                let clip = Uuid::new_v4();
+                assert_eq!(clip_of(&clip_key(clip)), Some(clip));
+                // A key for another kind of object never reads back as a clip.
+                assert_eq!(clip_of(&field_key(FIELD_TITLE_WORDS, clip)), None);
+                // Nor does the timeline, which names no object at all.
+                assert_eq!(clip_of(&timeline_key()), None);
+                let foreign = PresenceKey::Widget {
+                    path: vec![
+                        PathSegment::Field("wp_block".to_string()),
+                        PathSegment::Field(clip.to_string()),
+                    ],
+                };
+                assert_eq!(clip_of(&foreign), None);
+                // Nor a well-tagged key carrying something that is not a uuid.
+                let malformed = PresenceKey::Widget {
+                    path: vec![
+                        PathSegment::Field(CLIP.to_string()),
+                        PathSegment::Field("not-a-uuid".to_string()),
+                    ],
+                };
+                assert_eq!(clip_of(&malformed), None);
             }
-            assert!(
-                saw_selection,
-                "the selection never got a turn while the playhead was moving",
-            );
+            {
+                for t in [0.0, 0.001, 1.0, 12.5, 23.456, 3600.0] {
+                    assert!(
+                        (seconds(ticks(t)) - t).abs() < 1e-9,
+                        "{t}s came back as {}s",
+                        seconds(ticks(t)),
+                    );
+                }
+                // A negative time clamps here rather than wrapping to an enormous one.
+                assert_eq!(ticks(-5.0), 0);
+                assert_eq!(ticks(f64::NAN), 0);
+                assert_eq!(ticks(f64::NEG_INFINITY), 0);
+            }
+        }
+
+        phase presence_publisher_emits_every_facet_fairly;
+        {
+            {
+                let (key, payload) = point_frame(None, 12.5);
+                assert_eq!(key, timeline_key());
+                assert_eq!(payload, PresencePayload::Caret { pos: 12_500 });
+
+                let clip = Uuid::new_v4();
+                let (key, payload) = point_frame(Some((FIELD_TITLE_WORDS, clip, 4)), 12.5);
+                assert_eq!(key, field_key(FIELD_TITLE_WORDS, clip));
+                assert_eq!(
+                    payload,
+                    PresencePayload::Caret { pos: 4 },
+                    "while typing, the point is the text caret, not the playhead",
+                );
+            }
+            {
+                let clip = Uuid::new_v4();
+                let (key, _) = range_frame(Some((clip, 2.0, 6.0)));
+                assert_eq!(key, clip_key(clip));
+
+                let (key, payload) = range_frame(None);
+                assert_eq!(key, timeline_key(), "the empty range is not on any clip");
+                assert_eq!(payload, PresencePayload::Selection { start: 0, end: 0 });
+
+                // Both frames to one receiver, in order: the clip ends up with no peer.
+                let mut ctx = PresenceCtx::empty();
+                let (k, p) = range_frame(Some((clip, 2.0, 6.0)));
+                ctx.apply_remote_presence("ada".into(), k, p);
+                assert_eq!(peer_clips(&ctx).len(), 1, "selected");
+                let (k, p) = range_frame(None);
+                ctx.apply_remote_presence("ada".into(), k, p);
+                assert!(peer_clips(&ctx).is_empty(), "and deselected again");
+            }
+            {
+                let clip = Uuid::new_v4();
+                let local = LocalPresence::default();
+                let facets = || [point_frame(None, 12.5), range_frame(Some((clip, 2.0, 6.0)))];
+
+                let first = local.next(facets()).expect("a first frame");
+                let second = local.next(facets()).expect("a second frame");
+                assert_ne!(first, second, "the second poll offers the other facet");
+
+                let published = [first, second.clone()];
+                assert!(
+                    published.iter().any(|(k, _)| *k == timeline_key()),
+                    "the playhead was never published: {published:?}",
+                );
+                assert!(
+                    published.iter().any(|(k, _)| *k == clip_key(clip)),
+                    "the selection was never published: {published:?}",
+                );
+
+                let third = local.next(facets());
+                assert_eq!(third, Some(second.clone()));
+                assert_eq!(local.next(facets()), Some(second));
+            }
+            {
+                let clip = Uuid::new_v4();
+                let local = LocalPresence::default();
+                let mut saw_selection = false;
+                for frame in 0..8 {
+                    // A playhead moving every frame, and a selection that never does.
+                    let t = 1.0 + f64::from(frame) * 0.25;
+                    let out = local.next([point_frame(None, t), range_frame(Some((clip, 2.0, 6.0)))]);
+                    if out.map(|(k, _)| k) == Some(clip_key(clip)) {
+                        saw_selection = true;
+                    }
+                }
+                assert!(
+                    saw_selection,
+                    "the selection never got a turn while the playhead was moving",
+                );
+            }
         }
     }
 

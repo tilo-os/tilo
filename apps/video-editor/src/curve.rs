@@ -427,258 +427,270 @@ ui::tilo_resource::json_model!(Curve);
 mod tests {
     use super::*;
 
-    #[test]
-    fn curve_bake_shapes_channels_master_and_mix() {
-        {
-            let c = Curve::default();
-            assert!(c.is_identity(), "a fresh curve changes nothing");
-            for t in [0.0, 0.13, 0.5, 0.87, 1.0] {
-                let (r, g, b) = c.apply(t, t, t);
-                assert!((r - t).abs() < 1e-9 && (g - t).abs() < 1e-9 && (b - t).abs() < 1e-9);
-            }
-        }
-        {
-            let lut = Curve::default().bake();
-            assert_eq!(lut.len(), LUT_SIZE * 4);
-            for i in 0..LUT_SIZE {
-                let want = i as u8;
-                assert_eq!(lut[i * 4], want, "entry {i} red");
-                assert_eq!(lut[i * 4 + 1], want, "entry {i} green");
-                assert_eq!(lut[i * 4 + 2], want, "entry {i} blue");
-            }
-        }
-        {
-            let mut c = Curve::default();
-            c.master.set_point(0.5, 0.75);
-            assert!(!c.is_identity());
-            assert!(c.apply(0.0, 0.0, 0.0).0.abs() < 1e-9, "black stays black");
-            assert!(
-                (c.apply(1.0, 1.0, 1.0).0 - 1.0).abs() < 1e-9,
-                "white stays white"
-            );
-            let mid = c.apply(0.5, 0.5, 0.5).0;
-            assert!(
-                (mid - 0.75).abs() < 1e-6,
-                "the point the user placed is honoured: {mid}"
-            );
-            // It lifts a range, not only the sampled tone.
-            assert!(c.apply(0.3, 0.3, 0.3).0 > 0.35);
-            assert!(c.apply(0.7, 0.7, 0.7).0 > 0.72);
-        }
-        {
-            let mut c = Curve::default();
-            c.red.set_point(0.5, 0.8);
-            let (r, g, b) = c.apply(0.5, 0.5, 0.5);
-            assert!((r - 0.8).abs() < 1e-6, "red was shaped: {r}");
-            assert!((g - 0.5).abs() < 1e-9, "green untouched: {g}");
-            assert!((b - 0.5).abs() < 1e-9, "blue untouched: {b}");
-            assert_eq!(c.shaped_channels(), vec![Channel::Red]);
-        }
-        {
-            // red: 0.5 -> 0.8, master: 0.8 -> 0.2. Composed the other way the
-            // answer is not 0.2, so this pins the order.
-            let mut c = Curve::default();
-            c.red.set_point(0.5, 0.8);
-            c.master.set_point(0.8, 0.2);
-            let r = c.apply(0.5, 0.5, 0.5).0;
-            assert!((r - 0.2).abs() < 1e-6, "master(red(x)), got {r}");
-        }
-        {
-            let mut c = Curve::default();
-            c.master.set_point(0.5, 1.0);
-            c.mix = 0.5;
-            let mid = c.apply(0.5, 0.5, 0.5).0;
-            assert!((mid - 0.75).abs() < 1e-6, "half way from 0.5 to 1.0: {mid}");
-            c.mix = 0.0;
-            assert!(c.is_identity(), "mixed all the way out is a bypass");
-            assert!((c.apply(0.5, 0.5, 0.5).0 - 0.5).abs() < 1e-9);
-        }
-        {
-            let mut c = Curve::default();
-            c.master.set_point(0.5, 1.0);
-            c.mix = 0.5;
-            let lut = c.bake();
-            let mid = f64::from(lut[128 * 4]) / 255.0;
-            let want = c.apply(128.0 / 255.0, 0.0, 0.0).0;
-            assert!(
-                (mid - want).abs() < 1.0 / 255.0,
-                "baked {mid} vs computed {want}"
-            );
-            assert!(
-                mid > 0.6,
-                "and it really is lifted, not the identity: {mid}"
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn curves_bake_and_interpolate;
 
-    #[test]
-    fn curve_interpolation_is_monotone_and_exact_on_simple_splines() {
+        phase curve_bake_shapes_channels_master_and_mix;
         {
-            // A steep S is exactly what a Catmull-Rom spline overshoots on: the
-            // segment past the last steep point bulges above 1.0 and clips into
-            // a band the user never drew.
-            let mut c = Curve::default();
-            c.master.set_point(0.25, 0.05);
-            c.master.set_point(0.75, 0.95);
-            for i in 0..=1000 {
-                let t = f64::from(i) / 1000.0;
-                let v = c.master.eval(t);
-                assert!(
-                    (0.0..=1.0).contains(&v),
-                    "eval({t}) = {v} left the unit range"
-                );
+            {
+                let c = Curve::default();
+                assert!(c.is_identity(), "a fresh curve changes nothing");
+                for t in [0.0, 0.13, 0.5, 0.87, 1.0] {
+                    let (r, g, b) = c.apply(t, t, t);
+                    assert!((r - t).abs() < 1e-9 && (g - t).abs() < 1e-9 && (b - t).abs() < 1e-9);
+                }
             }
-            for i in 0..=200 {
-                let t = 0.25 + 0.5 * f64::from(i) / 200.0;
-                let v = c.master.eval(t);
+            {
+                let lut = Curve::default().bake();
+                assert_eq!(lut.len(), LUT_SIZE * 4);
+                for i in 0..LUT_SIZE {
+                    let want = i as u8;
+                    assert_eq!(lut[i * 4], want, "entry {i} red");
+                    assert_eq!(lut[i * 4 + 1], want, "entry {i} green");
+                    assert_eq!(lut[i * 4 + 2], want, "entry {i} blue");
+                }
+            }
+            {
+                let mut c = Curve::default();
+                c.master.set_point(0.5, 0.75);
+                assert!(!c.is_identity());
+                assert!(c.apply(0.0, 0.0, 0.0).0.abs() < 1e-9, "black stays black");
                 assert!(
-                    (0.05 - 1e-9..=0.95 + 1e-9).contains(&v),
-                    "eval({t}) = {v} left the segment"
+                    (c.apply(1.0, 1.0, 1.0).0 - 1.0).abs() < 1e-9,
+                    "white stays white"
+                );
+                let mid = c.apply(0.5, 0.5, 0.5).0;
+                assert!(
+                    (mid - 0.75).abs() < 1e-6,
+                    "the point the user placed is honoured: {mid}"
+                );
+                // It lifts a range, not only the sampled tone.
+                assert!(c.apply(0.3, 0.3, 0.3).0 > 0.35);
+                assert!(c.apply(0.7, 0.7, 0.7).0 > 0.72);
+            }
+            {
+                let mut c = Curve::default();
+                c.red.set_point(0.5, 0.8);
+                let (r, g, b) = c.apply(0.5, 0.5, 0.5);
+                assert!((r - 0.8).abs() < 1e-6, "red was shaped: {r}");
+                assert!((g - 0.5).abs() < 1e-9, "green untouched: {g}");
+                assert!((b - 0.5).abs() < 1e-9, "blue untouched: {b}");
+                assert_eq!(c.shaped_channels(), vec![Channel::Red]);
+            }
+            {
+                // red: 0.5 -> 0.8, master: 0.8 -> 0.2. Composed the other way the
+                // answer is not 0.2, so this pins the order.
+                let mut c = Curve::default();
+                c.red.set_point(0.5, 0.8);
+                c.master.set_point(0.8, 0.2);
+                let r = c.apply(0.5, 0.5, 0.5).0;
+                assert!((r - 0.2).abs() < 1e-6, "master(red(x)), got {r}");
+            }
+            {
+                let mut c = Curve::default();
+                c.master.set_point(0.5, 1.0);
+                c.mix = 0.5;
+                let mid = c.apply(0.5, 0.5, 0.5).0;
+                assert!((mid - 0.75).abs() < 1e-6, "half way from 0.5 to 1.0: {mid}");
+                c.mix = 0.0;
+                assert!(c.is_identity(), "mixed all the way out is a bypass");
+                assert!((c.apply(0.5, 0.5, 0.5).0 - 0.5).abs() < 1e-9);
+            }
+            {
+                let mut c = Curve::default();
+                c.master.set_point(0.5, 1.0);
+                c.mix = 0.5;
+                let lut = c.bake();
+                let mid = f64::from(lut[128 * 4]) / 255.0;
+                let want = c.apply(128.0 / 255.0, 0.0, 0.0).0;
+                assert!(
+                    (mid - want).abs() < 1.0 / 255.0,
+                    "baked {mid} vs computed {want}"
+                );
+                assert!(
+                    mid > 0.6,
+                    "and it really is lifted, not the identity: {mid}"
                 );
             }
         }
+
+        phase curve_interpolation_is_monotone_and_exact_on_simple_splines;
         {
-            // Two points at the same height must not bow between them.
-            let mut s = Spline::identity();
-            s.set_point(0.3, 0.6);
-            s.set_point(0.6, 0.6);
-            for i in 0..=100 {
-                let t = 0.3 + 0.3 * f64::from(i) / 100.0;
-                assert!((s.eval(t) - 0.6).abs() < 1e-9, "eval({t}) = {}", s.eval(t));
+            {
+                // A steep S is exactly what a Catmull-Rom spline overshoots on: the
+                // segment past the last steep point bulges above 1.0 and clips into
+                // a band the user never drew.
+                let mut c = Curve::default();
+                c.master.set_point(0.25, 0.05);
+                c.master.set_point(0.75, 0.95);
+                for i in 0..=1000 {
+                    let t = f64::from(i) / 1000.0;
+                    let v = c.master.eval(t);
+                    assert!(
+                        (0.0..=1.0).contains(&v),
+                        "eval({t}) = {v} left the unit range"
+                    );
+                }
+                for i in 0..=200 {
+                    let t = 0.25 + 0.5 * f64::from(i) / 200.0;
+                    let v = c.master.eval(t);
+                    assert!(
+                        (0.05 - 1e-9..=0.95 + 1e-9).contains(&v),
+                        "eval({t}) = {v} left the segment"
+                    );
+                }
+            }
+            {
+                // Two points at the same height must not bow between them.
+                let mut s = Spline::identity();
+                s.set_point(0.3, 0.6);
+                s.set_point(0.6, 0.6);
+                for i in 0..=100 {
+                    let t = 0.3 + 0.3 * f64::from(i) / 100.0;
+                    assert!((s.eval(t) - 0.6).abs() < 1e-9, "eval({t}) = {}", s.eval(t));
+                }
+            }
+            {
+                let mut s = Spline {
+                    points: vec![CurvePoint::new(0.0, 0.2), CurvePoint::new(1.0, 0.8)],
+                };
+                for i in 0..=100 {
+                    let t = f64::from(i) / 100.0;
+                    let want = 0.2 + 0.6 * t;
+                    assert!(
+                        (s.eval(t) - want).abs() < 1e-9,
+                        "eval({t}) = {}, want {want}",
+                        s.eval(t)
+                    );
+                }
+                // And moving an endpoint keeps it a line, not a curve with a kink.
+                s.move_point(0, 0.5, 0.0);
+                assert!((s.eval(0.5) - 0.4).abs() < 1e-9, "{}", s.eval(0.5));
             }
         }
+    }
+
+    tilo_test_env::scenario! {
+        #[expect(
+            clippy::float_cmp,
+            reason = "the points are stored as given and read straight back"
+        )]
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn curve_points_and_names_are_kept_exactly;
+
+        phase curve_point_editing_keeps_the_spline_valid;
         {
-            let mut s = Spline {
-                points: vec![CurvePoint::new(0.0, 0.2), CurvePoint::new(1.0, 0.8)],
-            };
-            for i in 0..=100 {
-                let t = f64::from(i) / 100.0;
-                let want = 0.2 + 0.6 * t;
-                assert!(
-                    (s.eval(t) - want).abs() < 1e-9,
-                    "eval({t}) = {}, want {want}",
-                    s.eval(t)
+            {
+                let mut s = Spline::identity();
+                s.move_point(0, 0.4, 0.3);
+                assert_eq!(s.points[0].x, 0.0, "the left endpoint stays at 0");
+                assert_eq!(s.points[0].y, 0.3, "but it lifts");
+                s.move_point(1, 0.4, 0.6);
+                assert_eq!(s.points[1].x, 1.0);
+                assert_eq!(s.points[1].y, 0.6);
+            }
+            {
+                let mut s = Spline::identity();
+                s.set_point(0.3, 0.3);
+                s.set_point(0.6, 0.6);
+                // Index 1 is the 0.3 point; try to drag it past the 0.6 one.
+                s.move_point(1, 0.95, 0.5);
+                assert!(s.points[1].x < s.points[2].x, "{:?}", s.points);
+                assert!(s.points[1].x <= 0.6 - MIN_X_GAP + 1e-9, "{:?}", s.points);
+                // The order is still sorted, which is what eval relies on.
+                let xs: Vec<f64> = s.points.iter().map(|p| p.x).collect();
+                assert!(xs.windows(2).all(|w| w[0] < w[1]), "{xs:?}");
+            }
+            {
+                let mut s = Spline::identity();
+                s.set_point(0.5, 0.7);
+                assert_eq!(s.points.len(), 3);
+                assert!(!s.remove_point(0), "the left endpoint is not removable");
+                assert!(!s.remove_point(2), "nor the right");
+                assert!(s.remove_point(1), "an interior point is");
+                assert!(s.is_identity(), "and the curve is back to the line");
+            }
+            {
+                let mut s = Spline::identity();
+                s.set_point(0.5, 0.7);
+                // Well inside MIN_X_GAP of the existing point but not within the
+                // half-gap that counts as "the same point": refused outright.
+                assert_eq!(s.set_point(0.5 + MIN_X_GAP * 0.75, 0.2), None);
+                assert_eq!(s.points.len(), 3, "{:?}", s.points);
+                // Right on top of it edits instead.
+                assert_eq!(s.set_point(0.5, 0.2), Some(1));
+                assert_eq!(s.points[1].y, 0.2);
+            }
+            {
+                // Out of order, out of range, missing both endpoints, and a NaN.
+                let bad = Spline {
+                    points: vec![
+                        CurvePoint { x: 0.8, y: 2.0 },
+                        CurvePoint { x: 0.2, y: -1.0 },
+                        CurvePoint {
+                            x: f64::NAN,
+                            y: 0.5,
+                        },
+                    ],
+                };
+                let s = bad.normalised();
+                let xs: Vec<f64> = s.points.iter().map(|p| p.x).collect();
+                assert!(xs.windows(2).all(|w| w[0] < w[1]), "sorted: {xs:?}");
+                assert_eq!(xs.first().copied(), Some(0.0), "an endpoint at 0");
+                assert_eq!(xs.last().copied(), Some(1.0), "and at 1");
+                for p in &s.points {
+                    assert!((0.0..=1.0).contains(&p.y), "{p:?}");
+                }
+                for i in 0..=100 {
+                    assert!(s.eval(f64::from(i) / 100.0).is_finite());
+                }
+            }
+            {
+                let mut s = Spline::identity();
+                s.set_point(0.5, 0.5);
+                assert_eq!(s.point_near(0.52, 0.48, 0.05), Some(1));
+                assert_eq!(
+                    s.point_near(0.52, 0.48, 0.01),
+                    None,
+                    "outside the tolerance"
+                );
+                assert_eq!(
+                    s.point_near(0.02, 0.02, 0.05),
+                    Some(0),
+                    "the endpoint counts too"
                 );
             }
-            // And moving an endpoint keeps it a line, not a curve with a kink.
-            s.move_point(0, 0.5, 0.0);
-            assert!((s.eval(0.5) - 0.4).abs() < 1e-9, "{}", s.eval(0.5));
         }
-    }
 
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the points are stored as given and read straight back"
-    )]
-    fn curve_point_editing_keeps_the_spline_valid() {
+        phase curve_names_and_json_round_trip_with_absent_field_defaults;
         {
-            let mut s = Spline::identity();
-            s.move_point(0, 0.4, 0.3);
-            assert_eq!(s.points[0].x, 0.0, "the left endpoint stays at 0");
-            assert_eq!(s.points[0].y, 0.3, "but it lifts");
-            s.move_point(1, 0.4, 0.6);
-            assert_eq!(s.points[1].x, 1.0);
-            assert_eq!(s.points[1].y, 0.6);
-        }
-        {
-            let mut s = Spline::identity();
-            s.set_point(0.3, 0.3);
-            s.set_point(0.6, 0.6);
-            // Index 1 is the 0.3 point; try to drag it past the 0.6 one.
-            s.move_point(1, 0.95, 0.5);
-            assert!(s.points[1].x < s.points[2].x, "{:?}", s.points);
-            assert!(s.points[1].x <= 0.6 - MIN_X_GAP + 1e-9, "{:?}", s.points);
-            // The order is still sorted, which is what eval relies on.
-            let xs: Vec<f64> = s.points.iter().map(|p| p.x).collect();
-            assert!(xs.windows(2).all(|w| w[0] < w[1]), "{xs:?}");
-        }
-        {
-            let mut s = Spline::identity();
-            s.set_point(0.5, 0.7);
-            assert_eq!(s.points.len(), 3);
-            assert!(!s.remove_point(0), "the left endpoint is not removable");
-            assert!(!s.remove_point(2), "nor the right");
-            assert!(s.remove_point(1), "an interior point is");
-            assert!(s.is_identity(), "and the curve is back to the line");
-        }
-        {
-            let mut s = Spline::identity();
-            s.set_point(0.5, 0.7);
-            // Well inside MIN_X_GAP of the existing point but not within the
-            // half-gap that counts as "the same point": refused outright.
-            assert_eq!(s.set_point(0.5 + MIN_X_GAP * 0.75, 0.2), None);
-            assert_eq!(s.points.len(), 3, "{:?}", s.points);
-            // Right on top of it edits instead.
-            assert_eq!(s.set_point(0.5, 0.2), Some(1));
-            assert_eq!(s.points[1].y, 0.2);
-        }
-        {
-            // Out of order, out of range, missing both endpoints, and a NaN.
-            let bad = Spline {
-                points: vec![
-                    CurvePoint { x: 0.8, y: 2.0 },
-                    CurvePoint { x: 0.2, y: -1.0 },
-                    CurvePoint {
-                        x: f64::NAN,
-                        y: 0.5,
-                    },
-                ],
-            };
-            let s = bad.normalised();
-            let xs: Vec<f64> = s.points.iter().map(|p| p.x).collect();
-            assert!(xs.windows(2).all(|w| w[0] < w[1]), "sorted: {xs:?}");
-            assert_eq!(xs.first().copied(), Some(0.0), "an endpoint at 0");
-            assert_eq!(xs.last().copied(), Some(1.0), "and at 1");
-            for p in &s.points {
-                assert!((0.0..=1.0).contains(&p.y), "{p:?}");
+            {
+                for c in Channel::ALL {
+                    assert_eq!(Channel::from_name(c.as_str()), c, "{c:?}");
+                }
             }
-            for i in 0..=100 {
-                assert!(s.eval(f64::from(i) / 100.0).is_finite());
+            {
+                let mut c = Curve::default();
+                c.master.set_point(0.4, 0.6);
+                c.blue.set_point(0.7, 0.3);
+                c.mix = 0.4;
+                let json = serde_json::to_string(&c).expect("serialise");
+                let back: Curve = serde_json::from_str(&json).expect("deserialise");
+                assert_eq!(back, c);
             }
-        }
-        {
-            let mut s = Spline::identity();
-            s.set_point(0.5, 0.5);
-            assert_eq!(s.point_near(0.52, 0.48, 0.05), Some(1));
-            assert_eq!(
-                s.point_near(0.52, 0.48, 0.01),
-                None,
-                "outside the tolerance"
-            );
-            assert_eq!(
-                s.point_near(0.02, 0.02, 0.05),
-                Some(0),
-                "the endpoint counts too"
-            );
-        }
-    }
-
-    #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the points are stored as given and read straight back"
-    )]
-    fn curve_names_and_json_round_trip_with_absent_field_defaults() {
-        {
-            for c in Channel::ALL {
-                assert_eq!(Channel::from_name(c.as_str()), c, "{c:?}");
+            {
+                // `mix` defaulting to 0.0 would silently bypass every curve written
+                // before the field existed.
+                let back: Curve = serde_json::from_str(r#"{"master":{"points":[]}}"#).expect("parse");
+                assert_eq!(back.mix, 1.0);
             }
-        }
-        {
-            let mut c = Curve::default();
-            c.master.set_point(0.4, 0.6);
-            c.blue.set_point(0.7, 0.3);
-            c.mix = 0.4;
-            let json = serde_json::to_string(&c).expect("serialise");
-            let back: Curve = serde_json::from_str(&json).expect("deserialise");
-            assert_eq!(back, c);
-        }
-        {
-            // `mix` defaulting to 0.0 would silently bypass every curve written
-            // before the field existed.
-            let back: Curve = serde_json::from_str(r#"{"master":{"points":[]}}"#).expect("parse");
-            assert_eq!(back.mix, 1.0);
         }
     }
 }

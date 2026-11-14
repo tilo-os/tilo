@@ -1388,18 +1388,102 @@ mod tests {
         );
     }
 
-    #[test]
-    fn exporting_over_source_media_is_refused_without_changing_its_bytes() {
-        let dir = tempfile::tempdir().expect("source fixture directory");
-        let source = dir.path().join("source.mp4");
-        let original = b"source bytes must survive even a failed export";
-        std::fs::write(&source, original).expect("write source fixture");
-        let project = one_clip_over(source.to_str().expect("UTF-8 fixture path"));
-        let status = start_export(&project, &ExportSettings::default(), source.clone()).join();
-        assert!(
-            matches!(status, ExportStatus::Failed { reason } if reason.contains("source media"))
-        );
-        assert_eq!(std::fs::read(&source).expect("source survives"), original);
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn an_export_is_refused_or_planned_before_any_frame_is_encoded;
+
+        phase exporting_over_source_media_is_refused_without_changing_its_bytes;
+        {
+            let dir = tempfile::tempdir().expect("source fixture directory");
+            let source = dir.path().join("source.mp4");
+            let original = b"source bytes must survive even a failed export";
+            std::fs::write(&source, original).expect("write source fixture");
+            let project = one_clip_over(source.to_str().expect("UTF-8 fixture path"));
+            let status = start_export(&project, &ExportSettings::default(), source.clone()).join();
+            assert!(
+                matches!(status, ExportStatus::Failed { reason } if reason.contains("source media"))
+            );
+            assert_eq!(std::fs::read(&source).expect("source survives"), original);
+        }
+
+        phase a_missing_source_is_needed_only_by_a_range_its_clip_reaches_into;
+        // Whether a missing source refuses the export is decided at the marks, to the edge: a
+        // clip that starts where the range ends, or ends where it starts, has no frame in it.
+        {
+            use crate::model::{MediaItem, MediaKind};
+            let mut p = one_clip_over("no/such/directory/definitely-not-here-42.mp4");
+            let late = uuid::Uuid::new_v4();
+            p.media.push(MediaItem {
+                id: late,
+                name: "late".into(),
+                kind: MediaKind::Video,
+                path: "no/such/directory/nor-this-43.mp4".into(),
+                duration: 0.2,
+                ..Default::default()
+            });
+            let track = p.tracks[0].id;
+            let cut = p.clips[0].end();
+            p.add_clip(track, late, cut).expect("media exists");
+            let frame = 1.0 / 30.0;
+            let rows: [(Option<f64>, Option<f64>, &[&str]); 5] = [
+                (None, None, &["clip", "late"]),
+                (None, Some(cut), &["clip"]),
+                (None, Some(cut + frame), &["clip", "late"]),
+                (Some(cut), None, &["late"]),
+                (Some(cut - frame), None, &["clip", "late"]),
+            ];
+            for (mark_in, mark_out, needed) in rows {
+                p.clear_marks();
+                if let Some(t) = mark_in {
+                    p.set_mark_in(t);
+                }
+                if let Some(t) = mark_out {
+                    p.set_mark_out(t);
+                }
+                let named: Vec<String> = unreadable_sources(&p)
+                    .into_iter()
+                    .map(|(name, _)| name)
+                    .collect();
+                assert_eq!(named, needed, "marked {mark_in:?} to {mark_out:?}");
+            }
+        }
+
+        phase cut_render_plans_do_not_pad_short_clips_or_add_roundoff_frames;
+        {
+            let mut project = Project::new("short cut");
+            project.clips.push(crate::model::Clip {
+                in_point: 0.5,
+                out_point: 0.8,
+                ..Default::default()
+            });
+            assert!(
+                (project.duration() - 1.0).abs() < f64::EPSILON,
+                "the ruler keeps its UI minimum"
+            );
+            let plan = RenderPlan::new(&project, 30.0);
+            assert_eq!(plan.total, 9, "a nine-frame cut stays nine frames");
+            assert!(plan.time_of(8) < project.clips[0].end());
+
+            project.clips[0].out_point += 0.001;
+            assert_eq!(RenderPlan::new(&project, 30.0).total, 10);
+            project.set_mark_in(0.1);
+            project.set_mark_out(0.2);
+            let plan = RenderPlan::new(&project, 30.0);
+            assert_eq!(plan.total, 3);
+            assert!((plan.time_of(0) - 0.1).abs() < f64::EPSILON);
+
+            project.clear_marks();
+            project.clips[0].in_point = 3600.1;
+            project.clips[0].out_point = 3600.4;
+            assert_eq!(RenderPlan::new(&project, 30.0).total, 9);
+            project.clips[0].start = 3600.0;
+            project.set_mark_in(3600.1);
+            project.set_mark_out(3600.2);
+            assert_eq!(RenderPlan::new(&project, 30.0).total, 3);
+        }
     }
 
     /// The refusal compares files, not spellings: a destination that reaches the source by
@@ -1434,82 +1518,6 @@ mod tests {
                 "{spelling}"
             );
         }
-    }
-
-    /// Whether a missing source refuses the export is decided at the marks, to the edge: a
-    /// clip that starts where the range ends, or ends where it starts, has no frame in it.
-    #[test]
-    fn a_missing_source_is_needed_only_by_a_range_its_clip_reaches_into() {
-        use crate::model::{MediaItem, MediaKind};
-        let mut p = one_clip_over("no/such/directory/definitely-not-here-42.mp4");
-        let late = uuid::Uuid::new_v4();
-        p.media.push(MediaItem {
-            id: late,
-            name: "late".into(),
-            kind: MediaKind::Video,
-            path: "no/such/directory/nor-this-43.mp4".into(),
-            duration: 0.2,
-            ..Default::default()
-        });
-        let track = p.tracks[0].id;
-        let cut = p.clips[0].end();
-        p.add_clip(track, late, cut).expect("media exists");
-        let frame = 1.0 / 30.0;
-        let rows: [(Option<f64>, Option<f64>, &[&str]); 5] = [
-            (None, None, &["clip", "late"]),
-            (None, Some(cut), &["clip"]),
-            (None, Some(cut + frame), &["clip", "late"]),
-            (Some(cut), None, &["late"]),
-            (Some(cut - frame), None, &["clip", "late"]),
-        ];
-        for (mark_in, mark_out, needed) in rows {
-            p.clear_marks();
-            if let Some(t) = mark_in {
-                p.set_mark_in(t);
-            }
-            if let Some(t) = mark_out {
-                p.set_mark_out(t);
-            }
-            let named: Vec<String> = unreadable_sources(&p)
-                .into_iter()
-                .map(|(name, _)| name)
-                .collect();
-            assert_eq!(named, needed, "marked {mark_in:?} to {mark_out:?}");
-        }
-    }
-
-    #[test]
-    fn cut_render_plans_do_not_pad_short_clips_or_add_roundoff_frames() {
-        let mut project = Project::new("short cut");
-        project.clips.push(crate::model::Clip {
-            in_point: 0.5,
-            out_point: 0.8,
-            ..Default::default()
-        });
-        assert!(
-            (project.duration() - 1.0).abs() < f64::EPSILON,
-            "the ruler keeps its UI minimum"
-        );
-        let plan = RenderPlan::new(&project, 30.0);
-        assert_eq!(plan.total, 9, "a nine-frame cut stays nine frames");
-        assert!(plan.time_of(8) < project.clips[0].end());
-
-        project.clips[0].out_point += 0.001;
-        assert_eq!(RenderPlan::new(&project, 30.0).total, 10);
-        project.set_mark_in(0.1);
-        project.set_mark_out(0.2);
-        let plan = RenderPlan::new(&project, 30.0);
-        assert_eq!(plan.total, 3);
-        assert!((plan.time_of(0) - 0.1).abs() < f64::EPSILON);
-
-        project.clear_marks();
-        project.clips[0].in_point = 3600.1;
-        project.clips[0].out_point = 3600.4;
-        assert_eq!(RenderPlan::new(&project, 30.0).total, 9);
-        project.clips[0].start = 3600.0;
-        project.set_mark_in(3600.1);
-        project.set_mark_out(3600.2);
-        assert_eq!(RenderPlan::new(&project, 30.0).total, 3);
     }
 
     #[test]
