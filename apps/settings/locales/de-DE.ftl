@@ -586,9 +586,6 @@ mesh-health-connecting = Verbindung…
 mesh-health-ready = Online. Dateien bereit
 mesh-health-syncing = Online. Dateien werden kopiert
 mesh-health-unreachable = Offline. Prüfe, ob er an und verbunden ist
-mesh-continue-title = Auf Geräten fortsetzen
-mesh-activity = Arbeitsbereichs- und App-Aktivität
-mesh-sync-auto = Automatisch synchronisieren
 mesh-this-device = Arbeit, die dieses Gerät übernimmt
 mesh-this-device-desc = Ob Apps und Dateien deiner anderen Geräte hier laufen, oder nur auf dem Gerät, das sie angefragt hat.
 mesh-home-peer = Heimgerät
@@ -615,14 +612,14 @@ mesh-status-this-device = Dieses Gerät
 mesh-status-trusted = Vertrauenswürdig
 mesh-status-nearby = In der Nähe
 mesh-status-devices-reading = Deine Geräte werden gelesen…
-mesh-no-target = Kein anderes Gerät
 mesh-allow-continuity = Mit deinen anderen Geräten teilen
-mesh-allow-continuity-desc = Ausschalten, um alles auf einmal zu beenden.
-mesh-facet-active = { $desc } Aktiv für { $target }.
-mesh-facet-prepared = { $desc } Pausiert, solange das Teilen aus ist.
-mesh-facet-off = { $desc }
+mesh-share-once-added = Füge ein Gerät hinzu, um auszuwählen, was es teilt.
+mesh-shared-with = { $count ->
+    [1] Aktiv für { $first }
+    [2] Aktiv für { $first } und { $second }
+   *[other] Aktiv für { $first }, { $second } und { $more } weitere
+}
 mesh-audit-empty = Noch keine Änderungen am Teilen.
-mesh-roaming-empty = Noch werden keine Einstellungen auf dieses Gerät übertragen.
 mesh-roaming-none = Es werden keine persönlichen Einstellungen oder gespeicherten WLAN-Netzwerke übertragen.
 mesh-privacy-title = Mit deinen Geräten teilen
 mesh-agents-title = Agenten
@@ -2099,10 +2096,7 @@ display-caption-port = Schließe einen weiteren Bildschirm an einen verfügbaren
 display-caption-second = Schließe einen weiteren Bildschirm an, um deinen Arbeitsbereich zu erweitern.
 display-caption-switch = Ziehe die Bildschirme so, dass ihre Anordnung deinem Arbeitsplatz entspricht.
 display-card-title = Bildschirmanordnung
-mesh-activity-caption = Setze Aktivitäten in Arbeitsbereichen und Apps auf deinen anderen Geräten fort.
 mesh-audit-change = Änderung
-mesh-privacy-stay = Nur aktivierte Kategorien werden mit deinen Geräten geteilt.
-mesh-roaming-caption = Diese Einstellungen folgen deiner Identität auf verbundenen Geräten.
 notif-app-verified = App-Identität
 notif-delivery = Zustellung
 notif-dnd-title = Benachrichtigungen stummschalten

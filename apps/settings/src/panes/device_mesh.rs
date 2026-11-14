@@ -24,7 +24,7 @@ use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
-    SettingsSection, StatusTone, error_caption, note, page_of, row, rows, section, value_row,
+    SettingsSection, StatusTone, note, page_of, rows, section, value_row,
 };
 use settings_store::roaming_provenance::{Origin, RoamingProvenance};
 
@@ -716,13 +716,12 @@ fn continuity_key(capability: Capability) -> String {
     format!("device_mesh.continuity.{}", capability.key())
 }
 
-fn origin_summary(origin: &Origin) -> String {
-    format!("{} at revision {}", origin.device_label, origin.counter)
-}
-
 fn resolution_summary(winner: &Origin, alternatives: &[Origin]) -> String {
     if alternatives.is_empty() {
-        return t_args("mesh-from", &[("origin", origin_summary(winner).into())]);
+        return t_args(
+            "mesh-from",
+            &[("origin", winner.device_label.as_str().into())],
+        );
     }
     let others = alternatives
         .iter()
@@ -742,7 +741,7 @@ fn resolution_summary(winner: &Origin, alternatives: &[Origin]) -> String {
     t_args(
         "mesh-resolved",
         &[
-            ("winner", origin_summary(winner).into()),
+            ("winner", winner.device_label.as_str().into()),
             ("others", others.into()),
             ("suffix", suffix.into()),
         ],
@@ -1390,50 +1389,34 @@ impl Page<'_> {
     }
 
     fn page(&self) -> Element {
-        let activity = t("mesh-activity");
-        let sync_auto = t("mesh-sync-auto");
-        let mut continuation_rows = vec![
-            value_row(&activity, &sync_auto),
-            note(&t("mesh-activity-caption")),
-        ];
-        if let Some(trouble) = self.status.settings_trouble_shown() {
-            continuation_rows.push(row(error_caption(&trouble)));
-        }
-
-        let target_name = self
+        let others: Vec<&str> = self
             .personal_devices
             .iter()
             .flatten()
-            .find(|device| !device.local)
-            .map_or_else(|| t("mesh-no-target"), |device| device.label.clone());
+            .filter(|device| !device.local)
+            .map(|device| device.label.as_str())
+            .collect();
 
-        let mut roaming_rows = if self.roaming_provenance_unreadable {
+        let summaries = self.roaming_provenance.as_ref().map(provenance_summaries);
+        let roaming_rows = if self.roaming_provenance_unreadable {
             vec![note(&t("mesh-roaming-unreadable"))]
+        } else if let Some(summaries) = summaries.filter(|summaries| !summaries.is_empty()) {
+            let row = |(name, detail): (String, String)| value_row(&name, &detail);
+            summaries.into_iter().map(row).collect()
         } else {
-            self.roaming_provenance.as_ref().map_or_else(
-                || vec![note(&t("mesh-roaming-empty"))],
-                |provenance| {
-                    let summaries = provenance_summaries(provenance);
-                    if summaries.is_empty() {
-                        vec![note(&t("mesh-roaming-none"))]
-                    } else {
-                        summaries
-                            .into_iter()
-                            .map(|(name, detail)| value_row(&name, &detail))
-                            .collect()
-                    }
-                },
-            )
+            vec![note(&t("mesh-roaming-none"))]
         };
-        roaming_rows.push(note(&t("mesh-roaming-caption")));
 
         let mut groups = vec![self.devices_section().into_element()];
-        groups.push(section(&t("mesh-continue-title"), rows(continuation_rows)).into_element());
-        groups.extend(
-            self.continuity_group(move |cx, continuity| {
-                privacy_section(cx, continuity, &target_name)
-            }),
-        );
+        if others.is_empty() {
+            let waiting = rows(vec![note(&t("mesh-share-once-added"))]);
+            groups.push(section(&t("mesh-privacy-title"), waiting).into_element());
+        } else {
+            let shared_with = shared_with(&others);
+            groups.extend(self.continuity_group(move |cx, continuity| {
+                privacy_section(cx, continuity, &shared_with)
+            }));
+        }
         groups.push(section(&t("mesh-roaming-title"), rows(roaming_rows)).into_element());
         groups.extend(self.continuity_group(|_, continuity| activity_section(continuity)));
         groups.extend(self.agents_group());
@@ -1496,43 +1479,46 @@ impl Page<'_> {
 fn privacy_section(
     cx: &ViewCx<ContinuityPrivacy>,
     continuity: &ContinuityPrivacy,
-    target: &str,
+    shared_with: &str,
 ) -> SettingsSection {
-    let mut privacy_rows = vec![
-        cx.setting(t("mesh-allow-continuity"))
-            .described(t("mesh-allow-continuity-desc"))
-            .id(CONTINUITY_ENABLED_KEY)
-            .toggle_verb(
-                |continuity: &ContinuityPrivacy| continuity.enabled,
-                ContinuityPrivacy::ALLOW_CONTINUITY,
-            ),
-    ];
-    for capability in Capability::ALL {
-        let key = continuity_key(capability);
-        let desc = continuity::description(capability);
-        let status = if continuity.effective(capability) {
-            t_args(
-                "mesh-facet-active",
-                &[("desc", desc.as_str().into()), ("target", target.into())],
-            )
-        } else if continuity.allowed(capability) {
-            t_args("mesh-facet-prepared", &[("desc", desc.into())])
-        } else {
-            t_args("mesh-facet-off", &[("desc", desc.into())])
-        };
+    let mut all = cx
+        .setting(t("mesh-allow-continuity"))
+        .id(CONTINUITY_ENABLED_KEY);
+    if continuity.enabled {
+        all = all.described(shared_with);
+    }
+    let mut privacy_rows = vec![all.toggle_verb(
+        |continuity: &ContinuityPrivacy| continuity.enabled,
+        ContinuityPrivacy::ALLOW_CONTINUITY,
+    )];
+    // Each kind of sharing refines the switch above, so it shows only while that is on.
+    for capability in Capability::ALL.into_iter().filter(|_| continuity.enabled) {
         let facet = capability.key().to_owned();
         privacy_rows.push(
             cx.setting(continuity::label(capability))
-                .described(status)
-                .id(key)
+                .described(continuity::description(capability))
+                .id(continuity_key(capability))
                 .toggle_verb(
                     move |continuity: &ContinuityPrivacy| continuity.allowed(capability),
                     ContinuityPrivacy::ALLOW_CAPABILITY.map(move |on: bool| (facet.clone(), on)),
                 ),
         );
     }
-    privacy_rows.push(note(&t("mesh-privacy-stay")));
     section(&t("mesh-privacy-title"), rows(privacy_rows))
+}
+
+/// Who the sharing reaches: "On for Pixel and Laptop".
+fn shared_with(others: &[&str]) -> String {
+    let count = i64::try_from(others.len()).unwrap_or(i64::MAX);
+    t_args(
+        "mesh-shared-with",
+        &[
+            ("count", count.into()),
+            ("first", others.first().copied().unwrap_or_default().into()),
+            ("second", others.get(1).copied().unwrap_or_default().into()),
+            ("more", (count - 2).into()),
+        ],
+    )
 }
 
 fn activity_section(continuity: &ContinuityPrivacy) -> SettingsSection {
@@ -2164,11 +2150,15 @@ mod tests {
     fn continuity_controls_are_typed_audited_and_refuse_future_provenance() {
         {
             let dir = tempfile::tempdir().unwrap();
-            let pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-            let mut app = window_on(pane);
+            let mut app = window_on(devices_and_a_home_server(dir.path()));
             let ids = test_ids(app.harness().root_widget());
 
             assert!(ids.iter().any(|id| id == CONTINUITY_ENABLED_KEY));
+            let described = descriptions(app.harness().root_widget());
+            assert!(
+                described.contains("On for Ada's Phone and Kitchen NAS\n"),
+                "{described}"
+            );
             for capability in Capability::ALL {
                 let key = continuity_key(capability);
                 assert!(ids.iter().any(|id| id == &key), "missing {key}");
@@ -2203,11 +2193,11 @@ mod tests {
                 vec![
                     (
                         "tilo.appearance.mode".into(),
-                        "Resolved to Laptop at revision 8; differs from Desktop".into()
+                        "Resolved to Laptop; differs from Desktop".into()
                     ),
                     (
                         "Wi-Fi: Home".into(),
-                        "Sealed WPA2 profile. From Laptop at revision 9".into()
+                        "Sealed WPA2 profile. From Laptop".into()
                     )
                 ]
             );
@@ -2615,6 +2605,16 @@ mod tests {
         }
     }
 
+    /// What a reader hears after each name, one line each.
+    fn descriptions(widget: &dyn Widget) -> String {
+        let own = widget.accessibility().and_then(|node| node.description);
+        let below = widget.children().into_iter().map(descriptions);
+        own.map(|text| text + "\n")
+            .into_iter()
+            .chain(below)
+            .collect()
+    }
+
     fn row_holding(widget: &dyn Widget, id: &str) -> Option<String> {
         if let Some(found) = widget
             .children()
@@ -2908,7 +2908,14 @@ mod tests {
         let text = |app: &mut TestApp<SettingsShell>| {
             provider_settings_ui::widgets::announced_text(app.harness().root_widget()).join("\n")
         };
-        assert!(text(&mut app).contains(&t("mesh-status-devices-reading")));
+        let alone = text(&mut app);
+        assert!(alone.contains(&t("mesh-status-devices-reading")), "{alone}");
+        // With no other device nothing is shared, so no sharing switch shows.
+        assert!(
+            alone.contains("Add a device to choose what it shares."),
+            "{alone}"
+        );
+        assert!(!alone.contains("Clipboard"), "{alone}");
 
         let devices = devices_in(
             &serde_json::json!({"devices": [
@@ -2928,6 +2935,9 @@ mod tests {
         );
         assert!(shown.contains("This laptop, This device"), "{shown}");
         assert!(shown.contains("Phone, Nearby"), "{shown}");
+        let described = descriptions(app.harness().root_widget());
+        assert!(described.contains("On for Phone\n"), "{described}");
+        assert!(!shown.contains("Add a device to choose"), "{shown}");
         assert_eq!(devices_in("not a reading"), None);
     }
 

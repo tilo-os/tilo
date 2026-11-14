@@ -167,6 +167,9 @@ impl Page<'_> {
         if let Some(status) = self.status.pairing_shown() {
             items.push(note(&status));
         }
+        if let Some(trouble) = self.status.settings_trouble_shown() {
+            items.push(row(error_caption(&trouble)));
+        }
         section_with(&t("mesh-trusted-title"), add_device, rows(items))
     }
 

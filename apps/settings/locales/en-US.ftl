@@ -586,9 +586,6 @@ mesh-health-connecting = Connecting…
 mesh-health-ready = Online. Files ready
 mesh-health-syncing = Online. Syncing files
 mesh-health-unreachable = Offline. Check that it is on and connected
-mesh-continue-title = Continue across devices
-mesh-activity = Workspace and app activity
-mesh-sync-auto = Sync automatically
 mesh-this-device = Work this device takes
 mesh-this-device-desc = Whether apps and files of your other devices run here, or only on the device that asked.
 mesh-home-peer = Home peer
@@ -615,14 +612,14 @@ mesh-status-this-device = This device
 mesh-status-trusted = Trusted
 mesh-status-nearby = Nearby
 mesh-status-devices-reading = Reading your devices…
-mesh-no-target = No other device
 mesh-allow-continuity = Share with your other devices
-mesh-allow-continuity-desc = Turn off to stop sharing everything at once.
-mesh-facet-active = { $desc } On for { $target }.
-mesh-facet-prepared = { $desc } Paused while sharing is off.
-mesh-facet-off = { $desc }
+mesh-share-once-added = Add a device to choose what it shares.
+mesh-shared-with = { $count ->
+    [1] On for { $first }
+    [2] On for { $first } and { $second }
+   *[other] On for { $first }, { $second } and { $more } more
+}
 mesh-audit-empty = No sharing changes yet.
-mesh-roaming-empty = No settings are roaming to this device yet.
 mesh-roaming-none = No personal settings or saved Wi-Fi networks are roaming.
 mesh-privacy-title = Share with your devices
 mesh-agents-title = Agents
@@ -2099,10 +2096,7 @@ display-caption-port = Connect another display to an available port to arrange i
 display-caption-second = Connect another display to extend your workspace.
 display-caption-switch = Drag displays to match their physical arrangement.
 display-card-title = Display arrangement
-mesh-activity-caption = Continue workspace and app activity on your other devices.
 mesh-audit-change = Change
-mesh-privacy-stay = Only the enabled categories are shared with your devices.
-mesh-roaming-caption = These settings follow your identity across connected devices.
 notif-app-verified = App identity
 notif-delivery = Delivery
 notif-dnd-title = Quiet notifications
