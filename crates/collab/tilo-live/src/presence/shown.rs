@@ -4,7 +4,7 @@
 
 use collab_types::presence::{ShellPresence, Shown, ShownFocus, ShownLayout, ShownPoint};
 
-use super::{Device, Member, Own};
+use super::{Device, Own, Present};
 
 /// What a shell says of its person that a surface draws: its face, where its
 /// windows are, the caret in them and what it says beside its pointer.
@@ -42,7 +42,7 @@ fn of_shell(shown: &mut Shown, shell: Option<&ShellPresence>) {
 
 /// `member` as a surface here draws them, on the clock presence is heard on.
 #[must_use]
-pub fn shown(member: &Member, now_ms: f64) -> Shown {
+pub fn shown(member: &Present, now_ms: f64) -> Shown {
     let mut shown = Shown {
         publisher: hex::encode(member.publisher),
         epoch: member.epoch,

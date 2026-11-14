@@ -358,7 +358,7 @@ impl Presence {
             .workspaces
             .iter()
             .find(|held| held.id == workspace)
-            .and_then(|held| held.board.member(*from.as_bytes()))
+            .and_then(|held| held.board.present(*from.as_bytes()))
             .is_some_and(|member| member.user.is_none() && member.spoken_by.is_none())
     }
 
@@ -375,7 +375,7 @@ impl Presence {
         };
         let device = held
             .board
-            .member(*from.as_bytes())
+            .present(*from.as_bytes())
             .map(|member| member.device.clone())
             .unwrap_or_default();
         held.board.certify(*from.as_bytes(), person, &device)
@@ -392,7 +392,7 @@ impl Presence {
         let workspace = plane.workspaces.iter().find(|held| held.ws == topic)?;
         let user = workspace
             .board
-            .member(*peer.as_bytes())
+            .present(*peer.as_bytes())
             .and_then(|known| known.user.clone());
         Some((workspace.id.clone(), user))
     }
@@ -492,7 +492,7 @@ impl Presence {
             .find(|held| held.id == workspace)
             .map(|held| {
                 held.board
-                    .members()
+                    .presents()
                     .iter()
                     .filter_map(|member| {
                         let publisher = EndpointId::from_bytes(&member.publisher).ok()?;
@@ -627,7 +627,7 @@ impl Presence {
         };
         plane.workspaces.iter().any(|held| {
             held.board
-                .member(bytes)
+                .present(bytes)
                 .and_then(|member| member.user.as_deref())
                 .is_some_and(|user| user == own_user)
         })

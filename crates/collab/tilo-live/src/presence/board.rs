@@ -150,7 +150,7 @@ pub struct LiveCaller {
 
 /// Someone else here, as their frames and their certificate tell it.
 #[derive(Clone, Debug)]
-pub struct Member {
+pub struct Present {
     /// Their device's publisher.
     pub publisher: Device,
     /// The person behind the device (user root, hex), once its certificate
@@ -202,7 +202,7 @@ pub struct Member {
     heard_ms: Option<f64>,
 }
 
-impl Member {
+impl Present {
     fn new(publisher: Device) -> Self {
         Self {
             publisher,
@@ -360,7 +360,7 @@ pub struct Board {
     /// The sequence of the last shell view this device said: a receiver takes
     /// a view with a higher one.
     shell_seq: u32,
-    members: Vec<Member>,
+    presents: Vec<Present>,
     revision: u64,
     /// The device the workspace's governance pins as its host: a device that
     /// is no member here, whose word for the runs it executes is taken
@@ -383,7 +383,7 @@ impl Board {
             schedule: Schedule::default(),
             keepalive_at: None,
             shell_seq: 0,
-            members: Vec::new(),
+            presents: Vec::new(),
             revision: 0,
             host: None,
             listened_ms: None,
@@ -399,10 +399,10 @@ impl Board {
             return false;
         }
         let former = std::mem::replace(&mut self.host, host);
-        let before = self.members.len();
-        self.members
+        let before = self.presents.len();
+        self.presents
             .retain(|member| member.spoken_by.is_none() || member.spoken_by != former);
-        let changed = self.members.len() != before;
+        let changed = self.presents.len() != before;
         if changed {
             self.revision = self.revision.wrapping_add(1);
         }
@@ -419,25 +419,25 @@ impl Board {
             return Some(from);
         };
         let member_here = self
-            .member(from)
+            .present(from)
             .is_some_and(|member| member.here && member.spoken_by.is_none());
         if self.host != Some(from) && !member_here {
             return None;
         }
         let stand_in = collab_types::presence::stand_in(from, run);
         if !self
-            .members
+            .presents
             .iter()
             .any(|member| member.publisher == stand_in)
         {
-            let mut member = Member::new(stand_in);
+            let mut member = Present::new(stand_in);
             member.spoken_by = Some(from);
             member.run = Some(run.clone());
             // The run is said on its speaker's device: it lists as that device.
-            if let Some(speaker) = self.member(from) {
+            if let Some(speaker) = self.present(from) {
                 member.device.clone_from(&speaker.device);
             }
-            self.members.push(member);
+            self.presents.push(member);
         }
         Some(stand_in)
     }
@@ -450,7 +450,7 @@ impl Board {
     pub fn speak_for(&mut self, runs: &[(String, ShellPresence)]) -> bool {
         let own = Some(self.publisher);
         let gone: Vec<String> = self
-            .members
+            .presents
             .iter()
             .filter(|member| member.spoken_by == own)
             .filter_map(|member| member.run.clone())
@@ -458,7 +458,7 @@ impl Board {
             .collect();
         let mut changed = !gone.is_empty();
         for run in gone {
-            self.members
+            self.presents
                 .retain(|member| member.spoken_by != own || member.run.as_ref() != Some(&run));
             self.schedule
                 .push(Presence::desktop(self.workspace.clone(), Payload::Left).spoken_for(run));
@@ -466,18 +466,18 @@ impl Board {
         for (run, view) in runs {
             let stand_in = collab_types::presence::stand_in(self.publisher, run);
             if !self
-                .members
+                .presents
                 .iter()
                 .any(|member| member.publisher == stand_in)
             {
-                let mut member = Member::new(stand_in);
+                let mut member = Present::new(stand_in);
                 member.spoken_by = own;
                 member.run = Some(run.clone());
                 member.device.clone_from(&self.own.device);
-                self.members.push(member);
+                self.presents.push(member);
             }
             let Some(member) = self
-                .members
+                .presents
                 .iter_mut()
                 .find(|member| member.publisher == stand_in)
             else {
@@ -642,7 +642,11 @@ impl Board {
         // The runs this device speaks for are said after it, so a reader
         // already hears this device here when their word arrives.
         let own = Some(self.publisher);
-        for member in self.members.iter().filter(|member| member.spoken_by == own) {
+        for member in self
+            .presents
+            .iter()
+            .filter(|member| member.spoken_by == own)
+        {
             let Some(run) = &member.run else {
                 continue;
             };
@@ -711,7 +715,7 @@ impl Board {
         };
         let changed = self.take(from, frame, now_ms);
         if let Some(member) = self
-            .members
+            .presents
             .iter_mut()
             .find(|member| member.publisher == from)
         {
@@ -725,13 +729,13 @@ impl Board {
     /// dropped, keeps no row here. Whether what is known here changed.
     pub fn forget_silent(&mut self, now_ms: f64) -> bool {
         self.listen(now_ms);
-        let before = self.members.len();
-        self.members.retain(|member| {
+        let before = self.presents.len();
+        self.presents.retain(|member| {
             member
                 .heard_ms
                 .is_none_or(|heard| now_ms - heard < SILENT_MS)
         });
-        let changed = self.members.len() != before;
+        let changed = self.presents.len() != before;
         if changed {
             self.revision = self.revision.wrapping_add(1);
         }
@@ -747,7 +751,7 @@ impl Board {
             let deaf = now_ms - last - KEEPALIVE_MS;
             if deaf > 0.0 {
                 for heard in self
-                    .members
+                    .presents
                     .iter_mut()
                     .filter_map(|member| member.heard_ms.as_mut())
                 {
@@ -779,7 +783,7 @@ impl Board {
                 Payload::Left,
             ) if *workspace == self.workspace => {
                 let left = self
-                    .members
+                    .presents
                     .iter_mut()
                     .find(|member| member.publisher == from)
                     .filter(|member| !member.pointer.is_empty());
@@ -790,7 +794,7 @@ impl Board {
                 })
             }
             (PresenceKey::Workspace { id }, payload) if *id == self.workspace => match payload {
-                Payload::Arrived => self.touch(from, Member::arrive),
+                Payload::Arrived => self.touch(from, Present::arrive),
                 Payload::Left => {
                     self.touch(from, |member| std::mem::replace(&mut member.here, false))
                 }
@@ -863,7 +867,7 @@ impl Board {
     /// over. Whether it is one to draw: the same place said again is a rest.
     fn moved(&mut self, from: Device, point: (u64, f64, f64), now_ms: f64) -> bool {
         let heard = self
-            .members
+            .presents
             .iter()
             .find(|member| member.publisher == from)
             .is_some_and(|member| member.here && member.pointer.newest() == Some(point));
@@ -915,12 +919,12 @@ impl Board {
     /// Change what is known of `from`, starting their entry the first time
     /// they say anything; `change` says whether it is one to draw. Whether it
     /// was.
-    fn touch(&mut self, from: Device, change: impl FnOnce(&mut Member) -> bool) -> bool {
-        if !self.members.iter().any(|member| member.publisher == from) {
-            self.members.push(Member::new(from));
+    fn touch(&mut self, from: Device, change: impl FnOnce(&mut Present) -> bool) -> bool {
+        if !self.presents.iter().any(|member| member.publisher == from) {
+            self.presents.push(Present::new(from));
         }
         let changed = self
-            .members
+            .presents
             .iter_mut()
             .find(|member| member.publisher == from)
             .is_some_and(change);
@@ -947,7 +951,7 @@ impl Board {
     pub fn certify(&mut self, from: Device, user: String, device: &str) -> bool {
         // The runs a device speaks for list as that device.
         for run in self
-            .members
+            .presents
             .iter_mut()
             .filter(|member| member.spoken_by == Some(from))
         {
@@ -963,11 +967,11 @@ impl Board {
 
     /// They left the workspace, and the runs they spoke for.
     pub fn depart(&mut self, publisher: Device) -> bool {
-        let before = self.members.len();
+        let before = self.presents.len();
         // The runs a device spoke for leave with it.
-        self.members
+        self.presents
             .retain(|member| member.publisher != publisher && member.spoken_by != Some(publisher));
-        let changed = self.members.len() != before;
+        let changed = self.presents.len() != before;
         if changed {
             self.revision = self.revision.wrapping_add(1);
         }
@@ -976,19 +980,19 @@ impl Board {
 
     /// Everyone heard here, as they arrived.
     #[must_use]
-    pub fn members(&self) -> &[Member] {
-        &self.members
+    pub fn presents(&self) -> &[Present] {
+        &self.presents
     }
 
     /// Who is here: those who said so and have not left.
-    pub fn here(&self) -> impl Iterator<Item = &Member> {
-        self.members.iter().filter(|member| member.here)
+    pub fn here(&self) -> impl Iterator<Item = &Present> {
+        self.presents.iter().filter(|member| member.here)
     }
 
     /// The member `publisher` names, if they said anything here.
     #[must_use]
-    pub fn member(&self, publisher: Device) -> Option<&Member> {
-        self.members
+    pub fn present(&self, publisher: Device) -> Option<&Present> {
+        self.presents
             .iter()
             .find(|member| member.publisher == publisher)
     }

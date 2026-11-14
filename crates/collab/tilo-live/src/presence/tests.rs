@@ -51,7 +51,7 @@ fn a_members_parts_merge_into_one_row_and_one_call() {
         3.0,
     );
     board.certify([1; 32], "aa".repeat(32), "Framework");
-    let member = board.member([1; 32]).expect("they are here");
+    let member = board.present([1; 32]).expect("they are here");
     assert_eq!(member.label(), "Ada");
     assert_eq!(
         member.status,
@@ -87,7 +87,7 @@ fn only_a_change_draws_and_only_this_workspace_counts() {
     );
     board.hear([2; 32], &Presence::desktop(OTHER, Payload::Arrived), 3.0);
     assert!(
-        board.member([2; 32]).is_none(),
+        board.present([2; 32]).is_none(),
         "another workspace's word is no member here"
     );
 }
@@ -96,7 +96,9 @@ fn only_a_change_draws_and_only_this_workspace_counts() {
 fn a_pointer_is_said_in_the_pixels_of_its_tile_and_a_rest_draws_nothing() {
     let mut board = board();
     board.hear([1; 32], &pointed(WORKSPACE, 3, 12.0, 34.0), 1_000.0);
-    let member = board.member([1; 32]).expect("a pointer says they are here");
+    let member = board
+        .present([1; 32])
+        .expect("a pointer says they are here");
     assert!(member.here);
     assert_eq!(member.pointer(1_000.0), Some((3, 12.0, 34.0)));
     let over = Tile::new(3, 100.0, 50.0, 400.0, 300.0);
@@ -116,7 +118,7 @@ fn a_pointer_is_said_in_the_pixels_of_its_tile_and_a_rest_draws_nothing() {
     assert_eq!(board.revision(), drawn, "a resting pointer draws nothing");
     assert_eq!(
         board
-            .member([1; 32])
+            .present([1; 32])
             .expect("still here")
             .pointer_heard_at(),
         Some(1_000.5),
@@ -222,7 +224,7 @@ fn a_wave_is_a_new_wave_each_time_and_an_apps_word_lives_under_its_key() {
     };
     assert!(board.hear([1; 32], &draft, 3.0));
     assert_eq!(
-        board.member([1; 32]).and_then(|member| member.app(&key)),
+        board.present([1; 32]).and_then(|member| member.app(&key)),
         Some(&Payload::Composing { composing: true })
     );
     let left = Presence {
@@ -231,7 +233,7 @@ fn a_wave_is_a_new_wave_each_time_and_an_apps_word_lives_under_its_key() {
     };
     assert!(board.hear([1; 32], &left, 4.0));
     assert_eq!(
-        board.member([1; 32]).and_then(|member| member.app(&key)),
+        board.present([1; 32]).and_then(|member| member.app(&key)),
         None
     );
     assert!(board.depart([1; 32]));
@@ -326,7 +328,7 @@ fn the_caret_a_burst_left_at_stands_whatever_order_its_frames_land_in() {
     };
     let caret = |board: &Board| {
         board
-            .member([1; 32])
+            .present([1; 32])
             .and_then(|member| member.shell.as_deref())
             .and_then(|shell| shell.selection.as_ref())
             .map(|selection| selection.head.clone())
@@ -370,11 +372,11 @@ fn stopping_following_is_said_so_nobody_keeps_showing_it() {
 fn a_member_who_comes_back_is_a_stay_of_its_own() {
     let mut board = board();
     board.hear([1; 32], &said(Payload::Arrived), 0.0);
-    let first = board.member([1; 32]).expect("here").epoch;
+    let first = board.present([1; 32]).expect("here").epoch;
     assert!(board.here().any(|member| member.publisher == [1; 32]));
     board.hear([1; 32], &said(Payload::Arrived), 1.0);
     assert_eq!(
-        board.member([1; 32]).expect("here").epoch,
+        board.present([1; 32]).expect("here").epoch,
         first,
         "a restated arrival is the same stay"
     );
@@ -382,7 +384,7 @@ fn a_member_who_comes_back_is_a_stay_of_its_own() {
     assert!(!board.here().any(|member| member.publisher == [1; 32]));
     board.hear([1; 32], &said(Payload::Arrived), 3.0);
     assert!(
-        board.member([1; 32]).expect("here").epoch > first,
+        board.present([1; 32]).expect("here").epoch > first,
         "coming back begins a new stay, never the one before"
     );
 }
@@ -399,7 +401,7 @@ fn a_member_whose_presence_ended_is_taken_down_at_once() {
         board.heard([1; 32], &[], 1.0),
         "the end of their presence is a change"
     );
-    assert!(board.member([1; 32]).is_none(), "they are gone at once");
+    assert!(board.present([1; 32]).is_none(), "they are gone at once");
     assert!(!board.heard([1; 32], &[], 2.0), "and gone only once");
     assert!(board.heard([1; 32], &arrived, 3.0));
     assert!(
@@ -422,7 +424,7 @@ fn a_member_is_drawn_from_the_word_the_board_merged() {
     );
     board.hear([1; 32], &pointed(WORKSPACE, 7, 12.0, 24.0), 1_000.0);
     board.certify([1; 32], "aa".repeat(32), "Framework");
-    let member = board.member([1; 32]).expect("they are here");
+    let member = board.present([1; 32]).expect("they are here");
     let shown = shown(member, 1_500.0);
     assert_eq!(shown.publisher, hex::encode([1; 32]));
     assert_eq!(shown.label, "Ada");
@@ -491,7 +493,7 @@ fn a_status_taken_back_is_said_and_its_reader_forgets_it() {
         reader.hear([1; 32], &frame, 1.0);
     }
     assert_eq!(
-        reader.member([1; 32]).and_then(|member| member.activity()),
+        reader.present([1; 32]).and_then(|member| member.activity()),
         Some(("Editing ‘Plan’ in Notes", true))
     );
     speaker.say(&Own {
@@ -509,7 +511,7 @@ fn a_status_taken_back_is_said_and_its_reader_forgets_it() {
         reader.hear([1; 32], &frame, 3.0);
     }
     assert_eq!(
-        reader.member([1; 32]).and_then(|member| member.activity()),
+        reader.present([1; 32]).and_then(|member| member.activity()),
         None
     );
 }
@@ -540,7 +542,7 @@ fn a_member_who_goes_quiet_is_forgotten_and_one_who_keeps_talking_is_not() {
         vec![[2; 32]],
         "the quiet member is gone, the other stays"
     );
-    assert!(board.member([1; 32]).is_none(), "nothing of it is kept");
+    assert!(board.present([1; 32]).is_none(), "nothing of it is kept");
     let revision = board.revision();
     assert!(
         !board.forget_silent(now),
@@ -588,7 +590,7 @@ fn a_member_only_the_roster_named_is_not_forgotten_for_silence() {
     let mut board = board();
     board.certify([1; 32], "ada".into(), "laptop");
     assert!(!board.forget_silent(SILENT_MS * 10.0));
-    assert!(board.member([1; 32]).is_some());
+    assert!(board.present([1; 32]).is_some());
 }
 
 /// The workspace's host speaks for the runs it executes: each is a member of
@@ -631,14 +633,14 @@ fn the_host_speaks_for_each_run_it_executes_and_nobody_else_does() {
     );
     assert!(board.hear(host, &face, 3.0));
     let shown = board
-        .member(stand_in(host, run))
+        .present(stand_in(host, run))
         .expect("the run is a member");
     assert!(shown.here && shown.agent());
     assert_eq!(shown.label(), "Visa backend");
     assert_eq!(shown.spoken_by, Some(host));
     assert_eq!(shown.device, "home-server", "said on the host's device");
     assert!(
-        !board.member(host).is_some_and(|host| host.here),
+        !board.present(host).is_some_and(|host| host.here),
         "the host itself said nothing"
     );
     let row = super::shown(shown, 3.0);
@@ -654,7 +656,7 @@ fn the_host_speaks_for_each_run_it_executes_and_nobody_else_does() {
     // A host the governance no longer pins speaks for none of them.
     assert!(board.hear(host, &face, 5.0));
     assert!(board.set_host(Some(member)));
-    assert!(board.member(stand_in(host, run)).is_none());
+    assert!(board.present(stand_in(host, run)).is_none());
 }
 
 /// The line beside an agent's face names the step it is on, never the one
@@ -689,7 +691,7 @@ fn an_agents_line_never_rolls_back_to_the_step_before() {
     let line = |board: &Board| {
         super::shown(
             board
-                .member(stand_in(host, run))
+                .present(stand_in(host, run))
                 .expect("the run is a member"),
             1.0,
         )
@@ -751,7 +753,7 @@ fn a_device_speaks_for_the_agents_it_admitted() {
 
     assert!(board.speak_for(&[("helper".into(), face("Waiting"))]));
     let agent = board
-        .member(stand_in(own, "helper"))
+        .present(stand_in(own, "helper"))
         .expect("the agent is here");
     assert!(agent.here && agent.agent());
     assert_eq!(agent.spoken_by, Some(own));
@@ -778,7 +780,9 @@ fn a_device_speaks_for_the_agents_it_admitted() {
     for (_, frame) in &said {
         theirs.hear(own, frame, 11.0);
     }
-    let heard = theirs.member(stand_in(own, "helper")).expect("heard there");
+    let heard = theirs
+        .present(stand_in(own, "helper"))
+        .expect("heard there");
     assert!(heard.here && heard.agent());
     assert_eq!(heard.spoken_by, Some(own));
     assert_eq!(
@@ -788,14 +792,14 @@ fn a_device_speaks_for_the_agents_it_admitted() {
 
     // It leaves here, and there.
     assert!(board.speak_for(&[]));
-    assert!(board.member(stand_in(own, "helper")).is_none());
+    assert!(board.present(stand_in(own, "helper")).is_none());
     let left = board.flush(20.0);
     for (_, frame) in &left {
         theirs.hear(own, frame, 21.0);
     }
     assert!(
         !theirs
-            .member(stand_in(own, "helper"))
+            .present(stand_in(own, "helper"))
             .is_some_and(|agent| agent.here),
         "the agent left with its run"
     );
