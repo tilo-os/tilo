@@ -70,6 +70,14 @@ workspaces-unreadable-body = Die Liste deiner eigenen Arbeitsbereiche, die diese
 ## eigene Schreibtisch liegt weiterhin auf der Platte, und diese Sitzung startet
 ## leer, damit nichts darüber geschrieben wird.
 
+## Der eigene Datensatz der Shell, den dieses Gerät führte, konnte nicht
+## geöffnet werden: die Einstellungen deines Schreibtischs liegen weiterhin
+## auf der Platte, und diese Sitzung startet mit den Vorgaben der Shell, damit
+## dein eigener Datensatz nie überschrieben wird.
+desk-record-not-opened-app-name = Schreibtisch
+desk-record-not-opened-title = Deine Schreibtisch-Einstellungen wurden nicht geöffnet
+desk-record-not-opened-detail = Sie konnten diesmal nicht gelesen werden ({ $reason }). Sie wurden nicht verändert: diese Sitzung startet mit den Vorgaben der Shell und speichert nichts davon, kann deine eigenen Einstellungen also nicht überschreiben.
+
 ## Der Schreibtisch, den Tilo vor dieser Version führte, der nicht übernommen
 ## wurde: er liegt unverändert auf der Platte, und diese Sitzung behält ihren
 ## eigenen.

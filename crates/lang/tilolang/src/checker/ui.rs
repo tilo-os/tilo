@@ -156,7 +156,7 @@ impl Checker<'_> {
         else {
             return;
         };
-        if at.is_some() {
+        if at.as_ref().is_some() {
             self.err(
                 "E063",
                 event.span,

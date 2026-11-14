@@ -157,6 +157,7 @@ type Channel = TextChannel | Thread    // a resource of either type
 
 root notebook: Notebook                // one per workspace; the launcher opens it
 default view notebook for Notebook     // what a window of the root shows
+place view all_notes for Notebook      // what a place of it shows on its own: the notes, no tree
 default view note_editor for Note      // what a window of a Note shows
 ```
 

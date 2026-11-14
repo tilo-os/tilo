@@ -24,6 +24,11 @@ pub const ME: &str = "me";
 /// matches carry as `host.Match.kind`.
 pub const BLOCK_KINDS: &[&str] = &["paragraph", "heading", "quote", "list", "code", "field"];
 
+/// The filter every resource takes outside a view, as `grep` takes it: when it last changed
+/// (`find(Note, changed: -7d)`), by its last version. A type that declares a filter of this name
+/// is filtered by its own.
+pub const CHANGED: &str = "changed";
+
 pub struct Function {
     pub name: &'static str,
     /// What it means, and the forms it is written in, for `describe` and the metadata.

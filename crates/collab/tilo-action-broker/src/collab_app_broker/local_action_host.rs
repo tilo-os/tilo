@@ -771,6 +771,7 @@ mod tests {
             provider,
             "test-app",
             ActionDescriptor {
+                did: None,
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 address,

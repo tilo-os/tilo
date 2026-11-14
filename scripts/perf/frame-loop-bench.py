@@ -241,6 +241,10 @@ def summarize(rows: list[dict], warmup_us: int, target_us: int) -> dict:
         "layout": block([r["layout_us"] for r in painted]),
         "scene": block([r["scene_us"] for r in painted]),
         "submit": block([r["submit_us"] for r in painted]),
+        # The hosted surfaces' frames and the session's share after the frame: a trace written
+        # before they were recorded reads them as zero.
+        "hosts": block([r.get("hosts_us", 0) or 0 for r in painted]),
+        "after": block([r.get("after_us", 0) or 0 for r in rows]),
         "clients": block([r["clients_us"] for r in rows]),
         "sleep": block([r["sleep_us"] for r in rows]),
         "input_latency": block(lat),
@@ -286,7 +290,9 @@ def print_summary(s: dict, title: str) -> None:
     print(fmt_block("  pump", s["pump"]))
     print(fmt_block("  layout", s["layout"]))
     print(fmt_block("  scene", s["scene"]))
+    print(fmt_block("  hosts", s["hosts"]))
     print(fmt_block("  submit", s["submit"]))
+    print(fmt_block("  after", s["after"]))
     print(fmt_block("  clients", s["clients"]))
     print(fmt_block("parked", s["sleep"]))
     kind = "input->queued" if s.get("present_async") else "input->present"

@@ -564,7 +564,94 @@ fn pieces(source: &str) -> Vec<Piece> {
 
 /// `source` with each reference written as the resource it names; a word written as a
 /// reference that the session never showed (and no `let` bound) is refused.
+#[cfg(test)]
 fn resolve_refs(source: &str, programs: &Programs) -> Result<String, String> {
+    resolve_placed(source, programs).map(|resolved| resolved.source)
+}
+
+/// A program as its host compiles it, with each reference written as the resource it names, and
+/// where each one was written in the program as sent: what places the compiler's errors in the
+/// program its writer sent rather than in the literals it never wrote.
+#[derive(Debug, Default)]
+struct Resolved {
+    source: String,
+    /// Each reference replaced: its line, and its column and length in characters as sent and
+    /// as compiled, in the order written.
+    written: Vec<Written>,
+}
+
+#[derive(Debug)]
+struct Written {
+    line: usize,
+    sent_col: usize,
+    sent_len: usize,
+    compiled_col: usize,
+    compiled_len: usize,
+}
+
+impl Resolved {
+    /// The column, in the program as sent, of the 1-based `col` of `line` as compiled: inside a
+    /// literal, where its reference was written.
+    fn sent_col(&self, line: usize, col: usize) -> usize {
+        // What the literals before it added, and what their references took away.
+        let (mut added, mut taken) = (0usize, 0usize);
+        for written in self.written.iter().filter(|w| w.line == line) {
+            if col < written.compiled_col {
+                break;
+            }
+            if col < written.compiled_col.saturating_add(written.compiled_len) {
+                return written.sent_col;
+            }
+            added = added.saturating_add(written.compiled_len);
+            taken = taken.saturating_add(written.sent_len);
+        }
+        col.saturating_add(taken).saturating_sub(added).max(1)
+    }
+
+    /// The compiler's diagnostics of a program that did not compile (`line:col: E0xx message`),
+    /// each placed in the program as sent, its resources named by their references.
+    fn place_detail(&self, answer: &mut Value, programs: &mut Programs) {
+        if answer.get("state").and_then(Value::as_str) != Some("rejected") {
+            return;
+        }
+        let Some(lines) = answer.get_mut("detail").and_then(Value::as_array_mut) else {
+            return;
+        };
+        for line in lines {
+            let Some(text) = line.as_str() else {
+                continue;
+            };
+            *line = Value::String(self.placed(text, programs));
+        }
+    }
+
+    fn placed(&self, text: &str, programs: &mut Programs) -> String {
+        let shown = shown_line(text, programs);
+        let mut parts = shown.splitn(3, ':');
+        let (Some(line), Some(col), Some(rest)) = (parts.next(), parts.next(), parts.next()) else {
+            return shown;
+        };
+        let (Ok(line), Ok(col)) = (line.parse::<usize>(), col.parse::<usize>()) else {
+            return shown;
+        };
+        format!("{line}:{}:{rest}", self.sent_col(line, col))
+    }
+}
+
+/// Move the 1-based place `line:col` past `text`.
+fn advance(text: &str, line: &mut usize, col: &mut usize) {
+    for ch in text.chars() {
+        if ch == '\n' {
+            *line = line.saturating_add(1);
+            *col = 1;
+        } else {
+            *col = col.saturating_add(1);
+        }
+    }
+}
+
+/// [`resolve_refs`], keeping where each reference was written.
+fn resolve_placed(source: &str, programs: &Programs) -> Result<Resolved, String> {
     if outside_strings(source).contains('@') {
         // A literal typed by hand names a resource no answer showed.
         return Err(
@@ -572,36 +659,48 @@ fn resolve_refs(source: &str, programs: &Programs) -> Result<String, String> {
                 .to_owned(),
         );
     }
-    let mut out = String::new();
+    let mut resolved = Resolved::default();
+    // Where the next piece starts: its line, and its 1-based column as sent and as compiled.
+    let (mut line, mut sent_col, mut compiled_col) = (1usize, 1usize, 1usize);
     for piece in pieces(source) {
-        match piece {
+        let (sent, compiled) = match piece {
             Piece::Word {
                 text,
                 member: false,
             } => {
-                if let Some(literal) = programs.by_ref.get(&text) {
-                    out.push_str(literal);
-                    continue;
+                let named = programs.by_ref.get(&text).cloned().or_else(|| {
+                    (text == "this" && !programs.lets.contains(&text))
+                        .then(|| programs.this.clone())
+                        .flatten()
+                });
+                match named {
+                    Some(literal) => (text, literal),
+                    None if looks_like_ref(&text) && !programs.lets.contains(&text) => {
+                        return Err(format!(
+                            "`{text}` is no reference this session showed: a reference comes \
+                             from an answer (the word at the start of its line)"
+                        ));
+                    }
+                    None => (text.clone(), text),
                 }
-                if text == "this"
-                    && !programs.lets.contains(&text)
-                    && let Some(this) = &programs.this
-                {
-                    out.push_str(this);
-                    continue;
-                }
-                if looks_like_ref(&text) && !programs.lets.contains(&text) {
-                    return Err(format!(
-                        "`{text}` is no reference this session showed: a reference comes from an \
-                         answer (the word at the start of its line)"
-                    ));
-                }
-                out.push_str(&text);
             }
-            Piece::Word { text, .. } | Piece::Other(text) => out.push_str(&text),
+            Piece::Word { text, .. } | Piece::Other(text) => (text.clone(), text),
+        };
+        if sent != compiled {
+            resolved.written.push(Written {
+                line,
+                sent_col,
+                sent_len: sent.chars().count(),
+                compiled_col,
+                compiled_len: compiled.chars().count(),
+            });
         }
+        resolved.source.push_str(&compiled);
+        let mut compiled_line = line;
+        advance(&compiled, &mut compiled_line, &mut compiled_col);
+        advance(&sent, &mut line, &mut sent_col);
     }
-    Ok(out)
+    Ok(resolved)
 }
 
 /// `source` without the text of its strings and regular expressions.
@@ -644,8 +743,9 @@ fn shown_line(line: &str, programs: &mut Programs) -> String {
     let mut rest = line;
     while let Some((before, after)) = rest.split_once('@') {
         out.push_str(before);
+        // A diagnostic quotes a literal in backticks.
         let end = after
-            .find(|c: char| c.is_whitespace() || matches!(c, '"' | ')' | ']' | ','))
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | ')' | ']' | ',' | '`' | ';'))
             .unwrap_or(after.len());
         let (literal, tail) = after.split_at(end);
         let ty = literal.split_once(':').and_then(|(path, _)| {
@@ -934,8 +1034,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
             _ => {}
         }
-        let source = resolve_refs(program, &self.programs.lock_recover())?;
-        let answer = self.run_in_task(&source, args.confirm).await?;
+        let resolved = resolve_placed(program, &self.programs.lock_recover())?;
+        let source = resolved.source.clone();
+        let mut answer = self.run_in_task(&source, args.confirm).await?;
+        resolved.place_detail(&mut answer, &mut self.programs.lock_recover());
         let failed = !matches!(
             answer.get("state").and_then(Value::as_str),
             Some("done" | "preview" | "suspended")
@@ -1052,11 +1154,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     ) -> Result<PersonStep, String> {
         let mut task = TaskLink::new(fd).map_err(|error| error.to_string())?;
         let author = self.program_author();
-        let source = {
+        let resolved = {
             let programs = self.programs.lock_recover();
-            resolve_refs(source, &programs)?
+            resolve_placed(source, &programs)?
         };
-        let answer = Box::pin(self.serve_run(&mut task, &source, false, &author)).await?;
+        let source = resolved.source.clone();
+        let mut answer = Box::pin(self.serve_run(&mut task, &source, false, &author)).await?;
+        resolved.place_detail(&mut answer, &mut self.programs.lock_recover());
         let text = self.answered(&source, &answer).text;
         Ok(PersonStep::of(text, answer))
     }
@@ -1070,10 +1174,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                   across an await would leave the future unsendable"
     )]
     async fn run_as_person(&self, source: &str, author: &Value) -> Result<(String, Value), String> {
-        let source = {
+        let resolved = {
             let programs = self.programs.lock_recover();
-            resolve_refs(source, &programs)?
+            resolve_placed(source, &programs)?
         };
+        let source = resolved.source.clone();
         let mut link = self.task.lock().await;
         if link.is_none() {
             *link = Some(self.start_task().await?);
@@ -1082,13 +1187,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             return Err("the task's host did not start".to_owned());
         };
         let ran = Box::pin(self.serve_run(task, &source, false, author)).await;
-        let answer = match ran {
+        let mut answer = match ran {
             Ok(answer) => answer,
             Err(why) => {
                 *link = None;
                 return Err(why);
             }
         };
+        resolved.place_detail(&mut answer, &mut self.programs.lock_recover());
         let text = self.answered(source.as_str(), &answer).text;
         Ok((text, answer))
     }
@@ -1944,6 +2050,7 @@ mod tests {
                 presentation: None,
             },
             action: Some(tilo_actions::ActionDescriptor {
+                did: None,
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 address: tilo_actions::ActionAddress::new(
@@ -2082,5 +2189,36 @@ mod tests {
             .build()
             .expect("a runtime")
             .block_on(future)
+    }
+
+    /// A program that does not compile is answered in the program its writer sent: the compiler
+    /// placed its errors in the literals the references were written as, which the writer never
+    /// saw, and named the resources by them.
+    #[test]
+    fn a_compile_error_is_placed_in_the_program_as_sent() {
+        let mut programs = Programs::default();
+        shown_line("@notes.Note:root/notes:a \"Q3 plan\"", &mut programs);
+        let resolved = resolve_placed("n1.edited\nprint(n1, n1.titel)", &programs).unwrap();
+        assert_eq!(
+            resolved.source,
+            "@notes.Note:root/notes:a.edited\nprint(@notes.Note:root/notes:a, @notes.Note:root/notes:a.titel)"
+        );
+        let mut answer = json!({
+            "state": "rejected",
+            "detail": [
+                "1:26: E021 `Note` has no field `edited`; fields are: title, body",
+                "2:7: E020 `@notes.Note:root/notes:a` is not printable",
+                "2:58: E021 `Note` has no field `titel`; did you mean `title`?",
+            ],
+        });
+        resolved.place_detail(&mut answer, &mut programs);
+        assert_eq!(
+            answer["detail"],
+            json!([
+                "1:4: E021 `Note` has no field `edited`; fields are: title, body",
+                "2:7: E020 `n1` is not printable",
+                "2:14: E021 `Note` has no field `titel`; did you mean `title`?",
+            ])
+        );
     }
 }

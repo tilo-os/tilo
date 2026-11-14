@@ -462,9 +462,12 @@ fn nested_manual_measurement_settles_bounded_and_side_effect_free() {
                 },
             })
         });
+        // Bounded: it is laid out as its last pass left it, and said.
+        let _ = super::super::take_unsettled_layout();
+        assert!(solve(Box::new(oscillating)).is_ok());
         assert!(matches!(
-            solve(Box::new(oscillating)),
-            Err(WidgetLayoutError::DidNotSettle { .. })
+            super::super::take_unsettled_layout(),
+            Some(WidgetLayoutError::DidNotSettle { .. })
         ));
         let mut nested: Element = Box::new(Text::new("Bottom"));
         for _ in 0..34 {

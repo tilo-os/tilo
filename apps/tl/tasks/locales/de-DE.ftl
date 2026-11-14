@@ -273,6 +273,10 @@ d-i2mhsb3h = Start
     .w-projects = Projekte
     .w-no-tasks-here = Keine Aufgaben hier
 
+d-q4eq7oqv = Zu erledigen
+    .w-new-task = Neue Aufgabe
+    .w-nothing-to-do = Nichts zu tun
+
 d-doqleehr = Aufgabe
     .w-what-to-do = Was zu tun ist
     .w-anything-worth-remembering-about-it = Alles, was sich darüber zu merken lohnt.

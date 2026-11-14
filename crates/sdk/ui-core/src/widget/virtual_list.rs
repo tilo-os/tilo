@@ -73,6 +73,11 @@ mod row_group;
 pub use row_group::RowGroup;
 
 const DEFAULT_VIEWPORT_HEIGHT: f64 = 320.0;
+/// The tallest a list that fills its parent says its rows come to where the parent has no height
+/// to give ([`VirtualList::natural_style`]), in logical pixels: a tall screen's height. Past it the
+/// list scrolls in whatever room it is given, and a list never says a height that would have every
+/// one of thousands of rows mounted.
+const NATURAL_MOST: f64 = 2160.0;
 const END_SLACK: f64 = 0.5;
 
 fn fit_needs_layout(box_height: f64, rows: f64, viewport: f64) -> bool {
@@ -369,6 +374,11 @@ pub struct VirtualList<M: ListModel> {
     content_gutter: f64,
     rows_beside_bar: bool,
     fill_height: bool,
+    /// What a list that fills its parent's height says its rows come to where that parent has no
+    /// height of its own to give (a place on a canvas that hugs what it holds): an empty node in
+    /// the layout as tall as the rows, up to [`NATURAL_MOST`]. Under a parent with a height the
+    /// list takes that height and the node is only inside it.
+    natural: Option<NodeId>,
     fit_rows: bool,
     follow_end: bool,
     at_end: bool,
@@ -532,6 +542,7 @@ impl<M: ListModel> VirtualList<M> {
             content_gutter: 0.0,
             rows_beside_bar: false,
             fill_height: false,
+            natural: None,
             fit_rows: false,
             follow_end: false,
             at_end: false,
@@ -687,6 +698,22 @@ impl<M: ListModel> VirtualList<M> {
         match self.stance {
             RowStance::Column => self.bleed.max(bar + self.lift),
             RowStance::Bleed | RowStance::Flush => self.lead + bar,
+        }
+    }
+
+    /// The empty node a list that fills its parent stands in the layout ([`Self::natural`]): no
+    /// width, and as tall as its rows up to [`NATURAL_MOST`]. The list's own height is its
+    /// parent's whenever the parent has one; where it has none (a place hugging what it holds is
+    /// measured with no height to fill), the list is as tall as this, so the place hugs its rows.
+    pub(super) fn natural_style(&self) -> taffy::Style {
+        let rows = self.viewport.content_extent() + self.content_gutter;
+        taffy::Style {
+            size: taffy::Size {
+                width: taffy::Dimension::length(0.0),
+                height: taffy::Dimension::length(px(rows.clamp(0.0, NATURAL_MOST))),
+            },
+            flex_shrink: 0.0,
+            ..taffy::Style::default()
         }
     }
 
@@ -1623,6 +1650,13 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             child_nodes.push(child);
         }
         self.place_rows(taffy);
+        // A list that fills its parent says how tall its rows come to, for a parent that has no
+        // height to give and asks what it holds (`natural_style`).
+        self.natural = self
+            .fill_height
+            .then(|| taffy.new_leaf(self.natural_style()).ok())
+            .flatten();
+        child_nodes.extend(self.natural);
         let node = taffy.parent_node(
             Style {
                 size: Size {
@@ -1633,6 +1667,17 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                         Dimension::length(px(self.viewport.content_extent()))
                     } else {
                         Dimension::length(px(self.viewport.viewport()))
+                    },
+                },
+                // Taking its parent's height, it can always be as short as the parent leaves it:
+                // what its rows come to (`natural`) is what it says only where the parent has no
+                // height to offer, never a least height it holds a pane open to.
+                min_size: Size {
+                    width: Dimension::auto(),
+                    height: if self.fill_height {
+                        Dimension::length(0.0)
+                    } else {
+                        Dimension::auto()
                     },
                 },
                 overflow: taffy::Point {

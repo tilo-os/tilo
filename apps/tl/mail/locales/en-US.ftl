@@ -449,6 +449,11 @@ d-4fjgzcq6 = Unified
     .w-all-mail = All mail
     .w-labels = Labels
 
+d-m5y6nl2m = All inboxes
+    .w-add-a-mail-account-in-settings = Add a mail account in Settings
+
+d-tfom3oeo = Account threads
+
 d-gka45our = Mailboxes
     .w-all-mail = All mail
     .w-labels = Labels

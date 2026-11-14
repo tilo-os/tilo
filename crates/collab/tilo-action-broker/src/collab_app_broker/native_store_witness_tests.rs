@@ -65,6 +65,7 @@ async fn target(
     let handle = Rc::new(f.app_handle(200, STORE, false));
     let target = wire_channel_rc(Rc::clone(&handle));
     let submit = runtime_collab::ExportedAction {
+        did: None,
         semantic_identity: None,
         resource: RESOURCE.into(),
         action: action.into(),

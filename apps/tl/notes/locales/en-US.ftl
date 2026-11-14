@@ -168,6 +168,9 @@ d-ojfhuiuf = Add child
 
 d-5y75taxm = Note node
 
+d-kdl43aw7 = Notes
+    .w-no-notes-yet = No notes yet
+
 d-xqxkoqbj = Note row
 
 d-6wqou47w = Note editor

@@ -4,11 +4,17 @@
 //! Each is an **installed package**, as it is on a person's device: the app's `.tapp` is
 //! installed into the session's own package store (`tilolang run` builds and installs them), the
 //! session reads each app's payload from its store row, and the app runs through the launcher
-//! like any other. Loading it here publishes the records it keeps: the app's root made
-//! and filled by its first scenario (the seed data its shots and tests start from), published as
-//! the session publishes a room's records ([`tilolang_tilo::records_service::RecordService`]), so
-//! every note, task, channel and mailbox is a resource the session's `find` finds, an
-//! arrangement places and an agent reads and changes through its actions.
+//! like any other. Loading it here publishes the record it keeps: the app's root made and filled
+//! by its first scenario (the seed data its shots and tests start from), published as the session
+//! publishes a room's records ([`tilolang_tilo::records_service::RecordService`]), so every note,
+//! task, channel and mailbox is a resource the session's `find` finds, an arrangement places and
+//! an agent reads and changes through its actions.
+//!
+//! Each app's record is the one its windows open: once the session holds the workspace the
+//! person is in, it keeps the record there ([`tilo_service::Service::workspace_record`]), so the
+//! seed data is written into the workspace's record of the app, and the app's window, the REPL,
+//! an agent's programs and the canvas read and change that one record. A record the workspace
+//! holds already takes the place of the seed data.
 //!
 //! There is no second way for an app to reach a session: an app that is not installed is not run,
 //! and an app that is installed has the manifest the launcher and connector planning read. Its
@@ -23,13 +29,14 @@ use tilolang_tilo::runtime::Principal;
 
 use crate::platform::notice::Toolkit;
 
-/// Whether this build seeds the apps `--seed-apps` asks for: development builds only.
-pub const SEEDED_BY_THIS_BUILD: bool = cfg!(debug_assertions);
+/// Whether this build seeds the apps `--seed-apps` asks for: development builds only, the
+/// optimised one with the developer overrides (`dev-overrides`) included, so a session whose
+/// feel is measured on an optimised build shows the same scenario a debug one does.
+pub const SEEDED_BY_THIS_BUILD: bool = cfg!(any(debug_assertions, feature = "dev-overrides"));
 
-/// The tilolang apps a development session installs and seeds, in the order a session reads
-/// them: the packages they use meet each other as [`seeded`] loads them. Discussion is no app
-/// here: Tasks and Notes are made with it, so the comments on a task or a note are kept in that
-/// app's own record, as a package an app uses that is not installed keeps its records in it.
+/// The tilolang apps a development session installs and seeds. Discussion is no app here: Tasks
+/// and Notes are made with it, so the comments on a task or a note are kept in that app's own
+/// record, as a package an app uses that is not installed keeps its records in it.
 pub const APPS: [&str; 5] = [
     "so.tilo.lang.notes",
     "so.tilo.lang.tasks",
@@ -38,52 +45,27 @@ pub const APPS: [&str; 5] = [
     "so.tilo.lang.tube",
 ];
 
-/// The records of the installed apps [`APPS`] names, in one workspace record of `person`'s:
-/// each app's root made and filled by its first scenario, each step as its authorship names it,
-/// published for them.
+/// The records of the installed apps [`APPS`] names, each in a record of its own as its windows
+/// keep it: the app's root made and filled by its first scenario, each step as its authorship
+/// names it, published for them. Before them, the session's own document, which keeps the records of the packages the
+/// session runs itself (the shell, [`tilo_service::Service::share`]).
 ///
 /// # Errors
 /// An app of [`APPS`] is not installed as a tilolang package, its payload does not read, or its
 /// scenario does not run.
-pub fn seeded(person: &str, catalog: &package_store::Catalog) -> Result<RecordService, String> {
+pub fn seeded(
+    person: &str,
+    catalog: &package_store::Catalog,
+) -> Result<Vec<RecordService>, String> {
     let installed = installed_apps(catalog)?;
     let host = Host::new(&tilo_resource::Doc::new(), Principal::new(person), || None)
         .map_err(|e| e.to_string())?;
     host.set_words(crate::i18n::SeededWords);
-    // A package's imported modules ride in its own bundle, so any order loads; the packages a
-    // session reads first are loaded first, so a package that another one shows is the one it
-    // was compiled against.
-    let mut scenarios = Vec::new();
+    let mut services = vec![told(RecordService::new(host, person))];
     for app in &installed {
-        let bundle =
-            Bundle::read(&app.payload_root).map_err(|error| format!("{}: {error}", app.app_id))?;
-        let package = host
-            .load_bundle(&bundle)
-            .map_err(|error| format!("{}: {error}", app.app_id))?;
-        scenarios.push((
-            package.meta.app.clone(),
-            package.meta.scenarios.first().cloned(),
-        ));
+        services.push(told(seeded_app(person, app)?));
     }
-    for (app, scenario) in scenarios {
-        host.root_of(&app)
-            .map_err(|error| format!("{app}'s root: {error}"))?;
-        let Some(scenario) = scenario else {
-            continue;
-        };
-        host.runtime()
-            .invoke_action(&Principal::new(person), (scenario.action.as_str(), vec![]))
-            .map_err(|error| format!("{app} {:?}: {error}", scenario.name))?;
-    }
-    let mut service = RecordService::new(host, person);
-    // What an app tells reaches the person through the platform's notifier this session serves,
-    // as any app's notification does.
-    service.set_tell(Toolkit::new(
-        ui::notify::system(Some("so.tilo.session")),
-        NOTICE_TAGS,
-    ));
-    tilo_service::Service::settle(&mut service);
-    Ok(service)
+    Ok(services)
 }
 
 /// [`seeded`] over the app store the environment names (`$TILO_APPS_DATA_DIR`, else the
@@ -91,9 +73,44 @@ pub fn seeded(person: &str, catalog: &package_store::Catalog) -> Result<RecordSe
 ///
 /// # Errors
 /// The store cannot be located, or [`seeded`] fails.
-pub fn seeded_from_env(person: &str) -> Result<RecordService, String> {
+pub fn seeded_from_env(person: &str) -> Result<Vec<RecordService>, String> {
     let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
     seeded(person, &catalog)
+}
+
+/// The record of the installed app `app`: its root made and filled by its first scenario as
+/// steps its authorship names, in a record of its own.
+fn seeded_app(person: &str, app: &InstalledApp) -> Result<RecordService, String> {
+    let host = Host::new(&tilo_resource::Doc::new(), Principal::new(person), || None)
+        .map_err(|e| e.to_string())?;
+    host.set_words(crate::i18n::SeededWords);
+    // The packages the app is made with ride in its own bundle, and keep their records in its
+    // record.
+    let bundle =
+        Bundle::read(&app.payload_root).map_err(|error| format!("{}: {error}", app.app_id))?;
+    let package = host
+        .load_bundle(&bundle)
+        .map_err(|error| format!("{}: {error}", app.app_id))?;
+    let name = package.meta.app.clone();
+    host.root_of(&name)
+        .map_err(|error| format!("{name}'s root: {error}"))?;
+    if let Some(scenario) = package.meta.scenarios.first() {
+        host.runtime()
+            .invoke_action(&Principal::new(person), (scenario.action.as_str(), vec![]))
+            .map_err(|error| format!("{name} {:?}: {error}", scenario.name))?;
+    }
+    Ok(RecordService::of_app(name, host, person))
+}
+
+/// `service`, what its apps tell reaching the person through the platform's notifier this
+/// session serves, as any app's notification does, and its records published.
+fn told(mut service: RecordService) -> RecordService {
+    service.set_tell(Toolkit::new(
+        ui::notify::system(Some("so.tilo.session")),
+        NOTICE_TAGS,
+    ));
+    tilo_service::Service::settle(&mut service);
+    service
 }
 
 /// The installed packages [`APPS`] names, each an app of the language: a payload that carries

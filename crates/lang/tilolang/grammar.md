@@ -15,12 +15,13 @@ app_opt    = ( "icon" | "category" ) ":" "." ident
 app_id     = ident { "." ident } ;
 
 item       = { doc } ( use | type_decl | alias | enum_decl | root | default_view | row_view
-                     | views | [ role ] action | view | fn | scenario | trigger ) ;
+                     | place_view | views | [ role ] action | view | fn | scenario | trigger ) ;
 use        = "use" app_id [ "as" ident ] ;
 root       = "root" [ ident ":" ] type ;                      (* `root notebook: Notebook`, a record type *)
 alias      = "type" Ident "=" type ;                          (* another name for a type *)
 default_view = "default" "view" ident "for" ( type | ident ) ;   (* a type, or a root by name *)
 row_view   = "row" "view" ident "for" type ;
+place_view = "place" "view" ident "for" type ;   (* what a place of the type shows standing on its own *)
 views      = "views" ident { "," ident } "for" type ;   (* what a window of the type switches between *)
 role       = "primary" | "destructive" | "migration" ;
 
