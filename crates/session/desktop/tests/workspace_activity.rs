@@ -421,7 +421,6 @@ tilo_test_env::scenario! {
                 &device::Writer {
                     person: Some("ada"),
                     mine: &|id| id >> 48 == 1,
-                    retained: &|_| true,
                     records: device::Writer::NOTHING_NOTED,
                 },
             )
