@@ -1064,9 +1064,9 @@ fn the_desk_draws_the_workspace_in_front_and_no_other() {
 /// The desk carries no strip label of its own: the strip a person is in is what the bar's strip
 /// pill names, and a label over each window's band was bare text a person could not act on, flush
 /// against the desk's edge. The desk of the development shell holds two workspaces (the one it
-/// starts from and the joined Lounge), each with a `Main` row, which is the desk that showed one
-/// bare `Main` over each band. Every `Main` the desk says of a strip is the bar's pill now; nothing
-/// says it over the windows.
+/// starts from and the joined Lounge), each with a strip nobody named, which is the desk that
+/// showed one bare name over each band. Every `Strip 1` the desk says of a strip is the bar's pill
+/// now; nothing says it over the windows.
 #[test]
 fn the_desk_carries_no_strip_label_of_its_own() {
     let _settled = ui::motion::testing::settled();
@@ -1076,7 +1076,7 @@ fn the_desk_carries_no_strip_label_of_its_own() {
     });
 
     // A window on the desk, and a second workspace: the desk the development shell's shot showed —
-    // two workspaces, each with a `Main` row, and a window on one of them.
+    // two workspaces, each with a strip nobody named, and a window on one of them.
     place(&mut session, &notes[0]);
     let shown = shown_as(&session, NOTE_TITLE);
     until(&mut session, "the placed note's window", |session| {
@@ -1094,7 +1094,8 @@ fn the_desk_carries_no_strip_label_of_its_own() {
 
     // Every saying of the strip's name, once the desk has drawn: the bar's pill, and nothing over a
     // window's band.
-    let mains: Vec<(f64, f64, f64, f64)> = session.shell_text_bounds_all("Main");
+    // A strip nobody named is called by where it stands, as the strip switcher calls it.
+    let mains: Vec<(f64, f64, f64, f64)> = session.shell_text_bounds_all("Strip 1");
     assert!(
         !mains.is_empty(),
         "the bar names the strip: {:?}",

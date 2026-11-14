@@ -738,18 +738,20 @@ fn workspace_in_front(tree: &DesktopTree) -> String {
     )
 }
 
-/// The name of the strip in front in the workspace in front, when it has one: what the bar names
-/// after the workspace.
+/// The name of the strip in front in the workspace in front, as the strip switcher names it: what
+/// the bar names after the workspace.
 fn strip_in_front(tree: &DesktopTree) -> String {
     let Some(workspace) = tree.active_workspace() else {
         return String::new();
     };
-    let active = tree
+    let at = tree
         .active_strip
         .get(&tree.active)
-        .and_then(|id| workspace.strips.iter().find(|strip| strip.id == *id))
-        .or_else(|| workspace.strips.first());
-    active.map_or_else(String::new, |strip| strip.name.trim().to_owned())
+        .and_then(|id| workspace.strips.iter().position(|strip| strip.id == *id))
+        .unwrap_or(0);
+    workspace.strips.get(at).map_or_else(String::new, |strip| {
+        tilo_desktop_surface::names::strip_named(&strip.name, at)
+    })
 }
 
 impl Desk {
