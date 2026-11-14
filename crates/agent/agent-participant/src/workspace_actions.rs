@@ -1956,7 +1956,11 @@ impl Worker {
         }
         routes
             .into_iter()
-            .filter(|route| self.catalogue.get(&route.app_id).is_some())
+            .filter(|route| {
+                self.catalogue
+                    .get(&route.app_id)
+                    .is_some_and(|app| opens_as_its_own(app, &route.record))
+            })
             .collect()
     }
 
@@ -2832,6 +2836,15 @@ fn log_outcome(
             resource = %target.address.resource, action = %target.address.action,
             code = error.code(), %error, "workspace actions: refused"),
     }
+}
+
+/// Whether `record` is one of `app`'s own records, which its replica opens. An app that keeps one
+/// record per workspace opens that one alone: a record it owns beside it, of another kind (Files'
+/// tree of the workspace's folder), is read where it is kept, never mounted as the app's, which
+/// refuses it as not the app's workspace record.
+fn opens_as_its_own(app: &ui::application::ApplicationDefinition, record: &str) -> bool {
+    !app.keeps_workspace_record()
+        || ui::record::RecordId::from_route(record).is_some_and(|id| id.is_package_primary())
 }
 
 #[cfg(test)]

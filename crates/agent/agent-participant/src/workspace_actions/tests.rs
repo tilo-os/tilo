@@ -422,3 +422,17 @@ fn a_records_keys_are_waited_for_as_an_act_or_a_read() {
     assert!(matches!(Keys::Joined.act(), Needs::Joined));
     assert!(matches!(Keys::Workspace.read(), Needs::Workspace));
 }
+
+#[test]
+fn files_opens_its_workspace_record_and_lists_no_tree_beside_it() {
+    let files = file_explorer::definition();
+    assert!(
+        super::opens_as_its_own(files, ""),
+        "the workspace's own Files record"
+    );
+    let tree = collab_types::person_record_id(fs_protocol::tree::TREE_KIND);
+    assert!(
+        !super::opens_as_its_own(files, &tree),
+        "the tree of the workspace's folder is read where it is kept, never mounted as Files'"
+    );
+}
