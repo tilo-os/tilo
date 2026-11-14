@@ -55,6 +55,9 @@ workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The tests record into the store a replica without a window keeps, which is
+# behind `test-support`; the revision's own test build turns it on.
+tilo-resource = { path = ".", features = ["test-support"] }
 hex.workspace = true
 # The tests are a window: they register the store their code records in.
 tilo-wake.workspace = true

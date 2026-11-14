@@ -21221,6 +21221,7 @@ dependencies = [
  "tilo-content",
  "tilo-failure",
  "tilo-lock",
+ "tilo-resource",
  "tilo-resource-macros",
  "tilo-sort",
  "tilo-test-env",
