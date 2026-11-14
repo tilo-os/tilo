@@ -205,6 +205,40 @@ fn an_admitted_client_is_an_agent_member_people_find() {
     program.end();
 }
 
+/// A box that sends a message lists the workspace's agents and the people here: the client the
+/// person admitted is an agent they can message, and the person at this desk is a recipient of
+/// their own workspace.
+#[test]
+fn a_send_lists_the_workspaces_agents_and_people() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("agent.sock");
+    let (mut session, questions) = session(root.path(), &socket);
+    let program = Program::connect(&socket);
+    let served = admit(&mut session, &questions, &program);
+    assert!(served.pointer("/result/serverInfo").is_some(), "{served}");
+
+    let recipients = crate::common::wait_for(&mut session, "the send's recipients", |session| {
+        let reading = session.read("session:send-to")?;
+        let recipients = reading.get("recipients")?.as_array()?.clone();
+        (!recipients.is_empty()).then_some(recipients)
+    });
+    eprintln!("the send lists: {recipients:?}");
+    assert!(
+        recipients
+            .iter()
+            .any(|recipient| recipient["name"] == "Claude Code" && recipient["kind"] == "agent"),
+        "the admitted client is an agent a message can go to: {recipients:?}"
+    );
+    let mut seen: Vec<(serde_json::Value, serde_json::Value)> = Vec::new();
+    for recipient in &recipients {
+        let key = (recipient["kind"].clone(), recipient["id"].clone());
+        assert!(!seen.contains(&key), "one row each: {recipients:?}");
+        seen.push(key);
+    }
+    program.end();
+}
+
 /// Ask for a seat on the control protocol and read the refusal: it names the protocol as served to
 /// a program inside an app this session started, and to nothing else.
 #[track_caller]

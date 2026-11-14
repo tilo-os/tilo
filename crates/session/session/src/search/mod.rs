@@ -256,6 +256,11 @@ pub struct SessionSearch {
     /// (the page), which offers no such row.
     #[cfg(target_os = "linux")]
     agents: RefCell<Option<Vec<crate::agents::Kept>>>,
+    /// Every agent each workspace's record lists, whoever keeps it: whom a message can go to.
+    listed_agents: RefCell<Vec<crate::agents::Listed>>,
+    /// How often who is here or what the agents' records list moved: what a box that reads whom a
+    /// message can go to is told again for.
+    recipients_moved: Cell<u64>,
     /// The question search answered, and the answer as it is being written: kept across the builds
     /// of the rows so what arrives stays where the person asked it.
     ask: crate::search_ask::Shared,
@@ -400,6 +405,8 @@ impl SessionSearch {
             downloaded: RefCell::default(),
             #[cfg(target_os = "linux")]
             agents: RefCell::default(),
+            listed_agents: RefCell::default(),
+            recipients_moved: Cell::default(),
             ask: crate::search_ask::Shared::default(),
             workers,
             pending: RefCell::default(),
@@ -457,7 +464,17 @@ impl SessionSearch {
     /// Who is in the person's workspaces now, as their presence and the desk's collaborators say
     /// it: the empty palette's first group.
     pub fn set_here(&self, workspaces: Vec<WorkspaceHere>) {
+        if *self.here.borrow() == workspaces {
+            return;
+        }
         *self.here.borrow_mut() = workspaces;
+        self.moved_recipients();
+    }
+
+    /// Say that who a message can go to moved, so the reading of it is taken again.
+    fn moved_recipients(&self) {
+        self.recipients_moved
+            .set(self.recipients_moved.get().wrapping_add(1));
     }
 
     /// The agent each workspace keeps for the person here, as the pass read them: whom the row
@@ -465,6 +482,16 @@ impl SessionSearch {
     #[cfg(target_os = "linux")]
     pub(crate) fn set_kept_agents(&self, agents: &[crate::agents::Kept]) {
         *self.agents.borrow_mut() = Some(agents.to_vec());
+    }
+
+    /// Record every agent each workspace's record lists, whoever keeps it: what a box that sends
+    /// a message addresses besides the people present and what the apps published.
+    pub(crate) fn set_listed_agents(&self, agents: &[crate::agents::Listed]) {
+        if *self.listed_agents.borrow() == agents {
+            return;
+        }
+        *self.listed_agents.borrow_mut() = agents.to_vec();
+        self.moved_recipients();
     }
 
     /// The workspaces this device shows, by id and the name the desk gives it: what a row says of a
@@ -962,17 +989,66 @@ impl SessionSearch {
     }
 
     /// The agents, people and conversations a message can go to, the most recent first.
-    pub(crate) fn recipients(&self) -> Vec<ui::floating_surface::Recipient> {
-        self.indexes
+    /// The agents, people and conversations a message can go to in `workspace`: what its apps
+    /// published, the people present there, and every agent its record lists — each once, by kind
+    /// and id.
+    pub(crate) fn recipients(&self, workspace: &str) -> Vec<ui::floating_surface::Recipient> {
+        use ui::floating_surface::{Recipient, RecipientKind};
+        let mut found = self
+            .indexes
             .as_ref()
-            .map_or_else(Vec::new, |indexes| indexes.recipients())
+            .map_or_else(Vec::new, |indexes| indexes.recipients());
+        for here in self
+            .here
+            .borrow()
+            .iter()
+            .filter(|here| here.workspace == workspace)
+        {
+            for person in &here.people {
+                found.push(Recipient::found(
+                    if person.agent {
+                        RecipientKind::Agent
+                    } else {
+                        RecipientKind::Person
+                    },
+                    person.id.clone(),
+                    person.name.clone(),
+                ));
+            }
+        }
+        for agent in self
+            .listed_agents
+            .borrow()
+            .iter()
+            .filter(|agent| agent.workspace == workspace)
+        {
+            found.push(Recipient::found(
+                RecipientKind::Agent,
+                agent.id.clone(),
+                agent.name.clone(),
+            ));
+        }
+        let mut out: Vec<Recipient> = Vec::new();
+        for recipient in found {
+            if !out
+                .iter()
+                .any(|kept| kept.kind == recipient.kind && kept.id == recipient.id)
+            {
+                out.push(recipient);
+            }
+        }
+        out
     }
 
-    /// A number that moves whenever what [`Self::recipients`] lists may have.
-    pub(crate) fn recipients_generation(&self) -> u64 {
-        self.indexes
-            .as_ref()
-            .map_or(0, |indexes| indexes.generation())
+    /// A number that moves whenever what [`Self::recipients`] lists may have: what the apps
+    /// published, and who is here or kept.
+    pub(crate) fn recipients_generation(&self) -> (u64, u64) {
+        (
+            self.indexes
+                .as_ref()
+                .map_or(0, |indexes| indexes.generation()),
+            self.recipients_moved.get(),
+        )
     }
 
     /// The apps this session opens, for what it asks to be opened outside a search: a link a page

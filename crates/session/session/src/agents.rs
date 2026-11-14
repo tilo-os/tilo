@@ -39,6 +39,14 @@ pub(crate) struct Kept {
     pub model: Option<String>,
 }
 
+/// An agent a workspace's record lists, as a box that sends a message addresses it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Listed {
+    pub workspace: String,
+    pub id: String,
+    pub name: String,
+}
+
 /// Who keeps each of the workspaces' agents, and what each may spend today,
 /// as the pass read their records.
 #[derive(Default)]
@@ -114,18 +122,29 @@ impl Agents {
     }
 
     /// Read each workspace's agents record as `person` , hand who keeps each agent to the broker,
-    /// and answer the agents kept here: this device runs those.
-    pub(crate) fn feed(&self, person: &str, workspaces: &[(String, WorkspacePolicy)]) -> Vec<Kept> {
+    /// and answer the agents kept here — this device runs those — beside every agent each
+    /// workspace lists, whoever keeps it.
+    pub(crate) fn feed(
+        &self,
+        person: &str,
+        workspaces: &[(String, WorkspacePolicy)],
+    ) -> (Vec<Kept>, Vec<Listed>) {
         let day = ui::clock::today().to_string();
         let mut listed: BTreeMap<String, Vec<_>> = BTreeMap::new();
         let mut spend = BTreeMap::new();
         let mut kept = Vec::new();
+        let mut every = Vec::new();
         for (workspace, policy) in workspaces {
             let Some(record) = self.record(workspace, policy, person) else {
                 continue;
             };
             let state = record.get();
             for agent in state.active() {
+                every.push(Listed {
+                    workspace: workspace.clone(),
+                    id: agent.id.0.clone(),
+                    name: agent.name.clone(),
+                });
                 listed.entry(workspace.clone()).or_default().push(
                     tilo_broker_core::services::ListedAgent {
                         id: agent.id.0.clone(),
@@ -158,7 +177,7 @@ impl Agents {
         if let Ok(mut held) = self.roster.spend.lock() {
             *held = spend;
         }
-        kept
+        (kept, every)
     }
 
     /// Charge what the runs' agents spent to their day, on each workspace's record of its agents,
@@ -277,8 +296,9 @@ impl crate::Shared {
             });
         self.agents
             .charge(&workspaces, &self.person, &self.conversations.take_spent());
-        let kept = self.agents.feed(&self.person, &workspaces);
+        let (kept, listed) = self.agents.feed(&self.person, &workspaces);
         self.search.set_kept_agents(&kept);
+        self.search.set_listed_agents(&listed);
         if let Some(apps) = &self.launch {
             for agent in &kept {
                 apps.start_agent(agent);

@@ -89,7 +89,7 @@ pub(crate) struct Sends {
     sent: Rc<RefCell<Vec<Sent>>>,
     recipients: Rc<RefCell<Vec<Recipient>>>,
     /// The search's generation [`Self::recipients`] was read at.
-    read_at: Rc<Cell<Option<u64>>>,
+    read_at: Rc<Cell<Option<(u64, u64)>>>,
     /// Whether the reading moved since the service last said so.
     moved: Rc<Cell<bool>>,
 }
@@ -417,11 +417,38 @@ impl Shared {
     }
 
     /// The agents, people and conversations a message can go to, the most recent first, with
-    /// reporting a problem last.
+    /// reporting a problem last: what the apps published and who is here, then every member the
+    /// workspace's governance lists — a person or the software that works beside them — except the
+    /// person sitting here, who sends nothing to themselves.
     pub(crate) fn recipients(&self) -> Vec<Recipient> {
-        let mut found = self.search.recipients();
+        let workspace = self.active_workspace_id();
+        let mut found = self.search.recipients(&workspace);
+        if let Some(engine) = &self.engine
+            && let Ok(members) = engine.people(&workspace)
+        {
+            for member in members {
+                if member.removed || member.is_self {
+                    continue;
+                }
+                let kind = match &member.id {
+                    tilo_action_policy::MemberId::Person(_) => RecipientKind::Person,
+                    tilo_action_policy::MemberId::Agent(_)
+                    | tilo_action_policy::MemberId::Bot(_) => RecipientKind::Agent,
+                };
+                found.push(Recipient::found(kind, member.id.id(), member.name));
+            }
+        }
         found.push(self.feedback_row());
-        found
+        let mut out: Vec<Recipient> = Vec::new();
+        for recipient in found {
+            if !out
+                .iter()
+                .any(|kept| kept.kind == recipient.kind && kept.id == recipient.id)
+            {
+                out.push(recipient);
+            }
+        }
+        out
     }
 }
 
