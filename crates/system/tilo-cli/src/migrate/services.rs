@@ -289,14 +289,25 @@ pub fn summary(review: &Review) -> String {
         MAIL => "mail",
         _ => "Linear",
     };
-    format!(
-        "From {source}: {} ({count} {what})",
-        chosen
-            .iter()
-            .map(|item| item.title.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
+    let titles = chosen
+        .iter()
+        .map(|item| item.title.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    // A mail account is its own title: "1 account" after it says nothing more.
+    if review.source == MAIL {
+        return format!("From {source}: {titles}");
+    }
+    format!("From {source}: {titles} ({})", counted(count, what))
+}
+
+/// `count` of what `plural` names, in the singular for one: `1 issue`, `3 issues`.
+pub(super) fn counted(count: usize, plural: &str) -> String {
+    let what = match count {
+        1 => plural.strip_suffix('s').unwrap_or(plural),
+        _ => plural,
+    };
+    format!("{count} {what}")
 }
 
 /// Bring the chosen groups of `review` over.

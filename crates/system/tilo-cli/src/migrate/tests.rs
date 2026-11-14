@@ -317,3 +317,10 @@ fn a_runs_newest_change_in_effect_is_found_in_a_records_history() {
     );
     assert_eq!(super::newest_of_run(history, "migrate-linear-3"), None);
 }
+
+#[test]
+fn a_run_counts_one_thing_in_the_singular() {
+    assert_eq!(super::services::counted(1, "issues"), "1 issue");
+    assert_eq!(super::services::counted(3, "issues"), "3 issues");
+    assert_eq!(super::services::counted(0, "messages"), "0 messages");
+}

@@ -155,7 +155,7 @@ pub fn summary(review: &Review) -> String {
     let counted: Vec<String> = counts
         .iter()
         .filter(|(_, count)| **count > 0)
-        .map(|(what, count)| format!("{count} {what}"))
+        .map(|(what, count)| super::services::counted(*count, what))
         .collect();
     let mut summary = String::from("From Thunderbird");
     if !accounts.is_empty() {
