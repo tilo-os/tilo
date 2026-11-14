@@ -633,10 +633,11 @@ impl super::TextInput {
         let caret = Widget::ime_cursor_rect(self).unwrap_or(self.rect);
         let max_x = (self.rect.x1 - width).max(self.rect.x0);
         let x = caret.x0.clamp(self.rect.x0, max_x);
-        // By the word it corrects: under its row, or over that row where the
-        // field ends (a paragraph's last row), never over the field's first.
+        // Under the word it corrects where there is room (past the field, in
+        // a note's blank under its last line), else over the word's row.
+        let room = self.chip_room.unwrap_or(self.rect);
         let below = caret.y1 + 4.0;
-        let y = if below + height <= self.rect.y1 - 4.0 {
+        let y = if below + height <= room.y1 - 4.0 {
             below
         } else {
             caret.y0 - height - 4.0

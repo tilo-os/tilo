@@ -412,6 +412,8 @@ pub struct TextInput {
     autocorrection_preview: Option<AutocorrectionPreview>,
     caret_word: CaretWord,
     suggestion_chip: Option<Rect>,
+    /// Where a correction may stand past the field: the part of a note shown.
+    pub(in crate::widget) chip_room: Option<Rect>,
     last_autocorrection: Option<Autocorrection>,
     /// A correction taken back with Backspace: where the word starts and
     /// the word as typed. It is not corrected again there.
@@ -738,6 +740,7 @@ impl TextInput {
             autocorrection_preview: None,
             caret_word: CaretWord::default(),
             suggestion_chip: None,
+            chip_room: None,
             last_autocorrection: None,
             declined_autocorrection: None,
             defer_autocorrection: false,

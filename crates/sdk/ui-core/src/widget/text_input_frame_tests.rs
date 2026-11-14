@@ -384,7 +384,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_correction_stands_by_its_word_on_a_paragraphs_last_row;
-    // A note's paragraph is as tall as its rows: no room under the last one.
+    // Under the word where the note shows room, else over the word's row.
     {
         let text = "alpha beta gamma delta epsilon zeta eta theta beautifull";
         let mut ti = suggesting_field(text).multiline(true);
@@ -396,12 +396,13 @@ tilo_test_env::scenario! {
         let start = crate::time::now() + crate::time::Duration::from_secs(3600);
         ti.refresh_suggestion_at(start);
         let _frame = crate::motion::pin_frame_at(start + SUGGESTION_SETTLE);
-        draw_to_populate(&mut ti);
-        let chip = ti.overhang().expect("the settled misspelling is offered a correction");
-        assert!(
-            chip.y1 <= caret.y0 && chip.y1 >= caret.y0 - 8.0,
-            "the correction stands just over its word's row: {chip:?}, caret {caret:?}"
-        );
+        for (room, under) in [(400.0, true), (caret.y1 + 2.0, false)] {
+            ti.chip_room = Some(Rect::new(0.0, 0.0, 120.0, room));
+            draw_to_populate(&mut ti);
+            let chip = ti.overhang().expect("the settled misspelling is offered a correction");
+            let gap = if under { chip.y0 - caret.y1 } else { caret.y0 - chip.y1 };
+            assert!((0.0..=8.0).contains(&gap), "under {under}: {chip:?}, caret {caret:?}");
+        }
     }
 
     phase a_lowercase_pronoun_is_corrected_at_the_next_word_boundary;

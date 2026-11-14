@@ -9195,6 +9195,7 @@ impl Widget for BlockEditor {
             b.line.inner_mut().suppress_caret_paint(
                 preceding.is_some() || self.caret_paint_suppressed || caret_apart,
             );
+            b.line.inner_mut().chip_room = self.popover_bounds;
             if let Some(Some((rect, _))) = self.transclusion_rects.get(idx) {
                 let (title, body) = cards.get(idx).cloned().flatten().unwrap_or_default();
                 draw_embed_card(
