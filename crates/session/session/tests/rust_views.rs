@@ -187,8 +187,9 @@ fn shot(session: &mut Session, root: &std::path::Path, name: &str) {
     );
 }
 
+/// One placed channel holds both: the page it draws, and what a press on a row of it does.
 #[test]
-fn a_tube_channel_placed_on_the_canvas_draws_its_own_page() {
+fn a_tube_channel_placed_on_the_canvas_draws_its_own_page_and_a_videos_row_places_the_video() {
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
     let mut session = session(root.path());
@@ -225,17 +226,7 @@ fn a_tube_channel_placed_on_the_canvas_draws_its_own_page() {
     );
     // How the person sees it: a real frame of the session, when a shots directory is named.
     shot(&mut session, root.path(), "channel-page.png");
-}
 
-#[test]
-fn pressing_a_videos_row_places_the_video() {
-    let _settled = ui::motion::testing::settled();
-    let root = crate::common::private_home();
-    let mut session = session(root.path());
-    place(&mut session, CHANNEL);
-    crate::common::until(&mut session, "the channel's page", |session| {
-        session.shell_says(VIDEO)
-    });
     // Pressing the video's row shows the video: the place the press asks for stands on the
     // layout, as a press on a tilolang view's row does.
     crate::common::press(&mut session, VIDEO);
