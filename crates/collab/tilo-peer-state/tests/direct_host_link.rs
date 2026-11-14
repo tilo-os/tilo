@@ -1459,6 +1459,17 @@ pub(crate) fn commit_record(
     key: &SigningKey,
     value: &str,
 ) -> u64 {
+    commit_record_at(owner, workspace, key, value, SystemTime::now())
+}
+
+/// [`commit_record`], the write signed as made at `when`.
+pub(crate) fn commit_record_at(
+    owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
+    workspace: tilo_desktop_model::WorkspaceId,
+    key: &SigningKey,
+    value: &str,
+    when: SystemTime,
+) -> u64 {
     let message = owner
         .with_current(workspace, |view| {
             let mut peer = view.peer().clone();
@@ -1469,7 +1480,7 @@ pub(crate) fn commit_record(
                     RECORD,
                     AutoCommit::new().save(),
                     key,
-                    SystemTime::now(),
+                    when,
                 );
             };
             let mut document = AutoCommit::load(&bytes).unwrap();
@@ -1479,13 +1490,7 @@ pub(crate) fn commit_record(
             let heads = document.get_heads();
             document.put(ROOT, "value", value).unwrap();
             document.commit_edit("fixture", "value");
-            publication.publish_incremental(
-                APP,
-                RECORD,
-                document.save_after(&heads),
-                key,
-                SystemTime::now(),
-            )
+            publication.publish_incremental(APP, RECORD, document.save_after(&heads), key, when)
         })
         .expect("the write signs");
     let NeighbourMsg::AppDocument { envelope, .. } = message else {
@@ -1502,7 +1507,7 @@ pub(crate) fn commit_record(
                     envelope,
                 },
             },
-            SystemTime::now(),
+            when,
         )
         .expect("the owner admits its own write");
     seq

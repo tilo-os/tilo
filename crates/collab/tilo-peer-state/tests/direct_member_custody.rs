@@ -16,7 +16,7 @@
 
 use crate::common::{addr, device, localhost_endpoint};
 use crate::direct_host_link::{
-    commit_membership, commit_record, hint, invitation, joins, owner_at, until,
+    commit_membership, commit_record, commit_record_at, hint, invitation, joins, owner_at, until,
 };
 
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
@@ -513,6 +513,84 @@ async fn an_expired_sealed_write_is_renewed_sent_answered_and_leaves_custody() {
         })
         .unwrap();
     assert!(held_by_host, "the host refused none of the member's writes");
+
+    hosted.close().await;
+}
+
+/// A member's cleartext write that waited in its custody past the live window, while its host was
+/// away, is no write the host refused: the host neither answers it as refused nor files a verdict
+/// on it, and the member keeps it, in its replica and in its custody. Answered as refused, the
+/// member withdrew the edit from its own replica too, and lost it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cleartext_write_that_waited_past_the_live_window_stays_with_its_writer() {
+    let mut hosted = Hosted::new(60).await;
+    let workspace = hosted.workspace;
+    let (_, sent) = hosted.custody_pass();
+    let answered = hosted.answered(&sent).await;
+    hosted.retire(&answered);
+    hosted.unlink();
+
+    // Written offline six minutes ago, past the five a live frame is taken for.
+    let written = SystemTime::now()
+        .checked_sub(Duration::from_secs(360))
+        .unwrap();
+    commit_record_at(
+        &hosted.member,
+        workspace,
+        &hosted.member_key,
+        "written offline",
+        written,
+    );
+    let [write] = hosted
+        .member
+        .owed_writes(workspace)
+        .unwrap()
+        .try_into()
+        .expect("custody holds the write made offline");
+
+    let dialed = hosted.dial().await;
+    let (_, sent) = hosted.custody_pass();
+    assert!(sent.contains(&write), "the write goes to the host");
+    hosted.run(dialed);
+    // What the host answers meanwhile the member's network actor takes, as it would.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let mut answered = BTreeMap::new();
+    while let Ok(answer) = hosted.answers.try_recv() {
+        answered.insert(answer.write, answer);
+    }
+    assert!(
+        answered
+            .get(&write)
+            .is_none_or(|answer| answer.kept != Kept::Refused),
+        "the host does not answer a late write as refused: {answered:?}"
+    );
+    hosted.retire(&answered);
+    hosted.member.retire_outgoing(workspace).unwrap();
+    if !answered.contains_key(&write) {
+        assert!(
+            hosted
+                .member
+                .owed_writes(workspace)
+                .unwrap()
+                .contains(&write),
+            "the write stays in custody"
+        );
+    }
+    let kept = hosted
+        .member
+        .with_current(workspace, |view| {
+            let bytes = view.peer().document(APP, RECORD).ok_or("no record")?;
+            let document = AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+            Ok(automerge::ReadDoc::get(&document, ROOT, "value")
+                .map_err(|error| error.to_string())?
+                .and_then(|(value, _)| value.into_string().ok()))
+        })
+        .unwrap();
+    assert_eq!(
+        kept.as_deref(),
+        Some("written offline"),
+        "the member's replica keeps its edit"
+    );
 
     hosted.close().await;
 }

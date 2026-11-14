@@ -1605,7 +1605,7 @@ impl DirectSync {
             Ok(_) => None,
             // A frame this device could not decide is no verdict on it: it is
             // not kept as refused, and the writer's next frame proceeds.
-            Err(error) if error.is_device_failure() => None,
+            Err(error) if error.is_device_failure() || arrived_late(error) => None,
             Err(error) => neighbour_wire::RefusalReason::of(&error.to_string())
                 .permanent()
                 .then_some(Kept::Refused),
@@ -1744,16 +1744,19 @@ impl DirectSync {
             .owner
             .receive(admission.workspace, origin, message.clone(), now);
         // A refused write reaches its author: this device keeps its verdict on it in its own
-        // slice of the workspace, which the next sync carries back.
-        if let Err(error) = admission
-            .owner
-            .keep_verdicts(
-                admission.workspace,
-                &[(&message, &report)],
-                &*self.0.signer,
-                now,
-            )
-            .await
+        // slice of the workspace, which the next sync carries back. A write that only came late
+        // is no verdict on the write ([`arrived_late`]).
+        let late = report.as_ref().is_err_and(arrived_late);
+        if !late
+            && let Err(error) = admission
+                .owner
+                .keep_verdicts(
+                    admission.workspace,
+                    &[(&message, &report)],
+                    &*self.0.signer,
+                    now,
+                )
+                .await
         {
             tracing::warn!(%error, "a document write's verdict was not kept");
         }
@@ -1815,7 +1818,7 @@ impl DirectSync {
         let refused = received
             .as_ref()
             .err()
-            .filter(|error| !error.is_device_failure());
+            .filter(|error| !error.is_device_failure() && !arrived_late(error));
         if let Some(own) = own.filter(|_| received.is_ok() || refused.is_some()) {
             let filed = self
                 .signed_change(|peer, signer, now| match (&received, refused) {
@@ -2266,6 +2269,16 @@ async fn forward(
             Err(broadcast::error::RecvError::Closed) => return Ok(()),
         }
     }
+}
+
+/// Whether `error` refused a frame only for arriving after the live window: a member's write
+/// that waited in its custody while its host was away. That says nothing of the write, so it is
+/// neither answered as refused nor filed as a verdict: the writer keeps it, in its replica and
+/// in its custody, rather than losing an edit the workspace never judged.
+fn arrived_late(error: &crate::AdmissionError) -> bool {
+    error
+        .to_string()
+        .contains(&collab_types::validator::ValidationError::OutsideValidityWindow.to_string())
 }
 
 /// Why a link to a device ends, or is refused: the workspace removed its
