@@ -401,6 +401,7 @@ tilo_test_env::scenario! {
         reason = "fx/fy are literal fractions in 0..=1 in this test, so (dim - 1) * frac stays within 0..dim"
     )]
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
     fn rotate_crop_and_reset_change_exactly_the_exported_pixels;
 
     phase rotating_changes_the_exported_pixels;
@@ -591,6 +592,7 @@ impl ClipboardBackend for RecordingClipboard {
 }
 
 tilo_test_env::scenario! {
+    #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
     fn copy_and_save_export_what_was_shown_without_overwriting;
 
     phase copy_puts_the_edited_pixels_on_the_clipboard;
@@ -981,6 +983,7 @@ tilo_test_env::scenario! {
 
 tilo_test_env::scenario! {
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
     fn library_cards_lay_out_inside_the_canvas_at_every_size;
 
     phase library_card_controls_stay_inside_their_cards_at_wide_and_narrow_sizes;
