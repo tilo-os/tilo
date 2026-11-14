@@ -930,6 +930,9 @@ heavy = true
 # from `TILO_SOURCE_REVISION` when a build farm names one.
 [[check]]
 name = "sdk-web-size"
+# Heavy: an app's size budget, a release wasm build of 15 minutes; on main's newest head with the
+# room main's heads leave (`idle`), bisected to the commit that broke it as a default check is.
+on = ["idle"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo build --locked -p tilo-app-cli --bin tilo-app\ncargo test --locked --manifest-path tools/web/wasm-split/Cargo.toml\napp=$CARGO_TARGET_DIR/debug/tilo-app\n# model-providers-web builds the same bundle path in the dev profile, possibly\n# at the same time in the same build directory, so the release bundle has its own.\nexport CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web\nbundle=$CARGO_TARGET_DIR/tilo-app/web/calculator/bundle\n\"$app\" build --target web --bundle desktop --release apps/calculator\npython3 -I tools/web/wasm_size_ratchet.py measure desktop \"$bundle\"\n"
 needs = ["test-assets"]
@@ -5679,6 +5682,10 @@ default = false
 # of its own.
 [[check]]
 name = "e2e"
+# Heavy: on main's newest head with the room main's heads leave (`idle`), keyed on every commit, so
+# a failure is still bisected to the commit that broke it and told to its pusher. At every head
+# it and the release-profile builds it needs cost about 2 core-hours of the node's (11-14).
+on = ["idle"]
 # No egress: every flow meets the stack on loopback (the relay and API on 127.0.0.1 and localhost,
 # the site at tilo.localhost, which the image's resolver answers itself), and its programs, fonts
 # and Caddy are its needs'. Its sandbox refuses a router search (UPnP, 239.255.255.250:1900, as
@@ -5709,6 +5716,10 @@ timeout_secs = 1200
 # of its own.
 [[check]]
 name = "tilo-sh-admits-a-page"
+# Heavy: on main's newest head with the room main's heads leave (`idle`), keyed on every commit, so
+# a failure is still bisected to the commit that broke it and told to its pusher. At every head
+# it and the release-profile builds it needs cost about 2 core-hours of the node's (11-14).
+on = ["idle"]
 # No egress: as e2e, the page and the stack meet on loopback alone.
 run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/entry entry"
 needs = ["lounge-gate-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
