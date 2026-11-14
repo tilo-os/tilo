@@ -1848,6 +1848,7 @@ tilo_test_env::scenario! {
                 peer: 7,
                 surface: 42,
                 can_control: true,
+                streaming: true,
                 name: String::new(),
             }]);
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
@@ -1892,18 +1893,21 @@ tilo_test_env::scenario! {
                 peer: 7,
                 surface: 42,
                 can_control: false,
+                streaming: true,
                 name: String::new(),
             },
             crate::chrome::ActiveExposure {
                 peer: 9,
                 surface: 43,
                 can_control: true,
+                streaming: true,
                 name: String::new(),
             },
             crate::chrome::ActiveExposure {
                 peer: 7,
                 surface: 44,
                 can_control: true,
+                streaming: true,
                 name: String::new(),
             },
         ]);
@@ -1952,6 +1956,7 @@ tilo_test_env::scenario! {
                 peer: 9,
                 surface: 42,
                 can_control: false,
+                streaming: true,
                 name: String::new(),
             }]);
         let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
@@ -2015,6 +2020,7 @@ tilo_test_env::scenario! {
                 peer: 9,
                 surface: 42,
                 can_control: true,
+                streaming: true,
                 name: String::new(),
             }]);
         let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
@@ -2051,6 +2057,7 @@ tilo_test_env::scenario! {
                         peer,
                         surface: 42,
                         can_control: false,
+                        streaming: true,
                         name: name.to_owned(),
                     }]);
                 let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
@@ -2072,8 +2079,8 @@ tilo_test_env::scenario! {
                 "the person's own other device goes by its name"
             );
             assert!(
-                disclosure.contains("Framework") && disclosure.contains("view only Budget"),
-                "{disclosure}"
+                disclosure.contains("Screen visible to Framework: view only Budget."),
+                "a reader is told the name the pill shows and nothing made up: {disclosure}"
             );
             assert!(shows_no_handle(&pill) && shows_no_handle(&disclosure));
 
@@ -2083,8 +2090,8 @@ tilo_test_env::scenario! {
                 "a viewer nothing names is said in words"
             );
             assert!(
-                disclosure.contains("another device") && disclosure.contains("view only Budget"),
-                "{disclosure}"
+                disclosure.contains("Screen visible to a device with no name: view only Budget."),
+                "a reader is told the device has no name, not a stand-in for one: {disclosure}"
             );
             assert!(shows_no_handle(&pill) && shows_no_handle(&disclosure));
 
@@ -2093,6 +2100,134 @@ tilo_test_env::scenario! {
             let (pill, disclosure) = said(&key);
             assert_eq!(pill, "Watching: another device");
             assert!(!disclosure.contains(&key), "{disclosure}");
+    }
+
+    phase a_viewer_sent_nothing_is_said_to_wait_and_to_watch_once_the_window_goes_out;
+    // A device that asked to see a shared window sees nothing until something of the window goes
+    // out to it. Until then the pill, and what the people control tells a reader, say that it
+    // waits: neither says that anyone watches or is in control, or that the screen is visible.
+    {
+        let mut tree = DesktopTree {
+            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+            active: WorkspaceSlot::from(0),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].slot;
+        tree.workspaces[0].members_here([
+            tilo_desktop_model::Member::keyed("ada", "Ada"),
+            tilo_desktop_model::Member::keyed("lin", "Lin"),
+        ]);
+        tree.workspaces[0].present[0].session = Some(7);
+        tree.workspaces[0].present[1].session = Some(9);
+        tree.workspaces[0]
+            .strips
+            .push(shared_windows(&[(42, "Notes"), (43, "Budget")]));
+        // What the pill paints and what the people control tells a reader of `exposures`: each a
+        // viewer, the window it asked to see, whether it may control the window and whether
+        // anything of the window goes out.
+        let said = |exposures: &[(u64, u64, bool, bool)]| {
+            let chrome = super::fixture::FixtureChrome::new(tree.clone());
+            chrome.borrow_mut().set_active_exposures(
+                exposures
+                    .iter()
+                    .map(|&(peer, surface, can_control, streaming)| {
+                        crate::chrome::ActiveExposure {
+                            peer,
+                            surface,
+                            can_control,
+                            streaming,
+                            name: String::new(),
+                        }
+                    })
+                    .collect(),
+            );
+            let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+            lay_out_and_draw(&mut bar, 1600.0);
+            let pill = bar
+                .placed
+                .sharing
+                .as_ref()
+                .map(|(label, _)| label.clone())
+                .expect("a window someone asked to see paints the pill");
+            (pill, bar.control_name(TopBarChrome::CONTROL_PEOPLE))
+        };
+        // What would say that someone sees or steers a window: watching, in control, visible,
+        // view only, can control.
+        let overstates = |words: &str| {
+            ["atching", "n control", "isible", "iew only", "an control"]
+                .iter()
+                .any(|claim| words.contains(claim))
+        };
+        let (ada, lin, notes, budget) = (7, 9, 42, 43);
+
+        // One viewer, and nothing of the window goes out.
+        let (pill, disclosure) = said(&[(ada, notes, false, false)]);
+        assert_eq!(pill, "Waiting: Ada");
+        assert_eq!(
+            disclosure,
+            "Nothing sent yet to Ada (person): waiting for Notes. Show who is here"
+        );
+        assert!(!overstates(&pill) && !overstates(&disclosure));
+        // The window goes out: now she watches it.
+        let (pill, disclosure) = said(&[(ada, notes, false, true)]);
+        assert_eq!(pill, "Watching: Ada");
+        assert_eq!(
+            disclosure,
+            "Screen visible to Ada (person): view only Notes. Show who is here"
+        );
+
+        // A viewer the person let control the window is not in control of one it does not see.
+        let (pill, disclosure) = said(&[(ada, notes, true, false)]);
+        assert_eq!(pill, "Waiting, may control: Ada");
+        assert_eq!(
+            disclosure,
+            "Nothing sent yet to Ada (person): waiting for Notes, control allowed. Show who is here"
+        );
+        assert!(!overstates(&pill) && !overstates(&disclosure));
+        let (pill, disclosure) = said(&[(ada, notes, true, true)]);
+        assert_eq!(pill, "In control: Ada");
+        assert_eq!(
+            disclosure,
+            "Screen visible to Ada (person): can control Notes. Show who is here"
+        );
+
+        // Two viewers are counted the same way: nobody watches a window that does not go out.
+        let (pill, disclosure) = said(&[(ada, notes, false, false), (lin, notes, false, false)]);
+        assert_eq!(pill, "2 waiting");
+        assert_eq!(
+            disclosure,
+            "Nothing sent yet to Ada (person): waiting for Notes; Lin (person): waiting for Notes. \
+             Show who is here"
+        );
+        assert!(!overstates(&pill) && !overstates(&disclosure));
+        let (pill, disclosure) = said(&[(ada, notes, true, false), (lin, notes, false, false)]);
+        assert_eq!(pill, "2 waiting, 1 may control");
+        assert!(!overstates(&pill) && !overstates(&disclosure), "{disclosure}");
+        let (pill, _) = said(&[(ada, notes, false, true), (lin, notes, false, true)]);
+        assert_eq!(pill, "2 watching");
+        let (pill, _) = said(&[(ada, notes, true, true), (lin, notes, false, true)]);
+        assert_eq!(pill, "2 watching, 1 in control");
+
+        // One window goes out and another does not: each viewer is said by what reaches it.
+        let (pill, disclosure) = said(&[(ada, notes, false, true), (lin, budget, false, false)]);
+        assert_eq!(pill, "1 watching, 1 waiting");
+        assert_eq!(
+            disclosure,
+            "Screen visible to Ada (person): view only Notes. Nothing sent yet to Lin (person): \
+             waiting for Budget. Show who is here"
+        );
+        let (pill, _) = said(&[(ada, notes, true, true), (lin, budget, true, false)]);
+        assert_eq!(pill, "1 watching, 1 in control, 1 waiting");
+
+        // A viewer of two windows watches the one that goes out, and is not said to be in control
+        // through the one that does not.
+        let (pill, disclosure) = said(&[(ada, notes, false, true), (ada, budget, true, false)]);
+        assert_eq!(pill, "Watching: Ada");
+        assert_eq!(
+            disclosure,
+            "Screen visible to Ada (person): view only Notes. Nothing sent yet to Ada (person): \
+             waiting for Budget, control allowed. Show who is here"
+        );
     }
 
     phase avatar_stack_has_breathing_room_to_tray_pill;

@@ -352,7 +352,8 @@ fn sharing_rows(facts: &Facts, own: bool, held: Option<String>) -> Vec<Row> {
 }
 
 /// The row sharing the window with its workspace, or, once the session reads it as shared, the
-/// row that stops: it says how many devices watch the window while any does.
+/// row that stops: it says how many devices watch the window while any does, and how many wait
+/// for it while they asked to see it and nothing of it goes out to them.
 fn workspace_share_row(share: WorkspaceShare) -> Row {
     if !share.shared {
         return Row::offered(SHARE_WITH_WORKSPACE, t("window-menu-share-with-workspace"))
@@ -362,10 +363,12 @@ fn workspace_share_row(share: WorkspaceShare) -> Row {
         t("window-menu-stop-sharing-with-workspace")
     } else {
         let viewers = i64::try_from(share.viewers).unwrap_or(i64::MAX);
-        t_args(
-            "window-menu-stop-sharing-watched",
-            &[("viewers", viewers.into())],
-        )
+        let key = if share.streaming {
+            "window-menu-stop-sharing-watched"
+        } else {
+            "window-menu-stop-sharing-waiting"
+        };
+        t_args(key, &[("viewers", viewers.into())])
     };
     Row::offered(STOP_SHARING_WITH_WORKSPACE, label).with_icon(Icon::EyeOff)
 }

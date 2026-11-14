@@ -377,10 +377,11 @@ other device opens for itself.
 A person shares a window from its own menu, "Share with workspace", on the
 device that has it, and stops there. The row is one more caller of the
 session's window share (`session:window-share`, `share` and `stop` by the
-tab): it reads whether the window is shared, and who watches, from that
-resource, and keeps no state of its own. Only a window the device maps, in a
-tab it minted, in a workspace its session takes part in offers the row; a
-device that shows the window's picture, or its placeholder, does not.
+tab): it reads whether the window is shared, how many devices asked to see
+it and whether it goes out to them from that resource, and keeps no state of
+its own. Only a window the device maps, in a tab it minted, in a workspace
+its session takes part in offers the row; a device that shows the window's
+picture, or its placeholder, does not.
 
 The share itself is workspace state. The device the window runs on writes the
 share's grants, on the window's own node, into the workspace's governance as
@@ -432,7 +433,14 @@ asks for it, a window shared as its page once its app handed a page over. A
 stream's start puts nothing on a screen, so a device that shows a window says
 whether its tile holds it (`pictured`: a decoded picture, or the page's whole
 frame), and until then that its row waits for the first one; a shared window
-a member shows, nothing of which went out, says that it waits too. An open
+a member shows, nothing of which went out, says that it waits too. A device
+that asked to see a window is not yet one that sees it, so what the sharing
+device tells its person follows `streaming` and nothing else: while nothing
+of a window goes out, the bar's sharing pill, the window's menu and what both
+tell a screen reader say that its viewers wait, and they say that someone
+watches a window, or is in control of it, only while it goes out. `streaming`
+says what left the sharing device; whether a viewer's own tile holds the
+window is that device's to say (`pictured`). An open
 plane also says the epoch it seals under, what it opened and could not open
 of the other devices, and which of its windows another device asks it for
 (`asked_for`), which is where two devices that hear nothing of each other read

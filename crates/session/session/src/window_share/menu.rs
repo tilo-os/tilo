@@ -20,8 +20,8 @@ use crate::sync::Client;
 
 impl WindowShares {
     /// What the resource's reading says of sharing the window of `tab` : shared while it is among
-    /// the windows shared or waiting to be, and viewed by as many devices as the reading names
-    /// viewers of it.
+    /// the windows shared or waiting to be, asked for by as many devices as the reading names
+    /// viewers of it, and going out to them while the reading says so (`streaming`).
     fn share_of(&self, tab: TabId) -> WorkspaceShare {
         let reading = self.reading();
         let tab = tab.to_string();
@@ -40,10 +40,15 @@ impl WindowShares {
                     .get("viewers")
                     .and_then(Value::as_array)
                     .map_or(0, Vec::len),
+                streaming: shared
+                    .get("streaming")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             },
             None => WorkspaceShare {
                 shared: of_tab("starting").is_some(),
                 viewers: 0,
+                streaming: false,
             },
         }
     }
@@ -83,7 +88,7 @@ pub(crate) fn follow_asks(desk: &DesktopHandle) -> Vec<Invocation> {
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::super::Starting;
+    use super::super::{Asked, Paged, Starting};
     use super::*;
 
     const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
@@ -117,8 +122,69 @@ mod tests {
             WorkspaceShare {
                 shared: true,
                 viewers: 0,
+                streaming: false,
             }
         );
         assert_eq!(shares.share_of(8), WorkspaceShare::default());
+    }
+
+    /// A device that asked to see a window is not one that sees it. While nothing of the window
+    /// goes out, the bar is told the device waits and the menu counts it as waiting; once the
+    /// shares note that the window goes out, both say so. The reading, the menu and the bar give
+    /// one answer, the reading's.
+    #[test]
+    fn a_device_that_asked_for_a_window_nothing_went_out_of_is_not_said_to_see_it() {
+        const TAB: TabId = 7;
+        const VIEWER: u64 = 0x9ab6;
+        let mut shares = WindowShares::default();
+        shares.pages.insert(
+            TAB,
+            Paged {
+                tab: TAB,
+                window: "window".to_owned(),
+                app_id: "so.tilo.browser".to_owned(),
+                workspace: WORKSPACE.to_owned(),
+                ws: tilo_desktop_model::WorkspaceId::parse(WORKSPACE).expect("a workspace id"),
+                width: 800,
+                height: 600,
+                announced: std::collections::BTreeMap::new(),
+            },
+        );
+        shares.asked.insert(
+            (TAB, VIEWER),
+            Asked {
+                device: iroh::SecretKey::from_bytes(&[5; 32]).public(),
+                at: std::time::Instant::now(),
+                decode: Vec::new(),
+                name: "Ada".to_owned(),
+            },
+        );
+        // What the reading, the menu and the bar each say of whether the window goes out.
+        let said = |shares: &WindowShares| {
+            let reading = shares.reading()["sharing"][0]["streaming"].as_bool();
+            let told: Vec<(u64, bool)> = shares
+                .exposures()
+                .iter()
+                .map(|viewer| (viewer.peer, viewer.streaming))
+                .collect();
+            (reading, shares.share_of(TAB), told)
+        };
+        let asked = |streaming| WorkspaceShare {
+            shared: true,
+            viewers: 1,
+            streaming,
+        };
+
+        assert_eq!(
+            said(&shares),
+            (Some(false), asked(false), vec![(VIEWER, false)]),
+            "nothing of the window went out: the device that asked for it waits"
+        );
+        shares.streaming.insert(TAB);
+        assert_eq!(
+            said(&shares),
+            (Some(true), asked(true), vec![(VIEWER, true)]),
+            "the window goes out: the device watches it"
+        );
     }
 }

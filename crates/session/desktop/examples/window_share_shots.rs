@@ -252,6 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     WorkspaceShare {
                         shared: true,
                         viewers: 1,
+                        streaming: true,
                     },
                 ),
             ];

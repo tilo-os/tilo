@@ -12,6 +12,18 @@ topbar-sharing-session-controls = In control: { $name }
 topbar-sharing-session-viewing = Watching: { $name }
 topbar-sharing-count-controlling = { $viewers } watching, { $controllers } in control
 topbar-sharing-count = { $viewers } watching
+# A viewer asked to see a shared window and nothing of it has gone out to them: they wait, and are
+# said to watch or to be in control only once it has.
+topbar-sharing-agent-waiting = Agent waiting: { $name }
+topbar-sharing-agent-waiting-control = Agent waiting, may control: { $name }
+topbar-sharing-person-waiting = Waiting: { $name }
+topbar-sharing-person-waiting-control = Waiting, may control: { $name }
+topbar-sharing-session-waiting = Waiting: { $name }
+topbar-sharing-session-waiting-control = Waiting, may control: { $name }
+topbar-sharing-count-waiting = { $waiting } waiting
+topbar-sharing-count-waiting-control = { $waiting } waiting, { $controllers } may control
+topbar-sharing-count-mixed = { $viewers } watching, { $waiting } waiting
+topbar-sharing-count-mixed-controlling = { $viewers } watching, { $controllers } in control, { $waiting } waiting
 topbar-sharing-unknown-window = a window
 # Who views a shared window when nothing names them, after "Watching:" or "In control:".
 topbar-sharing-unnamed-viewer = another device
@@ -40,12 +52,20 @@ topbar-bell-silenced = { $unread ->
 topbar-show-people = Everyone here
 topbar-viewer-can-control = can control { $targets }
 topbar-viewer-view-only = view only { $targets }
-topbar-viewer-entry = { $name } ({ $kind ->
-        [agent] agent
-        [person] person
-       *[session] unidentified session
-    }): { $access }
+topbar-viewer-waiting = waiting for { $targets }
+topbar-viewer-waiting-control = waiting for { $targets }, control allowed
+# One viewer of the shared windows, as a screen reader says them: who the workspace says they are,
+# the name the bar's pill shows for a viewer it knows only by name, and for one nothing names that
+# it has no name.
+topbar-viewer-entry = { $kind ->
+        [agent] { $name } (agent)
+        [person] { $name } (person)
+        [unnamed] a device with no name
+       *[named] { $name }
+    }: { $access }
 topbar-people-visible = Screen visible to { $viewers }. Show who is here
+topbar-people-waiting = Nothing sent yet to { $viewers }. Show who is here
+topbar-people-visible-and-waiting = Screen visible to { $viewers }. Nothing sent yet to { $waiting }. Show who is here
 topbar-capture-privacy = Privacy settings for active capture
 topbar-control = Top bar control
 topbar-invite = Invite
@@ -1163,6 +1183,7 @@ window-menu-stop-desktop-control = Stop controlling the desktop
 window-menu-share-with-workspace = Share with workspace
 window-menu-stop-sharing-with-workspace = Stop sharing with workspace
 window-menu-stop-sharing-watched = Stop sharing with workspace ({ $viewers } watching)
+window-menu-stop-sharing-waiting = Stop sharing with workspace ({ $viewers } waiting)
 window-menu-someone-elses = { $name }'s window
 
 # The desk's widgets: what each is called, and what its controls do.

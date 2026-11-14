@@ -827,6 +827,8 @@ struct SessionShares {
     takes_part: RefCell<Vec<String>>,
     /// The windows it shares, and how many devices view each.
     shared: RefCell<BTreeMap<TabId, usize>>,
+    /// Whether nothing of the windows it shares goes out to the devices that asked to see them.
+    nothing_sent: std::cell::Cell<bool>,
     /// The window and workspace of every question, in order.
     asked: RefCell<Vec<(TabId, String)>>,
 }
@@ -844,6 +846,7 @@ impl SessionShares {
             Some(WorkspaceShare {
                 shared: viewers.is_some(),
                 viewers: viewers.unwrap_or(0),
+                streaming: !shares.nothing_sent.get(),
             })
         });
         handle.reads_workspace_shares(reading);
@@ -1022,6 +1025,25 @@ fn the_share_with_the_workspace_reads_as_the_session_says_it_stands() {
             Some("Stop sharing with workspace (3 watching)".into())
         )
     );
+
+    // Devices that asked to see a window nothing goes out of wait for it, and the row says so: it
+    // counts nobody as watching who sees nothing.
+    shares.nothing_sent.set(true);
+    assert_eq!(
+        labels(&handle),
+        (None, Some("Stop sharing with workspace (3 waiting)".into()))
+    );
+    ui::i18n::I18nManager::set_locale("de-DE");
+    let german_waiting = labels(&handle);
+    ui::i18n::I18nManager::set_locale("en-US");
+    assert_eq!(
+        german_waiting,
+        (
+            None,
+            Some("Teilen mit dem Arbeitsbereich beenden (3 warten)".into())
+        )
+    );
+    shares.nothing_sent.set(false);
 
     ui::i18n::I18nManager::set_locale("de-DE");
     let german_shared = labels(&handle);

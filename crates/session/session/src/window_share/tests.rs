@@ -1182,6 +1182,7 @@ fn a_shared_window_reaches_the_member_showing_it() {
             peer: viewer.sync.peer(),
             surface: tab,
             can_control: false,
+            streaming: true,
             name: String::new(),
         }],
         "the bar's sharing indicator says who is watching what"
@@ -1873,6 +1874,10 @@ mod viewers;
 
 /// A window whose app draws its own page, drawn from that page on the device showing it.
 mod page;
+
+/// What the sharing device says of who sees a window: a device that asked waits until the window
+/// goes out to it.
+mod watching;
 
 /// A window one device shares shows on another device's desk because the workspace's governance
 /// says it is shared there: nobody names the tab on the other device.

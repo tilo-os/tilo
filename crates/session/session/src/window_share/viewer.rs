@@ -5,17 +5,34 @@
 //! name they go by, the person's own other device by what that device calls itself. A viewer
 //! nothing names carries no name, and the bar says so in words: its handle and its key are never
 //! a name.
+//!
+//! A viewer is a device that asked to see a window, which is not yet one that sees it. Whether
+//! anything of a window goes out is answered in one place ([`WindowShares::goes_out`]): the
+//! share's reading says it (`streaming`), the window's menu reads it there, and the bar is told it
+//! with each viewer. So the bar and the menu say that a viewer watches only a window the reading
+//! says is sent, and until then that it waits.
 
 use collab_types::presence::Shown;
 use iroh::EndpointId;
 use tilo_desktop::chrome::ActiveExposure;
+use tilo_desktop_model::TabId;
 
 use super::WindowShares;
 use crate::sync::Client;
 
 impl WindowShares {
-    /// What the bar says is being shared: each member viewing a window of this device, what the
-    /// workspace calls it, and whether it may control the window.
+    /// Whether anything of the window of `tab` goes out to the devices showing it now: its
+    /// pictures while a member's desk asks the workspace's plane for them, its page once its app
+    /// handed a whole one over for a desk that asks. Both are noted in one place, once a pass
+    /// ([`Self::follow_streams`]), and this is the one answer the share's reading, the window's
+    /// menu and the bar give.
+    pub(super) fn goes_out(&self, tab: TabId) -> bool {
+        self.streaming.contains(&tab)
+    }
+
+    /// What the bar says is being shared: each member that asked to see a window of this device,
+    /// what the workspace calls it, whether it may control the window, and whether anything of
+    /// the window goes out, which is when the bar says the member watches it.
     pub(crate) fn exposures(&self) -> Vec<ActiveExposure> {
         let hosted = self.hosted.iter().map(|(tab, hosted)| (*tab, Some(hosted)));
         // A window whose page is published is drawn by its app: nobody controls it from here.
@@ -31,6 +48,7 @@ impl WindowShares {
                         surface: tab,
                         can_control: hosted
                             .is_some_and(|hosted| hosted.open || hosted.controlled.contains(peer)),
+                        streaming: self.goes_out(tab),
                         name: asked.name.clone(),
                     })
             })

@@ -25,8 +25,12 @@ use super::DesktopHandle;
 pub struct WorkspaceShare {
     /// The session shares the window, or is starting to.
     pub shared: bool,
-    /// How many devices of the workspace view it now.
+    /// How many devices of the workspace asked to see it.
     pub viewers: usize,
+    /// Whether anything of the window goes out to those devices now, as the share's reading says
+    /// (`streaming`). While nothing does they wait for it, and the row says so: it counts nobody
+    /// as watching who sees nothing.
+    pub streaming: bool,
 }
 
 /// The host session's reading of its window shares: what it says now of the window in the tab,

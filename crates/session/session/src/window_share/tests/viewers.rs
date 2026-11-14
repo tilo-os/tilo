@@ -391,6 +391,7 @@ fn a_shared_window_reaches_both_members_showing_it() {
                 peer: *peer,
                 surface: tab,
                 can_control: *can_control,
+                streaming: true,
                 name: String::new(),
             })
             .collect::<Vec<_>>(),
@@ -602,6 +603,7 @@ fn a_member_that_stops_showing_a_shared_window_ends_its_own_stream_only() {
             peer: staying,
             surface: tab,
             can_control: false,
+            streaming: true,
             name: String::new(),
         }],
         "the bar's sharing indicator names the one member still watching"
@@ -744,6 +746,12 @@ fn the_persons_own_other_device_viewing_a_window_goes_by_its_device_name() {
 
     watch(&mut viewer, tab);
     viewing(&mut host, &mut window, &mut viewer, tab);
+    // The bar says a device watches a window once the window goes out to it.
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        rows(&shares(&host.session), "sharing")
+            .first()
+            .is_some_and(|shared| shared["streaming"].as_bool() == Some(true))
+    });
 
     let exposures = host.session.shared.window_shares.borrow().exposures();
     assert_eq!(
@@ -752,6 +760,7 @@ fn the_persons_own_other_device_viewing_a_window_goes_by_its_device_name() {
             peer: viewer.sync.peer(),
             surface: tab,
             can_control: false,
+            streaming: true,
             name: "Phone".to_owned(),
         }],
         "the bar names the person's own other device by what it calls itself"

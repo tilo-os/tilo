@@ -21,6 +21,42 @@ topbar-sharing-count = { $viewers } { $viewers ->
         [one] sieht
        *[other] sehen
     } zu
+# Jemand wollte ein geteiltes Fenster sehen, und nichts davon ist bisher hinausgegangen: Er wartet
+# und sieht erst zu oder steuert, wenn etwas hinausgegangen ist.
+topbar-sharing-agent-waiting = Agent wartet: { $name }
+topbar-sharing-agent-waiting-control = Agent wartet, darf steuern: { $name }
+topbar-sharing-person-waiting = Wartet: { $name }
+topbar-sharing-person-waiting-control = Wartet, darf steuern: { $name }
+topbar-sharing-session-waiting = Wartet: { $name }
+topbar-sharing-session-waiting-control = Wartet, darf steuern: { $name }
+topbar-sharing-count-waiting = { $waiting } { $waiting ->
+        [one] wartet
+       *[other] warten
+    }
+topbar-sharing-count-waiting-control = { $waiting } { $waiting ->
+        [one] wartet
+       *[other] warten
+    }, { $controllers } { $controllers ->
+        [one] darf
+       *[other] dürfen
+    } steuern
+topbar-sharing-count-mixed = { $viewers } { $viewers ->
+        [one] sieht
+       *[other] sehen
+    } zu, { $waiting } { $waiting ->
+        [one] wartet
+       *[other] warten
+    }
+topbar-sharing-count-mixed-controlling = { $viewers } { $viewers ->
+        [one] sieht
+       *[other] sehen
+    } zu, { $controllers } { $controllers ->
+        [one] steuert
+       *[other] steuern
+    }, { $waiting } { $waiting ->
+        [one] wartet
+       *[other] warten
+    }
 topbar-sharing-unknown-window = ein Fenster
 # Wer ein geteiltes Fenster sieht, wenn nichts ihn benennt, nach „Sieht zu:“ oder „Steuert:“.
 topbar-sharing-unnamed-viewer = ein anderes Gerät
@@ -52,12 +88,19 @@ topbar-bell-silenced = { $unread ->
 topbar-show-people = Alle hier
 topbar-viewer-can-control = kann { $targets } steuern
 topbar-viewer-view-only = sieht nur { $targets }
-topbar-viewer-entry = { $name } ({ $kind ->
-        [agent] Agent
-        [person] Person
-       *[session] unbekannte Sitzung
-    }): { $access }
+topbar-viewer-waiting = wartet auf { $targets }
+topbar-viewer-waiting-control = wartet auf { $targets }, Steuern erlaubt
+# Wer ein geteiltes Fenster sieht, wie ein Screenreader es sagt: was der Arbeitsbereich über ihn
+# sagt, der Name aus der oberen Leiste, wenn nur der bekannt ist, und ohne Namen eben das.
+topbar-viewer-entry = { $kind ->
+        [agent] { $name } (Agent)
+        [person] { $name } (Person)
+        [unnamed] ein Gerät ohne Namen
+       *[named] { $name }
+    }: { $access }
 topbar-people-visible = Bildschirm sichtbar für { $viewers }. Zeigen, wer hier ist
+topbar-people-waiting = Noch nichts gesendet an { $viewers }. Zeigen, wer hier ist
+topbar-people-visible-and-waiting = Bildschirm sichtbar für { $viewers }. Noch nichts gesendet an { $waiting }. Zeigen, wer hier ist
 topbar-capture-privacy = Datenschutzeinstellungen für aktive Aufnahme
 topbar-control = Steuerelement der oberen Leiste
 topbar-invite = Einladen
@@ -1181,6 +1224,10 @@ window-menu-stop-sharing-with-workspace = Teilen mit dem Arbeitsbereich beenden
 window-menu-stop-sharing-watched = Teilen mit dem Arbeitsbereich beenden ({ $viewers } { $viewers ->
         [one] sieht zu
        *[other] sehen zu
+    })
+window-menu-stop-sharing-waiting = Teilen mit dem Arbeitsbereich beenden ({ $viewers } { $viewers ->
+        [one] wartet
+       *[other] warten
     })
 window-menu-someone-elses = { $name }s Fenster
 # The desk's widgets: what each is called, and what its controls do.

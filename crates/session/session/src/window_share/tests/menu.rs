@@ -8,11 +8,11 @@ use crate::shell::state::WINDOW_MENU;
 /// The row that shares a window with its workspace, by the id the desk's menu gives it.
 const SHARE_ROW: &str = "window-share-with-workspace";
 /// The row that stops sharing it.
-const STOP_ROW: &str = "window-stop-sharing-with-workspace";
+pub(super) const STOP_ROW: &str = "window-stop-sharing-with-workspace";
 
 /// The rows of the menu of `tab` on `member` 's desk, as the session reads them once the menu is
 /// up where a person pressed for it.
-fn menu_of(member: &mut Member, tab: u64) -> Vec<Value> {
+pub(super) fn menu_of(member: &mut Member, tab: u64) -> Vec<Value> {
     member
         .session
         .invoke(
@@ -31,7 +31,7 @@ fn menu_of(member: &mut Member, tab: u64) -> Vec<Value> {
 }
 
 /// How the row `id` of `menu` reads, when the menu offers it.
-fn label_of<'a>(menu: &'a [Value], id: &str) -> Option<&'a str> {
+pub(super) fn label_of<'a>(menu: &'a [Value], id: &str) -> Option<&'a str> {
     menu.iter()
         .find(|row| row["id"].as_str() == Some(id))
         .and_then(|row| row["label"].as_str())
@@ -58,9 +58,9 @@ fn shared_count(member: &Member) -> usize {
 /// A person shares a window with its workspace from the window's menu, and stops there too. The
 /// row asks the shares by the tab alone; the window then stands in the shares' reading and in the
 /// workspace's governance, as a share any other caller starts does. The menu says what that
-/// reading says: the way back once the window is shared, how many devices watch it while one
-/// does, and the share again once it ended. A device that only shows the window offers neither
-/// row, and cannot share it.
+/// reading says: the way back once the window is shared, how many devices watch it once it goes
+/// out to them, and the share again once it ended. A device that only shows the window offers
+/// neither row, and cannot share it.
 #[test]
 fn a_window_is_shared_with_its_workspace_from_its_menu_and_stopped_there() {
     tilo_window_share::flatpak_share::read_encoders();
@@ -142,13 +142,19 @@ fn a_window_is_shared_with_its_workspace_from_its_menu_and_stopped_there() {
         "the viewing device shares nothing"
     );
 
-    // Someone watches: the row says so, from the same reading.
+    // Someone asks to see it, and the window goes out to them: the row says they watch, from
+    // the same reading. A device that asked and is sent nothing yet waits, and is not counted as
+    // watching ([`super::watching`]).
     watch(&mut viewer, tab);
     until(&mut host, &mut window, &mut viewer, |host, _, _| {
         rows(&shares(&host.session), "sharing")
             .first()
-            .and_then(|shared| shared["viewers"].as_array())
-            .is_some_and(|viewers| viewers.len() == 1)
+            .is_some_and(|shared| {
+                shared["viewers"]
+                    .as_array()
+                    .is_some_and(|viewers| viewers.len() == 1)
+                    && shared["streaming"].as_bool() == Some(true)
+            })
     });
     let menu = menu_of(&mut host, tab);
     assert_eq!(

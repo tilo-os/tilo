@@ -180,7 +180,7 @@ struct CacheFingerprint {
     /// repaints the bar only when a face changes.
     faces: Vec<(bool, Option<u8>, u16)>,
     watching: u32,
-    sharing: (usize, usize, usize),
+    sharing: sharing::SharingSummary,
     activity_headline: Option<String>,
     activity_unread: usize,
     activity_visible: bool,

@@ -167,7 +167,7 @@ impl WindowShares {
                     "viewers": viewers,
                     // Whether a member's desk asks the plane for the window now, so it is
                     // captured and sent.
-                    "streaming": hosted.shown,
+                    "streaming": self.goes_out(*tab),
                     "waiting_for": self.waiting_for(&hosted.workspace),
                 })
             })

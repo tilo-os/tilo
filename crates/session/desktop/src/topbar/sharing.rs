@@ -149,7 +149,7 @@ impl TopBarChrome {
         !self.face_initials.is_empty()
             || self.face_overflow > 0
             || self.watching() > 0
-            || self.sharing_summary().0 > 0
+            || self.sharing_summary().viewers > 0
     }
 
     /// People following the workspace without taking part, from the host.
@@ -159,155 +159,274 @@ impl TopBarChrome {
             .map_or(0, |chrome| chrome.snapshot().watching)
     }
 
-    /// `(viewers, controllers, surfaces)` from the compositor authority.
-    pub(super) fn sharing_summary(&self) -> (usize, usize, usize) {
+    /// How the shared windows stand with the devices that asked to see them, from the compositor
+    /// authority.
+    pub(super) fn sharing_summary(&self) -> SharingSummary {
         let Some(chrome) = self.chrome.as_ref() else {
-            return (0, 0, 0);
+            return SharingSummary::default();
         };
         let snapshot = chrome.snapshot();
-        let mut peers = snapshot
-            .active_exposures
-            .iter()
-            .map(|row| row.peer)
-            .collect::<Vec<_>>();
-        peers.compact_sort();
-        peers.dedup();
-        let mut controllers = snapshot
-            .active_exposures
-            .iter()
-            .filter(|row| row.can_control)
-            .map(|row| row.peer)
-            .collect::<Vec<_>>();
-        controllers.compact_sort();
-        controllers.dedup();
-        let mut surfaces = snapshot
-            .active_exposures
-            .iter()
-            .map(|row| row.surface)
-            .collect::<Vec<_>>();
-        surfaces.compact_sort();
-        surfaces.dedup();
-        (peers.len(), controllers.len(), surfaces.len())
+        let rows = &snapshot.active_exposures;
+        let distinct = |mut ids: Vec<u64>| {
+            ids.compact_sort();
+            ids.dedup();
+            ids.len()
+        };
+        let peers = |counts: fn(&crate::chrome::ActiveExposure) -> bool| {
+            distinct(
+                rows.iter()
+                    .filter(|row| counts(row))
+                    .map(|row| row.peer)
+                    .collect(),
+            )
+        };
+        SharingSummary {
+            viewers: peers(|_| true),
+            watching: peers(|row| row.streaming),
+            in_control: peers(|row| row.streaming && row.can_control),
+            may_control: peers(|row| row.can_control),
+            surfaces: distinct(rows.iter().map(|row| row.surface).collect()),
+        }
     }
 
     /// Named viewers for disclosure prose. A transport id is joined to the active workspace's live
     /// roster through the presence session ; a viewer no row carries goes by what its share says
     /// the workspace calls it, and one nothing names is said in words. A handle or a key means
-    /// nothing to a person and is never shown as a name.
-    pub(super) fn sharing_viewers(&self) -> Vec<(u64, String, Option<bool>, bool)> {
+    /// nothing to a person and is never shown as a name. Each says whether anything of a window
+    /// goes out to it: one nothing goes out to asked to see a window and waits.
+    pub(super) fn sharing_viewers(&self) -> Vec<SharingViewer> {
         let Some(chrome) = self.chrome.as_ref() else {
             return Vec::new();
         };
         let snapshot = chrome.snapshot();
-        let mut authority = Vec::<(u64, bool, &str)>::new();
+        let mut viewers = Vec::<SharingViewer>::new();
         for row in &snapshot.active_exposures {
-            if let Some((_, can_control, name)) =
-                authority.iter_mut().find(|(peer, ..)| *peer == row.peer)
-            {
-                *can_control |= row.can_control;
-                if name.is_empty() {
-                    *name = row.name.as_str();
-                }
+            if let Some(viewer) = viewers.iter_mut().find(|viewer| viewer.peer == row.peer) {
+                viewer.take(row);
             } else {
-                authority.push((row.peer, row.can_control, row.name.as_str()));
+                let mut viewer = SharingViewer {
+                    peer: row.peer,
+                    ..SharingViewer::default()
+                };
+                viewer.take(row);
+                viewers.push(viewer);
             }
         }
-        authority.compact_sort_by_key(|(peer, ..)| *peer);
+        viewers.compact_sort_by_key(|viewer| viewer.peer);
         let tree = chrome.tree();
-        let mut viewers = Vec::new();
-        for (peer, can_control, name) in authority {
-            if let Some(member) = tree.workspaces.iter().find_map(|workspace| {
+        for viewer in &mut viewers {
+            let member = tree.workspaces.iter().find_map(|workspace| {
                 let here = workspace
                     .present
                     .iter()
-                    .find(|here| here.session == Some(peer))?;
+                    .find(|here| here.session == Some(viewer.peer))?;
                 workspace
                     .members
                     .iter()
                     .find(|member| member.id == here.member)
-            }) {
-                viewers.push((
-                    peer,
-                    member.name.clone(),
-                    Some(!member.id.is_person()),
-                    can_control,
-                ));
+            });
+            if let Some(member) = member {
+                viewer.name.clone_from(&member.name);
+                viewer.kind = if member.id.is_person() {
+                    ViewerKind::Person
+                } else {
+                    ViewerKind::Agent
+                };
+            } else if let Some(name) = ui::presence::shown_name(&viewer.name).map(str::to_owned) {
+                viewer.name = name;
+                viewer.kind = ViewerKind::Named;
             } else {
-                let name = ui::presence::shown_name(name)
-                    .map_or_else(|| t("topbar-sharing-unnamed-viewer"), str::to_owned);
-                viewers.push((peer, name, None, can_control));
+                viewer.name = t("topbar-sharing-unnamed-viewer");
+                viewer.kind = ViewerKind::Unnamed;
             }
         }
         viewers
     }
 
-    pub(super) fn sharing_targets_for_peer(&self, peer: u64) -> (Vec<String>, Vec<String>) {
+    /// The windows `peer` asked to see, by what the bar calls them: those that go out to it, apart
+    /// by whether it may control them, and those nothing of which goes out yet, apart the same way.
+    pub(super) fn sharing_targets_for_peer(&self, peer: u64) -> SharingTargets {
         let Some(chrome) = self.chrome.as_ref() else {
-            return (Vec::new(), Vec::new());
+            return SharingTargets::default();
         };
         let snapshot = chrome.snapshot();
-        let mut authority = Vec::<(u64, bool)>::new();
+        // Each window once: whether it goes out, and whether this viewer may control it.
+        let mut windows = Vec::<(u64, bool, bool)>::new();
         for row in snapshot
             .active_exposures
             .iter()
             .filter(|row| row.peer == peer)
         {
-            if let Some((_, can_control)) = authority
+            if let Some((_, streaming, can_control)) = windows
                 .iter_mut()
-                .find(|(surface, _)| *surface == row.surface)
+                .find(|(surface, ..)| *surface == row.surface)
             {
+                *streaming |= row.streaming;
                 *can_control |= row.can_control;
             } else {
-                authority.push((row.surface, row.can_control));
+                windows.push((row.surface, row.streaming, row.can_control));
             }
         }
-        authority.compact_sort_by_key(|(surface, _)| *surface);
+        windows.compact_sort_by_key(|(surface, ..)| *surface);
         let tree = chrome.tree();
-        let controlled = authority
-            .iter()
-            .filter(|(_, can_control)| *can_control)
-            .map(|(surface, _)| *surface)
-            .collect();
-        let view_only = authority
-            .iter()
-            .filter(|(_, can_control)| !*can_control)
-            .map(|(surface, _)| *surface)
-            .collect();
-        (
-            Self::sharing_target_labels(&tree, view_only),
-            Self::sharing_target_labels(&tree, controlled),
-        )
+        let labels = |streaming: bool, can_control: bool| {
+            Self::sharing_target_labels(
+                &tree,
+                windows
+                    .iter()
+                    .filter(|(_, out, control)| *out == streaming && *control == can_control)
+                    .map(|(surface, ..)| *surface)
+                    .collect(),
+            )
+        };
+        SharingTargets {
+            view_only: labels(true, false),
+            controlled: labels(true, true),
+            waiting: labels(false, false),
+            waiting_control: labels(false, true),
+        }
     }
 
     /// Glance text puts the privacy state before identity so elision can shorten a long display
-    /// name without ever hiding "controls"/"viewing" or whether the participant is an agent.
+    /// name without ever hiding "controls"/"viewing" or whether the participant is an agent. A
+    /// viewer nothing of a window goes out to waits: the pill says it watches, or is in control,
+    /// only of a window that goes out to it.
     pub(super) fn sharing_label(&self) -> Option<String> {
-        let (viewers, controllers, _) = self.sharing_summary();
-        if viewers == 0 {
+        let summary = self.sharing_summary();
+        if summary.viewers == 0 {
             return None;
         }
         let named = self.sharing_viewers();
+        let waiting = summary.viewers.saturating_sub(summary.watching);
         Some(match named.as_slice() {
-            [(_, name, is_agent, controls)] => {
-                let key = match (is_agent, controls) {
-                    (Some(true), true) => "topbar-sharing-agent-controls",
-                    (Some(true), false) => "topbar-sharing-agent-viewing",
-                    (Some(false), true) => "topbar-sharing-person-controls",
-                    (Some(false), false) => "topbar-sharing-person-viewing",
-                    (None, true) => "topbar-sharing-session-controls",
-                    (None, false) => "topbar-sharing-session-viewing",
+            [viewer] => {
+                let [controls, viewing, waiting_control, waiting] = match viewer.kind {
+                    ViewerKind::Agent => [
+                        "topbar-sharing-agent-controls",
+                        "topbar-sharing-agent-viewing",
+                        "topbar-sharing-agent-waiting-control",
+                        "topbar-sharing-agent-waiting",
+                    ],
+                    ViewerKind::Person => [
+                        "topbar-sharing-person-controls",
+                        "topbar-sharing-person-viewing",
+                        "topbar-sharing-person-waiting-control",
+                        "topbar-sharing-person-waiting",
+                    ],
+                    ViewerKind::Named | ViewerKind::Unnamed => [
+                        "topbar-sharing-session-controls",
+                        "topbar-sharing-session-viewing",
+                        "topbar-sharing-session-waiting-control",
+                        "topbar-sharing-session-waiting",
+                    ],
                 };
-                t_args(key, &[("name", name.as_str().into())])
+                let key = match (viewer.watching, viewer.in_control, viewer.may_control) {
+                    (true, true, _) => controls,
+                    (true, false, _) => viewing,
+                    (false, _, true) => waiting_control,
+                    (false, _, false) => waiting,
+                };
+                t_args(key, &[("name", viewer.name.as_str().into())])
             }
-            _ if controllers > 0 => t_args(
-                "topbar-sharing-count-controlling",
+            _ if summary.watching == 0 && summary.may_control > 0 => t_args(
+                "topbar-sharing-count-waiting-control",
                 &[
-                    ("controllers", controllers.into()),
-                    ("viewers", viewers.into()),
+                    ("controllers", summary.may_control.into()),
+                    ("waiting", waiting.into()),
                 ],
             ),
-            _ => t_args("topbar-sharing-count", &[("viewers", viewers.into())]),
+            _ if summary.watching == 0 => t_args(
+                "topbar-sharing-count-waiting",
+                &[("waiting", waiting.into())],
+            ),
+            _ if waiting == 0 && summary.in_control > 0 => t_args(
+                "topbar-sharing-count-controlling",
+                &[
+                    ("controllers", summary.in_control.into()),
+                    ("viewers", summary.watching.into()),
+                ],
+            ),
+            _ if waiting == 0 => t_args(
+                "topbar-sharing-count",
+                &[("viewers", summary.watching.into())],
+            ),
+            _ if summary.in_control > 0 => t_args(
+                "topbar-sharing-count-mixed-controlling",
+                &[
+                    ("controllers", summary.in_control.into()),
+                    ("viewers", summary.watching.into()),
+                    ("waiting", waiting.into()),
+                ],
+            ),
+            _ => t_args(
+                "topbar-sharing-count-mixed",
+                &[
+                    ("viewers", summary.watching.into()),
+                    ("waiting", waiting.into()),
+                ],
+            ),
         })
+    }
+
+    /// What the people control tells a reader of the shared windows: who the screen is visible to
+    /// and what each may do there, and who asked to see a window and has been sent nothing of it.
+    /// A viewer stands among those the screen is visible to only for the windows that go out.
+    pub(super) fn sharing_disclosure(&self, viewers: &[SharingViewer]) -> String {
+        let mut seeing = Vec::new();
+        let mut waiting = Vec::new();
+        for viewer in viewers {
+            let targets = self.sharing_targets_for_peer(viewer.peer);
+            let kind = match viewer.kind {
+                ViewerKind::Agent => "agent",
+                ViewerKind::Person => "person",
+                ViewerKind::Named => "named",
+                ViewerKind::Unnamed => "unnamed",
+            };
+            let entry = |access: &[String]| {
+                t_args(
+                    "topbar-viewer-entry",
+                    &[
+                        ("name", viewer.name.as_str().into()),
+                        ("kind", kind.into()),
+                        ("access", access.join("; ").into()),
+                    ],
+                )
+            };
+            let said = |key: &str, windows: &[String]| {
+                (!windows.is_empty())
+                    .then(|| t_args(key, &[("targets", windows.join(", ").into())]))
+            };
+            let sent: Vec<String> = [
+                said("topbar-viewer-can-control", &targets.controlled),
+                said("topbar-viewer-view-only", &targets.view_only),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let unsent: Vec<String> = [
+                said("topbar-viewer-waiting-control", &targets.waiting_control),
+                said("topbar-viewer-waiting", &targets.waiting),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            if !sent.is_empty() {
+                seeing.push(entry(&sent));
+            }
+            if !unsent.is_empty() {
+                waiting.push(entry(&unsent));
+            }
+        }
+        let (seeing, waiting) = (seeing.join("; "), waiting.join("; "));
+        match (seeing.is_empty(), waiting.is_empty()) {
+            (true, true) => t("topbar-show-people"),
+            (false, true) => t_args("topbar-people-visible", &[("viewers", seeing.into())]),
+            (true, false) => t_args("topbar-people-waiting", &[("viewers", waiting.into())]),
+            (false, false) => t_args(
+                "topbar-people-visible-and-waiting",
+                &[("viewers", seeing.into()), ("waiting", waiting.into())],
+            ),
+        }
     }
 
     pub(super) fn sharing_target_labels(tree: &DesktopTree, surfaces: Vec<u64>) -> Vec<String> {
@@ -317,18 +436,13 @@ impl TopBarChrome {
                 tree.workspaces
                     .iter()
                     .find_map(|workspace| {
+                        // A shared window is told by the tab it stands in on this desk.
                         workspace
                             .strips
                             .iter()
                             .flat_map(|strip| &strip.window_groups)
                             .flat_map(|group| &group.tabs)
-                            .find(|tab| {
-                                matches!(
-                                    &tab.tile,
-                                    tilo_desktop_model::TileContent::Foreign { surface_id, .. }
-                                        if *surface_id == surface
-                                )
-                            })
+                            .find(|tab| tab.id == surface)
                             .map(|tab| (workspace, tab))
                     })
                     // A window the tree does not list has no name a person knows; its surface
@@ -404,17 +518,16 @@ impl TopBarChrome {
     }
 
     /// The sharing disclosure's chip showing `label` in `available` room: the eye, the words, and
-    /// the state's tone washed into the chip's body — warning where someone controls the
-    /// windows, the accent while they only view.
+    /// the state's tone washed into the chip's body — warning where the person let someone
+    /// control a window, whether or not it goes out to them yet, the accent while they only view.
     pub(super) fn sharing_chip<'a>(
         &self,
         theme: &Theme,
         label: &'a str,
         available: f64,
     ) -> ui::widget::BarChipFace<'a> {
-        let (_, controllers, _) = self.sharing_summary();
         let tokens = &theme.tokens;
-        let color = if controllers > 0 {
+        let color = if self.sharing_summary().may_control > 0 {
             tokens.colors.semantic.warning
         } else {
             tokens.colors.intent.accent_ink
@@ -443,7 +556,7 @@ impl TopBarChrome {
         right_x: f64,
     ) -> f64 {
         self.placed.sharing = None;
-        // A sharing label exists exactly when someone is viewing.
+        // A sharing label exists exactly when someone asked to see a window.
         let Some(label) = self.sharing_label() else {
             self.sharing_indicator_rect = Rect::ZERO;
             return right_x;
@@ -539,6 +652,77 @@ impl TopBarChrome {
     pub(super) fn continuity_label(&self) -> Option<String> {
         self.chrome.as_ref()?.continuity_offer()
     }
+}
+
+/// How the windows this device shares stand with the devices that asked to see them, counted by
+/// viewer: what the bar says of them, and repaints for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct SharingSummary {
+    /// Everyone who asked to see a window of this device.
+    pub(super) viewers: usize,
+    /// Those something of a window goes out to: they watch, and the others wait.
+    pub(super) watching: usize,
+    /// Those who control a window that goes out to them.
+    pub(super) in_control: usize,
+    /// Everyone the person let control a window, whether or not it goes out to them yet.
+    pub(super) may_control: usize,
+    /// The windows they asked to see.
+    pub(super) surfaces: usize,
+}
+
+/// What the bar knows of who a viewer is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum ViewerKind {
+    /// A row of the roster carries it, and says it is an agent.
+    Agent,
+    /// A row of the roster carries it, and says it is a person.
+    Person,
+    /// No row carries it, and its share says what the workspace calls it.
+    Named,
+    /// Nothing names it: the bar says so in words.
+    #[default]
+    Unnamed,
+}
+
+/// One viewer of this device's shared windows, as the bar names it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct SharingViewer {
+    pub(super) peer: u64,
+    /// The name the bar says: the roster's, what its share says the workspace calls it, or the
+    /// bar's words for a viewer nothing names.
+    pub(super) name: String,
+    pub(super) kind: ViewerKind,
+    /// Something of a window goes out to it: it watches. Until then it asked to see one and waits.
+    pub(super) watching: bool,
+    /// It controls a window that goes out to it.
+    pub(super) in_control: bool,
+    /// The person let it control a window, whether or not that window goes out to it yet.
+    pub(super) may_control: bool,
+}
+
+impl SharingViewer {
+    /// Take what `row`, one window this viewer asked to see, says of it.
+    fn take(&mut self, row: &crate::chrome::ActiveExposure) {
+        self.watching |= row.streaming;
+        self.in_control |= row.streaming && row.can_control;
+        self.may_control |= row.can_control;
+        if self.name.is_empty() {
+            self.name.clone_from(&row.name);
+        }
+    }
+}
+
+/// The windows one viewer asked to see, by what the bar calls them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct SharingTargets {
+    /// Windows that go out to it, which it only views.
+    pub(super) view_only: Vec<String>,
+    /// Windows that go out to it, which it may control.
+    pub(super) controlled: Vec<String>,
+    /// Windows nothing of which goes out to it yet.
+    pub(super) waiting: Vec<String>,
+    /// Windows nothing of which goes out to it yet, which the person let it control.
+    pub(super) waiting_control: Vec<String>,
 }
 
 /// How one face in the people stack looks now.
