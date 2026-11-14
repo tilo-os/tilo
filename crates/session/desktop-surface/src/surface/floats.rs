@@ -9,7 +9,9 @@
 
 use std::collections::HashMap;
 
-use tilo_desktop_model::{CanvasPlace, DesktopTree, FloatPlace, StripId, Workspace, WorkspaceSlot};
+use tilo_desktop_model::{
+    CanvasPlace, DesktopTree, FloatPlace, StripId, TabId, Workspace, WorkspaceSlot,
+};
 use ui::kurbo::{Point, Rect};
 use ui::num::{f64_of_i64, i32_of_f64, u32_of_f64};
 use ui::widget::{FLOAT_CARD_ROOM, FLOAT_CARD_SIZE, FloatAsk, GroupRow, Widget};
@@ -47,30 +49,76 @@ fn workspace_with(tree: &DesktopTree, strip: StripId) -> Option<&Workspace> {
         .find(|workspace| workspace.strips.iter().any(|held| held.id == strip))
 }
 
+/// A window the person floated or put back in its strip on this desk. The host makes it an
+/// arranging action of the workspace's layout ([`super::DesktopHandle::take_asked_floats`]); until
+/// then the desk shows the window as asked.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AskedFloat {
+    /// The window in front of the group, which the action names.
+    pub tab: TabId,
+    pub group: u64,
+    /// Where it floats; `None` puts it back in its strip.
+    pub float: Option<FloatPlace>,
+}
+
+impl super::DesktopHandle {
+    /// The windows the person floated or put back since the last call, in the order asked.
+    pub fn take_asked_floats(&self) -> Vec<AskedFloat> {
+        std::mem::take(&mut self.shared.borrow_mut().asked_floats)
+    }
+}
+
+#[cfg(test)]
+impl super::DesktopHandle {
+    /// Make the floats asked for as a host's arranging action makes them: the workspace's
+    /// arrangement holds each window where it was asked to float.
+    pub(crate) fn arrange_asked_floats(&self) {
+        let asked = self.take_asked_floats();
+        let mut shared = self.shared.borrow_mut();
+        for asked in asked {
+            for workspace in &mut shared.tree.workspaces {
+                if workspace.tabs().any(|tab| tab.id == asked.tab) {
+                    workspace.arrangement.set_float(asked.group, asked.float);
+                }
+            }
+        }
+        shared.replaced = true;
+        shared.changed();
+    }
+}
+
+impl Shared {
+    /// Where the window `group` of the workspace `strip` is on floats: as the person last asked,
+    /// else as the workspace holds it.
+    fn float_of(&self, strip: StripId, group: u64) -> Option<FloatPlace> {
+        match self
+            .asked_floats
+            .iter()
+            .rev()
+            .find(|asked| asked.group == group)
+        {
+            Some(asked) => asked.float,
+            None => workspace_with(&self.tree, strip)?
+                .arrangement
+                .float_of(group),
+        }
+    }
+}
+
 /// Whether the workspace `strip` is on holds the window `group` floating.
-pub(super) fn holds(tree: &DesktopTree, strip: StripId, group: u64) -> bool {
-    workspace_with(tree, strip)
-        .is_some_and(|workspace| workspace.arrangement.float_of(group).is_some())
+pub(super) fn holds(shared: &Shared, strip: StripId, group: u64) -> bool {
+    shared.float_of(strip, group).is_some()
 }
 
 /// The windows of the strip `strip` the workspace has floating, each at its rect on the work area
 /// `area` .
-pub(super) fn floats_of(
-    tree: &DesktopTree,
-    strip: StripId,
-    area: CanvasPlace,
-) -> HashMap<u64, Rect> {
-    let Some(workspace) = workspace_with(tree, strip) else {
-        return HashMap::new();
-    };
-    workspace
-        .strips
-        .iter()
-        .find(|held| held.id == strip)
+pub(super) fn floats_of(shared: &Shared, strip: StripId, area: CanvasPlace) -> HashMap<u64, Rect> {
+    workspace_with(&shared.tree, strip)
+        .and_then(|workspace| workspace.strips.iter().find(|held| held.id == strip))
         .into_iter()
         .flat_map(|held| &held.window_groups)
         .filter_map(|group| {
-            let float = workspace.arrangement.float_of(group.id)?;
+            let float = shared.float_of(strip, group.id)?;
             Some((group.id, rect_of(float.resolved(area))))
         })
         .collect()
@@ -86,14 +134,8 @@ fn slot_with(tree: &DesktopTree, strip: StripId) -> Option<WorkspaceSlot> {
     )
 }
 
-fn workspace_mut(tree: &mut DesktopTree, slot: WorkspaceSlot) -> Option<&mut Workspace> {
-    tree.workspaces
-        .iter_mut()
-        .find(|workspace| workspace.slot == slot)
-}
-
-/// Keep the float `group` of the workspace `strip` is on as `float` , `None` putting it back in its
-/// strip. Returns whether the tree changed.
+/// Ask for the float `group` of the workspace `strip` is on to be `float` , `None` putting it back
+/// in its strip: an arranging action the host makes. Returns whether that changes where it stands.
 pub(super) fn set(
     shared: &mut Shared,
     strip: StripId,
@@ -103,13 +145,22 @@ pub(super) fn set(
     let Some(slot) = slot_with(&shared.tree, strip) else {
         return false;
     };
+    let Some(tab) = workspace_with(&shared.tree, strip)
+        .and_then(|workspace| workspace.strips.iter().find(|held| held.id == strip))
+        .and_then(|held| held.window_groups.iter().find(|held| held.id == group))
+        .map(|held| held.active_tab)
+    else {
+        return false;
+    };
     if float.is_some() {
         shared.tree.active_strip.insert(slot, strip);
     }
-    let Some(workspace) = workspace_mut(&mut shared.tree, slot) else {
+    if shared.float_of(strip, group) == float {
         return false;
-    };
-    workspace.arrangement.set_float(group, float)
+    }
+    shared.asked_floats.push(AskedFloat { tab, group, float });
+    shared.changed();
+    true
 }
 
 /// The window a floating window opened beside: the one before it in its strip, else the one

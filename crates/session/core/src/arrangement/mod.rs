@@ -1376,6 +1376,32 @@ impl Arrangement {
         self.write(&person, action)
     }
 
+    /// Make each window the person floated or put back on the desk since the last call their own
+    /// arranging action: [`ArrangementAction::Float`] or [`ArrangementAction::Snap`].
+    ///
+    /// # Errors
+    /// Why one of them could not be made; the others are made all the same.
+    pub fn take_asked_floats(&mut self) -> Result<(), String> {
+        let mut refused = Ok(());
+        for asked in self.handle.take_asked_floats() {
+            let action = match asked.float {
+                Some(float) => ArrangementAction::Float {
+                    place: asked.tab,
+                    float,
+                },
+                None => ArrangementAction::Snap {
+                    place: asked.tab,
+                    row: None,
+                    before: None,
+                },
+            };
+            if let Err(why) = self.ask_person(&action) {
+                refused = Err(why);
+            }
+        }
+        refused
+    }
+
     /// Undo `person` 's last change of the arrangement: one step of the layout's own history, taken
     /// back in the desk it was made in. Whether there was one.
     pub fn undo(&mut self, person: &str) -> bool {

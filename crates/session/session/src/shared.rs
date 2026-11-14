@@ -103,10 +103,13 @@ impl Shared {
     }
 
     /// Run what waited for the person to finish their gesture or their typing: an arranging action
-    /// that arrived then, in the order it came. The arrangement is the desk, so what the desk did
-    /// meanwhile needs no taking in.
+    /// that arrived then, in the order it came, after the windows the person floated or put back on
+    /// the desk, which are their own and never wait.
     pub(crate) fn follow_arrangement(&self, underway: arrangement::Busy) {
         let mut arrangement = self.arrangement.borrow_mut();
+        if let Err(why) = arrangement.take_asked_floats() {
+            tracing::warn!(why, "a window could not be floated or put back");
+        }
         if !underway.holds()
             && arrangement.waiting() > 0
             && let Err(why) = arrangement.release()

@@ -645,6 +645,7 @@ impl Desktop {
         self.revoke_agent_grants();
         self.ask_host_of_nodes();
         self.ask_app_actions();
+        self.arrangement.take_asked_floats();
         let permissions = self.permissions.borrow();
         self.openings.open(&self.handle, |app, existing| {
             crate::desktop::may_open(&permissions, app, existing)

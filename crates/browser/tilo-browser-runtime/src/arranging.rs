@@ -77,6 +77,13 @@ impl Arranging {
             .take(resources);
     }
 
+    /// Make each window the person floated or put back on the desk their arranging action.
+    pub(crate) fn take_asked_floats(&self) {
+        if let Err(why) = self.arrangement.borrow_mut().take_asked_floats() {
+            tracing::warn!(why, "a window could not be floated or put back");
+        }
+    }
+
     /// Carry out `address` with `arguments` as the person here, as the page's action calls do for
     /// a window's application.
     ///
