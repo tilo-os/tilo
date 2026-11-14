@@ -633,8 +633,6 @@ const memoryStore = () => {
 /** The list as storage holds it. */
 const seed = (store, list) => store.setItem('tilo-entered-workspaces', JSON.stringify(list));
 const kept = (origin, room, extra = {}) => ({origin, room, hostDevice: HOST, ...extra});
-/** An entry as the runtime's rules read and write it: they name the workspace `workspace`. */
-const wire = (origin, workspace, extra = {}) => ({origin, workspace, hostDevice: HOST, ...extra});
 
 /** The runtime's rules of the list (tilo-session-client's `entered`, tested
  * there), answering what each was asked with `answer`. */
@@ -660,20 +658,17 @@ test('the remembered workspaces are read as kept, and damaged or roomless entrie
   assert.deepEqual(enteredWorkspaces(store), [{origin: 'https://ok.example', room: 'OK', hostDevice: HOST, name: null, unavailable: false}]);
   store.setItem('tilo-entered-workspaces', '{broken');
   assert.deepEqual(enteredWorkspaces(store), []);
-  // The list as the runtime writes it names the workspace `workspace`; the page reads it as `room`.
-  seed(store, [wire('https://acme.example', 'W', {name: 'Wire'})]);
-  assert.deepEqual(enteredWorkspaces(store), [{origin: 'https://acme.example', room: 'W', hostDevice: HOST, name: 'Wire', unavailable: false}]);
 });
 
 test('each change is the runtime\'s rules\', written back with no bare entry reopening what it forgot', () => {
   const store = memoryStore();
   seed(store, [kept('https://acme.example', 'A')]);
   chooseWorkspace({origin: 'https://acme.example', room: 'A'}, store);
-  const after = [wire('https://acme.example', 'B', {name: 'Bee'})];
-  const {runtime, asked} = rules(() => ({entered: after, unchoose: [{origin: 'https://acme.example', workspace: 'A'}]}));
+  const after = [kept('https://acme.example', 'B', {name: 'Bee'})];
+  const {runtime, asked} = rules(() => ({entered: after, unchoose: [{origin: 'https://acme.example', room: 'A'}]}));
   rememberEntered(runtime, {hostDevice: HOST, origin: 'https://acme.example/', room: 'B', name: 'Bee'}, store);
-  assert.deepEqual(asked[0].slice(1).map(text => JSON.parse(text)), [[wire('https://acme.example', 'A')],
-    {origin: 'https://acme.example', workspace: 'B', hostDevice: HOST, name: 'Bee'}], 'asked as the runtime names a workspace, a list kept under its old name too, with the origin as a link names it');
+  assert.deepEqual(asked[0], ['rememberEntered', JSON.stringify([kept('https://acme.example', 'A')]),
+    JSON.stringify({origin: 'https://acme.example', room: 'B', hostDevice: HOST, name: 'Bee'})], 'asked with the origin as a link names it');
   assert.deepEqual(JSON.parse(store.getItem('tilo-entered-workspaces')), after);
   assert.equal(chosenWorkspace(store), null, 'the one it forgot is not reopened');
   // What is no entry is not asked about.
@@ -693,8 +688,8 @@ test('a bare entry reopens the chosen workspace until it does not open, and choo
   chooseWorkspace(null, store);
   assert.equal(chosenWorkspace(store), null);
   chooseWorkspace({origin: 'https://acme.example', room: 'A'}, store);
-  const {runtime} = rules(() => ({entered: [wire('https://acme.example', 'A', {name: 'Acme', unavailable: true})],
-    unchoose: [{origin: 'https://acme.example', workspace: 'A'}]}));
+  const {runtime} = rules(() => ({entered: [kept('https://acme.example', 'A', {name: 'Acme', unavailable: true})],
+    unchoose: [{origin: 'https://acme.example', room: 'A'}]}));
   markUnavailable(runtime, {origin: 'https://acme.example', room: 'A'}, store);
   assert.equal(chosenWorkspace(store), null);
   assert.equal(enteredWorkspaces(store)[0].unavailable, true);
@@ -704,10 +699,10 @@ test('a workspace its owner deleted is forgotten and no longer reopened', () => 
   const store = memoryStore();
   seed(store, [kept('https://acme.example', 'A', {name: 'Acme'}), kept('https://acme.example', 'B')]);
   chooseWorkspace({origin: 'https://acme.example', room: 'A'}, store);
-  const {runtime, asked} = rules(() => ({entered: [wire('https://acme.example', 'B')], unchoose: [{origin: 'https://acme.example', workspace: 'A'}]}));
+  const {runtime, asked} = rules(() => ({entered: [kept('https://acme.example', 'B')], unchoose: [{origin: 'https://acme.example', room: 'A'}]}));
   forgetDeletedWorkspace(runtime, {origin: 'https://acme.example/', room: 'A'}, store);
   assert.deepEqual(asked[0].slice(0, 1), ['forgetDeletedWorkspace']);
-  assert.deepEqual(JSON.parse(asked[0][2]), {origin: 'https://acme.example', workspace: 'A'}, 'asked with the origin as a link names it');
+  assert.deepEqual(JSON.parse(asked[0][2]), {origin: 'https://acme.example', room: 'A'}, 'asked with the origin as a link names it');
   assert.deepEqual(enteredWorkspaces(store).map(entry => entry.room), ['B']);
   assert.equal(chosenWorkspace(store), null, 'the deleted one is not reopened');
   forgetDeletedWorkspace(runtime, {origin: 'not a url', room: 'A'}, store);

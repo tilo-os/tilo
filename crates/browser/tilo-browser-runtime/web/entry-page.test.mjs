@@ -78,17 +78,16 @@ async function fixture({boot, remembered = [], own = false, search = '', session
       const gone = entry => entry.origin === origin && entry.hostDevice !== hostDevice;
       return JSON.stringify({entered: all.filter(entry => !gone(entry)), unchoose: all.filter(gone)});
     },
-    // They name a workspace `workspace`, as the runtime does.
     rememberEntered: (list, entry) => {
-      const {origin, workspace, hostDevice} = JSON.parse(entry);
+      const {origin, room, hostDevice} = JSON.parse(entry);
       const {entered, unchoose} = JSON.parse(runtime.forgetGoneWorkspaces(list, origin, hostDevice));
-      const same = kept => kept.origin === origin && kept.workspace === workspace;
+      const same = kept => kept.origin === origin && kept.room === room;
       const name = JSON.parse(entry).name ?? entered.find(same)?.name;
-      return JSON.stringify({entered: [{origin, workspace, hostDevice, ...(name ? {name} : {})}, ...entered.filter(kept => !same(kept))], unchoose});
+      return JSON.stringify({entered: [{origin, room, hostDevice, ...(name ? {name} : {})}, ...entered.filter(kept => !same(kept))], unchoose});
     },
     nameEntered: (list, place, name) => {
-      const {origin, workspace} = JSON.parse(place);
-      return JSON.stringify({entered: JSON.parse(list).map(entry => entry.origin === origin && entry.workspace === workspace && !entry.name ? {...entry, name} : entry), unchoose: []});
+      const {origin, room} = JSON.parse(place);
+      return JSON.stringify({entered: JSON.parse(list).map(entry => entry.origin === origin && entry.room === room && !entry.name ? {...entry, name} : entry), unchoose: []});
     },
   });
   globalThis.__entryPageFixture = {page, runtime, mounted: [], prepared, identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
