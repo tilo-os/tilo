@@ -495,7 +495,8 @@ class Problems(list):
 def set_up(ctx, res):
     ctx.facts["wsb:why"] = "WB01 failed"
     ctx.reset()
-    watch_drawing_threads(ctx)
+    since = debug_session(ctx)
+    ctx.facts["wsb:since"] = since
     run = uuid.uuid4().hex[:8]
     ws = ae.create_workspace(ctx, f"{SOURCE} {run}")
     ws["name"] = f"{SOURCE} {run}"
@@ -586,6 +587,12 @@ fi
         problems.want(bool(members["owner"]), f"{ws['name']} has no owner: {members}")
     except CheckFailed as exc:
         problems.append(str(exc))
+    # No app's drawing thread crashed since the session started (Mesa's device-select layer, at
+    # a session's start on a machine without 3D).
+    crashed = ctx.vm.root_exec(f"journalctl -k --since @{since} --no-pager 2>/dev/null "
+                               "| grep -a 'native-render-p.*segfault' | tail -n 6", timeout=60, check=False).strip()
+    problems.want(not crashed, f"drawing threads crashed since the session started: {crashed[-1500:]}; "
+                               f"their processes: {crashed_threads(ctx)}")
     problems.judge()
 
 
@@ -625,12 +632,8 @@ def branch_said(ctx, name: str, room: str) -> dict:
 
     notices = wait_until(told, 15, interval=0.5) or []
     # What did not come along, as the session logged it (the notice's body is not on screen).
-    why = ctx.vm.root_exec("journalctl --no-pager -o cat 2>/dev/null | sed 's/\\x1b\\[[0-9;]*m//g' "
-                           "| grep -ai 'not complete\\|did not reach\\|keys did not' | tail -n 20 | cut -c1-500",
-                           timeout=120, check=False) + "\n" + ctx.vm.exec(
-        f"{{ cat \"{core.SESSION_LOG}\"; journalctl --user --no-pager -o cat; }} 2>/dev/null "
-                      "| sed 's/\\x1b\\[[0-9;]*m//g' | grep -a 'branch of a workspace is not complete' "
-                      "| tail -n 20 | cut -c1-500", timeout=120, check=False) if any(
+    why = session_said(ctx, "not complete|did not reach|did not come|keys did not|branch",
+                       30, ctx.facts.get("wsb:since", 0)) if any(
         "is not complete" in n for n in notices) else ""
     audit = ctx.vm.exec("cat \"$HOME\"/.local/share/ush/audit/* \"$HOME\"/.local/share/ush/*/audit/* 2>/dev/null "
                         f"| grep -a branch-workspace | grep -a {shlex.quote(room)} | tail -n 2 | cut -c1-600",
@@ -879,7 +882,7 @@ def post_chat(ctx, ws: dict, text: str) -> None:
         running = app_processes(ctx, CHAT) + "\n== the crashed drawing threads' processes\n" + crashed_threads(ctx)
         # The launcher drops an app's own output: keep it from the session's next start on (WB05
         # restarts it), so Chat says itself why it shows nothing.
-        running += "\n== keeping its output\n" + keep_app_output(ctx)
+        running += "\n" + chat_evidence(ctx, ctx.facts.get("wsb:since", 0))
         said = crash + "\n" + running + "\n" + said
         ctx.write("WB01-chat-said.txt", said)
         raise Unobservable(f"Chat in {ws.get('name')} shows no {COMPOSER!r} and offers no post; it offers "
@@ -937,9 +940,9 @@ def watch_drawing_threads(ctx) -> None:
     """For the run's next 40 minutes, note every process with a thread preparing to draw, by the
     thread's id: the kernel names a crashed thread only by that id and its name."""
     ctx.vm.root_exec(
-        "nohup sh -c 'end=$(( $(date +%s) + 2400 )); while [ $(date +%s) -lt $end ]; do "
+        "setsid nohup sh -c 'end=$(( $(date +%s) + 2400 )); while [ $(date +%s) -lt $end ]; do "
         "ps -eLo tid=,pid=,comm=,cgroup:90=,args:160= 2>/dev/null | grep -a native-render >> "
-        f"{TASKS_LOG}; sleep 0.2; done' >/dev/null 2>&1 &", timeout=30, check=False)
+        f"{TASKS_LOG}; sleep 0.2; done' </dev/null >/dev/null 2>&1 &", timeout=30, check=False)
 
 
 def crashed_threads(ctx) -> str:
@@ -950,25 +953,95 @@ def crashed_threads(ctx) -> str:
         "| head -n 12", timeout=60, check=False)
 
 
-DEBUG_OUTPUT_DROPIN = "/etc/systemd/system/tilo-vm-session@.service.d/90-e2e-app-output.conf"
+def debug_dropin(ctx) -> str:
+    """The slot session's own drop-in this check writes, beside tilo-vmd's (an instance drop-in,
+    as e2e-branch writes its log level, which tilo-vmd leaves in place)."""
+    return f"/etc/systemd/system/tilo-vm-session@{ctx.vm.slot}.service.d/90-e2e-ws-branch.conf"
 
 
-def keep_app_output(ctx) -> str:
-    """From the slot session's next start on, its launchers keep each app's own stdout and stderr
-    in the app's data home (`launcher-debug-output.log`) instead of dropping them: set wherever the
-    session's environment comes from (its unit, and the managers that start it). Says what the
-    session runs as, so a later read knows whether it took."""
+def debug_session(ctx) -> int:
+    """Restart the slot session with its launchers keeping each app's own stdout and stderr in the
+    app's data home (`launcher-debug-output.log`, `TILO_LAUNCHER_DEBUG_STDERR`), watching every
+    drawing thread from before it starts. The time it was restarted, for what it said since."""
+    dropin = debug_dropin(ctx)
+    ctx.vm.root_exec(f"mkdir -p \"$(dirname {dropin})\" && "
+                     f"printf '[Service]\\nEnvironment=TILO_LAUNCHER_DEBUG_STDERR=1\\n' > {dropin} && "
+                     "systemctl daemon-reload", timeout=60, check=False)
+    watch_drawing_threads(ctx)
+    since = int((ctx.vm.root_exec("date +%s", timeout=30, check=False) or "0").strip() or 0)
+    ctx.vm.restart_session()
+    return since
+
+
+def session_said(ctx, pattern: str, lines: int = 40, since: int = 0) -> str:
+    """What the slot session logged that matches `pattern`, read across the machine-id change a
+    fresh box makes (`journalctl -m`), as e2e-branch reads its sessions."""
+    when = f"--since @{since} " if since else ""
     return ctx.vm.root_exec(
-        "p=$(pgrep -f 'tilo-session' | head -n 1); echo \"session pid $p\"; "
-        "u=$(ps -o unit= -p \"$p\" 2>/dev/null); uu=$(ps -o uunit= -p \"$p\" 2>/dev/null); "
-        "echo \"unit $u user unit $uu\"; ls -l /proc/$p/fd/1 /proc/$p/fd/2 2>&1 | cut -c1-200; "
-        f"mkdir -p \"$(dirname {DEBUG_OUTPUT_DROPIN})\" && "
-        f"printf '[Service]\\nEnvironment=TILO_LAUNCHER_DEBUG_STDERR=1\\n' > {DEBUG_OUTPUT_DROPIN}; "
-        "systemctl set-environment TILO_LAUNCHER_DEBUG_STDERR=1; systemctl daemon-reload; "
-        "for m in $(pgrep -x systemd | tail -n +2); do o=$(stat -c %U /proc/$m); "
-        "sudo -u \"$o\" XDG_RUNTIME_DIR=/run/user/$(id -u \"$o\") systemctl --user set-environment "
-        "TILO_LAUNCHER_DEBUG_STDERR=1 2>&1 | head -n 2; done; echo kept",
-        timeout=120, check=False)
+        f"journalctl -m {when}--no-pager -o short-iso 2>/dev/null | grep -a 'tilo-session' "
+        "| sed 's/\\x1b\\[[0-9;]*m//g' | grep -av 'FRAME-LIFECYCLE\\|paint-stats\\|HEAP-MILESTONE' "
+        f"| grep -aiE {shlex.quote(pattern)} | tail -n {lines} | cut -c1-500", timeout=120, check=False)
+
+
+# Start `app` by hand in the slot session's view, as the session starts another app: that app's
+# launcher argv and environment with the id swapped, stderr kept, for 30 s.
+CHAT_BY_HAND = r"""
+import os, subprocess
+mine = os.getuid()
+model = None
+for pid in sorted((p for p in os.listdir("/proc") if p.isdigit()), key=int):
+    try:
+        if os.stat(f"/proc/{pid}").st_uid != mine:
+            continue
+        argv = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")[:-1]
+    except OSError:
+        continue
+    if argv and argv[0].endswith(b"tilo-launcher") and b"--app-id" in argv:
+        model = pid
+        if b"so.tilo.notes" in argv:
+            break
+if model is None:
+    print("no running app's launcher to copy")
+    raise SystemExit
+argv = open(f"/proc/{model}/cmdline", "rb").read().split(b"\0")[:-1]
+env = dict(e.split(b"=", 1) for e in open(f"/proc/{model}/environ", "rb").read().split(b"\0") if b"=" in e)
+app = argv[argv.index(b"--app-id") + 1]
+argv = [a.replace(app, b"APP") for a in argv]
+print("copied", app.decode(), "launch:", b" ".join(argv).decode(errors="replace")[:600])
+argv = [a.replace(b"APP", b"so.tilo.chat") for a in argv]
+with open("/tmp/e2e-chat-by-hand.err", "wb") as err:
+    try:
+        done = subprocess.run(argv, env=env, stdout=err, stderr=err, timeout=30)
+        print("exit status", done.returncode)
+    except subprocess.TimeoutExpired:
+        print("still running after 30 s")
+print(open("/tmp/e2e-chat-by-hand.err", "rb").read()[-6000:].decode(errors="replace"))
+"""
+
+
+def chat_evidence(ctx, since: int) -> str:
+    """Everything this box says of Chat that ended without a window: its own output (the
+    launcher's debug log), what the session said of launching it, the core dumps, the user's
+    journal, and Chat started by hand with its stderr kept."""
+    parts = [
+        "== the session's switch: " + ctx.vm.root_exec(
+            f"cat {debug_dropin(ctx)} 2>&1 | tail -n 3; p=$(pgrep -f 'tilo-session' | head -n 1); "
+            "tr '\\0' '\\n' < /proc/$p/environ 2>/dev/null | grep -c TILO_LAUNCHER_DEBUG_STDERR",
+            timeout=60, check=False),
+        "== Chat's own output\n" + ctx.vm.root_exec(
+            "find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name launcher-debug-output.log "
+            "-path '*so.tilo.chat*' -print 2>/dev/null | head -n 3 | while read -r f; do echo \"== $f\"; "
+            "tail -c 5000 \"$f\"; done", timeout=300, check=False),
+        "== the session of launches\n" + session_said(
+            ctx, "so.tilo.chat|launch was refused|launch did not start|an app stopped|an app closed", 40, since),
+        "== core dumps\n" + ctx.vm.root_exec("coredumpctl --no-pager list 2>&1 | tail -n 10", timeout=60, check=False),
+        "== the user's journal\n" + ctx.vm.exec(
+            "journalctl --user -m --no-pager -n 100 -o short-iso 2>&1 | grep -av 'FRAME-LIFECYCLE\\|paint-stats' "
+            "| cut -c1-300", timeout=60, check=False),
+        "== Chat started by hand\n" + ctx.vm.exec(
+            "python3 -I - <<'PY'\n" + CHAT_BY_HAND + "\nPY", timeout=120, check=False),
+    ]
+    return "\n".join(parts)
 
 
 def app_output(ctx, ws: dict, app: str) -> str:
@@ -983,7 +1056,7 @@ def app_output(ctx, ws: dict, app: str) -> str:
     return ctx.vm.root_exec(
         "p=$(pgrep -f 'tilo-session' | head -n 1); echo \"session pid $p: $(tr '\\0' '\\n' < /proc/$p/environ "
         "| grep -c TILO_LAUNCHER_DEBUG_STDERR) debug switch\"; "
-        f"grep -c TILO_LAUNCHER_DEBUG_STDERR {DEBUG_OUTPUT_DROPIN} 2>&1; "
+        f"grep -c TILO_LAUNCHER_DEBUG_STDERR {debug_dropin(ctx)} 2>&1; "
         "find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name launcher-debug-output.log "
         f"-path '*{app}*' -print 2>/dev/null | head -n 3 | while read -r f; do echo \"== $f\"; "
         "tail -c 5000 \"$f\"; done", timeout=300, check=False) + "\n" + app_processes(ctx, app)[-3000:]
