@@ -5197,11 +5197,12 @@ mod tests {
             .iter()
             .find(|action| action.id == "set-media-codecs")
             .expect("published codec choice");
+        let codecs = crate::setup::strings::t("imager-destination-set-media-codecs");
         assert!(
             install
                 .description
                 .as_deref()
-                .is_some_and(|description| description.contains(&note)),
+                .is_some_and(|said| said.contains(&codecs)),
             "{:?}",
             install.description
         );

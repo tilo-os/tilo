@@ -2459,10 +2459,7 @@ mod tests {
             app.apply_command(SetupCommand::StartInternalDownload);
 
             assert!(app.status_is_error);
-            assert_eq!(
-                app.status,
-                "Full Tilo downloads can start only from the Full Tilo review."
-            );
+            assert_eq!(app.status, "Start the download from the Full Tilo review.");
             assert!(
                 app.internal_download_flow
                     .as_ref()

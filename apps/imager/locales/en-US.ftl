@@ -1002,6 +1002,18 @@ installer-preview-storage-heading = Choose space for Tilo
 
 installer-preview-storage-intro = Keep your current system and install Tilo alongside it.
 
+installer-preview-usb-heading = Prepare a USB installer
+
+installer-preview-usb-intro = Use it to start Tilo on your other computer.
+
+installer-preview-desktop-heading = Add Tilo as a desktop
+
+installer-preview-desktop-intro = Keep your existing Linux system.
+
+installer-preview-storage-usb-fallback-heading = Install Tilo from USB
+
+installer-preview-storage-usb-fallback-intro = Direct installation is not available in this build. Use a USB drive to install Tilo on this computer.
+
 installer-preview-storage-another = Choose a USB drive next. Its contents will be erased when you confirm the write.
 
 installer-preview-review-heading = Review your setup
