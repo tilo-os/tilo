@@ -5,7 +5,7 @@ use crate::analysis::{Analysis, AnalysisCache, Body, STRUCTURE_LEN, hash_body};
 use crate::cache::{EmitCache, Key, data_section, key_sections, sections_not_keyed};
 use crate::content;
 use crate::data::{Claimant, DataLayout, DataPlan};
-use crate::plan::{Plan, PlanCache};
+use crate::plan::PlanCache;
 use crate::relocations::ModuleWithRelocations;
 use anyhow::{Context, Result};
 use itertools::Itertools;
@@ -25,6 +25,8 @@ use walrus::{
     ir::{self, Visitor, dfs_in_order},
 };
 use wasmparser::Payload;
+
+mod planning;
 
 /// A parsed wasm module with additional metadata and functionality for splitting and patching.
 ///
@@ -69,6 +71,12 @@ pub struct Splitter<'a> {
     bodies: Vec<Body>,
     /// How many of `bodies` a run before this one had read.
     bodies_reused: usize,
+    /// The local indices of the bodies this run walked: the new and changed
+    /// ones, whose answers a read-back plan has to make again.
+    bodies_changed: Vec<usize>,
+    /// What the bind patch made of the last split's functions, when it wrote
+    /// the module again with functions renumbered (analysis.rs).
+    renumber: Option<crate::analysis::Renumber>,
     /// What the plan every module is taken from was made from (plan.rs).
     plan_key: String,
     /// The main module's symbols that nothing it keeps reaches: read off the
@@ -85,6 +93,9 @@ pub struct Splitter<'a> {
     /// Each data symbol's identity by name (`relocations::data_symbol_ids`),
     /// by symbol index.
     data_symbol_ids: Vec<u64>,
+    /// Each data symbol's name, by its index in the linked module: the
+    /// identity a renumbering leaves as it was.
+    data_names: HashMap<usize, String>,
 }
 
 /// What every emission's key starts from (`Splitter::emit_key_base`), and
@@ -242,6 +253,18 @@ impl<'a> Splitter<'a> {
         bindgened: &'a [u8],
         cache: Option<&AnalysisCache>,
     ) -> Result<Self> {
+        let renumber = crate::analysis::Renumber::from_env(bindgened);
+        Self::prepare_with(original, bindgened, cache, renumber)
+    }
+
+    /// [`Self::prepare`] with the renumbering the bind patch wrote, as the
+    /// caller read it (`WASM_SPLIT_RENUMBER` names it in a build).
+    pub(crate) fn prepare_with(
+        original: &'a [u8],
+        bindgened: &'a [u8],
+        cache: Option<&AnalysisCache>,
+        renumber: Option<crate::analysis::Renumber>,
+    ) -> Result<Self> {
         let started = std::time::Instant::now();
         let (module, ids, fns_to_ids) = parse_module_with_ids(bindgened)?;
         took("parsed the bindgened module", started);
@@ -270,19 +293,6 @@ impl<'a> Splitter<'a> {
         structure.add(&imported).add(&hashes.len());
         let structure = structure.finish();
         assert_eq!(structure.len(), STRUCTURE_LEN);
-        let bodies = cache
-            .and_then(AnalysisCache::load)
-            .and_then(|analysis| analysis.matching(&structure, &hashes))
-            .unwrap_or_default();
-        if cache.is_some() {
-            eprintln!(
-                "wasm-split: read {} of {} function bodies from the last split",
-                bodies.len(),
-                hashes.len()
-            );
-        }
-        took("read the bodies' hashes", started);
-
         let split_points = accumulate_split_points(&module, &lazy_exports(original)?)?;
         let entry_slots = split_points.iter().map(|split| split.entries.len()).sum();
 
@@ -306,26 +316,57 @@ impl<'a> Splitter<'a> {
             data_sizes: Default::default(),
             imported,
             bodies: Vec::new(),
-            bodies_reused: bodies.len(),
+            bodies_reused: 0,
+            bodies_changed: Vec::new(),
+            renumber: None,
             plan_key: String::new(),
             planned_unused: None,
             symbol_ids: Vec::new(),
             content_hashes: Vec::new(),
             data_symbol_ids: Vec::new(),
+            data_names: HashMap::new(),
         };
 
-        // The bodies first: everything after this reads their answers, so a
-        // run whose plan is kept reads them and then stops.
-        let started = std::time::Instant::now();
-        module.walk_bodies(&hashes, bodies)?;
-        took("walked the bound functions' bodies", started);
-
-        let started = std::time::Instant::now();
+        // What each body does, by content: the identity a renumbering leaves
+        // as it was (content.rs), and what a body is read back by.
         module.symbol_ids =
             content::symbol_ids(&module.source_module, &module._ids_to_fns, module.imported);
         module.content_hashes = content::body_hashes(module.bindgened, &module.symbol_ids);
         module.data_symbol_ids = crate::relocations::data_symbol_ids(original)?;
         took("read the bodies' content", started);
+
+        let bodies = cache
+            .and_then(AnalysisCache::load)
+            .map(|analysis| match analysis.matching(&structure, &hashes) {
+                Some(bodies) => bodies,
+                None => renumber
+                    .as_ref()
+                    .and_then(|renumber| {
+                        analysis.matching_renumbered(renumber, &module.content_hashes, &hashes)
+                    })
+                    .unwrap_or_default(),
+            })
+            .unwrap_or_default();
+        if cache.is_some() {
+            eprintln!(
+                "wasm-split: read {} of {} function bodies from the last split",
+                bodies.len(),
+                hashes.len()
+            );
+        }
+        module.bodies_reused = bodies.len();
+        module.bodies_changed = (0..hashes.len())
+            .filter(|local| !bodies.contains_key(local))
+            .collect();
+        module.renumber = renumber;
+        took("read the bodies' hashes", started);
+
+        // The bodies first: everything after this reads their answers, so a
+        // run whose plan is kept reads them and then stops.
+        let started = std::time::Instant::now();
+        let content = module.content_hashes.clone();
+        module.walk_bodies(&hashes, &content, bodies)?;
+        took("walked the bound functions' bodies", started);
 
         let started = std::time::Instant::now();
         module.plan_key = crate::plan::key(&structure, original, &module.bodies)?;
@@ -349,7 +390,16 @@ impl<'a> Splitter<'a> {
         if let Some(plans) = plans {
             if let Some(plan) = plans.load(&self.plan_key) {
                 self.use_plan(plan);
+                // This plan is the module's: the next run moves this one.
+                plans.touch(&self.plan_key);
                 eprintln!("wasm-split: the plan is the last split's: its graphs read back");
+                return Ok(());
+            }
+            if let Some(plan) = self.read_plan_back(plans)? {
+                self.use_plan(plan);
+                // This plan is the module's: the next run moves this one.
+                plans.store(&self.plan_key, &self.plan())?;
+                eprintln!("wasm-split: the plan is the last split's, its functions renumbered");
                 return Ok(());
             }
         }
@@ -370,85 +420,6 @@ impl<'a> Splitter<'a> {
             plans.store(&self.plan_key, &self.plan())?;
         }
         Ok(())
-    }
-
-    /// Everything a split decides before it writes a module, in the module's
-    /// index spaces (plan.rs).
-    fn plan(&self) -> Plan {
-        Plan {
-            main_graph: self
-                .main_graph
-                .iter()
-                .map(|node| self.plan_node(node))
-                .collect(),
-            reachable: self
-                .split_points
-                .iter()
-                .map(|split| {
-                    split
-                        .reachable_graph
-                        .iter()
-                        .map(|node| self.plan_node(node))
-                        .collect()
-                })
-                .collect(),
-            chunks: self
-                .chunks
-                .iter()
-                .map(|chunk| chunk.iter().map(|node| self.plan_node(node)).collect())
-                .collect(),
-            chunk_imports: self
-                .chunk_imports
-                .iter()
-                .map(|imports| imports.iter().map(|node| self.plan_node(node)).collect())
-                .collect(),
-            shared_symbols: self
-                .shared_symbols
-                .iter()
-                .map(|node| self.plan_node(node))
-                .collect(),
-            data_sizes: self.data_sizes.clone(),
-            unused: self
-                .planned_unused
-                .iter()
-                .flatten()
-                .map(|node| self.plan_node(node))
-                .collect(),
-        }
-    }
-
-    /// Take `plan` as this split's, as [`Self::plan`] would have made it.
-    fn use_plan(&mut self, plan: Plan) {
-        let ids = &self._ids_to_fns;
-        let node = |node| from_plan_node(ids, node);
-        self.main_graph = plan.main_graph.into_iter().map(node).collect();
-        for (split, reachable) in self.split_points.iter_mut().zip(plan.reachable) {
-            split.reachable_graph = reachable.into_iter().map(node).collect();
-        }
-        self.chunks = plan
-            .chunks
-            .into_iter()
-            .map(|chunk| chunk.into_iter().map(node).collect())
-            .collect();
-        self.chunk_imports = plan
-            .chunk_imports
-            .into_iter()
-            .map(|imports| imports.into_iter().map(node).collect())
-            .collect();
-        self.shared_symbols = plan.shared_symbols.into_iter().map(node).collect();
-        self.data_sizes = plan.data_sizes;
-        self.planned_unused = Some(plan.unused.into_iter().map(node).collect());
-    }
-
-    /// A node as a plan holds it: the function's index in the bound module,
-    /// or the data symbol's own.
-    fn plan_node(&self, node: &Node) -> crate::plan::Node {
-        match node {
-            Node::Function(id) => {
-                crate::plan::function_node(self.fns_to_ids.get(id).copied().unwrap_or(usize::MAX))
-            }
-            Node::DataSymbol(index) => crate::plan::data_node(*index),
-        }
     }
 
     /// Split the module into multiple modules at the boundaries of split points.
@@ -1819,39 +1790,6 @@ impl<'a> Splitter<'a> {
         Ok(())
     }
 
-    /// Every split module's entries: what only the table reaches.
-    fn entry_funcs(&self) -> HashSet<FunctionId> {
-        self.split_points
-            .iter()
-            .flat_map(|split| split.entries.iter().map(|entry| entry.func))
-            .collect()
-    }
-
-    fn unused_main_symbols(&self) -> HashSet<Node> {
-        let entries = self.entry_funcs();
-        self.split_points
-            .iter()
-            .flat_map(|split| split.reachable_graph.iter())
-            .filter(|sym| {
-                // Make sure the symbol isn't in the main graph
-                if self.main_graph.contains(sym) {
-                    return false;
-                }
-
-                // And ensure we aren't also exporting it, but as a lazy
-                // export, whose export a stub takes over
-                match sym {
-                    Node::Function(u) => {
-                        entries.contains(u)
-                            || self.source_module.exports.get_exported_func(*u).is_none()
-                    }
-                    _ => true,
-                }
-            })
-            .cloned()
-            .collect()
-    }
-
     /// Read every one of the module's own functions' bodies: the functions it
     /// calls and the immediates it holds.
     ///
@@ -1859,7 +1797,12 @@ impl<'a> Splitter<'a> {
     /// body an earlier run walked with the same bytes is read back instead
     /// (analysis.rs): the answers are what that body's code says, whatever the
     /// rest of the module holds.
-    fn walk_bodies(&mut self, hashes: &[u64], known: HashMap<usize, Body>) -> Result<()> {
+    fn walk_bodies(
+        &mut self,
+        hashes: &[u64],
+        content: &[u64],
+        known: HashMap<usize, Body>,
+    ) -> Result<()> {
         let ids = &self._ids_to_fns;
         let fns_to_ids = &self.fns_to_ids;
         let module = &self.source_module;
@@ -1926,6 +1869,7 @@ impl<'a> Splitter<'a> {
                 values.dedup();
                 Body {
                     hash: hashes[index],
+                    content: content[index],
                     callees,
                     values,
                 }
@@ -1939,6 +1883,7 @@ impl<'a> Splitter<'a> {
     fn build_call_graph(&mut self) -> Result<()> {
         let mut step = std::time::Instant::now();
         let original = ModuleWithRelocations::new(self.original)?;
+        self.data_names = original.data_names.clone();
         took("read the linked module's relocations", step);
         step = std::time::Instant::now();
         self.data_sizes = original
@@ -2133,97 +2078,7 @@ impl<'a> Splitter<'a> {
             self.bodies = bodies;
         }
 
-        step = std::time::Instant::now();
-
-        for (parnet, children) in self.call_graph.iter() {
-            for child in children {
-                self.parent_graph.entry(*child).or_default().insert(*parnet);
-            }
-        }
-
-        // Now go fill in the reachability graph for each of the split points
-        // We want to be as narrow as possible since we've reparented any new symbols to the main module
-        // Each point's walk reads the graph and writes its own set: walked
-        // one point a thread.
-        let roots = self.main_roots();
-        let (call_graph, split_points) = (&self.call_graph, &mut self.split_points);
-        let (main, ()) = rayon::join(
-            || reachable_graph(call_graph, &roots),
-            || {
-                split_points.par_iter_mut().for_each(|split| {
-                    let roots: HashSet<_> = split
-                        .entries
-                        .iter()
-                        .map(|entry| Node::Function(entry.func))
-                        .collect();
-                    split.reachable_graph = reachable_graph(call_graph, &roots);
-                });
-            },
-        );
-        // And then the reachability graph for main
-        self.main_graph = main;
-        took("walked the call graph from every split point", step);
-        step = std::time::Instant::now();
-        // WASM_SPLIT_WHY=name,name prints why each function stays in the main
-        // module (its path from a root) and stops: the way to find the next cut.
-        if let Ok(targets) = std::env::var("WASM_SPLIT_WHY") {
-            for target in targets.split(',') {
-                eprintln!("{target}:");
-                self.explain_main_path(target);
-            }
-            std::process::exit(0);
-        }
-
-        // And then the symbols shared between all
-        self.shared_symbols = {
-            let mut shared_funcs = HashSet::new();
-
-            for split in self.split_points.iter() {
-                shared_funcs.extend(self.main_graph.intersection(&split.reachable_graph));
-            }
-
-            // And then all our imports will be callabale via the ifunc table too
-            for import in self.source_module.imports.iter() {
-                if let ImportKind::Function(id) = import.kind {
-                    shared_funcs.insert(Node::Function(id));
-                }
-            }
-
-            // Make sure to make this *ordered*
-            shared_funcs.into_iter().collect()
-        };
-
-        took("found the shared symbols", step);
-        Ok(())
-    }
-
-    fn main_roots(&self) -> HashSet<Node> {
-        // Accumulate all the split entrypoints
-        // This will include wasm_bindgen functions too
-        let exported_splits = self.entry_funcs();
-
-        // And only return the functions that are reachable from the main module's start function
-        let mut roots = self
-            .source_module
-            .exports
-            .iter()
-            .filter_map(|e| match e.item {
-                ExportItem::Function(id) if !exported_splits.contains(&id) => {
-                    Some(Node::Function(id))
-                }
-                _ => None,
-            })
-            .chain(self.source_module.start.map(Node::Function))
-            .collect::<HashSet<Node>>();
-
-        // Also add "imports" to the roots
-        for import in self.source_module.imports.iter() {
-            if let ImportKind::Function(id) = import.kind {
-                roots.insert(Node::Function(id));
-            }
-        }
-
-        roots
+        self.derive_from_graph()
     }
 
     /// Convert this set of nodes to reference the new module
@@ -2779,69 +2634,6 @@ pub(crate) fn leave_holes_empty(out: &mut Module, hole: FunctionId) {
 }
 
 impl Splitter<'_> {
-    /// Keep in the main module every function that code staying there calls
-    /// or takes the address of. The relocation call graph can miss an edge
-    /// (wasm-bindgen rewrites and renames functions); deleting a function
-    /// that main still references breaks the module, while keeping one only
-    /// costs its bytes.
-    fn keep_referenced(&self, unused: &mut HashSet<Node>) {
-        let module = &self.source_module;
-        let split_exports = self.entry_funcs();
-        // Walk from everything main keeps, through both the code's own
-        // references and the relocation graph: a function kept only by
-        // this walk still reaches vtables (data symbols) whose methods are
-        // called through the table, and those must stay too, or the call
-        // lands on the hole left for a split module.
-        let mut queue: Vec<Node> = module
-            .funcs
-            .iter()
-            .map(|f| Node::Function(f.id()))
-            .filter(|node| !unused.contains(node))
-            .filter(|node| !matches!(node, Node::Function(id) if split_exports.contains(id)))
-            .collect();
-        let mut seen: HashSet<Node> = queue.iter().copied().collect();
-        let mut kept = 0usize;
-        while let Some(node) = queue.pop() {
-            let mut next: Vec<Node> = self
-                .call_graph
-                .get(&node)
-                .into_iter()
-                .flatten()
-                .copied()
-                .collect();
-            if let Node::Function(id) = node {
-                // What the body calls, as the walk that built the call graph
-                // read it (analysis.rs).
-                if let Some(body) = self
-                    .fns_to_ids
-                    .get(&id)
-                    .and_then(|index| index.checked_sub(self.imported))
-                    .and_then(|index| self.bodies.get(index))
-                {
-                    next.extend(
-                        body.callees
-                            .iter()
-                            .map(|index| Node::Function(self._ids_to_fns[*index as usize])),
-                    );
-                }
-            }
-            for child in next {
-                if seen.insert(child) {
-                    if unused.remove(&child) && matches!(child, Node::Function(_)) {
-                        kept += 1;
-                    }
-                    queue.push(child);
-                }
-            }
-        }
-        if kept > 0 {
-            tracing::warn!("kept {kept} functions in the main module the call graph had moved out");
-            eprintln!(
-                "wasm-split: kept {kept} functions in the start module that the call graph missed"
-            );
-        }
-    }
-
     /// Print the shortest path from a main root to the first function whose
     /// name contains `target`: why that function stays in the start module.
     fn explain_main_path(&self, target: &str) {

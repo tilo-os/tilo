@@ -331,6 +331,62 @@ fn a_split_from_the_cache_writes_what_emitting_writes() -> Result<()> {
     result
 }
 
+/// A split whose input gained a function with a signature of its own writes
+/// exactly what one that emits every module writes, and reads the modules the
+/// function does not reach back: a module's types are the ones its own code
+/// names, so a type added elsewhere moves no module's bytes.
+#[test]
+fn a_new_signature_reaches_no_other_module() -> Result<()> {
+    let source = include_str!("../fixtures/data_split.rs");
+    let changed = source
+        .replace(
+            "fn later_step(x: u32) -> u32 {",
+            "fn later_scale(x: f32, y: f32) -> f32 {\n    x * y + 0.5\n}\n\n#[inline(never)]\nfn later_step(x: u32) -> u32 {\n    let scaled = later_scale(x as f32, 0.25) as u32;\n    let _ = scaled;",
+        )
+        .replace(
+            "fn later_step(x: u32) -> u32 {\n    let scaled = later_scale(x as f32, 0.25) as u32;\n    let _ = scaled;\n    x.rotate_left(7) ^ 0x5bd1_e995\n}",
+            "fn later_step(x: u32) -> u32 {\n    let scaled = later_scale(x as f32, 0.25) as u32;\n    (x.rotate_left(7) ^ 0x5bd1_e995) ^ scaled\n}",
+        );
+    assert_ne!(source, changed);
+    let before = build_fixture("new-signature")?.linked;
+    let after = build_fixture_from("new-signature", &changed)?.linked;
+    let (before_bound, after_bound) = (
+        without_link_sections(&before)?,
+        without_link_sections(&after)?,
+    );
+    let dir = scratch("new-signature-cache");
+    std::fs::remove_dir_all(&dir).ok();
+    let result = (|| -> Result<()> {
+        let fresh = |linked: &[u8], bound: &[u8]| -> Result<_> {
+            Ok(written_modules(
+                Splitter::new(linked, bound)?.emit_with(None)?,
+            ))
+        };
+        let cached = |linked: &[u8], bound: &[u8]| -> Result<(_, usize, usize)> {
+            let outputs = Splitter::new(linked, bound)?.emit_with(Some(&EmitCache::at(&dir)?))?;
+            let reused = outputs.reused;
+            let count = outputs.modules.len() + outputs.chunks.len() + 1;
+            Ok((written_modules(outputs), reused, count))
+        };
+        let (first, reused, _) = cached(&before, &before_bound)?;
+        assert_eq!(reused, 0, "an empty cache holds no module");
+        assert!(first == fresh(&before, &before_bound)?);
+        let (changed_output, reused, count) = cached(&after, &after_bound)?;
+        assert!(
+            changed_output == fresh(&after, &after_bound)?,
+            "after a new signature, the cache gave other modules than emitting does"
+        );
+        assert!(
+            reused > 0 && reused < count,
+            "a function with a new signature emitted {} of {count} modules again",
+            count - reused
+        );
+        Ok(())
+    })();
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
 /// A split whose input gained a function elsewhere writes exactly what one
 /// that emits every module writes, and reads back the modules the function
 /// does not reach: a function added renumbers the module's index spaces, and
@@ -459,6 +515,147 @@ fn a_split_from_the_analysis_cache_writes_what_emitting_writes() -> Result<()> {
     })();
     std::fs::remove_dir_all(&dir).ok();
     result
+}
+
+/// A split whose functions were renumbered (a function added) reads last
+/// run's plan and bodies through the renumbering the bind patch wrote, and
+/// writes exactly what a split that makes both again writes.
+#[test]
+fn a_split_moved_through_a_renumbering_writes_what_emitting_writes() -> Result<()> {
+    let source = include_str!("../fixtures/data_split.rs");
+    let changed = source.replace(
+        "fn later_step(x: u32) -> u32 {\n    x.rotate_left(7) ^ 0x5bd1_e995\n}",
+        "fn later_offset(x: u32) -> u32 {\n    x.wrapping_mul(0x9e37_79b9)\n}\n\n#[inline(never)]\nfn later_step(x: u32) -> u32 {\n    (x.rotate_left(7) ^ 0x5bd1_e995) ^ later_offset(x)\n}",
+    );
+    assert_ne!(source, changed);
+    let before = build_fixture("renumber")?.linked;
+    let after = build_fixture_from("renumber", &changed)?.linked;
+    let (before_bound, after_bound) = (
+        without_link_sections(&before)?,
+        without_link_sections(&after)?,
+    );
+    let dir = scratch("renumber-cache");
+    std::fs::remove_dir_all(&dir).ok();
+    let result = (|| -> Result<()> {
+        let fresh = |linked: &[u8], bound: &[u8]| -> Result<_> {
+            Ok(written_modules(
+                Splitter::new(linked, bound)?.emit_with(None)?,
+            ))
+        };
+        let plans = crate::plan::PlanCache::at(&dir);
+        let analysis = AnalysisCache::at(&dir);
+        // The run the module changed from: its plan and its bodies are kept.
+        let mut splitter = Splitter::prepare(&before, &before_bound, Some(&analysis))?;
+        splitter.finish(Some(&plans))?;
+        let first = written_modules(splitter.emit_with(Some(&EmitCache::at(&dir)?))?);
+        assert!(first == fresh(&before, &before_bound)?);
+        // What the bind patch made of each function.
+        let (old_imports, old_names) = function_names(&before_bound)?;
+        let (new_imports, new_names) = function_names(&after_bound)?;
+        assert!(!old_names.is_empty());
+        let map = old_names
+            .iter()
+            .map(|name| {
+                let mut found = new_names
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, new)| *new == name)
+                    .map(|(index, _)| index as u32);
+                let first = found.next()?;
+                found.next().is_none().then_some(first)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            map.iter().filter(|target| target.is_some()).count() > old_names.len() / 2,
+            "the fixtures' functions did not pair"
+        );
+        let linked = (0..new_imports + new_names.len() as u32)
+            .map(Some)
+            .collect::<Vec<_>>();
+        let path = dir.join("renumber.bin");
+        crate::analysis::write_renumbering(
+            &path,
+            &after_bound,
+            old_imports,
+            new_imports,
+            &map,
+            &linked,
+        )?;
+        let renumber = crate::analysis::Renumber::read_file(&path, &after_bound)
+            .context("reading the renumbering")?;
+        let mut splitter =
+            Splitter::prepare_with(&after, &after_bound, Some(&analysis), Some(renumber))?;
+        splitter.finish(Some(&plans))?;
+        let moved = plans.moved();
+        let outputs = splitter.emit_with(Some(&EmitCache::at(&dir)?))?;
+        let bodies_reused = outputs.bodies_reused;
+        let second = written_modules(outputs);
+        assert!(moved > 0, "the plan was not moved through the renumbering");
+        assert!(
+            bodies_reused > 0,
+            "no body was read back through the renumbering"
+        );
+        let expected = fresh(&after, &after_bound)?;
+        for e in &expected {
+            let got = second.iter().find(|module| module.0 == e.0);
+            assert!(got.is_some(), "module {} missing", e.0);
+            assert!(got.unwrap() == e, "module {} differs", e.0);
+        }
+        assert_eq!(second.len(), expected.len());
+        assert!(second != first, "the change reached no module");
+        Ok(())
+    })();
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
+/// The linked module's imported function count, and the names of its own
+/// functions in order: what a renumbering is made from.
+fn function_names(bound: &[u8]) -> Result<(u32, Vec<String>)> {
+    let mut imports = 0u32;
+    let mut names = std::collections::HashMap::new();
+    let mut locals = 0usize;
+    for payload in wasmparser::Parser::new(0).parse_all(bound) {
+        match payload? {
+            Payload::ImportSection(section) => {
+                for import in section {
+                    if matches!(import?.ty, wasmparser::TypeRef::Func(_)) {
+                        imports += 1;
+                    }
+                }
+            }
+            Payload::FunctionSection(section) => {
+                for entry in section {
+                    let _ = entry?;
+                    locals += 1;
+                }
+            }
+            Payload::CustomSection(section) if section.name() == "name" => {
+                let reader = wasmparser::NameSectionReader::new(wasmparser::BinaryReader::new(
+                    section.data(),
+                    section.data_offset(),
+                ));
+                for part in reader {
+                    if let wasmparser::Name::Function(map) = part? {
+                        for naming in map {
+                            let naming = naming?;
+                            names.insert(naming.index, naming.name.to_owned());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let locals = (0..locals)
+        .map(|local| {
+            names
+                .get(&(imports + local as u32))
+                .cloned()
+                .unwrap_or_else(|| format!("function {local}"))
+        })
+        .collect();
+    Ok((imports, locals))
 }
 
 /// A split that takes the plan an earlier one made (plan.rs) writes exactly

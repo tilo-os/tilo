@@ -49,12 +49,16 @@ fn run(args: &[&OsStr]) -> std::process::ExitStatus {
 }
 
 fn record(dir: &Path) -> std::process::ExitStatus {
+    record_pair(dir, "linked0", "bound0")
+}
+
+fn record_pair(dir: &Path, linked: &str, bound: &str) -> std::process::ExitStatus {
     run(&[
         OsStr::new("record"),
         OsStr::new("--linked"),
-        module(dir, "linked0").as_os_str(),
+        module(dir, linked).as_os_str(),
         OsStr::new("--bound"),
-        module(dir, "bound0").as_os_str(),
+        module(dir, bound).as_os_str(),
         OsStr::new("--cache"),
         cache(dir).as_os_str(),
     ])
@@ -107,17 +111,55 @@ fn a_change_outside_bodies_asks_for_a_full_bind() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A body that changed size moves its function in the bind's order, and the
+/// function and type sections with it; the module is written again and is
+/// what a fresh bind writes.
 #[test]
-fn a_body_that_changed_size_asks_for_a_full_bind() {
+fn a_body_that_changed_size_patches_to_exactly_what_a_fresh_bind_writes() {
     let dir = workspace("size");
     assert!(record(&dir).success());
     let out = dir.join("patched.wasm");
-    let status = apply(&dir, "linked-changed-size", &out);
-    assert_eq!(
-        status.code(),
-        Some(3),
-        "an instruction added to a body moves the function the bind emits it at"
+    assert!(apply(&dir, "linked-changed-size", &out).success());
+    let patched = std::fs::read(&out).expect("the patched module");
+    let fresh = std::fs::read(module(&dir, "bound-changed-size")).expect("the fresh bind");
+    assert!(
+        patched == fresh,
+        "a body that changed size is not written as a full bind writes it"
     );
-    assert!(!out.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A function added shifts the positions the bind emits every function after
+/// it at, and the type, export, element and name indices with them; the
+/// patched module is what a fresh bind writes.
+#[test]
+fn a_function_added_patches_to_exactly_what_a_fresh_bind_writes() {
+    let dir = workspace("fn-add");
+    assert!(record(&dir).success());
+    let out = dir.join("patched.wasm");
+    assert!(apply(&dir, "linked-fn-add", &out).success());
+    let patched = std::fs::read(&out).expect("the patched module");
+    let fresh = std::fs::read(module(&dir, "bound-fn-add")).expect("the fresh bind");
+    assert!(
+        patched == fresh,
+        "the patched module is not the module a full bind writes"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A function removed is the same change the other way: the kept bind has
+/// the function, the linked module has not.
+#[test]
+fn a_function_removed_patches_to_exactly_what_a_fresh_bind_writes() {
+    let dir = workspace("fn-remove");
+    assert!(record_pair(&dir, "linked-fn-add", "bound-fn-add").success());
+    let out = dir.join("patched.wasm");
+    assert!(apply(&dir, "linked0", &out).success());
+    let patched = std::fs::read(&out).expect("the patched module");
+    let fresh = std::fs::read(module(&dir, "bound0")).expect("the fresh bind");
+    assert!(
+        patched == fresh,
+        "the patched module is not the module a full bind writes"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

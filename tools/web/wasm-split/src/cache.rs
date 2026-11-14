@@ -354,7 +354,11 @@ pub(crate) fn sections_not_keyed(bytes: &[u8]) -> Result<Vec<Range<usize>>> {
         at = (at + size).min(bytes.len());
         let custom_kept =
             id == 0 && custom_section_name(bytes, contents) == Some("target_features");
-        if (3..=12).contains(&id) || (id == 0 && !custom_kept) {
+        // The types are left out too: a module's emission writes the types
+        // its own functions and bodies name, in the bind's canonical order,
+        // so a type added elsewhere (a function given a signature the module
+        // does not use) moves no module's bytes.
+        if id == 1 || (3..=12).contains(&id) || (id == 0 && !custom_kept) {
             skipped.push(start..at);
         }
     }

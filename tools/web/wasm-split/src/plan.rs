@@ -34,7 +34,7 @@ use crate::split::{hash_sections, read_leb};
 
 /// Raised whenever what a plan is made from, or what it holds, changes, so a
 /// directory an older splitter filled is never read as this one's.
-const MAGIC: &[u8; 8] = b"WSSPLN\0\x03";
+const MAGIC: &[u8; 8] = b"WSSPLN\0\x04";
 
 /// The code section's id; its bytes move with a change and are no part of a
 /// plan.
@@ -81,6 +81,13 @@ pub struct Plan {
     pub data_sizes: HashMap<usize, usize>,
     /// The start module's symbols that nothing it keeps reaches.
     pub unused: HashSet<Node>,
+    /// Every function and data symbol's outgoing edges: what a plan read
+    /// back through a renumbering is moved by without reading the relocations
+    /// again (split.rs's `read_plan_back`).
+    pub graph: HashMap<Node, HashSet<Node>>,
+    /// Each data symbol's name, by its index: the identity a function added
+    /// or removed leaves as it was while the index moves.
+    pub data_names: Vec<(usize, String)>,
 }
 
 /// What a split's plan was made from (see the module comment): `structure` is
@@ -137,6 +144,8 @@ pub struct PlanCache {
     dir: PathBuf,
     /// How many plans this cache read back: a split that took one says so.
     taken: std::sync::atomic::AtomicUsize,
+    /// How many plans were moved to another module's indices.
+    moved: std::sync::atomic::AtomicUsize,
 }
 
 impl PlanCache {
@@ -152,6 +161,7 @@ impl PlanCache {
         Self {
             dir: cache.join("plans"),
             taken: std::sync::atomic::AtomicUsize::new(0),
+            moved: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -202,6 +212,17 @@ impl PlanCache {
                 .insert(read.u64()? as usize, read.u64()? as usize);
         }
         plan.unused = read.nodes()?;
+        for _ in 0..read.u64()? {
+            let node = read.u64()?;
+            plan.graph.insert(node, read.nodes()?);
+        }
+        for _ in 0..read.u64()? {
+            let index = read.u64()? as usize;
+            let len = read.u64()? as usize;
+            let name = read.take(len)?;
+            plan.data_names
+                .push((index, String::from_utf8(name.to_vec()).ok()?));
+        }
         Some(plan)
     }
 
@@ -234,14 +255,57 @@ impl PlanCache {
             out.extend_from_slice(&(*size as u64).to_le_bytes());
         }
         write_nodes(&mut out, &plan.unused);
+        out.extend_from_slice(&(plan.graph.len() as u64).to_le_bytes());
+        for (node, children) in &plan.graph {
+            out.extend_from_slice(&node.to_le_bytes());
+            write_nodes(&mut out, children);
+        }
+        out.extend_from_slice(&(plan.data_names.len() as u64).to_le_bytes());
+        for (index, name) in &plan.data_names {
+            out.extend_from_slice(&(*index as u64).to_le_bytes());
+            out.extend_from_slice(&(name.len() as u64).to_le_bytes());
+            out.extend_from_slice(name.as_bytes());
+        }
         std::fs::create_dir_all(&self.dir)
             .with_context(|| format!("creating {}", self.dir.display()))?;
         let path = self.path(key);
         let partial = self.dir.join(format!(".{key}.{}", std::process::id()));
         std::fs::write(&partial, &out).with_context(|| format!("writing {}", partial.display()))?;
         std::fs::rename(&partial, &path).with_context(|| format!("writing {}", path.display()))?;
+        // The plan this run made: the next one may move it through a
+        // renumbering when its own key is not here.
+        let latest = self.dir.join("latest");
+        let partial = self.dir.join(format!(".latest.{}", std::process::id()));
+        std::fs::write(&partial, key).with_context(|| format!("writing {}", partial.display()))?;
+        std::fs::rename(&partial, &latest)
+            .with_context(|| format!("writing {}", latest.display()))?;
         self.prune(key);
         Ok(())
+    }
+
+    /// Say this run took the plan under `key`: the next run moves this one.
+    pub fn touch(&self, key: &str) {
+        let latest = self.dir.join("latest");
+        let partial = self.dir.join(format!(".latest.{}", std::process::id()));
+        if std::fs::write(&partial, key).is_ok() {
+            let _ = std::fs::rename(&partial, &latest);
+        }
+    }
+
+    /// The plan the last run made, if this cache holds it: the one a
+    /// renumbering moves to this run's module.
+    pub fn load_latest(&self) -> Option<Plan> {
+        let key = std::fs::read_to_string(self.dir.join("latest")).ok()?;
+        let plan = self.load(key.trim())?;
+        self.moved
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Some(plan)
+    }
+
+    /// How many plans this cache moved to another module's indices.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn moved(&self) -> usize {
+        self.moved.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Drop the plans this run did not use, past the last few: a plan that
@@ -331,6 +395,16 @@ mod tests {
             shared_symbols: [function_node(11), data_node(12)].into_iter().collect(),
             data_sizes: [(12, 4096)].into_iter().collect(),
             unused: [function_node(13), data_node(14)].into_iter().collect(),
+            graph: [
+                (
+                    function_node(1),
+                    [function_node(2), data_node(3)].into_iter().collect(),
+                ),
+                (data_node(3), [function_node(4)].into_iter().collect()),
+            ]
+            .into_iter()
+            .collect(),
+            data_names: [(3, "a static".to_string())].into_iter().collect(),
         };
         cache.store("abc", &plan).expect("store");
         let read = cache.load("abc").expect("load");
@@ -343,6 +417,8 @@ mod tests {
         assert_eq!(read.shared_symbols, plan.shared_symbols);
         assert_eq!(read.data_sizes, plan.data_sizes);
         assert_eq!(read.unused, plan.unused);
+        assert_eq!(read.graph, plan.graph);
+        assert_eq!(read.data_names, plan.data_names);
         assert!(cache.load("other").is_none(), "another key is no plan");
         std::fs::remove_dir_all(&dir).ok();
     }

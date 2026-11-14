@@ -29,6 +29,8 @@ pub(crate) struct ModuleWithRelocations<'a> {
     symbols: Vec<SymbolInfo<'a>>,
     funcs_by_index: Vec<FunctionId>,
     pub(crate) call_graph: HashMap<Node, HashSet<Node>>,
+    /// Each data symbol's name, by its index in the linked module.
+    pub(crate) data_names: HashMap<usize, String>,
     parents: HashMap<Node, HashSet<Node>>,
     relocation_map: HashMap<Node, Vec<RelocationEntry>>,
     pub(crate) data_symbols: BTreeMap<usize, DataSymbol>,
@@ -63,6 +65,17 @@ impl<'a> ModuleWithRelocations<'a> {
             })
             .collect::<Vec<_>>();
 
+        let data_names = raw_data
+            .symbols
+            .iter()
+            .enumerate()
+            .filter_map(|(index, symbol)| match symbol {
+                SymbolInfo::Data { name, .. } if !name.is_empty() => {
+                    Some((index, name.to_string()))
+                }
+                _ => None,
+            })
+            .collect();
         let mut module = Self {
             module,
             code_ranges,
@@ -71,6 +84,7 @@ impl<'a> ModuleWithRelocations<'a> {
             symbols: raw_data.symbols,
             funcs_by_index,
             call_graph: Default::default(),
+            data_names,
             relocation_map: Default::default(),
             parents: Default::default(),
         };
@@ -325,4 +339,112 @@ pub(crate) fn data_symbol_ids(original: &[u8]) -> Result<Vec<u64>> {
         }
     }
     Ok(ids)
+}
+
+/// Each data symbol's name, by its index in the linked module: the identity
+/// a function added or removed leaves as it was, while the symbol's index
+/// moves (the table lists functions and data together).
+pub(crate) fn data_names(original: &[u8]) -> Result<HashMap<usize, String>> {
+    let mut names = HashMap::new();
+    for payload in wasmparser::Parser::new(0).parse_all(original) {
+        let Payload::CustomSection(section) = payload? else {
+            continue;
+        };
+        if section.name() != "linking" {
+            continue;
+        }
+        let reader = LinkingSectionReader::new(BinaryReader::new(section.data(), 0))?;
+        for subsection in reader.subsections() {
+            let Linking::SymbolTable(map) = subsection? else {
+                continue;
+            };
+            for (index, symbol) in map.into_iter().enumerate() {
+                if let SymbolInfo::Data { name, .. } = symbol? {
+                    if !name.is_empty() {
+                        names.insert(index, name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Ok(names)
+}
+
+/// The data symbols each of `wanted`'s functions holds a relocation to, by
+/// the linked module's local function index.
+///
+/// The splitter's plan has an edge from a function to every symbol its code
+/// renames; a plan a function added or removed leaves as it was keeps the
+/// edges of untouched functions, and this reads the ones the changed
+/// functions have now without reading the whole call graph again.
+pub(crate) fn code_data_edges(
+    original: &[u8],
+    wanted: &HashSet<usize>,
+) -> Result<HashMap<usize, Vec<usize>>> {
+    if wanted.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let raw = parse_bytes_to_data_segment(original)?;
+    let symbols = &raw.symbols;
+    let code = code_section(original)?.context("module has no code section")?;
+    let mut imported = 0usize;
+    for payload in wasmparser::Parser::new(0).parse_all(original) {
+        let Payload::ImportSection(imports) = payload? else {
+            continue;
+        };
+        for import in imports {
+            if matches!(import?.ty, wasmparser::TypeRef::Func(_)) {
+                imported += 1;
+            }
+        }
+    }
+    // Each local function's code, as relocation offsets count: from the code
+    // section's contents, including the body's size LEB.
+    let ranges = code
+        .bodies
+        .iter()
+        .map(|body| {
+            let size_len = (usize::BITS - body.len().leading_zeros())
+                .div_ceil(7)
+                .max(1);
+            let start = body.start - code.contents - size_len as usize;
+            start..body.end - code.contents
+        })
+        .collect::<Vec<_>>();
+    let mut relocations = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(original) {
+        let Payload::CustomSection(section) = payload? else {
+            continue;
+        };
+        if section.name() != "reloc.CODE" {
+            continue;
+        }
+        let reader = RelocSectionReader::new(BinaryReader::new(section.data(), 0))?;
+        relocations.extend(reader.entries().into_iter().flatten());
+    }
+    let mut edges: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut at = 0;
+    for entry in relocations {
+        let offset = entry.relocation_range().start;
+        while at < ranges.len() && ranges[at].end <= offset {
+            at += 1;
+        }
+        let Some(range) = ranges.get(at) else { break };
+        if offset < range.start {
+            continue;
+        }
+        if entry.ty == wasmparser::RelocationType::TypeIndexLeb
+            || !wanted.contains(&(imported + at))
+        {
+            continue;
+        }
+        let Some(SymbolInfo::Data { .. }) = symbols.get(entry.index as usize) else {
+            continue;
+        };
+        edges
+            .entry(imported + at)
+            .or_default()
+            .push(entry.index as usize);
+    }
+    Ok(edges)
 }

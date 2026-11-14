@@ -380,6 +380,11 @@ else
     fi
   fi
   [[ $bind_input == "$linked" ]] || rm -f "$bind_input"
+  # What the patch made of every function, when it wrote the module again
+  # with functions renumbered: the splitter reads its kept plan and bodies
+  # through it (wasm-split's analysis.rs, plan.rs).
+  local renumber=
+  if [[ -f $bind_cache/renumber.bin ]]; then renumber=$bind_cache/renumber.bin; fi
   began=$SECONDS
   if [[ $bundle == desktop && $split == 1 ]]; then
     # The local bundle keeps the modules each split emitted in the build
@@ -391,7 +396,8 @@ else
       split_cache=$target_dir/wasm-split-cache/$bundle-$profile
       [[ $names == 0 ]] || split_cache+=-names
     fi
-    WASM_SPLIT_CACHE=$split_cache RAYON_NUM_THREADS=${RAYON_NUM_THREADS:-16} \
+    WASM_SPLIT_CACHE=$split_cache WASM_SPLIT_RENUMBER=$renumber \
+      RAYON_NUM_THREADS=${RAYON_NUM_THREADS:-16} \
       bash "$repo/tools/web/wasm-split/split.sh" "$linked" "$next"
   elif [[ $bundle == desktop ]]; then
     bash "$repo/tools/web/wasm-split/split.sh" --unsplit "$next"
