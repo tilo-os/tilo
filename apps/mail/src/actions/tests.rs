@@ -359,6 +359,15 @@ fn drafts_labels_and_folders_round_trip_and_stay_bounded() {
     }
 
     {
+        // The window whose code records the draft keeps its parts in its own
+        // content store: a body at the bound is more than an action carries
+        // inline.
+        let window = ui::wake::WakeScope::new();
+        ui::tilo_resource::content::register(
+            &window.handle(),
+            ui::content::ContentStore::memory_in_workspace(),
+        );
+        let _in_the_window = window.enter();
         let mut mail = Replica::<Mail>::new();
         let draft = Draft {
             subject: "é".repeat(MAX_DRAFT_SUBJECT_CHARS + 10),

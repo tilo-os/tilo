@@ -232,7 +232,8 @@ mod tests {
     #[test]
     fn the_file_manager_is_handed_this_devices_home() {
         let directory = tempfile::tempdir().expect("a directory");
-        let workspace = Workspace::under(directory.path(), "workspace-7");
+        let mut workspace = Workspace::under(directory.path(), "workspace-7");
+        workspace.person = "person-7".to_owned();
         let home = PathBuf::from("/home/you");
         assert_eq!(
             workspace.grants_for_launch("so.tilo.file-explorer", Some(home.clone())),
@@ -246,7 +247,6 @@ mod tests {
                     )
                     .through("so.tilo.file-explorer"),
                 ],
-                ..LaunchGrants::default()
             }
         );
         assert!(
@@ -282,6 +282,8 @@ mod tests {
     fn a_launch_reads_back_only_what_this_app_was_granted() {
         let directory = tempfile::tempdir().expect("a directory");
         let mut workspace = Workspace::under(directory.path(), "workspace-7");
+        workspace.policy = Some(WorkspacePolicy::new("workspace-7", "person-7"));
+        workspace.person = "person-7".to_owned();
         workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
         workspace.grants = {
             let mut grants = workspace.grants.clone();
@@ -293,7 +295,6 @@ mod tests {
                 )
                 .through("so.tilo.mail"),
             );
-            grants.author = true;
             grants
         };
         let path = workspace
@@ -304,11 +305,14 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).expect("readable")).expect("JSON");
         assert_eq!(
             read,
-            workspace.grants.for_app("so.tilo.notes"),
+            workspace.grants_for_launch("so.tilo.notes", None),
             "the launcher reads what was granted to this app, not the workspace's other grants"
         );
         assert_eq!(read.sandbox.len(), 1);
-        assert!(read.author);
+        assert!(
+            read.author,
+            "the person may change the workspace through the app"
+        );
     }
 
     #[test]

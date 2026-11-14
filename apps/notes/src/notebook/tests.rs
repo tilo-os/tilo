@@ -957,8 +957,11 @@ fn an_imported_wiki_keeps_its_tree_tags_and_pictures_and_updates_in_place() {
 
     let handbook = imported_page_id("outline", "a");
     let expenses = imported_page_id("outline", "b");
-    assert_eq!(children(&notebook, None), [handbook.clone()]);
-    assert_eq!(children(&notebook, Some(&handbook)), [expenses.clone()]);
+    assert_eq!(children(&notebook, None), std::slice::from_ref(&handbook));
+    assert_eq!(
+        children(&notebook, Some(&handbook)),
+        std::slice::from_ref(&expenses)
+    );
     let expenses_page = page(&notebook, &expenses);
     assert_eq!(expenses_page.title, "Expenses");
     assert_eq!(expenses_page.tags.len(), 2);

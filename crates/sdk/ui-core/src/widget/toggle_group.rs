@@ -2423,47 +2423,33 @@ impl Widget for ToggleGroup {
             self.segments.get(self.selected).map(|s| s.label.clone())
         };
         // Segments are drawn, not child widgets: each is a synthetic child so assistive
-        // technology enumerates the choices, not just the active one. A strip folded into a picker
-        // offers its choices through the menu it opens, so the one control a person reaches is the
-        // picker itself.
+        // technology enumerates the choices, not just the active one. A strip folded into a
+        // picker is still the same set of choices to a reader; folding is how it paints.
         let count = self.segments.len();
-        let seg_children: Vec<AccessNode> = if self.folded {
-            vec![
-                AccessNode::new(Role::Button)
-                    .with_action_target(self.segment_id(self.selected))
-                    .with_name(value.clone().unwrap_or_default())
+        let seg_children: Vec<AccessNode> = self
+            .segments
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let on = match &self.chosen {
+                    Some(chosen) => chosen.get(i).copied().unwrap_or(false),
+                    None => i == self.selected,
+                };
+                let node = AccessNode::new(Role::ToggleButton)
+                    .with_action_target(self.segment_id(i))
+                    .with_name(s.label.clone())
                     .with_state(
                         AccessState::new()
-                            .expanded(self.menu.is_open())
-                            .disabled(!self.is_enabled()),
+                            .checked(on)
+                            .disabled(!self.is_enabled() || s.disabled),
                     )
-                    .with_bounds(self.target_rect(self.rect)),
-            ]
-        } else {
-            self.segments
-                .iter()
-                .enumerate()
-                .map(|(i, s)| {
-                    let on = match &self.chosen {
-                        Some(chosen) => chosen.get(i).copied().unwrap_or(false),
-                        None => i == self.selected,
-                    };
-                    let node = AccessNode::new(Role::ToggleButton)
-                        .with_action_target(self.segment_id(i))
-                        .with_name(s.label.clone())
-                        .with_state(
-                            AccessState::new()
-                                .checked(on)
-                                .disabled(!self.is_enabled() || s.disabled),
-                        )
-                        .with_position(i.saturating_add(1), count);
-                    match self.segment_rects.get(i) {
-                        Some(rect) => node.with_bounds(self.target_rect(*rect)),
-                        None => node,
-                    }
-                })
-                .collect()
-        };
+                    .with_position(i.saturating_add(1), count);
+                match self.segment_rects.get(i) {
+                    Some(rect) => node.with_bounds(self.target_rect(*rect)),
+                    None => node,
+                }
+            })
+            .collect();
         let name = self
             .accessible_name
             .as_deref()
