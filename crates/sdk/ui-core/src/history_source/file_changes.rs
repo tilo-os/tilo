@@ -46,8 +46,8 @@ pub const MAX_DIFF_LINES: usize = 20_000;
 /// at it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum WriterKey {
-    /// `agent:claude:<session>`, `agent:<id>`, `app:<id>`, `program:<id>`.
-    Actor(String),
+    /// What the signing device recorded as the writer.
+    Actor(fs_protocol::AttributedWriter),
     /// The person at the device that signed the version.
     Device(String),
 }
@@ -57,7 +57,7 @@ impl WriterKey {
     #[must_use]
     pub fn of(version: &FileVersionV1, attribution: Option<&FileAttributionV1>) -> Self {
         match attribution.filter(|attribution| attribution.validate().is_ok()) {
-            Some(attribution) => Self::Actor(attribution.actor.clone()),
+            Some(attribution) => Self::Actor(attribution.writer.clone()),
             // The person *and* the device: a version nobody was attributed
             // for is the person at that device.
             None => Self::Device(format!(
@@ -68,17 +68,17 @@ impl WriterKey {
         }
     }
 
-    /// Whether this writer is a coding agent's session (`agent:<kind>:<id>`),
-    /// whose whole session is one run in history.
+    /// Whether this writer is a coding agent's session, whose whole session
+    /// is one run in history.
     #[must_use]
     pub fn is_agent_session(&self) -> bool {
-        let Self::Actor(actor) = self else {
-            return false;
-        };
-        let Some(writer) = actor.strip_prefix("agent:") else {
-            return false;
-        };
-        writer.contains(':')
+        matches!(
+            self,
+            Self::Actor(fs_protocol::AttributedWriter::Agent {
+                session: Some(_),
+                ..
+            })
+        )
     }
 }
 
@@ -469,9 +469,9 @@ mod tests {
         }
     }
 
-    fn attribution(actor: &str, label: &str) -> FileAttributionV1 {
+    fn attribution(writer: fs_protocol::AttributedWriter, label: &str) -> FileAttributionV1 {
         FileAttributionV1 {
-            actor: actor.into(),
+            writer,
             label: label.into(),
             color: [10, 20, 30],
         }
@@ -493,12 +493,18 @@ mod tests {
         assert_eq!(changes[1].versions.len(), 1, "a later edit");
 
         let mut attributions = BTreeMap::new();
-        attributions.insert(versions[1].id, attribution("app:so.tilo.notes", "Notes"));
+        attributions.insert(
+            versions[1].id,
+            attribution(
+                fs_protocol::AttributedWriter::App("so.tilo.notes".into()),
+                "Notes",
+            ),
+        );
         let changes = coalesce(&versions, &attributions, QUIET, &NoTurnBoundary);
         assert_eq!(changes.len(), 3, "another writer split the save");
         assert_eq!(
-            changes[1].writer.as_ref().map(|a| a.actor.as_str()),
-            Some("app:so.tilo.notes")
+            changes[1].writer.as_ref().map(|a| &a.writer),
+            Some(&fs_protocol::AttributedWriter::App("so.tilo.notes".into()))
         );
         assert_eq!(changes[1].versions.len(), 1);
     }
@@ -540,7 +546,10 @@ mod tests {
         for version in &versions {
             attributions.insert(
                 version.id,
-                attribution("agent:claude:session-1", "Report work"),
+                attribution(
+                    fs_protocol::AttributedWriter::agent_session("claude", "session-1"),
+                    "Report work",
+                ),
             );
         }
         let changes = coalesce(&versions, &attributions, QUIET, &NoTurnBoundary);

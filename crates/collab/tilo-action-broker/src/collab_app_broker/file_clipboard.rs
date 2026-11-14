@@ -272,13 +272,15 @@ fn session_person(identity: &super::AdmittedJoinIdentity) -> Option<&str> {
 /// attributed to. A person, an app, a bot, an agent acting for somebody else
 /// or for nobody is refused.
 fn attributed_agent(actor: &super::BrokerActor, person: Option<&str>) -> Result<String, String> {
-    match person {
-        Some(person)
-            if actor.is_agent()
-                && actor.id().starts_with("agent:")
-                && actor.for_person.as_deref() == Some(person) =>
+    let agent = tilo_actions::MemberId::parse(actor.id());
+    match (
+        person,
+        agent.as_ref().and_then(tilo_actions::MemberId::agent_id),
+    ) {
+        (Some(person), Some(agent))
+            if actor.is_agent() && actor.for_person.as_deref() == Some(person) =>
         {
-            Ok(actor.id().to_owned())
+            Ok(agent.to_owned())
         }
         _ => Err("only an agent acting for this session's person is attributed".into()),
     }
@@ -354,13 +356,10 @@ mod attribution_tests {
     #[test]
     fn writes_are_attributed_only_to_an_agent_acting_for_the_session_person() {
         let scribe = BrokerActor::agent("agent:scribe").for_person("ada");
-        assert_eq!(
-            attributed_agent(&scribe, Some("ada")),
-            Ok("agent:scribe".into())
-        );
+        assert_eq!(attributed_agent(&scribe, Some("ada")), Ok("scribe".into()));
         assert_eq!(
             attributed_agent(&scribe.clone().session_delegated(), Some("ada")),
-            Ok("agent:scribe".into())
+            Ok("scribe".into())
         );
         for (actor, person) in [
             (scribe.clone(), Some("bea")),

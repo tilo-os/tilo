@@ -185,7 +185,7 @@ pub enum FsRequest {
     SessionRefreshPublic,
     SessionAttributeWrites {
         paths: Vec<String>,
-        actor: String,
+        agent: String,
         label: String,
         color: [u8; 3],
         ttl_ms: u32,

@@ -95,7 +95,10 @@ tilo_test_env::scenario! {
             Writer::Agent { harness: Harness::ClaudeCode, session: "4f2c".into(), title: Some("Tidy the notes".into()) }
         );
         let attribution = writer.attribution().unwrap();
-        assert_eq!(attribution.actor, "agent:claude:4f2c");
+        assert_eq!(
+            attribution.writer,
+            fs_protocol::AttributedWriter::agent_session("claude", "4f2c")
+        );
         assert_eq!(attribution.label, "Tidy the notes");
         assert_eq!(attribution.validate(), Ok(()));
         // FUSE names the thread that writes, here one of Claude Code's.
@@ -179,7 +182,10 @@ tilo_test_env::scenario! {
         procs.spawn(606, 1, 1, false, &[], "/user.slice/user-1000.slice/session-2.scope");
         let resolver = procs.resolver();
         assert_eq!(resolver.resolve(600), Writer::App { id: "so.tilo.notes".into() });
-        assert_eq!(resolver.resolve(600).attribution().unwrap().actor, "app:so.tilo.notes");
+        assert_eq!(
+            resolver.resolve(600).attribution().unwrap().writer,
+            fs_protocol::AttributedWriter::App("so.tilo.notes".into())
+        );
         assert_eq!(resolver.resolve(601), Writer::App { id: "so.tilo.my-app".into() });
         assert_eq!(
             resolver.resolve(602),
@@ -206,6 +212,9 @@ tilo_test_env::scenario! {
         assert!(attribution.label.len() <= fs_protocol::files::MAX_ATTRIBUTION_TEXT_BYTES);
         assert!(!attribution.label.contains('\u{7}'));
         assert_eq!(attribution.validate(), Ok(()));
-        assert_eq!(colour_of("agent:claude:s"), attribution.color);
+        assert_eq!(
+            colour_of(&fs_protocol::AttributedWriter::agent_session("claude", "s")),
+            attribution.color
+        );
     }
 }

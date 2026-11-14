@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use fs_protocol::FileAttributionV1;
+use fs_protocol::{AttributedWriter, FileAttributionV1};
 
 /// How many ancestors are looked through for an agent's process.
 const MAX_ANCESTORS: usize = 64;
@@ -42,9 +42,9 @@ pub enum Harness {
 }
 
 impl Harness {
-    /// The principal's prefix: `agent:<prefix>:<session id>`.
+    /// The agent's id.
     #[must_use]
-    pub const fn prefix(self) -> &'static str {
+    pub const fn agent(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude",
             Self::Codex => "codex",
@@ -60,14 +60,6 @@ impl Harness {
             Self::Codex => "Codex",
             Self::Pi => "pi",
         }
-    }
-
-    /// The harness a principal's prefix names.
-    #[must_use]
-    pub fn from_prefix(prefix: &str) -> Option<Self> {
-        [Self::ClaudeCode, Self::Codex, Self::Pi]
-            .into_iter()
-            .find(|harness| harness.prefix() == prefix)
     }
 }
 
@@ -95,22 +87,22 @@ impl Writer {
     /// person, whom the version's signature names already.
     #[must_use]
     pub fn attribution(&self) -> Option<FileAttributionV1> {
-        let (actor, label) = match self {
+        let (writer, label) = match self {
             Self::Agent {
                 harness,
                 session,
                 title,
             } => (
-                format!("agent:{}:{session}", harness.prefix()),
+                AttributedWriter::agent_session(harness.agent(), bounded(session)),
                 title.clone().unwrap_or_else(|| harness.name().to_owned()),
             ),
-            Self::App { id } => (format!("app:{id}"), id.clone()),
-            Self::Program { id, name } => (format!("program:{id}"), name.clone()),
+            Self::App { id } => (AttributedWriter::App(bounded(id)), id.clone()),
+            Self::Program { id, name } => (AttributedWriter::Program(bounded(id)), name.clone()),
             Self::Person => return None,
         };
         let attribution = FileAttributionV1 {
-            color: colour_of(&actor),
-            actor: bounded(&actor),
+            color: colour_of(&writer),
+            writer,
             label: bounded(&label),
         };
         attribution.validate().is_ok().then_some(attribution)
@@ -132,9 +124,9 @@ fn bounded(text: &str) -> String {
     out
 }
 
-/// A steady colour per principal, so one session reads as one colour.
-fn colour_of(actor: &str) -> [u8; 3] {
-    let hash = blake3::hash(actor.as_bytes());
+/// A steady colour per writer, so one session reads as one colour.
+fn colour_of(writer: &AttributedWriter) -> [u8; 3] {
+    let hash = blake3::hash(format!("{writer:?}").as_bytes());
     let bytes = hash.as_bytes();
     // Kept off the extremes, so it reads on light and dark.
     let channel = |byte: u8| 64_u8.saturating_add(byte / 2);

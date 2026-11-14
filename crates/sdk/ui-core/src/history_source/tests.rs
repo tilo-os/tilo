@@ -910,7 +910,7 @@ tilo_test_env::scenario! {
         authors.register_agent(
             &hex::encode(device),
             HistoryAgent {
-                principal: "agent:scribe".into(),
+                agent: tilo_actions::MemberId::agent("scribe"),
                 label: "Scribe".into(),
                 rgb: (10, 20, 30),
                 person: person.clone(),

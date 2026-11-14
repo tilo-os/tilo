@@ -94,11 +94,11 @@ pub fn wire_author_line(author: &wire::Author) -> String {
 pub fn writer_badge(author: &HistoryAuthor) -> Option<String> {
     let attribution = author.attribution.as_ref()?;
     let label = attribution.writer_label.as_deref();
-    match attribution.writer? {
-        fs_protocol::AttributedWriter::Agent => agent_tool_name(&attribution.acting.by.key())
+    match attribution.writer.as_ref()? {
+        fs_protocol::AttributedWriter::Agent { agent, .. } => agent_tool_name(agent)
             .map(str::to_owned)
             .or_else(|| label.map(str::to_owned)),
-        fs_protocol::AttributedWriter::App | fs_protocol::AttributedWriter::Program => {
+        fs_protocol::AttributedWriter::App(_) | fs_protocol::AttributedWriter::Program(_) => {
             label.map(str::to_owned)
         }
     }
@@ -110,13 +110,13 @@ pub fn writer_badge(author: &HistoryAuthor) -> Option<String> {
 /// `None` for a change with no recorded writer, whose row names a person.
 pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
     let attribution = author.attribution.as_ref()?;
-    let writer = attribution.writer?;
+    let writer = attribution.writer.as_ref()?;
     let label = attribution.writer_label.as_deref().unwrap_or_default();
     let mut parts = Vec::with_capacity(5);
     match writer {
-        fs_protocol::AttributedWriter::Agent => {
+        fs_protocol::AttributedWriter::Agent { agent, .. } => {
             parts.push(crate::i18n::widget_format("history-writer-agent", &[]));
-            let tool = agent_tool_name(&attribution.acting.by.key());
+            let tool = agent_tool_name(agent);
             if let Some(tool) = tool {
                 parts.push(tool.to_owned());
             }
@@ -125,13 +125,13 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
                 parts.push(format!("‘{label}’"));
             }
         }
-        fs_protocol::AttributedWriter::App => {
+        fs_protocol::AttributedWriter::App(_) => {
             parts.push(crate::i18n::widget_format("history-writer-app", &[]));
             if !label.trim().is_empty() {
                 parts.push(label.to_owned());
             }
         }
-        fs_protocol::AttributedWriter::Program => {
+        fs_protocol::AttributedWriter::Program(_) => {
             parts.push(crate::i18n::widget_format("history-writer-program", &[]));
             if !label.trim().is_empty() {
                 parts.push(label.to_owned());
@@ -145,15 +145,10 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
     Some(parts.join(" · "))
 }
 
-/// The name of the agent tool a session actor names (`agent:claude:<session>`
-/// is Claude Code). `None` for a legacy `agent:<id>`, which names no tool.
-fn agent_tool_name(actor: &str) -> Option<&'static str> {
-    match actor
-        .strip_prefix("agent:")?
-        .split(':')
-        .next()
-        .unwrap_or_default()
-    {
+/// The name of the coding agent `agent` (`claude` is Claude Code). `None`
+/// for any other agent.
+fn agent_tool_name(agent: &str) -> Option<&'static str> {
+    match agent {
         "claude" => Some("Claude Code"),
         "codex" => Some("Codex"),
         "pi" => Some("pi"),

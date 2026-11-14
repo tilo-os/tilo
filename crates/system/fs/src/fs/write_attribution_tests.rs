@@ -36,7 +36,7 @@ async fn session_leased_writes_carry_their_agent_in_history() {
         .unwrap()
         .with_write_attributions(Arc::clone(&attributions));
     let scribe = fs_protocol::FileAttributionV1 {
-        actor: "agent:scribe".into(),
+        writer: fs_protocol::AttributedWriter::agent("scribe"),
         label: "Scribe".into(),
         color: [10, 20, 30],
     };

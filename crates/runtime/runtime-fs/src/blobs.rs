@@ -511,7 +511,7 @@ impl ServeObject for SessionServer {
                 }
                 FsRequest::SessionAttributeWrites {
                     paths,
-                    actor,
+                    agent,
                     label,
                     color,
                     ttl_ms,
@@ -521,7 +521,7 @@ impl ServeObject for SessionServer {
                     }
                     let attribution = WriteAttribution {
                         paths,
-                        actor,
+                        agent,
                         label,
                         color,
                         ttl: Duration::from_millis(u64::from(ttl_ms)),

@@ -1093,28 +1093,71 @@ impl FileVersionV1 {
     }
 }
 
-/// Most bytes an attribution's actor or label carries.
+/// Most bytes each text of an attribution carries.
 pub const MAX_ATTRIBUTION_TEXT_BYTES: usize = 128;
 
 /// What wrote a version, as the writing device recorded it beside the version.
 ///
 /// The signing device asserts it; the person whose device signed the version
 /// remains the version's `actor.person`. Presentation only: it grants nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttributedWriter {
-    /// A coding agent's session (`agent:claude:<session>`,
-    /// `agent:codex:<thread>`, `agent:pi:<session>`), or a session-leased
-    /// agent acting through Tilo actions (`agent:<id>`).
-    Agent,
-    /// A Tilo app acting as itself (`app:<id>`).
-    App,
-    /// A third-party desktop program (`program:<desktop id>`).
-    Program,
+    /// An agent acting through Tilo actions, or one session of a coding agent
+    /// (`claude`, `codex`, `pi`).
+    Agent {
+        agent: String,
+        session: Option<String>,
+    },
+    /// A Tilo app acting as itself, by its id.
+    App(String),
+    /// A third-party desktop program, by its desktop id.
+    Program(String),
+}
+
+impl AttributedWriter {
+    #[must_use]
+    pub fn agent(agent: impl Into<String>) -> Self {
+        Self::Agent {
+            agent: agent.into(),
+            session: None,
+        }
+    }
+
+    /// One session of the coding agent `agent`.
+    #[must_use]
+    pub fn agent_session(agent: impl Into<String>, session: impl Into<String>) -> Self {
+        Self::Agent {
+            agent: agent.into(),
+            session: Some(session.into()),
+        }
+    }
+
+    /// Who acted: the agent, in its session when it has one. `None` for an
+    /// app or a program, which write as the person.
+    #[must_use]
+    pub fn acting(&self) -> Option<tilo_actions::Acting> {
+        let Self::Agent { agent, session } = self else {
+            return None;
+        };
+        let acting = tilo_actions::Acting::agent(agent.clone());
+        Some(match session {
+            Some(session) => acting.in_session(session.clone()),
+            None => acting,
+        })
+    }
+
+    fn ids(&self) -> impl Iterator<Item = &str> {
+        let (id, session) = match self {
+            Self::Agent { agent, session } => (agent.as_str(), session.as_deref()),
+            Self::App(id) | Self::Program(id) => (id.as_str(), None),
+        };
+        std::iter::once(id).chain(session)
+    }
 }
 
 /// Who caused a version when it was not the signing person themselves: an
-/// agent session, a Tilo app, or a third-party program, writing through that
+/// agent, a Tilo app, or a third-party program, writing through that
 /// person's mount. The person it acted for is always the version's own
 /// `actor.person`, so an attribution can never name anybody else. The signing
 /// device's session took the writer from the FUSE caller's process, never
@@ -1123,42 +1166,19 @@ pub enum AttributedWriter {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileAttributionV1 {
-    pub actor: String,
+    pub writer: AttributedWriter,
     pub label: String,
     pub color: [u8; 3],
 }
 
 impl FileAttributionV1 {
-    /// The agent this attribution names, when it names one (`agent:<id>` or
-    /// `agent:<kind>:<id>`), as written.
-    #[must_use]
-    pub fn agent_id(&self) -> Option<&str> {
-        self.actor
-            .strip_prefix("agent:")
-            .filter(|id| !id.trim().is_empty())
-    }
-
-    /// What wrote the version and its own id: the writer's session, app id or
-    /// desktop id. `None` when the actor names no writer this format has.
-    #[must_use]
-    pub fn writer(&self) -> Option<(AttributedWriter, &str)> {
-        let (kind, id) = [
-            ("agent:", AttributedWriter::Agent),
-            ("app:", AttributedWriter::App),
-            ("program:", AttributedWriter::Program),
-        ]
-        .into_iter()
-        .find_map(|(prefix, kind)| self.actor.strip_prefix(prefix).map(|id| (kind, id)))?;
-        (!id.trim().is_empty()).then_some((kind, id))
-    }
-
     /// Validate a bounded, presentable attribution.
     ///
     /// # Errors
     ///
-    /// Returns [`FileRecordError::InvalidAttribution`] unless the actor names
-    /// an `agent:`, `app:` or `program:` writer with a non-empty id, and both
-    /// the actor and the label are bounded and free of control characters.
+    /// Returns [`FileRecordError::InvalidAttribution`] unless every id of the
+    /// writer and the label are non-empty, bounded and free of control
+    /// characters, and the ids carry no surrounding space.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         let presentable = |text: &str| {
             !text.trim().is_empty()
@@ -1166,9 +1186,9 @@ impl FileAttributionV1 {
                 && !text.chars().any(char::is_control)
         };
         if self
-            .writer()
-            .is_some_and(|(_, id)| presentable(id) && id.trim() == id)
-            && presentable(&self.actor)
+            .writer
+            .ids()
+            .all(|id| presentable(id) && id.trim() == id)
             && presentable(&self.label)
         {
             Ok(())
@@ -2099,52 +2119,40 @@ mod tests {
     /// validated; a person, an empty id or an unknown namespace is refused.
     #[test]
     fn an_attribution_names_its_writer_kind_and_id() {
-        let attribution = |actor: &str, label: &str| FileAttributionV1 {
-            actor: actor.into(),
+        let agent = |agent: &str, session: Option<&str>| AttributedWriter::Agent {
+            agent: agent.into(),
+            session: session.map(Into::into),
+        };
+        let attribution = |writer: AttributedWriter, label: &str| FileAttributionV1 {
+            writer,
             label: label.into(),
             color: [10, 20, 30],
         };
 
-        for (actor, kind, id) in [
-            ("agent:scribe", AttributedWriter::Agent, "scribe"),
-            (
-                "agent:claude:3f2a-session",
-                AttributedWriter::Agent,
-                "claude:3f2a-session",
-            ),
-            (
-                "agent:codex:thread-7",
-                AttributedWriter::Agent,
-                "codex:thread-7",
-            ),
-            ("app:so.tilo.notes", AttributedWriter::App, "so.tilo.notes"),
-            (
-                "program:org.gnome.TextEditor.desktop",
-                AttributedWriter::Program,
-                "org.gnome.TextEditor.desktop",
-            ),
+        for writer in [
+            agent("scribe", None),
+            agent("claude", Some("3f2a-session")),
+            AttributedWriter::App("so.tilo.notes".into()),
+            AttributedWriter::Program("org.gnome.TextEditor.desktop".into()),
         ] {
-            let attribution = attribution(actor, "A writer");
-            assert_eq!(attribution.writer(), Some((kind, id)), "{actor}");
-            attribution
+            attribution(writer.clone(), "A writer")
                 .validate()
-                .unwrap_or_else(|error| panic!("{actor}: {error}"));
+                .unwrap_or_else(|error| panic!("{writer:?}: {error}"));
         }
 
-        for (actor, label) in [
-            ("ada", "Ada"),
-            ("agent:", "A writer"),
-            ("agent:   ", "A writer"),
-            ("app: ", "Notes"),
-            ("unknown:thing", "A writer"),
-            ("agent:scribe", ""),
-            ("agent:scribe", "  "),
-            ("agent:scribe", "line\nbreak"),
+        for (writer, label) in [
+            (agent("", None), "A writer"),
+            (agent("   ", None), "A writer"),
+            (agent("claude", Some("")), "A writer"),
+            (AttributedWriter::App(" ".into()), "Notes"),
+            (agent("scribe", None), ""),
+            (agent("scribe", None), "  "),
+            (agent("scribe", None), "line\nbreak"),
         ] {
             assert_eq!(
-                attribution(actor, label).validate(),
+                attribution(writer.clone(), label).validate(),
                 Err(FileRecordError::InvalidAttribution),
-                "{actor:?} / {label:?}"
+                "{writer:?} / {label:?}"
             );
         }
     }

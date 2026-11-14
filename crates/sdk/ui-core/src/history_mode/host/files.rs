@@ -926,7 +926,7 @@ mod tests {
         authors.register_agent(
             &hex::encode(scribe),
             HistoryAgent {
-                principal: "agent:scribe".into(),
+                agent: tilo_actions::MemberId::agent("scribe"),
                 label: "Scribe".into(),
                 rgb: (10, 20, 30),
                 person: hex::encode(ada),
@@ -988,7 +988,7 @@ mod tests {
         // recorded it in the signed record, reads as that agent, for Ada --
         // the person who signed the version, never anybody else.
         let through_session = fs_protocol::FileAttributionV1 {
-            actor: "agent:courier".into(),
+            writer: fs_protocol::AttributedWriter::agent("courier"),
             label: "Courier".into(),
             color: [40, 50, 60],
         };
@@ -1013,24 +1013,6 @@ mod tests {
         assert_eq!(rows[1].author.name, "Ada", "an unattributed version");
         assert_eq!(rows[1].author.attribution, None);
 
-        files.attributions = [(
-            version(5, ada, ada_laptop).id,
-            fs_protocol::FileAttributionV1 {
-                actor: "ada".into(),
-                label: "Ada".into(),
-                color: [0, 0, 0],
-            },
-        )]
-        .into();
-        let rows = file_timeline_entries(&files);
-        assert_eq!(
-            rows.len(),
-            1,
-            "the same person's two versions, one unattributed, are one change"
-        );
-        assert_eq!(rows[0].author.name, "Ada");
-        assert_eq!(rows[0].author.attribution, None);
-
         // A writer the signing device's session recorded — an agent session,
         // an app or a third-party program — wrote through Ada's mount: the row
         // is Ada's own, wearing her avatar, with the writer named beside it and
@@ -1053,29 +1035,25 @@ mod tests {
                 authors
             },
         });
-        for (index, (actor, label, writer, badge)) in [
+        for (index, (writer, label, badge)) in [
             (
-                "agent:claude:session-1",
+                fs_protocol::AttributedWriter::agent_session("claude", "session-1"),
                 "Prepare the report",
-                fs_protocol::AttributedWriter::Agent,
                 "Claude Code",
             ),
             (
-                "agent:claude:untitled",
+                fs_protocol::AttributedWriter::agent_session("claude", "untitled"),
                 "Claude Code",
-                fs_protocol::AttributedWriter::Agent,
                 "Claude Code",
             ),
             (
-                "app:so.tilo.notes",
+                fs_protocol::AttributedWriter::App("so.tilo.notes".into()),
                 "so.tilo.notes",
-                fs_protocol::AttributedWriter::App,
                 "Notes",
             ),
             (
-                "program:org.gnome.TextEditor.desktop",
+                fs_protocol::AttributedWriter::Program("org.gnome.TextEditor.desktop".into()),
                 "Text Editor",
-                fs_protocol::AttributedWriter::Program,
                 "Text Editor",
             ),
         ]
@@ -1088,7 +1066,7 @@ mod tests {
             files.attributions = [(
                 written.id,
                 fs_protocol::FileAttributionV1 {
-                    actor: actor.into(),
+                    writer: writer.clone(),
                     label: label.into(),
                     color: [70, 80, 90],
                 },
@@ -1096,16 +1074,16 @@ mod tests {
             .into();
             let rows = file_timeline_entries(&files);
             let author = &rows[0].author;
-            assert_eq!(author.name, "Ada", "{actor}: the person's own row");
+            assert_eq!(author.name, "Ada", "{writer:?}: the person's own row");
             assert_eq!(
                 author.rgb(),
                 (242, 85, 85),
-                "{actor}: the person's avatar, not the writer's colour"
+                "{writer:?}: the person's avatar, not the writer's colour"
             );
             assert_eq!(
-                author.attribution.as_ref().and_then(|a| a.writer),
-                Some(writer),
-                "{actor}"
+                author.attribution.as_ref().and_then(|a| a.writer.as_ref()),
+                Some(&writer),
+                "{writer:?}"
             );
             assert_eq!(
                 author
@@ -1124,11 +1102,11 @@ mod tests {
             assert_eq!(
                 crate::history_source::sentence::writer_badge(author).as_deref(),
                 Some(badge),
-                "{actor}"
+                "{writer:?}"
             );
         }
         let agent = fs_protocol::FileAttributionV1 {
-            actor: "agent:claude:session-1".into(),
+            writer: fs_protocol::AttributedWriter::agent_session("claude", "session-1"),
             label: "Prepare the report".into(),
             color: [70, 80, 90],
         };
@@ -1146,7 +1124,7 @@ mod tests {
         );
 
         let program = fs_protocol::FileAttributionV1 {
-            actor: "program:org.gnome.TextEditor.desktop".into(),
+            writer: fs_protocol::AttributedWriter::Program("org.gnome.TextEditor.desktop".into()),
             label: "Text Editor".into(),
             color: [70, 80, 90],
         };
@@ -1203,7 +1181,7 @@ mod tests {
             provenance,
         };
         let session = fs_protocol::FileAttributionV1 {
-            actor: "agent:claude:session-1".into(),
+            writer: fs_protocol::AttributedWriter::agent_session("claude", "session-1"),
             label: "Prepare the report".into(),
             color: [70, 80, 90],
         };
@@ -1221,8 +1199,15 @@ mod tests {
         let rows = file_timeline_entries(&files);
         assert_eq!(rows.len(), 2, "the base version and the run");
         assert_eq!(
-            rows[1].author.attribution.as_ref().and_then(|a| a.writer),
-            Some(fs_protocol::AttributedWriter::Agent)
+            rows[1]
+                .author
+                .attribution
+                .as_ref()
+                .and_then(|a| a.writer.as_ref()),
+            Some(&fs_protocol::AttributedWriter::agent_session(
+                "claude",
+                "session-1"
+            ))
         );
 
         // The run's row is the last version; taking it back restores the

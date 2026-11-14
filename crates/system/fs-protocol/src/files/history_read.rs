@@ -250,7 +250,7 @@ mod tests {
             scope,
             version,
             attribution: Some(FileAttributionV1 {
-                actor: "agent:scribe".into(),
+                writer: crate::AttributedWriter::agent("scribe"),
                 label: "Scribe".into(),
                 color: [10, 20, 30],
             }),
@@ -263,8 +263,7 @@ mod tests {
     }
 
     /// A page carries the agents behind its versions only when there are
-    /// some, so a page without any reads exactly as before; an attribution
-    /// names an agent, never a person or an unpresentable actor.
+    /// some.
     #[test]
     fn pages_carry_agent_attributions_additively() {
         use crate::files::{FileAttributionV1, FileVersionAttributionV1};
@@ -290,16 +289,17 @@ mod tests {
         );
 
         let scribe = FileAttributionV1 {
-            actor: "agent:scribe".into(),
+            writer: crate::AttributedWriter::Agent {
+                agent: "scribe".into(),
+                session: None,
+            },
             label: "Scribe".into(),
             color: [10, 20, 30],
         };
-        assert_eq!(scribe.validate(), Ok(()));
-        assert_eq!(scribe.agent_id(), Some("scribe"));
         let attributed = FileHistoryPageV1 {
             attributions: vec![FileVersionAttributionV1 {
                 version_id: FileVersionId(Uuid::from_u128(4)),
-                attribution: scribe.clone(),
+                attribution: scribe,
             }],
             ..page
         };
@@ -308,45 +308,5 @@ mod tests {
             serde_json::from_slice::<FileHistoryPageV1>(&bytes).unwrap(),
             attributed
         );
-
-        for actor in [
-            "app:org.tilo.notes",
-            "program:org.gnome.TextEditor",
-            "agent:claude:4f2c",
-        ] {
-            let named = FileAttributionV1 {
-                actor: actor.into(),
-                ..scribe.clone()
-            };
-            assert_eq!(named.validate(), Ok(()), "{actor:?}");
-        }
-        for actor in [
-            "ada",
-            "agent:",
-            "agent: scribe",
-            "agent:sc\u{7}ribe",
-            "app:",
-            "person:ada",
-        ] {
-            let forged = FileAttributionV1 {
-                actor: actor.into(),
-                ..scribe.clone()
-            };
-            assert_eq!(
-                forged.validate(),
-                Err(crate::FileRecordError::InvalidAttribution),
-                "{actor:?}"
-            );
-        }
-        let unnamed = FileAttributionV1 {
-            label: " ".into(),
-            ..scribe.clone()
-        };
-        assert!(unnamed.validate().is_err());
-        let long = FileAttributionV1 {
-            label: "x".repeat(crate::files::MAX_ATTRIBUTION_TEXT_BYTES + 1),
-            ..scribe
-        };
-        assert!(long.validate().is_err());
     }
 }

@@ -805,7 +805,7 @@ fn only_the_session_names_the_agent_behind_writes_under_the_mount() {
     };
     let scribe = |paths: Vec<&str>| WriteAttribution {
         paths: paths.into_iter().map(str::to_owned).collect(),
-        actor: "agent:scribe".into(),
+        agent: "scribe".into(),
         label: "Scribe".into(),
         color: [10, 20, 30],
         ttl: std::time::Duration::from_secs(30),
@@ -824,16 +824,13 @@ fn only_the_session_names_the_agent_behind_writes_under_the_mount() {
             .attribute_writes(scribe(vec!["/etc/passwd"]))
             .is_err()
     );
-    let mut person = scribe(vec!["/var/workspace/Reports"]);
-    person.actor = "ada".into();
-    assert!(session.attribute_writes(person).is_err(), "only an agent");
     assert!(leases.is_idle());
 
     session
         .attribute_writes(scribe(vec!["/var/workspace/Reports"]))
         .unwrap();
     let named = leases.for_path("/Reports/q3.txt").unwrap();
-    assert_eq!(named.actor, "agent:scribe");
+    assert_eq!(named.writer, fs_protocol::AttributedWriter::agent("scribe"));
     assert_eq!(named.color, [10, 20, 30]);
     assert_eq!(leases.for_path("/notes.txt"), None);
 }

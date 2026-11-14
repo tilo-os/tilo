@@ -267,7 +267,7 @@ tilo_test_env::scenario! {
         let attribution = FileVersionAttributionV1 {
             version_id: restore.id,
             attribution: FileAttributionV1 {
-                actor: "agent:scribe".into(),
+                writer: fs_protocol::AttributedWriter::agent("scribe"),
                 label: "Scribe".into(),
                 color: [10, 20, 30],
             },

@@ -171,7 +171,7 @@ impl DocumentMedia {
             .grant(
                 paths,
                 fs_protocol::FileAttributionV1 {
-                    actor: attribution.actor,
+                    writer: fs_protocol::AttributedWriter::agent(attribution.agent),
                     label: attribution.label,
                     color: attribution.color,
                 },

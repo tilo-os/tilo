@@ -710,7 +710,7 @@ impl FileClipboardContext {
     pub fn owner(&self) -> &str {
         &self.owner
     }
-    /// The agent (`agent:<id>`) whose invocation this command continues,
+    /// The id of the agent whose invocation this command continues,
     /// acting for the person whose session Files runs in, as the broker's
     /// custody of that invocation names it; `None` for anyone else. What the
     /// transfer writes is recorded as that agent's, for its person. It grants
@@ -732,7 +732,7 @@ pub trait FileClipboardServices: Send + Sync {
     ) -> Result<runtime_collab::file_clipboard::Reply, String>;
     fn disconnect(&self, peer: u64);
 
-    /// Name `agent`, an `agent:<id>` principal the broker took from its own
+    /// Name the agent `agent`, by its id, which the broker took from its own
     /// custody of a live Files invocation and that acts for the person whose
     /// session Files runs in, as the cause of this device's next writes to
     /// `paths` (absolute paths under the workspace mount; a folder covers

@@ -146,7 +146,7 @@ mod tests {
 
     fn scribe() -> FileAttributionV1 {
         FileAttributionV1 {
-            actor: "agent:scribe".into(),
+            writer: fs_protocol::AttributedWriter::agent("scribe"),
             label: "Scribe".into(),
             color: [10, 20, 30],
         }
@@ -204,14 +204,13 @@ mod tests {
                     "{paths:?}"
                 );
             }
-            let person = FileAttributionV1 {
-                actor: "ada".into(),
+            let unnamed = FileAttributionV1 {
+                label: " ".into(),
                 ..scribe()
             };
             assert_eq!(
-                leases.grant(vec!["/a".into()], person, ttl),
+                leases.grant(vec!["/a".into()], unnamed, ttl),
                 Err(WriteAttributionError::InvalidAttribution),
-                "only an agent is attributed"
             );
             assert_eq!(
                 leases.grant(vec!["/a".into()], scribe(), MAX_LEASE_TTL * 2),

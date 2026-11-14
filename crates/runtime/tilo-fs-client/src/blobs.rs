@@ -261,8 +261,8 @@ pub struct PublicRead {
 pub struct WriteAttribution {
     /// Absolute paths under the workspace mount; a folder covers its subtree.
     pub paths: Vec<String>,
-    /// `agent:<id>`.
-    pub actor: String,
+    /// The agent's id.
+    pub agent: String,
     /// How the agent is shown.
     pub label: String,
     /// Its presence colour, sRGB.
@@ -1278,7 +1278,7 @@ async fn attribute(attribution: WriteAttribution, session: &Session) -> Result<(
         .root
         .call(FsRequest::SessionAttributeWrites {
             paths: attribution.paths,
-            actor: attribution.actor,
+            agent: attribution.agent,
             label: attribution.label,
             color,
             ttl_ms: u32::try_from(attribution.ttl.as_millis()).unwrap_or(u32::MAX),

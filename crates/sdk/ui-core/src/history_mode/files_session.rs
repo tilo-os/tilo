@@ -925,10 +925,10 @@ mod tests {
                 "a pinned frontier cannot change its total across pages"
             );
 
-            let attributed = |id, actor: &str| fs_protocol::FileVersionAttributionV1 {
+            let attributed = |id| fs_protocol::FileVersionAttributionV1 {
                 version_id: version(id).id,
                 attribution: fs_protocol::FileAttributionV1 {
-                    actor: actor.into(),
+                    writer: fs_protocol::AttributedWriter::agent("scribe"),
                     label: "Scribe".into(),
                     color: [10, 20, 30],
                 },
@@ -945,21 +945,23 @@ mod tests {
                 })
             };
             let transport = Pages(std::sync::Mutex::new(
-                [attributed_page(vec![attributed(1, "agent:scribe")])].into(),
+                [attributed_page(vec![attributed(1)])].into(),
             ));
             let (_, _, _, attributions) = load_all(&transport).unwrap();
             assert_eq!(
                 attributions
                     .get(&version(1).id)
-                    .map(|attribution| attribution.actor.as_str()),
-                Some("agent:scribe")
+                    .map(|attribution| &attribution.writer),
+                Some(&fs_protocol::AttributedWriter::agent("scribe"))
             );
-            for forged in [attributed(2, "agent:scribe"), attributed(1, "ada")] {
-                let transport = Pages(std::sync::Mutex::new(
-                    [attributed_page(vec![forged])].into(),
-                ));
-                assert_eq!(load_all(&transport), Err(Error::InvalidRequest));
-            }
+            let transport = Pages(std::sync::Mutex::new(
+                [attributed_page(vec![attributed(2)])].into(),
+            ));
+            assert_eq!(
+                load_all(&transport),
+                Err(Error::InvalidRequest),
+                "an attribution of a version the page does not hold"
+            );
         }
     }
 

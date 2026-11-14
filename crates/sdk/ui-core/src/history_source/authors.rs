@@ -66,8 +66,7 @@ pub struct AuthorDirectory {
 /// shown, and the person it acts for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryAgent {
-    /// The agent's principal (`agent:<id>`).
-    pub principal: String,
+    pub agent: tilo_actions::MemberId,
     /// Its display name.
     pub label: String,
     /// Its cursor colour: history paints it as presence does.
@@ -164,7 +163,7 @@ impl AuthorDirectory {
         self.register_agent(
             &hex::encode(agent.device),
             HistoryAgent {
-                principal: format!("agent:{}", agent.agent_id),
+                agent: tilo_actions::MemberId::agent(agent.agent_id.clone()),
                 label: agent.label.clone(),
                 rgb: (red, green, blue),
                 person,
@@ -258,16 +257,18 @@ impl AuthorDirectory {
         else {
             return self.resolve_file_actor(person, device);
         };
-        let Some((writer, id)) = attribution.writer() else {
-            return self.resolve_file_actor(person, device);
-        };
+        let writer = &attribution.writer;
         let [red, green, blue] = attribution.color;
-        // A session-leased agent (`agent:<id>`, no kind) acted through the
-        // person's Tilo actions, so it wrote as the agent: the row is the
-        // agent's, on behalf of its person, as it has always read.
-        if writer == fs_protocol::AttributedWriter::Agent && !id.contains(':') {
+        // An agent with no session acted through the person's Tilo actions,
+        // so it wrote as the agent: the row is the agent's, on behalf of its
+        // person.
+        if let fs_protocol::AttributedWriter::Agent {
+            agent,
+            session: None,
+        } = writer
+        {
             let agent = HistoryAgent {
-                principal: attribution.actor.clone(),
+                agent: tilo_actions::MemberId::agent(agent.clone()),
                 label: attribution.label.clone(),
                 rgb: (red, green, blue),
                 person: hex::encode(person),
@@ -278,16 +279,11 @@ impl AuthorDirectory {
         // a program) wrote through the person's mount: the row is the person's
         // own, wearing the person's avatar, with the writer named beside it.
         let person_key = hex::encode(person);
-        let acting = match writer {
-            fs_protocol::AttributedWriter::Agent => {
-                tilo_actions::Acting::of_key(&attribution.actor)
-            }
-            fs_protocol::AttributedWriter::App | fs_protocol::AttributedWriter::Program => {
-                tilo_actions::Acting::person(person_key.clone())
-            }
-        };
+        let acting = writer
+            .acting()
+            .unwrap_or_else(|| tilo_actions::Acting::person(person_key.clone()));
         let label = match writer {
-            fs_protocol::AttributedWriter::App => app_name(
+            fs_protocol::AttributedWriter::App(_) => app_name(
                 &attribution.label,
                 crate::i18n::I18nManager::window_locale().as_str(),
             ),
@@ -298,7 +294,7 @@ impl AuthorDirectory {
             .with_attribution(
                 HistoryAttribution::new(acting)
                     .acting_for(person_key.clone(), self.person_name(&person_key))
-                    .written_by(writer, label)
+                    .written_by(writer.clone(), label)
                     .from_device(self.device_name(&hex::encode(device)).map(str::to_owned))
                     .in_folder(place.folder.map(str::to_owned)),
             );
@@ -323,7 +319,7 @@ impl AuthorDirectory {
         let mut author = author_coloured(agent.label.clone(), short_id(actor_hex), agent.rgb)
             .with_relation(AuthorRelation::Software)
             .with_attribution(
-                HistoryAttribution::new(tilo_actions::Acting::of_key(&agent.principal))
+                HistoryAttribution::new(tilo_actions::Acting::member(agent.agent.clone()))
                     .acting_for(agent.person.clone(), person),
             );
         author.for_reader = reader.as_deref() == Some(agent.person.as_str());
@@ -396,7 +392,7 @@ impl AuthorDirectory {
         let on_behalf_of = invoker.acting.acted_for_person().map(str::to_owned);
         // A delegated agent writing as itself, under its own principal.
         if let Some(agent) = self.agents.get(&actor_hex.to_lowercase())
-            && agent.principal == actor
+            && invoker.acting.member_id() == Some(&agent.agent)
         {
             return self.agent_author(actor_hex, agent);
         }
@@ -414,11 +410,9 @@ impl AuthorDirectory {
             let agent = actor.as_str();
             let author = if software {
                 let painted = self.color_overrides.get(agent).copied();
-                author.with_rgb(painted.unwrap_or_else(|| {
-                    crate::presence::member_color(
-                        &crate::permissions::MemberId::agent(agent),
-                        on_behalf_of.as_deref(),
-                    )
+                author.with_rgb(painted.unwrap_or_else(|| match invoker.acting.member_id() {
+                    Some(member) => crate::presence::member_color(member, on_behalf_of.as_deref()),
+                    None => crate::presence::user_color(agent),
                 }))
             } else {
                 author

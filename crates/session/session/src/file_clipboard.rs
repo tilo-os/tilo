@@ -176,23 +176,22 @@ impl NativeFileClipboard {
         std::mem::take(&mut *self.published.lock_recover())
     }
 
-    /// Name `agent`, an `agent:<id>` principal the broker took from its own
+    /// Name the agent `agent`, by its id, which the broker took from its own
     /// custody of a live Files invocation, as the cause of this device's next
     /// writes to `paths`: each version the filesystem then makes of them
     /// records the agent, for the person who signs it, in the agent's presence
     /// colour. It grants nothing.
     ///
     /// # Errors
-    /// Refuses a principal that is not an agent, and what the filesystem says.
+    /// What the filesystem says.
     pub(crate) fn attribute(agent: &str, paths: Vec<String>) -> Result<(), String> {
-        let label = ui::history_source::agent_principal_name(agent)
-            .ok_or("only an agent is named as the cause of a write")?;
-        let (red, green, blue) = ui::presence::user_color(agent);
+        let (red, green, blue) =
+            ui::presence::member_color(&ui::permissions::MemberId::agent(agent), None);
         blobs::with_session_blobs(|client| {
             client.attribute_writes(runtime_fs::blobs::WriteAttribution {
                 paths,
-                actor: agent.to_owned(),
-                label,
+                agent: agent.to_owned(),
+                label: agent.to_owned(),
                 color: [red, green, blue],
                 ttl: WRITE_ATTRIBUTION_TTL,
             })

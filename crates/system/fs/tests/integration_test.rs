@@ -2280,7 +2280,10 @@ async fn a_write_through_the_mount_is_named_for_the_program_that_made_it() {
         "the versions carry who wrote them"
     );
     for attributed in &attributions {
-        assert_eq!(attributed.attribution.actor, "program:org.gnome.TextEditor");
+        assert_eq!(
+            attributed.attribution.writer,
+            fs_protocol::AttributedWriter::Program("org.gnome.TextEditor".into())
+        );
         assert_eq!(attributed.attribution.label, "TextEditor");
     }
     // A program reading the folder's own history sees who wrote it too.

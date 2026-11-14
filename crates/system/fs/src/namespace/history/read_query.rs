@@ -259,7 +259,7 @@ mod tests {
                 frontier: [7; 32],
             };
             let scribe = fs_protocol::FileAttributionV1 {
-                actor: "agent:scribe".into(),
+                writer: fs_protocol::AttributedWriter::agent("scribe"),
                 label: "Scribe".into(),
                 color: [10, 20, 30],
             };

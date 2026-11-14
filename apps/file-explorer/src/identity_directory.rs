@@ -230,7 +230,7 @@ impl TrustedHumanDirectory {
                 authors.register_agent(
                     &hex::encode(agent.device.as_bytes()),
                     ui::history_source::HistoryAgent {
-                        principal: format!("agent:{}", agent.agent_id),
+                        agent: ui::permissions::MemberId::agent(agent.agent_id.clone()),
                         label: agent.label.clone(),
                         rgb: (red, green, blue),
                         person: person.clone(),
