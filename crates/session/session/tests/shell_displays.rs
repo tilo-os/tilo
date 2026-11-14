@@ -58,6 +58,31 @@ fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     });
 }
 
+/// How many passes in a row the shell must run no view and draw no frame to be at rest.
+const REST: u32 = 10;
+
+/// Run passes until the shell is at rest: its part has drawn, and over [`REST`] more passes its
+/// views ran no turn, it drew no frame and no display owes one. What a display shows then is what
+/// it goes on showing until something changes, so a frame read now is the frame the person looks
+/// at. The counters are the shell part's own ([`Session::shell_work`]), the ones the shell's idle
+/// tests hold it to; a count of passes long enough for a busy machine draws the same frame and
+/// then draws it hundreds of times more.
+#[track_caller]
+fn until_at_rest(session: &mut Session) {
+    crate::common::wait_for(session, "the shell to come to rest", |session| {
+        let before = session.shell_work()?;
+        for _ in 0..REST {
+            session.settle_services();
+            session.step(Duration::from_millis(1)).unwrap();
+        }
+        let after = session.shell_work()?;
+        (after.drawn > 0
+            && (after.turns, after.drawn) == (before.turns, before.drawn)
+            && !session.compositor().owes_frame())
+        .then_some(())
+    });
+}
+
 /// Where the part on `output` stands, `(x, y, w, h)` , and whether it stepped aside: `None` while
 /// no part stands there.
 fn part(session: &Session, output: &str) -> Option<((i32, i32, u32, u32), bool)> {
@@ -276,10 +301,7 @@ fn a_shell_on_a_fractional_scale_display_draws_at_that_scale() {
     );
     // Its buffer is drawn at the display's pixels: one logical point is 1.75 buffer pixels, so the
     // shell is as crisp as the panel rather than a 1600-wide picture stretched over 2800.
-    for _ in 0..120 {
-        session.settle_services();
-        session.step(Duration::from_millis(1)).unwrap();
-    }
+    until_at_rest(&mut session);
     session.compositor().render().unwrap();
     let shot = session
         .compositor()
@@ -311,10 +333,8 @@ fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
                 ..Options::default()
             },
         );
-        for _ in 0..400 {
-            session.settle_services();
-            session.step(Duration::from_millis(1)).unwrap();
-        }
+        // The bar's band is read off the frame the shell comes to rest on.
+        until_at_rest(&mut session);
         session.compositor().render().unwrap();
         let shot = session
             .compositor()
@@ -370,13 +390,18 @@ fn a_bar_flush_with_the_display_paints_its_edges_its_own_colour() {
     );
     until(&mut session, |session| !session.shell_parts().is_empty());
     // The translucent style is where the glass rim shows.
+    let before = session.shell_work().expect("the shell runs");
     session
         .run_shell_action("set_bar_finish", vec![serde_json::json!("translucent")])
         .expect("the bar takes the theme's glass");
-    for _ in 0..120 {
-        session.settle_services();
-        session.step(Duration::from_millis(1)).unwrap();
-    }
+    // The bar stands in its glass once the shell has drawn since it took the finish, and has come
+    // to rest on that frame.
+    until(&mut session, |session| {
+        session
+            .shell_work()
+            .is_some_and(|now| now.drawn > before.drawn)
+    });
+    until_at_rest(&mut session);
     session.compositor().render().unwrap();
     let shot = session
         .compositor()
