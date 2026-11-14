@@ -1,5 +1,5 @@
-//! The person's layout as the layout they share with the workspace: what is
-//! open where, read off the layout itself, kept in the layout's own record
+//! The person's layout: what is open where, shared with the workspace and read off the layout
+//! itself, kept in its own record
 //! ([`tilo_desktop_model::shared_record`]) with history and undo, so every member
 //! of the workspace reads the same one. A place's view and its pin are the
 //! window's own ([`tilo_desktop_model::Tab`]).

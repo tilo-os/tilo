@@ -2,7 +2,7 @@
 //! (`docs/designs/app-language/shell.md` §8.1, "Any action").
 //!
 //! The agent answering a person's turn arranges the screen as the REPL does: the
-//! arrangement's `place` and `place-found`, the undo steps, the windows and the notices.
+//! layout's `place` and `place-found`, the undo steps, the windows and the notices.
 //! Those are published by the session on its own door, on the loop's thread, and this is
 //! the provider its broker answers them under, so one catalogue names them for every caller
 //! that has a broker: the MCP server, a launched agent, and a task's program alike.
@@ -10,7 +10,7 @@
 //! Each step is decided where it lands: the broker admits it as the turn's step (the
 //! person's grants, the agent's, the issue's), and the session carries it out on the loop's
 //! pass, attributed to the agent and the person who asked, as a change the person takes
-//! back like any other. The arrangement is `Rc<RefCell<…>>` on the loop's thread and is
+//! back like any other. The layout is `Rc<RefCell<…>>` on the loop's thread and is
 //! never shared: its rows are read on the pass and handed here, and an invocation is handed
 //! to the session's door ([`SessionSteps`](crate::platform::steps::SessionSteps)) and answered
 //! on the pass, as the door's own calls are.
@@ -18,7 +18,7 @@
     target_arch = "wasm32",
     allow(
         dead_code,
-        reason = "the page offers the arrangement and the windows as steps next"
+        reason = "the page offers the layout and the windows as steps next"
     )
 )]
 
@@ -37,7 +37,7 @@ pub(crate) struct SessionActions {
     doors: Arc<dyn SessionSteps>,
     /// The rows the session's own door offered on its last pass: what the catalogue lists.
     /// Read on the loop and written here, so a catalogue built on the broker's own thread
-    /// never waits on the session, and never reads the arrangement from off its thread.
+    /// never waits on the session, and never reads the layout from off its thread.
     rows: std::sync::RwLock<Vec<tilo_actions::door::PlacedAction>>,
     /// Where the door stood when the rows were last read
     /// ([`tilo_session_core::door::Doors::revision`]).
@@ -183,7 +183,7 @@ mod tests {
     }
 
     /// The session's own actions are its broker's: the person at this seat is offered the
-    /// arrangement's `place` on the session's own provider, read on the loop's pass and listed
+    /// layout's `place` on the session's own provider, read on the loop's pass and listed
     /// by the broker — one catalogue, whichever door the caller came in by. Its invocation, and
     /// the turn's admission of it, are proven against a real tracker in the broker's own
     /// `a_turn_takes_the_hosts_turn_steps_and_nobody_else_does`.
@@ -225,12 +225,12 @@ mod tests {
             .iter()
             .filter_map(|row| row.action.as_ref())
             .find(|action| action.address.action == "place")
-            .expect("the arrangement's place is offered on the broker")
+            .expect("the layout's place is offered on the broker")
             .clone();
         assert_eq!(
             placing.address.resource,
             tilo_session_core::layout::RESOURCE,
-            "offered on the arrangement the session publishes"
+            "offered on the layout the session publishes"
         );
         assert_eq!(
             page.rows.first().map(|row| row.app_id.as_str()),
