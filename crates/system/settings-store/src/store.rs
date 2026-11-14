@@ -290,20 +290,31 @@ impl Store {
         docs.seen = now;
         // Shown before the save is let go: a reader that finds the save already taken in — one
         // that looks after `seen` became `now` — reads what this look loaded, never the save
-        // before it.
-        self.publish(Arc::new(docs.projection()));
+        // before it. Readers are told only after: one that reads the settings back would wait on
+        // the lock this thread holds.
+        let changed = self.set_shown(Arc::new(docs.projection()));
         drop(docs);
+        if changed {
+            self.changes.ring();
+        }
     }
 
     fn publish(&self, document: Arc<Map<String, Value>>) {
+        if self.set_shown(document) {
+            self.changes.ring();
+        }
+    }
+
+    /// Whether `document` differs from what was shown.
+    fn set_shown(&self, document: Arc<Map<String, Value>>) -> bool {
         let mut snapshot = self.snapshot.lock_recover();
         if *snapshot.document == *document {
-            return;
+            return false;
         }
         snapshot.document = document;
-        self.revision.fetch_add(1, Ordering::AcqRel);
         drop(snapshot);
-        self.changes.ring();
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        true
     }
 
     fn write_where(
@@ -1212,6 +1223,27 @@ mod tests {
             holder.update_section("s", object(json!({"x": 3}))).unwrap();
             holder.flush_pending();
             assert_eq!(follower.load_section_value("s"), json!({"x": 3}));
+        }
+
+        phase a_follower_reader_told_of_a_save_may_read_the_settings_back;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let holder = Store::open(dir.path()).unwrap();
+            holder.update_section("s", object(json!({"x": 1}))).unwrap();
+            holder.flush_pending();
+            let follower = Store::open(dir.path()).unwrap();
+            let reader = Arc::downgrade(&follower);
+            let read: Arc<crate::source::Listener> = Arc::new(move || {
+                if let Some(follower) = reader.upgrade() {
+                    let _ = follower.document();
+                }
+            });
+            follower.changes.listen(&read);
+            holder.update_section("s", object(json!({"x": 2}))).unwrap();
+            holder.flush_pending();
+            let looker = Arc::clone(&follower);
+            let seen = promptly(move || looker.load_section_value("s"));
+            assert_eq!(seen, json!({"x": 2}));
         }
 
         phase a_follower_opened_to_hold_takes_over_when_the_holder_is_gone;
