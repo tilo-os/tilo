@@ -2580,7 +2580,10 @@ mod tests {
         let person = hex::encode(cert.user_public_key);
         let workspace = WorkspaceId::new();
         pollster::block_on(engine.found(workspace, "Layout", None));
-        assert!(engine.holds(workspace), "the layout's workspace is held here");
+        assert!(
+            engine.holds(workspace),
+            "the layout's workspace is held here"
+        );
 
         // The layout: one workspace with one window of this device's.
         let mut ids = tilo_desktop_model::IdMinter::new(salt);
@@ -2674,7 +2677,8 @@ mod tests {
             .expect("the record this device holds");
         assert_eq!(
             shared_record::read(&record, None).map(|layout| windows_of(
-                layout.tree
+                layout
+                    .tree
                     .workspaces
                     .first()
                     .expect("the record's workspace")

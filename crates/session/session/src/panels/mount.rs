@@ -10,7 +10,7 @@ use tilo_desktop::overlays::Overlays;
 use crate::controls::ControlsReading;
 use tilo_sheets::shortcut_guide::State as GuideState;
 
-use crate::keys::{ControllerKeys, ShellKeys, Invocations, PressedChords, Presses, SessionKeys};
+use crate::keys::{ControllerKeys, Invocations, PressedChords, Presses, SessionKeys, ShellKeys};
 use crate::panels::{ActivityLayer, Readout, ReadoutPlaces, Reserved};
 use crate::platform::keys::NativeKeys;
 use crate::setup::Setup;

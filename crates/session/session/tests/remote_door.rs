@@ -1359,9 +1359,11 @@ fn with_only_agents_from_other_devices_let_in_their_step_still_asks_the_person()
     assert!(shell.asked().is_empty(), "let in without a question");
 
     agent.send(tool(2, "tilo_do", &json!({"path": "notes/Notebook#open"})));
-    crate::common::until(&mut shell.session, "the person asked about the step", |_| {
-        !shell.questions.pending().is_empty()
-    });
+    crate::common::until(
+        &mut shell.session,
+        "the person asked about the step",
+        |_| !shell.questions.pending().is_empty(),
+    );
     assert_eq!(shell.asked(), [RUN_QUESTION], "the run's question is up");
     for _ in 0..200 {
         shell.session.step(Duration::from_millis(2)).expect("step");
@@ -1456,9 +1458,11 @@ fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_q
         "{introduced}"
     );
     local.send(tool(2, "tilo_do", &json!({"path": "notes/Notebook#open"})));
-    crate::common::until(&mut shell.session, "the person asked about its step", |_| {
-        !shell.questions.pending().is_empty()
-    });
+    crate::common::until(
+        &mut shell.session,
+        "the person asked about its step",
+        |_| !shell.questions.pending().is_empty(),
+    );
     assert_eq!(shell.asked(), [RUN_QUESTION], "its step is asked about");
     assert!(
         local.answers.try_recv().is_err(),

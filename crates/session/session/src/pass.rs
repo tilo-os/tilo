@@ -252,7 +252,8 @@ impl Session {
             .step(&self.shared.handle, &self.shared.desktop, now);
         // The session this pass laid out is published before it is drawn: whoever reads the session's
         // state reads the session the frame about to be presented shows, not the one before it.
-        self.control.publish(&session(&self.shared, &self.compositor));
+        self.control
+            .publish(&session(&self.shared, &self.compositor));
         self.compositor.mark_pump(pass.elapsed());
         // The session's windows are drawn as far as they have come; an animated switch owns its frames
         // until they rest.
@@ -857,7 +858,10 @@ fn serve_fabric_input(shared: &crate::Shared, compositor: &mut Compositor) {
 }
 
 /// The session as the control socket's answers read it now.
-fn session<'a>(shared: &'a crate::Shared, compositor: &Compositor) -> crate::test_control::Session<'a> {
+fn session<'a>(
+    shared: &'a crate::Shared,
+    compositor: &Compositor,
+) -> crate::test_control::Session<'a> {
     crate::test_control::Session {
         doors: &shared.doors,
         handle: &shared.handle,

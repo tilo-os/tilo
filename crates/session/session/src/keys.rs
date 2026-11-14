@@ -21,10 +21,10 @@ use std::rc::Rc;
 use tilo_actions::ActionAddress;
 use tilo_session_core::surface::{KeyClaim, KeyModifiers};
 
-use tilo_desktop::verbs::CHROME_RESOURCE;
-use tilo_desktop::widgets::Fold;
 use tilo_desktop::osd::OsdKind;
 use tilo_desktop::overlays::{Overlay, Overlays, Slot, SwitcherScope};
+use tilo_desktop::verbs::CHROME_RESOURCE;
+use tilo_desktop::widgets::Fold;
 use tilo_session_core::shell::OVERLAYS;
 use tilo_sheets::shortcut_guide::{Caught, State as GuideState};
 use ui::shortcut_table::{FixedAction, KeyChord, ShortcutAction, ShortcutConfig};

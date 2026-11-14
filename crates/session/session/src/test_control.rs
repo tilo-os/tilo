@@ -710,8 +710,9 @@ impl Control {
         if moved {
             self.published.set(Some(stamp));
         }
-        self.changes
-            .follow(moved, || session.handle.read(|tree| state_dump(tree, session)));
+        self.changes.follow(moved, || {
+            session.handle.read(|tree| state_dump(tree, session))
+        });
     }
 }
 
@@ -1709,7 +1710,8 @@ fn legacy_rows(
 /// The controls the session shows now, as the tools read them: each one's name, what it does where it
 /// does something the app publishes, and where it stands.
 fn listed_targets(session: &Session<'_>) -> Vec<Json> {
-    session.doors
+    session
+        .doors
         .controls()
         .into_iter()
         .map(|control| {

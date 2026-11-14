@@ -940,7 +940,9 @@ impl Apps {
             }
         });
         if !held {
-            return Err(DoorError::Failed(format!("the shell took no open of {app}")));
+            return Err(DoorError::Failed(format!(
+                "the shell took no open of {app}"
+            )));
         }
         let tool_context = self.state.borrow().tool_context.clone();
         self.plan_window(WindowAsk {

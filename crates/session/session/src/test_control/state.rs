@@ -8,7 +8,7 @@ use std::hash::Hash as _;
 use serde_json::{Value as Json, json};
 use tilo_desktop_model::Layout;
 
-use super::{Context, Session, Gate, Scope, Slot};
+use super::{Context, Gate, Scope, Session, Slot};
 
 /// What a socket at `gate` may see of the state `dump`: a development socket sees the session as
 /// it is, and the owner's door sees it too — except while the screen is locked, where it learns
@@ -143,7 +143,8 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
         .collect();
     let mut open = serde_json::Map::new();
     for slot in Slot::ALL {
-        let up = session.overlays.is_open(slot) || (slot == Slot::Overview && session.overview.get());
+        let up =
+            session.overlays.is_open(slot) || (slot == Slot::Overview && session.overview.get());
         open.insert(slot.as_str().to_owned(), up.into());
     }
     let tree = tilo_desktop_model::history::without_history(|| serde_json::to_value(tree))

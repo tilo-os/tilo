@@ -540,7 +540,8 @@ impl Session {
             std::sync::Arc::clone(&options.launches),
         ));
         let settling = Rc::clone(&window_doors);
-        let mut policy = crate::background::WindowPlacement::for_shell(options.shell, &desktop, strips);
+        let mut policy =
+            crate::background::WindowPlacement::for_shell(options.shell, &desktop, strips);
         // A window opens in the workspace its process was launched into: an agent's or a service's
         // open of an app in a workspace that is not in front lands there, never in front.
         let launched = std::sync::Arc::clone(&options.launches);
