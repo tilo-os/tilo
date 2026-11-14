@@ -314,6 +314,62 @@ snapshot does not carry. A password travels as dots. The tile that draws the
 page on another device names its text, each run where it is drawn, for a
 reader who cannot see it; it takes no input.
 
+**Whose page it is.** One Browser process serves every Browser window of a
+workspace. Each window has its own engine, its own connection to the
+session and its own share: what the session asks of one window, that it is
+watched or no longer watched, is that window's alone, and what a window
+queues of its page leaves on its own connection and no other. The first
+window's connection is made by its launcher and names no tab; each later
+window's is made by the session and names the tab the window takes. A
+window says that it hands its page over in a message that names no window.
+The session takes that offer up for the window the connection speaks for:
+the tab it gave the connection, else the tab the window names in what it
+asks (the `instance` its asks carry, which every window sends with what it
+declares for its bar), else the app's only window. It never takes it for
+the app's window in front: with two windows that is a guess, and a page
+offered as another window's is shown to whoever watches that one. Until a
+window on a launcher's connection has named itself, an app with several
+windows has that window's page offered as nobody's. Each frame names its
+window too (`instance` on `PaintStream`) and is published only as the page
+its connection offered; one that names another window is refused and
+published as nobody's. A window whose toolkit predates this names no window
+in its frames, which are its connection's page all the same.
+
+**Who is sent it.** The workspace's live plane takes any member's ask for
+any window's page track. The session publishes the page of a window shared
+as its page and of no other, and asks no other window's app for one: a
+device that asks for the page of a window nobody shared is sent nothing.
+
+**How large a page may be.** The page handed over is the whole document, not
+the part in view. Measured on the engine, in a window of 1280 by 800: a
+form of eight questions is a whole frame of 1.6 KB, a form of 240 questions
+47 KB, an article of 180 paragraphs 109 KB with ten photographs of 3.1 MB
+together (the largest 1.35 MB), a table of 2000 rows 1.8 MB, a table of 5000
+rows more than 4 MB. One message from the app to its session carries less than 1 MiB, so a
+payload goes in parts of at most 700 KiB, in order, and the app sends only
+as much as its connection has room for, the rest once the session has read
+on; the session joins the parts. The plane carries a payload as one object
+of at most 4 MiB less the 52 bytes sealing adds, and that is the bound: a
+whole frame larger than it reaches nobody. The app does not keep quiet
+about such a page: it sends the size and the start of the frame, the
+session reads from the first part that the page is too large, and the
+sharing device says so in its own words ("The window's page is too large to
+send to the devices showing it") instead of waiting. The watching device
+has no message for the reason: it says, as of any page that does not come,
+that the device running the window was asked and sent none. The app is
+asked again every ten seconds, since a page changes. The images of a page
+are handed over as the share has room for them, and none twice.
+
+**What it costs.** While a window is watched its page is captured when the
+engine painted it anew, at most every 50 ms. A page nothing changes costs
+nothing: the engine wakes nobody, no frame is drawn and nothing is handed
+over, measured over four seconds watched and four unwatched. A change the
+page makes to itself is in what was handed over about 20 ms later. The
+changes are taken where the engine's events are taken, so none waits for a
+frame to be drawn; a change that comes sooner after a capture than those
+50 ms is captured when they have passed, at a wake the view asks for, and a
+capture the engine does not answer within three seconds is asked again.
+
 ## A form as typed actions
 
 A form is what a page asks of whoever fills it in. The forms read turns each
@@ -609,7 +665,28 @@ down.
   and both devices say which side waits: the sharing one that the window's
   app has not handed its page over, the watching one that the device running
   the window was asked for it and sent none. The step has not been run on
-  machines since. Each session says how far its live plane
+  machines since. What a page on its way was found to do wrong since, and
+  what is left of it: a page was offered as the page of the app's window in
+  front, whichever window spoke; every window of a process shared one
+  outbox and one watched flag, so a window's frames could leave on another
+  window's connection and be published as that window's, and stopping one
+  window's share stopped them all; a page was published to any member's
+  desk that asked for it, shared or not; a whole frame or an image over
+  700 KiB was dropped in the app without a word, so a table of 2000 rows
+  never arrived and an article arrived without its largest photograph; and
+  a view drawn from pixels said after its first capture, for as long as its
+  window lived, that it had something to repaint. All of these are closed,
+  each held by a test (the session's two-window, parts, too-large and
+  unshared tests; the toolkit's; the engine suite on pages of real size).
+  Left: a picture of more than 4 MiB is not handed over, and its page
+  arrives without it, which the device showing the page cannot tell from a
+  picture still loading. A page that grows too large while it is watched
+  stays on the watching device as it last arrived, and that device is not
+  told. A page so large that the engine cannot capture it within three
+  seconds (a table of 12000 rows) is never handed over, and is said as a
+  page its app has not handed over. A Browser built before this, with two
+  windows in one process, still mixes their frames on its side; the session
+  cannot tell them apart, since such frames name no window. Each session says how far its live plane
   came, what a share waits for, whether a shared window went out and whether
   the watching tile holds it, and, for the device relaying a plane, which
   devices it turned away and why, which is what the step reads when a page
