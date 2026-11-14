@@ -269,9 +269,10 @@ fn invitations_at_the_desk(session: &mut Session) -> Vec<serde_json::Value> {
 fn scanned(code: &[u8]) -> Result<(Vec<u8>, usize), String> {
     use ui::widget::QrWidget;
 
-    let drawn = QrWidget::new(code.to_vec()).with_id("invite-code");
-    let px = tilo_sheets::invite::module_px(drawn.total_modules());
-    let widget = drawn.with_module_px(px);
+    let widget = QrWidget::new(code.to_vec())
+        .with_id("invite-code")
+        .with_width_at_most(tilo_sheets::invite::CODE_MAX_PX);
+    let px = widget.module_px().ok_or("no module width")?;
     if let Some(error) = widget.error() {
         return Err(format!("the code does not fit: {error}"));
     }

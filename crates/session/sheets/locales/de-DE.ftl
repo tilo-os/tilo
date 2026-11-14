@@ -728,20 +728,17 @@ pair-device = Gerätekopplung
 so-tilo-pair-device-link-copy = Den Link kopieren
 so-tilo-pair-device-link-done = Schließen
 pair-device-title = Gerät hinzufügen
-pair-device-description = Erstelle den Link, mit dem dein nächstes Gerät zu einem deiner Geräte wird: Scanne den Code mit dem Handy, öffne den Link im Browser oder füge ihn in Tilo auf einem anderen Computer ein.
+pair-device-description = Scanne den Code oder öffne den Link auf deinem neuen Gerät, damit es eines deiner Geräte wird.
 pair-device-close = Schließen
 pair-device-link-label = Der Link
 pair-device-copy = Link kopieren
 pair-device-copied = Kopiert
 pair-device-code-alt = Der Kopplungslink als Code zum Scannen
-pair-device-way-phone = Handy oder Tablet
-pair-device-way-phone-how = Den Code mit der Kamera scannen
-pair-device-way-browser = Browser
-pair-device-way-browser-how = Den Link öffnen
-pair-device-way-tilo = Anderer Computer
-pair-device-way-tilo-how = Den Link in „Arbeitsbereich beitreten“ einfügen
-pair-device-lasting = Der Code funktioniert einmal und läuft { $left } ab.
-pair-device-note = Dieser Computer fragt dich zuerst und zeigt denselben Code wie dein neues Gerät. Läuft dieser Code ab, wird hier ein neuer erstellt.
+pair-device-lasting = { $minutes ->
+    [one] Gilt einmal, für die nächste Minute.
+   *[other] Gilt einmal, für die nächsten { $minutes } Minuten.
+}
+pair-device-in-tilo = Auf einem Computer mit Tilo fügst du den Link in „Arbeitsbereich beitreten“ ein.
 pair-device-nearby = Dein neues Gerät erreicht diesen Computer nicht von unterwegs, deshalb gibt es keinen Link. Füge es stattdessen in der Nähe hinzu: Wähle auf dem neuen Gerät „Meine vorhandene Tilo-Identität verwenden“. Wähle dann in den Einstellungen unter „Deine Geräte“ „Gerät hinzufügen“ und prüfe, dass beide denselben Code zeigen.
 pair-device-no-workspace = Öffne zuerst einen Arbeitsbereich: Der Link öffnet ihn auf deinem neuen Gerät.
 pair-device-not-yours = Dieser Computer ist nicht als du angemeldet und kann daher kein neues Gerät aufnehmen.

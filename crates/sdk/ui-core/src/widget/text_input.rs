@@ -5356,14 +5356,19 @@ impl Widget for TextInput {
             text_y,
         );
 
-        // Text never runs under the show/hide control.
-        let text_clip = if self.has_reveal_control() {
-            let mut clip = self.rect;
-            clip.x1 = (clip.x1 - RevealToggle::width_for(clip.height())).max(clip.x0);
-            RoundedRect::from_rect(clip, f64::from(theme.tokens.radii.control))
-        } else {
-            shape
-        };
+        // The text shows only in the room its scroll keeps the caret in: inside the field's inset
+        // on both edges, never under the show/hide control or the trailing accessory.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "sums of a few on-screen insets, far inside f64's range"
+        )]
+        let text_clip = Rect::new(
+            self.rect.x0 + padding_x,
+            self.rect.y0,
+            (self.rect.x0 + padding_x + self.text_room(theme) + theme.caret_width)
+                .min(self.rect.x1),
+            self.rect.y1,
+        );
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             BlendMode::default(),
@@ -5371,22 +5376,6 @@ impl Widget for TextInput {
             transform,
             &text_clip,
         );
-        // The text never runs under the trailing accessory.
-        let accessory = self.accessory_room();
-        if accessory > 0.0 {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                BlendMode::default(),
-                1.0,
-                transform,
-                &Rect::new(
-                    self.rect.x0,
-                    self.rect.y0,
-                    self.rect.x1 - accessory,
-                    self.rect.y1,
-                ),
-            );
-        }
 
         let own_text = !self.host_shows_text;
         if own_text {
@@ -5410,9 +5399,6 @@ impl Widget for TextInput {
             self.draw_single_line_caret(scene, transform, theme);
         }
 
-        if accessory > 0.0 {
-            scene.pop_layer();
-        }
         scene.pop_layer();
         if self.has_reveal_control() {
             self.refresh_reveal_control();

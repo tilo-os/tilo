@@ -36,6 +36,11 @@ pub fn word(key: &str) -> String {
     t(key)
 }
 
+/// `text` as small print: what a sheet says under a part of it.
+pub(crate) fn caption(text: &str) -> ui::widget::Element {
+    Box::new(ui::widget::Text::new(text).with_role(ui::prelude::TextRole::Caption))
+}
+
 /// The same, with `args` filled in.
 #[must_use]
 pub fn words(key: &str, args: &[(&str, &str)]) -> String {

@@ -203,9 +203,9 @@ mod tests {
         use ui::widget::QrWidget;
         let mut invites = Invites::default();
         let shown = invites.at(SITE, ORIGIN, ROOM, &PERSON, START).unwrap();
-        let drawn = QrWidget::new(shown.link.clone().into_bytes());
-        let px = tilo_sheets::pair_device::module_px(drawn.total_modules());
-        let code = drawn.with_module_px(px);
+        let code = QrWidget::new(shown.link.clone().into_bytes())
+            .with_width_at_most(tilo_sheets::pair_device::CODE_MAX_PX);
+        let px = code.module_px().unwrap();
         assert!(code.error().is_none(), "the link fits a code");
         let quiet = code.quiet_modules();
         let modules = code.total_modules().saturating_sub(quiet.saturating_mul(2));

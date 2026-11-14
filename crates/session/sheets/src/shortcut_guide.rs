@@ -26,7 +26,7 @@ use ui::widget::{
 
 use crate::keyboard_shortcuts::chord_text;
 use crate::presentation::{Presentation, Seat, presented};
-use crate::t;
+use crate::{caption, t};
 
 /// The app the shell mounts the guide as.
 pub const APP_ID: &str = "so.tilo.shortcut-guide";
@@ -619,10 +619,6 @@ pub fn sheet(guide: &Guide, ask: &Ask, presentation: Option<&Presentation>) -> E
         .primary_action(t("guide-done"), move || done(GuideEffect::Done))
         .on_dismiss(move || dismissed(GuideEffect::Done)),
     ))
-}
-
-fn caption(text: &str) -> Element {
-    Box::new(Text::new(text).with_role(TextRole::Caption))
 }
 
 fn heading(text: &str) -> Element {

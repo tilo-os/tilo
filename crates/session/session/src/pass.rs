@@ -432,6 +432,8 @@ impl Session {
             // nothing draws before it.
             self.shared.desk_overlays.deadline(now),
             self.shared.restore.borrow().next_deadline(),
+            // The add-a-device sheet counts its minutes down, and renews its link once it ran out.
+            self.shared.pair_device_deadline(),
             // A branch being copied off the loop is looked at again soon, so it goes on the desk
             // once it is there.
             self.shared.branches.next_deadline(now),

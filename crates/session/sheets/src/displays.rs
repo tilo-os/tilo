@@ -28,7 +28,7 @@ use ui::widget::{
 };
 
 use crate::presentation::{Presentation, presented};
-use crate::{t, t_args};
+use crate::{caption, t, t_args};
 
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.display-sheet";
@@ -755,8 +755,6 @@ fn layouts(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Element {
 /// Keep and Revert while a staged change waits, the choice being saved, or
 /// why the last one was refused.
 fn band(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Option<Element> {
-    let caption =
-        |text: &str| -> Element { Box::new(Text::new(text).with_role(TextRole::Caption)) };
     match &sheet.band {
         Band::Idle => None,
         Band::Saving => Some(caption(&t("display-sheet-saving-layout"))),

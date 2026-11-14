@@ -17,11 +17,11 @@ use ui::prelude::*;
 use ui::tokens::Rhythm;
 use ui::widget::{
     Banner, Button, ButtonRole, Column, ControlSize, Element, ListRow, ModalDialog, QrWidget, Row,
-    Section, Segment, Text, TextInput, ToggleGroup,
+    Section, Segment, TextInput, ToggleGroup,
 };
 
 use crate::presentation::{Presentation, Seat, presented};
-use crate::{word, words};
+use crate::{caption, word, words};
 
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.invite";
@@ -30,14 +30,6 @@ pub const APP_ID: &str = "so.tilo.invite";
 /// phone held near the screen reads, and small enough that the link and its
 /// buttons, not the code, are what the sheet is about.
 pub const CODE_MAX_PX: usize = 144;
-
-/// The narrowest each module is drawn: below this the squares turn to
-/// speckle.
-pub const CODE_MODULE_PX: u32 = 2;
-
-/// The widest each module is drawn: a link is a few dozen modules, and squares
-/// this wide make it conspicuous rather than a stamp.
-pub const CODE_MODULE_MAX_PX: u32 = 5;
 
 /// The sheet's resource: the door its actions are published on. It holds
 /// nothing; the invitations are the workspace's.
@@ -737,9 +729,10 @@ fn handover_parts(
         .with_id("invite-link")
         .with_read_only(true)
         .with_accessible_name(&created.link_label);
-    let drawn = QrWidget::new(created.link.clone().into_bytes()).with_id("invite-code");
-    let px = module_px(drawn.total_modules());
-    let code = drawn.with_module_px(px).with_alt(created.alt.clone());
+    let code = QrWidget::new(created.link.clone().into_bytes())
+        .with_id("invite-code")
+        .with_width_at_most(CODE_MAX_PX)
+        .with_alt(created.alt.clone());
     let mut parts: Vec<Element> = vec![
         caption(&created.link_label),
         Box::new(text),
@@ -773,16 +766,6 @@ fn handover_parts(
     parts
 }
 
-/// How wide each module of a code `modules` across is drawn: as wide as
-/// [`CODE_MAX_PX`] allows, between the narrowest and the widest a module
-/// gets. A short link's few dozen modules fill the room and read at a glance.
-#[must_use]
-pub fn module_px(modules: usize) -> u32 {
-    u32::try_from(CODE_MAX_PX.checked_div(modules).unwrap_or(CODE_MAX_PX))
-        .unwrap_or(CODE_MODULE_MAX_PX)
-        .clamp(CODE_MODULE_PX, CODE_MODULE_MAX_PX)
-}
-
 /// The links that still work, each with the button that takes it back.
 fn pending_rows(invite: &Invite, ask: &Ask) -> Element {
     let mut items: Vec<Element> = Vec::new();
@@ -812,12 +795,6 @@ fn pending_rows(invite: &Invite, ask: &Ask) -> Element {
         ));
     }
     Box::new(Section::titled(invite.pending_title.clone(), items))
-}
-
-/// What the sheet says under a group: the small print of what a choice
-/// means.
-fn caption(text: &str) -> Element {
-    Box::new(Text::new(text).with_role(TextRole::Caption))
 }
 
 /// The sheet as an app.

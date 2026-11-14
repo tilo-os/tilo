@@ -1,11 +1,10 @@
 //! "Add a device": the link that makes a new device of yours one of yours, shown as a code a phone
 //! camera reads.
 //!
-//! The sheet shows the link as a code, as text to open on a browser, and a button that copies it,
-//! with the three ways a new device uses it and how long it works. The session makes the link and
-//! hands it here ([`AddDeviceSeat::show`]): one invite is open at a time, so a link the person
-//! leaves on screen is still the one that admits their device, and the code they see is replaced by
-//! a fresh one only once the one shown stopped working.
+//! The sheet shows the link as a code, as text to open or paste, and a button that copies it, with
+//! the minutes it still works and where Tilo on another computer takes it. The session makes the
+//! link and hands it here ([`AddDeviceSeat::show`]): one invite is open at a time, so a link left
+//! on screen still admits the device, and the code is replaced only once it stopped working.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,26 +14,18 @@ use ui::icons::Icon;
 use ui::prelude::*;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    Button, ButtonRole, Column, Element, ListRow, ModalDialog, QrWidget, Row, Section, Text,
-    TextInput,
+    Button, ButtonRole, Column, Element, ModalDialog, QrWidget, Row, Section, Text, TextInput,
 };
 
 use crate::presentation::{Presentation, Seat, presented};
-use crate::{word, words};
+use crate::{caption, word};
 
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.pair-device";
 
 /// The widest the code is drawn, quiet zone and all: big enough for a phone held near the screen
-/// to read, and small enough that the link and its ways, not the code, are what the sheet is about.
+/// to read, and small enough that the sheet is about the link, not the code.
 pub const CODE_MAX_PX: usize = 200;
-
-/// The narrowest each module is drawn: below this the squares turn to speckle.
-pub const CODE_MODULE_PX: u32 = 2;
-
-/// The widest each module is drawn: a pairing link is a few dozen modules, and squares this wide
-/// make it conspicuous rather than a stamp.
-pub const CODE_MODULE_MAX_PX: u32 = 5;
 
 /// The sheet's resource: the door its actions are published on. It holds nothing; the link is the
 /// session's.
@@ -59,15 +50,6 @@ pub enum PairDeviceEffect {
     Done,
 }
 
-/// One way a new device uses the link.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Way {
-    /// What it is, as the sheet lists it.
-    pub title: String,
-    /// How it uses the link.
-    pub detail: String,
-}
-
 /// What the sheet shows: the link the session made, and how long it works.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AddDevice {
@@ -83,21 +65,20 @@ pub struct AddDevice {
     pub copied: String,
     /// What the code is, for someone who cannot see it.
     pub alt: String,
-    /// The ways a new device uses the link.
-    pub ways: Vec<Way>,
     /// How long this code works, in the person's words.
     pub lasting: String,
-    /// Why it is safe to leave on screen.
-    pub note: String,
+    /// Where Tilo on another computer takes the link: the one way to use it nobody guesses.
+    pub in_tilo: String,
     /// Why there is no link to show, when there is none.
     pub refusal: Option<String>,
 }
 
 impl AddDevice {
-    /// The sheet showing `link`, whose invite stops working `left`, in the person's language: what
-    /// the session hands the seat each time the link it shows changes.
+    /// The sheet showing `link`, whose invite works for `minutes` more, in the person's language:
+    /// what the session hands the seat each time the link or its minutes change.
     #[must_use]
-    pub fn of(link: &str, left: &str) -> Self {
+    pub fn of(link: &str, minutes: u32) -> Self {
+        let minutes = ui::i18n::ArgValue::Number(f64::from(minutes));
         Self {
             title: word("pair-device-title"),
             description: word("pair-device-description"),
@@ -107,22 +88,8 @@ impl AddDevice {
             copy: word("pair-device-copy"),
             copied: word("pair-device-copied"),
             alt: word("pair-device-code-alt"),
-            ways: vec![
-                Way {
-                    title: word("pair-device-way-phone"),
-                    detail: word("pair-device-way-phone-how"),
-                },
-                Way {
-                    title: word("pair-device-way-browser"),
-                    detail: word("pair-device-way-browser-how"),
-                },
-                Way {
-                    title: word("pair-device-way-tilo"),
-                    detail: word("pair-device-way-tilo-how"),
-                },
-            ],
-            lasting: words("pair-device-lasting", &[("left", left)]),
-            note: word("pair-device-note"),
+            lasting: crate::t_args("pair-device-lasting", &[("minutes", minutes)]),
+            in_tilo: word("pair-device-in-tilo"),
             refusal: None,
         }
     }
@@ -181,16 +148,15 @@ pub fn sheet(
 
 /// The code the sheet draws for `device`: the link it was handed, as squares a camera reads.
 fn code_of(device: &AddDevice) -> QrWidget {
-    let code = QrWidget::new(device.link.clone().into_bytes())
+    QrWidget::new(device.link.clone().into_bytes())
         .with_secret()
         .with_id("pair-device-code")
-        .with_alt(device.alt.clone());
-    let px = module_px(code.total_modules());
-    code.with_module_px(px)
+        .with_alt(device.alt.clone())
+        .with_width_at_most(CODE_MAX_PX)
 }
 
-/// The link as a code a camera reads, as text to open or paste, with the button that copies it,
-/// the ways a new device uses it and how long it works.
+/// The link as a code a camera reads, how long it works, and the link as text to open or paste
+/// with the button that copies it.
 fn code(device: &AddDevice, link: &LocalState<String>, ask: &Ask) -> Element {
     if link.get() != device.link {
         link.set(device.link.clone());
@@ -201,7 +167,7 @@ fn code(device: &AddDevice, link: &LocalState<String>, ask: &Ask) -> Element {
         .with_id("pair-device-link")
         .with_read_only(true)
         .with_accessible_name(device.link_label.clone());
-    let mut parts: Vec<Element> = vec![
+    let parts: Vec<Element> = vec![
         Box::new(
             Row::new()
                 .with_justify(ui::taffy::JustifyContent::Center)
@@ -222,51 +188,9 @@ fn code(device: &AddDevice, link: &LocalState<String>, ask: &Ask) -> Element {
                     }),
             )),
         ),
+        caption(&device.in_tilo),
     ];
-    let ways: Vec<Element> = device
-        .ways
-        .iter()
-        .map(|way| {
-            Box::new(
-                ListRow::new(
-                    format!("pair-device-way-{}", slug(&way.title)),
-                    way.title.clone(),
-                )
-                .secondary(way.detail.clone()),
-            ) as Element
-        })
-        .collect();
-    parts.push(Box::new(Section::new(ways)));
-    parts.push(caption(&device.note));
     Box::new(Section::new(parts))
-}
-
-/// `text` as part of a widget id: its letters and digits, joined by dashes.
-fn slug(text: &str) -> String {
-    text.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_owned()
-}
-
-/// The size each module is drawn at, so the whole code takes about [`CODE_MAX_PX`].
-#[must_use]
-pub fn module_px(modules: usize) -> u32 {
-    u32::try_from(CODE_MAX_PX.checked_div(modules).unwrap_or(CODE_MAX_PX))
-        .unwrap_or(CODE_MODULE_MAX_PX)
-        .clamp(CODE_MODULE_PX, CODE_MODULE_MAX_PX)
-}
-
-/// The words under the code and the link, small.
-fn caption(text: &str) -> Element {
-    Box::new(Text::new(text).with_role(TextRole::Caption))
 }
 
 /// What the sheet asks for, as a press in it hands it back.
@@ -392,7 +316,7 @@ impl ResourceApp for AddDeviceApp {
         let device = match fixture.scenario() {
             Some("nearby") => AddDevice::nearby(),
             Some("refused") => AddDevice::refusing(&word("pair-device-no-workspace")),
-            _ => AddDevice::of(SAMPLE_LINK, "9 min"),
+            _ => AddDevice::of(SAMPLE_LINK, 9),
         };
         fixture.provide(device);
     }
@@ -413,7 +337,8 @@ mod tests {
     #![allow(
         clippy::unwrap_used,
         clippy::expect_used,
-        reason = "a failed step in a test is the assertion"
+        clippy::arithmetic_side_effects,
+        reason = "a failed step in a test is the assertion; pixels sit well inside the viewport"
     )]
 
     use super::*;
@@ -426,7 +351,7 @@ mod tests {
         // The code the sheet draws carries the link the session handed it, byte for byte: a phone
         // scanning it reads the link that admits the new device.
         {
-            let device = AddDevice::of(SAMPLE_LINK, "9 min");
+            let device = AddDevice::of(SAMPLE_LINK, 9);
             let code = code_of(&device);
             assert!(code.carries(SAMPLE_LINK.as_bytes()));
             assert!(code.error().is_none(), "the link fits a code");
@@ -441,11 +366,60 @@ mod tests {
                              0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c?pair=fefefefefefefefefefefefefefefefe\
                              fefefefefefefefefefefefefefefefedcba9876543210fedcba9876543210";
             let seat = AddDeviceSeat::default();
-            seat.show(AddDevice::of(SAMPLE_LINK, "9 min"));
-            seat.show(AddDevice::of(LATER, "10 min"));
+            seat.show(AddDevice::of(SAMPLE_LINK, 9));
+            seat.show(AddDevice::of(LATER, 10));
             let code = code_of(&seat.device());
             assert!(code.carries(LATER.as_bytes()));
             assert!(!code.carries(SAMPLE_LINK.as_bytes()));
+        }
+
+        phase the_ready_sheet_says_its_minutes_and_keeps_the_link_in_its_field;
+        // The ready sheet: the code, how many minutes it works as a whole sentence in each
+        // language, the link with its button and the one way to use it nobody guesses; no list of
+        // ways the code and the link already say. The link stops at its field's inset.
+        {
+            const VIEWPORT: (u32, u32) = (720, 900);
+            let mut app = ui::framework::testing::HeadlessApp::<AddDeviceApp>::capture_at(
+                Some("ready"),
+                VIEWPORT,
+            )
+            .expect("the sheet is staged");
+            let texts = app.texts();
+            for line in [
+                "Works once, for the next 9 minutes.",
+                "Copy link",
+                "On a computer with Tilo, paste the link into Join a workspace.",
+            ] {
+                assert!(texts.contains(&line.to_owned()), "{line} in {texts:?}");
+            }
+            assert!(!texts.contains(&"Phone or tablet".to_owned()), "{texts:?}");
+            let field = app
+                .harness()
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| node.role() == ui::accesskit::Role::TextInput)
+                .and_then(|(_, node)| node.bounds())
+                .expect("the link's field");
+            let pixels = app.harness().render_rgba();
+            assert_eq!(pixels.len(), 720 * 900 * 4, "drawn at one pixel a point");
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "pixels inside the viewport"
+            )]
+            let (right, middle) = (field.x1 as u32, f64::midpoint(field.y0, field.y1) as u32);
+            let at = |x, y| ui::offscreen::OffscreenRenderer::sample(&pixels, VIEWPORT.0, x, y);
+            let ground = at(right - 4, middle);
+            let inset = (right - 10..right - 3)
+                .all(|x| (middle - 6..middle + 6).all(|y| at(x, y) == ground));
+            assert!(inset, "no ink in the field's inset");
+            let one = AddDevice::of(SAMPLE_LINK, 1).lasting;
+            assert_eq!(one, "Works once, for the next minute.");
+            ui::i18n::I18nManager::set_locale("de-DE");
+            let nine = AddDevice::of(SAMPLE_LINK, 9).lasting;
+            assert_eq!(nine, "Gilt einmal, für die nächsten 9 Minuten.");
+            let one = AddDevice::of(SAMPLE_LINK, 1).lasting;
+            assert_eq!(one, "Gilt einmal, für die nächste Minute.");
         }
     }
 }

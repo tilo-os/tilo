@@ -728,20 +728,17 @@ pair-device = Device pairing
 so-tilo-pair-device-link-copy = Copy the link
 so-tilo-pair-device-link-done = Close
 pair-device-title = Add a device
-pair-device-description = Make the link your next device uses to become one of yours: scan the code with a phone, open the link in a browser, or paste it into Tilo on another computer.
+pair-device-description = Scan the code or open the link on your new device to make it one of yours.
 pair-device-close = Close
 pair-device-link-label = The link
 pair-device-copy = Copy link
 pair-device-copied = Copied
 pair-device-code-alt = The pairing link as a code to scan
-pair-device-way-phone = Phone or tablet
-pair-device-way-phone-how = Scan the code with the camera
-pair-device-way-browser = Browser
-pair-device-way-browser-how = Open the link
-pair-device-way-tilo = Another computer
-pair-device-way-tilo-how = Paste the link into Join a workspace
-pair-device-lasting = The code works once, and stops working { $left }.
-pair-device-note = This computer asks you first, and shows the code your new device shows. A new code is made here when this one runs out.
+pair-device-lasting = { $minutes ->
+    [one] Works once, for the next minute.
+   *[other] Works once, for the next { $minutes } minutes.
+}
+pair-device-in-tilo = On a computer with Tilo, paste the link into Join a workspace.
 pair-device-nearby = Your new device can't reach this computer from elsewhere, so there is no link to show. Add it nearby instead: on the new device, choose Use my existing Tilo identity. Then, in Settings under Your devices, choose Add device and check both show the same code.
 pair-device-no-workspace = Open a workspace first: the link opens it on your new device.
 pair-device-not-yours = This computer isn't signed in as you, so it can't let a new device in.

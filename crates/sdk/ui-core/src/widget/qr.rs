@@ -153,6 +153,15 @@ impl QrWidget {
         self
     }
 
+    /// Draw the code, quiet zone and all, about `px` pixels across at most: each module as wide as
+    /// that allows, but no narrower than 2 pixels, where squares turn to speckle, and no wider than
+    /// 5, where a link of a few dozen modules turns conspicuous rather than a stamp.
+    #[must_use]
+    pub fn with_width_at_most(self, px: usize) -> Self {
+        let module = px.checked_div(self.total_modules()).unwrap_or(px);
+        self.with_module_px(u32::try_from(module).unwrap_or(5).clamp(2, 5))
+    }
+
     /// The width each module is drawn at, when the caller asked for one.
     #[must_use]
     pub fn module_px(&self) -> Option<u32> {

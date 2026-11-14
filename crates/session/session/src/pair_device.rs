@@ -93,9 +93,8 @@ impl Adding {
             now_ms,
         ) {
             Ok(shown) => {
-                let left = shown.expires_at_ms.saturating_sub(now_ms) / 1_000;
-                let left = i64::try_from(left).unwrap_or(i64::MAX);
-                let mut device = AddDevice::of(&shown.link, &ui::format::relative_ahead(left));
+                let mut device =
+                    AddDevice::of(&shown.link, minutes_left(shown.expires_at_ms, now_ms));
                 if self.copied.borrow().as_deref() == Some(shown.link.as_str()) {
                     device.copy = device.copied.clone();
                 }
@@ -128,6 +127,21 @@ impl Adding {
         }
     }
 }
+
+/// The minutes a link that stops working at `until_ms` still works at `now_ms`, as the sheet
+/// counts them: a part of a minute counts whole, so the last minute reads "the next minute".
+fn minutes_left(until_ms: u64, now_ms: u64) -> u32 {
+    u32::try_from(until_ms.saturating_sub(now_ms).div_ceil(MINUTE_MS)).unwrap_or(u32::MAX)
+}
+
+/// How long after `now_ms` the count of a link stopping at `until_ms` goes down by one: at its
+/// last minute, the instant it stops working and a new link takes its place.
+fn next_count_in(until_ms: u64, now_ms: u64) -> Duration {
+    let into_minute = until_ms.saturating_sub(now_ms).saturating_sub(1) % MINUTE_MS;
+    Duration::from_millis(into_minute.saturating_add(1))
+}
+
+const MINUTE_MS: u64 = 60_000;
 
 /// Serve the sheet for one pass: what it shows at `now_ms`, while it is up.
 pub(crate) fn follow(
@@ -169,6 +183,18 @@ impl crate::Shared {
             ui::time::unix_now_ms(),
         );
         self.wait_for_new_device();
+    }
+
+    /// When the sheet next changes on its own while it is up: its minutes count down, and the link
+    /// that ran out gives way to a new one.
+    pub(crate) fn pair_device_deadline(&self) -> Option<std::time::Instant> {
+        let seat = self.pair_device.as_ref()?;
+        if !seat.presentation().is_open() {
+            return None;
+        }
+        let waiting = self.adding.waiting()?;
+        std::time::Instant::now()
+            .checked_add(next_count_in(waiting.until_ms, ui::time::unix_now_ms()))
     }
 
     /// Wait at the host the link shown names for the device that opens it, until the link runs
@@ -339,6 +365,27 @@ mod tests {
                 until_ms: START + 600_000,
             })
         );
+    }
+
+    /// The minutes on the sheet count down while it is up: a pass is due the instant the count
+    /// drops, and the last minute ends when the link does, where a new one takes its place.
+    #[test]
+    fn the_sheet_counts_down_to_a_new_link() {
+        let until = START + 600_000;
+        for (now, minutes, next) in [(0, 10, 60), (30, 10, 30), (60, 9, 60), (590, 1, 10)] {
+            assert_eq!(
+                minutes_left(until, START + now * 1_000),
+                minutes,
+                "at {now} s"
+            );
+            let next_in = next_count_in(until, START + now * 1_000);
+            assert_eq!(next_in, Duration::from_secs(next), "at {now} s");
+        }
+        let (adding, _) = adding();
+        let first = adding.device(Ok(place()), START);
+        assert_eq!(first.lasting, AddDevice::of(&first.link, 10).lasting);
+        let later = adding.device(Ok(place()), START + 60_000);
+        assert_eq!(later.lasting, AddDevice::of(&first.link, 9).lasting);
     }
 
     /// The sheet the session hands the seat is the one it shows: a press copies exactly the link
