@@ -298,21 +298,22 @@ mod tests {
             assert_eq!(narrow.menu.items()[1].checked(), Some(true));
             let node = Widget::accessibility(&narrow).expect("the strip reaches assistive technology");
             assert_eq!(node.state.expanded, Some(true));
-            // Folded, the strip draws one picker and no segment: the one control a person reaches is
-            // the picker, at the whole strip's target, and the menu it opens lists every case.
+            // Folded, the strip paints one picker, but to a reader it is still the same choices:
+            // every segment keeps its node, so each one's binding has a control, and the one it
+            // holds is the checked one.
+            let spoken: Vec<_> = node
+                .children
+                .iter()
+                .map(|child| (child.name.as_deref(), child.state.checked))
+                .collect();
             assert_eq!(
-                node.children.len(),
-                1,
-                "the picker is the one control, not segments that are not drawn"
-            );
-            let picker = &node.children[0];
-            assert_eq!(picker.name.as_deref(), Some("Dissolve"), "what it holds");
-            let bounds = picker.bounds.expect("the picker's own target").to_rect();
-            assert!(
-                bounds.width() >= narrow.rect.width() - 1.0,
-                "the picker stands the whole strip wide, not {} of {}",
-                bounds.width(),
-                narrow.rect.width()
+                spoken,
+                LABELS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, label)| (Some(*label), Some(i == 1)))
+                    .collect::<Vec<_>>(),
+                "a reader is offered every segment, the one it holds checked"
             );
 
             for index in [3, 0, 4] {
