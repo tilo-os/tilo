@@ -47,6 +47,18 @@ for binary; do
     bin=${binary#*:}
     handed=$(printenv "NEXTEST_BIN_EXE_${bin}" || true)
     if [[ -n "$handed" && -x "$handed" ]]; then
+        # A featured entry names a build of the program, not only a file's name: t hands one
+        # `tilo-relay` per family (its `starts` refuses one target with two feature sets), but a
+        # hand made anywhere else — a plain `cargo build` of the package, exported by hand — is
+        # the same file's name. `room` is the subcommand `tilo-relay`'s `agents` feature gives it
+        # (through `web`), and the Lounge tests start it: a hand without it is refused by name,
+        # never handed on as the room service.
+        if [[ -n "$features" && "$bin" == tilo-relay ]]; then
+            if ! "$handed" room --help >/dev/null 2>&1; then
+                echo "$0: NEXTEST_BIN_EXE_$bin names $handed, which has no \`room\` subcommand: not the build with $features" >&2
+                exit 1
+            fi
+        fi
         hand "$bin" "$handed"
         continue
     fi
