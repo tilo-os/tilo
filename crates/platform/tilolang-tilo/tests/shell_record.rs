@@ -292,16 +292,19 @@ fn applying_a_preset_changes_every_setting_it_names_and_undo_restores_them_all()
     choose(
         &r,
         "apply",
-        vec![shell_ref(&r), pick(&r, "Layout", "macos")],
+        vec![shell_ref(&r), pick(&r, "ChromePreset", "macos")],
     );
     r.commit();
-    assert!(is(&r, "preset", "Layout", "macos"));
+    assert!(is(&r, "preset", "ChromePreset", "macos"));
     assert!(is(&r, "dock_showing", "Showing", "no_overlap"));
     assert!(is(&r, "dock_fit", "Fit", "floating"));
     assert!(flag(&r, "dock_zoom"), "macOS's Dock magnifies");
 
     undo(&mut r);
-    assert!(is(&r, "preset", "Layout", "tilo"), "the preset goes back");
+    assert!(
+        is(&r, "preset", "ChromePreset", "tilo"),
+        "the preset goes back"
+    );
     assert!(is(&r, "dock_showing", "Showing", "always"));
     assert!(!flag(&r, "dock_zoom"));
 }
@@ -357,7 +360,11 @@ fn says(view: &tilolang_runtime::ViewInstance, words: &str) -> bool {
 
 /// Ada picks the preset `preset`, as pressing its card in the settings does.
 fn use_preset(r: &mut Replica, preset: &str) {
-    choose(r, "apply", vec![shell_ref(r), pick(r, "Layout", preset)]);
+    choose(
+        r,
+        "apply",
+        vec![shell_ref(r), pick(r, "ChromePreset", preset)],
+    );
     r.commit();
 }
 
@@ -374,7 +381,7 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
     // The full-width classic bar, always shown: no dock, so no `ui.DragRun` on the shell at
     // all — the bar's own run is there, the dock's is not.
     use_preset(&mut r, "windows");
-    assert!(is(&r, "preset", "Layout", "windows"));
+    assert!(is(&r, "preset", "ChromePreset", "windows"));
     assert!(!flag(&r, "bar_shown"), "the Windows preset has no top bar");
     assert!(flag(&r, "dock_shown"), "and its dock is the taskbar");
     assert!(is(&r, "dock_fit", "Fit", "full"));
