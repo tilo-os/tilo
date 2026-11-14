@@ -278,6 +278,61 @@ mod tests {
         assert_eq!(record.wrappers.len(), 3);
     }
 
+    /// The sign-in record this build writes: a person's account enrolled
+    /// with the TPM and with a recovery key, and a factor a newer build
+    /// enrolled this one does not know. Kept so a machine's file goes on
+    /// reading the same way; a field added, removed or reordered changes
+    /// these bytes.
+    const GOLDEN: &str = include_str!("../golden/sign-in-record/v1.hex");
+
+    fn golden() -> Vec<u8> {
+        hex::decode(GOLDEN.split_whitespace().collect::<String>()).unwrap()
+    }
+
+    fn kept() -> Record {
+        Record {
+            version: RECORD_FORMAT.version,
+            uid: 1000,
+            name: "ada".into(),
+            display_name: "Ada Lovelace".into(),
+            unlocks_system: true,
+            wrappers: vec![
+                Entry::Known(Wrapper::Tpm {
+                    public: "cA==".into(),
+                    private: "cQ==".into(),
+                }),
+                Entry::Known(Wrapper::Recovery {
+                    envelope: "cmVj".into(),
+                }),
+                Entry::Unknown(serde_json::json!({"kind": "fido2"})),
+            ],
+            system_keyslot: Some(3),
+            attention: Some(Attention::SystemKeyslotPending),
+            secret: Some(SecretKind::Password),
+        }
+    }
+
+    #[test]
+    fn the_record_kept_here_reads_and_writes_as_it_is() {
+        let kept = kept();
+        tilo_files::native::migration::assert_golden_bytes(
+            RECORD_FORMAT.name,
+            &golden(),
+            |bytes| {
+                let read = parse(Path::new("1000.json"), bytes.to_vec()).unwrap();
+                assert_eq!(read.version, RECORD_FORMAT.version);
+                assert_eq!(read.uid, 1000);
+                assert_eq!(read.display_name, "Ada Lovelace");
+                assert_eq!(read.system_keyslot, Some(3));
+                assert_eq!(read.attention, Some(Attention::SystemKeyslotPending));
+                assert_eq!(read.secret, Some(SecretKind::Password));
+                assert_eq!(read.wrappers.len(), 3);
+                assert_eq!(read.known().count(), 2);
+            },
+            || serde_json::to_vec_pretty(&kept).unwrap(),
+        );
+    }
+
     #[test]
     fn a_record_filed_under_another_uid_is_refused() {
         let dir = tempfile::tempdir().unwrap();

@@ -181,14 +181,17 @@ mod tests {
     /// The door file this build writes: one person kept out, when they were
     /// removed. Kept so a workspace's door goes on reading the same way; a
     /// field added, removed or reordered changes these bytes.
-    const KEPT: &str =
-        "010107070707070707070707070707070707070707070707070707070707070707078080a8b1e39fe7cb17";
+    const GOLDEN: &str = include_str!("../../golden/room-door/v1.hex");
+
+    fn golden() -> Vec<u8> {
+        hex::decode(GOLDEN.split_whitespace().collect::<String>()).unwrap()
+    }
 
     #[test]
     fn the_door_file_kept_here_reads_and_writes_as_it_is() {
         assert_golden_bytes(
-            "a workspace's door",
-            &hex::decode(KEPT).unwrap(),
+            FORMAT.name,
+            &golden(),
             |bytes| {
                 let stored: Stored = postcard::from_bytes(bytes).unwrap();
                 assert_eq!(stored.version, FORMAT.version);

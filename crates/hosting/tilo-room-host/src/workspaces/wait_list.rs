@@ -699,7 +699,11 @@ mod tests {
     /// entry is gone within the mail window. Kept so a workspace's list goes
     /// on reading the same way; a field added, removed or reordered changes
     /// these bytes.
-    const KEPT: &str = "020103030303030303030303030303030303030303030303030303030303030303030f616461406578616d706c652e6f72670501010101010101010101010101010101010101010101010101010101010101010101020202020202020202020202020202020202020202020202020202020202020201060564652d44450105010404040404040404040404040404040404040404040404040404040404040404010701080109090909090909090909090909090909090909090909090909090909090909090a010505050505050505050505050505050505050505050505050505050505050505";
+    const GOLDEN: &str = include_str!("../../golden/room-wait-list/v2.hex");
+
+    fn golden() -> Vec<u8> {
+        hex::decode(GOLDEN.split_whitespace().collect::<String>()).unwrap()
+    }
 
     fn kept() -> Stored {
         Stored {
@@ -728,8 +732,8 @@ mod tests {
     #[test]
     fn the_wait_list_kept_here_reads_and_writes_as_it_is() {
         assert_golden_bytes(
-            "a workspace's wait list",
-            &hex::decode(KEPT).unwrap(),
+            FORMAT.name,
+            &golden(),
             |bytes| {
                 let stored: Stored = postcard::from_bytes(bytes).unwrap();
                 assert_eq!(stored.version, FORMAT.version);

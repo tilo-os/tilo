@@ -296,6 +296,53 @@ mod tests {
         );
     }
 
+    /// The lockout file this build writes: the authorisation wrapped for the
+    /// admin's user key and for the machine's recovery key. Kept so a
+    /// machine's file goes on reading the same way; a field added, removed or
+    /// reordered changes these bytes.
+    const GOLDEN: &str = include_str!("../golden/tpm-lockout-authorisation/v1.hex");
+
+    fn golden() -> Vec<u8> {
+        hex::decode(GOLDEN.split_whitespace().collect::<String>()).unwrap()
+    }
+
+    fn kept() -> Stored {
+        Stored {
+            version: LOCKOUT_FORMAT.version,
+            wrappings: vec![
+                Wrapping::User {
+                    uid: 1000,
+                    envelope: "AAAA".into(),
+                },
+                Wrapping::Recovery {
+                    envelope: "BBBB".into(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn the_lockout_file_kept_here_reads_and_writes_as_it_is() {
+        tilo_files::native::migration::assert_golden_bytes(
+            LOCKOUT_FORMAT.name,
+            &golden(),
+            |bytes| {
+                let stored: Stored = serde_json::from_slice(bytes).unwrap();
+                assert_eq!(stored.version, LOCKOUT_FORMAT.version);
+                assert_eq!(stored.wrappings.len(), 2);
+                assert!(matches!(
+                    &stored.wrappings[0],
+                    Wrapping::User { uid: 1000, envelope } if envelope == "AAAA"
+                ));
+                assert!(matches!(
+                    &stored.wrappings[1],
+                    Wrapping::Recovery { envelope } if envelope == "BBBB"
+                ));
+            },
+            || serde_json::to_vec_pretty(&kept()).unwrap(),
+        );
+    }
+
     #[test]
     fn a_machine_without_the_file_has_nothing_to_adopt() {
         let dir = tempfile::tempdir().unwrap();

@@ -638,12 +638,17 @@ mod tests {
     }
 
     /// The bytes this build writes for a workspace's first access.
+    const GOLDEN: &str = include_str!("../../golden/governed-workspace-access/v3.hex");
+
+    fn golden() -> Vec<u8> {
+        hex::decode(GOLDEN.split_whitespace().collect::<String>()).unwrap()
+    }
+
     #[test]
     fn the_log_this_build_writes() {
-        const KEPT: &str = "74696c6f61636300030000004700000001010101010101010101010101010101010101010101010101010101010101010101000102020202020202020202020202020202020202020202020202020202020202020001017059f4fed357fdc7";
         tilo_files::native::migration::assert_golden_bytes(
-            "governed workspace access",
-            &hex::decode(KEPT).unwrap(),
+            FORMAT.name,
+            &golden(),
             |bytes| assert_eq!(read(bytes).unwrap().0, access(&[1], &[2])),
             || {
                 let mut log = header();
