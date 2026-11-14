@@ -4,7 +4,9 @@
 //! display list only while a session shares the window with someone watching. A web view draws
 //! it, as a window does, and the probe plays the session: it says the window is watched (what
 //! `FloatingSurfaceHostMessage::PaintKeyframe` does in an app), draws a frame when the app's own
-//! loop would, and reads the share's outbox as the app sends it on. What came out is applied as
+//! loop would, and reads the share's outbox as the app sends it on. The view is placed and drawn
+//! directly, with no window, no layout around it and no fonts: a page drawn from its pixels sets
+//! no text, and the probe runs where no font catalogue is prepared. What came out is applied as
 //! the device showing the window applies it, and the page it then holds is printed as one line of
 //! JSON: whether a whole frame came, after how long, how large, and the text it carries.
 //!
@@ -18,9 +20,10 @@
 )]
 use std::path::Path;
 
+use cosmic_text::{FontSystem, fontdb};
 use tilo_ui::Widget;
-use tilo_ui::headless::Framed;
-use tilo_ui::state::State;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::time::Duration;
 use tilo_ui::webview::chromium::ChromiumEngine;
@@ -28,7 +31,9 @@ use tilo_ui::webview::paint::stream::Item;
 use tilo_ui::webview::paint::stream::wire::{Payload, Receiver};
 use tilo_ui::webview::paint::{self, PaintEngine};
 use tilo_ui::webview::{SharedEngine, WebViewCommand, WebViewEvent};
-use tilo_ui::widget::WebView;
+use tilo_ui::widget::{DrawChild, WebView};
+use vello::Scene;
+use vello::kurbo::{Affine, Rect};
 
 #[allow(
     clippy::disallowed_methods,
@@ -144,14 +149,60 @@ impl Asked {
     }
 }
 
+/// The web view of a window, and what a frame of it is drawn with.
+struct Window {
+    view: WebView,
+    text: TextRenderer,
+    theme: Theme,
+    presence: PresenceCtx,
+}
+
+impl Window {
+    /// A window whose page fills `viewport`, in logical pixels at scale one.
+    fn showing(engine: &SharedEngine, viewport: (u32, u32)) -> Self {
+        let mut view = WebView::new(engine.clone());
+        view.set_viewport(
+            Rect::new(0.0, 0.0, f64::from(viewport.0), f64::from(viewport.1)),
+            1.0,
+        );
+        Self {
+            view,
+            // No face at all: nothing here sets text.
+            text: TextRenderer::with_font_system(FontSystem::new_with_locale_and_db(
+                "en-US".to_owned(),
+                fontdb::Database::new(),
+            )),
+            theme: Theme::dark(),
+            presence: PresenceCtx::empty(),
+        }
+    }
+
+    /// Draw one frame of the view, as a window's redraw does.
+    fn draw(&mut self) {
+        let mut scene = Scene::new();
+        self.view.draw_child(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut self.text,
+            &self.theme,
+            &self.presence,
+        );
+    }
+
+    /// Whether the view asks for a frame, as the app's loop asks it.
+    fn due(&self) -> bool {
+        self.view.needs_redraw() || self.view.needs_animation_frame()
+    }
+}
+
 /// Load the page, drawing the view as a window with a loading page does.
-fn load(view: &mut Framed<WebView>, engine: &SharedEngine, url: &str, handed: &mut Handed) {
+fn load(window: &mut Window, engine: &SharedEngine, url: &str, handed: &mut Handed) {
     engine.send(WebViewCommand::Navigate(url.to_owned()));
     let deadline = tilo_ui::time::now()
         .checked_add(Duration::from_secs(30))
         .expect("a bounded load");
     loop {
-        Framed::harness_mut(view).relayout();
+        window.draw();
         let loaded = engine.drain_events().iter().any(|event| {
             matches!(
                 event,
@@ -172,7 +223,7 @@ fn load(view: &mut Framed<WebView>, engine: &SharedEngine, url: &str, handed: &m
 /// from there the view is drawn when it says it needs it, as that loop draws it. Returns after
 /// how many milliseconds the page was whole, and how many frames were drawn.
 fn watch(
-    view: &mut Framed<WebView>,
+    window: &mut Window,
     engine: &SharedEngine,
     asked: &Asked,
     handed: &mut Handed,
@@ -183,7 +234,7 @@ fn watch(
     loop {
         let waited = tilo_ui::time::now().saturating_duration_since(since);
         if due {
-            Framed::harness_mut(view).relayout();
+            window.draw();
             frames = frames.saturating_add(1);
         }
         drop(engine.drain_events());
@@ -194,7 +245,7 @@ fn watch(
         if waited >= asked.within {
             return (None, frames);
         }
-        due = view.needs_redraw() || view.needs_animation_frame();
+        due = window.due();
         pause();
     }
 }
@@ -207,22 +258,17 @@ fn main() {
     // As Browser's windows run it: drawn from its pixels, captured only while watched.
     let engine: SharedEngine = PaintEngine::streaming(native);
     engine.set_visible(true);
-    let mut view = Framed::new(
-        State::new(),
-        WebView::new(engine.clone()),
-        asked.viewport,
-        Theme::dark(),
-    );
+    let mut window = Window::showing(&engine, asked.viewport);
     let mut handed = Handed::default();
     if asked.watched_before_load {
         paint::set_share_watched(true);
     }
-    load(&mut view, &engine, &asked.url, &mut handed);
+    load(&mut window, &engine, &asked.url, &mut handed);
     // A desk asks for the window's page: the session tells the app.
     if !asked.watched_before_load {
         paint::set_share_watched(true);
     }
-    let (complete_ms, frames) = watch(&mut view, &engine, &asked, &mut handed);
+    let (complete_ms, frames) = watch(&mut window, &engine, &asked, &mut handed);
     paint::set_share_watched(false);
     let texts = handed.texts();
     println!(
@@ -240,6 +286,6 @@ fn main() {
             "texts": texts.iter().take(64).collect::<Vec<_>>(),
         })
     );
-    drop(view);
+    drop(window);
     drop(engine);
 }
