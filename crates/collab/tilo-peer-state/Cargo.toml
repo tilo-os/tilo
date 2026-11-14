@@ -39,6 +39,8 @@ ed25519-dalek.workspace = true
 base64.workspace = true
 web-time = { version = "1", features = ["serde"] }
 collab-types = { path = "../collab-types" }
+# A record is published under an app id, in the one spelling apps use.
+tilo-app-id = { path = "../../platform/tilo-app-id" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-action-policy = { path = "../action-policy" }
 # The shared neighbour wire vocabulary (`NeighbourMsg`, colorimetry, HDR metadata).

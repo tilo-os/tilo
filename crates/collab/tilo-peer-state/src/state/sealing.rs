@@ -95,6 +95,7 @@ impl StatePeer {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<(NeighbourMsg, Option<crate::coverage::Coverage>), String> {
+        tilo_app_id::AppId::parse(app).map_err(|_| format!("{app:?} is not an application id"))?;
         let author = Ed25519PublicKey::from_bytes(key.device_public_key());
         let route = Route {
             app: app.into(),
