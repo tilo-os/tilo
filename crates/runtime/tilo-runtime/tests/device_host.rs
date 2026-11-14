@@ -239,6 +239,18 @@ async fn device_host(root: &SigningKey) -> Box_ {
     let (key, cert) = certified(root, 2, "Build box", DeviceCapabilities::primary());
     let endpoint = endpoint(&key).await;
     let state = tempfile::tempdir().unwrap();
+    // A host opens only after its endpoint had its whole wait to reach a relay
+    // (`tilo_room_host::workspaces::Workspaces::open`), and this endpoint has
+    // none to reach. A test on a runtime whose clock it can hold holds it over
+    // the open: the same wait runs on that clock, which passes it when nothing
+    // else can run instead of five seconds later.
+    let held = matches!(
+        tokio::runtime::Handle::current().runtime_flavor(),
+        tokio::runtime::RuntimeFlavor::CurrentThread
+    );
+    if held {
+        tokio::time::pause();
+    }
     let key_runs = KeyRuns::new();
     let host = Arc::new(
         WorkspaceHost::open(
@@ -262,6 +274,9 @@ async fn device_host(root: &SigningKey) -> Box_ {
         )
         .await
         .unwrap(),
+    if held {
+        tokio::time::resume();
+    }
     );
     let made = host.workspaces().create("Desk").await.unwrap();
     let store = PersonalStore::open(
@@ -329,7 +344,7 @@ fn text(answer: &Value) -> &str {
         .unwrap_or_default()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "current_thread")]
 async fn a_key_lists_enters_and_acts_in_a_workspace_its_persons_device_hosts() {
     let root = SigningKey::from_bytes(&[0x11; 32]);
     let device = device_host(&root).await;
@@ -395,7 +410,7 @@ async fn a_key_lists_enters_and_acts_in_a_workspace_its_persons_device_hosts() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "current_thread")]
 async fn a_key_reaching_another_workspace_enters_nothing_and_runs_nothing_here() {
     let root = SigningKey::from_bytes(&[0x12; 32]);
     let device = device_host(&root).await;

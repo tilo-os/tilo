@@ -105,6 +105,29 @@ fn ns(at: SystemTime) -> u64 {
     .unwrap()
 }
 
+/// `starting`, a host or a relay starting on one of these fixtures'
+/// endpoints, awaited past its wait for a relay. Each starts only after its
+/// endpoint had `tilo_endpoint_reachability::RELAY_WAIT` to reach a relay
+/// (`tilo_room_host::workspaces::Workspaces::open`, `tilo_relay`'s start), and
+/// these endpoints have none to reach. A test on a runtime whose clock it can
+/// hold holds it over the start: the same whole wait runs on that clock, which
+/// passes it when nothing else can run instead of five seconds later. The
+/// clock runs again before anything else of the test does.
+async fn past_the_relay_wait<T>(starting: impl std::future::Future<Output = T>) -> T {
+    let held = matches!(
+        tokio::runtime::Handle::current().runtime_flavor(),
+        tokio::runtime::RuntimeFlavor::CurrentThread
+    );
+    if held {
+        tokio::time::pause();
+    }
+    let started = starting.await;
+    if held {
+        tokio::time::resume();
+    }
+    started
+}
+
 async fn local_endpoint(key: &SigningKey) -> iroh::Endpoint {
     iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
@@ -157,7 +180,7 @@ impl Joined {
         workspace: WorkspaceId,
     ) -> (Arc<Self>, tempfile::TempDir) {
         let (joined, directory) = Self::test_empty().await;
-        let host = tilo_room_host::host::WorkspaceHost::open(
+        let host = past_the_relay_wait(Box::pin(tilo_room_host::host::WorkspaceHost::open(
             tilo_room_host::host::HostConfig::new(
                 directory.path().join("room-host"),
                 tilo_relay_protocol::WorkSetting::none(),
@@ -170,7 +193,7 @@ impl Joined {
             },
             joined.endpoint(),
             None,
-        )
+        )))
         .await
         .unwrap();
         joined
@@ -240,35 +263,37 @@ impl HostedWorkspace {
             serving: tilo_peer_state::direct::Serving::new(),
         };
         let join = JoinService(hosted.clone());
-        let relay = tilo_relay::Relay::start_on_endpoint_with_protocols(
-            tilo_relay::RelayConfig {
-                state_root: relay_root.clone(),
-                identity_root: dir.join("relay-identity"),
-                full_replica_status: dir.join("replica/status.json"),
-                home_peer_bundle: dir.join("home-peer.toml"),
-                trust_policy: tilo_relay::TrustPolicy::AllowList {
-                    users: vec![hex::encode(governor.user_public_key)],
+        let relay = past_the_relay_wait(Box::pin(
+            tilo_relay::Relay::start_on_endpoint_with_protocols(
+                tilo_relay::RelayConfig {
+                    state_root: relay_root.clone(),
+                    identity_root: dir.join("relay-identity"),
+                    full_replica_status: dir.join("replica/status.json"),
+                    home_peer_bundle: dir.join("home-peer.toml"),
+                    trust_policy: tilo_relay::TrustPolicy::AllowList {
+                        users: vec![hex::encode(governor.user_public_key)],
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
-            },
-            tilo_relay::daemon::RelayIdentity {
-                user_public_key: governor.user_public_key,
-                device_signing_key: host_key,
-                device_cert: host.clone(),
-                revocations: RevocationList::new(),
-            },
-            server.clone(),
-            vec![
-                (
-                    WORKSPACE_JOIN_ALPN.to_vec(),
-                    Box::new(WorkspaceJoinProtocol::new(join)) as Box<dyn DynProtocolHandler>,
-                ),
-                (
-                    tilo_peer_state::direct::DIRECT_ALPN.to_vec(),
-                    Box::new(hosted.serving.clone()) as Box<dyn DynProtocolHandler>,
-                ),
-            ],
-        )
+                tilo_relay::daemon::RelayIdentity {
+                    user_public_key: governor.user_public_key,
+                    device_signing_key: host_key,
+                    device_cert: host.clone(),
+                    revocations: RevocationList::new(),
+                },
+                server.clone(),
+                vec![
+                    (
+                        WORKSPACE_JOIN_ALPN.to_vec(),
+                        Box::new(WorkspaceJoinProtocol::new(join)) as Box<dyn DynProtocolHandler>,
+                    ),
+                    (
+                        tilo_peer_state::direct::DIRECT_ALPN.to_vec(),
+                        Box::new(hosted.serving.clone()) as Box<dyn DynProtocolHandler>,
+                    ),
+                ],
+            ),
+        ))
         .await
         .unwrap();
         hosted.serve();
@@ -1121,7 +1146,7 @@ impl tilo_action_broker::record_content::ContentShelf for Shelf {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "current_thread")]
 async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
     use tilo_action_broker::record_content::PIECE_BYTES;
     use tilo_content::hash_bytes;
@@ -1268,7 +1293,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
 /// whose holder is offline waits (the host keeps none of it), and the
 /// moment the holder connects to the host the want is asked of it, and the
 /// content arrives: waiting, then fetching, then here.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "current_thread")]
 async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_it_connects() {
     use tilo_action_broker::record_content::PIECE_BYTES;
     use tilo_content::{ContentState, hash_bytes};
@@ -1420,7 +1445,7 @@ fn signed_write(
 
 /// The profile's workspace is placed on the workspace host the profile runs and held
 /// as a joined workspace, admitted like any other; placing it again finds it.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "current_thread")]
 async fn the_profile_workspace_is_placed_once_on_its_own_host_and_held() {
     let workspace = WorkspaceId::new();
     let (joined, _directory) = Joined::test_hosting(workspace).await;
@@ -1447,7 +1472,7 @@ async fn the_profile_workspace_is_placed_once_on_its_own_host_and_held() {
 /// An app's write to a record the profile's workspace does not hold yet is
 /// taken only in a kind its installed manifest declares, and only signed by
 /// this device; nothing refused reaches the host.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "current_thread")]
 async fn a_write_to_a_record_the_workspace_lacks_is_taken_only_in_a_declared_kind() {
     let workspace = WorkspaceId::new();
     let (joined, _directory) = Joined::test_hosting(workspace).await;
