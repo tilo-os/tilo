@@ -376,6 +376,35 @@ fn native_floating_window_clip(window: KurboRect, presentation: KurboRect) -> Op
     (clipped.width() > 0.0 && clipped.height() > 0.0).then_some(clipped)
 }
 
+/// Whether a frame repaints the window for what it paints over the widgets: a layer it draws, or
+/// one the last frame drew that it erases. `drawn_last` becomes whether this frame drew one.
+fn layer_repaints(drawn_last: &mut bool, drawn_now: bool) -> bool {
+    std::mem::replace(drawn_last, drawn_now) || drawn_now
+}
+
+#[cfg(test)]
+mod layer_repaint_tests {
+    use super::layer_repaints;
+
+    /// A menu or box drawn over the widgets repaints the window while it stands and once more as
+    /// it goes, so its pixels are erased; then frames go back to the widgets' damage.
+    #[test]
+    fn the_frame_after_a_layer_erases_it() {
+        let mut drawn_last = false;
+        assert!(
+            !layer_repaints(&mut drawn_last, false),
+            "nothing over the widgets"
+        );
+        assert!(layer_repaints(&mut drawn_last, true), "the box opens");
+        assert!(layer_repaints(&mut drawn_last, true), "the box stands");
+        assert!(
+            layer_repaints(&mut drawn_last, false),
+            "the box went: erase it"
+        );
+        assert!(!layer_repaints(&mut drawn_last, false), "it is gone");
+    }
+}
+
 #[cfg(test)]
 mod native_floating_paint_tests {
     use super::native_floating_window_clip;
@@ -2797,7 +2826,7 @@ impl AppHandler {
         top_layer |= over.encoding().draw_tags.len() != content_draw_tags;
         full_redraw_required |= repaint_why.note(
             "layer",
-            top_layer || std::mem::replace(&mut self.top_layer_drawn, top_layer),
+            layer_repaints(&mut self.top_layer_drawn, top_layer),
         );
 
         // Animated widgets update their visual bounds while drawing (for

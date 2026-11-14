@@ -258,18 +258,7 @@ fn told(app: &mut App, shell: &mut UnixStream) -> Vec<WindowTarget> {
 /// about, and Send — the same list, whether a menu opened the box or the key did.
 #[test]
 fn the_box_a_send_key_opens_tells_the_shell_its_controls() {
-    let (mut app, mut shell, _keys) = box_window();
-    drawn(&mut app);
-    let _window = told(&mut app, &mut shell);
-
-    assert!(
-        app.apply_floating_host_messages(vec![FloatingSurfaceHostMessage::ShareSelection {
-            to: Vec::new(),
-            pointing: false,
-        }]),
-        "the shell asked the window for its box"
-    );
-    drawn(&mut app);
+    let (mut app, mut shell, _keys) = shells_box();
     let targets = told(&mut app, &mut shell);
     let names: Vec<&str> = targets.iter().map(|target| target.name.as_str()).collect();
     for wanted in [
@@ -360,41 +349,35 @@ fn the_sends_send_is_pressed_through_the_target_and_sends_what_the_box_holds() {
     );
 }
 
-/// The box the shell asks a window for stands though nothing the app shows has a menu: the
-/// window's own carries it, gives it the pointer and the keys — a key typed next is the box's,
-/// not the content's — and tells the shell its controls, with nothing the person did since.
-#[test]
-fn a_window_with_no_menu_of_its_own_stands_the_box_and_it_takes_the_keys() {
+/// [`box_window`] with the box the shell asks for standing, drawn and described once.
+fn shells_box() -> (App, UnixStream, Rc<Cell<u32>>) {
     let (mut app, mut shell, keys) = box_window();
     drawn(&mut app);
     let _window = told(&mut app, &mut shell);
+    assert!(
+        app.apply_floating_host_messages(vec![FloatingSurfaceHostMessage::ShareSelection {
+            to: Vec::new(),
+            pointing: false,
+        }]),
+        "the shell asked the window for its box"
+    );
+    drawn(&mut app);
+    let _ = crate::shared_selection::take_send_to();
+    (app, shell, keys)
+}
 
-    app.apply_floating_host_messages(vec![FloatingSurfaceHostMessage::ShareSelection {
-        to: Vec::new(),
-        pointing: false,
-    }]);
+/// The box the shell asks a window for stands though nothing the app shows has a menu: the
+/// window's own carries it and gives it the pointer and the keys: a key typed next is the box's,
+/// not the content's.
+#[test]
+fn a_window_with_no_menu_of_its_own_stands_the_box_and_it_takes_the_keys() {
+    let (mut app, _shell, keys) = shells_box();
     assert!(
         app.window_box.send_to_alone_open(),
         "the box hears the pointer while it stands"
     );
-    let _ = crate::shared_selection::take_send_to();
     app.surface_input(&Window, crate::synthetic_input::char_key("w"), false);
     assert_eq!(keys.get(), 0, "the key typed next went to the box");
-    drawn(&mut app);
-    let names: Vec<String> = told(&mut app, &mut shell)
-        .into_iter()
-        .map(|target| target.name)
-        .collect();
-    for wanted in [
-        crate::i18n::I18nManager::lookup_plain("send-to-recipients-name"),
-        crate::i18n::I18nManager::lookup_plain("send-to-message-name"),
-        crate::i18n::I18nManager::lookup_plain("send-to-send"),
-    ] {
-        assert!(
-            names.contains(&wanted),
-            "the box's {wanted:?} is one of the window's controls: {names:?}"
-        );
-    }
     // The key went to the message, so Enter sends it to the new agent the box opened with.
     app.surface_input(
         &Window,
@@ -416,14 +399,7 @@ fn a_window_with_no_menu_of_its_own_stands_the_box_and_it_takes_the_keys() {
 /// Escape puts away the box the shell asked for, and the next key is the content's again.
 #[test]
 fn escape_puts_the_shells_box_away() {
-    let (mut app, mut shell, keys) = box_window();
-    drawn(&mut app);
-    let _window = told(&mut app, &mut shell);
-    app.apply_floating_host_messages(vec![FloatingSurfaceHostMessage::ShareSelection {
-        to: Vec::new(),
-        pointing: false,
-    }]);
-    drawn(&mut app);
+    let (mut app, _shell, keys) = shells_box();
     assert!(app.window_box.send_to_alone_open(), "the box stands");
     app.surface_input(
         &Window,
@@ -433,4 +409,41 @@ fn escape_puts_the_shells_box_away() {
     assert!(!app.window_box.send_to_alone_open(), "Escape put it away");
     app.surface_input(&Window, crate::synthetic_input::char_key("w"), false);
     assert_eq!(keys.get(), 1, "the content hears the keys again");
+}
+
+/// An agent reaches the box the shell asked for through the window's described controls, as a
+/// person's keys do: it writes the message and presses Send, and the window sends what it wrote.
+#[test]
+fn an_agent_writes_in_the_shells_box_and_sends_it() {
+    let (mut app, _shell, keys) = shells_box();
+    let control = |app: &mut App, name: &str| {
+        app.refresh_semantic_tree();
+        let wanted = crate::i18n::I18nManager::lookup_plain(name);
+        app.semantic_tree()
+            .iter()
+            .find(|node| node.name.as_deref() == Some(wanted.as_str()))
+            .map(|node| node.id.clone())
+            .unwrap_or_else(|| panic!("the box describes {wanted:?}"))
+    };
+    let message = control(&mut app, "send-to-message-name");
+    assert!(
+        app.invoke_semantic_action(&message, "set-value", Some("Ship the launch notes"))
+            .expect("the message takes a value"),
+        "the agent wrote the message"
+    );
+    let send = control(&mut app, "send-to-send");
+    assert!(
+        app.invoke_semantic_action(&send, "activate", None)
+            .expect("Send takes a press"),
+        "the agent pressed Send"
+    );
+    let sent = crate::shared_selection::take_send_to();
+    assert_eq!(sent.len(), 1, "Send sent the box: {sent:?}");
+    assert_eq!(sent[0].text, "Ship the launch notes");
+    assert_eq!(
+        sent[0].to.iter().map(|to| to.kind).collect::<Vec<_>>(),
+        [RecipientKind::NewAgent],
+    );
+    assert!(!app.window_box.send_to_alone_open(), "the box went");
+    assert_eq!(keys.get(), 0, "nothing reached the content");
 }
