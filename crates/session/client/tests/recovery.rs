@@ -17,7 +17,8 @@ use tilo_session_client::{Cmd, Event, FailureSubject, LocalState, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    enrol, holds, ready, restart_host, route, say, start_host, start_peer, wait_for, workspace,
+    HostSettings, enrol, free_loopback_port, holds, ready, restart_host_relaying, route, say,
+    start_host, start_host_serving, start_peer, wait_for, workspace,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -26,11 +27,18 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
     let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let host = start_host(
+    // The relay the page finds the restarted host at, at the address it
+    // already knows it by.
+    let relay_port = free_loopback_port();
+    let host = start_host_serving(
         &root,
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
+        HostSettings {
+            packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, relay_port).into()),
+            ..HostSettings::default()
+        },
     )
     .await;
     let peer = start_peer(
@@ -54,7 +62,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
 
     drop(host.web);
     host.relay.shutdown().await;
-    let host = restart_host(&root, &host_device, state.path()).await;
+    let host = restart_host_relaying(&root, &host_device, state.path(), relay_port).await;
     // A reconnect resumes: the page already holds what it published.
     peer.send(Cmd::Reconnect).unwrap();
     ready(&[&peer]).await;
@@ -90,11 +98,18 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
     let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let host = start_host(
+    // The relay the page finds the host at when the network is back: the
+    // same address it knew it by before the outage.
+    let relay_port = free_loopback_port();
+    let host = start_host_serving(
         &root,
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
+        HostSettings {
+            packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, relay_port).into()),
+            ..HostSettings::default()
+        },
     )
     .await;
     let peer = start_peer(
@@ -145,7 +160,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
             .flatten()
     })
     .await;
-    let host = restart_host(&root, &host_device, state.path()).await;
+    let host = restart_host_relaying(&root, &host_device, state.path(), relay_port).await;
     peer.send(Cmd::Retry).unwrap();
     ready(&[&peer]).await;
     assert!(

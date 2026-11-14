@@ -18,7 +18,8 @@ use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    enrol, hears, holds, ready, restart_host, route, say, start_host, start_peer, wait_for,
+    HostSettings, enrol, free_loopback_port, hears, holds, ready, restart_host_relaying, route,
+    say, start_host_serving, start_peer, wait_for,
 };
 
 /// How many members' writes landed in `peer`'s replica since the last count.
@@ -81,12 +82,18 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     let observer = enrol(&root, "phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     // The restarted host comes up at the ports the kernel picks, its
-    // identity the one its pages hold.
-    let host = start_host(
+    // identity the one its pages hold, and its relay at the address they
+    // know it by.
+    let relay_port = free_loopback_port();
+    let host = start_host_serving(
         &root,
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
+        HostSettings {
+            packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, relay_port).into()),
+            ..HostSettings::default()
+        },
     )
     .await;
 
@@ -147,7 +154,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     // was committed while the observer was away.
     drop(host.web);
     host.relay.shutdown().await;
-    let host = restart_host(&root, &host_device, state.path()).await;
+    let host = restart_host_relaying(&root, &host_device, state.path(), relay_port).await;
     author.send(Cmd::Reconnect).unwrap();
     ready(&[&author]).await;
     author.write(route(), &say(&mut doc, "missed")).unwrap();

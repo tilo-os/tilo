@@ -234,6 +234,41 @@ pub async fn restart_host(root: &SigningKey, host: &Device, state: &Path) -> Tes
     start_host(root, host, state, "127.0.0.1:0".parse().unwrap()).await
 }
 
+/// [`restart_host`] on the packet relay `relay_port`, which the host it
+/// replaces ran too: a page finds a restarted host by its identity at the
+/// relay it knows, so that relay keeps its address.
+pub async fn restart_host_relaying(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    relay_port: u16,
+) -> TestHost {
+    start_host_serving(
+        root,
+        host,
+        state,
+        "127.0.0.1:0".parse().unwrap(),
+        HostSettings {
+            packet_relay: Some(SocketAddr::from((
+                std::net::Ipv4Addr::LOCALHOST,
+                relay_port,
+            ))),
+            ..HostSettings::default()
+        },
+    )
+    .await
+}
+
+/// A free loopback port for a test host's own packet relay, which a test
+/// whose host restarts keeps across the restart.
+pub fn free_loopback_port() -> u16 {
+    std::net::UdpSocket::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
 /// What a test host serves beyond its secure listener.
 #[derive(Default)]
 pub struct HostSettings<'a> {
@@ -245,9 +280,10 @@ pub struct HostSettings<'a> {
     pub limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
     /// The fetch proxy it serves its pages.
     pub fetch_proxy: Option<tilo_relay::web::FetchProxySetup>,
-    /// Run its own packet relay, as a host serving pages does: a page holds
-    /// no UDP socket and reaches it only through one.
-    pub packet_relay: bool,
+    /// Where it runs its own packet relay, as a host serving pages does: a
+    /// page holds no UDP socket and reaches it only through one. `None` leaves
+    /// the host on the public relays, which a sandboxed runner refuses.
+    pub packet_relay: Option<SocketAddr>,
 }
 
 /// A host serving what `settings` names.
@@ -271,24 +307,30 @@ pub async fn start_host_serving(
         member_limits: limits,
         ..Default::default()
     };
-    if packet_relay {
-        cfg.packet_relay = Some((std::net::Ipv4Addr::LOCALHOST, 0).into());
+    if let Some(addr) = packet_relay {
+        cfg.packet_relay = Some(addr);
     }
     if !guests.is_empty() {
         cfg.trust_policy = tilo_relay::TrustPolicy::AllowList {
             users: guests.iter().map(hex::encode).collect(),
         };
     }
-    let relay = Relay::start(
-        cfg,
-        RelayIdentity {
-            user_public_key: user,
-            device_signing_key: host.key.clone(),
-            device_cert: host.cert.clone(),
-            revocations: RevocationList::new(),
-        },
-    )
-    .await
+    // A host running its own packet relay is reached through it, and a page
+    // finds it there after a restart, by its identity. One that runs none is
+    // reached on the loopback the test runs in and looks up no public relay:
+    // the sandboxed runner refuses that network, so a restarted host would
+    // never be found at its new port.
+    let identity = RelayIdentity {
+        user_public_key: user,
+        device_signing_key: host.key.clone(),
+        device_cert: host.cert.clone(),
+        revocations: RevocationList::new(),
+    };
+    let relay = if cfg.packet_relay.is_some() {
+        Relay::start(cfg, identity).await
+    } else {
+        Relay::start_with_relay_mode(cfg, identity, iroh::RelayMode::Disabled).await
+    }
     .unwrap();
     let web = relay
         .serve_web(WebConfig {
@@ -306,7 +348,7 @@ pub async fn start_host_serving(
         })
         .await
         .unwrap();
-    if packet_relay {
+    if packet_relay.is_some() {
         relayed(&relay);
     }
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);

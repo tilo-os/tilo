@@ -21,7 +21,8 @@ use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use crate::support::{
-    admitted, enrol, holds, ready, restart_host, route, say, start_host, start_peer, wait_for,
+    HostSettings, admitted, enrol, free_loopback_port, holds, ready, restart_host_relaying, route,
+    say, start_host, start_host_serving, start_peer, wait_for,
 };
 
 /// How many of `peer`'s writes to the workspace its replica's custody still holds.
@@ -93,12 +94,18 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     let observer = enrol(&root, "phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     // The restarted host comes up at the ports the kernel picks, its
-    // identity the one its pages hold.
-    let host = start_host(
+    // identity the one its pages hold, and its relay at the address they
+    // know it by.
+    let relay_port = free_loopback_port();
+    let host = start_host_serving(
         &root,
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
+        HostSettings {
+            packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, relay_port).into()),
+            ..HostSettings::default()
+        },
     )
     .await;
 
@@ -142,7 +149,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     assert_ne!(peer.status().phase, TransportPhase::Connected);
     assert_eq!(peer.snapshot().synchronization, "pending");
 
-    let host = restart_host(&root, &host_device, state.path()).await;
+    let host = restart_host_relaying(&root, &host_device, state.path(), relay_port).await;
     peer.send(Cmd::Reconnect).unwrap();
     let receipt = peer.barrier().unwrap();
     wait_for("the replayed commits to be durable", || async {
