@@ -90,11 +90,7 @@ impl Presence {
     /// is composing a message in the resource its detail view shows.
     pub fn show(&mut self, instance: &mut Instance) {
         if std::mem::take(&mut self.renamed) {
-            let me = self
-                .heard
-                .self_label()
-                .or_else(collaboration::local_identity::own_name)
-                .unwrap_or_default();
+            let me = self.heard.self_label().unwrap_or_default();
             let others = self
                 .heard
                 .names

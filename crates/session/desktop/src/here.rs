@@ -974,23 +974,20 @@ impl HereState {
             .collect()
     }
 
-    /// Each other person here by the person they are (their user root, hex), with the name and
-    /// colour every surface here shows them by: what the apps here are told of them, so their
-    /// caret and their marks in a window wear the name and colour of their face on the bar.
+    /// Each person here by the person they are (their user root, hex), this page's own among them,
+    /// with the name and colour every surface here shows them by: what the apps here are told of
+    /// them, so their caret and marks in a window wear their face on the bar, and a window names
+    /// its own person as everyone else's does.
     #[must_use]
     pub fn persons(&self) -> Vec<(String, String, (u8, u8, u8))> {
         let mut persons: Vec<(String, String, (u8, u8, u8))> = Vec::new();
-        for member in self.members.iter().flatten() {
-            if member.kind == "agent" || self.is_own_person(&member.publisher) {
-                continue;
-            }
-            let Some(user) = self.user_of(&member.publisher) else {
-                continue;
-            };
-            if persons.iter().any(|(held, _, _)| held == user) {
-                continue;
-            }
-            if let Some((name, rgb)) = self.person(user) {
+        for member in self.own.iter().chain(self.members.iter().flatten()) {
+            let user = self
+                .user_of(&member.publisher)
+                .filter(|_| member.kind != "agent");
+            if let Some(user) = user.filter(|user| persons.iter().all(|(held, _, _)| held != user))
+                && let Some((name, rgb)) = self.person(user)
+            {
                 persons.push((user.to_owned(), name, rgb));
             }
         }
@@ -1791,12 +1788,18 @@ mod tests {
                 ..member(publisher, "person", label)
             };
             here.set_members(
-                None,
+                Some(device("pat-laptop", "pat-root", "Pat")),
                 Some(vec![
                     device("ada-device", "ada-root", "Ada"),
                     device("cy-device", "cy-root", ""),
+                    device("pat-phone", "pat-root", "Pat"),
                 ]),
             );
+            // The apps are told every person once, the page's own too: Pat's window calls Pat's
+            // messages Pat's, as everyone else's window does.
+            let told = here.persons().into_iter().map(|(person, name, _)| (person, name));
+            let pat = ("pat-root".to_owned(), "Pat".to_owned());
+            assert_eq!(told.collect::<Vec<_>>()[..2], [pat, ("ada-root".into(), "Ada".into())]);
             assert_eq!(
                 here.person("ada-root"),
                 Some(("Ada".to_owned(), here.colors()["ada-device"])),

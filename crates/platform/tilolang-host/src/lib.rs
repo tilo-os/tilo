@@ -684,7 +684,6 @@ impl TilolangHost {
             broker,
             identity.as_fd(),
             route,
-            Some(request.person.clone()),
         )
         .map_err(|error| AdmitError::Join(format!("{error:?}")))?;
         Ok(Stage::Joining {

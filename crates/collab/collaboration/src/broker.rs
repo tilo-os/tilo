@@ -2686,7 +2686,6 @@ impl CollaborationManager {
         connection: runtime_portal::windows::Descriptor,
         identity: std::os::fd::BorrowedFd<'_>,
         route: RouteSpec,
-        handle: Option<String>,
     ) -> Result<Self, crate::NativeLaunchError> {
         let signing = runtime_identity::inherited::connect_service(identity)
             .map_err(|error| native_launch_refusal(&error))?;
@@ -2697,7 +2696,8 @@ impl CollaborationManager {
             SdkIdentitySource::Ready(Some(identity)),
             route,
             Some(kind.as_str().to_owned()),
-            handle,
+            // The instance says no name of its own: the member list names its person.
+            None,
         ))
     }
 
