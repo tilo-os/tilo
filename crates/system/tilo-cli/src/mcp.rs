@@ -211,7 +211,7 @@ fn open(session: Arc<Session>, device: &Device, run: &str) -> Result<Served, Str
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or("this computer's login names no person; log in again")?;
     let actions = session.device.actions(workspace_id);
-    let person = collab_types::Principal::of_person(user).id().to_owned();
+    let person = hex::encode(user);
     // The records the agent works in open as windows on the workspace's
     // desk; the host that executes its run shows it there, doing what it
     // does.
