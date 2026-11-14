@@ -2010,7 +2010,8 @@ mod tests {
 
     /// An app's settings are this session's own document: the call the
     /// broker answers through its settings server reads and writes what this
-    /// device keeps, scoped to that app.
+    /// device keeps, scoped to that app, and serves the person's dictionary
+    /// from the same document.
     #[test]
     fn an_apps_settings_are_the_document_this_session_keeps() {
         let dir = tempfile::tempdir().expect("a profile of the test's own");
@@ -2043,21 +2044,47 @@ mod tests {
                 Some("set-font"),
             )
             .expect("the app writes its own setting");
+        let written: serde_json::Value = serde_json::from_slice(&written).expect("a settings view");
         assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&written).expect("a settings view"),
-            serde_json::json!({"app_personal": {"so.tilo.notes": {"font": "serif"}}})
+            written["app_personal"],
+            serde_json::json!({"so.tilo.notes": {"font": "serif"}})
         );
         assert_eq!(
             serde_json::Value::Object(records.load()),
             serde_json::json!({"app_personal": {"so.tilo.notes": {"font": "serif"}}}),
-            "and the write lands in this device's settings document"
+            "the write lands in this device's settings document, and the view's dictionary is \
+             not kept there"
         );
+        // The view carries the person's dictionary as the same document holds it.
+        let projected = |view: &serde_json::Value| {
+            view["app_device_local"]["so.tilo.notes"]
+                [settings_store::personal_dictionary::delivery::VIEW_KEY]
+                .clone()
+        };
+        assert_eq!(
+            projected(&written),
+            serde_json::to_value(settings_store::personal_dictionary::snapshot_of(
+                &records.load()
+            ))
+            .expect("the dictionary's snapshot")
+        );
+        let word =
+            settings_store::personal_dictionary::Word::new("Tilo", None).expect("a word to add");
+        settings_store::personal_dictionary::edit_in(
+            records.as_ref(),
+            0,
+            settings_store::personal_dictionary::Edit::Add(word),
+        )
+        .expect("the person adds a word");
         let (_, read) = local
             .block_on(&runtime, notes.read(0))
             .expect("the app reads its setting back");
+        let read: serde_json::Value = serde_json::from_slice(&read).expect("a settings view");
+        assert_eq!(read["app_personal"], written["app_personal"]);
         assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&read).expect("a settings view"),
-            serde_json::json!({"app_personal": {"so.tilo.notes": {"font": "serif"}}})
+            projected(&read)["words"],
+            serde_json::json!([{"spelling": "Tilo", "language": null}]),
+            "a word the person adds reaches the app's view"
         );
     }
 
