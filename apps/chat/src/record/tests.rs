@@ -343,6 +343,7 @@ fn reply(parent: &Id, text: &str) -> Invoke<ChatPart> {
             attachments: Vec::new(),
             mentions: None,
             written: None,
+            origin: None,
         },
     })
 }
@@ -371,6 +372,7 @@ fn post_fields(channel: &str, text: &str) -> NewMessage {
         attachments: Vec::new(),
         mentions: None,
         written: None,
+        origin: None,
     }
 }
 
@@ -1878,6 +1880,7 @@ tilo_test_env::scenario! {
                     },],
                     mentions: None,
                     written: None,
+                    origin: None,
                 },
             }))
             .is_err(),
@@ -1926,6 +1929,7 @@ tilo_test_env::scenario! {
                 }],
                 mentions: None,
                 written: None,
+                origin: None,
             },
         }))
         .unwrap();
@@ -1976,6 +1980,7 @@ tilo_test_env::scenario! {
                 attachments: vec![attached.clone()],
                 mentions: None,
                 written: None,
+                origin: None,
             },
         }))
         .unwrap();
@@ -2029,6 +2034,7 @@ tilo_test_env::scenario! {
                 attachments: Vec::new(),
                 mentions: None,
                 written: None,
+                origin: None,
             },
         }))
         .unwrap();
@@ -2083,6 +2089,7 @@ tilo_test_env::scenario! {
                         attachments: Vec::new(),
                         mentions: None,
                         written: None,
+                        origin: None,
                     },
                 }))
                 .is_err(),
@@ -2103,6 +2110,7 @@ tilo_test_env::scenario! {
                     attachments: Vec::new(),
                     mentions: None,
                     written: None,
+                    origin: None,
                 },
             }))
             .is_err(),
@@ -2119,4 +2127,51 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(ada.rows("c_chat")[0].text.len(), MAX_MESSAGE_TEXT_BYTES);
     }
+}
+
+#[test]
+fn a_moved_message_shows_its_author_there_at_its_time_and_stays_the_movers() {
+    let mut part = Replica::<ChatPart>::new()
+        .as_agent_for("agent:grant-a8a42b74", ADA)
+        .named("Company mover");
+    part.set_now_ms(1_900_000_000_000);
+    let origin = ui::tilo_resource::Origin {
+        author: "Jane Doe".into(),
+        handle: Some("jane".into()),
+        source: "Slack".into(),
+        url: None,
+        created_ms: Some(1_741_000_000_000),
+        updated_ms: None,
+    };
+    part.apply(ChatPart::POST.with(chat_part::Post {
+        message: NewMessage {
+            origin: Some(origin.clone()),
+            ..post_fields("general", "From before")
+        },
+    }))
+    .unwrap();
+    let state = part.state().unwrap();
+    let (message_id, message) = state.messages.iter().next().unwrap();
+    assert_eq!(message.origin.as_ref(), Some(&origin));
+    assert_eq!(
+        message.ts, 1_741_000_000,
+        "it stands where it was written there"
+    );
+    assert_eq!(
+        message.author.0, "agent:grant-a8a42b74",
+        "the mover stays its author"
+    );
+    assert_eq!(
+        message
+            .acting
+            .as_ref()
+            .and_then(|acting| acting.name.as_ref())
+            .map(|name| name.0.as_str()),
+        Some("Company mover")
+    );
+    let row = crate::projection::message_row(message_id, message);
+    assert_eq!(
+        row.appearance.map(|shown| shown.name).as_deref(),
+        Some("Jane Doe in Slack")
+    );
 }

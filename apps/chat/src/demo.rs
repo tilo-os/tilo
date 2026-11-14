@@ -854,6 +854,7 @@ pub fn post(channel: &str, text: &str, parent: Option<&str>) -> Invoke<ChatPart>
             attachments: Vec::new(),
             mentions: None,
             written: None,
+            origin: None,
         },
     })
 }

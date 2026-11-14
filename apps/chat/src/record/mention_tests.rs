@@ -30,6 +30,7 @@ fn a_mention_in_a_message_is_found_in_the_record_the_workspace_sent() {
             attachments: Vec::new(),
             mentions: None,
             written: None,
+            origin: None,
         },
     }))
     .unwrap();

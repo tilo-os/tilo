@@ -441,11 +441,32 @@ pub(crate) fn message_row(id: &Id, message: &crate::record::Message) -> Message 
         attachments: message.attachments.clone(),
         pinned: message.pinned,
         work: message.work.as_ref().and_then(work_row),
-        appearance: message.appearance.clone().map(Into::into),
+        // A message moved from another chat shows as its author's there.
+        appearance: message
+            .appearance
+            .clone()
+            .map(Into::into)
+            .or_else(|| message.origin.as_ref().map(origin_appearance)),
         acting: message.acting.clone(),
         share: message.share.clone(),
         attempts: message.attempts,
         sending: false,
+    }
+}
+
+/// How a message moved from another chat shows its author: by their name,
+/// in the tool it was written in (`Jane Doe in Slack`).
+fn origin_appearance(origin: &ui::tilo_resource::Origin) -> tilo_actions::Appearance {
+    tilo_actions::Appearance {
+        name: crate::i18n::t_args(
+            "chat-origin-author",
+            &[
+                ("name", origin.author.clone().into()),
+                ("source", origin.source.clone().into()),
+            ],
+        ),
+        avatar: None,
+        persona: None,
     }
 }
 

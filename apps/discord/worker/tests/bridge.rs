@@ -960,6 +960,7 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
                     }],
                     mentions: None,
                     written: None,
+                    origin: None,
                 },
             }),
         )
@@ -1019,6 +1020,7 @@ async fn a_deleted_webhook_is_replaced_and_the_message_still_arrives() {
                     }],
                     mentions: None,
                     written: None,
+                    origin: None,
                 },
             }),
         )

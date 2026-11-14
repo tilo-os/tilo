@@ -185,6 +185,7 @@ impl ChatPart {
                 attachments: posting.attachments,
                 appearance: posting.appearance.map(Into::into),
                 acting: cx.acting(),
+                origin: posting.origin,
                 share: posting.share,
                 ..Message::default()
             },
@@ -221,6 +222,12 @@ pub struct NewMessage {
     /// from elsewhere; leave it out
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub written: Option<i64>,
+    /// Where it was first written, when it is moved here from another chat:
+    /// its author there, the tool, its page and when it was written. It
+    /// shows as its author's message at that time, while the message stays
+    /// the mover's in its history
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ui::tilo_resource::Origin>,
 }
 
 // The window's effects on a message (reveal it, read it) are offered on
@@ -253,13 +260,19 @@ impl ChatPart {
             attachments,
             mentions,
             written,
+            origin,
         } = message;
         if text.trim().is_empty() && attachments.is_empty() && parent.is_none() {
             return Err(Refusal::new("a message says something"));
         }
+        let origin = ui::tilo_resource::Origin::checked_option(origin)?;
         let id = cx.id();
         let appearance = cx.appearance();
-        let ts = written_at(cx, written, appearance.is_some());
+        // A message moved from elsewhere stands where it was written there.
+        let ts = match origin.as_ref().and_then(|origin| origin.created_ms) {
+            Some(created_ms) => (created_ms / 1000).clamp(0, seconds(cx)),
+            None => written_at(cx, written, appearance.is_some()),
+        };
         self.append(
             cx,
             id,
@@ -273,6 +286,7 @@ impl ChatPart {
                 attachments,
                 appearance,
                 mentions: mentions.unwrap_or_default(),
+                origin,
                 ..Posting::default()
             },
         )

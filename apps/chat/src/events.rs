@@ -2240,6 +2240,7 @@ impl ChatApp {
                 attachments: vec![tilo_reference::Attached::from(file)],
                 mentions: None,
                 written: None,
+                origin: None,
             },
         }));
         self.scroll = 0.0;

@@ -693,6 +693,11 @@ pub struct Message {
     /// "Helper for Ada" after it left too. `None` for a person's own words.
     #[model(readonly)]
     pub acting: Option<ui::tilo_resource::Acting>,
+    /// Where it was first written, when it was moved here from another chat:
+    /// shown as its author's, at its time there, while `author` keeps who
+    /// moved it.
+    #[model(readonly)]
+    pub origin: Option<ui::tilo_resource::Origin>,
     /// The window it shares live, when it was written by sharing one: the
     /// resource is the one its first resource attachment names.
     #[model(readonly)]
@@ -1255,6 +1260,8 @@ pub(crate) struct Posting {
     /// Who the text refers to, as the chat record resolved it where the
     /// message was written.
     pub mentions: Vec<crate::mention::Mention>,
+    /// Where it was first written, when it was moved here from elsewhere.
+    pub origin: Option<ui::tilo_resource::Origin>,
 }
 
 impl Chat {

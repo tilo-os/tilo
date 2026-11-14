@@ -493,3 +493,5 @@ chat-workspace-overturn-decision = Overturn a decision
 chat-workspace-mark-read = Mark as read
 chat-workspace-submit-feedback = Submit feedback
 chat-workspace-triage = Triage feedback
+# A message moved from another chat: its author there, and the tool.
+chat-origin-author = { $name } in { $source }
