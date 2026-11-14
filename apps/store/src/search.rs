@@ -210,162 +210,166 @@ mod tests {
         }
     }
 
-    #[test]
-    fn catalogue_paging_and_stale_addresses_are_refused() {
-        crate::resource::CATALOG.ensure();
-        {
-            let items = (0..2_048).map(item).collect::<Vec<_>>();
-            let directory = StoreDirectory::default();
-            directory.sync(&items);
-            let provider = source(&directory);
-            let first = provider.search_page(&ui::search::SearchQuery::new("example"), None, 9, 4);
-            assert!(first.inspected <= 9);
-            assert_eq!(first.results.len(), 4);
-            assert!(first.next.is_some());
-            let hit = &first.results[0];
-            assert_eq!(hit.kind, "Apps");
-            let anchor = hit.anchor();
-            let crate::resource::StoreEffect::ShowDetails { app } = opened(&anchor).unwrap() else {
-                panic!("a hit opens details");
-            };
-            let app = app.as_str();
-            assert!(
-                directory.app(app).is_some(),
-                "the hit resolves in the directory"
-            );
-        }
+    tilo_test_env::scenario! {
+        fn the_store_directory_pages_resolves_and_rebuilds_in_order;
 
+        phase catalogue_paging_and_stale_addresses_are_refused;
         {
-            let directory = StoreDirectory::default();
-            directory.sync(&[item(7)]);
-            let hit = source(&directory).search_limited("app 7", 1).pop().unwrap();
-            let anchor = hit.anchor();
-            directory.sync(&[]);
-            let app = anchor.strip_prefix("app:").unwrap();
-            assert!(directory.app(app).is_none());
-            assert!(source(&directory).search_limited("app 7", 1).is_empty());
-        }
-    }
-
-    #[test]
-    fn configured_repository_is_searchable_through_the_resource_directory() {
-        let mut remote_app = item(7);
-        remote_app.source = StoreSource::FlatpakRemote {
-            name: "tools".into(),
-            title: "Example tools repository".into(),
-            branch: "stable".into(),
-            user_managed: true,
-        };
-        let directory = StoreDirectory::default();
-        directory.sync(&[remote_app]);
-        let hit = source(&directory)
-            .search_limited("tools repository", 1)
-            .pop()
-            .expect("the configured repository's application is discoverable");
-        assert_eq!(hit.anchor(), "app:dev.example.app7");
-        assert_eq!(
-            opened(&hit.anchor()).unwrap(),
-            crate::resource::StoreEffect::ShowDetails {
-                app: "dev.example.app7".into()
+            crate::resource::CATALOG.ensure();
+            {
+                let items = (0..2_048).map(item).collect::<Vec<_>>();
+                let directory = StoreDirectory::default();
+                directory.sync(&items);
+                let provider = source(&directory);
+                let first = provider.search_page(&ui::search::SearchQuery::new("example"), None, 9, 4);
+                assert!(first.inspected <= 9);
+                assert_eq!(first.results.len(), 4);
+                assert!(first.next.is_some());
+                let hit = &first.results[0];
+                assert_eq!(hit.kind, "Apps");
+                let anchor = hit.anchor();
+                let crate::resource::StoreEffect::ShowDetails { app } = opened(&anchor).unwrap() else {
+                    panic!("a hit opens details");
+                };
+                let app = app.as_str();
+                assert!(
+                    directory.app(app).is_some(),
+                    "the hit resolves in the directory"
+                );
             }
-        );
-        assert!(directory.app("dev.example.app7").is_some());
-    }
 
-    #[test]
-    fn publisher_metadata_refreshes_the_search_directory() {
-        let mut app = item(7);
-        let directory = StoreDirectory::default();
-        directory.sync(&[app.clone()]);
-        assert!(
-            source(&directory)
-                .search_limited("a1b2c3d4e5f6", 1)
-                .is_empty()
-        );
-        app.publisher_pubkey_hex = Some(format!("{}a1b2", "a1b2c3d4e5f6".repeat(5)));
-        directory.sync(&[app]);
-        let hit = source(&directory)
-            .search_limited("a1b2c3d4e5f6", 1)
-            .pop()
-            .unwrap();
-        assert_eq!(hit.anchor(), "app:dev.example.app7");
-    }
-
-    /// Malformed rebuilds withdraw and older stages never publish after newer ones.
-    #[test]
-    fn bulk_rebuilds_withdraw_malformed_input_and_publish_in_order() {
-        {
-            let directory = StoreDirectory::default();
-            directory.sync(&[item(9)]);
-            directory.sync(&[item(10), item(10)]);
-            assert!(directory.entries().is_empty());
-            assert!(directory.app("dev.example.app9").is_none());
+            {
+                let directory = StoreDirectory::default();
+                directory.sync(&[item(7)]);
+                let hit = source(&directory).search_limited("app 7", 1).pop().unwrap();
+                let anchor = hit.anchor();
+                directory.sync(&[]);
+                let app = anchor.strip_prefix("app:").unwrap();
+                assert!(directory.app(app).is_none());
+                assert!(source(&directory).search_limited("app 7", 1).is_empty());
+            }
         }
 
+        phase configured_repository_is_searchable_through_the_resource_directory;
+        {
+            let mut remote_app = item(7);
+            remote_app.source = StoreSource::FlatpakRemote {
+                name: "tools".into(),
+                title: "Example tools repository".into(),
+                branch: "stable".into(),
+                user_managed: true,
+            };
+            let directory = StoreDirectory::default();
+            directory.sync(&[remote_app]);
+            let hit = source(&directory)
+                .search_limited("tools repository", 1)
+                .pop()
+                .expect("the configured repository's application is discoverable");
+            assert_eq!(hit.anchor(), "app:dev.example.app7");
+            assert_eq!(
+                opened(&hit.anchor()).unwrap(),
+                crate::resource::StoreEffect::ShowDetails {
+                    app: "dev.example.app7".into()
+                }
+            );
+            assert!(directory.app("dev.example.app7").is_some());
+        }
+
+        phase publisher_metadata_refreshes_the_search_directory;
+        {
+            let mut app = item(7);
+            let directory = StoreDirectory::default();
+            directory.sync(&[app.clone()]);
+            assert!(
+                source(&directory)
+                    .search_limited("a1b2c3d4e5f6", 1)
+                    .is_empty()
+            );
+            app.publisher_pubkey_hex = Some(format!("{}a1b2", "a1b2c3d4e5f6".repeat(5)));
+            directory.sync(&[app]);
+            let hit = source(&directory)
+                .search_limited("a1b2c3d4e5f6", 1)
+                .pop()
+                .unwrap();
+            assert_eq!(hit.anchor(), "app:dev.example.app7");
+        }
+
+        phase bulk_rebuilds_withdraw_malformed_input_and_publish_in_order;
+        // Malformed rebuilds withdraw and older stages never publish after newer ones.
+        {
+            {
+                let directory = StoreDirectory::default();
+                directory.sync(&[item(9)]);
+                directory.sync(&[item(10), item(10)]);
+                assert!(directory.entries().is_empty());
+                assert!(directory.app("dev.example.app9").is_none());
+            }
+
+            {
+                let directory = StoreDirectory::default();
+                directory.sync(&[item(1)]);
+                let older_directory = directory.clone();
+                let (older_staged, older_staged_receiver) = mpsc::channel();
+                let (release_older, release_older_receiver) = mpsc::channel();
+                let older = std::thread::spawn(move || {
+                    older_directory.rebuild_serialized(&[item(2)], || {
+                        older_staged.send(()).expect("older stage signal");
+                        release_older_receiver.recv().expect("older release");
+                    });
+                });
+                older_staged_receiver
+                    .recv()
+                    .expect("older stage pauses before publication");
+                assert!(
+                    directory.writer.try_lock().is_err(),
+                    "the serial writer lock covers the complete rebuild lifecycle"
+                );
+
+                let newer_directory = directory.clone();
+                let (newer_started, newer_started_receiver) = mpsc::channel();
+                let newer = std::thread::spawn(move || {
+                    newer_started.send(()).expect("newer writer started");
+                    newer_directory.sync(&[item(3)]);
+                });
+                newer_started_receiver
+                    .recv()
+                    .expect("newer writer attempted publication");
+
+                release_older.send(()).expect("release older publication");
+                older.join().expect("older writer");
+                newer.join().expect("newer writer");
+
+                let provider = source(&directory);
+                assert!(provider.search_limited("app 2", 10).is_empty());
+                assert_eq!(provider.search_limited("app 3", 10).len(), 1);
+            }
+        }
+
+        phase large_replacement_keeps_current_entries_and_resolution_before_publish;
         {
             let directory = StoreDirectory::default();
             directory.sync(&[item(1)]);
-            let older_directory = directory.clone();
-            let (older_staged, older_staged_receiver) = mpsc::channel();
-            let (release_older, release_older_receiver) = mpsc::channel();
-            let older = std::thread::spawn(move || {
-                older_directory.rebuild_serialized(&[item(2)], || {
-                    older_staged.send(()).expect("older stage signal");
-                    release_older_receiver.recv().expect("older release");
+            let items = std::iter::once(item(1))
+                .chain((2..20_000).map(item))
+                .collect::<Vec<_>>();
+            let worker_directory = directory.clone();
+            let (staged, staged_receiver) = mpsc::channel();
+            let (continue_publish, continue_receiver) = mpsc::channel();
+            let replacement = std::thread::spawn(move || {
+                worker_directory.rebuild_serialized(&items, || {
+                    staged.send(()).expect("stage signal");
+                    continue_receiver.recv().expect("publish release");
                 });
             });
-            older_staged_receiver
+
+            staged_receiver
                 .recv()
-                .expect("older stage pauses before publication");
-            assert!(
-                directory.writer.try_lock().is_err(),
-                "the serial writer lock covers the complete rebuild lifecycle"
-            );
-
-            let newer_directory = directory.clone();
-            let (newer_started, newer_started_receiver) = mpsc::channel();
-            let newer = std::thread::spawn(move || {
-                newer_started.send(()).expect("newer writer started");
-                newer_directory.sync(&[item(3)]);
-            });
-            newer_started_receiver
-                .recv()
-                .expect("newer writer attempted publication");
-
-            release_older.send(()).expect("release older publication");
-            older.join().expect("older writer");
-            newer.join().expect("newer writer");
-
-            let provider = source(&directory);
-            assert!(provider.search_limited("app 2", 10).is_empty());
-            assert_eq!(provider.search_limited("app 3", 10).len(), 1);
+                .expect("large replacement is staged before publication");
+            assert_eq!(source(&directory).search_limited("app 1", 1).len(), 1);
+            assert!(directory.app("dev.example.app1").is_some());
+            continue_publish.send(()).expect("release publication");
+            replacement.join().expect("replacement worker");
+            assert_eq!(directory.entries().len(), 19_999);
         }
-    }
-
-    #[test]
-    fn large_replacement_keeps_current_entries_and_resolution_before_publish() {
-        let directory = StoreDirectory::default();
-        directory.sync(&[item(1)]);
-        let items = std::iter::once(item(1))
-            .chain((2..20_000).map(item))
-            .collect::<Vec<_>>();
-        let worker_directory = directory.clone();
-        let (staged, staged_receiver) = mpsc::channel();
-        let (continue_publish, continue_receiver) = mpsc::channel();
-        let replacement = std::thread::spawn(move || {
-            worker_directory.rebuild_serialized(&items, || {
-                staged.send(()).expect("stage signal");
-                continue_receiver.recv().expect("publish release");
-            });
-        });
-
-        staged_receiver
-            .recv()
-            .expect("large replacement is staged before publication");
-        assert_eq!(source(&directory).search_limited("app 1", 1).len(), 1);
-        assert!(directory.app("dev.example.app1").is_some());
-        continue_publish.send(()).expect("release publication");
-        replacement.join().expect("replacement worker");
-        assert_eq!(directory.entries().len(), 19_999);
     }
 }

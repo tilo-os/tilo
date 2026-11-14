@@ -455,61 +455,65 @@ mod tests {
         assert!(later.failed(&absent));
     }
 
-    #[test]
-    fn fixture_catalogue_covers_every_action_and_is_complete() {
-        use crate::model::ActionKind;
-        let catalogue = fixture_catalog();
-        let mut saw_open = false;
-        let mut saw_update = false;
-        let mut saw_flatpak_install = false;
-        let mut saw_flatpak_open = false;
-        let mut saw_flatpak_remove = false;
-        let mut saw_pin_toggle = false;
-        for item in &catalogue {
-            match item.action_kind(true) {
-                ActionKind::Open => saw_open = true,
-                ActionKind::Update => saw_update = true,
-                ActionKind::FlatpakInstall => saw_flatpak_install = true,
-                ActionKind::FlatpakOpen => saw_flatpak_open = true,
-                _ => {}
+    tilo_test_env::scenario! {
+        fn the_fixture_catalogue_is_complete_and_its_artwork_bundled;
+
+        phase fixture_catalogue_covers_every_action_and_is_complete;
+        {
+            use crate::model::ActionKind;
+            let catalogue = fixture_catalog();
+            let mut saw_open = false;
+            let mut saw_update = false;
+            let mut saw_flatpak_install = false;
+            let mut saw_flatpak_open = false;
+            let mut saw_flatpak_remove = false;
+            let mut saw_pin_toggle = false;
+            for item in &catalogue {
+                match item.action_kind(true) {
+                    ActionKind::Open => saw_open = true,
+                    ActionKind::Update => saw_update = true,
+                    ActionKind::FlatpakInstall => saw_flatpak_install = true,
+                    ActionKind::FlatpakOpen => saw_flatpak_open = true,
+                    _ => {}
+                }
+                saw_pin_toggle |= item.pin_action().is_some();
+                saw_flatpak_remove |= item.remove_action() == Some(ActionKind::FlatpakRemove);
+                if let Some(key) = item.publisher_pubkey_hex.as_deref() {
+                    assert_eq!(key.len(), 64, "{} has a full ed25519 key", item.name);
+                }
+                for version in &item.versions {
+                    if let Some(hash) = version.root_hash_hex.as_deref() {
+                        assert_eq!(hash.len(), 64, "{} has a full digest", item.name);
+                    }
+                }
             }
-            saw_pin_toggle |= item.pin_action().is_some();
-            saw_flatpak_remove |= item.remove_action() == Some(ActionKind::FlatpakRemove);
-            if let Some(key) = item.publisher_pubkey_hex.as_deref() {
-                assert_eq!(key.len(), 64, "{} has a full ed25519 key", item.name);
-            }
-            for version in &item.versions {
-                if let Some(hash) = version.root_hash_hex.as_deref() {
-                    assert_eq!(hash.len(), 64, "{} has a full digest", item.name);
+            assert!(
+                saw_open
+                    && saw_update
+                    && saw_flatpak_install
+                    && saw_flatpak_open
+                    && saw_flatpak_remove
+                    && saw_pin_toggle,
+                "fixture must exercise Open, Update, Flatpak install/open/remove, and the pin toggle"
+            );
+        }
+
+        phase artwork_covers_the_fixture_and_nothing_else;
+        {
+            for item in fixture_catalog() {
+                for url in item.icon_url.iter().chain(&item.screenshot_urls) {
+                    let name = url.strip_prefix(ARTWORK_HOST).expect("fixture artwork URL");
+                    assert!(
+                        ARTWORK.iter().any(|(file, _)| *file == name),
+                        "{name} is bundled"
+                    );
                 }
             }
         }
-        assert!(
-            saw_open
-                && saw_update
-                && saw_flatpak_install
-                && saw_flatpak_open
-                && saw_flatpak_remove
-                && saw_pin_toggle,
-            "fixture must exercise Open, Update, Flatpak install/open/remove, and the pin toggle"
-        );
     }
 
     #[test]
     fn seeded_app_lists_the_fixture_catalogue() {
         assert_eq!(seeded_app().state().items().len(), fixture_catalog().len());
-    }
-
-    #[test]
-    fn artwork_covers_the_fixture_and_nothing_else() {
-        for item in fixture_catalog() {
-            for url in item.icon_url.iter().chain(&item.screenshot_urls) {
-                let name = url.strip_prefix(ARTWORK_HOST).expect("fixture artwork URL");
-                assert!(
-                    ARTWORK.iter().any(|(file, _)| *file == name),
-                    "{name} is bundled"
-                );
-            }
-        }
     }
 }

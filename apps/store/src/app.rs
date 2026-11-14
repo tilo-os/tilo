@@ -2750,276 +2750,471 @@ mod tests {
     use ui::widget::Widget;
     use vello::kurbo::{Point, Rect};
 
-    #[test]
-    fn runtime_install_action_is_bound_to_the_reviewed_root() {
-        let mut item = crate::fixture::fixture_catalog().remove(0);
-        item.id = "so.tilo.runtime.chromium".into();
-        item.versions[0].root_hash_hex = Some("11".repeat(32));
-        item.versions[0].runtime = Some("tilo-runtime/2026.10.4-chromium".into());
-        let action = StoreEffect::package(ActionKind::RuntimeInstall, &item).unwrap();
-        let mut app = StoreState::new();
-        app.set_items(vec![item.clone()]);
-        assert_eq!(
-            app.inspect_catalogue(Some(&item.id)).unwrap()["detail"]["runtime"],
-            "tilo-runtime/2026.10.4-chromium"
-        );
-        item.versions[0].root_hash_hex = Some("33".repeat(32));
-        app.set_items(vec![item]);
-        assert!(app.admit(action).err().unwrap().contains("changed"));
-        assert!(app.active_operation.is_none());
-    }
+    tilo_test_env::scenario! {
+        fn effects_are_admitted_only_for_what_the_store_may_do;
 
-    #[test]
-    fn a_report_or_an_appeal_is_signed_as_the_person_without_asking() {
-        let mut app = seeded_app();
-        app.directory
-            .set_registries(vec![moderation_test_registry()]);
-        assert!(
-            app.admit(StoreEffect::ShowDetails {
-                app: "id.notes".into(),
-            })
-            .is_ok(),
-            "an app's page opens"
-        );
-        assert_eq!(app.focused_detail.as_deref(), Some("id.notes"));
-        draft(
-            &mut app,
-            "The app connected to a remote host while offline mode was active.",
-        );
-        let report = app.moderation_effect("id.notes", false).unwrap();
-        assert!(
-            app.admit(report).is_ok(),
-            "a signed report goes out as the person working here"
-        );
-    }
+        phase runtime_install_action_is_bound_to_the_reviewed_root;
+        {
+            let mut item = crate::fixture::fixture_catalog().remove(0);
+            item.id = "so.tilo.runtime.chromium".into();
+            item.versions[0].root_hash_hex = Some("11".repeat(32));
+            item.versions[0].runtime = Some("tilo-runtime/2026.10.4-chromium".into());
+            let action = StoreEffect::package(ActionKind::RuntimeInstall, &item).unwrap();
+            let mut app = StoreState::new();
+            app.set_items(vec![item.clone()]);
+            assert_eq!(
+                app.inspect_catalogue(Some(&item.id)).unwrap()["detail"]["runtime"],
+                "tilo-runtime/2026.10.4-chromium"
+            );
+            item.versions[0].root_hash_hex = Some("33".repeat(32));
+            app.set_items(vec![item]);
+            assert!(app.admit(action).err().unwrap().contains("changed"));
+            assert!(app.active_operation.is_none());
+        }
 
-    #[test]
-    fn late_detail_metadata_preserves_the_declared_navigation_destination() {
-        for destination in [
-            StoreEffect::ShowCatalogue,
-            StoreEffect::ShowRemotes,
-            StoreEffect::ShowDetails {
+        phase a_report_or_an_appeal_is_signed_as_the_person_without_asking;
+        {
+            let mut app = seeded_app();
+            app.directory
+                .set_registries(vec![moderation_test_registry()]);
+            assert!(
+                app.admit(StoreEffect::ShowDetails {
+                    app: "id.notes".into(),
+                })
+                .is_ok(),
+                "an app's page opens"
+            );
+            assert_eq!(app.focused_detail.as_deref(), Some("id.notes"));
+            draft(
+                &mut app,
+                "The app connected to a remote host while offline mode was active.",
+            );
+            let report = app.moderation_effect("id.notes", false).unwrap();
+            assert!(
+                app.admit(report).is_ok(),
+                "a signed report goes out as the person working here"
+            );
+        }
+
+        phase unsupported_device_version_has_no_invocable_open_offer;
+        {
+            let mut app = seeded_app();
+            let mut unsupported = item(
+                "Foreign",
+                StoreSource::Tilo {
+                    registry_name: "Tilo".into(),
+                },
+                "Tools",
+                InstalledState::Not,
+            );
+            unsupported.versions.clear();
+            let id = unsupported.id.clone();
+            app.set_items(vec![unsupported]);
+            let row = app.live_row(&format!("app:{id}")).unwrap().into_resource();
+            let open = row
+                .actions
+                .iter()
+                .find(|action| action.id == "open-app")
+                .unwrap();
+            assert!(
+                matches!(&open.contract.availability, ui::tilo_actions::Availability::Unavailable { code, .. } if code == "device_version_unavailable")
+            );
+            assert!(app.admit(StoreEffect::OpenApp { app: id }).is_err());
+        }
+
+        phase a_blocked_app_is_listed_nowhere_and_only_its_blocker_unblocks_it;
+        // A blocked app is in no list and no search and cannot be installed; its
+        // page says who blocked it; only the person who blocked it lifts it,
+        // and the list is the one desktop search reads.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_PERSON_DIR", dir.path());
+            let mut app = seeded_app();
+            app.set_query("Chess".into());
+            assert_eq!(app.results.apps, ["id.chess"]);
+            assert!(matches!(
+                app.admit(StoreEffect::BlockApp {
+                    app: "id.chess".into()
+                }),
+                Ok(Admitted::Done)
+            ));
+            assert!(
+                app.results.apps.is_empty(),
+                "a blocked app is found nowhere"
+            );
+            app.set_query(String::new());
+            app.show_view(View::Category("Games".into()));
+            assert!(app.visible_items().is_empty());
+            assert!(
+                app.catalogue_search_entries()
+                    .iter()
+                    .all(|entry| entry.anchor.as_deref() != Some("app:id.chess")),
+                "nor in the platform search the Store feeds"
+            );
+            assert!(
+                app.admit(StoreEffect::FlatpakInstall {
+                    app: "id.chess".into()
+                })
+                .is_err()
+            );
+            let inspected = app.inspect_catalogue(Some("id.chess")).unwrap();
+            assert_eq!(inspected["detail"]["blocked_by"][0]["kind"], "person");
+            assert!(
+                ui::registry::BlockList::load().is_blocked("id.chess"),
+                "the person's list is the one desktop search reads"
+            );
+            app.admit(StoreEffect::UnblockApp {
                 app: "id.chess".into(),
-            },
-        ] {
+            })
+            .unwrap();
+            assert!(!app.blocks.is_blocked("id.chess"));
+            assert!(!ui::registry::BlockList::load().is_blocked("id.chess"));
+            app.set_blocks(BlockList::empty().with_workspace_policy("School", ["id.chess"]));
+            assert!(
+                app.admit(StoreEffect::UnblockApp {
+                    app: "id.chess".into()
+                })
+                .is_err(),
+                "a workspace's block is not the person's to lift"
+            );
+            assert!(app.blocks.is_blocked("id.chess"));
+        }
+
+        phase flatpak_and_stale_operations_are_refused_without_escalation;
+        {
+            {
+                let mut app = seeded_app();
+                assert!(
+                    app.admit(StoreEffect::Update {
+                        app: "id.notes".into()
+                    })
+                    .is_err(),
+                    "an uninstalled app offers Open, not an arbitrary stale Update"
+                );
+                assert!(app.active_operation.is_none());
+            }
+
+            {
+                let mut app = seeded_app();
+                app.items
+                    .iter_mut()
+                    .find(|item| item.id == "id.chess")
+                    .unwrap()
+                    .installed = InstalledState::Installed {
+                    version: "1".into(),
+                    available: "1".into(),
+                    pinned: false,
+                    user_managed: true,
+                };
+                app.set_flatpak_available(false);
+                let chess = app
+                    .live_row("app:id.chess")
+                    .expect("an app row resolves")
+                    .into_resource();
+                let setup = chess
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "flatpak-setup")
+                    .unwrap();
+                assert!(matches!(
+                    setup.contract.availability,
+                    ui::tilo_actions::Availability::Unavailable { ref code, .. }
+                        if code == "flatpak_host_unavailable"
+                ));
+                assert!(
+                    app.effect_statuses()
+                        .iter()
+                        .any(|status| *status
+                            == EffectStatus::unavailable(
+                                StoreEffect::FLATPAK_UPDATE,
+                                "flatpak_host_unavailable",
+                                "Flatpak is not installed on this host; install it before using Flatpak catalog actions",
+                            ))
+                );
+                assert!(
+                    app.admit(StoreEffect::FlatpakUpdate {
+                        app: "id.chess".into()
+                    })
+                    .is_err(),
+                    "a direct invocation cannot bypass the unavailable operation"
+                );
+            }
+        }
+
+        phase uninstalling_is_the_systems_one_action_not_a_store_effect;
+        {
+            let mut app = seeded_app();
+            for item in &mut app.items {
+                if item.id == "id.chess" || item.id == "id.notes" {
+                    item.installed = InstalledState::Installed {
+                        version: "1".into(),
+                        available: "1".into(),
+                        pinned: false,
+                        user_managed: true,
+                    };
+                }
+            }
+            for (row, remove) in [
+                ("app:id.chess", ActionKind::FlatpakRemove),
+                ("app:id.notes", ActionKind::Remove),
+            ] {
+                let resource = app.live_row(row).unwrap().into_resource();
+                assert!(
+                    resource
+                        .actions
+                        .iter()
+                        .all(|action| action.id != "remove" && action.id != "flatpak-remove")
+                );
+                let item = app
+                    .items
+                    .iter()
+                    .find(|item| row.ends_with(&item.id))
+                    .unwrap();
+                assert_eq!(item.remove_action(), Some(remove));
+                assert!(StoreEffect::package(remove, item).is_none());
+                let binding = bindings::package(item, remove).unwrap();
+                let uninstall = bindings::uninstall(item);
+                assert_eq!(binding.address(), uninstall.address());
+                assert_eq!(
+                    binding.invoke(()).unwrap().arguments,
+                    uninstall.invoke(()).unwrap().arguments
+                );
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn late_worker_feedback_keeps_the_declared_page_and_query;
+
+        phase late_detail_metadata_preserves_the_declared_navigation_destination;
+        {
+            for destination in [
+                StoreEffect::ShowCatalogue,
+                StoreEffect::ShowRemotes,
+                StoreEffect::ShowDetails {
+                    app: "id.chess".into(),
+                },
+            ] {
+                let mut app = seeded_app();
+                app.admit(StoreEffect::ShowDetails {
+                    app: "id.notes".into(),
+                })
+                .unwrap();
+                let mut response = app
+                    .items
+                    .iter()
+                    .find(|item| item.id == "id.notes")
+                    .unwrap()
+                    .clone();
+                response.description = "Enriched catalogue description".into();
+                app.admit(destination).unwrap();
+                let selected = app.focused_detail.clone();
+                let remotes = app.remotes_open;
+                app.apply_worker_snapshot(crate::worker::Snapshot {
+                    items: app.items.clone(),
+                    status_line: "Loaded an earlier app".into(),
+                    query: None,
+                    detail: Some(crate::worker::DetailUpdate::Requested {
+                        id: response.id.clone(),
+                        item: Some(response),
+                    }),
+                    remotes: Vec::new(),
+                    flatpak_available: true,
+                    flatpak_error: None,
+                    operation_error: Some("Earlier detail request failed".into()),
+                    unanswered_repositories: Vec::new(),
+                    expired_repositories: Vec::new(),
+                    blocks: BlockList::empty(),
+                    updating: None,
+                });
+                assert_eq!(
+                    app.focused_detail, selected,
+                    "metadata cannot navigate away from the current destination"
+                );
+                assert_eq!(
+                    app.remotes_open, remotes,
+                    "metadata cannot close repositories"
+                );
+                assert_ne!(
+                    app.status_line, "Loaded an earlier app",
+                    "stale metadata cannot replace current feedback"
+                );
+                assert!(
+                    app.operation_error.is_none(),
+                    "stale detail errors cannot report failure for the current destination"
+                );
+                assert_eq!(
+                    app.items
+                        .iter()
+                        .find(|item| item.id == "id.notes")
+                        .unwrap()
+                        .description,
+                    "Enriched catalogue description",
+                    "the response still enriches the catalogue"
+                );
+            }
+        }
+
+        phase current_detail_feedback_and_opened_references_keep_their_navigation;
+        {
             let mut app = seeded_app();
             app.admit(StoreEffect::ShowDetails {
                 app: "id.notes".into(),
             })
             .unwrap();
-            let mut response = app
+            let response = app
                 .items
                 .iter()
                 .find(|item| item.id == "id.notes")
                 .unwrap()
                 .clone();
-            response.description = "Enriched catalogue description".into();
-            app.admit(destination).unwrap();
-            let selected = app.focused_detail.clone();
-            let remotes = app.remotes_open;
-            app.apply_worker_snapshot(crate::worker::Snapshot {
-                items: app.items.clone(),
-                status_line: "Loaded an earlier app".into(),
+            let snapshot = |detail, error| crate::worker::Snapshot {
+                items: Vec::new(),
+                status_line: "Detail response".into(),
                 query: None,
-                detail: Some(crate::worker::DetailUpdate::Requested {
-                    id: response.id.clone(),
-                    item: Some(response),
-                }),
+                detail: Some(detail),
                 remotes: Vec::new(),
                 flatpak_available: true,
                 flatpak_error: None,
-                operation_error: Some("Earlier detail request failed".into()),
+                operation_error: error,
+                unanswered_repositories: Vec::new(),
+                expired_repositories: Vec::new(),
+                blocks: BlockList::empty(),
+                updating: None,
+            };
+            app.apply_worker_snapshot(snapshot(
+                crate::worker::DetailUpdate::Requested {
+                    id: "id.notes".into(),
+                    item: Some(response.clone()),
+                },
+                None,
+            ));
+            assert_eq!(app.focused_detail.as_deref(), Some("id.notes"));
+            assert_eq!(app.status_line, "Detail response");
+            app.apply_worker_snapshot(snapshot(
+                crate::worker::DetailUpdate::Requested {
+                    id: "id.notes".into(),
+                    item: None,
+                },
+                Some("Could not load this app".into()),
+            ));
+            assert_eq!(
+                app.operation_error.as_deref(),
+                Some("Could not load this app")
+            );
+            app.admit(StoreEffect::ShowRemotes).unwrap();
+            app.apply_worker_snapshot(snapshot(
+                crate::worker::DetailUpdate::OpenedReference(response),
+                None,
+            ));
+            assert_eq!(app.focused_detail.as_deref(), Some("id.notes"));
+            assert!(
+                !app.remotes_open,
+                "an explicitly opened reference still navigates to its app"
+            );
+            assert!(app.operation_error.is_none());
+        }
+
+        phase a_size_refusal_outlasts_the_workers_background_errors;
+        {
+            let mut app = seeded_app();
+            let refused = app.admit(StoreEffect::ImportPackage {
+                path: Some("/large.tapp".parse().unwrap()),
+                content: None,
+                reported_size: Some(crate::package_import::MAX_IMPORT_BYTES as u64 + 1),
+            });
+            assert!(refused.is_err());
+            // A relative package path is refused before the Store sees it.
+            let arguments =
+                serde_json::Map::from_iter([("path".to_owned(), serde_json::json!("large.tapp"))]);
+            let relative =
+                <StoreEffect as ui::tilo_resource::Effect>::decode("import-package", &arguments)
+                    .unwrap_err();
+            assert!(
+                matches!(
+                    &relative,
+                    ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                        if name == "path" && source.to_string().contains("absolute")
+                ),
+                "{relative}"
+            );
+            let size_refused = CATALOG.t("store-package-size-refused");
+            app.apply_worker_snapshot(crate::worker::Snapshot {
+                items: Vec::new(),
+                status_line: String::new(),
+                query: None,
+                detail: None,
+                remotes: Vec::new(),
+                flatpak_available: false,
+                flatpak_error: Some("App service unavailable.".into()),
+                operation_error: Some("App service unavailable.".into()),
                 unanswered_repositories: Vec::new(),
                 expired_repositories: Vec::new(),
                 blocks: BlockList::empty(),
                 updating: None,
             });
+            assert_eq!(app.operation_error.as_deref(), Some(size_refused.as_str()));
+            app.admit(StoreEffect::ShowRemotes).unwrap();
+            assert!(app.local_refusal.is_none(), "the next effect moves on");
+        }
+
+        phase late_search_feedback_preserves_the_current_declared_query;
+        {
+            let mut app = seeded_app();
+            app.admit(StoreEffect::SetSearch {
+                query: "notes".into(),
+            })
+            .unwrap();
+            app.admit(StoreEffect::SetSearch {
+                query: "chess".into(),
+            })
+            .unwrap();
+            let retained_status = app.status_line.clone();
+            let retained_count = app.items.len();
+            let snapshot = |query: &str, items, error: Option<&str>| crate::worker::Snapshot {
+                items,
+                status_line: "Received search results".into(),
+                query: Some(query.into()),
+                detail: None,
+                remotes: Vec::new(),
+                flatpak_available: true,
+                flatpak_error: None,
+                operation_error: error.map(str::to_owned),
+                unanswered_repositories: Vec::new(),
+                expired_repositories: Vec::new(),
+                blocks: BlockList::empty(),
+                updating: None,
+            };
+            app.apply_worker_snapshot(snapshot("notes", Vec::new(), Some("Earlier search failed")));
             assert_eq!(
-                app.focused_detail, selected,
-                "metadata cannot navigate away from the current destination"
-            );
-            assert_eq!(
-                app.remotes_open, remotes,
-                "metadata cannot close repositories"
-            );
-            assert_ne!(
-                app.status_line, "Loaded an earlier app",
-                "stale metadata cannot replace current feedback"
+                app.status_line, retained_status,
+                "stale results cannot replace the current query feedback"
             );
             assert!(
                 app.operation_error.is_none(),
-                "stale detail errors cannot report failure for the current destination"
+                "stale errors cannot report failure for the current query"
             );
+            assert_eq!(app.items.len(), retained_count);
+            let current = app
+                .items
+                .iter()
+                .find(|item| item.id == "id.chess")
+                .unwrap()
+                .clone();
+            app.apply_worker_snapshot(snapshot("chess", vec![current], None));
+            assert_eq!(app.status_line, "Received search results");
             assert_eq!(
-                app.items
-                    .iter()
-                    .find(|item| item.id == "id.notes")
-                    .unwrap()
-                    .description,
-                "Enriched catalogue description",
-                "the response still enriches the catalogue"
+                app.items.len(),
+                retained_count,
+                "a query's answer never replaces the catalogue search runs over"
+            );
+            assert_eq!(app.query(), "chess");
+            assert!(
+                app.results.apps.iter().any(|id| id == "id.chess"),
+                "the local search found the app"
             );
         }
-    }
-
-    #[test]
-    fn current_detail_feedback_and_opened_references_keep_their_navigation() {
-        let mut app = seeded_app();
-        app.admit(StoreEffect::ShowDetails {
-            app: "id.notes".into(),
-        })
-        .unwrap();
-        let response = app
-            .items
-            .iter()
-            .find(|item| item.id == "id.notes")
-            .unwrap()
-            .clone();
-        let snapshot = |detail, error| crate::worker::Snapshot {
-            items: Vec::new(),
-            status_line: "Detail response".into(),
-            query: None,
-            detail: Some(detail),
-            remotes: Vec::new(),
-            flatpak_available: true,
-            flatpak_error: None,
-            operation_error: error,
-            unanswered_repositories: Vec::new(),
-            expired_repositories: Vec::new(),
-            blocks: BlockList::empty(),
-            updating: None,
-        };
-        app.apply_worker_snapshot(snapshot(
-            crate::worker::DetailUpdate::Requested {
-                id: "id.notes".into(),
-                item: Some(response.clone()),
-            },
-            None,
-        ));
-        assert_eq!(app.focused_detail.as_deref(), Some("id.notes"));
-        assert_eq!(app.status_line, "Detail response");
-        app.apply_worker_snapshot(snapshot(
-            crate::worker::DetailUpdate::Requested {
-                id: "id.notes".into(),
-                item: None,
-            },
-            Some("Could not load this app".into()),
-        ));
-        assert_eq!(
-            app.operation_error.as_deref(),
-            Some("Could not load this app")
-        );
-        app.admit(StoreEffect::ShowRemotes).unwrap();
-        app.apply_worker_snapshot(snapshot(
-            crate::worker::DetailUpdate::OpenedReference(response),
-            None,
-        ));
-        assert_eq!(app.focused_detail.as_deref(), Some("id.notes"));
-        assert!(
-            !app.remotes_open,
-            "an explicitly opened reference still navigates to its app"
-        );
-        assert!(app.operation_error.is_none());
-    }
-
-    #[test]
-    fn a_size_refusal_outlasts_the_workers_background_errors() {
-        let mut app = seeded_app();
-        let refused = app.admit(StoreEffect::ImportPackage {
-            path: Some("/large.tapp".parse().unwrap()),
-            content: None,
-            reported_size: Some(crate::package_import::MAX_IMPORT_BYTES as u64 + 1),
-        });
-        assert!(refused.is_err());
-        // A relative package path is refused before the Store sees it.
-        let arguments =
-            serde_json::Map::from_iter([("path".to_owned(), serde_json::json!("large.tapp"))]);
-        let relative =
-            <StoreEffect as ui::tilo_resource::Effect>::decode("import-package", &arguments)
-                .unwrap_err();
-        assert!(
-            matches!(
-                &relative,
-                ui::tilo_resource::EffectDecodeError::Argument { name, source }
-                    if name == "path" && source.to_string().contains("absolute")
-            ),
-            "{relative}"
-        );
-        let size_refused = CATALOG.t("store-package-size-refused");
-        app.apply_worker_snapshot(crate::worker::Snapshot {
-            items: Vec::new(),
-            status_line: String::new(),
-            query: None,
-            detail: None,
-            remotes: Vec::new(),
-            flatpak_available: false,
-            flatpak_error: Some("App service unavailable.".into()),
-            operation_error: Some("App service unavailable.".into()),
-            unanswered_repositories: Vec::new(),
-            expired_repositories: Vec::new(),
-            blocks: BlockList::empty(),
-            updating: None,
-        });
-        assert_eq!(app.operation_error.as_deref(), Some(size_refused.as_str()));
-        app.admit(StoreEffect::ShowRemotes).unwrap();
-        assert!(app.local_refusal.is_none(), "the next effect moves on");
-    }
-
-    #[test]
-    fn late_search_feedback_preserves_the_current_declared_query() {
-        let mut app = seeded_app();
-        app.admit(StoreEffect::SetSearch {
-            query: "notes".into(),
-        })
-        .unwrap();
-        app.admit(StoreEffect::SetSearch {
-            query: "chess".into(),
-        })
-        .unwrap();
-        let retained_status = app.status_line.clone();
-        let retained_count = app.items.len();
-        let snapshot = |query: &str, items, error: Option<&str>| crate::worker::Snapshot {
-            items,
-            status_line: "Received search results".into(),
-            query: Some(query.into()),
-            detail: None,
-            remotes: Vec::new(),
-            flatpak_available: true,
-            flatpak_error: None,
-            operation_error: error.map(str::to_owned),
-            unanswered_repositories: Vec::new(),
-            expired_repositories: Vec::new(),
-            blocks: BlockList::empty(),
-            updating: None,
-        };
-        app.apply_worker_snapshot(snapshot("notes", Vec::new(), Some("Earlier search failed")));
-        assert_eq!(
-            app.status_line, retained_status,
-            "stale results cannot replace the current query feedback"
-        );
-        assert!(
-            app.operation_error.is_none(),
-            "stale errors cannot report failure for the current query"
-        );
-        assert_eq!(app.items.len(), retained_count);
-        let current = app
-            .items
-            .iter()
-            .find(|item| item.id == "id.chess")
-            .unwrap()
-            .clone();
-        app.apply_worker_snapshot(snapshot("chess", vec![current], None));
-        assert_eq!(app.status_line, "Received search results");
-        assert_eq!(
-            app.items.len(),
-            retained_count,
-            "a query's answer never replaces the catalogue search runs over"
-        );
-        assert_eq!(app.query(), "chess");
-        assert!(
-            app.results.apps.iter().any(|id| id == "id.chess"),
-            "the local search found the app"
-        );
     }
 
     fn inspected_store() -> (
@@ -4103,98 +4298,352 @@ mod tests {
         app
     }
 
-    #[test]
-    fn flatpak_observation_failure_preserves_error_and_never_claims_missing() {
-        let mut app = seeded_app();
-        app.set_flatpak_available(false);
-        let error = "Could not read Flatpak on this device: app service unavailable";
-        app.flatpak_error = Some(error.into());
-        assert_eq!(
-            app.package_label(ActionKind::NeedsFlatpakHost),
-            CATALOG.t("store-flatpak-unavailable")
-        );
-        let row = app.live_row("app:id.chess").unwrap().into_resource();
-        let action = row
-            .actions
-            .iter()
-            .find(|action| action.id == "flatpak-setup")
-            .unwrap();
-        assert!(matches!(&action.contract.availability,
-            ui::tilo_actions::Availability::Unavailable { reason, .. } if reason == error));
-        assert_eq!(
-            app.package_operation("id.chess", ActionKind::FlatpakInstall)
-                .unwrap_err(),
-            error
-        );
-        assert!(app.effect_statuses().iter().any(|status| *status
-            == EffectStatus::unavailable(
-                StoreEffect::FLATPAK_INSTALL,
-                "flatpak_host_unavailable",
-                error
-            )));
-        app.set_flatpak_available(false);
-        assert!(
-            app.package_operation("id.chess", ActionKind::FlatpakInstall)
-                .unwrap_err()
-                .contains("not installed")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn flatpak_sources_keep_their_scope_authority_and_honest_actions;
 
-    #[test]
-    fn remote_enabled_actions_preserve_account_scope_and_declaration() {
-        let mut app = seeded_app();
-        let user = crate::flathub_client::Remote {
-            name: "custom-tools".into(),
-            title: "Custom tools".into(),
-            url: "https://tools.example.test/repo/".into(),
-            disabled: true,
-            user_managed: true,
-            catalogue_error: None,
-        };
-        let system = crate::flathub_client::Remote {
-            user_managed: false,
-            ..user.clone()
-        };
-        app.set_remotes(vec![user.clone(), system.clone()]);
-        for (disabled, expected, enabled) in [
-            (true, "enable-remote", true),
-            (false, "disable-remote", false),
-        ] {
-            let remote = crate::flathub_client::Remote {
-                disabled,
-                ..user.clone()
-            };
-            app.set_remotes(vec![remote.clone(), system.clone()]);
-            let row = app.live_row(&remote.resource_id()).unwrap().into_resource();
+        phase flatpak_observation_failure_preserves_error_and_never_claims_missing;
+        {
+            let mut app = seeded_app();
+            app.set_flatpak_available(false);
+            let error = "Could not read Flatpak on this device: app service unavailable";
+            app.flatpak_error = Some(error.into());
+            assert_eq!(
+                app.package_label(ActionKind::NeedsFlatpakHost),
+                CATALOG.t("store-flatpak-unavailable")
+            );
+            let row = app.live_row("app:id.chess").unwrap().into_resource();
             let action = row
                 .actions
                 .iter()
-                .find(|action| action.id == expected)
+                .find(|action| action.id == "flatpak-setup")
                 .unwrap();
-            assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Outside);
-            let job = admitted_job(&mut app, remote_enabled_effect(&remote));
-            assert!(
-                matches!(job.request, Request::RemoteSetEnabled { ref name, enabled: value } if name == "custom-tools" && value == enabled)
+            assert!(matches!(&action.contract.availability,
+                ui::tilo_actions::Availability::Unavailable { reason, .. } if reason == error));
+            assert_eq!(
+                app.package_operation("id.chess", ActionKind::FlatpakInstall)
+                    .unwrap_err(),
+                error
             );
-            let system_row = app.live_row(&system.resource_id()).unwrap().into_resource();
+            assert!(app.effect_statuses().iter().any(|status| *status
+                == EffectStatus::unavailable(
+                    StoreEffect::FLATPAK_INSTALL,
+                    "flatpak_host_unavailable",
+                    error
+                )));
+            app.set_flatpak_available(false);
             assert!(
-                !system_row
+                app.package_operation("id.chess", ActionKind::FlatpakInstall)
+                    .unwrap_err()
+                    .contains("not installed")
+            );
+        }
+
+        phase remote_enabled_actions_preserve_account_scope_and_declaration;
+        {
+            let mut app = seeded_app();
+            let user = crate::flathub_client::Remote {
+                name: "custom-tools".into(),
+                title: "Custom tools".into(),
+                url: "https://tools.example.test/repo/".into(),
+                disabled: true,
+                user_managed: true,
+                catalogue_error: None,
+            };
+            let system = crate::flathub_client::Remote {
+                user_managed: false,
+                ..user.clone()
+            };
+            app.set_remotes(vec![user.clone(), system.clone()]);
+            for (disabled, expected, enabled) in [
+                (true, "enable-remote", true),
+                (false, "disable-remote", false),
+            ] {
+                let remote = crate::flathub_client::Remote {
+                    disabled,
+                    ..user.clone()
+                };
+                app.set_remotes(vec![remote.clone(), system.clone()]);
+                let row = app.live_row(&remote.resource_id()).unwrap().into_resource();
+                let action = row
                     .actions
                     .iter()
-                    .any(|action| matches!(action.id.as_str(), "enable-remote" | "disable-remote"))
+                    .find(|action| action.id == expected)
+                    .unwrap();
+                assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Outside);
+                let job = admitted_job(&mut app, remote_enabled_effect(&remote));
+                assert!(
+                    matches!(job.request, Request::RemoteSetEnabled { ref name, enabled: value } if name == "custom-tools" && value == enabled)
+                );
+                let system_row = app.live_row(&system.resource_id()).unwrap().into_resource();
+                assert!(
+                    !system_row
+                        .actions
+                        .iter()
+                        .any(|action| matches!(action.id.as_str(), "enable-remote" | "disable-remote"))
+                );
+                assert!(
+                    app.admit(StoreEffect::EnableRemote {
+                        remote: system.resource_id()
+                    })
+                    .is_err()
+                );
+                assert!(
+                    app.admit(StoreEffect::DisableRemote {
+                        remote: "remote:user:missing".into()
+                    })
+                    .is_err()
+                );
+            }
+        }
+
+        phase default_flathub_browsing_preserves_disabled_and_managed_source_authority;
+        {
+            let mut app = seeded_app();
+            let source = crate::flathub_client::Remote {
+                name: "flathub".into(),
+                url: "https://dl.flathub.org/repo/".into(),
+                title: "Flathub".into(),
+                disabled: false,
+                user_managed: false,
+                catalogue_error: None,
+            };
+            app.set_remotes(vec![source.clone()]);
+            let row = app.live_row(&source.resource_id()).unwrap().into_resource();
+            assert!(
+                row.actions
+                    .iter()
+                    .any(|action| action.id == "browse-remote")
+            );
+            assert!(!row.actions.iter().any(|action| matches!(
+                action.id.as_str(),
+                "remove-remote" | "enable-remote" | "disable-remote" | "use-flathub-for-account"
+            )));
+            app.admit(StoreEffect::BrowseRemote {
+                remote: source.resource_id(),
+            })
+            .unwrap();
+            assert!(
+                app.admit(StoreEffect::RemoveRemote {
+                    name: source.name.clone()
+                })
+                .is_err()
             );
             assert!(
                 app.admit(StoreEffect::EnableRemote {
-                    remote: system.resource_id()
+                    remote: source.resource_id()
                 })
                 .is_err()
+            );
+            let disabled = crate::flathub_client::Remote {
+                disabled: true,
+                ..source
+            };
+            app.set_remotes(vec![disabled.clone()]);
+            assert!(
+                !app.live_row(&disabled.resource_id())
+                    .unwrap()
+                    .into_resource()
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "browse-remote")
             );
             assert!(
-                app.admit(StoreEffect::DisableRemote {
-                    remote: "remote:user:missing".into()
+                app.admit(StoreEffect::BrowseRemote {
+                    remote: disabled.resource_id()
                 })
                 .is_err()
             );
+            let account = crate::flathub_client::Remote {
+                user_managed: true,
+                ..disabled
+            };
+            app.set_remotes(vec![account.clone()]);
+            let row = app
+                .live_row(&account.resource_id())
+                .unwrap()
+                .into_resource();
+            let enable = row
+                .actions
+                .iter()
+                .find(|action| action.id == "enable-remote")
+                .unwrap();
+            assert_eq!(enable.contract.kind, ui::tilo_actions::ActionKind::Outside);
+            assert!(matches!(
+                admitted_job(&mut app, remote_enabled_effect(&account)).request,
+                Request::RemoteSetEnabled { enabled: true, .. }
+            ));
+        }
+
+        phase system_remotes_have_distinct_resources_and_no_user_remove_action;
+        {
+            let mut app = seeded_app();
+            let system = crate::flathub_client::Remote {
+                name: "flathub".into(),
+                url: "https://dl.flathub.org/repo/".into(),
+                title: "Flathub".into(),
+                disabled: false,
+                user_managed: false,
+                catalogue_error: None,
+            };
+            app.set_remotes(vec![system.clone()]);
+            let resource = app
+                .live_row("remote:system:flathub")
+                .unwrap()
+                .into_resource();
+            assert!(
+                !resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "remove-remote")
+            );
+            assert!(
+                app.admit(StoreEffect::RemoveRemote {
+                    name: "flathub".into()
+                })
+                .is_err()
+            );
+            let mut user = system;
+            user.user_managed = true;
+            app.set_remotes(vec![
+                user.clone(),
+                crate::flathub_client::Remote {
+                    user_managed: false,
+                    ..user
+                },
+            ]);
+            assert!(
+                app.live_row("remote:flathub")
+                    .unwrap()
+                    .into_resource()
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "remove-remote")
+            );
+            assert!(app.live_row("remote:system:flathub").is_some());
+        }
+
+        phase configured_remote_resources_offer_read_browse_and_honest_mutations;
+        {
+            let mut app = seeded_app();
+            app.set_flatpak_available(true);
+            let remote = crate::flathub_client::Remote {
+                name: "tools".into(),
+                title: "Example tools".into(),
+                url: "https://tools.example/repo".into(),
+                disabled: false,
+                user_managed: false,
+                catalogue_error: None,
+            };
+            app.set_remotes(vec![remote.clone()]);
+            let row = app.live_row("remote:system:tools").unwrap().into_resource();
+            assert!(
+                row.actions
+                    .iter()
+                    .any(|action| action.id == "browse-remote")
+            );
+            assert!(
+                !row.actions
+                    .iter()
+                    .any(|action| action.id == "remove-remote")
+            );
+            app.set_query("old search".into());
+            app.shown = view::PAGE * 3;
+            let job = admitted_job(
+                &mut app,
+                StoreEffect::BrowseRemote {
+                    remote: remote.resource_id(),
+                },
+            );
+            assert!(
+                matches!(job.request, Request::BrowseRemote(ref id) if id == "remote:system:tools")
+            );
+            assert!(!app.remotes_open);
+            assert_eq!(app.query(), "");
+            assert_eq!(
+                app.shown,
+                view::PAGE,
+                "browsing starts at the top of the list"
+            );
+            assert_eq!(
+                app.view(),
+                &View::Repository("remote:system:tools".into()),
+                "browsing a repository shows its apps"
+            );
+
+            let remote_item = crate::sources::remote_catalogue_items(
+                "org.example.Editor\tEditor\tEdit documents\t2.0\tstable\ttools\n",
+                &remote,
+                &[],
+            )
+            .remove(0);
+            app.set_items(vec![remote_item]);
+            let row = app
+                .live_row("app:org.example.Editor")
+                .unwrap()
+                .into_resource();
+            let install = row
+                .actions
+                .iter()
+                .find(|action| action.id == "flatpak-install")
+                .unwrap();
+            assert!(
+                matches!(&install.contract.availability, ui::tilo_actions::Availability::Unavailable { code, .. } if code == "device_managed_repository")
+            );
+            assert!(
+                app.admit(StoreEffect::FlatpakInstall {
+                    app: "org.example.Editor".into()
+                })
+                .is_err()
+            );
+            let mut disabled = remote;
+            disabled.disabled = true;
+            app.set_remotes(vec![disabled]);
+            assert!(
+                !app.live_row("remote:system:tools")
+                    .unwrap()
+                    .into_resource()
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "browse-remote")
+            );
+            assert!(
+                app.admit(StoreEffect::BrowseRemote {
+                    remote: "remote:system:tools".into()
+                })
+                .is_err()
+            );
+        }
+
+        phase remote_configuration_is_validated_and_drafts_stay_local;
+        // Remote configuration rejects hostile input and unsubmitted drafts stay on their device.
+        {
+            {
+                assert!(validate_remote_name("flathub").is_ok());
+                assert!(validate_remote_name(&"r".repeat(MAX_REMOTE_NAME_CHARS + 1)).is_err());
+                assert!(validate_remote_name("bad\nname").is_err());
+                assert!(validate_remote_url("https://dl.flathub.org/repo/").is_ok());
+                assert!(
+                    validate_remote_url(&format!(
+                        "https://example.invalid/{}",
+                        "a".repeat(MAX_REMOTE_URL_BYTES)
+                    ))
+                    .is_err()
+                );
+            }
+
+            {
+                let store = seeded_app();
+                let doc = AutoCommit::new();
+                store.remote_name_state.set("studio-tools".into());
+                store
+                    .remote_url_state
+                    .set("https://apps.tilo.so/artifacts/repo".into());
+                let mut app = StoreApp::showing(store);
+                app.sync(&doc, &automerge::ROOT);
+                assert!(doc.keys(&automerge::ROOT).all(|key| {
+                    !key.starts_with("store.remote_name") && !key.starts_with("store.remote_url")
+                }));
+            }
         }
     }
 
@@ -4242,250 +4691,6 @@ mod tests {
             })
             .unwrap();
         assert!(!control.disabled);
-    }
-
-    #[test]
-    fn default_flathub_browsing_preserves_disabled_and_managed_source_authority() {
-        let mut app = seeded_app();
-        let source = crate::flathub_client::Remote {
-            name: "flathub".into(),
-            url: "https://dl.flathub.org/repo/".into(),
-            title: "Flathub".into(),
-            disabled: false,
-            user_managed: false,
-            catalogue_error: None,
-        };
-        app.set_remotes(vec![source.clone()]);
-        let row = app.live_row(&source.resource_id()).unwrap().into_resource();
-        assert!(
-            row.actions
-                .iter()
-                .any(|action| action.id == "browse-remote")
-        );
-        assert!(!row.actions.iter().any(|action| matches!(
-            action.id.as_str(),
-            "remove-remote" | "enable-remote" | "disable-remote" | "use-flathub-for-account"
-        )));
-        app.admit(StoreEffect::BrowseRemote {
-            remote: source.resource_id(),
-        })
-        .unwrap();
-        assert!(
-            app.admit(StoreEffect::RemoveRemote {
-                name: source.name.clone()
-            })
-            .is_err()
-        );
-        assert!(
-            app.admit(StoreEffect::EnableRemote {
-                remote: source.resource_id()
-            })
-            .is_err()
-        );
-        let disabled = crate::flathub_client::Remote {
-            disabled: true,
-            ..source
-        };
-        app.set_remotes(vec![disabled.clone()]);
-        assert!(
-            !app.live_row(&disabled.resource_id())
-                .unwrap()
-                .into_resource()
-                .actions
-                .iter()
-                .any(|action| action.id == "browse-remote")
-        );
-        assert!(
-            app.admit(StoreEffect::BrowseRemote {
-                remote: disabled.resource_id()
-            })
-            .is_err()
-        );
-        let account = crate::flathub_client::Remote {
-            user_managed: true,
-            ..disabled
-        };
-        app.set_remotes(vec![account.clone()]);
-        let row = app
-            .live_row(&account.resource_id())
-            .unwrap()
-            .into_resource();
-        let enable = row
-            .actions
-            .iter()
-            .find(|action| action.id == "enable-remote")
-            .unwrap();
-        assert_eq!(enable.contract.kind, ui::tilo_actions::ActionKind::Outside);
-        assert!(matches!(
-            admitted_job(&mut app, remote_enabled_effect(&account)).request,
-            Request::RemoteSetEnabled { enabled: true, .. }
-        ));
-    }
-
-    #[test]
-    fn system_remotes_have_distinct_resources_and_no_user_remove_action() {
-        let mut app = seeded_app();
-        let system = crate::flathub_client::Remote {
-            name: "flathub".into(),
-            url: "https://dl.flathub.org/repo/".into(),
-            title: "Flathub".into(),
-            disabled: false,
-            user_managed: false,
-            catalogue_error: None,
-        };
-        app.set_remotes(vec![system.clone()]);
-        let resource = app
-            .live_row("remote:system:flathub")
-            .unwrap()
-            .into_resource();
-        assert!(
-            !resource
-                .actions
-                .iter()
-                .any(|action| action.id == "remove-remote")
-        );
-        assert!(
-            app.admit(StoreEffect::RemoveRemote {
-                name: "flathub".into()
-            })
-            .is_err()
-        );
-        let mut user = system;
-        user.user_managed = true;
-        app.set_remotes(vec![
-            user.clone(),
-            crate::flathub_client::Remote {
-                user_managed: false,
-                ..user
-            },
-        ]);
-        assert!(
-            app.live_row("remote:flathub")
-                .unwrap()
-                .into_resource()
-                .actions
-                .iter()
-                .any(|action| action.id == "remove-remote")
-        );
-        assert!(app.live_row("remote:system:flathub").is_some());
-    }
-
-    #[test]
-    fn configured_remote_resources_offer_read_browse_and_honest_mutations() {
-        let mut app = seeded_app();
-        app.set_flatpak_available(true);
-        let remote = crate::flathub_client::Remote {
-            name: "tools".into(),
-            title: "Example tools".into(),
-            url: "https://tools.example/repo".into(),
-            disabled: false,
-            user_managed: false,
-            catalogue_error: None,
-        };
-        app.set_remotes(vec![remote.clone()]);
-        let row = app.live_row("remote:system:tools").unwrap().into_resource();
-        assert!(
-            row.actions
-                .iter()
-                .any(|action| action.id == "browse-remote")
-        );
-        assert!(
-            !row.actions
-                .iter()
-                .any(|action| action.id == "remove-remote")
-        );
-        app.set_query("old search".into());
-        app.shown = view::PAGE * 3;
-        let job = admitted_job(
-            &mut app,
-            StoreEffect::BrowseRemote {
-                remote: remote.resource_id(),
-            },
-        );
-        assert!(
-            matches!(job.request, Request::BrowseRemote(ref id) if id == "remote:system:tools")
-        );
-        assert!(!app.remotes_open);
-        assert_eq!(app.query(), "");
-        assert_eq!(
-            app.shown,
-            view::PAGE,
-            "browsing starts at the top of the list"
-        );
-        assert_eq!(
-            app.view(),
-            &View::Repository("remote:system:tools".into()),
-            "browsing a repository shows its apps"
-        );
-
-        let remote_item = crate::sources::remote_catalogue_items(
-            "org.example.Editor\tEditor\tEdit documents\t2.0\tstable\ttools\n",
-            &remote,
-            &[],
-        )
-        .remove(0);
-        app.set_items(vec![remote_item]);
-        let row = app
-            .live_row("app:org.example.Editor")
-            .unwrap()
-            .into_resource();
-        let install = row
-            .actions
-            .iter()
-            .find(|action| action.id == "flatpak-install")
-            .unwrap();
-        assert!(
-            matches!(&install.contract.availability, ui::tilo_actions::Availability::Unavailable { code, .. } if code == "device_managed_repository")
-        );
-        assert!(
-            app.admit(StoreEffect::FlatpakInstall {
-                app: "org.example.Editor".into()
-            })
-            .is_err()
-        );
-        let mut disabled = remote;
-        disabled.disabled = true;
-        app.set_remotes(vec![disabled]);
-        assert!(
-            !app.live_row("remote:system:tools")
-                .unwrap()
-                .into_resource()
-                .actions
-                .iter()
-                .any(|action| action.id == "browse-remote")
-        );
-        assert!(
-            app.admit(StoreEffect::BrowseRemote {
-                remote: "remote:system:tools".into()
-            })
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn unsupported_device_version_has_no_invocable_open_offer() {
-        let mut app = seeded_app();
-        let mut unsupported = item(
-            "Foreign",
-            StoreSource::Tilo {
-                registry_name: "Tilo".into(),
-            },
-            "Tools",
-            InstalledState::Not,
-        );
-        unsupported.versions.clear();
-        let id = unsupported.id.clone();
-        app.set_items(vec![unsupported]);
-        let row = app.live_row(&format!("app:{id}")).unwrap().into_resource();
-        let open = row
-            .actions
-            .iter()
-            .find(|action| action.id == "open-app")
-            .unwrap();
-        assert!(
-            matches!(&open.contract.availability, ui::tilo_actions::Availability::Unavailable { code, .. } if code == "device_version_unavailable")
-        );
-        assert!(app.admit(StoreEffect::OpenApp { app: id }).is_err());
     }
 
     #[test]
@@ -4542,120 +4747,124 @@ mod tests {
         );
     }
 
-    #[test]
-    fn declared_search_finds_categories_publishers_and_configured_repositories() {
-        let mut app = seeded_app();
-        let mut items = app.items().to_vec();
-        let native = items.iter_mut().find(|item| item.name == "Notes").unwrap();
-        native.categories = vec!["Research".into()];
-        native.tagline = "Chalkboard projects".into();
-        native.publisher_pubkey_hex = Some(format!("{}a1b2", "a1b2c3d4e5f6".repeat(5)));
-        let native_id = native.id.clone();
-        let remote = items.iter_mut().find(|item| item.name == "Chess").unwrap();
-        remote.source = StoreSource::FlatpakRemote {
-            name: "community-tools".into(),
-            title: "Community repository".into(),
-            branch: "stable".into(),
-            user_managed: true,
-        };
-        let remote_id = remote.id.clone();
-        app.set_items(items);
-        for (query, expected) in [
-            ("Research", native_id.as_str()),
-            ("Chalkboard", native_id.as_str()),
-            ("a1b2c3d4e5f6", native_id.as_str()),
-            (native_id.as_str(), native_id.as_str()),
-            ("Community repository", remote_id.as_str()),
-            ("community-tools", remote_id.as_str()),
-        ] {
-            app.admit(StoreEffect::SetSearch {
-                query: query.into(),
-            })
-            .unwrap();
-            let hits: Vec<_> = app
-                .visible_items()
-                .iter()
-                .map(|item| item.id.as_str())
-                .collect();
-            assert_eq!(hits, vec![expected], "declared search query {query}");
-            assert!(app.live_row(&format!("app:{expected}")).is_some());
-        }
-    }
+    tilo_test_env::scenario! {
+        fn the_catalogue_is_searched_and_ranked_as_declared;
 
-    #[test]
-    fn catalogue_views_and_search_rank_visible_items() {
-        {
-            let app = seeded_app();
-            let names: Vec<&str> = app
-                .visible_items()
-                .iter()
-                .map(|i| i.name.as_str())
-                .collect();
-            assert_eq!(
-                names,
-                vec!["Notes"],
-                "Discover lists real content only: nothing is featured without a rank, update or date"
-            );
-        }
-
+        phase declared_search_finds_categories_publishers_and_configured_repositories;
         {
             let mut app = seeded_app();
-            app.show_view(View::Installed);
-            let names: Vec<&str> = app
-                .visible_items()
-                .iter()
-                .map(|i| i.name.as_str())
-                .collect();
-            assert_eq!(names, vec!["Terminal"]);
+            let mut items = app.items().to_vec();
+            let native = items.iter_mut().find(|item| item.name == "Notes").unwrap();
+            native.categories = vec!["Research".into()];
+            native.tagline = "Chalkboard projects".into();
+            native.publisher_pubkey_hex = Some(format!("{}a1b2", "a1b2c3d4e5f6".repeat(5)));
+            let native_id = native.id.clone();
+            let remote = items.iter_mut().find(|item| item.name == "Chess").unwrap();
+            remote.source = StoreSource::FlatpakRemote {
+                name: "community-tools".into(),
+                title: "Community repository".into(),
+                branch: "stable".into(),
+                user_managed: true,
+            };
+            let remote_id = remote.id.clone();
+            app.set_items(items);
+            for (query, expected) in [
+                ("Research", native_id.as_str()),
+                ("Chalkboard", native_id.as_str()),
+                ("a1b2c3d4e5f6", native_id.as_str()),
+                (native_id.as_str(), native_id.as_str()),
+                ("Community repository", remote_id.as_str()),
+                ("community-tools", remote_id.as_str()),
+            ] {
+                app.admit(StoreEffect::SetSearch {
+                    query: query.into(),
+                })
+                .unwrap();
+                let hits: Vec<_> = app
+                    .visible_items()
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect();
+                assert_eq!(hits, vec![expected], "declared search query {query}");
+                assert!(app.live_row(&format!("app:{expected}")).is_some());
+            }
         }
 
+        phase catalogue_views_and_search_rank_visible_items;
         {
-            let mut app = seeded_app();
-            app.admit(StoreEffect::SetCategory {
-                category: "Games".into(),
-            })
-            .unwrap();
-            let names: Vec<&str> = app
-                .visible_items()
-                .iter()
-                .map(|i| i.name.as_str())
-                .collect();
-            assert_eq!(names, vec!["Chess"]);
-        }
+            {
+                let app = seeded_app();
+                let names: Vec<&str> = app
+                    .visible_items()
+                    .iter()
+                    .map(|i| i.name.as_str())
+                    .collect();
+                assert_eq!(
+                    names,
+                    vec!["Notes"],
+                    "Discover lists real content only: nothing is featured without a rank, update or date"
+                );
+            }
 
-        {
-            let mut app = seeded_app();
-            // "Term" only matches Terminal — Notes contains "te" but not
-            // "term", so the substring gate drops it.
-            app.set_query("Term".into());
-            let visible = app.visible_items();
-            assert_eq!(visible.len(), 1);
-            assert_eq!(visible[0].name, "Terminal");
-        }
+            {
+                let mut app = seeded_app();
+                app.show_view(View::Installed);
+                let names: Vec<&str> = app
+                    .visible_items()
+                    .iter()
+                    .map(|i| i.name.as_str())
+                    .collect();
+                assert_eq!(names, vec!["Terminal"]);
+            }
 
-        // Case `search_finds_words_by_their_start`: the Store's index
-        // matches the start of a word, as desktop search does, so "te"
-        // finds Terminal and not the "te" inside Notes.
-        {
-            let mut app = seeded_app();
-            app.set_query("te".into());
-            let visible = app.visible_items();
-            assert_eq!(
-                visible.first().map(|item| item.name.as_str()),
-                Some("Terminal")
-            );
-            assert!(
-                visible.iter().all(|item| item.name != "Notes"),
-                "a letter pair inside a word is no match"
-            );
-        }
+            {
+                let mut app = seeded_app();
+                app.admit(StoreEffect::SetCategory {
+                    category: "Games".into(),
+                })
+                .unwrap();
+                let names: Vec<&str> = app
+                    .visible_items()
+                    .iter()
+                    .map(|i| i.name.as_str())
+                    .collect();
+                assert_eq!(names, vec!["Chess"]);
+            }
 
-        {
-            let app = seeded_app();
-            let cats = app.categories();
-            assert!(cats.iter().any(|c| c == "Productivity"));
-            assert!(cats.iter().any(|c| c == "Games"));
-            assert!(cats.iter().any(|c| c == "System"));
+            {
+                let mut app = seeded_app();
+                // "Term" only matches Terminal — Notes contains "te" but not
+                // "term", so the substring gate drops it.
+                app.set_query("Term".into());
+                let visible = app.visible_items();
+                assert_eq!(visible.len(), 1);
+                assert_eq!(visible[0].name, "Terminal");
+            }
+
+            // Case `search_finds_words_by_their_start`: the Store's index
+            // matches the start of a word, as desktop search does, so "te"
+            // finds Terminal and not the "te" inside Notes.
+            {
+                let mut app = seeded_app();
+                app.set_query("te".into());
+                let visible = app.visible_items();
+                assert_eq!(
+                    visible.first().map(|item| item.name.as_str()),
+                    Some("Terminal")
+                );
+                assert!(
+                    visible.iter().all(|item| item.name != "Notes"),
+                    "a letter pair inside a word is no match"
+                );
+            }
+
+            {
+                let app = seeded_app();
+                let cats = app.categories();
+                assert!(cats.iter().any(|c| c == "Productivity"));
+                assert!(cats.iter().any(|c| c == "Games"));
+                assert!(cats.iter().any(|c| c == "System"));
+            }
         }
     }
 
@@ -4798,38 +5007,6 @@ mod tests {
                     .as_deref()
                     .is_some_and(|detail| detail.contains("Notes description"))
             );
-        }
-    }
-
-    /// Remote configuration rejects hostile input and unsubmitted drafts stay on their device.
-    #[test]
-    fn remote_configuration_is_validated_and_drafts_stay_local() {
-        {
-            assert!(validate_remote_name("flathub").is_ok());
-            assert!(validate_remote_name(&"r".repeat(MAX_REMOTE_NAME_CHARS + 1)).is_err());
-            assert!(validate_remote_name("bad\nname").is_err());
-            assert!(validate_remote_url("https://dl.flathub.org/repo/").is_ok());
-            assert!(
-                validate_remote_url(&format!(
-                    "https://example.invalid/{}",
-                    "a".repeat(MAX_REMOTE_URL_BYTES)
-                ))
-                .is_err()
-            );
-        }
-
-        {
-            let store = seeded_app();
-            let doc = AutoCommit::new();
-            store.remote_name_state.set("studio-tools".into());
-            store
-                .remote_url_state
-                .set("https://apps.tilo.so/artifacts/repo".into());
-            let mut app = StoreApp::showing(store);
-            app.sync(&doc, &automerge::ROOT);
-            assert!(doc.keys(&automerge::ROOT).all(|key| {
-                !key.starts_with("store.remote_name") && !key.starts_with("store.remote_url")
-            }));
         }
     }
 
@@ -5489,65 +5666,6 @@ mod tests {
         }
     }
 
-    /// A blocked app is in no list and no search and cannot be installed; its
-    /// page says who blocked it; only the person who blocked it lifts it,
-    /// and the list is the one desktop search reads.
-    #[test]
-    fn a_blocked_app_is_listed_nowhere_and_only_its_blocker_unblocks_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_PERSON_DIR", dir.path());
-        let mut app = seeded_app();
-        app.set_query("Chess".into());
-        assert_eq!(app.results.apps, ["id.chess"]);
-        assert!(matches!(
-            app.admit(StoreEffect::BlockApp {
-                app: "id.chess".into()
-            }),
-            Ok(Admitted::Done)
-        ));
-        assert!(
-            app.results.apps.is_empty(),
-            "a blocked app is found nowhere"
-        );
-        app.set_query(String::new());
-        app.show_view(View::Category("Games".into()));
-        assert!(app.visible_items().is_empty());
-        assert!(
-            app.catalogue_search_entries()
-                .iter()
-                .all(|entry| entry.anchor.as_deref() != Some("app:id.chess")),
-            "nor in the platform search the Store feeds"
-        );
-        assert!(
-            app.admit(StoreEffect::FlatpakInstall {
-                app: "id.chess".into()
-            })
-            .is_err()
-        );
-        let inspected = app.inspect_catalogue(Some("id.chess")).unwrap();
-        assert_eq!(inspected["detail"]["blocked_by"][0]["kind"], "person");
-        assert!(
-            ui::registry::BlockList::load().is_blocked("id.chess"),
-            "the person's list is the one desktop search reads"
-        );
-        app.admit(StoreEffect::UnblockApp {
-            app: "id.chess".into(),
-        })
-        .unwrap();
-        assert!(!app.blocks.is_blocked("id.chess"));
-        assert!(!ui::registry::BlockList::load().is_blocked("id.chess"));
-        app.set_blocks(BlockList::empty().with_workspace_policy("School", ["id.chess"]));
-        assert!(
-            app.admit(StoreEffect::UnblockApp {
-                app: "id.chess".into()
-            })
-            .is_err(),
-            "a workspace's block is not the person's to lift"
-        );
-        assert!(app.blocks.is_blocked("id.chess"));
-    }
-
     /// Browsing effects move only this window: the document never changes,
     /// and an unknown filter is refused.
     #[test]
@@ -5657,108 +5775,6 @@ mod tests {
             assert!(app.safety_open && !app.remotes_open);
             app.admit(StoreEffect::ShowCatalogue).unwrap();
             assert!(!app.safety_open && !app.remotes_open);
-        }
-    }
-
-    #[test]
-    fn flatpak_and_stale_operations_are_refused_without_escalation() {
-        {
-            let mut app = seeded_app();
-            assert!(
-                app.admit(StoreEffect::Update {
-                    app: "id.notes".into()
-                })
-                .is_err(),
-                "an uninstalled app offers Open, not an arbitrary stale Update"
-            );
-            assert!(app.active_operation.is_none());
-        }
-
-        {
-            let mut app = seeded_app();
-            app.items
-                .iter_mut()
-                .find(|item| item.id == "id.chess")
-                .unwrap()
-                .installed = InstalledState::Installed {
-                version: "1".into(),
-                available: "1".into(),
-                pinned: false,
-                user_managed: true,
-            };
-            app.set_flatpak_available(false);
-            let chess = app
-                .live_row("app:id.chess")
-                .expect("an app row resolves")
-                .into_resource();
-            let setup = chess
-                .actions
-                .iter()
-                .find(|action| action.id == "flatpak-setup")
-                .unwrap();
-            assert!(matches!(
-                setup.contract.availability,
-                ui::tilo_actions::Availability::Unavailable { ref code, .. }
-                    if code == "flatpak_host_unavailable"
-            ));
-            assert!(
-                app.effect_statuses()
-                    .iter()
-                    .any(|status| *status
-                        == EffectStatus::unavailable(
-                            StoreEffect::FLATPAK_UPDATE,
-                            "flatpak_host_unavailable",
-                            "Flatpak is not installed on this host; install it before using Flatpak catalog actions",
-                        ))
-            );
-            assert!(
-                app.admit(StoreEffect::FlatpakUpdate {
-                    app: "id.chess".into()
-                })
-                .is_err(),
-                "a direct invocation cannot bypass the unavailable operation"
-            );
-        }
-    }
-
-    #[test]
-    fn uninstalling_is_the_systems_one_action_not_a_store_effect() {
-        let mut app = seeded_app();
-        for item in &mut app.items {
-            if item.id == "id.chess" || item.id == "id.notes" {
-                item.installed = InstalledState::Installed {
-                    version: "1".into(),
-                    available: "1".into(),
-                    pinned: false,
-                    user_managed: true,
-                };
-            }
-        }
-        for (row, remove) in [
-            ("app:id.chess", ActionKind::FlatpakRemove),
-            ("app:id.notes", ActionKind::Remove),
-        ] {
-            let resource = app.live_row(row).unwrap().into_resource();
-            assert!(
-                resource
-                    .actions
-                    .iter()
-                    .all(|action| action.id != "remove" && action.id != "flatpak-remove")
-            );
-            let item = app
-                .items
-                .iter()
-                .find(|item| row.ends_with(&item.id))
-                .unwrap();
-            assert_eq!(item.remove_action(), Some(remove));
-            assert!(StoreEffect::package(remove, item).is_none());
-            let binding = bindings::package(item, remove).unwrap();
-            let uninstall = bindings::uninstall(item);
-            assert_eq!(binding.address(), uninstall.address());
-            assert_eq!(
-                binding.invoke(()).unwrap().arguments,
-                uninstall.invoke(()).unwrap().arguments
-            );
         }
     }
 

@@ -1588,188 +1588,196 @@ mod tests {
         }
     }
 
-    #[test]
-    fn runtime_review_capability_preserves_exact_offer_and_installs_without_launch() {
-        let offer: app_cli::CatalogueApp = serde_json::from_value(serde_json::json!({
-            "package_id":"so.tilo.runtime.chromium", "display_name":"Chromium", "version":"4.0.0",
-            "registry":"main", "download_url":"https://example.invalid/engine.tapp",
-            "tapp_root_hash_hex":"11".repeat(32), "tapp_size_bytes":6656,
-            "publisher_pubkey_hex":"22".repeat(32), "runtime":"tilo-runtime/2026.10.4-chromium",
-            "trust":"publisher-signed"
-        }))
-        .unwrap();
-        let installs = Arc::new(AtomicUsize::new(0));
-        let expected = app_host::install::InstallExpectation {
-            package_root: format!("tapp:{}", offer.tapp_root_hash_hex)
-                .parse()
-                .unwrap(),
-            publisher: [0x22; 32],
-            app_id: offer.package_id.clone(),
-            version: offer.version.clone(),
-            size_bytes: offer.tapp_size_bytes,
-        };
-        let (service, connection) = app_host::testing::ConnectedService::start(ImportOfferHost {
-            registry: "main".into(),
-            expected,
-            installs: installs.clone(),
-            offer: Some(offer),
-            installed_root: None,
-        })
-        .unwrap();
-        let mut state = state_with_items(Vec::new(), StoreDirectory::default());
-        state.host = Some(app_host::client::BlockingClient::from_connected_fd(connection).unwrap());
-        let (sender, received) = mpsc::channel();
-        let snapshots = Snapshots {
-            sender,
-            wake: WakeHandle::new(),
-            pending: Arc::new(AtomicUsize::new(0)),
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let (_, result) = handle(
-            Request::RuntimeDetails {
-                runtime: "tilo-runtime/2026.10.4-chromium".into(),
-                registry: None,
-            },
-            &mut state,
-            &snapshots,
-            dir.path(),
-        );
-        assert!(result.unwrap().is_ok());
-        assert_eq!(
-            installs.load(Ordering::SeqCst),
-            0,
-            "review installs nothing"
-        );
-        let DetailUpdate::OpenedReference(item) = received.recv().unwrap().detail.unwrap() else {
-            panic!("runtime details missing")
-        };
-        assert_eq!(
-            item.versions[0].runtime.as_deref(),
-            Some("tilo-runtime/2026.10.4-chromium")
-        );
-        assert_eq!(item.action_kind(true), ActionKind::RuntimeInstall);
-        let outcome = crate::actions::execute_with_host(
-            state.host.as_ref(),
-            &item,
-            ActionKind::RuntimeInstall,
-            dir.path(),
-        );
-        assert!(outcome.ok);
-        assert!(
-            outcome.launch.is_none(),
-            "a runtime must never launch as an application"
-        );
-        assert_eq!(installs.load(Ordering::SeqCst), 1);
-        drop(state);
-        service.shutdown().unwrap();
-    }
+    tilo_test_env::scenario! {
+        fn a_runtime_review_installs_only_the_exact_offer;
 
-    #[test]
-    fn runtime_review_marks_only_the_exact_installed_root_installed() {
-        let offer: app_cli::CatalogueApp = serde_json::from_value(serde_json::json!({
-            "package_id":"so.tilo.runtime.chromium", "display_name":"Chromium", "version":"4.0.0",
-            "registry":"main", "download_url":"https://example.invalid/engine.tapp",
-            "tapp_root_hash_hex":"11".repeat(32), "tapp_size_bytes":6656,
-            "publisher_pubkey_hex":"22".repeat(32), "runtime":"tilo-runtime/2026.10.4-chromium",
-            "trust":"publisher-signed"
-        }))
-        .unwrap();
-        for (installed_root, installed) in [([0x11; 32], true), ([0x33; 32], false)] {
-            let (service, connection) =
-                app_host::testing::ConnectedService::start(ImportOfferHost {
-                    registry: "main".into(),
-                    expected: app_host::install::InstallExpectation {
-                        package_root: format!("tapp:{}", "11".repeat(32)).parse().unwrap(),
-                        publisher: [0x22; 32],
-                        app_id: offer.package_id.clone(),
-                        version: offer.version.clone(),
-                        size_bytes: offer.tapp_size_bytes,
-                    },
-                    installs: Arc::new(AtomicUsize::new(0)),
-                    offer: Some(offer.clone()),
-                    installed_root: Some(installed_root),
-                })
-                .unwrap();
-            let mut state = state_with_items(Vec::new(), StoreDirectory::default());
-            state.host =
-                Some(app_host::client::BlockingClient::from_connected_fd(connection).unwrap());
-            let item = runtime_details("tilo-runtime/2026.10.4-chromium", None, &state).unwrap();
-            assert_eq!(item.installed.is_installed(), installed);
-            assert_eq!(
-                item.unavailable_action(ActionKind::RuntimeInstall)
-                    .map(|(code, _)| code),
-                installed.then_some("runtime_already_installed")
-            );
-            drop(state);
-            service.shutdown().unwrap();
-        }
-    }
-
-    #[test]
-    fn runtime_review_capability_refuses_missing_foreign_or_malformed_offers() {
-        let valid: app_cli::CatalogueApp = serde_json::from_value(serde_json::json!({
-            "package_id":"so.tilo.runtime.chromium", "display_name":"Chromium", "version":"4.0.0",
-            "registry":"main", "download_url":"https://example.invalid/engine.tapp",
-            "tapp_root_hash_hex":"11".repeat(32), "tapp_size_bytes":6656,
-            "publisher_pubkey_hex":"22".repeat(32), "runtime":"tilo-runtime/2026.10.4-chromium",
-            "trust":"publisher-signed"
-        }))
-        .unwrap();
-        let mut wrong_runtime = valid.clone();
-        wrong_runtime.runtime = Some("tilo-runtime/2026.10.5-chromium".into());
-        let mut untrusted = valid.clone();
-        untrusted.trust = "untrusted".into();
-        let mut wrong_registry = valid.clone();
-        wrong_registry.registry = "foreign".into();
-        let mut zero_size = valid.clone();
-        zero_size.tapp_size_bytes = 0;
-        let mut malformed_root = valid.clone();
-        malformed_root.tapp_root_hash_hex = "xx".repeat(32);
-        let mut malformed_publisher = valid;
-        malformed_publisher.publisher_pubkey_hex = "x".into();
-        for offer in [
-            None,
-            Some(wrong_runtime),
-            Some(untrusted),
-            Some(wrong_registry),
-            Some(zero_size),
-            Some(malformed_root),
-            Some(malformed_publisher),
-        ] {
+        phase runtime_review_capability_preserves_exact_offer_and_installs_without_launch;
+        {
+            let offer: app_cli::CatalogueApp = serde_json::from_value(serde_json::json!({
+                "package_id":"so.tilo.runtime.chromium", "display_name":"Chromium", "version":"4.0.0",
+                "registry":"main", "download_url":"https://example.invalid/engine.tapp",
+                "tapp_root_hash_hex":"11".repeat(32), "tapp_size_bytes":6656,
+                "publisher_pubkey_hex":"22".repeat(32), "runtime":"tilo-runtime/2026.10.4-chromium",
+                "trust":"publisher-signed"
+            }))
+            .unwrap();
             let installs = Arc::new(AtomicUsize::new(0));
-            let (service, connection) =
-                app_host::testing::ConnectedService::start(ImportOfferHost {
-                    registry: "main".into(),
-                    expected: app_host::install::InstallExpectation {
-                        package_root: format!("tapp:{}", "11".repeat(32)).parse().unwrap(),
-                        publisher: [0x22; 32],
-                        app_id: "so.tilo.runtime.chromium".into(),
-                        version: "4.0.0".into(),
-                        size_bytes: 6656,
-                    },
-                    installs: installs.clone(),
-                    offer,
-                    installed_root: None,
-                })
-                .unwrap();
+            let expected = app_host::install::InstallExpectation {
+                package_root: format!("tapp:{}", offer.tapp_root_hash_hex)
+                    .parse()
+                    .unwrap(),
+                publisher: [0x22; 32],
+                app_id: offer.package_id.clone(),
+                version: offer.version.clone(),
+                size_bytes: offer.tapp_size_bytes,
+            };
+            let (service, connection) = app_host::testing::ConnectedService::start(ImportOfferHost {
+                registry: "main".into(),
+                expected,
+                installs: installs.clone(),
+                offer: Some(offer),
+                installed_root: None,
+            })
+            .unwrap();
             let mut state = state_with_items(Vec::new(), StoreDirectory::default());
-            state.host =
-                Some(app_host::client::BlockingClient::from_connected_fd(connection).unwrap());
-            assert!(runtime_details("tilo-runtime/2026.10.4-chromium", None, &state).is_err());
-            assert_eq!(installs.load(Ordering::SeqCst), 0);
+            state.host = Some(app_host::client::BlockingClient::from_connected_fd(connection).unwrap());
+            let (sender, received) = mpsc::channel();
+            let snapshots = Snapshots {
+                sender,
+                wake: WakeHandle::new(),
+                pending: Arc::new(AtomicUsize::new(0)),
+            };
+            let dir = tempfile::tempdir().unwrap();
+            let (_, result) = handle(
+                Request::RuntimeDetails {
+                    runtime: "tilo-runtime/2026.10.4-chromium".into(),
+                    registry: None,
+                },
+                &mut state,
+                &snapshots,
+                dir.path(),
+            );
+            assert!(result.unwrap().is_ok());
+            assert_eq!(
+                installs.load(Ordering::SeqCst),
+                0,
+                "review installs nothing"
+            );
+            let DetailUpdate::OpenedReference(item) = received.recv().unwrap().detail.unwrap() else {
+                panic!("runtime details missing")
+            };
+            assert_eq!(
+                item.versions[0].runtime.as_deref(),
+                Some("tilo-runtime/2026.10.4-chromium")
+            );
+            assert_eq!(item.action_kind(true), ActionKind::RuntimeInstall);
+            let outcome = crate::actions::execute_with_host(
+                state.host.as_ref(),
+                &item,
+                ActionKind::RuntimeInstall,
+                dir.path(),
+            );
+            assert!(outcome.ok);
+            assert!(
+                outcome.launch.is_none(),
+                "a runtime must never launch as an application"
+            );
+            assert_eq!(installs.load(Ordering::SeqCst), 1);
             drop(state);
             service.shutdown().unwrap();
         }
+
+        phase runtime_review_marks_only_the_exact_installed_root_installed;
+        {
+            let offer: app_cli::CatalogueApp = serde_json::from_value(serde_json::json!({
+                "package_id":"so.tilo.runtime.chromium", "display_name":"Chromium", "version":"4.0.0",
+                "registry":"main", "download_url":"https://example.invalid/engine.tapp",
+                "tapp_root_hash_hex":"11".repeat(32), "tapp_size_bytes":6656,
+                "publisher_pubkey_hex":"22".repeat(32), "runtime":"tilo-runtime/2026.10.4-chromium",
+                "trust":"publisher-signed"
+            }))
+            .unwrap();
+            for (installed_root, installed) in [([0x11; 32], true), ([0x33; 32], false)] {
+                let (service, connection) =
+                    app_host::testing::ConnectedService::start(ImportOfferHost {
+                        registry: "main".into(),
+                        expected: app_host::install::InstallExpectation {
+                            package_root: format!("tapp:{}", "11".repeat(32)).parse().unwrap(),
+                            publisher: [0x22; 32],
+                            app_id: offer.package_id.clone(),
+                            version: offer.version.clone(),
+                            size_bytes: offer.tapp_size_bytes,
+                        },
+                        installs: Arc::new(AtomicUsize::new(0)),
+                        offer: Some(offer.clone()),
+                        installed_root: Some(installed_root),
+                    })
+                    .unwrap();
+                let mut state = state_with_items(Vec::new(), StoreDirectory::default());
+                state.host =
+                    Some(app_host::client::BlockingClient::from_connected_fd(connection).unwrap());
+                let item = runtime_details("tilo-runtime/2026.10.4-chromium", None, &state).unwrap();
+                assert_eq!(item.installed.is_installed(), installed);
+                assert_eq!(
+                    item.unavailable_action(ActionKind::RuntimeInstall)
+                        .map(|(code, _)| code),
+                    installed.then_some("runtime_already_installed")
+                );
+                drop(state);
+                service.shutdown().unwrap();
+            }
+        }
+
+        phase runtime_review_capability_refuses_missing_foreign_or_malformed_offers;
+        {
+            let valid: app_cli::CatalogueApp = serde_json::from_value(serde_json::json!({
+                "package_id":"so.tilo.runtime.chromium", "display_name":"Chromium", "version":"4.0.0",
+                "registry":"main", "download_url":"https://example.invalid/engine.tapp",
+                "tapp_root_hash_hex":"11".repeat(32), "tapp_size_bytes":6656,
+                "publisher_pubkey_hex":"22".repeat(32), "runtime":"tilo-runtime/2026.10.4-chromium",
+                "trust":"publisher-signed"
+            }))
+            .unwrap();
+            let mut wrong_runtime = valid.clone();
+            wrong_runtime.runtime = Some("tilo-runtime/2026.10.5-chromium".into());
+            let mut untrusted = valid.clone();
+            untrusted.trust = "untrusted".into();
+            let mut wrong_registry = valid.clone();
+            wrong_registry.registry = "foreign".into();
+            let mut zero_size = valid.clone();
+            zero_size.tapp_size_bytes = 0;
+            let mut malformed_root = valid.clone();
+            malformed_root.tapp_root_hash_hex = "xx".repeat(32);
+            let mut malformed_publisher = valid;
+            malformed_publisher.publisher_pubkey_hex = "x".into();
+            for offer in [
+                None,
+                Some(wrong_runtime),
+                Some(untrusted),
+                Some(wrong_registry),
+                Some(zero_size),
+                Some(malformed_root),
+                Some(malformed_publisher),
+            ] {
+                let installs = Arc::new(AtomicUsize::new(0));
+                let (service, connection) =
+                    app_host::testing::ConnectedService::start(ImportOfferHost {
+                        registry: "main".into(),
+                        expected: app_host::install::InstallExpectation {
+                            package_root: format!("tapp:{}", "11".repeat(32)).parse().unwrap(),
+                            publisher: [0x22; 32],
+                            app_id: "so.tilo.runtime.chromium".into(),
+                            version: "4.0.0".into(),
+                            size_bytes: 6656,
+                        },
+                        installs: installs.clone(),
+                        offer,
+                        installed_root: None,
+                    })
+                    .unwrap();
+                let mut state = state_with_items(Vec::new(), StoreDirectory::default());
+                state.host =
+                    Some(app_host::client::BlockingClient::from_connected_fd(connection).unwrap());
+                assert!(runtime_details("tilo-runtime/2026.10.4-chromium", None, &state).is_err());
+                assert_eq!(installs.load(Ordering::SeqCst), 0);
+                drop(state);
+                service.shutdown().unwrap();
+            }
+        }
     }
 
-    #[test]
-    fn package_import_worker_reviews_before_exact_owned_offer_install() {
-        check_import_worker(crate::package_import::tests::signed_fixture());
-    }
+    tilo_test_env::scenario! {
+        fn a_package_import_is_reviewed_by_the_worker_before_its_install;
 
-    #[test]
-    fn package_import_offered_worker_preserves_verified_offer_install_route() {
-        check_import_worker(crate::package_import::tests::catalogue_fixture());
+        phase package_import_worker_reviews_before_exact_owned_offer_install;
+        {
+            check_import_worker(crate::package_import::tests::signed_fixture());
+        }
+
+        phase package_import_offered_worker_preserves_verified_offer_install_route;
+        {
+            check_import_worker(crate::package_import::tests::catalogue_fixture());
+        }
     }
 
     fn check_import_worker((bytes, item): (Vec<u8>, StoreItem)) {

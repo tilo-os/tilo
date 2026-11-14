@@ -412,181 +412,185 @@ mod tests {
         )
     }
 
-    #[test]
-    fn a_refresh_keeps_what_is_on_screen_in_place() {
-        let shown = vec!["b".to_owned(), "a".to_owned(), "c".to_owned()];
-        let fresh = vec!["a".to_owned(), "d".to_owned(), "b".to_owned()];
-        assert_eq!(keep_order(&shown, &fresh), ["b", "a", "d"]);
-        let previous = vec![tilo("x.b", "B"), tilo("x.a", "A")];
-        let mut updated = tilo("x.a", "A");
-        updated.tagline = "changed".into();
-        let merged =
-            in_previous_order(&previous, vec![updated, tilo("x.c", "C"), tilo("x.b", "B")]);
-        let ids: Vec<&str> = merged.iter().map(|item| item.id.as_str()).collect();
-        assert_eq!(ids, ["x.b", "x.a", "x.c"]);
-        assert_eq!(
-            merged[1].tagline, "changed",
-            "content updates where it stands"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_catalogue_orders_hides_and_finds_its_apps;
 
-    #[test]
-    fn home_features_tilo_first_then_flathub_by_rank_and_hides_blocked_apps() {
-        let mut popular = app("org.example.Popular", "Popular", StoreSource::Flathub);
-        popular.listing.featured_rank = Some(0);
-        popular.listing.updated_at_unix = 20;
-        let mut second = app("org.example.Second", "Second", StoreSource::Flathub);
-        second.listing.featured_rank = Some(1);
-        second.listing.updated_at_unix = 30;
-        let notes = tilo("so.tilo.notes", "Notes");
-        let blocked = tilo("so.tilo.tube", "Tube");
-        let items = vec![second, popular, notes, blocked];
-        let blocks = BlockList::empty().with_workspace_policy("School", ["so.tilo.tube"]);
-        let mut home = Home::compute(&items, &blocks);
-        assert_eq!(
-            home.featured,
-            ["so.tilo.notes", "org.example.Popular", "org.example.Second"]
-        );
-        assert_eq!(home.recent, ["org.example.Second", "org.example.Popular"]);
-        assert!(home.updates.is_empty(), "no shelf without real updates");
-        let mut items = items;
-        items[0].listing.featured_rank = Some(0);
-        items[1].listing.featured_rank = Some(5);
-        home.reconcile(&items, &blocks);
-        assert_eq!(
-            home.featured,
-            ["so.tilo.notes", "org.example.Popular", "org.example.Second"]
-        );
-    }
+        phase a_refresh_keeps_what_is_on_screen_in_place;
+        {
+            let shown = vec!["b".to_owned(), "a".to_owned(), "c".to_owned()];
+            let fresh = vec!["a".to_owned(), "d".to_owned(), "b".to_owned()];
+            assert_eq!(keep_order(&shown, &fresh), ["b", "a", "d"]);
+            let previous = vec![tilo("x.b", "B"), tilo("x.a", "A")];
+            let mut updated = tilo("x.a", "A");
+            updated.tagline = "changed".into();
+            let merged =
+                in_previous_order(&previous, vec![updated, tilo("x.c", "C"), tilo("x.b", "B")]);
+            let ids: Vec<&str> = merged.iter().map(|item| item.id.as_str()).collect();
+            assert_eq!(ids, ["x.b", "x.a", "x.c"]);
+            assert_eq!(
+                merged[1].tagline, "changed",
+                "content updates where it stands"
+            );
+        }
 
-    /// Only the person's own block is theirs to lift; a policy's stays.
-    #[test]
-    fn the_person_unblocks_only_what_they_blocked() {
-        let dir = tempfile::tempdir().unwrap();
-        let person = dir.path().join("blocked.json");
-        let device = dir.path().join("store-policy.json");
-        std::fs::write(
-            &person,
-            r#"{"blocked": ["com.example.Game", "com.example.Both"]}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &device,
-            r#"{"admin": "IT at Example", "blocked": ["com.spotify.Client", "com.example.Both"]}"#,
-        )
-        .unwrap();
-        let blocks = BlockList::load_from(Some(&person), Some(&device));
-        assert!(person_can_unblock(&blocks, "com.example.Game"));
-        assert!(!person_can_unblock(&blocks, "com.spotify.Client"));
-        assert!(
-            !person_can_unblock(&blocks, "com.example.Both"),
-            "lifting the person's block would leave the administrator's"
-        );
-        assert!(
-            !person_can_unblock(&blocks, "so.tilo.notes"),
-            "nothing to lift"
-        );
-    }
+        phase home_features_tilo_first_then_flathub_by_rank_and_hides_blocked_apps;
+        {
+            let mut popular = app("org.example.Popular", "Popular", StoreSource::Flathub);
+            popular.listing.featured_rank = Some(0);
+            popular.listing.updated_at_unix = 20;
+            let mut second = app("org.example.Second", "Second", StoreSource::Flathub);
+            second.listing.featured_rank = Some(1);
+            second.listing.updated_at_unix = 30;
+            let notes = tilo("so.tilo.notes", "Notes");
+            let blocked = tilo("so.tilo.tube", "Tube");
+            let items = vec![second, popular, notes, blocked];
+            let blocks = BlockList::empty().with_workspace_policy("School", ["so.tilo.tube"]);
+            let mut home = Home::compute(&items, &blocks);
+            assert_eq!(
+                home.featured,
+                ["so.tilo.notes", "org.example.Popular", "org.example.Second"]
+            );
+            assert_eq!(home.recent, ["org.example.Second", "org.example.Popular"]);
+            assert!(home.updates.is_empty(), "no shelf without real updates");
+            let mut items = items;
+            items[0].listing.featured_rank = Some(0);
+            items[1].listing.featured_rank = Some(5);
+            home.reconcile(&items, &blocks);
+            assert_eq!(
+                home.featured,
+                ["so.tilo.notes", "org.example.Popular", "org.example.Second"]
+            );
+        }
 
-    #[test]
-    fn search_answers_locally_with_apps_and_bots_apart_and_tilo_first() {
-        let mut bot = tilo("so.tilo.bot.notes-digest", "Notes digest");
-        bot.bot = Some(crate::model::BotListing {
-            version: "1.0.0".into(),
-            triggers: vec!["schedule".into()],
-            apps: vec!["so.tilo.notes".into()],
-            connectors: Vec::new(),
-            appearance: false,
-            artifact: ui::registry::BotArtifact {
-                program_url: "https://apps.tilo.so/blobs/00".into(),
-                program_blake3_hex: "00".repeat(32),
-                program_size_bytes: 10,
-                requires: ui::registry::BotRequirements::default(),
-            },
-        });
-        let items = vec![
-            app("org.example.Notes", "Notes", StoreSource::Flathub),
-            tilo("so.tilo.notes", "Notes"),
-            bot,
-            tilo("so.tilo.blocked-notes", "Notes blocked"),
-        ];
-        let blocks = BlockList::empty().with_workspace_policy("School", ["so.tilo.blocked-notes"]);
-        let index = ListIndex::default();
-        warm(&index, &items);
-        let found = search(&index, "notes", &items, &blocks);
-        assert_eq!(
-            found.apps.first().map(String::as_str),
-            Some("so.tilo.notes")
-        );
-        assert!(found.apps.iter().any(|id| id == "org.example.Notes"));
-        assert!(!found.apps.iter().any(|id| id == "so.tilo.blocked-notes"));
-        assert_eq!(found.bots, ["so.tilo.bot.notes-digest"]);
-        assert!(search(&index, "  ", &items, &blocks).is_empty());
-    }
+        phase the_person_unblocks_only_what_they_blocked;
+        // Only the person's own block is theirs to lift; a policy's stays.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let person = dir.path().join("blocked.json");
+            let device = dir.path().join("store-policy.json");
+            std::fs::write(
+                &person,
+                r#"{"blocked": ["com.example.Game", "com.example.Both"]}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                &device,
+                r#"{"admin": "IT at Example", "blocked": ["com.spotify.Client", "com.example.Both"]}"#,
+            )
+            .unwrap();
+            let blocks = BlockList::load_from(Some(&person), Some(&device));
+            assert!(person_can_unblock(&blocks, "com.example.Game"));
+            assert!(!person_can_unblock(&blocks, "com.spotify.Client"));
+            assert!(
+                !person_can_unblock(&blocks, "com.example.Both"),
+                "lifting the person's block would leave the administrator's"
+            );
+            assert!(
+                !person_can_unblock(&blocks, "so.tilo.notes"),
+                "nothing to lift"
+            );
+        }
 
-    /// Steam is on Flathub for `x86_64` only. On another processor it must
-    /// not vanish: search finds it, says it is not available for this device
-    /// and why, and nothing offers to install it. Browsing, which shows what
-    /// a person can get, leaves it out.
-    #[test]
-    fn an_app_without_a_build_for_this_processor_is_found_and_says_why() {
-        crate::resource::CATALOG.ensure();
-        let mut steam = app("com.valvesoftware.Steam", "Steam", StoreSource::Flathub);
-        steam.categories = vec!["Game".into()];
-        steam.listing.featured_rank = Some(0);
-        steam.listing.updated_at_unix = 50;
-        steam.listing.arches = vec!["different-device".into()];
-        let mut native = app("org.example.Steam", "Steam", StoreSource::Flathub);
-        native.categories = vec!["Game".into()];
-        native.listing.arches = vec![std::env::consts::ARCH.into()];
-        let unknown = app("org.example.Unknown", "Unknown", StoreSource::Flathub);
-        let items = vec![steam.clone(), native, unknown.clone()];
-        let blocks = BlockList::empty();
+        phase search_answers_locally_with_apps_and_bots_apart_and_tilo_first;
+        {
+            let mut bot = tilo("so.tilo.bot.notes-digest", "Notes digest");
+            bot.bot = Some(crate::model::BotListing {
+                version: "1.0.0".into(),
+                triggers: vec!["schedule".into()],
+                apps: vec!["so.tilo.notes".into()],
+                connectors: Vec::new(),
+                appearance: false,
+                artifact: ui::registry::BotArtifact {
+                    program_url: "https://apps.tilo.so/blobs/00".into(),
+                    program_blake3_hex: "00".repeat(32),
+                    program_size_bytes: 10,
+                    requires: ui::registry::BotRequirements::default(),
+                },
+            });
+            let items = vec![
+                app("org.example.Notes", "Notes", StoreSource::Flathub),
+                tilo("so.tilo.notes", "Notes"),
+                bot,
+                tilo("so.tilo.blocked-notes", "Notes blocked"),
+            ];
+            let blocks = BlockList::empty().with_workspace_policy("School", ["so.tilo.blocked-notes"]);
+            let index = ListIndex::default();
+            warm(&index, &items);
+            let found = search(&index, "notes", &items, &blocks);
+            assert_eq!(
+                found.apps.first().map(String::as_str),
+                Some("so.tilo.notes")
+            );
+            assert!(found.apps.iter().any(|id| id == "org.example.Notes"));
+            assert!(!found.apps.iter().any(|id| id == "so.tilo.blocked-notes"));
+            assert_eq!(found.bots, ["so.tilo.bot.notes-digest"]);
+            assert!(search(&index, "  ", &items, &blocks).is_empty());
+        }
 
-        let index = ListIndex::default();
-        let found = search(&index, "steam", &items, &blocks);
-        assert_eq!(
-            found.apps,
-            ["org.example.Steam", "com.valvesoftware.Steam"],
-            "found, after an equally good app this device runs"
-        );
-        assert!(steam.not_built_for_this_device());
-        assert!(
-            !unknown.not_built_for_this_device(),
-            "a source that names no processors is not read as unavailable"
-        );
-        assert_eq!(list_caption(&steam), "Not available for this device");
-        assert_eq!(list_caption(&unknown), "Flathub");
-        let reason = steam
-            .not_built_for_this_device_reason()
-            .expect("the page says why");
-        assert!(
-            reason.starts_with("Steam is only built for different-device"),
-            "{reason}"
-        );
-        let (code, why) = steam
-            .unavailable_action(crate::model::ActionKind::FlatpakInstall)
-            .expect("installing is refused, not offered");
-        assert_eq!(code, "not_available_for_this_device");
-        assert_eq!(why, reason);
-        assert!(!steam.allows_action(crate::model::ActionKind::FlatpakInstall, true));
+        phase an_app_without_a_build_for_this_processor_is_found_and_says_why;
+        // Steam is on Flathub for `x86_64` only. On another processor it must
+        // not vanish: search finds it, says it is not available for this device
+        // and why, and nothing offers to install it. Browsing, which shows what
+        // a person can get, leaves it out.
+        {
+            crate::resource::CATALOG.ensure();
+            let mut steam = app("com.valvesoftware.Steam", "Steam", StoreSource::Flathub);
+            steam.categories = vec!["Game".into()];
+            steam.listing.featured_rank = Some(0);
+            steam.listing.updated_at_unix = 50;
+            steam.listing.arches = vec!["different-device".into()];
+            let mut native = app("org.example.Steam", "Steam", StoreSource::Flathub);
+            native.categories = vec!["Game".into()];
+            native.listing.arches = vec![std::env::consts::ARCH.into()];
+            let unknown = app("org.example.Unknown", "Unknown", StoreSource::Flathub);
+            let items = vec![steam.clone(), native, unknown.clone()];
+            let blocks = BlockList::empty();
 
-        let home = Home::compute(&items, &blocks);
-        assert!(!home.featured.iter().any(|id| id == &steam.id));
-        assert!(!home.recent.iter().any(|id| id == &steam.id));
-        assert!(home.categories.contains(&("Game".to_owned(), 1)));
-        assert_eq!(in_category(&items, &blocks, "Game"), ["org.example.Steam"]);
+            let index = ListIndex::default();
+            let found = search(&index, "steam", &items, &blocks);
+            assert_eq!(
+                found.apps,
+                ["org.example.Steam", "com.valvesoftware.Steam"],
+                "found, after an equally good app this device runs"
+            );
+            assert!(steam.not_built_for_this_device());
+            assert!(
+                !unknown.not_built_for_this_device(),
+                "a source that names no processors is not read as unavailable"
+            );
+            assert_eq!(list_caption(&steam), "Not available for this device");
+            assert_eq!(list_caption(&unknown), "Flathub");
+            let reason = steam
+                .not_built_for_this_device_reason()
+                .expect("the page says why");
+            assert!(
+                reason.starts_with("Steam is only built for different-device"),
+                "{reason}"
+            );
+            let (code, why) = steam
+                .unavailable_action(crate::model::ActionKind::FlatpakInstall)
+                .expect("installing is refused, not offered");
+            assert_eq!(code, "not_available_for_this_device");
+            assert_eq!(why, reason);
+            assert!(!steam.allows_action(crate::model::ActionKind::FlatpakInstall, true));
 
-        let mut installed = steam;
-        installed.installed = InstalledState::Installed {
-            version: "1".into(),
-            available: "1".into(),
-            pinned: false,
-            user_managed: true,
-        };
-        assert!(
-            !installed.not_built_for_this_device(),
-            "an installed app runs here, however it got here"
-        );
+            let home = Home::compute(&items, &blocks);
+            assert!(!home.featured.iter().any(|id| id == &steam.id));
+            assert!(!home.recent.iter().any(|id| id == &steam.id));
+            assert!(home.categories.contains(&("Game".to_owned(), 1)));
+            assert_eq!(in_category(&items, &blocks, "Game"), ["org.example.Steam"]);
+
+            let mut installed = steam;
+            installed.installed = InstalledState::Installed {
+                version: "1".into(),
+                available: "1".into(),
+                pinned: false,
+                user_managed: true,
+            };
+            assert!(
+                !installed.not_built_for_this_device(),
+                "an installed app runs here, however it got here"
+            );
+        }
     }
 }

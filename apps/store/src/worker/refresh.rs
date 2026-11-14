@@ -692,253 +692,430 @@ mod tests {
         app.inspect_catalogue(Some("so.tilo.mail")).unwrap()
     }
 
-    #[test]
-    fn refreshing_preserves_the_opened_reference_over_catalogue_offers() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("editor.flatpakref");
-        std::fs::write(
-            &path,
-            "[Flatpak Ref]\nName=org.example.Editor\nTitle=Editor\nBranch=beta\nUrl=https://example.org/repo/\n",
-        )
-        .unwrap();
-        let mut state = super::super::tests::state_with_items(
-            vec![super::super::tests::item("so.tilo.editor", "Editor")],
-            crate::search::StoreDirectory::default(),
-        );
-        let opened = super::super::open_reference(Some(path), None, &mut state).unwrap();
-        let mut refresh = Refresh::start(&state, None);
-        refresh.errors.clear();
-        let record = serde_json::from_value(serde_json::json!({
-            "flatpakAppId": "org.example.Editor", "name": "Editor",
-            "currentReleaseVersion": "1.0"
-        }))
-        .unwrap();
-        refresh.apply(
-            &mut state,
-            Response::Flathub(Ok(FlathubFeed::from_records(
-                "en-US",
-                &[record],
-                &[],
-                true,
-                0,
-            ))),
-        );
-        refresh.rebuild(&mut state);
-        let item = state
-            .base_items
-            .iter()
-            .find(|item| item.id == opened.id)
-            .expect("an explicitly opened reference survives native name deduplication");
-        assert_eq!(item.install_ref_path, opened.install_ref_path);
-        assert_eq!(item.latest_version(), "beta");
-        assert_eq!(
-            item.source_url.as_deref(),
-            Some("https://example.org/repo/")
-        );
-        assert_eq!(item.action_kind(true), crate::ActionKind::FlatpakInstall);
-        // Reopening details must not replace the reference with Flathub's offer,
-        // including when the detail response is served from the worker cache.
-        for _ in 0..2 {
-            let install = super::super::tests::detail_installation_item(&mut state, &opened.id);
-            assert_eq!(install.install_ref_path, opened.install_ref_path);
-            assert_eq!(install.latest_version(), "beta");
+    tilo_test_env::scenario! {
+        fn a_refresh_keeps_opened_references_and_installed_apps;
+
+        phase refreshing_preserves_the_opened_reference_over_catalogue_offers;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("editor.flatpakref");
+            std::fs::write(
+                &path,
+                "[Flatpak Ref]\nName=org.example.Editor\nTitle=Editor\nBranch=beta\nUrl=https://example.org/repo/\n",
+            )
+            .unwrap();
+            let mut state = super::super::tests::state_with_items(
+                vec![super::super::tests::item("so.tilo.editor", "Editor")],
+                crate::search::StoreDirectory::default(),
+            );
+            let opened = super::super::open_reference(Some(path), None, &mut state).unwrap();
+            let mut refresh = Refresh::start(&state, None);
+            refresh.errors.clear();
+            let record = serde_json::from_value(serde_json::json!({
+                "flatpakAppId": "org.example.Editor", "name": "Editor",
+                "currentReleaseVersion": "1.0"
+            }))
+            .unwrap();
+            refresh.apply(
+                &mut state,
+                Response::Flathub(Ok(FlathubFeed::from_records(
+                    "en-US",
+                    &[record],
+                    &[],
+                    true,
+                    0,
+                ))),
+            );
+            refresh.rebuild(&mut state);
+            let item = state
+                .base_items
+                .iter()
+                .find(|item| item.id == opened.id)
+                .expect("an explicitly opened reference survives native name deduplication");
+            assert_eq!(item.install_ref_path, opened.install_ref_path);
+            assert_eq!(item.latest_version(), "beta");
             assert_eq!(
-                install.source_url.as_deref(),
+                item.source_url.as_deref(),
                 Some("https://example.org/repo/")
+            );
+            assert_eq!(item.action_kind(true), crate::ActionKind::FlatpakInstall);
+            // Reopening details must not replace the reference with Flathub's offer,
+            // including when the detail response is served from the worker cache.
+            for _ in 0..2 {
+                let install = super::super::tests::detail_installation_item(&mut state, &opened.id);
+                assert_eq!(install.install_ref_path, opened.install_ref_path);
+                assert_eq!(install.latest_version(), "beta");
+                assert_eq!(
+                    install.source_url.as_deref(),
+                    Some("https://example.org/repo/")
+                );
+            }
+        }
+
+        phase refreshing_a_remote_replaces_its_cached_detail_for_installation;
+        {
+            let mut state = super::super::tests::state_with_items(
+                Vec::new(),
+                crate::search::StoreDirectory::default(),
+            );
+            let remote = Remote {
+                name: "example".into(),
+                url: "https://example.org/repo/".into(),
+                title: "Example".into(),
+                disabled: false,
+                user_managed: true,
+                catalogue_error: None,
+            };
+            state.remotes.push(remote.clone());
+            for version in ["1.0", "2.0"] {
+                let mut refresh = Refresh::start(&state, None);
+                refresh.errors.clear();
+                refresh.apply(
+                    &mut state,
+                    Response::Flatpak(
+                        remote.clone(),
+                        Ok(format!(
+                            "org.example.Editor\tEditor\tAn editor\t{version}\tbeta\n"
+                        )),
+                    ),
+                );
+                refresh.rebuild(&mut state);
+                let install =
+                    super::super::tests::detail_installation_item(&mut state, "org.example.Editor");
+                assert_eq!(install.latest_version(), version);
+                assert!(install.install_ref_path.is_none());
+                assert!(
+                    matches!(install.source, StoreSource::FlatpakRemote { name, branch, user_managed: true, .. }
+                    if name == "example" && branch == "beta")
+                );
+            }
+        }
+
+        phase installed_flatpak_survives_native_name_collision_and_remains_selected;
+        {
+            let mut native = super::super::tests::item("so.tilo.editor", "Editor");
+            native.installed = crate::InstalledState::Installed {
+                version: "1".into(),
+                available: "1".into(),
+                pinned: false,
+                user_managed: false,
+            };
+            let mut state = super::super::tests::state_with_items(
+                vec![native],
+                crate::search::StoreDirectory::default(),
+            );
+            let mut refresh = Refresh::start(&state, None);
+            refresh.apply(
+                &mut state,
+                Response::Status(Ok(FlatpakStatus {
+                    available: true,
+                    installed: "org.example.Editor\t2.0\tflathub\tuser\n".into(),
+                    remotes: concat!(
+                        "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\n",
+                        "flathub\thttps://dl.flathub.org/repo/\tFlathub\tuser\n",
+                    )
+                    .into(),
+                })),
+            );
+            for remote in state.remotes.clone() {
+                refresh.apply(
+                    &mut state,
+                    Response::Flatpak(
+                        remote,
+                        Ok("org.example.Editor\tEditor\tEdit documents\t2.0\tstable\tflathub\n".into()),
+                    ),
+                );
+            }
+            refresh.rebuild(&mut state);
+            let item = state.base_items.iter().find(|item| item.id == "org.example.Editor")
+                .expect("the actually installed account app must not disappear behind a native name collision");
+            assert!(
+                matches!(&item.installed, crate::InstalledState::Installed { version, user_managed: true, .. } if version == "2.0")
+            );
+            assert_eq!(item.action_kind(true), crate::ActionKind::FlatpakOpen);
+            assert_eq!(state.remotes.len(), 2);
+            let mut app = crate::app::StoreState::new();
+            app.set_items(state.base_items);
+            app.set_flatpak_available(true);
+            app.admit(crate::StoreEffect::SetSearch {
+                query: "org.example.Editor".into(),
+            })
+            .unwrap();
+            app.admit(crate::StoreEffect::ShowDetails {
+                app: "org.example.Editor".into(),
+            })
+            .unwrap();
+            let exact = app.inspect_catalogue(Some("org.example.Editor")).unwrap();
+            assert_eq!(exact["matching"], 1);
+            assert_eq!(exact["selected_app"], "org.example.Editor");
+            assert_eq!(exact["detail"]["installed"], true);
+            assert_eq!(exact["detail"]["name"], "Editor");
+            app.admit(crate::StoreEffect::SetSearch {
+                query: "Editor".into(),
+            })
+            .unwrap();
+            assert!(
+                app.visible_items()
+                    .iter()
+                    .any(|item| item.id == "org.example.Editor")
+            );
+            app.admit(crate::StoreEffect::SetSearch {
+                query: String::new(),
+            })
+            .unwrap();
+            app.admit(crate::StoreEffect::ShowView {
+                view: "installed".into(),
+            })
+            .unwrap();
+            assert!(
+                app.visible_items()
+                    .iter()
+                    .any(|item| item.id == "org.example.Editor")
             );
         }
     }
 
-    #[test]
-    fn refreshing_a_remote_replaces_its_cached_detail_for_installation() {
-        let mut state = super::super::tests::state_with_items(
-            Vec::new(),
-            crate::search::StoreDirectory::default(),
-        );
-        let remote = Remote {
-            name: "example".into(),
-            url: "https://example.org/repo/".into(),
-            title: "Example".into(),
-            disabled: false,
-            user_managed: true,
-            catalogue_error: None,
-        };
-        state.remotes.push(remote.clone());
-        for version in ["1.0", "2.0"] {
-            let mut refresh = Refresh::start(&state, None);
-            refresh.errors.clear();
+    tilo_test_env::scenario! {
+        fn a_refresh_shows_the_last_verified_catalogue;
+
+        phase a_bundled_app_with_no_reachable_catalogue_shows_its_manifest_details;
+        {
+            let (mut state, mut refresh) = refresh_with_bundled_mail();
             refresh.apply(
                 &mut state,
-                Response::Flatpak(
-                    remote.clone(),
-                    Ok(format!(
-                        "org.example.Editor\tEditor\tAn editor\t{version}\tbeta\n"
-                    )),
+                Response::LastVerified(main_registry(), Err("no verified catalogue".into())),
+            );
+            refresh.apply(
+                &mut state,
+                Response::Native(main_registry(), Err("error sending request".into())),
+            );
+            refresh.rebuild(&mut state);
+
+            let item = mail(&state);
+            assert_eq!(item.name, "Mail");
+            assert_eq!(item.categories, ["Office"]);
+            assert_eq!(item.latest_version(), "0.4.0");
+            assert_eq!(item.versions[0].size_bytes, 2_400_000);
+            assert!(
+                item.description.is_empty(),
+                "no row repeats a sentence about missing details: {:?}",
+                item.description
+            );
+            assert!(!item.installed.update_available());
+            assert_eq!(item.action_kind(true), crate::ActionKind::Open);
+
+            // The details page names the repository that has not answered, once.
+            let shown = details(&state);
+            assert_eq!(shown["detail"]["name"], "Mail");
+            let notice = shown["detail"]["notice"].as_str().unwrap();
+            assert!(notice.contains(MAIN), "{notice}");
+            assert!(notice.contains("description and updates"), "{notice}");
+        }
+
+        phase a_failed_refresh_keeps_the_last_verified_catalogue;
+        {
+            let (mut state, mut refresh) = refresh_with_bundled_mail();
+            refresh.apply(
+                &mut state,
+                Response::LastVerified(main_registry(), Ok(catalogue_with_mail("0.5.0"))),
+            );
+            refresh.apply(
+                &mut state,
+                Response::Native(main_registry(), Err("error sending request".into())),
+            );
+            refresh.rebuild(&mut state);
+
+            let item = mail(&state);
+            assert_eq!(item.description, "Read and write email.");
+            assert!(
+                matches!(&item.source, StoreSource::Tilo { registry_name } if registry_name == MAIN)
+            );
+            assert!(item.installed.update_available());
+            assert!(details(&state)["detail"].get("notice").is_none());
+            assert!(
+                state
+                    .catalogue_error
+                    .as_deref()
+                    .is_some_and(|error| error.contains(MAIN))
+            );
+        }
+
+        phase a_verified_catalogue_fills_the_details_and_outranks_the_stored_one;
+        {
+            let (mut state, mut refresh) = refresh_with_bundled_mail();
+            refresh.apply(
+                &mut state,
+                Response::Native(main_registry(), Ok(catalogue_with_mail("0.6.0"))),
+            );
+            // A stored catalogue answering late must not replace the fresh one.
+            refresh.apply(
+                &mut state,
+                Response::LastVerified(main_registry(), Ok(catalogue_with_mail("0.5.0"))),
+            );
+            refresh.rebuild(&mut state);
+
+            let item = mail(&state);
+            assert_eq!(item.name, "Mail");
+            assert_eq!(item.description, "Read and write email.");
+            assert_eq!(item.latest_version(), "0.6.0");
+            assert!(state.unanswered_repositories.is_empty());
+            assert!(details(&state)["detail"].get("notice").is_none());
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_refused_or_expired_catalogue_says_why;
+
+        phase a_repository_the_system_is_too_old_to_read_says_the_system_needs_an_update;
+        // When the app host cannot read the system's interface declaration it
+        // refuses the repository; the Store says the device needs a system
+        // update, naming the repository, as visibly as an outage and without
+        // the RPC's internals.
+        {
+            crate::resource::CATALOG.ensure();
+            let (mut state, mut refresh) = refresh_with_bundled_mail();
+            refresh.apply(
+                &mut state,
+                Response::Native(
+                    main_registry(),
+                    Err(CatalogueError::Refused {
+                        refusal: Refusal::SystemUpdateNeeded,
+                        detail: "/usr/share/tilo/system-interfaces.toml is not a system-interface \
+                             declaration: invalid type: integer `2`, expected a sequence"
+                            .into(),
+                    }),
                 ),
             );
             refresh.rebuild(&mut state);
-            let install =
-                super::super::tests::detail_installation_item(&mut state, "org.example.Editor");
-            assert_eq!(install.latest_version(), version);
-            assert!(install.install_ref_path.is_none());
-            assert!(
-                matches!(install.source, StoreSource::FlatpakRemote { name, branch, user_managed: true, .. }
-                if name == "example" && branch == "beta")
-            );
-        }
-    }
 
-    #[test]
-    fn a_bundled_app_with_no_reachable_catalogue_shows_its_manifest_details() {
-        let (mut state, mut refresh) = refresh_with_bundled_mail();
-        refresh.apply(
-            &mut state,
-            Response::LastVerified(main_registry(), Err("no verified catalogue".into())),
-        );
-        refresh.apply(
-            &mut state,
-            Response::Native(main_registry(), Err("error sending request".into())),
-        );
-        refresh.rebuild(&mut state);
-
-        let item = mail(&state);
-        assert_eq!(item.name, "Mail");
-        assert_eq!(item.categories, ["Office"]);
-        assert_eq!(item.latest_version(), "0.4.0");
-        assert_eq!(item.versions[0].size_bytes, 2_400_000);
-        assert!(
-            item.description.is_empty(),
-            "no row repeats a sentence about missing details: {:?}",
-            item.description
-        );
-        assert!(!item.installed.update_available());
-        assert_eq!(item.action_kind(true), crate::ActionKind::Open);
-
-        // The details page names the repository that has not answered, once.
-        let shown = details(&state);
-        assert_eq!(shown["detail"]["name"], "Mail");
-        let notice = shown["detail"]["notice"].as_str().unwrap();
-        assert!(notice.contains(MAIN), "{notice}");
-        assert!(notice.contains("description and updates"), "{notice}");
-    }
-
-    #[test]
-    fn a_failed_refresh_keeps_the_last_verified_catalogue() {
-        let (mut state, mut refresh) = refresh_with_bundled_mail();
-        refresh.apply(
-            &mut state,
-            Response::LastVerified(main_registry(), Ok(catalogue_with_mail("0.5.0"))),
-        );
-        refresh.apply(
-            &mut state,
-            Response::Native(main_registry(), Err("error sending request".into())),
-        );
-        refresh.rebuild(&mut state);
-
-        let item = mail(&state);
-        assert_eq!(item.description, "Read and write email.");
-        assert!(
-            matches!(&item.source, StoreSource::Tilo { registry_name } if registry_name == MAIN)
-        );
-        assert!(item.installed.update_available());
-        assert!(details(&state)["detail"].get("notice").is_none());
-        assert!(
-            state
+            let error = state
                 .catalogue_error
                 .as_deref()
-                .is_some_and(|error| error.contains(MAIN))
-        );
-    }
-
-    /// When the app host cannot read the system's interface declaration it
-    /// refuses the repository; the Store says the device needs a system
-    /// update, naming the repository, as visibly as an outage and without
-    /// the RPC's internals.
-    #[test]
-    fn a_repository_the_system_is_too_old_to_read_says_the_system_needs_an_update() {
-        crate::resource::CATALOG.ensure();
-        let (mut state, mut refresh) = refresh_with_bundled_mail();
-        refresh.apply(
-            &mut state,
-            Response::Native(
-                main_registry(),
-                Err(CatalogueError::Refused {
-                    refusal: Refusal::SystemUpdateNeeded,
-                    detail: "/usr/share/tilo/system-interfaces.toml is not a system-interface \
-                             declaration: invalid type: integer `2`, expected a sequence"
-                        .into(),
-                }),
-            ),
-        );
-        refresh.rebuild(&mut state);
-
-        let error = state
-            .catalogue_error
-            .as_deref()
-            .expect("reported, not silent");
-        let says = crate::resource::CATALOG.t_args(
-            "store-system-update-needed",
-            &[("name", ui::i18n::ArgValue::Text(MAIN.into()))],
-        );
-        assert!(error.lines().any(|line| line == says), "{error}");
-        assert!(error.contains(MAIN), "{error}");
-        assert!(!error.contains("remote exception"), "{error}");
-        assert!(
-            state
-                .unanswered_repositories
-                .iter()
-                .any(|name| name == MAIN),
-            "the repository is not shown as answered and empty"
-        );
-    }
-
-    /// The Store's state follows the host's typed refusal alone: the same
-    /// refusal with any wording of its detail, or with none, reads the same,
-    /// and a failure whose text merely mentions a refusal is not one.
-    #[test]
-    fn a_refusal_reads_the_same_whatever_its_detail_says() {
-        crate::resource::CATALOG.ensure();
-        let state_after = |error: CatalogueError| {
-            let (mut state, mut refresh) = refresh_with_bundled_mail();
-            refresh.apply(&mut state, Response::Native(main_registry(), Err(error)));
-            refresh.rebuild(&mut state);
-            (state.catalogue_error, state.expired_repositories)
-        };
-        for refusal in [
-            Refusal::SystemUpdateNeeded,
-            Refusal::Expired,
-            Refusal::TimedOut,
-        ] {
-            let states: Vec<_> = [
-                "",
-                "the declaration is unreadable",
-                "command timed out after 8000 ms",
-                "[expired-catalogue] Failed: remote exception: something else entirely",
-            ]
-            .into_iter()
-            .map(|detail| {
-                state_after(CatalogueError::Refused {
-                    refusal,
-                    detail: detail.into(),
-                })
-            })
-            .collect();
+                .expect("reported, not silent");
+            let says = crate::resource::CATALOG.t_args(
+                "store-system-update-needed",
+                &[("name", ui::i18n::ArgValue::Text(MAIN.into()))],
+            );
+            assert!(error.lines().any(|line| line == says), "{error}");
+            assert!(error.contains(MAIN), "{error}");
+            assert!(!error.contains("remote exception"), "{error}");
             assert!(
-                states.windows(2).all(|pair| pair[0] == pair[1]),
-                "{refusal:?}: {states:?}"
+                state
+                    .unanswered_repositories
+                    .iter()
+                    .any(|name| name == MAIN),
+                "the repository is not shown as answered and empty"
             );
         }
-        let (error, expired) = state_after(CatalogueError::Failed(
-            "[expired-catalogue] this system needs an update to read app repositories: \
+
+        phase a_refusal_reads_the_same_whatever_its_detail_says;
+        // The Store's state follows the host's typed refusal alone: the same
+        // refusal with any wording of its detail, or with none, reads the same,
+        // and a failure whose text merely mentions a refusal is not one.
+        {
+            crate::resource::CATALOG.ensure();
+            let state_after = |error: CatalogueError| {
+                let (mut state, mut refresh) = refresh_with_bundled_mail();
+                refresh.apply(&mut state, Response::Native(main_registry(), Err(error)));
+                refresh.rebuild(&mut state);
+                (state.catalogue_error, state.expired_repositories)
+            };
+            for refusal in [
+                Refusal::SystemUpdateNeeded,
+                Refusal::Expired,
+                Refusal::TimedOut,
+            ] {
+                let states: Vec<_> = [
+                    "",
+                    "the declaration is unreadable",
+                    "command timed out after 8000 ms",
+                    "[expired-catalogue] Failed: remote exception: something else entirely",
+                ]
+                .into_iter()
+                .map(|detail| {
+                    state_after(CatalogueError::Refused {
+                        refusal,
+                        detail: detail.into(),
+                    })
+                })
+                .collect();
+                assert!(
+                    states.windows(2).all(|pair| pair[0] == pair[1]),
+                    "{refusal:?}: {states:?}"
+                );
+            }
+            let (error, expired) = state_after(CatalogueError::Failed(
+                "[expired-catalogue] this system needs an update to read app repositories: \
              command timed out after 8000 ms"
-                .into(),
-        ));
-        assert!(expired.is_empty());
-        let error = error.unwrap();
-        for refused in ["store-system-update-needed", "store-repository-expired"] {
-            let says = crate::resource::CATALOG
-                .t_args(refused, &[("name", ui::i18n::ArgValue::Text(MAIN.into()))]);
-            assert!(!error.lines().any(|line| line == says), "{error}");
+                    .into(),
+            ));
+            assert!(expired.is_empty());
+            let error = error.unwrap();
+            for refused in ["store-system-update-needed", "store-repository-expired"] {
+                let says = crate::resource::CATALOG
+                    .t_args(refused, &[("name", ui::i18n::ArgValue::Text(MAIN.into()))]);
+                assert!(!error.lines().any(|line| line == says), "{error}");
+            }
+        }
+
+        phase a_refusal_crosses_the_wire_typed_whatever_its_detail_says;
+        // The refusal crosses the wire typed: whatever the host's detail says,
+        // the Store's pending read gets the refusal, and the same state follows.
+        {
+            crate::resource::CATALOG.ensure();
+            let mut seen = Vec::new();
+            for detail in [
+                "",
+                "declaration unreadable",
+                "Failed: remote exception: timed out",
+            ] {
+                let (service, connection) = app_host::testing::ConnectedService::start(RefusingHost(
+                    app_host::client::Refusal::SystemUpdateNeeded,
+                    detail,
+                ))
+                .unwrap();
+                let client = app_host::client::BlockingClient::from_connected_fd(connection).unwrap();
+                let error = client.registry_catalogue(MAIN).unwrap_err();
+                assert_eq!(
+                    error.refusal(),
+                    Some(Refusal::SystemUpdateNeeded),
+                    "{error}"
+                );
+                let (mut state, mut refresh) = refresh_with_bundled_mail();
+                refresh.apply(&mut state, Response::Native(main_registry(), Err(error)));
+                refresh.rebuild(&mut state);
+                seen.push(state.catalogue_error);
+                drop(client);
+                service.shutdown().unwrap();
+            }
+            assert!(seen.windows(2).all(|pair| pair[0] == pair[1]), "{seen:?}");
+        }
+
+        phase an_expired_catalogue_is_reported_as_expired;
+        {
+            let (mut state, mut refresh) = refresh_with_bundled_mail();
+            let error = CatalogueError::Refused {
+                refusal: Refusal::Expired,
+                detail: "the repository's catalogue expired at 1792587897 (Unix time)".into(),
+            };
+            refresh.apply(&mut state, Response::Native(main_registry(), Err(error)));
+            refresh.rebuild(&mut state);
+            assert_eq!(state.expired_repositories, [MAIN]);
+            // Reported in the Store's words (the visible copy is pinned by
+            // app::tests::an_expired_catalogue_is_named_as_expired_not_as_unreachable),
+            // never as the host's raw text.
+            let reported = state.catalogue_error.as_deref().unwrap();
+            assert!(!reported.contains("1792587897"), "{reported}");
+            assert!(!reported.contains("Could not load"), "{reported}");
+
+            // Any other failure is not called expired.
+            let (mut state, mut refresh) = refresh_with_bundled_mail();
+            refresh.apply(
+                &mut state,
+                Response::Native(main_registry(), Err("error sending request".into())),
+            );
+            refresh.rebuild(&mut state);
+            assert!(state.expired_repositories.is_empty());
         }
     }
 
@@ -962,170 +1139,5 @@ mod tests {
                 other => app_host::testing::refuse(&other),
             })
         }
-    }
-
-    /// The refusal crosses the wire typed: whatever the host's detail says,
-    /// the Store's pending read gets the refusal, and the same state follows.
-    #[test]
-    fn a_refusal_crosses_the_wire_typed_whatever_its_detail_says() {
-        crate::resource::CATALOG.ensure();
-        let mut seen = Vec::new();
-        for detail in [
-            "",
-            "declaration unreadable",
-            "Failed: remote exception: timed out",
-        ] {
-            let (service, connection) = app_host::testing::ConnectedService::start(RefusingHost(
-                app_host::client::Refusal::SystemUpdateNeeded,
-                detail,
-            ))
-            .unwrap();
-            let client = app_host::client::BlockingClient::from_connected_fd(connection).unwrap();
-            let error = client.registry_catalogue(MAIN).unwrap_err();
-            assert_eq!(
-                error.refusal(),
-                Some(Refusal::SystemUpdateNeeded),
-                "{error}"
-            );
-            let (mut state, mut refresh) = refresh_with_bundled_mail();
-            refresh.apply(&mut state, Response::Native(main_registry(), Err(error)));
-            refresh.rebuild(&mut state);
-            seen.push(state.catalogue_error);
-            drop(client);
-            service.shutdown().unwrap();
-        }
-        assert!(seen.windows(2).all(|pair| pair[0] == pair[1]), "{seen:?}");
-    }
-
-    #[test]
-    fn an_expired_catalogue_is_reported_as_expired() {
-        let (mut state, mut refresh) = refresh_with_bundled_mail();
-        let error = CatalogueError::Refused {
-            refusal: Refusal::Expired,
-            detail: "the repository's catalogue expired at 1792587897 (Unix time)".into(),
-        };
-        refresh.apply(&mut state, Response::Native(main_registry(), Err(error)));
-        refresh.rebuild(&mut state);
-        assert_eq!(state.expired_repositories, [MAIN]);
-        // Reported in the Store's words (the visible copy is pinned by
-        // app::tests::an_expired_catalogue_is_named_as_expired_not_as_unreachable),
-        // never as the host's raw text.
-        let reported = state.catalogue_error.as_deref().unwrap();
-        assert!(!reported.contains("1792587897"), "{reported}");
-        assert!(!reported.contains("Could not load"), "{reported}");
-
-        // Any other failure is not called expired.
-        let (mut state, mut refresh) = refresh_with_bundled_mail();
-        refresh.apply(
-            &mut state,
-            Response::Native(main_registry(), Err("error sending request".into())),
-        );
-        refresh.rebuild(&mut state);
-        assert!(state.expired_repositories.is_empty());
-    }
-
-    #[test]
-    fn a_verified_catalogue_fills_the_details_and_outranks_the_stored_one() {
-        let (mut state, mut refresh) = refresh_with_bundled_mail();
-        refresh.apply(
-            &mut state,
-            Response::Native(main_registry(), Ok(catalogue_with_mail("0.6.0"))),
-        );
-        // A stored catalogue answering late must not replace the fresh one.
-        refresh.apply(
-            &mut state,
-            Response::LastVerified(main_registry(), Ok(catalogue_with_mail("0.5.0"))),
-        );
-        refresh.rebuild(&mut state);
-
-        let item = mail(&state);
-        assert_eq!(item.name, "Mail");
-        assert_eq!(item.description, "Read and write email.");
-        assert_eq!(item.latest_version(), "0.6.0");
-        assert!(state.unanswered_repositories.is_empty());
-        assert!(details(&state)["detail"].get("notice").is_none());
-    }
-
-    #[test]
-    fn installed_flatpak_survives_native_name_collision_and_remains_selected() {
-        let mut native = super::super::tests::item("so.tilo.editor", "Editor");
-        native.installed = crate::InstalledState::Installed {
-            version: "1".into(),
-            available: "1".into(),
-            pinned: false,
-            user_managed: false,
-        };
-        let mut state = super::super::tests::state_with_items(
-            vec![native],
-            crate::search::StoreDirectory::default(),
-        );
-        let mut refresh = Refresh::start(&state, None);
-        refresh.apply(
-            &mut state,
-            Response::Status(Ok(FlatpakStatus {
-                available: true,
-                installed: "org.example.Editor\t2.0\tflathub\tuser\n".into(),
-                remotes: concat!(
-                    "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\n",
-                    "flathub\thttps://dl.flathub.org/repo/\tFlathub\tuser\n",
-                )
-                .into(),
-            })),
-        );
-        for remote in state.remotes.clone() {
-            refresh.apply(
-                &mut state,
-                Response::Flatpak(
-                    remote,
-                    Ok("org.example.Editor\tEditor\tEdit documents\t2.0\tstable\tflathub\n".into()),
-                ),
-            );
-        }
-        refresh.rebuild(&mut state);
-        let item = state.base_items.iter().find(|item| item.id == "org.example.Editor")
-            .expect("the actually installed account app must not disappear behind a native name collision");
-        assert!(
-            matches!(&item.installed, crate::InstalledState::Installed { version, user_managed: true, .. } if version == "2.0")
-        );
-        assert_eq!(item.action_kind(true), crate::ActionKind::FlatpakOpen);
-        assert_eq!(state.remotes.len(), 2);
-        let mut app = crate::app::StoreState::new();
-        app.set_items(state.base_items);
-        app.set_flatpak_available(true);
-        app.admit(crate::StoreEffect::SetSearch {
-            query: "org.example.Editor".into(),
-        })
-        .unwrap();
-        app.admit(crate::StoreEffect::ShowDetails {
-            app: "org.example.Editor".into(),
-        })
-        .unwrap();
-        let exact = app.inspect_catalogue(Some("org.example.Editor")).unwrap();
-        assert_eq!(exact["matching"], 1);
-        assert_eq!(exact["selected_app"], "org.example.Editor");
-        assert_eq!(exact["detail"]["installed"], true);
-        assert_eq!(exact["detail"]["name"], "Editor");
-        app.admit(crate::StoreEffect::SetSearch {
-            query: "Editor".into(),
-        })
-        .unwrap();
-        assert!(
-            app.visible_items()
-                .iter()
-                .any(|item| item.id == "org.example.Editor")
-        );
-        app.admit(crate::StoreEffect::SetSearch {
-            query: String::new(),
-        })
-        .unwrap();
-        app.admit(crate::StoreEffect::ShowView {
-            view: "installed".into(),
-        })
-        .unwrap();
-        assert!(
-            app.visible_items()
-                .iter()
-                .any(|item| item.id == "org.example.Editor")
-        );
     }
 }

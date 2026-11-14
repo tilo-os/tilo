@@ -733,169 +733,173 @@ mod tests {
         }
     }
 
-    #[test]
-    fn item_actions_follow_source_and_install_state() {
+    tilo_test_env::scenario! {
+        fn items_offer_actions_and_rank_by_source_and_install_state;
+
+        phase item_actions_follow_source_and_install_state;
         {
-            // Tilo not-installed → Open (fetch-on-demand + run), with Keep
-            // on this device beside it as the opt-in.
-            let not_installed = tilo_item("Notes", InstalledState::Not, "0.1.0");
-            assert_eq!(not_installed.action_kind(true), ActionKind::Open);
-            assert_eq!(not_installed.pin_action(), Some(ActionKind::MarkInstalled));
+            {
+                // Tilo not-installed → Open (fetch-on-demand + run), with Keep
+                // on this device beside it as the opt-in.
+                let not_installed = tilo_item("Notes", InstalledState::Not, "0.1.0");
+                assert_eq!(not_installed.action_kind(true), ActionKind::Open);
+                assert_eq!(not_installed.pin_action(), Some(ActionKind::MarkInstalled));
 
-            let up_to_date = tilo_item("Notes", qinstalled("0.1.0", "0.1.0", false), "0.1.0");
-            assert_eq!(up_to_date.action_kind(true), ActionKind::Open);
-            assert_eq!(up_to_date.pin_action(), Some(ActionKind::MarkInstalled));
-            assert!(up_to_date.offers_remove());
+                let up_to_date = tilo_item("Notes", qinstalled("0.1.0", "0.1.0", false), "0.1.0");
+                assert_eq!(up_to_date.action_kind(true), ActionKind::Open);
+                assert_eq!(up_to_date.pin_action(), Some(ActionKind::MarkInstalled));
+                assert!(up_to_date.offers_remove());
 
-            let stale = tilo_item("Notes", qinstalled("0.1.0", "0.2.0", false), "0.2.0");
-            assert_eq!(stale.action_kind(true), ActionKind::Update);
+                let stale = tilo_item("Notes", qinstalled("0.1.0", "0.2.0", false), "0.2.0");
+                assert_eq!(stale.action_kind(true), ActionKind::Update);
 
-            let pinned = tilo_item("Notes", qinstalled("0.1.0", "0.1.0", true), "0.1.0");
-            assert_eq!(pinned.pin_action(), Some(ActionKind::Unmark));
+                let pinned = tilo_item("Notes", qinstalled("0.1.0", "0.1.0", true), "0.1.0");
+                assert_eq!(pinned.pin_action(), Some(ActionKind::Unmark));
 
-            let flatpak_not_installed = flatpak_item("Chess", InstalledState::Not);
-            assert_eq!(
-                flatpak_not_installed.action_kind(true),
-                ActionKind::FlatpakInstall
-            );
-            assert_eq!(
-                flatpak_not_installed.action_kind(false),
-                ActionKind::NeedsFlatpakHost
-            );
-            assert!(flatpak_not_installed.pin_action().is_none());
+                let flatpak_not_installed = flatpak_item("Chess", InstalledState::Not);
+                assert_eq!(
+                    flatpak_not_installed.action_kind(true),
+                    ActionKind::FlatpakInstall
+                );
+                assert_eq!(
+                    flatpak_not_installed.action_kind(false),
+                    ActionKind::NeedsFlatpakHost
+                );
+                assert!(flatpak_not_installed.pin_action().is_none());
 
-            let flatpak_installed = flatpak_item("Chess", qinstalled("1.0", "1.0", false));
-            assert_eq!(
-                flatpak_installed.action_kind(true),
-                ActionKind::FlatpakOpen,
-                "an installed app's primary action is to open it — a store \
+                let flatpak_installed = flatpak_item("Chess", qinstalled("1.0", "1.0", false));
+                assert_eq!(
+                    flatpak_installed.action_kind(true),
+                    ActionKind::FlatpakOpen,
+                    "an installed app's primary action is to open it — a store \
              that can install a Flatpak and then not start it is not \
              finished"
-            );
+                );
 
-            let update = flatpak_item("Chess", qinstalled("0.9", "1.0", false));
-            assert_eq!(update.action_kind(true), ActionKind::FlatpakUpdate);
-            assert_eq!(
-                flatpak_installed.remove_action(),
-                Some(ActionKind::FlatpakRemove),
-                "removal moves to the secondary slot, and is Flatpak's own \
+                let update = flatpak_item("Chess", qinstalled("0.9", "1.0", false));
+                assert_eq!(update.action_kind(true), ActionKind::FlatpakUpdate);
+                assert_eq!(
+                    flatpak_installed.remove_action(),
+                    Some(ActionKind::FlatpakRemove),
+                    "removal moves to the secondary slot, and is Flatpak's own \
              removal rather than tilo-install's"
-            );
+                );
+            }
+
+            {
+                assert_eq!(ActionKind::Open.progress_label(), "Starting");
+                assert_eq!(ActionKind::FlatpakInstall.progress_label(), "Installing");
+                assert_eq!(ActionKind::FlatpakRemove.progress_label(), "Removing");
+            }
+
+            // Case `each_source_names_its_own_removal`.
+            // The two sources remove differently, and the item is what knows
+            // which. Routing a Flatpak through `tilo-install uninstall` would
+            // report "no such package installed" and leave it there.
+            {
+                let q = tilo_item("Notes", qinstalled("1", "1", false), "1");
+                assert_eq!(q.remove_action(), Some(ActionKind::Remove));
+                let f = flatpak_item("Chess", qinstalled("1", "1", false));
+                assert_eq!(f.remove_action(), Some(ActionKind::FlatpakRemove));
+                assert_eq!(
+                    tilo_item("Notes", InstalledState::Not, "1").remove_action(),
+                    None
+                );
+                assert_eq!(
+                    flatpak_item("Chess", InstalledState::Not).remove_action(),
+                    None
+                );
+            }
+
+            {
+                let not_installed = tilo_item("Notes", InstalledState::Not, "1");
+                assert!(not_installed.allows_action(ActionKind::Open, true));
+                assert!(!not_installed.allows_action(ActionKind::Remove, true));
+                assert!(
+                    not_installed.allows_action(ActionKind::MarkInstalled, true),
+                    "keeping an app not downloaded yet downloads it to keep"
+                );
+
+                let cached = tilo_item("Notes", qinstalled("1", "1", false), "1");
+                assert!(cached.allows_action(ActionKind::Open, true));
+                assert!(cached.allows_action(ActionKind::Remove, true));
+                assert!(cached.allows_action(ActionKind::MarkInstalled, true));
+                assert!(!cached.allows_action(ActionKind::Update, true));
+            }
+
+            {
+                let same = qinstalled("1.0.0", "1.0.0", false);
+                assert!(!same.update_available());
+                let newer = qinstalled("0.1.0", "0.1.62530+gabc", false);
+                assert!(newer.update_available());
+                let older = qinstalled("0.1.62530+gabc", "0.1.0", false);
+                assert!(
+                    !older.update_available(),
+                    "a catalogue behind the system image offers no downgrade"
+                );
+                assert!(!qinstalled("1.0.0", "", false).update_available());
+                assert!(!InstalledState::Not.update_available());
+                let stale = tilo_item("Notes", qinstalled("0.1.0", "0.2.0", false), "0.2.0");
+                let current = tilo_item("Clocks", qinstalled("0.2.0", "0.2.0", false), "0.2.0");
+                assert!(SourceFilter::Updates.accepts(&stale));
+                assert!(!SourceFilter::Updates.accepts(&current));
+                assert_eq!(SourceFilter::Updates.label(), "Updates");
+            }
         }
 
+        phase catalogue_ranking_search_and_source_filters;
         {
-            assert_eq!(ActionKind::Open.progress_label(), "Starting");
-            assert_eq!(ActionKind::FlatpakInstall.progress_label(), "Installing");
-            assert_eq!(ActionKind::FlatpakRemove.progress_label(), "Removing");
-        }
+            {
+                let not = tilo_item("A", InstalledState::Not, "1");
+                let cached = tilo_item("B", qinstalled("1", "1", false), "1");
+                let pinned = tilo_item("C", qinstalled("1", "1", true), "1");
+                assert!(pinned.install_rank() > cached.install_rank());
+                assert!(cached.install_rank() > not.install_rank());
+            }
 
-        // Case `each_source_names_its_own_removal`.
-        // The two sources remove differently, and the item is what knows
-        // which. Routing a Flatpak through `tilo-install uninstall` would
-        // report "no such package installed" and leave it there.
-        {
-            let q = tilo_item("Notes", qinstalled("1", "1", false), "1");
-            assert_eq!(q.remove_action(), Some(ActionKind::Remove));
-            let f = flatpak_item("Chess", qinstalled("1", "1", false));
-            assert_eq!(f.remove_action(), Some(ActionKind::FlatpakRemove));
-            assert_eq!(
-                tilo_item("Notes", InstalledState::Not, "1").remove_action(),
-                None
-            );
-            assert_eq!(
-                flatpak_item("Chess", InstalledState::Not).remove_action(),
-                None
-            );
-        }
+            {
+                let n = tilo_item("Notes", InstalledState::Not, "0.1.0");
+                let index = ListIndex::default();
+                let matches = |needle: &str| relevance(&index, needle, &[&n])[0].is_some();
+                assert!(matches(""));
+                assert!(matches("Notes"));
+                assert!(matches("notes"));
+                assert!(matches("some notes app"));
+                assert!(!matches("terminal"));
+            }
 
-        {
-            let not_installed = tilo_item("Notes", InstalledState::Not, "1");
-            assert!(not_installed.allows_action(ActionKind::Open, true));
-            assert!(!not_installed.allows_action(ActionKind::Remove, true));
-            assert!(
-                not_installed.allows_action(ActionKind::MarkInstalled, true),
-                "keeping an app not downloaded yet downloads it to keep"
-            );
+            {
+                let mut n = tilo_item("Notes", InstalledState::Not, "0.1.0");
+                n.description = "great little app".into();
+                let index = ListIndex::default();
+                let rank = |needle: &str| relevance(&index, needle, &[&n])[0];
+                let prefix = rank("no");
+                let mid = rank("otes");
+                let desc = rank("little");
+                assert!(mid.is_some() && desc.is_some());
+                assert!(
+                    prefix > mid,
+                    "prefix ({prefix:?}) should outrank mid-name ({mid:?})"
+                );
+                assert!(
+                    prefix > desc,
+                    "prefix ({prefix:?}) should outrank description ({desc:?})"
+                );
+            }
 
-            let cached = tilo_item("Notes", qinstalled("1", "1", false), "1");
-            assert!(cached.allows_action(ActionKind::Open, true));
-            assert!(cached.allows_action(ActionKind::Remove, true));
-            assert!(cached.allows_action(ActionKind::MarkInstalled, true));
-            assert!(!cached.allows_action(ActionKind::Update, true));
-        }
-
-        {
-            let same = qinstalled("1.0.0", "1.0.0", false);
-            assert!(!same.update_available());
-            let newer = qinstalled("0.1.0", "0.1.62530+gabc", false);
-            assert!(newer.update_available());
-            let older = qinstalled("0.1.62530+gabc", "0.1.0", false);
-            assert!(
-                !older.update_available(),
-                "a catalogue behind the system image offers no downgrade"
-            );
-            assert!(!qinstalled("1.0.0", "", false).update_available());
-            assert!(!InstalledState::Not.update_available());
-            let stale = tilo_item("Notes", qinstalled("0.1.0", "0.2.0", false), "0.2.0");
-            let current = tilo_item("Clocks", qinstalled("0.2.0", "0.2.0", false), "0.2.0");
-            assert!(SourceFilter::Updates.accepts(&stale));
-            assert!(!SourceFilter::Updates.accepts(&current));
-            assert_eq!(SourceFilter::Updates.label(), "Updates");
-        }
-    }
-
-    #[test]
-    fn catalogue_ranking_search_and_source_filters() {
-        {
-            let not = tilo_item("A", InstalledState::Not, "1");
-            let cached = tilo_item("B", qinstalled("1", "1", false), "1");
-            let pinned = tilo_item("C", qinstalled("1", "1", true), "1");
-            assert!(pinned.install_rank() > cached.install_rank());
-            assert!(cached.install_rank() > not.install_rank());
-        }
-
-        {
-            let n = tilo_item("Notes", InstalledState::Not, "0.1.0");
-            let index = ListIndex::default();
-            let matches = |needle: &str| relevance(&index, needle, &[&n])[0].is_some();
-            assert!(matches(""));
-            assert!(matches("Notes"));
-            assert!(matches("notes"));
-            assert!(matches("some notes app"));
-            assert!(!matches("terminal"));
-        }
-
-        {
-            let mut n = tilo_item("Notes", InstalledState::Not, "0.1.0");
-            n.description = "great little app".into();
-            let index = ListIndex::default();
-            let rank = |needle: &str| relevance(&index, needle, &[&n])[0];
-            let prefix = rank("no");
-            let mid = rank("otes");
-            let desc = rank("little");
-            assert!(mid.is_some() && desc.is_some());
-            assert!(
-                prefix > mid,
-                "prefix ({prefix:?}) should outrank mid-name ({mid:?})"
-            );
-            assert!(
-                prefix > desc,
-                "prefix ({prefix:?}) should outrank description ({desc:?})"
-            );
-        }
-
-        {
-            let q = tilo_item("A", InstalledState::Not, "1");
-            let f = flatpak_item("B", InstalledState::Not);
-            let installed_q = tilo_item("C", qinstalled("1", "1", false), "1");
-            assert!(SourceFilter::All.accepts(&q));
-            assert!(SourceFilter::All.accepts(&f));
-            assert!(SourceFilter::Tilo.accepts(&q));
-            assert!(!SourceFilter::Tilo.accepts(&f));
-            assert!(SourceFilter::Flatpak.accepts(&f));
-            assert!(!SourceFilter::Flatpak.accepts(&q));
-            assert!(SourceFilter::Installed.accepts(&installed_q));
-            assert!(!SourceFilter::Installed.accepts(&q));
+            {
+                let q = tilo_item("A", InstalledState::Not, "1");
+                let f = flatpak_item("B", InstalledState::Not);
+                let installed_q = tilo_item("C", qinstalled("1", "1", false), "1");
+                assert!(SourceFilter::All.accepts(&q));
+                assert!(SourceFilter::All.accepts(&f));
+                assert!(SourceFilter::Tilo.accepts(&q));
+                assert!(!SourceFilter::Tilo.accepts(&f));
+                assert!(SourceFilter::Flatpak.accepts(&f));
+                assert!(!SourceFilter::Flatpak.accepts(&q));
+                assert!(SourceFilter::Installed.accepts(&installed_q));
+                assert!(!SourceFilter::Installed.accepts(&q));
+            }
         }
     }
 }

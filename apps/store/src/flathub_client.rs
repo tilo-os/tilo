@@ -494,201 +494,205 @@ pub fn list_remotes(output: &str) -> Vec<Remote> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn metadata_refresh_preserves_only_the_same_enabled_source_failure() {
-        let rows = "fedora\thttps://registry.example/repo\tFedora\tsystem\n";
-        let mut old = list_remotes(rows);
-        old[0].catalogue_error = Some("Unable to load summary".into());
-        assert_eq!(
-            refreshed_remotes(rows, &old)[0].catalogue_error,
-            old[0].catalogue_error
-        );
-        for changed in [
-            "fedora\thttps://other.example/repo\tFedora\tsystem\n",
-            "fedora\thttps://registry.example/repo\tFedora\tuser\n",
-            "fedora\thttps://registry.example/repo\tFedora\tsystem,disabled\n",
-        ] {
-            assert!(
-                refreshed_remotes(changed, &old)[0]
-                    .catalogue_error
-                    .is_none()
-            );
-        }
-        assert!(refreshed_remotes("", &old).is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn the_flathub_client_reads_remotes_installs_and_published_shapes;
 
-    #[test]
-    fn repository_timeout_explains_retry_without_rpc_internals() {
-        crate::resource::CATALOG.ensure();
-        let remote = Remote {
-            name: "fedora".into(),
-            url: "https://example.invalid/fedora".into(),
-            title: "Fedora Flatpaks".into(),
-            disabled: false,
-            user_managed: false,
-            catalogue_error: None,
-        };
-        let message = remote_error(
-            &remote,
-            &app_host::client::CatalogueError::Refused {
-                refusal: app_host::client::Refusal::TimedOut,
-                detail: "Flatpak repository query: command timed out after 8000 ms".into(),
-            },
-        );
-        // Only the refusal decides: any wording of the detail reads the same.
-        for detail in ["", "it took too long", "Flatpak repository query timed out"] {
+        phase metadata_refresh_preserves_only_the_same_enabled_source_failure;
+        {
+            let rows = "fedora\thttps://registry.example/repo\tFedora\tsystem\n";
+            let mut old = list_remotes(rows);
+            old[0].catalogue_error = Some("Unable to load summary".into());
             assert_eq!(
+                refreshed_remotes(rows, &old)[0].catalogue_error,
+                old[0].catalogue_error
+            );
+            for changed in [
+                "fedora\thttps://other.example/repo\tFedora\tsystem\n",
+                "fedora\thttps://registry.example/repo\tFedora\tuser\n",
+                "fedora\thttps://registry.example/repo\tFedora\tsystem,disabled\n",
+            ] {
+                assert!(
+                    refreshed_remotes(changed, &old)[0]
+                        .catalogue_error
+                        .is_none()
+                );
+            }
+            assert!(refreshed_remotes("", &old).is_empty());
+        }
+
+        phase repository_timeout_explains_retry_without_rpc_internals;
+        {
+            crate::resource::CATALOG.ensure();
+            let remote = Remote {
+                name: "fedora".into(),
+                url: "https://example.invalid/fedora".into(),
+                title: "Fedora Flatpaks".into(),
+                disabled: false,
+                user_managed: false,
+                catalogue_error: None,
+            };
+            let message = remote_error(
+                &remote,
+                &app_host::client::CatalogueError::Refused {
+                    refusal: app_host::client::Refusal::TimedOut,
+                    detail: "Flatpak repository query: command timed out after 8000 ms".into(),
+                },
+            );
+            // Only the refusal decides: any wording of the detail reads the same.
+            for detail in ["", "it took too long", "Flatpak repository query timed out"] {
+                assert_eq!(
+                    remote_error(
+                        &remote,
+                        &app_host::client::CatalogueError::Refused {
+                            refusal: app_host::client::Refusal::TimedOut,
+                            detail: detail.into(),
+                        },
+                    ),
+                    message
+                );
+            }
+            // And text alone never makes a refusal.
+            assert_ne!(
                 remote_error(
                     &remote,
-                    &app_host::client::CatalogueError::Refused {
-                        refusal: app_host::client::Refusal::TimedOut,
-                        detail: detail.into(),
-                    },
+                    &app_host::client::CatalogueError::Failed(
+                        "command timed out after 8000 ms GenerateOciSummary".into()
+                    ),
                 ),
                 message
             );
-        }
-        // And text alone never makes a refusal.
-        assert_ne!(
-            remote_error(
-                &remote,
-                &app_host::client::CatalogueError::Failed(
-                    "command timed out after 8000 ms GenerateOciSummary".into()
-                ),
-            ),
-            message
-        );
-        assert_eq!(
-            message,
-            crate::resource::CATALOG.t_args(
-                "store-repository-timeout",
-                &[("name", ui::i18n::ArgValue::Text("Fedora Flatpaks".into()))],
-            )
-        );
-        assert!(message.contains("Fedora Flatpaks"));
-        assert!(!message.contains("remote exception"));
-        assert!(!message.contains("8000"));
-    }
-
-    #[test]
-    fn installed_account_copy_wins_over_device_copy_in_either_row_order() {
-        for rows in [
-            "org.example.Editor\t1.0\tdevice-tools\tsystem\norg.example.Editor\t2.0\ttools\tuser\n",
-            "org.example.Editor\t2.0\ttools\tuser\norg.example.Editor\t1.0\tdevice-tools\tsystem\n",
-        ] {
             assert_eq!(
-                installed_flatpaks(rows),
-                vec![("org.example.Editor".into(), "2.0".into())]
+                message,
+                crate::resource::CATALOG.t_args(
+                    "store-repository-timeout",
+                    &[("name", ui::i18n::ArgValue::Text("Fedora Flatpaks".into()))],
+                )
             );
-            assert_eq!(
-                installed_origins(rows).get("org.example.Editor"),
-                Some(&("tools".into(), true))
-            );
+            assert!(message.contains("Fedora Flatpaks"));
+            assert!(!message.contains("remote exception"));
+            assert!(!message.contains("8000"));
         }
-    }
 
-    #[test]
-    fn popular_request_uses_current_collection_and_canonical_app_ids() {
-        use std::io::{Read as _, Write as _};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("FLATHUB_API_BASE", format!("http://{address}/api/v2"));
-        env.set(
-            "TILO_STORE_HTTP_TIMEOUT",
-            tilo_test_env::hang_bound().as_secs().to_string(),
-        );
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("collection request");
-            stream
-                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+        phase installed_account_copy_wins_over_device_copy_in_either_row_order;
+        {
+            for rows in [
+                "org.example.Editor\t1.0\tdevice-tools\tsystem\norg.example.Editor\t2.0\ttools\tuser\n",
+                "org.example.Editor\t2.0\ttools\tuser\norg.example.Editor\t1.0\tdevice-tools\tsystem\n",
+            ] {
+                assert_eq!(
+                    installed_flatpaks(rows),
+                    vec![("org.example.Editor".into(), "2.0".into())]
+                );
+                assert_eq!(
+                    installed_origins(rows).get("org.example.Editor"),
+                    Some(&("tools".into(), true))
+                );
+            }
+        }
+
+        phase popular_request_uses_current_collection_and_canonical_app_ids;
+        {
+            use std::io::{Read as _, Write as _};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("FLATHUB_API_BASE", format!("http://{address}/api/v2"));
+            env.set(
+                "TILO_STORE_HTTP_TIMEOUT",
+                tilo_test_env::hang_bound().as_secs().to_string(),
+            );
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("collection request");
+                stream
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                    .unwrap();
+                let mut buffer = [0; 4096];
+                let size = stream.read(&mut buffer).unwrap();
+                let request = String::from_utf8_lossy(&buffer[..size]).into_owned();
+                let body = r#"{"hits":[{"id":"org_gnome_Calculator","app_id":"org.gnome.Calculator","name":"Calculator","summary":"Solve equations","main_categories":["Utility"]}]}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
                 .unwrap();
-            let mut buffer = [0; 4096];
-            let size = stream.read(&mut buffer).unwrap();
-            let request = String::from_utf8_lossy(&buffer[..size]).into_owned();
-            let body = r#"{"hits":[{"id":"org_gnome_Calculator","app_id":"org.gnome.Calculator","name":"Calculator","summary":"Solve equations","main_categories":["Utility"]}]}"#;
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
+                request
+            });
+            let rows = fetch_collection("popular", 200, "en").unwrap();
+            let request = server.join().unwrap();
+            assert!(
+                request.starts_with(
+                    "GET /api/v2/collection/popular?page=1&per_page=200&locale=en HTTP/1.1"
+                ),
+                "{request}"
+            );
+            assert_eq!(rows[0].app_id, "org.gnome.Calculator");
+            let item = crate::sources::flathub_record_to_item(&rows[0], &[]);
+            assert_eq!(item.name, "Calculator");
+            assert_eq!(item.tagline, "Solve equations");
+            assert_eq!(item.categories, vec!["Utility"]);
+        }
+
+        phase flathub_decoders_accept_published_shapes_and_remotes_stay_bounded;
+        // Every Flathub search/detail response shape decodes; the remotes parser is bounded without a binary.
+        {
+            {
+                let out = decode_records(
+                r#"{"hits":[{"app_id":"org.example.App","name":"Example","summary":"Useful","main_categories":["Utility"]}]}"#,
             )
             .unwrap();
-            request
-        });
-        let rows = fetch_collection("popular", 200, "en").unwrap();
-        let request = server.join().unwrap();
-        assert!(
-            request.starts_with(
-                "GET /api/v2/collection/popular?page=1&per_page=200&locale=en HTTP/1.1"
-            ),
-            "{request}"
-        );
-        assert_eq!(rows[0].app_id, "org.gnome.Calculator");
-        let item = crate::sources::flathub_record_to_item(&rows[0], &[]);
-        assert_eq!(item.name, "Calculator");
-        assert_eq!(item.tagline, "Solve equations");
-        assert_eq!(item.categories, vec!["Utility"]);
-    }
+                assert_eq!(out[0].app_id, "org.example.App");
+                assert_eq!(out[0].categories[0].name, "Utility");
+            }
 
-    /// Every Flathub search/detail response shape decodes; the remotes parser is bounded without a binary.
-    #[test]
-    fn flathub_decoders_accept_published_shapes_and_remotes_stay_bounded() {
-        {
-            let out = decode_records(
-            r#"{"hits":[{"app_id":"org.example.App","name":"Example","summary":"Useful","main_categories":["Utility"]}]}"#,
-        )
-        .unwrap();
-            assert_eq!(out[0].app_id, "org.example.App");
-            assert_eq!(out[0].categories[0].name, "Utility");
+            {
+                let mut record = record_from_value(&serde_json::json!({
+                    "id": "placeholder",
+                    "name": "Example",
+                    "description": "Long description",
+                    "categories": ["Utility"],
+                    "releases": [{"version": "2.0"}],
+                    "screenshots": [{"url": "https://example.test/shot.png"}]
+                }))
+                .unwrap();
+                record.app_id = "org.example.App".into();
+                assert_eq!(record.current_release_version.as_deref(), Some("2.0"));
+                assert_eq!(record.screenshots.len(), 1);
+            }
+
+            // Collection IDs are search-index keys; only app_id is a Flatpak ref.
+            let current_collection = r#"{"hits":[{"id":"org_gnome_Calculator","app_id":"org.gnome.Calculator","name":"Calculator","summary":"Solve equations","icon":"https://dl.flathub.org/icon.png","main_categories":["Utility"]}],"page":1,"totalPages":1}"#;
+            let records = decode_records(current_collection).unwrap();
+            assert_eq!(records[0].app_id, "org.gnome.Calculator");
+            assert_eq!(records[0].summary, "Solve equations");
+            assert_eq!(records[0].categories[0].name, "Utility");
+
+            let architecture_rows = serde_json::json!({"hits": [
+                {"app_id": "org.example.Native", "arches": [std::env::consts::ARCH]},
+                {"app_id": "org.example.Foreign", "arches": ["different-device"]}
+            ]});
+            let rows = decode_records(&architecture_rows.to_string()).unwrap();
+            assert_eq!(
+                rows.iter()
+                    .map(|row| row.app_id.as_str())
+                    .collect::<Vec<_>>(),
+                ["org.example.Native", "org.example.Foreign"],
+                "an app built only for another processor is kept, not dropped"
+            );
+            assert_eq!(rows[0].arches, [std::env::consts::ARCH]);
+            assert_eq!(rows[1].arches, ["different-device"]);
+
+            let rows = list_remotes(
+                "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\nfedora\toci+https://registry.fedoraproject.org\tFedora\tsystem,disabled\n",
+            );
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].title, "Flathub");
+            assert!(!rows[0].disabled);
+            assert!(rows[1].disabled);
+            assert_eq!(
+                installed_flatpaks("org.gnome.Calculator\t48.0\n"),
+                vec![("org.gnome.Calculator".into(), "48.0".into())]
+            );
         }
-
-        {
-            let mut record = record_from_value(&serde_json::json!({
-                "id": "placeholder",
-                "name": "Example",
-                "description": "Long description",
-                "categories": ["Utility"],
-                "releases": [{"version": "2.0"}],
-                "screenshots": [{"url": "https://example.test/shot.png"}]
-            }))
-            .unwrap();
-            record.app_id = "org.example.App".into();
-            assert_eq!(record.current_release_version.as_deref(), Some("2.0"));
-            assert_eq!(record.screenshots.len(), 1);
-        }
-
-        // Collection IDs are search-index keys; only app_id is a Flatpak ref.
-        let current_collection = r#"{"hits":[{"id":"org_gnome_Calculator","app_id":"org.gnome.Calculator","name":"Calculator","summary":"Solve equations","icon":"https://dl.flathub.org/icon.png","main_categories":["Utility"]}],"page":1,"totalPages":1}"#;
-        let records = decode_records(current_collection).unwrap();
-        assert_eq!(records[0].app_id, "org.gnome.Calculator");
-        assert_eq!(records[0].summary, "Solve equations");
-        assert_eq!(records[0].categories[0].name, "Utility");
-
-        let architecture_rows = serde_json::json!({"hits": [
-            {"app_id": "org.example.Native", "arches": [std::env::consts::ARCH]},
-            {"app_id": "org.example.Foreign", "arches": ["different-device"]}
-        ]});
-        let rows = decode_records(&architecture_rows.to_string()).unwrap();
-        assert_eq!(
-            rows.iter()
-                .map(|row| row.app_id.as_str())
-                .collect::<Vec<_>>(),
-            ["org.example.Native", "org.example.Foreign"],
-            "an app built only for another processor is kept, not dropped"
-        );
-        assert_eq!(rows[0].arches, [std::env::consts::ARCH]);
-        assert_eq!(rows[1].arches, ["different-device"]);
-
-        let rows = list_remotes(
-            "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\nfedora\toci+https://registry.fedoraproject.org\tFedora\tsystem,disabled\n",
-        );
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].title, "Flathub");
-        assert!(!rows[0].disabled);
-        assert!(rows[1].disabled);
-        assert_eq!(
-            installed_flatpaks("org.gnome.Calculator\t48.0\n"),
-            vec![("org.gnome.Calculator".into(), "48.0".into())]
-        );
     }
 }

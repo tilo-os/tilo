@@ -575,43 +575,184 @@ pub(crate) mod tests {
         assert!(!item.allows_action(crate::ActionKind::FlatpakInstall, true));
     }
 
-    #[test]
-    fn tapp_versions_keep_their_runtime_pin_and_runtime_packages_offer_install() {
-        let mut entry = tilo_entry("so.tilo.runtime.chromium", "Chromium", "1.0.0", [1; 32]);
-        let runtime = "tilo-runtime/2026.10.23-chromium";
-        let version = &mut entry.versions[0];
-        version.tapp_mut().unwrap().target.runtime = Some(runtime.into());
-        let stored = tilo_version_to_store(version, version.tapp().unwrap());
-        assert_eq!(stored.runtime.as_deref(), Some(runtime));
-        let item = tilo_to_store_item(&verified(entry), "Tilo main", &[]);
-        assert!(item.bot.is_none());
-        assert_eq!(
-            item.action_kind(true),
-            crate::model::ActionKind::RuntimeInstall
-        );
-    }
+    tilo_test_env::scenario! {
+        fn catalogue_entries_become_store_items;
 
-    #[test]
-    fn native_catalogue_matches_cli_target_channel_and_version_selection() {
-        let mut entry = tilo_entry("so.tilo.notes", "Notes", "1.0.0", [1; 32]);
-        let mut foreign = entry.versions[0].clone();
-        foreign.version = "9.0.0".into();
-        foreign.tapp_mut().unwrap().target.architecture = "different-device".into();
-        let mut newest = entry.versions[0].clone();
-        newest.version = "2.0.0".into();
-        let mut prerelease = entry.versions[0].clone();
-        prerelease.version = "3.0.0-beta.1".into();
-        entry.versions = vec![foreign, entry.versions[0].clone(), prerelease, newest];
-        let verified = verified(entry);
-        let item = tilo_to_store_item(&verified, "Tilo main", &[]);
-        assert_eq!(item.latest_version(), "2.0.0");
-        assert_eq!(item.versions.len(), 2);
-        assert_eq!(
-            app_cli::entry_to_app(&verified, "Tilo main")
-                .unwrap()
-                .version,
-            item.latest_version()
-        );
+        phase tapp_versions_keep_their_runtime_pin_and_runtime_packages_offer_install;
+        {
+            let mut entry = tilo_entry("so.tilo.runtime.chromium", "Chromium", "1.0.0", [1; 32]);
+            let runtime = "tilo-runtime/2026.10.23-chromium";
+            let version = &mut entry.versions[0];
+            version.tapp_mut().unwrap().target.runtime = Some(runtime.into());
+            let stored = tilo_version_to_store(version, version.tapp().unwrap());
+            assert_eq!(stored.runtime.as_deref(), Some(runtime));
+            let item = tilo_to_store_item(&verified(entry), "Tilo main", &[]);
+            assert!(item.bot.is_none());
+            assert_eq!(
+                item.action_kind(true),
+                crate::model::ActionKind::RuntimeInstall
+            );
+        }
+
+        phase native_catalogue_matches_cli_target_channel_and_version_selection;
+        {
+            let mut entry = tilo_entry("so.tilo.notes", "Notes", "1.0.0", [1; 32]);
+            let mut foreign = entry.versions[0].clone();
+            foreign.version = "9.0.0".into();
+            foreign.tapp_mut().unwrap().target.architecture = "different-device".into();
+            let mut newest = entry.versions[0].clone();
+            newest.version = "2.0.0".into();
+            let mut prerelease = entry.versions[0].clone();
+            prerelease.version = "3.0.0-beta.1".into();
+            entry.versions = vec![foreign, entry.versions[0].clone(), prerelease, newest];
+            let verified = verified(entry);
+            let item = tilo_to_store_item(&verified, "Tilo main", &[]);
+            assert_eq!(item.latest_version(), "2.0.0");
+            assert_eq!(item.versions.len(), 2);
+            assert_eq!(
+                app_cli::entry_to_app(&verified, "Tilo main")
+                    .unwrap()
+                    .version,
+                item.latest_version()
+            );
+        }
+
+        phase a_bot_entry_becomes_a_bot_card_and_never_an_app;
+        {
+            let bot = app_cli::bots::CatalogueBot {
+                package_id: "so.tilo.bots.bridge".into(),
+                name: "Discord bridge".into(),
+                tagline: "Mirror a Discord server".into(),
+                description: "Bridges channels".into(),
+                icon_url: None,
+                publisher_pubkey_hex: "aa".repeat(32),
+                registry_name: "Tilo".into(),
+                version: "1.0.0".into(),
+                artifact: ui::registry::BotArtifact {
+                    program_url: format!("https://apps.tilo.so/blobs/{}", "ab".repeat(32)),
+                    program_blake3_hex: "ab".repeat(32),
+                    program_size_bytes: 10,
+                    requires: ui::registry::BotRequirements {
+                        connectors: vec![ui::registry::PackageRequirement {
+                            package_id: "so.tilo.discord".into(),
+                            min_version: "0.1.0".into(),
+                        }],
+                        apps: vec!["so.tilo.chat".into()],
+                        appearance: true,
+                        triggers: vec!["connector".into(), "record_changed".into()],
+                    },
+                },
+            };
+            let item = tilo_bot_to_store_item(&bot);
+            let listing = item.bot.as_ref().unwrap();
+            assert!(listing.appearance);
+            assert_eq!(listing.connectors[0].package_id, "so.tilo.discord");
+            assert!(
+                item.versions.is_empty(),
+                "a bot has no downloadable app version"
+            );
+            assert_eq!(item.action_kind(true), crate::model::ActionKind::AddBot);
+            assert!(
+                item.unavailable_action(crate::model::ActionKind::AddBot)
+                    .is_none(),
+                "the button prepares the workspace's Add a bot"
+            );
+            let invocation = crate::bindings::add_bot(&item)
+                .expect("a bot's page prepares the workspace's Add a bot")
+                .invoke(())
+                .unwrap();
+            let offer = ui::search::SearchRequest::from_arguments(&invocation.arguments)
+                .offer
+                .expect("the system search opens on Add a bot");
+            assert_eq!(offer.action, "bot.add");
+            assert_eq!(offer.arguments["entry"], "so.tilo.bots.bridge");
+            assert!(
+                !offer.arguments.contains_key("confirm"),
+                "the person confirms it, never the Store"
+            );
+        }
+
+        phase catalogue_entries_resolve_install_and_update_state;
+        {
+            {
+                let entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
+                let installed = vec![installed_package(
+                    "so.tilo.notes",
+                    "0.1.0",
+                    entry.publisher_pubkey_hex.clone(),
+                    true,
+                    true,
+                )];
+                let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
+                assert!(matches!(item.installed, InstalledState::Installed { .. }));
+                // The pin flag from tilo-install's registry must survive the
+                // merge so the store can show "marked installed".
+                assert!(item.installed.is_pinned());
+                assert_eq!(item.latest_version(), "0.1.0");
+                assert!(matches!(item.source, StoreSource::Tilo { .. }));
+            }
+
+            {
+                let entry = tilo_entry("so.tilo.notes", "Notes", "0.2.0", [1u8; 32]);
+                let installed = vec![installed_package(
+                    "so.tilo.notes",
+                    "0.1.0",
+                    entry.publisher_pubkey_hex.clone(),
+                    false,
+                    true,
+                )];
+                let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
+                assert!(item.installed.update_available());
+            }
+
+            {
+                let entry = tilo_entry("so.tilo.settings", "Settings", "1.0.0", [2u8; 32]);
+                let installed = vec![installed_package(
+                    entry.package_id.clone(),
+                    "1.0.0",
+                    entry.publisher_pubkey_hex.clone(),
+                    false,
+                    false,
+                )];
+                let item = tilo_to_store_item(&verified(entry), "Tilo system", &installed);
+                assert!(item.installed.is_installed());
+                assert_eq!(item.action_kind(true), crate::model::ActionKind::Open);
+                assert!(item.pin_action().is_none());
+                assert!(item.remove_action().is_none());
+            }
+
+            {
+                let item = installed_tilo_to_store_item(
+                    &installed_package("so.tilo.offline", "1.2.3", "ab".repeat(32), true, true),
+                    None,
+                );
+                // Without a manifest the id still yields a readable name, never
+                // the raw reverse-DNS id or a sentence about missing metadata.
+                assert_eq!(item.name, "Offline");
+                assert!(item.description.is_empty());
+                assert!(item.installed.is_installed());
+                assert!(item.installed.is_pinned());
+                assert!(!item.installed.update_available());
+                assert_eq!(item.action_kind(true), crate::model::ActionKind::Open);
+                assert_eq!(item.remove_action(), Some(crate::model::ActionKind::Remove));
+                assert!(item.versions[0].download_url.is_none());
+            }
+
+            {
+                let item = installed_flatpak_to_item("org.example.Offline", "4.0");
+                assert_eq!(item.name, "org.example.Offline");
+                assert!(item.installed.is_installed());
+                assert!(!item.installed.update_available());
+                assert_eq!(
+                    item.action_kind(true),
+                    crate::model::ActionKind::FlatpakOpen
+                );
+                assert_eq!(
+                    item.remove_action(),
+                    Some(crate::model::ActionKind::FlatpakRemove)
+                );
+            }
+        }
     }
 
     pub(crate) fn tilo_entry(
@@ -685,148 +826,11 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    fn a_bot_entry_becomes_a_bot_card_and_never_an_app() {
-        let bot = app_cli::bots::CatalogueBot {
-            package_id: "so.tilo.bots.bridge".into(),
-            name: "Discord bridge".into(),
-            tagline: "Mirror a Discord server".into(),
-            description: "Bridges channels".into(),
-            icon_url: None,
-            publisher_pubkey_hex: "aa".repeat(32),
-            registry_name: "Tilo".into(),
-            version: "1.0.0".into(),
-            artifact: ui::registry::BotArtifact {
-                program_url: format!("https://apps.tilo.so/blobs/{}", "ab".repeat(32)),
-                program_blake3_hex: "ab".repeat(32),
-                program_size_bytes: 10,
-                requires: ui::registry::BotRequirements {
-                    connectors: vec![ui::registry::PackageRequirement {
-                        package_id: "so.tilo.discord".into(),
-                        min_version: "0.1.0".into(),
-                    }],
-                    apps: vec!["so.tilo.chat".into()],
-                    appearance: true,
-                    triggers: vec!["connector".into(), "record_changed".into()],
-                },
-            },
-        };
-        let item = tilo_bot_to_store_item(&bot);
-        let listing = item.bot.as_ref().unwrap();
-        assert!(listing.appearance);
-        assert_eq!(listing.connectors[0].package_id, "so.tilo.discord");
-        assert!(
-            item.versions.is_empty(),
-            "a bot has no downloadable app version"
-        );
-        assert_eq!(item.action_kind(true), crate::model::ActionKind::AddBot);
-        assert!(
-            item.unavailable_action(crate::model::ActionKind::AddBot)
-                .is_none(),
-            "the button prepares the workspace's Add a bot"
-        );
-        let invocation = crate::bindings::add_bot(&item)
-            .expect("a bot's page prepares the workspace's Add a bot")
-            .invoke(())
-            .unwrap();
-        let offer = ui::search::SearchRequest::from_arguments(&invocation.arguments)
-            .offer
-            .expect("the system search opens on Add a bot");
-        assert_eq!(offer.action, "bot.add");
-        assert_eq!(offer.arguments["entry"], "so.tilo.bots.bridge");
-        assert!(
-            !offer.arguments.contains_key("confirm"),
-            "the person confirms it, never the Store"
-        );
-    }
-
     pub(crate) fn verified(entry: RegistryEntry) -> VerifiedEntry {
         VerifiedEntry {
             entry,
             trust: TrustLevel::PublisherSigned,
             version_index: None,
-        }
-    }
-
-    #[test]
-    fn catalogue_entries_resolve_install_and_update_state() {
-        {
-            let entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
-            let installed = vec![installed_package(
-                "so.tilo.notes",
-                "0.1.0",
-                entry.publisher_pubkey_hex.clone(),
-                true,
-                true,
-            )];
-            let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
-            assert!(matches!(item.installed, InstalledState::Installed { .. }));
-            // The pin flag from tilo-install's registry must survive the
-            // merge so the store can show "marked installed".
-            assert!(item.installed.is_pinned());
-            assert_eq!(item.latest_version(), "0.1.0");
-            assert!(matches!(item.source, StoreSource::Tilo { .. }));
-        }
-
-        {
-            let entry = tilo_entry("so.tilo.notes", "Notes", "0.2.0", [1u8; 32]);
-            let installed = vec![installed_package(
-                "so.tilo.notes",
-                "0.1.0",
-                entry.publisher_pubkey_hex.clone(),
-                false,
-                true,
-            )];
-            let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
-            assert!(item.installed.update_available());
-        }
-
-        {
-            let entry = tilo_entry("so.tilo.settings", "Settings", "1.0.0", [2u8; 32]);
-            let installed = vec![installed_package(
-                entry.package_id.clone(),
-                "1.0.0",
-                entry.publisher_pubkey_hex.clone(),
-                false,
-                false,
-            )];
-            let item = tilo_to_store_item(&verified(entry), "Tilo system", &installed);
-            assert!(item.installed.is_installed());
-            assert_eq!(item.action_kind(true), crate::model::ActionKind::Open);
-            assert!(item.pin_action().is_none());
-            assert!(item.remove_action().is_none());
-        }
-
-        {
-            let item = installed_tilo_to_store_item(
-                &installed_package("so.tilo.offline", "1.2.3", "ab".repeat(32), true, true),
-                None,
-            );
-            // Without a manifest the id still yields a readable name, never
-            // the raw reverse-DNS id or a sentence about missing metadata.
-            assert_eq!(item.name, "Offline");
-            assert!(item.description.is_empty());
-            assert!(item.installed.is_installed());
-            assert!(item.installed.is_pinned());
-            assert!(!item.installed.update_available());
-            assert_eq!(item.action_kind(true), crate::model::ActionKind::Open);
-            assert_eq!(item.remove_action(), Some(crate::model::ActionKind::Remove));
-            assert!(item.versions[0].download_url.is_none());
-        }
-
-        {
-            let item = installed_flatpak_to_item("org.example.Offline", "4.0");
-            assert_eq!(item.name, "org.example.Offline");
-            assert!(item.installed.is_installed());
-            assert!(!item.installed.update_available());
-            assert_eq!(
-                item.action_kind(true),
-                crate::model::ActionKind::FlatpakOpen
-            );
-            assert_eq!(
-                item.remove_action(),
-                Some(crate::model::ActionKind::FlatpakRemove)
-            );
         }
     }
 
