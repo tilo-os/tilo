@@ -280,16 +280,19 @@ up to eight frames the tab's actors read or acted in after the page's own,
 under their frame, with what each holds and who set it; choosing one brings
 it into view in its frame. A frame nobody read or acted in is not listed.
 
-A reviewer on another device sees the tab as the live picture of its window:
-the engine's own pixels, with a password shown as the page shows it and a
-window that protects itself from capture blanked. The review read and the
-record are what say who set what; the picture is what the page shows.
+A reviewer on another device sees the tab as its page. While a device shows
+the window, the Browser hands its session the page as a display list (the
+paint stream), which travels the workspace's live plane and is drawn by the
+device that shows it: no picture of the window is captured. A window that
+protects itself from capture hands over no page. The review read and the
+record are what say who set what; the page is what the window shows.
 
-The page as a display list (the paint stream) carries what each field holds
-too: an input's text, a textarea's lines, the option a select shows, and
-whether a checkbox or a radio button is chosen, which the engine's own theme
-paints and a layout snapshot does not carry. A password travels as dots. The
-session does not take that stream yet (see "Not built yet").
+The display list carries what each field holds too: an input's text, a
+textarea's lines, the option a select shows, and whether a checkbox or a
+radio button is chosen, which the engine's own theme paints and a layout
+snapshot does not carry. A password travels as dots. The tile that draws the
+page on another device names its text, each run where it is drawn, for a
+reader who cannot see it; it takes no input.
 
 ## A form as typed actions
 
@@ -511,26 +514,30 @@ down.
   for everyone watching, as agents are shown in other apps.
 - **Who types.** Direct input is one source. Input that arrives through a
   shared window should carry the person it came from.
-- **The page as a display list for other devices.** Another device sees a tab
-  today as the live picture of its window (see "Other devices"). The
-  Browser can also describe its page as a display list, which costs the
-  sharing device no video encoding and is drawn sharply at any size, but
-  the session does not take that stream yet: an app that offers it is
-  refused, and nothing asks a window for it.
+- **Acting in a page from another device.** A device that shows a Browser
+  window draws its page and sends it nothing: a click or a key in that tile
+  reaches no one. Whoever is on another device acts on the page through the
+  tab's actions.
 - **Another member's agent.** An agent reaches a desktop through its agent
   door, which admits the devices of the desktop's own person. A device of
-  another member of the workspace sees a shared tab and may type into it,
-  but its agent has no door to the tab's actions.
+  another member of the workspace sees a shared tab, but its agent has no
+  door to the tab's actions.
 - **Several machines in one tab: what is left.** Three machines answer one
   form in one tab on the machines the remote end-to-end run boots, and the
   record names their devices. Two things are not shown there. A window
-  shared with the workspace has not stayed pictured on the person's other
-  device on those machines: when the step last ran its pictures crossed and
-  stopped, what stopped them is closed in the session, and the step has not
-  been run on machines since. Each session says how far its live plane came,
-  what a share waits for and, for the device relaying a plane, which devices
-  it turned away and why, which is what the step reads when a picture does
-  not arrive or does not go on arriving.
+  shared with the workspace has not been seen drawn on the person's other
+  device on those machines: when the step last ran, the share's start
+  crossed and the watching tab kept the card of a window still arriving,
+  while both sessions read as if it were pictured. The session handed that
+  tab's tile the page's objects in the plane's framing, which the tile cannot
+  read; that is closed, and two sessions on one relay now carry a page from
+  the window to the watching tab in a test. The step reads the page's text
+  off the watching desk rather than take the sessions' word for it, and has
+  not been run on machines since. Each session says how far its live plane
+  came, what a share waits for, whether a shared window went out and whether
+  the watching tile holds it, and, for the device relaying a plane, which
+  devices it turned away and why, which is what the step reads when a page
+  does not arrive or does not go on arriving.
   And nothing has run more than three machines. The door
   serves sixteen connections at once and refuses the next as busy; a tab
   keeps track of sixty-four actors and forgets the oldest beyond that

@@ -418,6 +418,16 @@ When the share ends the shared window's tab goes, and the view stays. The
 share's reading names the tab on the row of the window it watches
 (`shown_in`).
 
+A window whose app draws its own page, as the Browser's does, is shared as
+that page and not as a picture of it. Its app hands the session the page as a
+display list while a member's desk shows the window, the list travels the
+live plane on a track of its own, sealed as the pictures are, and the device
+showing the window draws it with its own text and vector stack. Nothing of
+such a window is captured or encoded, and the device showing it sends it no
+input. The tile that draws the page names the page's text, each run where it
+is drawn, so a reader who cannot see the page, and a tool that lists what a
+desk shows, read what is on the screen.
+
 The window's pictures travel the workspace's live plane, which the device
 hosting the workspace relays for its members, or the members certified to
 host where there are any. A device is in the plane once it holds the keys of
@@ -428,10 +438,16 @@ says how far that came, since a plane that is not open drops nothing and
 reports nothing by itself: `live` names each workspace's plane as open or by
 what it waits for (the keys, the device that relays it, or that device's
 refusal), a window shared or watched under a plane that is not open says the
-same on its own row (`waiting_for`), and a shared window says whether a
-member's desk asks for it now (`streaming`). An open plane also says the
-epoch it seals under and what it opened and could not open of the other
-devices, which is where two devices that hear nothing of each other read
+same on its own row (`waiting_for`), and a shared window says whether it goes
+out to a member's desk now (`streaming`): a captured window as soon as a desk
+asks for it, a window shared as its page once its app handed a page over. A
+stream's start puts nothing on a screen, so a device that shows a window says
+whether its tile holds it (`pictured`: a decoded picture, or the page's whole
+frame), and until then that its row waits for the first one; a shared window
+a member shows, nothing of which went out, says that it waits too. An open
+plane also says the epoch it seals under, what it opened and could not open
+of the other devices, and which of its windows another device asks it for
+(`asked_for`), which is where two devices that hear nothing of each other read
 why. A device that holds none of the workspace's keys and is lent the keys of
 its own streams by the workspace's host, as the session in a workspace's VM
 is, is in the plane on those (`lent_keys`): it sends what it shares and opens
