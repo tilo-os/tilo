@@ -183,9 +183,9 @@ impl<'a> Membership<'a> {
 
 /// Write the people `policy` — the workspace's governance — names into `workspace` : the part each
 /// of them takes there, when each was admitted, the owner aside, whom the desk's policy names on
-/// its own, and the agents it admits, each with the grants governance gave it. The grants a person
-/// gives to a person on a node below the workspace, and the ones a consent or an invite makes for
-/// this session, are the desk's own and stay. Whether anything changed.
+/// its own, and the grants it makes, which are the ones the broker decides a person's and an app's
+/// actions against here: a grant governs from the device it was written on, and one taken back is
+/// gone here as it is everywhere. Whether anything changed.
 pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
     let owner = policy.owner.as_deref();
     let members: BTreeMap<UserId, Role> = policy
@@ -195,36 +195,22 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
         .map(|(person, role)| (person.clone(), *role))
         .collect();
     let joined = policy.joined.clone();
-    let agents = picked_grants(&policy.grants, |grant| grant.grantee.agent_id().is_some());
-    let held = picked_grants(&workspace.policy.grants, |grant| {
-        grant.grantee.agent_id().is_some()
-    });
-    if workspace.policy.members == members && workspace.policy.joined == joined && held == agents {
+    let grants = settled(&policy.grants);
+    let held = settled(&workspace.policy.grants);
+    if workspace.policy.members == members && workspace.policy.joined == joined && held == grants {
         return false;
     }
     workspace.policy.members = members;
     workspace.policy.joined = joined;
-    if held != agents {
-        workspace
-            .policy
-            .grants
-            .retain(|grant| grant.grantee.agent_id().is_none());
-        workspace.policy.grants.extend(agents);
+    if held != grants {
+        workspace.policy.grants = grants;
     }
     true
 }
 
-/// The grants `grants` that `pick` names, in a settled order so two readings of the same policy
-/// compare equal.
-fn picked_grants<'a>(
-    grants: impl IntoIterator<Item = &'a Grant>,
-    pick: impl Fn(&Grant) -> bool,
-) -> Vec<Grant> {
-    let mut grants: Vec<Grant> = grants
-        .into_iter()
-        .filter(|grant| pick(grant))
-        .cloned()
-        .collect();
+/// The grants `grants` in a settled order, so two readings of one policy compare equal.
+fn settled<'a>(grants: impl IntoIterator<Item = &'a Grant>) -> Vec<Grant> {
+    let mut grants: Vec<Grant> = grants.into_iter().cloned().collect();
     grants.sort_by(|a, b| a.id.cmp(&b.id));
     grants
 }

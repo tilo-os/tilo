@@ -128,7 +128,6 @@ impl NativeWorkspaceOwner {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::TransportOrigin;
@@ -272,6 +271,49 @@ mod tests {
         let reopened =
             crate::owner::open_file(&fixture.directory.path().join("owner.json")).unwrap();
         assert!(agent_caps(&reopened, &fixture).is_empty());
+    }
+
+    /// A grant the session records is a member command of the workspace
+    /// ([`WorkspaceMembershipCommand::Member`]): the commit answers, and the governance every device
+    /// decides against carries the grant.
+    #[tokio::test]
+    async fn a_member_command_carries_a_grant_into_the_policy() {
+        let fixture = fixture();
+        let workspace = crate::owner::testing::WORKSPACE;
+        let person = hex::encode(fixture.certificate.user_public_key);
+        let grant = tilo_action_policy::Grant::new(
+            "app-action:clear",
+            tilo_action_policy::Grantee::person(&person),
+            tilo_action_policy::TreePath::workspace(workspace),
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(&person),
+        );
+        let command = WorkspaceMembershipCommand::Member {
+            change: tilo_action_policy::Change::Grant(grant),
+        };
+        fixture
+            .owner
+            .commit_workspace_membership_command(
+                request(&fixture, command),
+                &fixture.key,
+                fixture.now,
+            )
+            .await
+            .unwrap();
+        let policy = fixture
+            .owner
+            .with_current(WorkspaceId::parse(workspace).unwrap(), |view| {
+                view.peer().governance().governed_policy()
+            })
+            .unwrap();
+        assert!(
+            policy
+                .grants
+                .iter()
+                .any(|held| held.id.as_str() == "app-action:clear"),
+            "the grant is in force: {policy:?}"
+        );
     }
 
     #[tokio::test]

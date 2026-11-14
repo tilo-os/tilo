@@ -1866,7 +1866,16 @@ fn a_grant_the_person_gives_is_in_force_once_the_desk_carries_it() {
                     .any(|grant| grant.id.as_str() == "app-action:clear")
             })
         };
+        // A loop that never sees the grant is a hang the suite only cuts off, so the governance
+        // the engine holds is reported instead.
+        let mut turns = 0;
         while !held(&engine) {
+            assert!(
+                turns < 4096,
+                "the governance never carries the grant the desk was given: {:?}",
+                engine.policy(WORKSPACE)
+            );
+            turns += 1;
             tokio::select! {
                 recorded = &mut recording => panic!("in force before the desk carries it: {recorded:?}"),
                 () = tokio::task::yield_now() => {}
