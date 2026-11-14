@@ -102,52 +102,46 @@ fn sheets() -> [Sheet; 12] {
     ]
 }
 
-tilo_test_env::scenario! {
-    /// `label::localized` and `label::published` for the sheets' kinds. Each phase sets the
-    /// thread's language itself before it reads a name.
-    fn a_sheets_resource_is_named_in_the_language_of_the_thread;
-
-    phase a_sheet_names_its_resource_in_the_persons_language;
-    {
-        // Loading a word of the sheets' own loads their catalogue; the language
-        // is the desktop's from here on.
-        let _ = tilo_sheets::word("power-session");
-        ui::i18n::I18nManager::set_locale("de-DE");
-        for (kind, declared, english, german) in sheets() {
-            assert_eq!(
-                label::localized(kind, declared, SHEETS),
-                german,
-                "{kind} in German"
-            );
-            assert_ne!(label::localized(kind, declared, SHEETS), english, "{kind}");
-        }
-        // The same resolution a resource's own name goes through.
-        assert_eq!(Power::label(), "Ein/Aus");
-
-        ui::i18n::I18nManager::set_locale("en-US");
-        for (kind, declared, english, _) in sheets() {
-            assert_eq!(
-                label::localized(kind, declared, SHEETS),
-                english,
-                "{kind} in English"
-            );
-        }
-        assert_eq!(Power::label(), "Power");
-    }
-
-    phase a_resource_a_sheet_names_itself_keeps_that_name;
-    {
-        let _ = tilo_sheets::word("power-session");
-        ui::i18n::I18nManager::set_locale("de-DE");
-        // A publisher that names the resource itself (the app a question is
-        // about, say) is not read through the kind's entry.
+#[test]
+fn a_sheet_names_its_resource_in_the_persons_language() {
+    // Loading a word of the sheets' own loads their catalogue; the language
+    // is the desktop's from here on.
+    let _ = tilo_sheets::word("power-session");
+    ui::i18n::I18nManager::set_locale("de-DE");
+    for (kind, declared, english, german) in sheets() {
         assert_eq!(
-            label::published(Power::KIND, "Frogs, by name", Power::LABEL, SHEETS),
-            "Frogs, by name"
+            label::localized(kind, declared, SHEETS),
+            german,
+            "{kind} in German"
         );
+        assert_ne!(label::localized(kind, declared, SHEETS), english, "{kind}");
+    }
+    // The same resolution a resource's own name goes through.
+    assert_eq!(Power::label(), "Ein/Aus");
+
+    ui::i18n::I18nManager::set_locale("en-US");
+    for (kind, declared, english, _) in sheets() {
         assert_eq!(
-            label::published(Power::KIND, Power::LABEL, Power::LABEL, SHEETS),
-            "Ein/Aus"
+            label::localized(kind, declared, SHEETS),
+            english,
+            "{kind} in English"
         );
     }
+    assert_eq!(Power::label(), "Power");
+}
+
+#[test]
+fn a_resource_a_sheet_names_itself_keeps_that_name() {
+    let _ = tilo_sheets::word("power-session");
+    ui::i18n::I18nManager::set_locale("de-DE");
+    // A publisher that names the resource itself (the app a question is
+    // about, say) is not read through the kind's entry.
+    assert_eq!(
+        label::published(Power::KIND, "Frogs, by name", Power::LABEL, SHEETS),
+        "Frogs, by name"
+    );
+    assert_eq!(
+        label::published(Power::KIND, Power::LABEL, Power::LABEL, SHEETS),
+        "Ein/Aus"
+    );
 }
