@@ -103,7 +103,7 @@ pub use published_invocation::OriginalInvocation;
 use published_invocation::{InvocationCaller, OriginalInvocationData};
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::CString;
 use std::fs::OpenOptions;
 use std::os::fd::AsRawFd;
@@ -2735,8 +2735,10 @@ pub struct AppBrokerState {
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
     certificate_authority:
         std::sync::OnceLock<Arc<dyn super::certificate_authority::CertificateAuthority>>,
-    /// Latest complete action surface per live connection.
-    surfaces: Mutex<HashMap<u64, PublishedSurface>>,
+    /// Latest complete action surface per live connection, kept in the order
+    /// the connections came: the catalogue lists them in it, so a caller is
+    /// offered the same list each time it asks.
+    surfaces: Mutex<BTreeMap<u64, PublishedSurface>>,
     /// Per-connection incarnations, independent of unrelated discovery churn.
     witness_publications: Mutex<HashMap<u64, (u64, u64)>>,
     next_witness_publication: AtomicU64,
@@ -3529,7 +3531,7 @@ impl AppBrokerState {
                     .map(|config| config.certificate_authority.clone())
                     .or_else(|| services.native_certificates.clone())
                     .map_or_else(std::sync::OnceLock::new, std::sync::OnceLock::from),
-                surfaces: Mutex::new(HashMap::new()),
+                surfaces: Mutex::new(BTreeMap::new()),
                 witness_publications: Mutex::new(HashMap::new()),
                 next_witness_publication: AtomicU64::new(1),
                 surface_tables: Mutex::new(HashMap::new()),

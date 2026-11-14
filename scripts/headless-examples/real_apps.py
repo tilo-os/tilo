@@ -56,8 +56,10 @@ SESSION = REPO / "dist/dev/nested-session.sh"
 # The apps every session installs unless it names its own: what a check of a
 # desktop needs to see a person's work in it.
 APPS = "notes file-explorer chat settings terminal"
+# Where cargo builds, as cargo reads it.
+TARGET = Path(os.environ.get("CARGO_TARGET_DIR") or REPO / "target")
 # Where the nested-session build lands (dist/dev/nested-session-build.sh).
-BUILD = Path(os.environ.get("TILO_NESTED_SESSION_BUILD") or REPO / "target/nested-session")
+BUILD = Path(os.environ.get("TILO_NESTED_SESSION_BUILD") or TARGET / "nested-session")
 # The MCP revision the agent door speaks.
 MCP_PROTOCOL = "2025-06-18"
 

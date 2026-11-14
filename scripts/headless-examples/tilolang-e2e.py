@@ -88,7 +88,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # The session this checks and the tools that act in it: one harness for every
 # check of a desktop with the tree's apps (scripts/headless-examples/real_apps.py).
-from real_apps import (BUILD, Failed, Session, prepare, run,  # noqa: E402
+from real_apps import (BUILD, TARGET, Failed, Session, prepare, run,  # noqa: E402
                        start_session, stop_session, until)
 
 
@@ -901,12 +901,14 @@ def value_of(answer: dict):
         raise Failed(f"an answer without a value: {json.dumps(answer)[:2000]}") from None
 
 
-def app_operation(session: Session, app: str, operation: str):
+def app_operation(session: Session, app: str, operation: str, resource: str | None = None):
     """The action `operation` (`history`, `read`, `activate-window`) the window of `app`
     publishes, by the operation it names whatever language its title reads in. Its application is
-    `app` exactly."""
+    `app` exactly; with `resource`, it is the one published on that resource, as an agent picks
+    among the reads an app offers on each of its resources."""
     for action in session.actions(""):
-        if action.get("application") == app and action.get("operation") == operation:
+        if (action.get("application") == app and action.get("operation") == operation
+                and resource in (None, action.get("resource"))):
             return action
     return None
 
@@ -970,11 +972,20 @@ def check_activation(session: Session) -> dict:
     return out
 
 
+def own_read(session: Session, app: str) -> dict:
+    """The read of `app` itself: the one on the resource its "Show this window" stands on, the
+    app's own. An app publishes a read on each of its records too (Notes' notebook among them),
+    so an agent picks the read by the resource it reads, never by where the listing puts it."""
+    own = until(f"{app}'s 'Show this window'",
+                lambda: app_operation(session, app, "activate-window"))["resource"]
+    return until(f"{app}'s 'Read the content' on {own}",
+                 lambda: app_operation(session, app, "read", own))
+
+
 def check_read(session: Session) -> dict:
     """An agent or a script reads what a tilolang app holds through the door's `read`, as it
     reads a native app's content: the workspace's records, then one of them by its id."""
-    action = until("tilolang Notes' 'Read the content'",
-                   lambda: app_operation(session, app_id("notes"), "read"))
+    action = own_read(session, app_id("notes"))
     answer = value_of(invoke_found(session, action))
     # Notes' root record, whatever its type is called: the one record of the app's own kinds.
     prefix = f"tl.{app_id('notes')}."
@@ -988,7 +999,7 @@ def check_read(session: Session) -> dict:
                   and any(i.get("type") == "Note" for i in f.get("items", []))), {})
     if read.get("kind") != kind or not notes.get("items"):
         raise Failed(f"Notes' root record's read holds no notes: {json.dumps(read)[:2000]}")
-    native = until("native Notes' 'Read the content'", lambda: app_operation(session, NATIVE, "read"))
+    native = own_read(session, NATIVE)
     return {
         "records": len(answer["records"]),
         "notebook": {"label": read.get("label"), "notes": notes.get("count")},
@@ -1074,7 +1085,7 @@ def probe_packages(state: Path, out: Path) -> list[Path]:
     and as Tasks (which declares no read): each package is the app's own, with
     the probe as its entrypoint and the routes to try in its payload. Bakes the
     probe's runtime bundle into the session, signed by its runtime publisher."""
-    probe = REPO / "target/debug/tilo-collab-probe"
+    probe = TARGET / "debug/tilo-collab-probe"
     if not probe.is_file():
         raise Failed(f"no probe at {probe} (cargo build -p collab-probe)")
     bundle = state / "runtimes" / PROBE_RUNTIME
@@ -1222,14 +1233,14 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--no-build", action="store_true")
-    parser.add_argument("--out", type=Path, default=REPO / "target/tilolang-e2e")
+    parser.add_argument("--out", type=Path, default=TARGET / "tilolang-e2e")
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args()
     out = args.out.resolve()
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
     state = out / "state"
-    tool = REPO / "target/debug/tilolang"
+    tool = TARGET / "debug/tilolang"
     os.environ.setdefault("TMPDIR", str(Path.home() / "tmp"))
     Path(os.environ["TMPDIR"]).mkdir(parents=True, exist_ok=True)
 

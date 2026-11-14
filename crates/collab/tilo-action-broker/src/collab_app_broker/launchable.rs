@@ -8,7 +8,7 @@
 //! invoking one launches the app and admits the invocation against the
 //! surface the app publishes fresh, never against the retained copy.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -252,7 +252,7 @@ impl Drop for CatalogueStore {
 /// The retained launchable surfaces, and how long an invocation of one waits
 /// for the application it launched. The host's launcher starts the app.
 pub(super) struct LaunchableCatalogue {
-    surfaces: Mutex<HashMap<SurfaceKey, PublishedSurface>>,
+    surfaces: Mutex<BTreeMap<SurfaceKey, PublishedSurface>>,
     store: Mutex<Option<CatalogueStore>>,
     launcher: Mutex<Option<AppLauncher>>,
     windowless: Mutex<Option<WindowlessStarter>>,
@@ -266,7 +266,7 @@ pub(super) struct LaunchableCatalogue {
 impl LaunchableCatalogue {
     pub(super) fn new() -> Self {
         Self {
-            surfaces: Mutex::new(HashMap::new()),
+            surfaces: Mutex::new(BTreeMap::new()),
             store: Mutex::new(None),
             launcher: Mutex::new(None),
             windowless: Mutex::new(None),
@@ -397,7 +397,7 @@ impl LaunchableCatalogue {
         }
     }
 
-    fn save(&self, surfaces: &HashMap<SurfaceKey, PublishedSurface>) {
+    fn save(&self, surfaces: &BTreeMap<SurfaceKey, PublishedSurface>) {
         let Ok(store) = self.store.lock() else {
             return;
         };

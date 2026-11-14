@@ -848,6 +848,39 @@ async fn eighty_synthetic_runs_keep_exact_record_and_invocation_identity() {
     assert!(events.try_recv().is_err());
 }
 
+/// The catalogue lists the apps' actions in the order their connections came, whatever order
+/// they published in: a caller asking twice, or in another session, is offered the same list.
+#[test]
+fn the_catalogue_lists_connections_in_the_order_they_came() {
+    let (state, caller, _app) = fixture();
+    let published = state.live_surfaces(action_host::RowScope::All);
+    let surface = published.first().expect("the fixture's surface").clone();
+    let peers: Vec<u64> = (0..24).map(|i| (i * 7) % 24 + 10).collect();
+    state.replace_published_surfaces_for_test(
+        peers
+            .iter()
+            .map(|&peer_id| PublishedSurface {
+                peer_id,
+                ..surface.clone()
+            })
+            .collect(),
+    );
+    let listed = || -> Vec<String> {
+        state
+            .eager_catalogue(&caller, action_host::RowScope::All)
+            .0
+            .into_iter()
+            .filter(|row| row.action.is_some())
+            .map(|row| row.provider)
+            .collect()
+    };
+    let mut ordered = peers;
+    ordered.sort_unstable();
+    let ordered: Vec<String> = ordered.iter().map(u64::to_string).collect();
+    assert_eq!(listed(), ordered);
+    assert_eq!(listed(), ordered);
+}
+
 #[test]
 fn observer_backpressure_is_bounded_and_reports_loss_without_replaying_actions() {
     let (state, caller, mut app) = fixture();
