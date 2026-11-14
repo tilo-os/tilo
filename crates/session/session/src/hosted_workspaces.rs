@@ -39,6 +39,8 @@ pub(crate) struct HostedWorkspaces(Arc<Inner>);
 
 struct Inner {
     engine: Arc<Engine>,
+    /// The endpoint this device runs under its key, once bound: every host is dialled from it.
+    endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
     runtime: tokio::runtime::Handle,
     /// Each host's session, by the host's device key.
     hosts: Mutex<HashMap<[u8; 32], Arc<Host>>>,
@@ -61,15 +63,17 @@ struct Placed {
 }
 
 impl HostedWorkspaces {
-    /// The hosts of `engine`'s workspaces, reached on `runtime`; `None` for a session that holds
-    /// no workspaces. The session's own runtime reaches them: this is built where the session
-    /// starts, which is no task of any runtime's.
+    /// The hosts of `engine`'s workspaces, reached from this device's `endpoint` on `runtime`;
+    /// `None` for a session that holds no workspaces. The session's own runtime reaches them: this
+    /// is built where the session starts, which is no task of any runtime's.
     pub(crate) fn service(
         engine: Option<&Arc<Engine>>,
+        endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
         runtime: tokio::runtime::Handle,
     ) -> Option<Self> {
         Some(Self(Arc::new(Inner {
             engine: Arc::clone(engine?),
+            endpoint,
             runtime,
             hosts: Mutex::default(),
         })))
@@ -103,10 +107,10 @@ impl HostedWorkspaces {
             return Arc::clone(host);
         }
         let identity = self.0.engine.identity();
-        // It reads and asks with this device's own keys: the device holds one place in each
-        // workspace's key group, which a second key service of its own would take each time it
-        // asked to be admitted.
-        let device = Device::over_with(
+        // It reads and asks with this device's own keys, and dials from this device's own
+        // endpoint: the device holds one place in each workspace's key group, and one connection
+        // per relay, which a second key service or endpoint of its own would take.
+        let device = Device::over_lent(
             PeerConfig {
                 host: tilo_relay_client::Host::at(placed.host.endpoint_addr.clone()),
                 cert: identity.device_cert.clone(),
@@ -116,7 +120,10 @@ impl HostedWorkspaces {
             },
             Arc::clone(&identity.signer),
             &identity.device_cert.device_label,
-            self.0.engine.keys().get(),
+            tilo_session_client::Lent {
+                keys: self.0.engine.keys().get(),
+                endpoint: self.0.endpoint.get().cloned(),
+            },
         );
         let host = Arc::new(Host {
             device,

@@ -219,17 +219,33 @@ pub fn start_session(
     link
 }
 
-/// [`start_session`] for a session of a device whose own key service is `keys`: it reads and asks
-/// with those, and settles none of its own. A device holds one place in a workspace's key group,
-/// and a second service under the same device key would take that place from the first each time
-/// it asked to be admitted.
-pub fn start_session_with_keys(
+/// What a device's own session lends a session it opens to another host, so the device stays one
+/// device there.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Default)]
+pub struct Lent {
+    /// The device's own key service: the session reads and asks with it, and settles no keys of
+    /// its own. A device holds one place in a workspace's key group, and a second service under
+    /// the same device key would take that place from the first each time it asked to be admitted.
+    pub keys: Option<tilo_workspace_keys::SharedKeys>,
+    /// The endpoint the device runs under its key: the session dials from it. A relay keeps one
+    /// connection per endpoint id, so a second endpoint under the same key cut the first off.
+    pub endpoint: Option<iroh::Endpoint>,
+}
+
+/// [`start_session`] for a session of a device that lends it what its own session runs
+/// ([`Lent`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn start_session_lent(
     config: PeerConfig,
     signer: Arc<dyn DeviceSigner>,
     store: Arc<dyn PeerStore>,
-    keys: tilo_workspace_keys::SharedKeys,
+    lent: Lent,
 ) -> Link {
-    let (task, link, receiver) = session_task(config, signer, store, Some(keys));
+    let (mut task, link, receiver) = session_task(config, signer, store, lent.keys);
+    if let Some(endpoint) = lent.endpoint {
+        task.dial.lend(endpoint);
+    }
     n0_future::task::spawn(task.run(receiver));
     link
 }
@@ -418,7 +434,7 @@ struct Task {
     /// here as a reader that asks for access and follows the participants' commits.
     workspace_keys: tilo_workspace_keys::SharedKeys,
     /// What the channels say to and hear from the host: `None` when the device's own key service
-    /// settles [`Self::workspace_keys`] ([`start_session_with_keys`]).
+    /// settles [`Self::workspace_keys`] ([`start_session_lent`]).
     governance: Option<HostGovernance>,
     /// The channels' state and the writes held for their keys, in the store.
     key_state: crate::custody::StoredKeys,

@@ -53,6 +53,10 @@ pub(super) struct Dial {
     key: [u8; 32],
     /// This device's signed statement that the endpoint speaks for it.
     delegation: Option<Vec<u8>>,
+    /// The endpoint this device already runs under its key, when it lends
+    /// it: the session dials from there instead of binding one of its own.
+    #[cfg(not(target_arch = "wasm32"))]
+    lent: Option<iroh::Endpoint>,
 }
 
 impl Dial {
@@ -69,6 +73,12 @@ impl Dial {
             key: blake3::derive_key("tilo page endpoint v1", vault),
             ..Self::default()
         }
+    }
+
+    /// Dial from `endpoint`, the one this device already runs under its key.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn lend(&mut self, endpoint: iroh::Endpoint) {
+        self.lent = Some(endpoint);
     }
 
     /// Let go of the host, waiting for it to hear: a session that ends for
@@ -168,6 +178,10 @@ async fn connect_entering(
     let dialer = dial
         .dialer
         .get_or_insert_with(|| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(endpoint) = dial.lent.clone() {
+                return Arc::new(Dialer::from_endpoint(host.clone(), endpoint));
+            }
             Arc::new(Dialer::new(
                 host.clone(),
                 Some(signer.endpoint_secret().unwrap_or(dial.key)),
@@ -222,7 +236,7 @@ async fn sign_delegation(
     endpoint: [u8; 32],
     slot: &mut Option<Vec<u8>>,
 ) -> Result<Vec<u8>, LinkError> {
-    if signer.endpoint_secret().is_some() {
+    if endpoint == device {
         return Ok(Vec::new());
     }
     if let Some(delegation) = slot {

@@ -67,31 +67,32 @@ impl Device {
     /// A session for the device `config` certifies, in no workspace yet.
     #[must_use]
     pub fn over(config: PeerConfig, signer: Arc<dyn DeviceSigner>, label: &str) -> Self {
-        Self::over_with(config, signer, label, None)
+        let store = Arc::new(MemoryPeerStore::default()) as Arc<dyn PeerStore>;
+        Self::of(
+            crate::session::start_session(config.clone(), signer, store),
+            config.cert,
+            config.host_cert,
+            label,
+        )
     }
 
-    /// [`Self::over`] for a device whose own key service is `keys`, when it has one: the session
-    /// reads and asks with those ([`crate::start_session_with_keys`]).
+    /// [`Self::over`] for a device whose own session lends this one what it runs
+    /// ([`crate::Lent`]).
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
-    pub fn over_with(
+    pub fn over_lent(
         config: PeerConfig,
         signer: Arc<dyn DeviceSigner>,
         label: &str,
-        keys: Option<tilo_workspace_keys::SharedKeys>,
+        lent: crate::Lent,
     ) -> Self {
         let store = Arc::new(MemoryPeerStore::default()) as Arc<dyn PeerStore>;
-        Self {
-            peer: match keys {
-                Some(keys) => {
-                    crate::session::start_session_with_keys(config.clone(), signer, store, keys)
-                }
-                None => crate::session::start_session(config.clone(), signer, store),
-            },
-            cert: config.cert,
-            host_cert: config.host_cert,
-            workspace_id: WorkspaceId::from_u128(0),
-            label: label.to_owned(),
-        }
+        Self::of(
+            crate::session::start_session_lent(config.clone(), signer, store, lent),
+            config.cert,
+            config.host_cert,
+            label,
+        )
     }
 
     /// The device whose session `peer` already is: a page's, which started its session itself.

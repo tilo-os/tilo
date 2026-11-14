@@ -77,8 +77,11 @@ impl Purpose {
 ///
 /// Over iroh it keeps the device's endpoint, bound on the first link and
 /// reused for every link after (and by the live plane, [`Self::endpoint`]):
-/// a device speaks to its host as one endpoint. Over WebTransport each link
-/// is a session of its own.
+/// a device speaks to its host as one endpoint. A device that already runs
+/// an endpoint under its key lends it ([`Self::from_endpoint`]), so it never
+/// binds a second one: a relay holds one connection per endpoint id and
+/// drops the older of two, which cut the other endpoint off. Over
+/// WebTransport each link is a session of its own.
 pub struct Dialer {
     host: Host,
     /// The key the iroh endpoint speaks as; a fresh one when `None`.
@@ -89,6 +92,10 @@ pub struct Dialer {
     key: Option<[u8; 32]>,
     #[cfg(not(target_arch = "wasm32"))]
     endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
+    /// Whether the endpoint is the device's own, lent: it outlives this
+    /// dialer, which never closes it.
+    #[cfg(not(target_arch = "wasm32"))]
+    lent: bool,
 }
 
 impl Dialer {
@@ -100,6 +107,22 @@ impl Dialer {
             key,
             #[cfg(not(target_arch = "wasm32"))]
             endpoint: tokio::sync::OnceCell::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            lent: false,
+        }
+    }
+
+    /// Links to `host` from `endpoint`, the one this device already runs:
+    /// its links are connections of that endpoint, and closing the dialer
+    /// leaves it running.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn from_endpoint(host: Host, endpoint: iroh::Endpoint) -> Self {
+        Self {
+            host,
+            key: None,
+            endpoint: tokio::sync::OnceCell::new_with(Some(endpoint)),
+            lent: true,
         }
     }
 
@@ -180,15 +203,9 @@ impl Dialer {
             .cloned()
     }
 
-    /// The endpoint, when one was bound: nothing is bound to ask.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[must_use]
-    pub fn bound(&self) -> Option<iroh::Endpoint> {
-        self.endpoint.get().cloned()
-    }
-
     /// Let go of the host: close the endpoint, waiting for the host to hear
-    /// it. Links over WebTransport close on their own.
+    /// it; a lent endpoint stays open for the device that runs it. Links
+    /// over WebTransport close on their own.
     #[cfg_attr(
         target_arch = "wasm32",
         expect(
@@ -198,7 +215,7 @@ impl Dialer {
     )]
     pub async fn close(&self) {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(endpoint) = self.endpoint.get() {
+        if let Some(endpoint) = self.endpoint.get().filter(|_| !self.lent) {
             endpoint.close().await;
         }
     }

@@ -303,8 +303,6 @@ pub(crate) fn start_action_plane(
     // asks them over that same plane, and what the device that wins produced is kept in the content
     // this session keeps.
     let action_offload = offload_route(actions.as_ref(), content.as_ref());
-    // The fabric this session acts on, and what its services offer on it.
-    let fabric = acting_fabric(options, sync);
     // Files' clipboard lives beside the broker that answers it, and its copies reach the loop that
     // has the compositor through the same wake.
     let file_clipboard = std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
@@ -315,13 +313,14 @@ pub(crate) fn start_action_plane(
     // through.
     let personal = sync
         .and_then(crate::sync::Client::personal)
-        .map(|personal| personal.sync().clone());
+        .map(|own| own.sync().clone());
     let channels = std::sync::Arc::clone(&sealed.broker);
     let broker = plane::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
         std::sync::Arc::clone(&options.launches),
-        fabric,
+        // The fabric this session acts on, and what its services offer on it.
+        acting_fabric(options, sync),
         plane::Hosted {
             live_activities: std::sync::Arc::clone(live_activities),
             native_media: calls_service.clone(),
@@ -343,6 +342,7 @@ pub(crate) fn start_action_plane(
             // What the broker writes a workspace's people through, and where it keeps what it
             // admits: this session's own workspaces, else the ones its collaboration plane holds.
             engine: engine.or_else(|| sync.and_then(crate::sync::Client::engine).cloned()),
+            endpoint: sync.map(|sync| sync.endpoint_handle()).unwrap_or_default(),
             journal_root: options.state.as_deref().map(plane::journal_root),
             // What each installed app declares it may do on the action door,
             // read by search's own worker off the session's thread.

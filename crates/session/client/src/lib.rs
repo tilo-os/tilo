@@ -63,9 +63,9 @@ pub use plane::{
 };
 pub use presence::OwnPresence;
 pub use saying::saying;
-pub use session::{
-    PeerConfig, SessionMemberHost, member_host, start_session, start_session_with_keys,
-};
+#[cfg(not(target_arch = "wasm32"))]
+pub use session::{Lent, start_session_lent};
+pub use session::{PeerConfig, SessionMemberHost, member_host, start_session};
 pub use tilo_live::presence::Call as InCall;
 pub use tilo_live::presence::{LiveCall, LiveCaller};
 /// The route a record is opened and written by: what [`Cmd`]s and [`Event`]s name.
