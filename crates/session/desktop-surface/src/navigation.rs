@@ -1324,9 +1324,7 @@ fn admit_open(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
         .into_iter()
         .flat_map(|s| s.window_groups.iter())
         .find_map(|group| {
-            let tab = group.tabs.iter().find(|tab| {
-                tilo_desktop_model::apps::canonical_app_id(&tab.tile).as_deref() == Some(app)
-            })?;
+            let tab = group.tabs.iter().find(|tab| window_here(tab, app))?;
             Some(RouteIds {
                 workspace: workspace.slot,
                 strip,
@@ -1344,6 +1342,16 @@ pub(crate) fn resolve_open(tree: &DesktopTree, app: &str) -> Admitted {
         Ok(Admitted::Select(ids)) => Admitted::Select(ids),
         _ => Admitted::Launch(app.to_owned(), false),
     }
+}
+
+/// Whether `tab` is a window of `app` on this device: one it shows, or opens itself. A window that
+/// runs only on another device is that device's, whatever app it is of: it is no place to take a
+/// person who asks for the app here.
+fn window_here(tab: &tilo_desktop_model::Tab, app: &str) -> bool {
+    !matches!(
+        tab.tile,
+        tilo_desktop_model::TileContent::HostedWindow { .. }
+    ) && tilo_desktop_model::apps::canonical_app_id(&tab.tile).as_deref() == Some(app)
 }
 
 /// A window of `app` in the active workspace, the shown strip's first:
@@ -1370,9 +1378,7 @@ pub fn window_of_app(tree: &DesktopTree, app: &str) -> Option<RouteIds> {
                 .map(move |group| (strip.id, group))
         })
         .find_map(|(strip, group)| {
-            let tab = group.tabs.iter().find(|tab| {
-                tilo_desktop_model::apps::canonical_app_id(&tab.tile).as_deref() == Some(app)
-            })?;
+            let tab = group.tabs.iter().find(|tab| window_here(tab, app))?;
             Some(RouteIds {
                 workspace: workspace.slot,
                 strip,
@@ -1779,6 +1785,34 @@ mod tests {
                 strip: "9".into(),
                 offset: 1.5
             })
+        );
+    }
+
+    /// A window that runs only on another device is that device's window of the app. Asking for
+    /// the app here opens this device's own window, and never takes the person to the other
+    /// device's instead.
+    #[test]
+    fn an_app_whose_only_window_here_runs_on_another_device_is_opened_here() {
+        let mut tree = tree();
+        assert_eq!(
+            window_of_app(&tree, "so.tilo.notes").map(|ids| ids.tab),
+            Some(4),
+            "this device's own window of the app is the one asking for it selects"
+        );
+        assert!(matches!(
+            resolve_open(&tree, "so.tilo.notes"),
+            Admitted::Select(ids) if ids.tab == 4
+        ));
+        tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::HostedWindow {
+            app_id: "so.tilo.notes".into(),
+            label: "Notes".into(),
+            host: "ab".repeat(32),
+            host_label: "Laptop".into(),
+        };
+        assert_eq!(window_of_app(&tree, "so.tilo.notes"), None);
+        assert_eq!(
+            resolve_open(&tree, "so.tilo.notes"),
+            Admitted::Launch("so.tilo.notes".into(), false)
         );
     }
 
