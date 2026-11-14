@@ -805,104 +805,108 @@ mod tests {
     use super::*;
     use crate::toolbar::OskToolbarItem;
 
-    #[test]
-    fn every_band_shares_one_width_inset_by_the_gutter() {
-        let layout = KeyboardLayout::qwerty();
-        let toolbar = OskToolbarItem::default_set();
-        let window = Rect::new(0.0, 0.0, 390.0, 312.0);
-        let gutter = 8.0;
-        let g = keyboard_geometry(
-            window,
-            &layout,
-            &toolbar,
-            &[],
-            ShiftState::Off,
-            48.0,
-            40.0,
-            gutter,
-        );
-        for band in [g.toolbar_area, g.suggestion_area, g.key_area] {
-            assert_eq!(band.x0, gutter, "band starts at the gutter");
-            assert_eq!(band.x1, 390.0 - gutter, "band ends at the gutter");
-        }
-        assert!(g.keys.iter().all(|(_, r)| r.x0 >= gutter - 1e-6));
-    }
+    tilo_test_env::scenario! {
+        fn the_keyboard_geometry_keeps_its_bands_gutters_and_baselines;
 
-    #[test]
-    fn the_gutter_never_collapses_a_narrow_window_to_nothing() {
-        let layout = KeyboardLayout::qwerty();
-        let g = keyboard_geometry(
-            Rect::new(0.0, 0.0, 10.0, 312.0),
-            &layout,
-            &[],
-            &[],
-            ShiftState::Off,
-            48.0,
-            40.0,
-            8.0,
-        );
-        assert!(g.content_rect.width() >= 0.0);
-    }
-
-    #[test]
-    fn letters_punctuation_and_marks_share_one_baseline_and_capitals_centre_on_their_height() {
-        for c in [
-            'a', 'g', 'j', 'p', 'q', 'y', 'b', 'é', '.', ',', '-', '\'', '$',
-        ] {
-            assert_eq!(
-                body_middle(c),
-                body_middle('x'),
-                "{c} rides the shared body"
+        phase every_band_shares_one_width_inset_by_the_gutter;
+        {
+            let layout = KeyboardLayout::qwerty();
+            let toolbar = OskToolbarItem::default_set();
+            let window = Rect::new(0.0, 0.0, 390.0, 312.0);
+            let gutter = 8.0;
+            let g = keyboard_geometry(
+                window,
+                &layout,
+                &toolbar,
+                &[],
+                ShiftState::Off,
+                48.0,
+                40.0,
+                gutter,
             );
+            for band in [g.toolbar_area, g.suggestion_area, g.key_area] {
+                assert_eq!(band.x0, gutter, "band starts at the gutter");
+                assert_eq!(band.x1, 390.0 - gutter, "band ends at the gutter");
+            }
+            assert!(g.keys.iter().all(|(_, r)| r.x0 >= gutter - 1e-6));
         }
-        for c in ['H', 'Q', '7'] {
-            assert!(
-                body_middle(c) > body_middle('x'),
-                "{c} is centred on its cap height"
-            );
-        }
-    }
 
-    #[test]
-    fn the_key_rows_keep_one_key_gap_from_the_band_edges() {
-        let layout = KeyboardLayout::qwerty();
-        let g = keyboard_geometry(
-            Rect::new(0.0, 0.0, 720.0, 360.0),
-            &layout,
-            &[],
-            &[],
-            ShiftState::Off,
-            48.0,
-            40.0,
-            8.0,
-        );
-        let pad = key_pad_for_height(g.key_area.height() / layout.row_count() as f64);
-        assert!((g.key_rows.y0 - g.key_area.y0 - pad).abs() < 1e-6);
-        assert!((g.key_area.y1 - g.key_rows.y1 - pad).abs() < 1e-6);
-    }
-
-    #[test]
-    fn a_narrow_band_shows_fewer_chips_so_none_is_squeezed() {
-        let layout = KeyboardLayout::qwerty();
-        let words: Vec<Suggestion> = ["help", "held", "hell", "helped", "helping"]
-            .iter()
-            .map(|w| Suggestion::new(*w, 1.0))
-            .collect();
-        let chips = |width: f64| {
-            keyboard_geometry(
-                Rect::new(0.0, 0.0, width, 312.0),
+        phase the_gutter_never_collapses_a_narrow_window_to_nothing;
+        {
+            let layout = KeyboardLayout::qwerty();
+            let g = keyboard_geometry(
+                Rect::new(0.0, 0.0, 10.0, 312.0),
                 &layout,
                 &[],
-                &words,
+                &[],
                 ShiftState::Off,
                 48.0,
                 40.0,
                 8.0,
-            )
-            .suggestions
-            .len()
-        };
-        assert_eq!(chips(420.0), 3);
-        assert_eq!(chips(720.0), 5);
+            );
+            assert!(g.content_rect.width() >= 0.0);
+        }
+
+        phase letters_punctuation_and_marks_share_one_baseline_and_capitals_centre_on_their_height;
+        {
+            for c in [
+                'a', 'g', 'j', 'p', 'q', 'y', 'b', 'é', '.', ',', '-', '\'', '$',
+            ] {
+                assert_eq!(
+                    body_middle(c),
+                    body_middle('x'),
+                    "{c} rides the shared body"
+                );
+            }
+            for c in ['H', 'Q', '7'] {
+                assert!(
+                    body_middle(c) > body_middle('x'),
+                    "{c} is centred on its cap height"
+                );
+            }
+        }
+
+        phase the_key_rows_keep_one_key_gap_from_the_band_edges;
+        {
+            let layout = KeyboardLayout::qwerty();
+            let g = keyboard_geometry(
+                Rect::new(0.0, 0.0, 720.0, 360.0),
+                &layout,
+                &[],
+                &[],
+                ShiftState::Off,
+                48.0,
+                40.0,
+                8.0,
+            );
+            let pad = key_pad_for_height(g.key_area.height() / layout.row_count() as f64);
+            assert!((g.key_rows.y0 - g.key_area.y0 - pad).abs() < 1e-6);
+            assert!((g.key_area.y1 - g.key_rows.y1 - pad).abs() < 1e-6);
+        }
+
+        phase a_narrow_band_shows_fewer_chips_so_none_is_squeezed;
+        {
+            let layout = KeyboardLayout::qwerty();
+            let words: Vec<Suggestion> = ["help", "held", "hell", "helped", "helping"]
+                .iter()
+                .map(|w| Suggestion::new(*w, 1.0))
+                .collect();
+            let chips = |width: f64| {
+                keyboard_geometry(
+                    Rect::new(0.0, 0.0, width, 312.0),
+                    &layout,
+                    &[],
+                    &words,
+                    ShiftState::Off,
+                    48.0,
+                    40.0,
+                    8.0,
+                )
+                .suggestions
+                .len()
+            };
+            assert_eq!(chips(420.0), 3);
+            assert_eq!(chips(720.0), 5);
+        }
     }
 }

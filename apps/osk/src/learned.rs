@@ -134,80 +134,84 @@ mod tests {
         Learned::LEARN.with(learned::Learn { lesson })
     }
 
-    #[test]
-    fn lessons_add_up_and_forgetting_leaves_nothing() {
-        let mut record = Replica::<Learned>::new();
-        record
-            .apply(learn(lesson(&[("good", "mood"), ("", "hello")])))
-            .unwrap();
-        record
-            .apply(learn(Lesson {
-                kept: vec!["teh".into()],
-                touch: vec![(
-                    'a',
-                    KeyOffset {
-                        dx: 0.25,
-                        dy: -0.125,
-                        samples: 3,
-                    },
-                )],
-                ..lesson(&[("good", "mood")])
-            }))
-            .unwrap();
-        let learned = record.state().unwrap();
-        assert_eq!(learned.count("en", "good", "mood"), 2);
-        assert_eq!(learned.count("en", "", "hello"), 1);
-        assert!(learned.kept.contains(&"teh".to_owned()));
-        assert_eq!(
-            learned.touch_offsets()[&'a'],
-            KeyOffset {
-                dx: 0.25,
-                dy: -0.125,
-                samples: 3
-            }
-        );
+    tilo_test_env::scenario! {
+        fn learned_lessons_count_merge_stay_bounded_and_forget;
 
-        record.apply(Learned::FORGET.invoke()).unwrap();
-        assert!(record.state().unwrap().is_empty());
-    }
+        phase lessons_add_up_and_forgetting_leaves_nothing;
+        {
+            let mut record = Replica::<Learned>::new();
+            record
+                .apply(learn(lesson(&[("good", "mood"), ("", "hello")])))
+                .unwrap();
+            record
+                .apply(learn(Lesson {
+                    kept: vec!["teh".into()],
+                    touch: vec![(
+                        'a',
+                        KeyOffset {
+                            dx: 0.25,
+                            dy: -0.125,
+                            samples: 3,
+                        },
+                    )],
+                    ..lesson(&[("good", "mood")])
+                }))
+                .unwrap();
+            let learned = record.state().unwrap();
+            assert_eq!(learned.count("en", "good", "mood"), 2);
+            assert_eq!(learned.count("en", "", "hello"), 1);
+            assert!(learned.kept.contains(&"teh".to_owned()));
+            assert_eq!(
+                learned.touch_offsets()[&'a'],
+                KeyOffset {
+                    dx: 0.25,
+                    dy: -0.125,
+                    samples: 3
+                }
+            );
 
-    #[test]
-    fn two_devices_learning_at_once_count_both() {
-        let mut first = Replica::<Learned>::new();
-        first.apply(learn(lesson(&[("good", "mood")]))).unwrap();
-        let mut second = first.fork();
-        first.apply(learn(lesson(&[("good", "mood")]))).unwrap();
-        second.apply(learn(lesson(&[("good", "mood")]))).unwrap();
-        first.sync_with(&mut second).unwrap();
-        assert_eq!(first.state().unwrap().count("en", "good", "mood"), 3);
-        assert_eq!(second.state().unwrap(), first.state().unwrap());
-    }
+            record.apply(Learned::FORGET.invoke()).unwrap();
+            assert!(record.state().unwrap().is_empty());
+        }
 
-    #[test]
-    fn a_full_context_learns_no_new_words() {
-        let mut record = Replica::<Learned>::new();
-        let words: Vec<String> = (0..=MAX_LEARNED_WORDS_PER_CONTEXT)
-            .map(|index| format!("word{index}"))
-            .collect();
-        let pairs: Vec<(&str, &str)> = words.iter().map(|word| ("the", word.as_str())).collect();
-        record.apply(learn(lesson(&pairs))).unwrap();
-        assert_eq!(
-            record.state().unwrap().transitions["en"]["the"].len(),
-            MAX_LEARNED_WORDS_PER_CONTEXT
-        );
-    }
+        phase two_devices_learning_at_once_count_both;
+        {
+            let mut first = Replica::<Learned>::new();
+            first.apply(learn(lesson(&[("good", "mood")]))).unwrap();
+            let mut second = first.fork();
+            first.apply(learn(lesson(&[("good", "mood")]))).unwrap();
+            second.apply(learn(lesson(&[("good", "mood")]))).unwrap();
+            first.sync_with(&mut second).unwrap();
+            assert_eq!(first.state().unwrap().count("en", "good", "mood"), 3);
+            assert_eq!(second.state().unwrap(), first.state().unwrap());
+        }
 
-    #[test]
-    fn learning_is_no_undo_step_and_forgetting_is_one() {
-        use ui::tilo_actions::{Action as _, ChangeKind};
-        let learn = Learned::LEARN
-            .with(learned::Learn {
-                lesson: lesson(&[("good", "mood")]),
-            })
-            .build(0)
-            .unwrap();
-        assert_eq!(learn.change_kind(), ChangeKind::External);
-        let forget = Learned::FORGET.invoke().build(0).unwrap();
-        assert_eq!(forget.change_kind(), ChangeKind::Content);
+        phase a_full_context_learns_no_new_words;
+        {
+            let mut record = Replica::<Learned>::new();
+            let words: Vec<String> = (0..=MAX_LEARNED_WORDS_PER_CONTEXT)
+                .map(|index| format!("word{index}"))
+                .collect();
+            let pairs: Vec<(&str, &str)> = words.iter().map(|word| ("the", word.as_str())).collect();
+            record.apply(learn(lesson(&pairs))).unwrap();
+            assert_eq!(
+                record.state().unwrap().transitions["en"]["the"].len(),
+                MAX_LEARNED_WORDS_PER_CONTEXT
+            );
+        }
+
+        phase learning_is_no_undo_step_and_forgetting_is_one;
+        {
+            use ui::tilo_actions::{Action as _, ChangeKind};
+            let learn = Learned::LEARN
+                .with(learned::Learn {
+                    lesson: lesson(&[("good", "mood")]),
+                })
+                .build(0)
+                .unwrap();
+            assert_eq!(learn.change_kind(), ChangeKind::External);
+            let forget = Learned::FORGET.invoke().build(0).unwrap();
+            assert_eq!(forget.change_kind(), ChangeKind::Content);
+        }
     }
 }

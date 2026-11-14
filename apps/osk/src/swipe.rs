@@ -596,43 +596,116 @@ mod tests {
         }
     }
 
-    #[test]
-    fn elastic_recognition_follows_scaled_translated_geometry_and_language() {
-        let (layout, geometry) = qwerty_geom();
-        let model = GeometricSwipeModel::english().with_elastic_alignment();
-        let path = path_through("quick", &geometry, &layout);
-        let expected = model.decode_top(&path, &geometry, &layout, 8);
-        assert_eq!(
-            expected.first().map(|candidate| candidate.word.as_str()),
-            Some("quick")
-        );
-        for scale in [1.0, 1.25, 1.5, 2.0] {
-            let transform =
-                vello::kurbo::Affine::translate((71.0, 43.0)) * vello::kurbo::Affine::scale(scale);
-            let geometry: Vec<_> = geometry
-                .iter()
-                .map(|(id, rect)| (*id, transform.transform_rect_bbox(*rect)))
-                .collect();
-            let path: Vec<_> = path.iter().map(|point| transform * *point).collect();
-            let actual = model.decode_top(&path, &geometry, &layout, 8);
-            assert_eq!(actual.len(), expected.len());
-            for (actual, expected) in actual.iter().zip(&expected) {
-                assert_eq!(actual.word, expected.word);
-                assert!((actual.score - expected.score).abs() < 0.000_01);
+    tilo_test_env::scenario! {
+        fn swipe_decoding_follows_geometry_paths_and_endpoints;
+
+        phase elastic_recognition_follows_scaled_translated_geometry_and_language;
+        {
+            let (layout, geometry) = qwerty_geom();
+            let model = GeometricSwipeModel::english().with_elastic_alignment();
+            let path = path_through("quick", &geometry, &layout);
+            let expected = model.decode_top(&path, &geometry, &layout, 8);
+            assert_eq!(
+                expected.first().map(|candidate| candidate.word.as_str()),
+                Some("quick")
+            );
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let transform =
+                    vello::kurbo::Affine::translate((71.0, 43.0)) * vello::kurbo::Affine::scale(scale);
+                let geometry: Vec<_> = geometry
+                    .iter()
+                    .map(|(id, rect)| (*id, transform.transform_rect_bbox(*rect)))
+                    .collect();
+                let path: Vec<_> = path.iter().map(|point| transform * *point).collect();
+                let actual = model.decode_top(&path, &geometry, &layout, 8);
+                assert_eq!(actual.len(), expected.len());
+                for (actual, expected) in actual.iter().zip(&expected) {
+                    assert_eq!(actual.word, expected.word);
+                    assert!((actual.score - expected.score).abs() < 0.000_01);
+                }
+            }
+            let mut model = model;
+            model.set_language(Language::French);
+            let layout = KeyboardLayout::azerty();
+            let geometry = key_rects(&layout, Rect::new(0.0, 0.0, 390.0, 220.0), ShiftState::Off);
+            let path = path_through("bonjour", &geometry, &layout);
+            assert_eq!(
+                model
+                    .decode_top(&path, &geometry, &layout, 8)
+                    .first()
+                    .map(|candidate| candidate.word.as_str()),
+                Some("bonjour")
+            );
+        }
+
+        phase swipe_paths_resample_and_distinguish_taps_from_drags;
+        {
+            eprintln!("phase empty_or_trivial_path_yields_nothing");
+            {
+                let (layout, geom) = qwerty_geom();
+                let model = GeometricSwipeModel::english();
+                assert!(model.decode_top(&[], &geom, &layout, 8).is_empty());
+                assert!(
+                    model
+                        .decode_top(&[Point::new(1.0, 1.0)], &geom, &layout, 8)
+                        .is_empty()
+                );
+                // A real path, but no keys to read it against, or nothing asked for.
+                let path = path_through("the", &geom, &layout);
+                assert!(model.decode_top(&path, &[], &layout, 8).is_empty());
+                assert!(model.decode_top(&path, &geom, &layout, 0).is_empty());
+                let one = model.decode_top(&path, &geom, &layout, 1);
+                assert_eq!(one.len(), 1, "no more than asked for");
+                assert_eq!(one[0].word, "the");
+            }
+
+            eprintln!("phase is_swipe_distinguishes_tap_from_drag");
+            {
+                let (layout, geom) = qwerty_geom();
+                let scale = letter_key_scale(&geom, &layout).expect("QWERTY has letter keys");
+                let tap = vec![
+                    Point::new(100.0, 100.0),
+                    Point::new(101.0, 100.5),
+                    Point::new(100.5, 101.0),
+                ];
+                assert!(!is_swipe(&tap, scale), "tiny jitter is not a swipe");
+                let drag = vec![
+                    Point::new(0.0, 100.0),
+                    Point::new(200.0, 100.0),
+                    Point::new(400.0, 100.0),
+                ];
+                assert!(is_swipe(&drag, scale), "long drag is a swipe");
+            }
+
+            eprintln!("phase resample_produces_exact_count_and_endpoints");
+            {
+                let path = vec![
+                    Point::new(0.0, 0.0),
+                    Point::new(10.0, 0.0),
+                    Point::new(10.0, 10.0),
+                ];
+                let rs = resample(&path, 16);
+                assert_eq!(rs.len(), 16);
+                assert_eq!(rs[0], Point::new(0.0, 0.0));
+                assert_eq!(*rs.last().unwrap(), Point::new(10.0, 10.0));
             }
         }
-        let mut model = model;
-        model.set_language(Language::French);
-        let layout = KeyboardLayout::azerty();
-        let geometry = key_rects(&layout, Rect::new(0.0, 0.0, 390.0, 220.0), ShiftState::Off);
-        let path = path_through("bonjour", &geometry, &layout);
-        assert_eq!(
-            model
-                .decode_top(&path, &geometry, &layout, 8)
-                .first()
-                .map(|candidate| candidate.word.as_str()),
-            Some("bonjour")
-        );
+
+        phase a_decode_scores_only_words_its_endpoints_allow;
+        {
+            let (layout, geom) = qwerty_geom();
+            let model = GeometricSwipeModel::english();
+            let path = path_through("keyboard", &geom, &layout);
+            SHAPES_SCORED.with(|count| count.set(0));
+            let top = model.decode_top(&path, &geom, &layout, 8);
+            let scored = SHAPES_SCORED.with(std::cell::Cell::get);
+            assert_eq!(top.first().map(|c| c.word.as_str()), Some("keyboard"));
+            let words = model.dictionary().len();
+            assert!(
+                scored * 4 < words,
+                "the endpoint index prunes the dictionary: {scored} of {words} words scored"
+            );
+        }
     }
 
     #[test]
@@ -673,75 +746,6 @@ mod tests {
                 assert_eq!(cands[0].word, word, "got {words:?}");
             }
         }
-    }
-
-    #[test]
-    fn swipe_paths_resample_and_distinguish_taps_from_drags() {
-        eprintln!("phase empty_or_trivial_path_yields_nothing");
-        {
-            let (layout, geom) = qwerty_geom();
-            let model = GeometricSwipeModel::english();
-            assert!(model.decode_top(&[], &geom, &layout, 8).is_empty());
-            assert!(
-                model
-                    .decode_top(&[Point::new(1.0, 1.0)], &geom, &layout, 8)
-                    .is_empty()
-            );
-            // A real path, but no keys to read it against, or nothing asked for.
-            let path = path_through("the", &geom, &layout);
-            assert!(model.decode_top(&path, &[], &layout, 8).is_empty());
-            assert!(model.decode_top(&path, &geom, &layout, 0).is_empty());
-            let one = model.decode_top(&path, &geom, &layout, 1);
-            assert_eq!(one.len(), 1, "no more than asked for");
-            assert_eq!(one[0].word, "the");
-        }
-
-        eprintln!("phase is_swipe_distinguishes_tap_from_drag");
-        {
-            let (layout, geom) = qwerty_geom();
-            let scale = letter_key_scale(&geom, &layout).expect("QWERTY has letter keys");
-            let tap = vec![
-                Point::new(100.0, 100.0),
-                Point::new(101.0, 100.5),
-                Point::new(100.5, 101.0),
-            ];
-            assert!(!is_swipe(&tap, scale), "tiny jitter is not a swipe");
-            let drag = vec![
-                Point::new(0.0, 100.0),
-                Point::new(200.0, 100.0),
-                Point::new(400.0, 100.0),
-            ];
-            assert!(is_swipe(&drag, scale), "long drag is a swipe");
-        }
-
-        eprintln!("phase resample_produces_exact_count_and_endpoints");
-        {
-            let path = vec![
-                Point::new(0.0, 0.0),
-                Point::new(10.0, 0.0),
-                Point::new(10.0, 10.0),
-            ];
-            let rs = resample(&path, 16);
-            assert_eq!(rs.len(), 16);
-            assert_eq!(rs[0], Point::new(0.0, 0.0));
-            assert_eq!(*rs.last().unwrap(), Point::new(10.0, 10.0));
-        }
-    }
-
-    #[test]
-    fn a_decode_scores_only_words_its_endpoints_allow() {
-        let (layout, geom) = qwerty_geom();
-        let model = GeometricSwipeModel::english();
-        let path = path_through("keyboard", &geom, &layout);
-        SHAPES_SCORED.with(|count| count.set(0));
-        let top = model.decode_top(&path, &geom, &layout, 8);
-        let scored = SHAPES_SCORED.with(std::cell::Cell::get);
-        assert_eq!(top.first().map(|c| c.word.as_str()), Some("keyboard"));
-        let words = model.dictionary().len();
-        assert!(
-            scored * 4 < words,
-            "the endpoint index prunes the dictionary: {scored} of {words} words scored"
-        );
     }
 
     /// Held-out swipes from FUTO's swipe.futo.org dataset (MIT, see

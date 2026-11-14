@@ -364,140 +364,144 @@ mod tests {
         keys.iter().find(|k| k.id == id).unwrap().ch
     }
 
-    #[test]
-    fn key_centre_resolves_to_that_key() {
-        let keys = qwerty_keys();
-        let p = NextKeyDistribution::from_weights([('e', 1.0)]);
-        for k in &keys {
+    tilo_test_env::scenario! {
+        fn the_touch_model_resolves_taps_by_context_core_zone_and_learned_offsets;
+
+        phase key_centre_resolves_to_that_key;
+        {
+            let keys = qwerty_keys();
+            let p = NextKeyDistribution::from_weights([('e', 1.0)]);
+            for k in &keys {
+                assert_eq!(
+                    resolved_char(&keys, k.rect.center(), &p, &TouchModel::new()),
+                    k.ch
+                );
+            }
+        }
+
+        phase e_r_border_after_th_resolves_to_e;
+        {
+            let keys = qwerty_keys();
+            let predictor = Predictor::english();
+            let p = predictor.next_key_distribution(None, "th");
+            assert!(
+                p.prob('e') > p.prob('r'),
+                "lexicon should favour 'e' after 'th'"
+            );
+            let e = key(&keys, 'e');
+            let r = key(&keys, 'r');
+            let touch = Point::new(r.rect.x0 + 1.0, e.rect.center().y);
+            assert!(r.rect.contains(touch));
+            assert_eq!(resolved_char(&keys, touch, &p, &TouchModel::new()), 'e');
+        }
+
+        phase uniform_context_resolves_to_nearest_key;
+        {
+            let keys = qwerty_keys();
+            let e = key(&keys, 'e');
+            let r = key(&keys, 'r');
+            let y = e.rect.center().y;
+            let uniform = NextKeyDistribution::uniform();
+            let m = TouchModel::new();
             assert_eq!(
-                resolved_char(&keys, k.rect.center(), &p, &TouchModel::new()),
-                k.ch
+                resolved_char(&keys, Point::new(r.rect.x0 + 1.0, y), &uniform, &m),
+                'r'
+            );
+            assert_eq!(
+                resolved_char(&keys, Point::new(e.rect.x1 - 1.0, y), &uniform, &m),
+                'e'
             );
         }
-    }
 
-    #[test]
-    fn e_r_border_after_th_resolves_to_e() {
-        let keys = qwerty_keys();
-        let predictor = Predictor::english();
-        let p = predictor.next_key_distribution(None, "th");
-        assert!(
-            p.prob('e') > p.prob('r'),
-            "lexicon should favour 'e' after 'th'"
-        );
-        let e = key(&keys, 'e');
-        let r = key(&keys, 'r');
-        let touch = Point::new(r.rect.x0 + 1.0, e.rect.center().y);
-        assert!(r.rect.contains(touch));
-        assert_eq!(resolved_char(&keys, touch, &p, &TouchModel::new()), 'e');
-    }
+        phase core_zone_always_wins;
+        {
+            let keys = qwerty_keys();
+            let r = key(&keys, 'r');
+            let only_e = NextKeyDistribution::from_weights([('e', 1.0)]);
+            let core = core_zone(r.rect, CORE_FRACTION);
+            let touch = Point::new(core.x0 + 0.5, core.center().y);
+            assert_eq!(
+                resolved_char(&keys, touch, &only_e, &TouchModel::new()),
+                'r'
+            );
+        }
 
-    #[test]
-    fn uniform_context_resolves_to_nearest_key() {
-        let keys = qwerty_keys();
-        let e = key(&keys, 'e');
-        let r = key(&keys, 'r');
-        let y = e.rect.center().y;
-        let uniform = NextKeyDistribution::uniform();
-        let m = TouchModel::new();
-        assert_eq!(
-            resolved_char(&keys, Point::new(r.rect.x0 + 1.0, y), &uniform, &m),
-            'r'
-        );
-        assert_eq!(
-            resolved_char(&keys, Point::new(e.rect.x1 - 1.0, y), &uniform, &m),
-            'e'
-        );
-    }
-
-    #[test]
-    fn core_zone_always_wins() {
-        let keys = qwerty_keys();
-        let r = key(&keys, 'r');
-        let only_e = NextKeyDistribution::from_weights([('e', 1.0)]);
-        let core = core_zone(r.rect, CORE_FRACTION);
-        let touch = Point::new(core.x0 + 0.5, core.center().y);
-        assert_eq!(
-            resolved_char(&keys, touch, &only_e, &TouchModel::new()),
-            'r'
-        );
-    }
-
-    #[test]
-    fn core_zone_wins_for_every_key_against_every_other_letter() {
-        let keys = qwerty_keys();
-        let m = TouchModel::new();
-        for k in &keys {
-            let core = core_zone(k.rect, CORE_FRACTION);
-            for other in keys.iter().filter(|o| o.id != k.id) {
-                let p = NextKeyDistribution::from_weights([(other.ch, 1.0)]);
-                for (fx, fy) in [
-                    (0.01, 0.5),
-                    (0.99, 0.5),
-                    (0.5, 0.01),
-                    (0.5, 0.99),
-                    (0.01, 0.01),
-                ] {
-                    let touch =
-                        Point::new(core.x0 + core.width() * fx, core.y0 + core.height() * fy);
-                    assert_eq!(resolved_char(&keys, touch, &p, &m), k.ch);
+        phase core_zone_wins_for_every_key_against_every_other_letter;
+        {
+            let keys = qwerty_keys();
+            let m = TouchModel::new();
+            for k in &keys {
+                let core = core_zone(k.rect, CORE_FRACTION);
+                for other in keys.iter().filter(|o| o.id != k.id) {
+                    let p = NextKeyDistribution::from_weights([(other.ch, 1.0)]);
+                    for (fx, fy) in [
+                        (0.01, 0.5),
+                        (0.99, 0.5),
+                        (0.5, 0.01),
+                        (0.5, 0.99),
+                        (0.01, 0.01),
+                    ] {
+                        let touch =
+                            Point::new(core.x0 + core.width() * fx, core.y0 + core.height() * fy);
+                        assert_eq!(resolved_char(&keys, touch, &p, &m), k.ch);
+                    }
                 }
             }
         }
-    }
 
-    #[test]
-    fn learned_offset_shifts_decision() {
-        let keys = qwerty_keys();
-        let e = key(&keys, 'e');
-        let r = key(&keys, 'r');
-        let touch = Point::new(r.rect.x0 + 2.0, e.rect.center().y);
-        let uniform = NextKeyDistribution::uniform();
-        let mut m = TouchModel::new();
-        assert_eq!(resolved_char(&keys, touch, &uniform, &m), 'r');
-        for _ in 0..20 {
-            m.learn('e', Point::new(e.rect.x1 - 2.0, e.rect.center().y), e.rect);
+        phase learned_offset_shifts_decision;
+        {
+            let keys = qwerty_keys();
+            let e = key(&keys, 'e');
+            let r = key(&keys, 'r');
+            let touch = Point::new(r.rect.x0 + 2.0, e.rect.center().y);
+            let uniform = NextKeyDistribution::uniform();
+            let mut m = TouchModel::new();
+            assert_eq!(resolved_char(&keys, touch, &uniform, &m), 'r');
+            for _ in 0..20 {
+                m.learn('e', Point::new(e.rect.x1 - 2.0, e.rect.center().y), e.rect);
+            }
+            assert!(m.offset('e').unwrap().dx > 0.2);
+            assert_eq!(resolved_char(&keys, touch, &uniform, &m), 'e');
         }
-        assert!(m.offset('e').unwrap().dx > 0.2);
-        assert_eq!(resolved_char(&keys, touch, &uniform, &m), 'e');
-    }
 
-    #[test]
-    fn learned_offsets_are_bounded_and_serialisable() {
-        let keys = qwerty_keys();
-        let e = key(&keys, 'e');
-        let mut m = TouchModel::new();
-        for _ in 0..50 {
-            m.learn(
-                'e',
-                Point::new(e.rect.x1 + 500.0, e.rect.y0 - 500.0),
-                e.rect,
-            );
+        phase learned_offsets_are_bounded_and_serialisable;
+        {
+            let keys = qwerty_keys();
+            let e = key(&keys, 'e');
+            let mut m = TouchModel::new();
+            for _ in 0..50 {
+                m.learn(
+                    'e',
+                    Point::new(e.rect.x1 + 500.0, e.rect.y0 - 500.0),
+                    e.rect,
+                );
+            }
+            let off = m.offset('e').unwrap();
+            assert!(off.dx <= MAX_OFFSET && off.dy >= -MAX_OFFSET);
+            let json = serde_json::to_string(&m).unwrap();
+            let back: TouchModel = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, m);
+            m.clear();
+            assert_eq!(m.learned_keys(), 0);
         }
-        let off = m.offset('e').unwrap();
-        assert!(off.dx <= MAX_OFFSET && off.dy >= -MAX_OFFSET);
-        let json = serde_json::to_string(&m).unwrap();
-        let back: TouchModel = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, m);
-        m.clear();
-        assert_eq!(m.learned_keys(), 0);
-    }
 
-    #[test]
-    fn cache_recomputes_only_on_context_change() {
-        let mut cache = NextKeyCache::default();
-        let mut calls = 0;
-        for _ in 0..3 {
-            cache.get(Some("of"), "th", || {
+        phase cache_recomputes_only_on_context_change;
+        {
+            let mut cache = NextKeyCache::default();
+            let mut calls = 0;
+            for _ in 0..3 {
+                cache.get(Some("of"), "th", || {
+                    calls += 1;
+                    NextKeyDistribution::uniform()
+                });
+            }
+            cache.get(Some("of"), "the", || {
                 calls += 1;
                 NextKeyDistribution::uniform()
             });
+            assert_eq!(calls, 2);
         }
-        cache.get(Some("of"), "the", || {
-            calls += 1;
-            NextKeyDistribution::uniform()
-        });
-        assert_eq!(calls, 2);
     }
 }
 

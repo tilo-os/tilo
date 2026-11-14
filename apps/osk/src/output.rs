@@ -237,86 +237,90 @@ mod tests {
         OskOutput::Commit(s.into())
     }
 
-    #[test]
-    fn router_inserts_a_barrier_only_when_the_connection_changes() {
-        let mut router = OrderedRouter::new();
-        assert_eq!(router.route(pre("he")), vec![Step::Preedit("he".into())]);
-        assert_eq!(router.route(commit("he")), vec![Step::Commit("he".into())]);
-        assert_eq!(
-            router.route(OskOutput::key(Symbol::Return)),
-            vec![
-                Step::Barrier(Channel::InputMethod),
-                Step::Key(Keypress::from(Symbol::Return))
-            ]
-        );
-        assert_eq!(
-            router.route(OskOutput::key(Symbol::BackSpace)),
-            vec![Step::Key(Keypress::from(Symbol::BackSpace))]
-        );
-        assert_eq!(
-            router.route(commit("x")),
-            vec![Step::Barrier(Channel::Keys), Step::Commit("x".into())]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn output_is_routed_emulated_and_mirrored;
 
-    #[test]
-    fn emulator_types_grows_and_trims_the_composed_word() {
-        let mut vk = PreeditEmulator::new();
-        assert_eq!(vk.symbols(&pre("t")), vec![Symbol::Unicode('t')]);
-        assert_eq!(vk.symbols(&pre("th")), vec![Symbol::Unicode('h')]);
-        assert_eq!(
-            vk.symbols(&pre("the")),
-            vec![Symbol::Unicode('e')],
-            "extension types only the new letter"
-        );
-        assert_eq!(
-            vk.symbols(&commit("they ")),
-            vec![Symbol::Unicode('y'), Symbol::Space]
-        );
-        assert_eq!(vk.symbols(&pre("a")), vec![Symbol::Unicode('a')]);
-        assert_eq!(vk.symbols(&pre("")), vec![Symbol::BackSpace]);
-        assert_eq!(
-            vk.symbols(&OskOutput::key(Symbol::BackSpace)),
-            vec![Symbol::BackSpace]
-        );
-    }
+        phase router_inserts_a_barrier_only_when_the_connection_changes;
+        {
+            let mut router = OrderedRouter::new();
+            assert_eq!(router.route(pre("he")), vec![Step::Preedit("he".into())]);
+            assert_eq!(router.route(commit("he")), vec![Step::Commit("he".into())]);
+            assert_eq!(
+                router.route(OskOutput::key(Symbol::Return)),
+                vec![
+                    Step::Barrier(Channel::InputMethod),
+                    Step::Key(Keypress::from(Symbol::Return))
+                ]
+            );
+            assert_eq!(
+                router.route(OskOutput::key(Symbol::BackSpace)),
+                vec![Step::Key(Keypress::from(Symbol::BackSpace))]
+            );
+            assert_eq!(
+                router.route(commit("x")),
+                vec![Step::Barrier(Channel::Keys), Step::Commit("x".into())]
+            );
+        }
 
-    #[test]
-    fn emulator_replaces_a_differing_word() {
-        let mut vk = PreeditEmulator::new();
-        vk.symbols(&pre("quick"));
-        assert_eq!(
-            vk.symbols(&pre("quiet")),
-            vec![
-                Symbol::BackSpace,
-                Symbol::BackSpace,
-                Symbol::Unicode('e'),
-                Symbol::Unicode('t')
-            ]
-        );
-    }
+        phase emulator_types_grows_and_trims_the_composed_word;
+        {
+            let mut vk = PreeditEmulator::new();
+            assert_eq!(vk.symbols(&pre("t")), vec![Symbol::Unicode('t')]);
+            assert_eq!(vk.symbols(&pre("th")), vec![Symbol::Unicode('h')]);
+            assert_eq!(
+                vk.symbols(&pre("the")),
+                vec![Symbol::Unicode('e')],
+                "extension types only the new letter"
+            );
+            assert_eq!(
+                vk.symbols(&commit("they ")),
+                vec![Symbol::Unicode('y'), Symbol::Space]
+            );
+            assert_eq!(vk.symbols(&pre("a")), vec![Symbol::Unicode('a')]);
+            assert_eq!(vk.symbols(&pre("")), vec![Symbol::BackSpace]);
+            assert_eq!(
+                vk.symbols(&OskOutput::key(Symbol::BackSpace)),
+                vec![Symbol::BackSpace]
+            );
+        }
 
-    #[test]
-    fn mirror_replaces_the_composing_tail_and_keeps_commits() {
-        let mut m = TextMirror::new(64);
-        m.apply(&pre("he"));
-        m.apply(&pre("hel"));
-        assert_eq!(m.text(), "hel");
-        m.apply(&commit("help "));
-        m.apply(&pre("m"));
-        assert_eq!(m.text(), "help m");
-        m.apply(&pre(""));
-        m.apply(&OskOutput::key(Symbol::BackSpace));
-        assert_eq!(m.text(), "help");
-        m.apply(&OskOutput::key(Symbol::Return));
-        assert_eq!(m.text(), "help\n");
-    }
+        phase emulator_replaces_a_differing_word;
+        {
+            let mut vk = PreeditEmulator::new();
+            vk.symbols(&pre("quick"));
+            assert_eq!(
+                vk.symbols(&pre("quiet")),
+                vec![
+                    Symbol::BackSpace,
+                    Symbol::BackSpace,
+                    Symbol::Unicode('e'),
+                    Symbol::Unicode('t')
+                ]
+            );
+        }
 
-    #[test]
-    fn mirror_is_bounded() {
-        let mut m = TextMirror::new(4);
-        m.apply(&commit("abcdef"));
-        assert_eq!(m.text(), "abcd");
-        assert_eq!(m.dropped_bytes(), 2);
+        phase mirror_replaces_the_composing_tail_and_keeps_commits;
+        {
+            let mut m = TextMirror::new(64);
+            m.apply(&pre("he"));
+            m.apply(&pre("hel"));
+            assert_eq!(m.text(), "hel");
+            m.apply(&commit("help "));
+            m.apply(&pre("m"));
+            assert_eq!(m.text(), "help m");
+            m.apply(&pre(""));
+            m.apply(&OskOutput::key(Symbol::BackSpace));
+            assert_eq!(m.text(), "help");
+            m.apply(&OskOutput::key(Symbol::Return));
+            assert_eq!(m.text(), "help\n");
+        }
+
+        phase mirror_is_bounded;
+        {
+            let mut m = TextMirror::new(4);
+            m.apply(&commit("abcdef"));
+            assert_eq!(m.text(), "abcd");
+            assert_eq!(m.dropped_bytes(), 2);
+        }
     }
 }
