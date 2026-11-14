@@ -259,7 +259,7 @@ mod install_tests {
     fn startup() -> Startup {
         let enrollment = Enrollment {
             destination: Destination {
-                room: WORKSPACE.into(),
+                workspace: WORKSPACE.into(),
                 provider: "record:so.tilo.chat:".into(),
                 channel: "feedback".into(),
             },
