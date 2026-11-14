@@ -313,7 +313,7 @@ impl Worker {
         unsaved: Unsaved,
     ) -> InvocationReceipt {
         let mut ledger = self.ledger();
-        ledger.running = None;
+        ledger.running.remove(&invocation);
         if let Some(entry) = ledger.entries.get_mut(&invocation) {
             entry.saving = true;
             entry.left_at = left_at;

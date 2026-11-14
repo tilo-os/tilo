@@ -1,7 +1,7 @@
 //! The invocations the host's action service remembers: what a retry under
 //! the same id, `tilo_status` and history read back.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -39,7 +39,9 @@ pub(super) struct Entry {
 pub(super) struct Ledger {
     pub(super) entries: HashMap<InvocationId, Entry>,
     pub(super) order: VecDeque<InvocationId>,
-    pub(super) running: Option<InvocationId>,
+    /// The invocations running now, each on the thread serving its
+    /// workspace.
+    pub(super) running: HashSet<InvocationId>,
 }
 
 impl Ledger {

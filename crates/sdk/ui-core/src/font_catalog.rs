@@ -116,9 +116,18 @@ pub(crate) fn catalog_in_memory(locale: &str) -> Option<FontSystem> {
             continue;
         };
         if read.insert(path.clone()) {
-            let (dir, name) = tilo_files::file_at(path).ok()?;
-            let bytes = tilo_files::blocking::read(&dir, &name).ok()?;
-            held.load_font_source(fontdb::Source::Binary(Arc::new(bytes)));
+            // Mapped rather than copied: every confined process holding the
+            // catalog shares its pages, and the mapping outlives the
+            // filesystem access the process gives up. Read whole where it
+            // cannot be mapped.
+            let bytes: Arc<dyn AsRef<[u8]> + Send + Sync> =
+                if let Ok(map) = tilo_files::native::mapped::MappedFile::open(path) {
+                    Arc::new(map)
+                } else {
+                    let (dir, name) = tilo_files::file_at(path).ok()?;
+                    Arc::new(tilo_files::blocking::read(&dir, &name).ok()?)
+                };
+            held.load_font_source(fontdb::Source::Binary(bytes));
         }
     }
     held.set_sans_serif_family(crate::text_render::UI_SANS_FAMILY);

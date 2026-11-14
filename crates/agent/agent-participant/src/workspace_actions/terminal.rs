@@ -35,8 +35,8 @@
 //! ([`Watching::stop`]), records the run like any other, and settles the
 //! invocation as cancelled.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
 use serde_json::{Map, Value, json};
@@ -134,7 +134,7 @@ pub(super) struct Ended {
 /// One run asked of the host's shell, ready to start on a thread of its own.
 struct Started {
     shell: Arc<dyn WorkspaceShell>,
-    jobs: mpsc::Sender<(Instant, Job)>,
+    jobs: super::Jobs,
     shared: Arc<Shared>,
     workspace: String,
     session: String,
@@ -406,7 +406,7 @@ impl Worker {
             .start_terminal_run(workspace_id, caller, request)
             .or_else(|| self.stop_terminal_runs(workspace_id, caller, request))?;
         let mut ledger = self.ledger();
-        ledger.running = None;
+        ledger.running.remove(&request.invocation);
         let refused = matches!(
             receipt.status,
             tilo_actions::remote::ReceiptStatus::Rejected { .. }
