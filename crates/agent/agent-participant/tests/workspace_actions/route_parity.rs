@@ -42,6 +42,8 @@ const TERMINAL: &str = "so.tilo.terminal";
 /// and on the keys they certified, who allows what they are asked.
 struct Member {
     host: HostDevice,
+    /// The host's workspaces, which hand the service the keys its device holds.
+    workspaces: tilo_relay::workspaces::Workspaces,
     person: [u8; 32],
     devices: Vec<[u8; 32]>,
     asked: AtomicUsize,
@@ -118,6 +120,15 @@ impl WorkspaceRecordsLink for Member {
     }
     fn workspace_content(&self, _workspace: WorkspaceId) -> Option<tilo_content::ContentStore> {
         Some(self.content.clone())
+    }
+    fn host_keys(
+        &self,
+        route: &DocumentRoute,
+        create: bool,
+    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
+        self.host
+            .runtime
+            .block_on(self.workspaces.own_route_keys(route, create))
     }
     fn shell(&self) -> Option<Arc<dyn tilo_agent_participant::workspace_actions::WorkspaceShell>> {
         Some(self.shell.clone())
@@ -399,7 +410,6 @@ async fn both_routes_decide_every_callers_actions_alike() {
     let shell_state = tempfile::tempdir().unwrap();
     let shells = shell_state.path().join("shells");
     let hosted = start(&root, &host, state.path()).await;
-    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let records: Vec<DocumentRoute> = [NOTES, PDF, WRITER, TERMINAL]
         .into_iter()
@@ -419,6 +429,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
             key: host.key.clone(),
             runtime: tokio::runtime::Handle::current(),
         },
+        workspaces: hosted.relay.workspaces().unwrap().clone(),
         person,
         devices: vec![
             guest_device.cert.device_public_key,
@@ -790,7 +801,6 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
     let computer = enrol(&root, "Codex on build-box", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     browser.create(NOTES);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();

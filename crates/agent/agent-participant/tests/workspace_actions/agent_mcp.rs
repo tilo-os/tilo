@@ -55,7 +55,6 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let sheets = browser.create(SHEETS);
     browser.put_desk();
@@ -379,7 +378,6 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
         },
     )
     .await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     // Its session runs the agent, as `tilo login` makes it say.
@@ -499,7 +497,6 @@ async fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
         },
     )
     .await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     // Its session runs the agent, as `tilo login` makes it say.
@@ -673,7 +670,6 @@ async fn leaves_who_is_here(ending: Ending) {
     let device = computer.cert.device_public_key;
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let _sheets = browser.create(SHEETS);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
@@ -778,7 +774,6 @@ async fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let _sheets = browser.create(SHEETS);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
@@ -850,7 +845,6 @@ async fn a_quiet_agent_stays_while_its_session_lasts() {
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let _sheets = browser.create(SHEETS);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
@@ -934,7 +928,6 @@ async fn an_agent_is_present_waiting_as_soon_as_it_connects() {
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let _sheets = browser.create(SHEETS);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
@@ -1005,7 +998,6 @@ async fn the_run_after_one_that_ended_is_on_the_page_at_once() {
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let _sheets = browser.create(SHEETS);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();

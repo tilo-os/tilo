@@ -113,8 +113,6 @@ use std::sync::Arc;
 use std::time::Duration;
 #[cfg(test)]
 use std::time::Instant;
-#[cfg(test)]
-use tilo_session_client::Cmd;
 use tilo_session_client::Outbox;
 
 use ed25519_dalek::SigningKey;
@@ -734,164 +732,12 @@ fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_whose_keys_have_not_arrived_holds_back_no_other() {
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::member());
-    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = crate::support::scratch_dir();
-    let hosted = start(&root, &host, state.path()).await;
-    let laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
-    // Every record of the workspace is sealed under one key scope, and the
-    // page asks the laptop for it: the laptop holds that admission back, so
-    // the page holds no keys at all.
-    let held = laptop.hold_admission(browser_device.cert.device_public_key);
-    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
-    held.requested().await;
-
-    // The host opens a record for the page while no keys have arrived. The
-    // record's first change waits for them before the host can keep it, so
-    // the open is answered pending, not done; and the page's other requests
-    // are answered meanwhile.
-    let started = Instant::now();
-    let open = request(
-        &format!("workspace:{WORKSPACE}"),
-        ActionAddress::new(format!("app.{SHEETS}"), "open"),
-        InvokeArgument::None,
-    );
-    let opening = open.invocation;
-    // Asked as `tilo mcp` asks, through the session's remote actions, whose
-    // caller stops waiting once it is answered pending and only asks how it
-    // went later, as `tilo_status` does.
-    let actions = tilo_session_core::remote::SessionActions::new(
-        &browser.peer,
-        browser.workspace,
-        host.cert.device_public_key,
-    );
-    let caller = tilo_actions::remote::Caller::local_person("ada");
-    let opened = {
-        use tilo_actions::remote::ActionHost as _;
-        let (actions, caller) = (actions.clone(), caller.clone());
-        tokio::task::spawn_blocking(move || {
-            actions
-                .invoke(&caller, open)
-                .wait_timeout(Duration::from_secs(60))
-                .ok()
-                .flatten()
-                .expect("the host answers the open")
-                .expect("the host takes the open")
-        })
-        .await
-        .unwrap()
-    };
-    eprintln!(
-        "workspace actions latency: an open answered while the page held no keys: {:?}",
-        started.elapsed()
-    );
-    assert!(
-        matches!(opened.status, ReceiptStatus::Accepted),
-        "a record whose first change waits for its keys is answered pending: {opened:?}"
-    );
-    let listing = browser
-        .catalogue(CatalogueQuery {
-            max_results: 200,
-            ..CatalogueQuery::default()
-        })
-        .await;
-    assert!(
-        listing.is_ok(),
-        "the page's catalogue answers while a write waits for its keys: {listing:?}"
-    );
-
-    // The keys arrive: the held write is saved, and the open is answered
-    // done, naming the record it made.
-    drop(held);
-    let settled = {
-        use tilo_actions::remote::ActionHost as _;
-        tokio::task::spawn_blocking(move || {
-            let deadline = tilo_test_env::hang_deadline();
-            loop {
-                let state = actions
-                    .observe(&caller, &opening)
-                    .expect("the host remembers the open it answered pending");
-                if state.update.is_terminal() {
-                    return state.update;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "the open never read as settled: {:?}",
-                    state.update
-                );
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        })
-        .await
-        .unwrap()
-    };
-    let tilo_actions::InvocationUpdate::Succeeded { output, .. } = &settled else {
-        panic!("the open is done once its record is saved: {settled:?}");
-    };
-    let record = output.value.as_ref().unwrap()["record"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let created = DocumentRoute {
-        app_id: SHEETS.into(),
-        cluster_id: WORKSPACE.into(),
-        record,
-    };
-    // The page opens the record it could not before, and acts on it through
-    // the host: saved at once now, answered done.
-    browser.peer.send(Cmd::OpenRoute(created.clone())).unwrap();
-    let provider = record_provider(&created);
-    let new_sheet = browser
-        .catalogue(CatalogueQuery {
-            provider: Some(provider.clone()),
-            max_results: 200,
-            ..CatalogueQuery::default()
-        })
-        .await
-        .unwrap()
-        .rows
-        .iter()
-        .filter_map(|row| row.action.as_ref())
-        .find(|action| action.address.action == "new-sheet")
-        .expect("the host lists the record's actions")
-        .address
-        .clone();
-    let acted = browser
-        .invoke(request(&provider, new_sheet, sheet_named("After the keys")))
-        .await;
-    assert!(
-        matches!(acted.status, ReceiptStatus::Completed { .. }),
-        "{acted:?}"
-    );
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        browser.pump();
-        if browser.peer.status().channels.contains(&created.record) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the page never opened the record its keys opened: {}",
-            browser.peer.status().channels
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    browser.peer.close();
-    hosted.agents.shutdown();
-    drop(hosted.web);
-    hosted.relay.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_listed_themes_action_is_one_the_host_can_run() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let host_key = host.cert.device_public_key;
     let themes = browser.create("so.tilo.themes");
@@ -986,7 +832,6 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let host_key = host.cert.device_public_key;
 
@@ -1203,7 +1048,6 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
     let sheets = browser.create(SHEETS);

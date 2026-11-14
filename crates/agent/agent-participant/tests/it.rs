@@ -34,8 +34,6 @@
 mod common;
 #[path = "harness/mod.rs"]
 mod harness;
-#[path = "../../../session/client/tests/support/participant.rs"]
-mod participant;
 #[path = "../../../session/client/tests/support/mod.rs"]
 mod support;
 

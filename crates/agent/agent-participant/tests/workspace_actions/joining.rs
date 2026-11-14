@@ -16,7 +16,6 @@ async fn a_request_sent_as_the_page_joins_is_answered_once_it_is_admitted() {
     let device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
 
     let peer = start_peer(
         Host::at(hosted.relay.node_addr()),

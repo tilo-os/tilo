@@ -46,7 +46,7 @@ async fn on_the_scan(
     action: &str,
     allowed: bool,
 ) -> (tilo_relay_protocol::agents::AgentTask, Vec<String>) {
-    let (root, host_device, _state, host, _laptop) = session().await;
+    let (root, host_device, _state, host) = session().await;
     let store = tilo_content::ContentStore::memory();
     let scan = format!("tilo.content:{}", store.put(&png(1600, 1200)).unwrap());
     let done = tool_call(

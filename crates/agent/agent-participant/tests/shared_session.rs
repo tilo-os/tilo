@@ -342,7 +342,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     let host = start_host(&root, &host_device, state.path(), &supervisor).await;
     let host_cert: DeviceCert = host_device.cert.clone();
-    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
+    crate::support::place(&host.relay, &host_device.cert).await;
 
     // 1. The agent's identity: its own key, certified under the root by the
     // laptop (consent), and a root-signed delegation the host registers.

@@ -114,7 +114,6 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
         )
         .await
     };
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut agent = Browser::open(&hosted, &computer, &host).await;
     let _ =
         tilo_session_client::device::run_as_agent(&agent.peer, hosted_documents::RUN_LABEL).await;

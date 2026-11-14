@@ -92,7 +92,6 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         },
     )
     .await;
-    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
     // The person's laptop answers what the host asks them about the agent.
     let _asked = crate::harness::hosted::Laptop::new(
         ["Claude Code".to_owned()],
@@ -398,7 +397,6 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
         Options::offering(crate::common::catalogue, ModelChoice::Scripted),
     )
     .await;
-    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
@@ -578,12 +576,7 @@ fn agent_runs(
 
 /// The person, as the actions the agent runs for them name them.
 fn person_of(root: &ed25519_dalek::SigningKey) -> String {
-    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
-        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-    ) else {
-        panic!("a key names a person")
-    };
-    person
+    hex::encode(root.verifying_key().to_bytes())
 }
 
 /// Each run opens Notes and makes a note: both succeed, whichever run asks.
@@ -640,7 +633,6 @@ async fn a_logged_in_computers_agents_act_while_the_persons_tab_is_open() {
         crate::common::catalogue,
     )
     .await;
-    let _participant = crate::participant::Participant::start(&relay, &root).await;
     let mut tab = Browser::open_at(&relay, &tab_device, &host, WORKSPACE).await;
     let agent = Browser::open_at(&relay, &computer, &host, WORKSPACE).await;
     let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;

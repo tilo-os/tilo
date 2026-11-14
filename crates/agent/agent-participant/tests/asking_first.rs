@@ -151,7 +151,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _laptop = crate::participant::Participant::start(&host.relay, &root).await;
+    crate::support::place(&host.relay, &host_device.cert).await;
     let agent_device = enrol(
         &root,
         "Agent: Careful",

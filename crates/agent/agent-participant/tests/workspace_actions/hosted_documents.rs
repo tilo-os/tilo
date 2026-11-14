@@ -364,7 +364,6 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
         },
     )
     .await;
-    let _laptop = crate::participant::Participant::start(&hosted.relay, &root).await;
 
     // The agent's session: one of the person's devices, as `tilo login`
     // makes one, serving the MCP projection of the workspace's host. No

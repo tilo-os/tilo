@@ -16,9 +16,6 @@ mod common;
 #[path = "../tests/harness/mod.rs"]
 mod harness;
 #[cfg(not(test))]
-#[path = "../../../session/client/tests/support/participant.rs"]
-mod participant;
-#[cfg(not(test))]
 #[path = "../../../session/client/tests/support/mod.rs"]
 mod support;
 

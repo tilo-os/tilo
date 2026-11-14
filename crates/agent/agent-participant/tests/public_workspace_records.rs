@@ -257,7 +257,6 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         .register_agent(&agent_device.cert, delegation.clone())
         .await
         .unwrap();
-    let _laptop = crate::participant::Participant::start(&host.relay, &owner).await;
     let planned = std::sync::Arc::new(Mutex::new(Vec::new()));
     let control = AgentControl::new(delegation.clone());
     let mut agent = AgentParticipant::start(

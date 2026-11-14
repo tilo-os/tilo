@@ -22,6 +22,8 @@ const TASKS: &str = "so.tilo.tasks";
 /// revoked, and what they answer when the host asks them.
 struct Membership {
     member: HostDevice,
+    /// The host's workspaces, which hand the service the keys its device holds.
+    workspaces: tilo_relay::workspaces::Workspaces,
     person: [u8; 32],
     device: [u8; 32],
     role: Mutex<Option<Role>>,
@@ -78,6 +80,15 @@ impl WorkspaceRecordsLink for Membership {
     }
     fn workspace_content(&self, _workspace: WorkspaceId) -> Option<tilo_content::ContentStore> {
         Some(self.content.clone())
+    }
+    fn host_keys(
+        &self,
+        route: &DocumentRoute,
+        create: bool,
+    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
+        self.member
+            .runtime
+            .block_on(self.workspaces.own_route_keys(route, create))
     }
     fn ask_person(
         &self,
@@ -330,7 +341,6 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _participant = crate::participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let notes = browser.create(NOTES);
     let tasks = browser.create(TASKS);
@@ -363,6 +373,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
             key: host.key.clone(),
             runtime: tokio::runtime::Handle::current(),
         },
+        workspaces: hosted.relay.workspaces().unwrap().clone(),
         person: guest_device.cert.user_public_key,
         device: guest_device.cert.device_public_key,
         role: Mutex::new(Some(Role::Viewer)),
