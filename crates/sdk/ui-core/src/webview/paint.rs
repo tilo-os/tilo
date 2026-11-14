@@ -2078,7 +2078,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_pages_text_is_set_in_its_face_and_drawn_inside_its_box;
+        fn a_pages_text_is_set_in_its_face_and_at_its_own_width;
 
         phase a_family_list_is_set_in_the_face_or_at_least_the_class_its_page_asked_for;
         // A page that names no face is set by its engine in the engine's own standard one, a
@@ -2155,34 +2155,6 @@ mod tests {
             assert!(
                 (from + to).abs_diff(400) <= 6,
                 "centred in the field: {from}..{to}"
-            );
-        }
-
-        phase a_run_wider_than_its_box_is_drawn_narrower_and_ends_inside_it;
-        // A run this device's face sets wider than the engine's did is drawn narrower, so it
-        // ends where the engine's line ended and never runs into what follows it; what a
-        // field holds that is longer than its room stays in the room too. Text written right
-        // to left is drawn in its box like any other.
-        {
-            let words = "The harbour kept its own hours";
-            let style = TextStyle::new(20.0);
-            let (natural, _) = TextRenderer::new().measure_style(words, None, &style);
-            let narrow = tilo_paint_stream::Rect::new(20.0, 20.0, natural * 0.7, 30.0);
-            let end = 20 + (natural * 0.7).ceil() as usize + 1;
-            for part in [16, ItemKey::SLOT] {
-                let (left, right) = inked(part, narrow, words);
-                assert!(
-                    left >= 19 && right <= end,
-                    "part {part}: {left}..{right} in a box that ends at {end}"
-                );
-            }
-            let hebrew = "\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{5e2}\u{5d5}\u{5dc}\u{5dd}";
-            let (wide, _) = TextRenderer::new().measure_style(hebrew, None, &style);
-            let boxed = tilo_paint_stream::Rect::new(100.0, 20.0, wide, 30.0);
-            let (left, right) = inked(16, boxed, hebrew);
-            assert!(
-                left >= 98 && right <= 102 + wide.ceil() as usize,
-                "{left}..{right} in a box from 100, {wide} wide"
             );
         }
     }
@@ -2702,6 +2674,34 @@ mod tests {
             dark.iter().copied().min().expect("the text left ink"),
             dark.iter().copied().max().expect("the text left ink"),
         )
+    }
+
+    /// A run this device's face sets wider than the engine's did is drawn narrower, so it
+    /// ends where the engine's line ended and never runs into what follows it; what a
+    /// field holds that is longer than its room stays in the room too. Text written right
+    /// to left is drawn in its box like any other.
+    #[test]
+    fn a_run_wider_than_its_box_is_drawn_narrower_and_ends_inside_it() {
+        let words = "The harbour kept its own hours";
+        let style = TextStyle::new(20.0);
+        let (natural, _) = TextRenderer::new().measure_style(words, None, &style);
+        let narrow = tilo_paint_stream::Rect::new(20.0, 20.0, natural * 0.7, 30.0);
+        let end = 20 + (natural * 0.7).ceil() as usize + 1;
+        for part in [16, ItemKey::SLOT] {
+            let (left, right) = inked(part, narrow, words);
+            assert!(
+                left >= 19 && right <= end,
+                "part {part}: {left}..{right} in a box that ends at {end}"
+            );
+        }
+        let hebrew = "\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{5e2}\u{5d5}\u{5dc}\u{5dd}";
+        let (wide, _) = TextRenderer::new().measure_style(hebrew, None, &style);
+        let boxed = tilo_paint_stream::Rect::new(100.0, 20.0, wide, 30.0);
+        let (left, right) = inked(16, boxed, hebrew);
+        assert!(
+            left >= 98 && right <= 102 + wide.ceil() as usize,
+            "{left}..{right} in a box from 100, {wide} wide"
+        );
     }
 
     /// The toolkit draws the recorded page close to the engine's own pixels.
