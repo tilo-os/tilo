@@ -81,6 +81,10 @@ struct Served {
 /// windows included, and shows the agent there itself.
 struct OnDevice(tilo_runtime::enter::Entered);
 
+/// One workspace's run, once whoever entered it holds it: a lock per
+/// workspace, so entering one does not hold another's requests.
+type Entered<Run> = Arc<tokio::sync::Mutex<Option<Arc<Run>>>>;
+
 pub struct Session {
     pub grant: String,
     pub scope: Scope,
@@ -95,9 +99,11 @@ pub struct Session {
     connection: Arc<Connection>,
     /// The server, which answers the account's own actions.
     server: std::sync::Weak<crate::Server>,
-    served: tokio::sync::Mutex<HashMap<String, Arc<Served>>>,
+    /// The runs in workspaces the relay hosts, by workspace, each entered
+    /// under its own lock.
+    served: tokio::sync::Mutex<HashMap<String, Entered<Served>>>,
     /// The runs in workspaces the person's devices host, by workspace.
-    on_devices: tokio::sync::Mutex<HashMap<String, Arc<OnDevice>>>,
+    on_devices: tokio::sync::Mutex<HashMap<String, Entered<OnDevice>>>,
     /// The workspace tools, once a workspace served them.
     tools: Mutex<Option<Vec<Value>>>,
     pub(crate) last_used: Mutex<Instant>,
@@ -256,10 +262,18 @@ impl Session {
         &self.connection
     }
 
-    /// The run in `workspace`, entering it the first time.
+    /// The run in `workspace`, entering it the first time. Each workspace's
+    /// entry has a lock of its own, so entering one does not hold another's
+    /// answers.
     async fn served(&self, workspace: &str) -> Result<Arc<Served>, RelayError> {
-        let mut runs = self.served.lock().await;
-        if let Some(known) = runs.get(workspace) {
+        let slot = {
+            let mut runs = self.served.lock().await;
+            let slot = Arc::clone(runs.entry(workspace.to_owned()).or_default());
+            drop(runs);
+            slot
+        };
+        let mut entered = slot.lock().await;
+        if let Some(known) = entered.as_ref() {
             return Ok(Arc::clone(known));
         }
         let id = self.relay.enter(&self.connection, workspace).await?;
@@ -276,8 +290,8 @@ impl Session {
             .with_surface(Surface::Agent)
             .with_agent_run(&self.run, self.label.clone());
         let run = Arc::new(Served { server, windows });
-        runs.insert(workspace.to_owned(), Arc::clone(&run));
-        drop(runs);
+        *entered = Some(Arc::clone(&run));
+        drop(entered);
         Ok(run)
     }
 
@@ -338,14 +352,21 @@ impl Session {
     /// The run in `workspace` when one of the person's devices hosts it, as
     /// their list says, entering it at that device's agent door the first
     /// time (and again once the device closed it); `None` for a workspace the
-    /// relay keeps.
+    /// relay keeps. As [`Self::served`], each workspace's entry has a lock of
+    /// its own.
     async fn on_device(&self, workspace: &str) -> Result<Option<Arc<OnDevice>>, String> {
         // A workspace the run already works in on the relay is the relay's.
         if self.served.lock().await.contains_key(workspace) {
             return Ok(None);
         }
-        let mut runs = self.on_devices.lock().await;
-        if let Some(known) = runs.get(workspace).filter(|known| known.0.is_live()) {
+        let slot = {
+            let mut runs = self.on_devices.lock().await;
+            let slot = Arc::clone(runs.entry(workspace.to_owned()).or_default());
+            drop(runs);
+            slot
+        };
+        let mut entered = slot.lock().await;
+        if let Some(known) = entered.as_ref().filter(|known| known.0.is_live()) {
             return Ok(Some(Arc::clone(known)));
         }
         let Some(address) = self.device_address(workspace).await else {
@@ -356,16 +377,16 @@ impl Session {
             .endpoint()
             .await
             .map_err(|error| error.to_string())?;
-        let entered = tilo_runtime::enter::enter(
+        let on_device = tilo_runtime::enter::enter(
             &endpoint,
             &self.connection.entering_key(),
             workspace,
             &address,
         )
         .await?;
-        let run = Arc::new(OnDevice(entered));
-        runs.insert(workspace.to_owned(), Arc::clone(&run));
-        drop(runs);
+        let run = Arc::new(OnDevice(on_device));
+        *entered = Some(Arc::clone(&run));
+        drop(entered);
         Ok(Some(run))
     }
 
