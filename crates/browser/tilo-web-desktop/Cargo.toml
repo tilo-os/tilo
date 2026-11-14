@@ -57,6 +57,7 @@ ebook = { path = "../../../apps/ebook" }
 feeds = { path = "../../../apps/feeds" }
 file-explorer = { path = "../../../apps/file-explorer" }
 hex-editor = { path = "../../../apps/hex-editor" }
+mail = { path = "../../../apps/mail", default-features = false, features = [] }
 maps = { path = "../../../apps/maps" }
 messages = { path = "../../../apps/messages" }
 model-providers = { path = "../../../apps/model-providers" }

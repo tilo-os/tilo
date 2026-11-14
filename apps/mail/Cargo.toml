@@ -11,6 +11,12 @@ license.workspace = true
 [package.metadata.cargo-machete]
 ignored = ["mail-samples"]
 
+# A page reads the mail its workspace holds and asks a capable device to
+# reach the servers (`src/peer.rs`): it compiles no IMAP/SMTP engine and no
+# account custody.
+[package.metadata.tilo]
+web-features = []
+
 [lib]
 name = "mail"
 path = "src/lib.rs"
@@ -73,7 +79,6 @@ taffy.workspace = true
 # MIME parsing and message construction; both are pure Rust with no native,
 # TLS, or async dependencies.
 mail-parser = "0.11.4"
-mail-builder = "0.4.4"
 # HTML mail is parsed as an engine parses it (the WHATWG algorithm), for the
 # sealed document the reader's web engine shows and for the styled text it
 # shows without one.
@@ -104,6 +109,14 @@ rcgen = { workspace = true, optional = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+mail-builder = "0.4.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# A page builds MIME too (drafts, and the sends a capable device delivers),
+# but has no hostname to read: without its default `gethostname` feature
+# mail-builder pulls no native socket stack, and Mail names every
+# Message-ID itself.
+mail-builder = { version = "0.4.4", default-features = false }
 
 [features]
 # The sample mailboxes the screenshot scenarios and tests show: development

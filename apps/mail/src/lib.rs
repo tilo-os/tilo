@@ -33,13 +33,13 @@
 
 pub mod account;
 pub mod actions;
-#[cfg(feature = "live")]
 pub(crate) mod address_book;
 pub mod app;
 pub mod attachment_store;
 pub mod avatars;
 pub mod bindings;
 pub mod compose;
+#[cfg(feature = "live")]
 pub(crate) mod connect;
 pub mod copies;
 pub(crate) mod custody;

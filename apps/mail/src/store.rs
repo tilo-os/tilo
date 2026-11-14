@@ -33,6 +33,7 @@ type Write = (PathBuf, Option<Vec<Message>>, Vec<(PathBuf, Vec<u8>)>);
 type Sender<T> = std::sync::mpsc::Sender<T>;
 
 impl Store {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn at(root: PathBuf) -> Self {
         Self {
             root: Some(root),

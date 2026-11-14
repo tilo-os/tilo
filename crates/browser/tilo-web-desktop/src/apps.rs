@@ -24,6 +24,7 @@ pub(crate) fn register() {
     feeds_split::register();
     file_explorer_split::register();
     hex_editor_split::register();
+    mail_split::register();
     maps_split::register();
     messages_split::register();
     model_providers_split::register();
@@ -608,6 +609,41 @@ mod hex_editor_split {
 
     pub(super) fn register() {
         registry::defer_arriving(APP, "Hex Editor", SkeletonShape::Ground, open);
+    }
+}
+
+mod mail_split {
+    use std::ffi::c_void;
+
+    use ui::application::ApplicationDefinition;
+    use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
+
+    use crate::split::Callback;
+
+    const APP: &str = "so.tilo.mail";
+
+    #[link(wasm_import_module = "./__wasm_split.js")]
+    #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
+    unsafe extern "C" {
+        #[link_name = "__wasm_split_load_mail_a7bf17b9b0720c4c_definition"]
+        fn load(callback: Callback, data: *const c_void);
+        #[link_name = "__wasm_split_00___mail___00_import_a7bf17b9b0720c4c_definition"]
+        fn definition() -> *const ApplicationDefinition;
+    }
+
+    #[unsafe(export_name = "__wasm_split_00___mail___00_export_a7bf17b9b0720c4c_definition")]
+    #[allow(improper_ctypes_definitions, reason = "called only from Rust")]
+    extern "C" fn export() -> *const ApplicationDefinition {
+        mail::definition()
+    }
+
+    fn open() -> Loading {
+        Box::pin(crate::split::definition(load, definition))
+    }
+
+    pub(super) fn register() {
+        registry::defer_arriving(APP, "Mail", SkeletonShape::Ground, open);
     }
 }
 

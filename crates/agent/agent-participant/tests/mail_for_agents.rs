@@ -98,13 +98,13 @@ fn subjects(listing: &Value) -> Vec<String> {
 }
 
 #[test]
-fn mail_is_in_the_agents_catalogue_but_not_the_browsers() {
+fn mail_is_in_the_agents_catalogue_and_the_browsers() {
     assert!(AppCatalogue::native().get(MAIL).is_some());
     assert!(
         tilo_agent_participant::component_apps()
             .iter()
-            .all(|definition| definition.app_id != MAIL),
-        "a browser page still cannot mount Mail"
+            .any(|definition| definition.app_id == MAIL),
+        "a browser page mounts Mail"
     );
 }
 

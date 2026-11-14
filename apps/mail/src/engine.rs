@@ -287,6 +287,7 @@ pub trait MailEngine: Send {
     fn handle(&mut self, req: EngineRequest, out: &Sender<EngineEvent>);
 }
 
+#[cfg(feature = "live")]
 fn report_engine_error(
     out: &Sender<EngineEvent>,
     request_id: EngineRequestId,

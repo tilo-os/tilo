@@ -35,6 +35,10 @@ pub(crate) struct SecretRelease {
 
 impl SecretRelease {
     /// Custody on the window's route, captured while the window is built.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "a page holds no account secrets to release")
+    )]
     pub(crate) fn capture() -> Option<Self> {
         Client::capture().map(|client| Self::from(Source::Route(Box::new(client))))
     }
@@ -44,6 +48,10 @@ impl SecretRelease {
         Self::from(Source::Root(root))
     }
 
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "a page holds no account secrets to release")
+    )]
     fn from(source: Source) -> Self {
         Self {
             source,
@@ -110,6 +118,10 @@ enum Asked {
 }
 
 enum Source {
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(dead_code, reason = "a page holds no account secrets to release")
+    )]
     Route(Box<Client>),
     #[cfg(test)]
     Root(std::path::PathBuf),

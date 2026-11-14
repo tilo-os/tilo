@@ -23,6 +23,7 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         feeds::definition(),
         file_explorer::definition(),
         hex_editor::definition(),
+        mail::definition(),
         maps::definition(),
         messages::definition(),
         model_providers::definition(),

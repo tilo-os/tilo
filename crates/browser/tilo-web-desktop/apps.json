@@ -114,6 +114,13 @@
       "module": "hex_editor"
     },
     {
+      "id": "so.tilo.mail",
+      "name": "Mail",
+      "category": "Office",
+      "version": "0.1.0",
+      "module": "mail"
+    },
+    {
       "id": "so.tilo.maps",
       "name": "Maps",
       "category": "Utility",

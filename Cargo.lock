@@ -22867,6 +22867,7 @@ dependencies = [
  "feeds",
  "file-explorer",
  "hex-editor",
+ "mail",
  "maps",
  "messages",
  "model-providers",

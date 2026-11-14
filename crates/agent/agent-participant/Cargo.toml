@@ -60,6 +60,7 @@ ebook = { path = "../../../apps/ebook" }
 feeds = { path = "../../../apps/feeds" }
 file-explorer = { path = "../../../apps/file-explorer" }
 hex-editor = { path = "../../../apps/hex-editor" }
+mail = { path = "../../../apps/mail", default-features = false, features = [] }
 maps = { path = "../../../apps/maps" }
 messages = { path = "../../../apps/messages" }
 model-providers = { path = "../../../apps/model-providers" }
@@ -86,11 +87,6 @@ video-player = { path = "../../../apps/video-player", default-features = false, 
 weather = { path = "../../../apps/weather" }
 word-processor = { path = "../../../apps/word-processor" }
 # generated apps: end
-# Apps an agent's worker holds that a browser page cannot mount
-# (`apps::agent_only_apps`). Mail's account engine is built in (main's Mail
-# does not build without `live`) but idle: a worker holds no account and
-# reaches no network.
-mail = { path = "../../../apps/mail" }
 # The participant's client: the certified relay session (iroh for a host-side agent) with its live
 # plane, the same code a browser page runs, and the board of who is here and the agent's own word
 # on it.

@@ -141,6 +141,9 @@ impl ServerOutbox {
 
 #[derive(Clone)]
 enum AccountsPersist {
+    /// A page keeps no account store of its own: the person's accounts
+    /// record is all it reads.
+    #[cfg(not(target_arch = "wasm32"))]
     Profile(std::path::PathBuf),
     #[cfg(test)]
     Sandbox(Arc<tempfile::TempDir>),
@@ -161,6 +164,7 @@ impl AccountsPersist {
 
     fn root(&self) -> Option<std::path::PathBuf> {
         match self {
+            #[cfg(not(target_arch = "wasm32"))]
             AccountsPersist::Profile(root) => Some(root.clone()),
             #[cfg(test)]
             AccountsPersist::Sandbox(dir) => Some(dir.path().to_path_buf()),
@@ -176,6 +180,7 @@ impl AccountsPersist {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn wake_through(slot: &Arc<std::sync::Mutex<Option<ui::WakeHandle>>>) -> crate::engine::Wake {
     let slot = Arc::clone(slot);
     Arc::new(move || {
@@ -427,6 +432,10 @@ impl MailApp {
             .is_some()
     }
 
+    /// A window someone uses on a device that reaches mail servers: the
+    /// accounts of the host's profile, and the engine worker that keeps them
+    /// current. No fabricated messages.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn for_window(
         storage: &ui::storage::AppStorage,
         content: Option<ContentStore>,
@@ -461,6 +470,24 @@ impl MailApp {
         app.state().store = store;
         app.open_kept_mail();
         app
+    }
+
+    /// A window someone uses in a browser page: it shows the mail the
+    /// workspace holds (the person's accounts and kept copies, the mailbox
+    /// record) and queues what needs a server in the mailbox's outboxes,
+    /// which a device holding the account carries out. A page opens no
+    /// sockets and no account vault, so it starts no engine.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn for_window(
+        _storage: &ui::storage::AppStorage,
+        content: Option<ContentStore>,
+    ) -> Self {
+        let shared = MailState::shared(MailState::new_live(
+            AccountStore::new(),
+            crate::avatars::Avatars::new(),
+        ));
+        let content = content.unwrap_or_else(ContentStore::memory);
+        Self::assemble(shared, content, None, AccountsPersist::Disabled)
     }
 
     pub(crate) fn for_past_version() -> Self {
