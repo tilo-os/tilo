@@ -151,13 +151,13 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
     drop(host.web);
     host.relay.shutdown().await;
     // The session waits out a backoff before its next attempt, and its
-    // status names when that is. Away from its host, a dial runs to its
-    // deadline, so a backoff many attempts in would take minutes to reach:
-    // the first one is what tells a session told the network is back from
-    // one left to its timer.
+    // status names when that is. The retry is proved by reaching the dial
+    // before that time, so the backoff is the room a stall may take: the
+    // first lasts a quarter of a second and a loaded machine keeps a thread
+    // off the CPU that long, the second twice it.
     let due = wait_for("the session to wait out a backoff", || async {
         let status = peer.status();
-        (status.phase == TransportPhase::Offline)
+        (status.phase == TransportPhase::Offline && status.attempt >= 2)
             .then_some(status.next_attempt_at_ms)
             .flatten()
     })
