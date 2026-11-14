@@ -13,6 +13,7 @@
 //! sliding, changes one layer header instead of every item beneath it. The
 //! client scrolls the root layer locally and tells the host afterwards.
 
+pub mod fonts;
 mod model;
 mod patch;
 pub mod snapshot;

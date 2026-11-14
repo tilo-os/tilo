@@ -84,6 +84,22 @@ pub struct ItemKey {
     pub part: u32,
 }
 
+impl ItemKey {
+    /// A part of text whose box is the room it has, not the box the engine
+    /// laid it out in: what a field holds. A client draws it at its own
+    /// width from the box's start, narrower when it would run past the box's
+    /// end, and never stretches it to the box.
+    pub const SLOT: u32 = 1 << 13;
+    /// Slot text that ends at its box's end: a field written right to left,
+    /// or one its page aligns so.
+    pub const SLOT_END: u32 = 1 << 12;
+    /// Slot text centred in its box: the words on a button.
+    pub const SLOT_CENTRE: u32 = 1 << 11;
+    /// The parts below this are a line of text the engine laid out, in its
+    /// own box: the bits above mark text that is not.
+    pub const LINES: u32 = 1 << 11;
+}
+
 /// One paint operation, in its layer's content coordinates.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Item {

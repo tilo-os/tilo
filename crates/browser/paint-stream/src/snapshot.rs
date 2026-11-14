@@ -6,11 +6,22 @@
 //! which is what keeps scroll and sticky motion out of the item lists.
 //!
 //! Capture a snapshot with [`COMPUTED_STYLES`]; pass the result to [`convert`].
+//!
+//! A snapshot is layout, not paint: what the engine's own theme draws of a
+//! form control (a field's edge, a select's mark, a ticked box, the ring
+//! around the field being edited) is not in it. [`controls`] draws those
+//! from what the snapshot does say of each control, as items every client
+//! already draws. What a field shows where that is not what it holds (a date
+//! in the engine's own words) the engine is asked for: [`asks`] names those
+//! fields, and [`convert_with`] takes what it said.
+
+mod controls;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::Value;
 
+use crate::fonts::FontClass;
 use crate::model::{
     Anchor, BlobRef, Color, FontSpec, Frame, Item, ItemKey, Layer, LayerId, Point, ROOT, Rect,
     Shape,
@@ -45,6 +56,22 @@ pub const COMPUTED_STYLES: &[&str] = &[
     "stroke",
     "stroke-width",
     "fill-rule",
+    // From here on what the engine's theme paints is told from: a snapshot
+    // recorded without them converts as it did.
+    "appearance",
+    "border-top-style",
+    "outline-style",
+    "outline-width",
+    "outline-color",
+    "outline-offset",
+    "accent-color",
+    "text-decoration-line",
+    "text-decoration-color",
+    "-webkit-text-security",
+    "direction",
+    "text-align",
+    "padding-right",
+    "white-space",
 ];
 
 #[derive(Clone, Copy)]
@@ -76,21 +103,55 @@ enum S {
     SvgStroke,
     SvgStrokeWidth,
     FillRule,
+    Appearance,
+    BorderTopStyle,
+    OutlineStyle,
+    OutlineWidth,
+    OutlineColor,
+    OutlineOffset,
+    Accent,
+    DecorationLine,
+    DecorationColor,
+    TextSecurity,
+    Direction,
+    TextAlign,
+    PaddingRight,
+    WhiteSpace,
 }
 
 const PLACEHOLDER: Color = Color([117, 117, 117, 255]);
 const PART_FILL: u32 = 0;
 const PART_BORDER: u32 = 1;
 const PART_IMAGE: u32 = 2;
-const PART_FIELD: u32 = 3;
+const SLOT: u32 = ItemKey::SLOT;
+const SLOT_END: u32 = ItemKey::SLOT_END;
+const SLOT_CENTRE: u32 = ItemKey::SLOT_CENTRE;
+const PART_FIELD: u32 = 3 | SLOT;
 const PART_VECTOR: u32 = 4;
 /// The part of a checkbox or a radio button that says it is chosen: drawn
 /// only while it is.
 pub const CHOICE_MARK: u32 = 5;
 /// The box of a checkbox or a radio button the page gave no box of its own.
 pub const CHOICE_BOX: u32 = 6;
+/// The ring an element is outlined with: the engine's own around the field
+/// being edited, or one the page draws.
+pub const OUTLINE: u32 = 7;
+/// What marks a field as one that opens: a select's drop-down mark, the
+/// picker of a date or a time.
+pub const FIELD_MARK: u32 = 8;
+/// The filling of a ticked box, of a chosen radio button's ring and of a
+/// slider up to its thumb.
+const PART_CHOICE_FILL: u32 = 9;
+/// A slider's thumb, and the swatch of a colour.
+pub const FIELD_VALUE: u32 = 10;
+/// What stands behind a fieldset's legend, where its border is not drawn.
+const PART_LEGEND_GAP: u32 = 11;
+/// The inner half of a border the engine draws in two tones.
+const PART_BORDER_INNER: u32 = 12;
+/// A line drawn on text: under it, through it or over it.
+pub const TEXT_LINE: u32 = 13;
 /// The first line of a field that holds several; a field has few.
-const PART_LINE: u32 = 32;
+const PART_LINE: u32 = 32 | SLOT;
 /// Lines of one field a frame carries.
 const MAX_FIELD_LINES: usize = 64;
 /// Shapes one inline SVG may carry; larger drawings are not icons.
@@ -176,6 +237,25 @@ fn ellipse(cx: f32, cy: f32, rx: f32, ry: f32) -> String {
     )
 }
 
+/// The text of one line box as its line shows it. An engine keeps a text as
+/// its page wrote it and lays out the spaces it collapses to: a line break in
+/// the source is a space on the line, and a run of spaces is one, unless the
+/// page keeps its spaces (`kept`). A client that drew a line break inside a
+/// line box would set one line as two.
+fn spaced(text: &str, kept: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut after_space = false;
+    for letter in text.chars() {
+        let space = matches!(letter, ' ' | '\n' | '\r' | '\t' | '\u{c}');
+        if space && after_space && !kept {
+            continue;
+        }
+        out.push(if space { ' ' } else { letter });
+        after_space = space;
+    }
+    out
+}
+
 fn css_url(s: &str) -> Option<&str> {
     let start = s.find("url(")?;
     let rest = s.get(start.saturating_add(4)..)?;
@@ -193,6 +273,9 @@ struct Doc<'a> {
     styles: Vec<Vec<i64>>,
     bounds: Vec<Option<Rect>>,
     scroll: Vec<Option<Rect>>,
+    /// Each box as the page's own script measures it: in the page's pixels,
+    /// which a zoomed page lays out larger.
+    offset: Vec<Option<Rect>>,
     paint_order: Vec<i64>,
     layout_text: Vec<i64>,
     layout_of: HashMap<i64, usize>,
@@ -272,6 +355,28 @@ impl<'a> Doc<'a> {
                 str::to_owned,
             );
         words.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// How much larger the engine lays the page out than the page's own
+    /// pixels say: the zoom of the page. A snapshot's boxes are laid out
+    /// zoomed and its computed lengths are not, so every length a style gives
+    /// is scaled by this. The root element says it, as its laid out width
+    /// over the width its script measures.
+    fn zoom(&self) -> f32 {
+        let root = self
+            .layout_node
+            .iter()
+            .position(|node| self.name(*node) == "HTML");
+        let widths = root.and_then(|li| {
+            let laid = self.bounds.get(li).copied().flatten()?;
+            let measured = self.offset.get(li).copied().flatten()?;
+            (laid.w >= 1.0 && measured.w >= 1.0).then_some(laid.w / measured.w)
+        });
+        match widths {
+            // A script measures in whole pixels: a width a fraction off is no zoom.
+            Some(zoom) if (zoom - 1.0).abs() >= 0.02 => zoom.clamp(0.2, 8.0),
+            _ => 1.0,
+        }
     }
 
     fn parent_of(&self, node: i64) -> i64 {
@@ -400,6 +505,7 @@ fn parse(snapshot: &Value) -> Result<Doc<'_>, SnapshotError> {
             .unwrap_or_default(),
         bounds: rects(&layout["bounds"]),
         scroll: rects(&layout["scrollRects"]),
+        offset: rects(&layout["offsetRects"]),
         paint_order: ints(&layout["paintOrders"]),
         layout_text: ints(&layout["text"]),
         sources: resolve(rare(&nodes["currentSourceURL"])),
@@ -432,9 +538,91 @@ struct Converter<'a> {
     doc_scroll: Point,
     layer_of_node: HashMap<i64, LayerId>,
     layers: BTreeMap<LayerId, Building>,
+    /// The page's zoom ([`Doc::zoom`]).
+    zoom: f32,
+    told: &'a Told,
+    /// The colour behind everything, for what is drawn over a box to hide it.
+    canvas: Color,
+    asks: Vec<(u64, String)>,
+    passwords: Vec<u64>,
+    /// The family lists text is set in that the engine has not said the
+    /// class of.
+    families: std::cell::RefCell<std::collections::BTreeSet<String>>,
+}
+
+/// What a caller knows of a page that its snapshot does not say.
+#[derive(Clone, Debug, Default)]
+pub struct Told {
+    /// What the engine said a field shows, by the field's node: the value the
+    /// field held when it was asked, and the text it showed then, or `None`
+    /// where the engine could not say.
+    pub shown: HashMap<u64, (String, Option<String>)>,
+    /// Whether the engine is asked what the fields of [`Converted::asks`]
+    /// show. Until it has said, such a field is drawn empty: what it holds is
+    /// not what its page shows.
+    pub asking: bool,
+    /// Fields that were password fields: a page that shows a password on
+    /// request turns its field into plain text, and what it holds is no less
+    /// a secret for that.
+    pub secret: HashSet<u64>,
+    /// What class of face the engine said it sets a family list like, by the
+    /// list as its style computes it; `None` where the engine could not tell
+    /// (the face is like none of its generic families, or like several).
+    pub classes: HashMap<String, Option<FontClass>>,
+}
+
+/// A frame, and what its page's engine is still to be asked.
+#[derive(Clone, Debug)]
+pub struct Converted {
+    pub frame: Frame,
+    /// The fields that show something other than what they hold, each with
+    /// what it holds: a date, a time or a number in the engine's own words,
+    /// the words on a button the page gave none. Only the engine can say what
+    /// they show.
+    pub asks: Vec<(u64, String)>,
+    /// The password fields, for [`Told::secret`].
+    pub passwords: Vec<u64>,
+    /// The family lists the page's text is set in that [`Told::classes`]
+    /// does not hold: only the engine can say what class of face it sets
+    /// each in on its machine.
+    pub families: Vec<String>,
 }
 
 impl Converter<'_> {
+    /// A length a style gives, in the pixels the page is laid out in.
+    fn len(&self, li: usize, s: S) -> f32 {
+        px(self.doc.style(li, s)) * self.zoom
+    }
+
+    /// Whether the engine's own theme paints the control: its page left its
+    /// appearance alone. A snapshot that does not say is taken as a page
+    /// that drew the control itself.
+    fn themed(&self, li: usize) -> bool {
+        !matches!(self.doc.style(li, S::Appearance), "" | "none")
+    }
+
+    /// The colour `node` stands on: its own background, else the nearest one
+    /// behind it, else the canvas.
+    fn backdrop(&self, node: i64) -> Color {
+        let mut at = node;
+        for _ in 0..64 {
+            if at < 0 {
+                break;
+            }
+            let own = self
+                .doc
+                .layout_of
+                .get(&at)
+                .and_then(|li| css_color(self.doc.style(*li, S::Bg)))
+                .filter(|color| color.0[3] == 255);
+            if let Some(color) = own {
+                return color;
+            }
+            at = self.doc.parent_of(at);
+        }
+        self.canvas
+    }
+
     /// The layer whose content holds `node`'s boxes: the nearest
     /// layer-rooting ancestor-or-self.
     fn layer_for(&mut self, node: i64) -> LayerId {
@@ -481,7 +669,10 @@ impl Converter<'_> {
             .get(li)
             .copied()
             .flatten()
-            .map_or_else(Point::default, |r| Point { x: r.x, y: r.y });
+            .map_or_else(Point::default, |r| Point {
+                x: r.x * self.zoom,
+                y: r.y * self.zoom,
+            });
         let parent_origin = self
             .layers
             .get(&parent)
@@ -597,54 +788,9 @@ impl Converter<'_> {
                 node: node_key,
                 part,
             };
-            let radius = px(self.doc.style(li, S::Radius));
-            // A background under a CSS mask is an icon shape we cannot cut
-            // yet; drawing it unmasked paints a solid square.
-            let masked = !matches!(self.doc.style(li, S::Mask), "" | "none");
-            if !masked && let Some(color) = css_color(self.doc.style(li, S::Bg)) {
-                self.push_decoration(
-                    node,
-                    order,
-                    0,
-                    Item::Fill {
-                        key: key(PART_FILL),
-                        rect,
-                        color,
-                        radius,
-                    },
-                );
-            }
-            let widths = [
-                S::BorderTopW,
-                S::BorderRightW,
-                S::BorderBottomW,
-                S::BorderLeftW,
-            ]
-            .map(|s| px(self.doc.style(li, s)));
-            let colors = [
-                S::BorderTopC,
-                S::BorderRightC,
-                S::BorderBottomC,
-                S::BorderLeftC,
-            ]
-            .map(|s| css_color(self.doc.style(li, s)).unwrap_or_default());
-            // A computed border width is 0 unless its style is a visible one,
-            // so the widths alone say which sides the page draws.
-            if widths.iter().any(|w| *w > 0.0) && colors.iter().any(|c| c.0[3] > 0) {
-                self.push_decoration(
-                    node,
-                    order,
-                    1,
-                    Item::Border {
-                        key: key(PART_BORDER),
-                        rect,
-                        widths,
-                        colors,
-                        radius,
-                    },
-                );
-            }
             let name = self.doc.name(node);
+            let masked = !matches!(self.doc.style(li, S::Mask), "" | "none");
+            let rect = self.dress(node, li, order, rect);
             let src = if name == "IMG" {
                 self.doc.sources.get(&node).copied()
             } else if masked {
@@ -673,246 +819,80 @@ impl Converter<'_> {
         }
     }
 
-    /// Form fields draw their value through the engine's shadow tree, which
-    /// the snapshot omits: draw value or placeholder from the node instead.
-    ///
-    /// What a viewer is shown is what the page holds: the text of an input,
-    /// the lines of a textarea, the option a select shows, and whether a
-    /// checkbox or a radio button is chosen.
-    fn field(&mut self, node: i64, li: usize, order: i64, rect: Rect) {
-        let name = self.doc.name(node);
-        let kind = self.doc.attr(node, "type").unwrap_or("");
-        if name == "INPUT" {
-            let radio = kind.eq_ignore_ascii_case("radio");
-            if radio || kind.eq_ignore_ascii_case("checkbox") {
-                self.choice(node, li, order, rect, radio);
-                return;
-            }
-        }
-        if name == "TEXTAREA" {
-            self.lines(node, li, order, rect);
-            return;
-        }
-        let chosen;
-        let raw = if name == "SELECT" {
-            // A list shown open lays its options out as boxes of its own.
-            let open = self.doc.attr(node, "multiple").is_some()
-                || self
-                    .doc
-                    .attr(node, "size")
-                    .and_then(|size| size.trim().parse::<u32>().ok())
-                    .is_some_and(|size| size > 1);
-            if open {
-                return;
-            }
-            chosen = self.doc.chosen_option(node);
-            chosen.as_str()
-        } else {
-            self.doc.input_values.get(&node).copied().unwrap_or("")
-        };
-        // A password never leaves the host: viewers see its length as dots,
-        // as the page itself shows it.
-        let masked;
-        let value = if self
-            .doc
-            .attr(node, "type")
-            .is_some_and(|t| t.eq_ignore_ascii_case("password"))
-        {
-            masked = "\u{2022}".repeat(raw.chars().count());
-            masked.as_str()
-        } else {
-            raw
-        };
-        let (text, color) = if value.is_empty() {
-            let placeholder = self.doc.attr(node, "placeholder").unwrap_or("");
-            (placeholder, PLACEHOLDER)
-        } else {
-            (
-                value,
-                css_color(self.doc.style(li, S::Fg)).unwrap_or_default(),
-            )
-        };
-        if text.is_empty() {
-            return;
-        }
-        let font = self.font(li);
-        let pad = px(self.doc.style(li, S::PaddingLeft)) + px(self.doc.style(li, S::BorderLeftW));
-        let line = (font.size * 1.25).min(rect.h);
-        let r = Rect::new(
-            rect.x + pad,
-            rect.y + (rect.h - line) / 2.0,
-            (rect.w - pad).max(0.0),
-            line,
-        );
-        let key = ItemKey {
-            node: self.doc.node_key(node),
-            part: PART_FIELD,
-        };
-        self.push(
-            node,
-            order,
-            3,
-            Item::Text {
-                key,
-                rect: r,
-                text: text.to_string(),
-                font,
-                color,
-            },
-        );
-    }
-
-    /// A checkbox or a radio button is painted by the engine's own theme,
-    /// which a snapshot does not carry. Its box is drawn here when the page
-    /// gave it none of its own, and its mark when it is chosen, so whoever
-    /// watches is shown the answer the page holds. Its value is what the page
-    /// sends for it, not words it shows, and is never drawn.
-    fn choice(&mut self, node: i64, li: usize, order: i64, rect: Rect, round: bool) {
-        let side = rect.w.min(rect.h);
-        if side <= 0.0 {
-            return;
-        }
-        let color = css_color(self.doc.style(li, S::Fg)).unwrap_or_default();
+    /// Draw `node`'s own box: its background, its border and the ring it is
+    /// outlined with. The box these are drawn in is returned, which is not
+    /// always the box the engine laid out: a fieldset's starts halfway down
+    /// its legend.
+    fn dress(&mut self, node: i64, li: usize, order: i64, rect: Rect) -> Rect {
         let node_key = self.doc.node_key(node);
-        // A computed border width is zero unless its style is a visible one,
-        // so the widths alone say whether the page gave the box a border.
-        let bordered = [
-            S::BorderTopW,
-            S::BorderRightW,
-            S::BorderBottomW,
-            S::BorderLeftW,
-        ]
-        .into_iter()
-        .any(|width| px(self.doc.style(li, width)) > 0.0);
-        let filled = css_color(self.doc.style(li, S::Bg)).is_some_and(|bg| bg.0[3] > 0);
-        if !bordered && !filled {
-            self.push(
+        let key = |part| ItemKey {
+            node: node_key,
+            part,
+        };
+        let edge = self.edge(node, li, rect);
+        let (rect, radius) = (edge.rect, edge.radius);
+        // A background under a CSS mask is an icon shape we cannot cut
+        // yet; drawing it unmasked paints a solid square.
+        let masked = !matches!(self.doc.style(li, S::Mask), "" | "none");
+        if !masked && let Some(color) = css_color(self.doc.style(li, S::Bg)) {
+            self.push_decoration(
+                node,
+                order,
+                0,
+                Item::Fill {
+                    key: key(PART_FILL),
+                    rect,
+                    color,
+                    radius,
+                },
+            );
+        }
+        // A computed border width is 0 unless its style is a visible one,
+        // so the widths alone say which sides the page draws.
+        if edge.widths.iter().any(|w| *w > 0.0) && edge.colors.iter().any(|c| c.0[3] > 0) {
+            self.push_decoration(
                 node,
                 order,
                 1,
                 Item::Border {
-                    key: ItemKey {
-                        node: node_key,
-                        part: CHOICE_BOX,
-                    },
+                    key: key(PART_BORDER),
                     rect,
-                    widths: [1.0; 4],
-                    colors: [color; 4],
-                    radius: if round { side / 2.0 } else { 2.0 },
+                    widths: edge.widths,
+                    colors: edge.colors,
+                    radius,
                 },
             );
-        }
-        if !self.doc.checked.contains(&node) {
-            return;
-        }
-        let inset = (side / 4.0).max(1.0);
-        let mark = Rect::new(
-            rect.x + inset,
-            rect.y + inset,
-            (rect.w - inset * 2.0).max(1.0),
-            (rect.h - inset * 2.0).max(1.0),
-        );
-        self.push(
-            node,
-            order,
-            3,
-            Item::Fill {
-                key: ItemKey {
-                    node: node_key,
-                    part: CHOICE_MARK,
-                },
-                rect: mark,
-                color,
-                radius: if round { mark.w.min(mark.h) / 2.0 } else { 1.0 },
-            },
-        );
-    }
-
-    /// A textarea's text, a line box to each line. The client shapes the
-    /// text itself, so lines are broken here at about the width the box
-    /// gives by an average letter, and as many are drawn as the box shows:
-    /// text past them ends in an ellipsis, as it is scrolled out of sight.
-    fn lines(&mut self, node: i64, li: usize, order: i64, rect: Rect) {
-        let value = self.doc.text_values.get(&node).copied().unwrap_or("");
-        let (text, color) = if value.is_empty() {
-            (
-                self.doc.attr(node, "placeholder").unwrap_or(""),
-                PLACEHOLDER,
-            )
-        } else {
-            (
-                value,
-                css_color(self.doc.style(li, S::Fg)).unwrap_or_default(),
-            )
-        };
-        if text.is_empty() {
-            return;
-        }
-        let font = self.font(li);
-        let pad = px(self.doc.style(li, S::PaddingLeft)) + px(self.doc.style(li, S::BorderLeftW));
-        let line = font.size * 1.25;
-        let width = (rect.w - pad * 2.0).max(font.size);
-        let most = (width / (font.size * 0.5)).max(1.0);
-        let letters_of =
-            |word: &str| f32::from(u16::try_from(word.chars().count()).unwrap_or(u16::MAX));
-        let mut rows: Vec<String> = Vec::new();
-        for paragraph in text.split('\n') {
-            let mut row = String::new();
-            let mut letters = 0.0_f32;
-            for word in paragraph.split(' ') {
-                let length = letters_of(word);
-                if letters > 0.0 && letters + 1.0 + length > most {
-                    rows.push(std::mem::take(&mut row));
-                    letters = 0.0;
-                }
-                if letters > 0.0 {
-                    row.push(' ');
-                    letters += 1.0;
-                }
-                row.push_str(word);
-                letters += length;
-            }
-            rows.push(row);
-            if rows.len() > MAX_FIELD_LINES {
-                break;
-            }
-        }
-        let bottom = rect.y + rect.h;
-        let mut fits = 0_usize;
-        let mut below = rect.y + pad;
-        while fits < MAX_FIELD_LINES && (fits == 0 || below + line <= bottom) {
-            fits = fits.saturating_add(1);
-            below += line;
-        }
-        if rows.len() > fits {
-            rows.truncate(fits);
-            if let Some(last) = rows.last_mut() {
-                last.push('\u{2026}');
-            }
-        }
-        let node_key = self.doc.node_key(node);
-        let mut top = rect.y + pad;
-        for (index, row) in rows.into_iter().enumerate() {
-            let part = PART_LINE.saturating_add(u32::try_from(index).unwrap_or(u32::MAX));
-            if !row.is_empty() {
-                self.push(
+            if let Some((inner, colors)) = edge.inner {
+                self.push_decoration(
                     node,
                     order,
-                    3,
-                    Item::Text {
-                        key: ItemKey {
-                            node: node_key,
-                            part,
-                        },
-                        rect: Rect::new(rect.x + pad, top, width, line),
-                        text: row,
-                        font: font.clone(),
-                        color,
+                    1,
+                    Item::Border {
+                        key: key(PART_BORDER_INNER),
+                        rect: inner,
+                        widths: edge.widths,
+                        colors,
+                        radius: (radius - edge.widths[0]).max(0.0),
                     },
                 );
             }
-            top += line;
+            if let Some(gap) = edge.gap {
+                let color = self.backdrop(node);
+                self.push_decoration(
+                    node,
+                    order,
+                    2,
+                    Item::Fill {
+                        key: key(PART_LEGEND_GAP),
+                        rect: gap,
+                        color,
+                        radius: 0.0,
+                    },
+                );
+            }
         }
+        self.outline(node, li, order, rect, radius);
+        rect
     }
 
     /// An inline `<svg>`'s shapes, with the fill and stroke the engine
@@ -934,7 +914,7 @@ impl Converter<'_> {
                     _ => None,
                 }
             })
-            .unwrap_or_else(|| Rect::new(0.0, 0.0, rect.w, rect.h));
+            .unwrap_or_else(|| Rect::new(0.0, 0.0, rect.w / self.zoom, rect.h / self.zoom));
         let mut shapes = Vec::new();
         let mut stack: Vec<(i64, usize)> = vec![(svg, 0)];
         while let Some((node, depth)) = stack.pop() {
@@ -1015,10 +995,25 @@ impl Converter<'_> {
 
     fn font(&self, li: usize) -> FontSpec {
         FontSpec {
-            family: self.doc.style(li, S::FontFamily).to_string(),
-            size: px(self.doc.style(li, S::FontSize)).max(1.0),
+            family: self.family(self.doc.style(li, S::FontFamily)),
+            size: self.len(li, S::FontSize).max(1.0),
             weight: self.doc.style(li, S::FontWeight).parse().unwrap_or(400),
             italic: self.doc.style(li, S::FontStyle) == "italic",
+        }
+    }
+
+    /// The family list a client is sent for the list a style computes to:
+    /// the list itself, or the list as the engine said it sets it
+    /// ([`crate::fonts::told`]). A list the engine has not said of is noted
+    /// for it to be asked.
+    fn family(&self, css: &str) -> String {
+        match self.told.classes.get(css) {
+            Some(Some(class)) => crate::fonts::told(css, *class),
+            Some(None) => css.to_owned(),
+            None => {
+                self.families.borrow_mut().insert(css.to_owned());
+                css.to_owned()
+            }
         }
     }
 
@@ -1032,9 +1027,11 @@ impl Converter<'_> {
             let Ok(li) = usize::try_from(li) else {
                 continue;
             };
+            // A node of very many lines numbers its last ones alike: the parts
+            // above are kept for text that is no line of the engine's.
             let part = fragment.entry(li).or_insert(PART_TEXT);
             let this_part = *part;
-            *part = part.saturating_add(1);
+            *part = part.saturating_add(1).min(ItemKey::LINES - 1);
             let node = self.doc.layout_node.get(li).copied().unwrap_or(-1);
             let full = self
                 .doc
@@ -1054,6 +1051,11 @@ impl Converter<'_> {
             if text.trim().is_empty() || self.doc.style(li, S::Visibility) != "visible" {
                 continue;
             }
+            let kept = matches!(
+                self.doc.style(li, S::WhiteSpace),
+                "pre" | "pre-wrap" | "break-spaces"
+            );
+            let text = spaced(&text, kept);
             let Some(color) = css_color(self.doc.style(li, S::Fg)) else {
                 continue;
             };
@@ -1066,6 +1068,22 @@ impl Converter<'_> {
                 part: this_part,
             };
             let font = self.font(li);
+            for (line, tint) in self.decorations(li, node, rect, font.size) {
+                self.push(
+                    node,
+                    order,
+                    4,
+                    Item::Fill {
+                        key: ItemKey {
+                            node: key.node,
+                            part: TEXT_LINE,
+                        },
+                        rect: line,
+                        color: tint.unwrap_or(color),
+                        radius: 0.0,
+                    },
+                );
+            }
             self.push(
                 node,
                 order,
@@ -1079,6 +1097,52 @@ impl Converter<'_> {
                 },
             );
         }
+    }
+
+    /// The lines the page draws on a run of text: under it, through it, over
+    /// it, each as the box it fills and the colour the page names for it. A
+    /// line is the run's own or one an element around it draws on all its
+    /// text, so a struck-out price inside a link is still struck out.
+    fn decorations(
+        &self,
+        li: usize,
+        node: i64,
+        rect: Rect,
+        size: f32,
+    ) -> Vec<(Rect, Option<Color>)> {
+        let mut found = Some(li);
+        let mut at = node;
+        let mut lines = "";
+        for _ in 0..16 {
+            if let Some(li) = found {
+                lines = self.doc.style(li, S::DecorationLine);
+                if !matches!(lines, "" | "none") {
+                    break;
+                }
+            }
+            at = self.doc.parent_of(at);
+            if at < 0 {
+                return Vec::new();
+            }
+            found = self.doc.layout_of.get(&at).copied();
+        }
+        let Some(li) = found else {
+            return Vec::new();
+        };
+        let tint = css_color(self.doc.style(li, S::DecorationColor));
+        let thick = (size / 16.0).max(1.0);
+        [
+            ("underline", 0.88),
+            ("line-through", 0.56),
+            ("overline", 0.0),
+        ]
+        .into_iter()
+        .filter(|(name, _)| lines.split(' ').any(|line| line == *name))
+        .map(|(_, down)| {
+            let top = (rect.y + rect.h * down).min(rect.y + rect.h - thick);
+            (Rect::new(rect.x, top.max(rect.y), rect.w, thick), tint)
+        })
+        .collect()
     }
 
     /// The canvas takes the root element's background, or else body's.
@@ -1096,8 +1160,20 @@ impl Converter<'_> {
     }
 }
 
-/// Convert a snapshot of a `viewport`-sized page into frame `seq`.
+/// Convert a snapshot of a `viewport`-sized page into frame `seq`, as a caller
+/// does that knows nothing of the page beside it.
 pub fn convert(snapshot: &Value, viewport: Point, seq: u64) -> Result<Frame, SnapshotError> {
+    convert_with(snapshot, viewport, seq, &Told::default()).map(|converted| converted.frame)
+}
+
+/// Convert a snapshot of a `viewport`-sized page into frame `seq`, with what
+/// its engine was `told` to say of it so far.
+pub fn convert_with(
+    snapshot: &Value,
+    viewport: Point,
+    seq: u64,
+    told: &Told,
+) -> Result<Converted, SnapshotError> {
     let doc0 = snapshot["documents"]
         .get(0)
         .ok_or(SnapshotError("documents"))?;
@@ -1105,12 +1181,21 @@ pub fn convert(snapshot: &Value, viewport: Point, seq: u64) -> Result<Frame, Sna
         x: css_px(doc0["scrollOffsetX"].as_f64().unwrap_or(0.0)),
         y: css_px(doc0["scrollOffsetY"].as_f64().unwrap_or(0.0)),
     };
+    let doc = parse(snapshot)?;
+    let zoom = doc.zoom();
     let mut c = Converter {
-        doc: parse(snapshot)?,
+        doc,
         doc_scroll,
         layer_of_node: HashMap::new(),
         layers: BTreeMap::new(),
+        zoom,
+        told,
+        canvas: Color([255, 255, 255, 255]),
+        asks: Vec::new(),
+        passwords: Vec::new(),
+        families: std::cell::RefCell::default(),
     };
+    c.canvas = c.background();
     c.layers.insert(
         ROOT,
         Building {
@@ -1131,7 +1216,7 @@ pub fn convert(snapshot: &Value, viewport: Point, seq: u64) -> Result<Frame, Sna
     );
     c.boxes();
     c.texts(&doc0["textBoxes"]);
-    let background = c.background();
+    let background = c.canvas;
     let layers = c
         .layers
         .into_iter()
@@ -1141,10 +1226,34 @@ pub fn convert(snapshot: &Value, viewport: Point, seq: u64) -> Result<Frame, Sna
             (id, b.layer)
         })
         .collect();
-    Ok(Frame {
-        seq,
-        viewport,
-        background,
-        layers,
+    Ok(Converted {
+        frame: Frame {
+            seq,
+            viewport,
+            background,
+            layers,
+        },
+        asks: c.asks,
+        passwords: c.passwords,
+        families: c.families.into_inner().into_iter().collect(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spaced;
+
+    #[test]
+    fn a_line_break_in_the_source_is_a_space_on_the_line() {
+        // As an engine hands over the text of one line box of a paragraph its page wrote
+        // on several lines.
+        assert_eq!(
+            spaced("had long\nsince stopped arguing", false),
+            "had long since stopped arguing"
+        );
+        assert_eq!(spaced(" 9 crowns,\n", false), " 9 crowns, ");
+        assert_eq!(spaced("to   read\n\t  twice", false), "to read twice");
+        // A page that keeps its spaces has them drawn, and still no line break in a line.
+        assert_eq!(spaced("a  b\tc", true), "a  b c");
+    }
 }
