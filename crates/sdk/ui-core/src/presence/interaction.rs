@@ -1978,6 +1978,7 @@ mod tests {
                 label: "Morning".into(),
                 kind: "shortcut".into(),
                 title: None,
+                declared_id: None,
             });
             assert_eq!(
                 actor_label(&presence, &shortcut),

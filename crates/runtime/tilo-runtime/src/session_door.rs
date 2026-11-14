@@ -615,6 +615,7 @@ where
                 label: "REPL".into(),
                 kind: "repl".into(),
                 title: None,
+                declared_id: None,
             },
         ),
     };

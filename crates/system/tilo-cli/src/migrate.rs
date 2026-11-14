@@ -370,22 +370,30 @@ fn records_of(source: &str) -> &'static [&'static str] {
     }
 }
 
-/// How many times one record is asked to take a run back: a run's changes are one step unless
-/// someone else's fell between them.
-const UNDO_ROUNDS: usize = 16;
-
 /// `tilo migrate undo`: take the run `named` back in every record it changed.
 fn undo(place: &Place, named: &str) -> Result<Value> {
     let (source, run) = run_named(place, named)?;
+    let mut journal = place.journal(&source)?;
     let mut held = workspace::Held::connect()?;
     let mut taken = Vec::new();
+    let mut named = false;
     for record in records_of(&source) {
-        let undone = undo_in(&mut held, record, &run)?;
-        if undone > 0 {
-            taken.push(json!({"record": record, "steps": undone}));
+        match undo_in(&mut held, record, &run)? {
+            RunInHistory::InEffect(_) => {
+                named = true;
+                taken.push(json!({"record": record}));
+            }
+            RunInHistory::Undone => named = true,
+            RunInHistory::Absent => {}
         }
     }
-    let mut journal = place.journal(&source)?;
+    let brought = journal.runs.get(&run).is_some_and(|keys| !keys.is_empty());
+    if !named && brought {
+        bail!(
+            "History has no change of run {run}, though it brought items: they stay, and this \
+             computer still counts them"
+        );
+    }
     let forgotten = journal.runs.remove(&run).unwrap_or_default();
     for key in &forgotten {
         journal.landed.remove(key);
@@ -427,54 +435,60 @@ fn run_named(place: &Place, named: &str) -> Result<(String, String)> {
     bail!("no run {named:?}: `tilo migrate status` names each source's last run")
 }
 
-/// Take the run `run` back in `record`: its own `undo` of the step each of the run's changes
-/// still in effect is part of, newest first. How many steps it took back.
-fn undo_in(workspace: &mut dyn Workspace, record: &str, run: &str) -> Result<usize> {
-    let mut undone = 0_usize;
-    for _ in 0..UNDO_ROUNDS {
-        let answer = match workspace.ask(&format!("{record}#history"), json!({"last": 200})) {
-            Ok(answer) => answer,
-            // An app the run never opened keeps no history of it.
-            Err(_) if undone == 0 => return Ok(0),
-            Err(error) => return Err(error),
-        };
-        let Some(change) = newest_of_run(&answer, run) else {
-            return Ok(undone);
-        };
+/// Take the run `run` back in `record`: its own `undo` of the step the run's changes are.
+/// What `record`'s History held of the run before.
+fn undo_in(workspace: &mut dyn Workspace, record: &str, run: &str) -> Result<RunInHistory> {
+    let Ok(answer) = workspace.ask(&format!("{record}#history"), json!({"last": 200})) else {
+        // An app the run never opened keeps no history of it.
+        return Ok(RunInHistory::Absent);
+    };
+    let found = run_in_history(&answer, run);
+    if let RunInHistory::InEffect(change) = &found {
         workspace
             .ask(&format!("{record}#undo"), json!({"step": change}))
             .with_context(|| format!("{record} did not take the run back"))?;
-        undone = undone.saturating_add(1);
     }
-    Ok(undone)
+    Ok(found)
 }
 
-/// The newest change of `run` still in effect in a record's `history` answer. An entry names
-/// its run only where a run begins; the entries after it are that run's until another is named.
-fn newest_of_run(history: &str, run: &str) -> Option<String> {
-    let body = history.get(history.find('{')?..)?;
-    let value: Value = serde_json::from_str(body).ok()?;
-    let entries = ["versions", "history"]
+/// What a record's History holds of one run.
+#[derive(Debug, PartialEq, Eq)]
+enum RunInHistory {
+    /// No change of it is there.
+    Absent,
+    /// Every change of it is undone already.
+    Undone,
+    /// It is in effect: its newest change still in effect, which names its step to `undo`.
+    InEffect(String),
+}
+
+/// What a record's `history` answer holds of the run `run`: History keeps with each change the
+/// id of the run its agent said it is a step of (`actor.run_id`).
+fn run_in_history(history: &str, run: &str) -> RunInHistory {
+    let entries = history
+        .find('{')
+        .and_then(|at| history.get(at..))
+        .and_then(|body| serde_json::from_str::<Value>(body).ok())
+        .and_then(|value| {
+            ["versions", "history"]
+                .iter()
+                .find_map(|key| value.get(*key).and_then(Value::as_array).cloned())
+        })
+        .unwrap_or_default();
+    let mut of_run = entries
         .iter()
-        .find_map(|key| value.get(*key))
-        .and_then(Value::as_array)?;
-    let mut current: Option<&str> = None;
-    let mut newest = None;
-    for entry in entries {
-        if let Some(named) = entry.get("run_id").and_then(Value::as_str) {
-            current = Some(named);
-        } else if entry.get("run").is_some_and(Value::is_null) {
-            current = None;
-        }
-        let undone = entry.get("undone").and_then(Value::as_bool) == Some(true);
-        if current == Some(run) && !undone {
-            newest = entry
-                .get("change")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-        }
+        .rev()
+        .filter(|entry| entry.pointer("/actor/run_id").and_then(Value::as_str) == Some(run))
+        .peekable();
+    if of_run.peek().is_none() {
+        return RunInHistory::Absent;
     }
-    newest
+    of_run
+        .find(|entry| entry.get("undone").and_then(Value::as_bool) != Some(true))
+        .and_then(|entry| entry.get("change").and_then(Value::as_str))
+        .map_or(RunInHistory::Undone, |change| {
+            RunInHistory::InEffect(change.to_owned())
+        })
 }
 
 fn status(place: &Place, source: Option<&str>) -> Result<Value> {

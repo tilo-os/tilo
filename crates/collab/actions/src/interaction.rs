@@ -386,6 +386,7 @@ mod tests {
                 label: "Prepare budget".into(),
                 kind: "task".into(),
                 title: None,
+                declared_id: None,
             }),
         }
     }

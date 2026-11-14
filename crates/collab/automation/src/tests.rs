@@ -1315,6 +1315,7 @@ tilo_test_env::scenario! {
             label: "Sort the inbox".into(),
             kind: "task".into(),
             title: None,
+            declared_id: None,
         };
         let report = block_on(run(
             &host,

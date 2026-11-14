@@ -21,7 +21,7 @@ mod step;
 mod turns;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use step::{STEP, STEP_TITLE, SURFACE_STRUCTURED};
+use step::{DeclaredRun, STEP, STEP_RUN, SURFACE_STRUCTURED};
 use tilo_actions::remote::{
     ActionHost, Caller, CatalogueLimits, CataloguePage, CatalogueQuery, CatalogueRow,
     InvokeArgument, InvokeRequest, RemoteActionTarget,
@@ -1314,6 +1314,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             label: label.into(),
             kind: "agent-run".into(),
             title: None,
+            declared_id: None,
         });
         self
     }
@@ -1408,15 +1409,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .and_then(Value::as_str)
             .map(str::to_owned);
         let step = self.step_gesture(metadata, invocation.as_deref())?;
-        let title = Self::step_title(metadata)?;
+        let declared = Self::step_run(metadata)?;
         let structured = metadata
             .and_then(|metadata| metadata.pointer(SURFACE_STRUCTURED))
             .and_then(Value::as_bool)
             .unwrap_or(false);
         STEP.scope(
             step,
-            STEP_TITLE.scope(
-                title,
+            STEP_RUN.scope(
+                declared,
                 self.call_named(parse::<ToolCall>(params), structured),
             ),
         )
@@ -1540,6 +1541,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     label,
                     kind: "agent-run".into(),
                     title: None,
+                    declared_id: None,
                 });
             }
             run.as_ref().map(|run| run.id.clone())
@@ -2948,16 +2950,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// ([`STEP`]).
     fn context(&self) -> Option<tilo_actions::ActionContext> {
         self.agent_run().map(|mut run| {
-            // A call naming the run it is a step of (`_meta` run.title) is
-            // attributed to that name, which is what people read in history
-            // and see in presence, not the connection's own label. It says so
-            // as its own title too: a host that names the run itself still
-            // calls it what the agent asked for.
-            if let Ok(Some(title)) = STEP_TITLE.try_with(Clone::clone)
-                && !title.is_empty()
-            {
-                run.label.clone_from(&title);
-                run.title = Some(title);
+            // A call naming the run it is a step of (`_meta` run) is
+            // attributed to that run's title, which is what people read in
+            // history and see in presence, not the connection's own label,
+            // and names the run's id, which tells the agent's runs apart
+            // there. It says both as its own: a host that names the run
+            // itself still keeps what the agent declared.
+            if let Some(declared) = DeclaredRun::current() {
+                declared.onto(&mut run);
             }
             tilo_actions::ActionContext {
                 group: Some(run),

@@ -135,8 +135,8 @@ pub struct Journal {
     /// What History calls the last run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
-    /// The id every action of the last run named: what takes it back as one step
-    /// (`#undo` with this `run`, or the run's entry in History).
+    /// The id every action of the last run named: History keeps it with each change the run
+    /// made, so `undo` finds them by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     /// What the last run brought, by kind: `messages`, `contacts`, …

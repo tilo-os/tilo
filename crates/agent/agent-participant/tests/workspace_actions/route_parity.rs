@@ -373,6 +373,7 @@ fn claimed_run() -> tilo_actions::ActionContext {
             label: "Not me".into(),
             kind: tilo_actions::context::AGENT_RUN_GROUP.into(),
             title: None,
+            declared_id: None,
         }),
         ..tilo_actions::ActionContext::default()
     }

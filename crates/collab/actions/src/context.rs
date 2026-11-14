@@ -355,6 +355,7 @@ impl ActionContext {
             label: label.into(),
             kind: kind.into(),
             title: None,
+            declared_id: None,
         });
         self
     }
@@ -1430,6 +1431,12 @@ pub struct WorkGroup {
     /// to read, never the group itself, which a host may decide on its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The id the caller itself gave the work, when it named one: the run an
+    /// agent says each of its calls is a step of. A host's own [`Self::id`]
+    /// may span several of them (every call of one connection), so this is
+    /// what tells the caller's runs apart in history; never the group itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_id: Option<String>,
 }
 
 /// [`ActionFacet::key`] of the risk ([`crate::RiskLevel::name`]) of the

@@ -10,7 +10,7 @@
 //! path), the host's observation of an invocation for a run, and the host's
 //! roster for presence.
 use super::*;
-use crate::mcp::step::STEP_TITLE;
+use crate::mcp::step::DeclaredRun;
 
 /// One invocation of this session, as `tilo_watch` follows it: what it ran,
 /// the run it is a step of, and how it stands.
@@ -132,7 +132,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     fn run_named(&self) -> (String, String) {
         let run = self.agent_run();
         let id = run.as_ref().map(|run| run.id.clone()).unwrap_or_default();
-        let label = match STEP_TITLE.try_with(Clone::clone).ok().flatten() {
+        let label = match DeclaredRun::current().map(|run| run.title) {
             Some(title) if !title.is_empty() => title,
             _ => run.map_or_else(String::new, |run| run.label),
         };

@@ -598,6 +598,18 @@ fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<Str
     }
     if let Some(invoker) = &context.invoker {
         let mut actor = json!(invoker.acting);
+        // The run the agent said this change is a step of, by the id it gave
+        // it: how an agent or a script finds its own run's steps again, where
+        // `run_id` is the host's run of the whole connection.
+        if let (Some(run), Some(fields)) = (
+            context
+                .group
+                .as_ref()
+                .and_then(|group| group.declared_id.as_ref()),
+            actor.as_object_mut(),
+        ) {
+            fields.insert("run_id".into(), run.clone().into());
+        }
         if let (Some(name), Some(fields)) = (&invoker.name, actor.as_object_mut()) {
             let (red, green, blue) = collab_types::presence::agent_rgb(name);
             fields.insert("name".into(), name.clone().into());

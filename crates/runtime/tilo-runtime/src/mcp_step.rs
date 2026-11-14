@@ -28,10 +28,36 @@ tokio::task_local! {
     /// every change they make records it as its gesture, so history takes
     /// them back as one step.
     pub(super) static STEP: tilo_actions::ActionId;
-    /// The name the run that step belongs to goes by, when the call named
-    /// one: what history and presence show instead of the connection's own
-    /// label.
-    pub(super) static STEP_TITLE: Option<String>;
+    /// The run that step belongs to, when the call named one: its id, which
+    /// history keeps with each change, and the name history and presence
+    /// show instead of the connection's own label.
+    pub(super) static STEP_RUN: Option<DeclaredRun>;
+}
+
+/// The run a tool call says it is a step of (`_meta["so.tilo.mcp"].run`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct DeclaredRun {
+    /// The id the client gave the run: what tells its runs apart in history.
+    pub(super) id: String,
+    /// What the client called it; empty when it called it nothing.
+    pub(super) title: String,
+}
+
+impl DeclaredRun {
+    /// The declared run of the tool call being answered.
+    pub(super) fn current() -> Option<Self> {
+        STEP_RUN.try_with(Clone::clone).ok().flatten()
+    }
+
+    /// `run`, this connection's own, as the client declared this step of it:
+    /// under its title, and naming its id.
+    pub(super) fn onto(&self, run: &mut tilo_actions::WorkGroup) {
+        if !self.title.is_empty() {
+            run.label.clone_from(&self.title);
+            run.title = Some(self.title.clone());
+        }
+        run.declared_id = Some(self.id.clone());
+    }
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
@@ -97,7 +123,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// name it goes by, when the call names one (`_meta["so.tilo.mcp"]`
     /// `run`).
     pub(super) fn grouped_run() -> Option<(tilo_actions::ActionId, String)> {
-        let label = STEP_TITLE.try_with(Clone::clone).ok().flatten()?;
+        let label = DeclaredRun::current()?.title;
         let step = STEP.try_with(|step| *step).ok()?;
         Some((step, label))
     }
@@ -108,30 +134,33 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     #[must_use]
     pub fn run_of(&self, request: &Value) -> Option<tilo_actions::WorkGroup> {
         let mut run = self.agent_run()?;
-        if let Ok(Some(title)) = Self::step_title(request.pointer("/params/_meta"))
-            && !title.is_empty()
-        {
-            run.label.clone_from(&title);
-            run.title = Some(title);
+        if let Ok(Some(declared)) = Self::step_run(request.pointer("/params/_meta")) {
+            declared.onto(&mut run);
         }
         Some(run)
     }
 
-    /// The name the run a tool call joins goes by, when its
-    /// `_meta["so.tilo.mcp"].run` names one: what the changes of the call are
-    /// attributed to, as history shows them. `Some("")` for a call that
-    /// names a run and no title for it; `None` for a call that names no run.
-    pub(super) fn step_title(meta: Option<&Value>) -> Result<Option<String>, String> {
-        let names_run = meta.is_some_and(|meta| {
-            ["/so.tilo.mcp/run/id", "/so.tilo.mcp/run"]
+    /// The run a tool call joins, when its `_meta["so.tilo.mcp"].run` names
+    /// one: its id, and the name the changes of the call are attributed to,
+    /// as history shows them (empty when it names none). `None` for a call
+    /// that names no run.
+    pub(super) fn step_run(meta: Option<&Value>) -> Result<Option<DeclaredRun>, String> {
+        let Some(id) = meta.and_then(|meta| {
+            [SURFACE_RUN_ID, SURFACE_RUN]
                 .iter()
-                .any(|key| meta.pointer(key).is_some_and(Value::is_string))
-        });
-        if !names_run {
+                .find_map(|key| meta.pointer(key).and_then(Value::as_str))
+        }) else {
             return Ok(None);
+        };
+        if id.is_empty() || id.len() > MAX_RUN_ID {
+            return Err("_meta so.tilo.mcp run id must be a string of 1 to 96 bytes".into());
         }
+        let id = id.to_owned();
         let Some(title) = meta.and_then(|meta| meta.pointer(SURFACE_RUN_TITLE)) else {
-            return Ok(Some(String::new()));
+            return Ok(Some(DeclaredRun {
+                id,
+                title: String::new(),
+            }));
         };
         let title: String = title
             .as_str()
@@ -141,6 +170,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .filter(|character| !character.is_control())
             .take(MAX_RUN_TITLE)
             .collect();
-        Ok(Some(title.trim().to_owned()))
+        Ok(Some(DeclaredRun {
+            id,
+            title: title.trim().to_owned(),
+        }))
     }
 }

@@ -169,6 +169,7 @@ impl HostStepServices for TaskPrograms {
                 label,
                 kind: "task".into(),
                 title: None,
+                declared_id: None,
             },
             program,
             confirm,

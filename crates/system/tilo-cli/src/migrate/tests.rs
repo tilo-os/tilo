@@ -298,24 +298,42 @@ fn a_stopped_run_resumes_where_it_stopped() {
 }
 
 #[test]
-fn a_runs_newest_change_in_effect_is_found_in_a_records_history() {
-    let history = r#"ok {"versions": [
-        {"change": "a1", "run": "From Linear", "run_id": "migrate-linear-1"},
-        {"change": "a2"},
-        {"change": "b1", "run": null},
-        {"change": "c1", "run": "From Linear", "run_id": "migrate-linear-2"},
-        {"change": "c2", "undone": true}
-    ]}"#;
-    assert_eq!(
-        super::newest_of_run(history, "migrate-linear-1").as_deref(),
-        Some("a2")
+fn a_runs_change_in_effect_is_found_by_the_run_id_history_keeps() {
+    let of = |change: &str, run: &str| {
+        format!(
+            r#"{{"change": "{change}", "run": "From Linear: Engineering", "actor": {{"id": "agent:tilo", "run_id": "{run}"}}}}"#
+        )
+    };
+    let history = format!(
+        r#"ok {{"versions": [{}, {}, {{"change": "b1", "actor": {{"id": "person"}}}}, {}, {}]}}"#,
+        of("a1", "migrate-linear-1"),
+        of("a2", "migrate-linear-1"),
+        of("c1", "migrate-linear-2"),
+        of("c2", "migrate-linear-2").replace(r#""change""#, r#""undone": true, "change""#),
     );
     assert_eq!(
-        super::newest_of_run(history, "migrate-linear-2").as_deref(),
-        Some("c1"),
+        super::run_in_history(&history, "migrate-linear-1"),
+        super::RunInHistory::InEffect("a2".to_owned()),
+        "two runs under one title are told apart by their ids"
+    );
+    assert_eq!(
+        super::run_in_history(&history, "migrate-linear-2"),
+        super::RunInHistory::InEffect("c1".to_owned()),
         "a change undone already is not taken back again"
     );
-    assert_eq!(super::newest_of_run(history, "migrate-linear-3"), None);
+    assert_eq!(
+        super::run_in_history(&history, "migrate-linear-3"),
+        super::RunInHistory::Absent
+    );
+    let undone = format!(
+        r#"ok {{"versions": [{}]}}"#,
+        of("d1", "migrate-linear-4").replace(r#""change""#, r#""undone": true, "change""#)
+    );
+    assert_eq!(
+        super::run_in_history(&undone, "migrate-linear-4"),
+        super::RunInHistory::Undone,
+        "a run someone undid already is there, with nothing left to take back"
+    );
 }
 
 #[test]

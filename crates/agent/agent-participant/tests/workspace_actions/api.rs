@@ -701,7 +701,8 @@ async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
 /// names its changes "Jane Doe's agent", in the colour presence draws it in,
 /// never the key's grant id nor anything the client says of itself. Its run
 /// goes by the title the agent gave it (`_meta` run.title), and by the
-/// agent's name where it gave none.
+/// agent's name where it gave none, and each of its changes names the run's
+/// id (`_meta` run.id) beside the agent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
     let on_relay = api_on_relay(ISSUER).await;
@@ -785,6 +786,18 @@ async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
         runs,
         ["Jane Doe's agent", title].into_iter().collect(),
         "the untitled calls' run goes by the agent's name, the titled call's by its title: {history}"
+    );
+    // Each change names the run its agent declared by the run's id, next to the agent: what
+    // tells two runs under one title apart. A call that declared none names none.
+    let declared: Vec<Option<&str>> = by_agent
+        .iter()
+        .map(|version| version["actor"]["run_id"].as_str())
+        .collect();
+    assert!(
+        declared.contains(&Some("visa-1"))
+            && declared.contains(&None)
+            && declared.iter().flatten().all(|run| *run == "visa-1"),
+        "{history}"
     );
 }
 
