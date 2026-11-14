@@ -1095,7 +1095,7 @@ async fn request_grant(
             SUPERVISOR_RESOURCE,
             REQUEST_GRANT_ACTION,
             InvokeArgument::Json(
-                serde_json::json!({"label": label, "rooms": [WORKSPACE], "apps": apps,
+                serde_json::json!({"label": label, "workspaces": [WORKSPACE], "apps": apps,
                                    "expiresInSecs": 3600})
                 .as_object()
                 .unwrap()

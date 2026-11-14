@@ -271,7 +271,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
         REQUEST_GRANT_ACTION,
         json(&serde_json::json!({
             "label": "Scribe",
-            "rooms": [workspace.workspace],
+            "workspaces": [workspace.workspace],
             "apps": [SHEETS],
             "expiresInSecs": 3600,
         })),
