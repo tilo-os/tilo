@@ -12,7 +12,8 @@ tilo.content:30d6761d0551dba00b292649ccd90c63a27057c20f0f3ff24da14e5977442ab5
 ```
 
 The same bytes uploaded twice are one file, because the name is the hash. An action that puts the file
-somewhere takes the name it goes by as an argument of its own. One upload takes at most 64 MiB.
+somewhere takes the name it goes by as an argument of its own. One request carries at most 64 MiB;
+a larger file goes up in pieces, which `tilo files put` does for you.
 
 ## Actions take the reference
 
