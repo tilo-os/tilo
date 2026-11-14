@@ -1,5 +1,6 @@
-//! The device's time as the person reads it: the minute in their style and zone. Published again
-//! when the minute turns, so a view that shows the time runs again then and at no other time.
+//! The device's time as the person reads it: the minute in their style and zone, and the timer
+//! Clocks floats beside it. Published again when either moves, so a view that shows the time runs
+//! again then and at no other time.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -16,13 +17,39 @@ pub(crate) const RESOURCE: &str = "session:time";
 pub(crate) struct Time {
     /// The minute, in the person's style (`4:28 PM`, `16:28`).
     pub clock: String,
+    /// The timer or stopwatch Clocks floats, by its name: its label, or `Timer` or `Stopwatch`
+    /// when the app named none; empty when none floats.
+    pub timer: String,
+    /// What the timer has left, or what the stopwatch has run.
+    pub timer_left: String,
+    pub timer_paused: bool,
 }
 
 impl Time {
-    fn now() -> Self {
-        Self {
+    fn now(activities: &crate::chrome::Activities) -> Self {
+        let mut time = Self {
             clock: ui::clock::time_of_day(&ui::clock::local_now()),
-        }
+            ..Self::default()
+        };
+        let Some(published) = activities.published(crate::chrome::CLOCKS_APP) else {
+            return time;
+        };
+        let Some(summary) = published.summary.filter(|_| published.overlay) else {
+            return time;
+        };
+        let countdown = summary.countdown.unwrap_or_default();
+        let stopwatch = summary.kind == ui::live_activity::Kind::Stopwatch;
+        time.timer = if !summary.title.is_empty() {
+            summary.title
+        } else if stopwatch {
+            "Stopwatch".to_owned()
+        } else {
+            "Timer".to_owned()
+        };
+        time.timer_left = ui::format::timecode(u64::try_from(countdown).unwrap_or_default());
+        // A paused timer is one with time still to run before it is due.
+        time.timer_paused = summary.tone == ui::live_activity::Tone::Neutral && countdown > 0;
+        time
     }
 }
 
@@ -33,9 +60,18 @@ pub(crate) fn surface() -> tilo_actions::surface::Surface {
 }
 
 /// The time as the session's services publish it.
-#[derive(Default)]
 pub(crate) struct Served {
     published: Time,
+    activities: std::rc::Rc<crate::chrome::Activities>,
+}
+
+impl Served {
+    pub(crate) fn new(activities: std::rc::Rc<crate::chrome::Activities>) -> Self {
+        Self {
+            published: Time::default(),
+            activities,
+        }
+    }
 }
 
 impl Service for Served {
@@ -61,7 +97,7 @@ impl Service for Served {
     }
 
     fn poll(&mut self) -> bool {
-        let now = Time::now();
+        let now = Time::now(&self.activities);
         if now == self.published {
             return false;
         }

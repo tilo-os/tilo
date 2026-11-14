@@ -609,7 +609,9 @@ fn the_bars_overview_shows_every_window_and_picking_one_brings_it_front() {
     until(&mut session, |session| says(session, &time(session).clock));
     let first = open_window(&mut session, "so.tilo.notes");
     open_window(&mut session, "so.tilo.mail");
-    until(&mut session, |session| desk(session).windows.len() == 2);
+    until(&mut session, |session| {
+        crate::common::windows(session).len() == 2
+    });
     assert_eq!(here(&session), "none", "the desk is at rest");
     // The bar's Overview opens the desktop's overview, as its menu item does.
     session
@@ -630,7 +632,7 @@ fn the_bars_overview_shows_every_window_and_picking_one_brings_it_front() {
             .iter()
             .any(|label| label == "Overview")
     });
-    for w in desk(&session).windows {
+    for w in crate::common::windows(&session) {
         assert!(
             session.accessible_labels().contains(&w.title),
             "the overview shows {:?}: {:?}",
@@ -641,8 +643,7 @@ fn the_bars_overview_shows_every_window_and_picking_one_brings_it_front() {
     keep(&mut session, "shell-overview");
     // Picking a window's place goes to it. (Its place may not be on screen until the overlay has
     // been drawn, so the press comes once it is.)
-    let notes = desk(&session)
-        .windows
+    let notes = crate::common::windows(&session)
         .iter()
         .find(|w| w.key == first.to_string())
         .map(|w| w.title.clone())
@@ -674,7 +675,9 @@ fn the_reading_holds_every_workspaces_windows_and_the_walk_keeps_to_the_front_on
     let mut session = session();
     until(&mut session, |session| says(session, &time(session).clock));
     let behind = open_window(&mut session, "so.tilo.notes");
-    until(&mut session, |session| desk(session).windows.len() == 1);
+    until(&mut session, |session| {
+        crate::common::windows(session).len() == 1
+    });
     let first = desk(&session);
     let first_key = first
         .workspaces
@@ -695,18 +698,14 @@ fn the_reading_holds_every_workspaces_windows_and_the_walk_keeps_to_the_front_on
         desk(session).workspaces.len() == 2 && desk(session).workspace != first.workspace
     });
     let front = open_window(&mut session, "so.tilo.mail");
-    until(&mut session, |session| desk(session).windows.len() == 2);
-    let now = desk(&session);
+    until(&mut session, |session| {
+        crate::common::windows(session).len() == 2
+    });
+    let now = crate::common::windows(&session);
     let elsewhere = now
-        .windows
         .iter()
         .find(|window| window.key == behind.to_string())
-        .unwrap_or_else(|| {
-            panic!(
-                "the other workspace's window is read too: {:?}",
-                now.windows
-            )
-        });
+        .unwrap_or_else(|| panic!("the other workspace's window is read too: {now:?}"));
     assert_eq!(
         elsewhere.workspace_key, first_key,
         "it names the workspace it is in, not the one in front"
@@ -726,7 +725,9 @@ fn the_reading_holds_every_workspaces_windows_and_the_walk_keeps_to_the_front_on
     assert!(!elsewhere.focused, "what has focus is the window in front");
     // A second window in the workspace in front, so the walk has somewhere to go.
     let second = open_window(&mut session, "so.tilo.mail");
-    until(&mut session, |session| desk(session).windows.len() == 3);
+    until(&mut session, |session| {
+        crate::common::windows(session).len() == 3
+    });
     let in_front = [front.to_string(), second.to_string()];
     // The walk crosses the workspace in front alone.
     for _ in 0..3 {
@@ -736,7 +737,7 @@ fn the_reading_holds_every_workspaces_windows_and_the_walk_keeps_to_the_front_on
         assert!(
             in_front.contains(&reached(&session).key),
             "the walk keeps to the workspace in front: {:?}",
-            desk(&session).windows
+            crate::common::windows(&session)
         );
     }
 }
@@ -749,7 +750,9 @@ fn the_overviews_search_finds_a_window_of_another_workspace() {
     let mut session = session();
     until(&mut session, |session| says(session, &time(session).clock));
     let notes = open_window(&mut session, "so.tilo.notes");
-    until(&mut session, |session| desk(session).windows.len() == 1);
+    until(&mut session, |session| {
+        crate::common::windows(session).len() == 1
+    });
     let behind = desk(&session).workspace;
     session
         .invoke(
@@ -763,11 +766,11 @@ fn the_overviews_search_finds_a_window_of_another_workspace() {
     });
     // The reading holds it, in the workspace behind the one in front.
     let read = desk(&session);
-    let placed = read
-        .windows
+    let windows = crate::common::windows(&session);
+    let placed = windows
         .iter()
         .find(|w| w.key == notes.to_string())
-        .unwrap_or_else(|| panic!("the window behind is read: {:?}", read.windows));
+        .unwrap_or_else(|| panic!("the window behind is read: {windows:?}"));
     assert_eq!(placed.workspace, behind, "it keeps the workspace it is in");
     assert_ne!(
         placed.workspace, read.workspace,
@@ -798,12 +801,11 @@ fn the_overviews_search_finds_a_window_of_another_workspace() {
     press(&mut session, "so.tilo.notes");
     until(&mut session, |session| desk(session).workspace == behind);
     assert!(
-        desk(&session)
-            .windows
+        crate::common::windows(&session)
             .iter()
             .any(|w| w.key == notes.to_string() && w.focused),
         "the window found is the one in front: {:?}",
-        desk(&session).windows
+        crate::common::windows(&session)
     );
     assert!(
         session.shell_refusals().is_empty(),
@@ -818,7 +820,9 @@ fn the_launcher_opens_from_the_bar_and_searches_windows() {
     let mut session = session();
     until(&mut session, |session| says(session, &time(session).clock));
     open_window(&mut session, "so.tilo.notes");
-    until(&mut session, |session| desk(session).windows.len() == 1);
+    until(&mut session, |session| {
+        crate::common::windows(session).len() == 1
+    });
     // The shell's actions reach the desk's surface through its door.
     session
         .invoke(
@@ -945,17 +949,17 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
     until(&mut session, |session| says(session, &time(session).clock));
     open_window(&mut session, "so.tilo.notes");
     open_window(&mut session, "so.tilo.mail");
-    until(&mut session, |session| desk(session).windows.len() == 2);
+    until(&mut session, |session| {
+        crate::common::windows(session).len() == 2
+    });
     // The desk's order, the window in front first: Alt+Tab opens on the next one.
-    let before = desk(&session);
+    let before = crate::common::windows(&session);
     let front = before
-        .windows
         .iter()
         .position(|window| window.focused)
         .expect("a window is in front");
     let next = before
-        .windows
-        .get((front + 1) % before.windows.len())
+        .get((front + 1) % before.len())
         .expect("there is a window after it")
         .key
         .clone();
@@ -967,8 +971,7 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
     until(&mut session, |session| here(session) == "switcher");
     // The switcher lifts the window its walk reached.
     until(&mut session, |session| {
-        desk(session)
-            .windows
+        crate::common::windows(session)
             .iter()
             .any(|window| window.key == next && window.focused)
     });
@@ -978,9 +981,9 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
     // The switcher names every window it walks, each with the app it shows, and the keys stand
     // under them rather than over their titles.
     let labels = session.accessible_labels();
-    let walked = desk(&session);
+    let walked = crate::common::windows(&session);
     let mut titles = Vec::new();
-    for window in &walked.windows {
+    for window in &walked {
         let named = labels.iter().filter(|l| l.as_str() == window.title).count();
         assert!(
             named > 0,
@@ -1023,8 +1026,7 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
         "letting Alt go takes the switcher down again"
     );
     assert_eq!(
-        desk(&session)
-            .windows
+        crate::common::windows(&session)
             .iter()
             .find(|window| window.focused)
             .map(|window| window.key.clone()),
@@ -1053,9 +1055,8 @@ fn walk(session: &mut Session, steps: i64, scope: &str) {
 
 /// The window the switcher lifts, as the desk reads it: the one the walk reached while the panel
 /// shows, and the window in front while the panel is down.
-fn reached(session: &Session) -> tilo_surface_host::shell_part::WindowReading {
-    desk(session)
-        .windows
+fn reached(session: &Session) -> tilo_session::desk_windows::Window {
+    crate::common::windows(session)
         .into_iter()
         .find(|window| window.focused)
         .expect("a window is in front")
@@ -1076,17 +1077,16 @@ fn a_flick_shows_no_panel_and_holding_the_walk_outlasts_its_delay() {
     until(&mut session, |session| says(session, &time(session).clock));
     open_window(&mut session, "so.tilo.notes");
     open_window(&mut session, "so.tilo.mail");
-    until(&mut session, |session| desk(session).windows.len() == 2);
-    let before = desk(&session);
+    until(&mut session, |session| {
+        crate::common::windows(session).len() == 2
+    });
+    let before = crate::common::windows(&session);
     let front = before
-        .windows
         .iter()
         .position(|window| window.focused)
         .expect("a window is in front");
-    let front_key = before.windows[front].key.clone();
-    let next = before.windows[(front + 1) % before.windows.len()]
-        .key
-        .clone();
+    let front_key = before[front].key.clone();
+    let next = before[(front + 1) % before.len()].key.clone();
     let plain = keep(&mut session, "shell-flick");
 
     walk(&mut session, 1, "workspace");
@@ -1154,7 +1154,9 @@ fn alt_backtick_walks_only_the_front_apps_windows() {
     ] {
         open_window(&mut session, app);
     }
-    until(&mut session, |session| desk(session).windows.len() == 4);
+    until(&mut session, |session| {
+        crate::common::windows(session).len() == 4
+    });
     let front = reached(&session);
 
     // The walk over this app's windows never leaves it, however far it walks.
@@ -1903,8 +1905,7 @@ fn tab_place(session: &Session, tab: u64) -> Option<(u64, String)> {
 
 /// The tab `tab` is the window in front, as the desk publishes it.
 fn in_front(session: &Session, tab: u64) -> bool {
-    desk(session)
-        .windows
+    crate::common::windows(session)
         .iter()
         .any(|window| window.focused && window.key == tab.to_string())
 }
@@ -1966,10 +1967,11 @@ fn a_press_on_a_launcher_row_brings_its_window_front() {
     until(&mut session, |session| says(session, &time(session).clock));
     open_window(&mut session, "so.tilo.notes");
     open_window(&mut session, "so.tilo.mail");
-    until(&mut session, |session| desk(session).windows.len() == 2);
+    until(&mut session, |session| {
+        crate::common::windows(session).len() == 2
+    });
     // The window not in front is the one to go to.
-    let behind = desk(&session)
-        .windows
+    let behind = crate::common::windows(&session)
         .into_iter()
         .find(|w| !w.focused)
         .expect("one window is behind the other");
@@ -2047,7 +2049,9 @@ fn closing_a_window_from_the_overview_takes_it_off_the_desk() {
     let mut session = session();
     until(&mut session, |session| says(session, &time(session).clock));
     let notes = open_window(&mut session, "so.tilo.notes");
-    until(&mut session, |session| desk(session).windows.len() == 1);
+    until(&mut session, |session| {
+        crate::common::windows(session).len() == 1
+    });
     show(&mut session, "overview");
     window_menu(&mut session, "Close");
     press(&mut session, "Close");
@@ -2068,7 +2072,9 @@ fn moving_a_window_to_a_strip_from_the_overview_carries_it_there() {
     until(&mut session, |session| says(session, &time(session).clock));
     let notes = open_window(&mut session, "so.tilo.notes");
     let mail = second_strip(&mut session, "Main", "Research", "so.tilo.mail");
-    until(&mut session, |session| desk(session).windows.len() == 2);
+    until(&mut session, |session| {
+        crate::common::windows(session).len() == 2
+    });
     show(&mut session, "overview");
     // The first window's menu offers the other window's strip, whichever window it is.
     until(&mut session, |session| {
@@ -2140,7 +2146,9 @@ fn moving_a_window_to_a_workspace_from_the_overview_carries_it_there() {
         desk(session).workspace == first.workspace
     });
     let notes = open_window(&mut session, "so.tilo.notes");
-    until(&mut session, |session| desk(session).windows.len() == 1);
+    until(&mut session, |session| {
+        crate::common::windows(session).len() == 1
+    });
     show(&mut session, "overview");
     let item = format!("Move to {}", second.name);
     window_menu(&mut session, &item);

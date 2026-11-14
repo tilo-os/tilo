@@ -25,7 +25,7 @@ view key_hints_switcher(this_app: Text) {
 /// quit it. Wait gives the app another period to answer and takes the card away; Force quit ends
 /// the app, and the window with it. Both are the window's own published actions, so a script or an
 /// agent takes them the same way.
-view hung_window(w: Win) {
+view hung_window(w: device.Window) {
     stack(gap: .tight) {
         ui.Badge("Not responding", tone: .warning)
         row(gap: .tight, align: .center, wrap: true) {

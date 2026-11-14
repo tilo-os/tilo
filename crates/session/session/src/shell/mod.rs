@@ -65,6 +65,11 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::displays::surface(),
         crate::notifications::surface(),
         crate::time::surface(),
+        crate::controls::apps_surface(),
+        crate::desk_resource::windows_surface(),
+        crate::desk_resource::tray_surface(),
+        crate::desk_resource::agents_surface(),
+        crate::desk_resource::styles_surface(),
         crate::desk_resource::surface(),
     ]
 }
@@ -293,12 +298,12 @@ impl Shell {
         desk_changed
     }
 
-    /// Tell the shell what the screen says of its edges: the pointer at the top or bottom edge,
+    /// Tell the displays what the screen says of its edges: the pointer at the top or bottom edge,
     /// and a window standing where a bar or a dock there rides. What a bar or dock that shows
-    /// only sometimes follows; a screen that says the same as before publishes nothing.
-    pub(crate) fn publish_edges(&self, compositor: &Compositor) {
+    /// only sometimes follows. Whether that moved.
+    fn publish_edges(&self, compositor: &Compositor, displays: &displays::Displays) -> bool {
         let Some(outputs) = Self::outputs(compositor) else {
-            return;
+            return false;
         };
         #[allow(
             clippy::cast_precision_loss,
@@ -321,7 +326,7 @@ impl Shell {
             compositor.pointer_location(),
             &windows,
         );
-        self.link.publish_edges(edges);
+        displays.set_edges(edges)
     }
 
     /// Follow the displays as they come and go, and a window taking one for itself: a part is made
@@ -1367,9 +1372,20 @@ impl crate::Session {
         }
     }
 
+    /// What the screen says of its edges, as the displays publish it: it moves without the
+    /// services, so a move is taken in at once and the bar follows the pointer this pass.
+    fn publish_edges(&self) {
+        if let Some(shell) = &self.shell
+            && shell.publish_edges(&self.compositor, &self.displays_service)
+        {
+            self.shared.services.borrow_mut().poll();
+        }
+    }
+
     /// Hand the shell the desk when it changed, and run what it asked through the door, as any
     /// caller of the action protocol does.
     pub(crate) fn follow_shell(&mut self) -> Result<(), crate::Error> {
+        self.publish_edges();
         let Some(shell) = self.shell.as_ref() else {
             return Ok(());
         };
@@ -1427,9 +1443,6 @@ impl crate::Session {
             });
             lend_content(shell, &self.shared, workspaces);
         }
-        // What the screen says of its edges is what a bar or dock that shows only sometimes
-        // follows; it moves without the desk, so it goes every turn.
-        shell.publish_edges(&self.compositor);
         // One part per display: a display plugged in, taken away or taken by a fullscreen window
         // moves its part.
         shell.follow_displays(&mut self.compositor, &mut self.shared.doors);

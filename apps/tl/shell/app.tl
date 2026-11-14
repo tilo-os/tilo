@@ -18,13 +18,6 @@ type Desk (origin: session.desk) {
     switcher_scope: Text merge register
     /// What the person typed in the shell's search, which opens the launcher where they left off.
     spotlight: Text merge register
-    /// The timer or stopwatch Clocks runs, by its name: its label, or `Timer` or `Stopwatch`
-    /// when the app named none; empty when none floats.
-    timer: Text merge register
-    /// What the timer reads: what it has left, or what the stopwatch has run.
-    timer_left: Text merge register
-    timer_paused: Bool
-    timer_stopwatch: Bool
     /// The question the person is asked about themselves; empty when none waits.
     ask: Text merge register
     /// What answering the question brings.
@@ -37,62 +30,6 @@ type Desk (origin: session.desk) {
     strip: Text merge register
     workspaces: Collection<Workspace>
     people: Collection<Person>
-    /// The pointer at the top edge, and a window standing where the bar rides: what a bar that
-    /// shows only sometimes follows. The session writes them with the rest of the desk; no
-    /// action changes them and no preset names them.
-    bar_reached: Bool
-    bar_covered: Bool
-    /// The pointer at the bottom edge, and a window standing where the dock rides.
-    dock_reached: Bool
-    dock_covered: Bool
-    agents: Collection<Agent>
-    windows: Collection<Win>
-    /// The running applications' tray items, in the order they registered.
-    tray: Collection<TrayItem>
-    /// The applications installed on this device: what the launcher lists and opens.
-    apps: Collection<App>
-    /// The desk styles every installed package offers, as the session publishes them: each
-    /// a view of the arrangement (`shell.md` §6), listed by its own words. The person's choice
-    /// names one of them in `Viewing.style`.
-    styles: Collection<DeskStyle>
-}
-
-/// A desk style: a view of the arrangement an installed app declares. Its `style` is the view
-/// reference the person's choice keeps
-/// (`so.tilo.shell:strips`, `me.styles:timeline`).
-type DeskStyle (origin: session.desk_style) {
-    /// The style's view reference, which the record keeps it by.
-    key: Text merge register
-    /// The view reference: a package and a view, what `Viewing.style` names.
-    style: Text merge register
-    /// The package that declares it.
-    package: Text merge register
-    /// The view's own name, as its declaration writes it.
-    name: Text merge register
-    /// The view's doc line, in its author's words: what the switch lists it by.
-    line: Text merge register
-    /// Whether the style loads: false for one whose app is not here or does not work with this
-    /// desk, or whose view failed when it ran, so the switch can say so and the desk shows the
-    /// built-in strips until it is fixed.
-    loads: Bool
-    /// Why the style does not load, in the words it failed with, when it does not; empty when
-    /// it does.
-    reason: Text
-}
-
-/// An application installed on this device, as the launcher lists it: its package id, its name in
-/// the person's language, the glyph it shows, and how it opens.
-type App (origin: session.application) {
-    /// Its package id, which `open_app` names it by.
-    key: Text merge register
-    /// Its name in the person's interface language.
-    name: Text merge register
-    /// The glyph it shows, by the platform icon's kebab-case name.
-    icon: Text merge register
-    /// Its category (`work`, `media`, `play`, `system`), empty when it named none.
-    category: Text merge register
-    /// What it is for, in a few words; empty when it offers none.
-    description: Text merge register
 }
 
 /// A workspace on this device.
@@ -102,71 +39,10 @@ type Workspace (origin: session.workspace) {
     current: Bool
 }
 
-/// A running application's tray item: what the bar shows, and what a press on it reaches.
-type TrayItem (origin: session.tray_item) {
-    key: Text merge register
-    title: Text merge register
-    menu: Bool
-}
-
 /// Someone else here in the workspace in front.
 type Person (origin: session.person) {
     key: Text merge register
     name: Text merge register
-}
-
-/// A window of the desk: a tab of a strip in the workspace in front.
-type Win (origin: session.window) {
-    key: Text merge register
-    title: Text merge register
-    origin_app: Text merge register
-    /// The app it shows, shared by two windows of one app: the switcher's app scope crosses
-    /// the windows holding it.
-    app_key: Text merge register
-    icon: Text merge register
-    strip: Text merge register
-    /// Its strip's id, as moving a window there names the strip.
-    strip_key: Text merge register
-    workspace: Text merge register
-    /// Its workspace's id, as switching to it names the workspace.
-    workspace_key: Text merge register
-    /// The window it is a tab of: a group's tabs are one window on the desk, and its other
-    /// tabs stand behind it.
-    group_key: Text merge register
-    /// Its place among its group's tabs: 0 for the tab in front, then the tabs behind it in
-    /// their order.
-    tab_index: Int
-    /// Its share of its strip's width, 0..1: the width the window keeps on the desk.
-    share: Float
-    /// Whether it runs on this device: false for a window on another of the person's devices,
-    /// or on a peer's.
-    local: Bool
-    /// The device that runs it, when it is not this one: its key, empty when it is not known.
-    device: Text merge register
-    /// That device's name, as its certificate labels it.
-    device_name: Text merge register
-    /// Where it stands in the picture of its workspace: 1 for the first tab of the first group
-    /// of the first strip, on along them, strips top to bottom.
-    place: Int
-    recency: Int
-    focused: Bool
-    preview: Text merge register
-    /// Whether its app stopped answering: its card says so, and offers to keep waiting for the
-    /// app or to quit it.
-    not_responding: Bool
-}
-
-/// An agent here for the person, or that acted for them.
-type Agent (origin: session.agent) {
-    key: Text merge register
-    name: Text merge register
-    state: Text merge register
-    doing: Text merge register
-    mark: Text merge register
-    unseen: Int
-    /// Whether it is seated at the person's agent door now, a client they admitted, rather
-    /// than a run's own agent.
-    seat: Bool
 }
 
 root arrangement: Arrangement
@@ -226,7 +102,7 @@ view desk_view(a: Arrangement) {
 /// the session has not listed yet is one it has said nothing against, so it is drawn and, if it
 /// cannot be, the failed state the runtime draws stands in for it.
 fn loads_style(d: Desk, chosen: Text) -> Bool {
-    if let found = d.styles.find(s -> s.style == chosen) {
+    if let found = device.styles.offered.find(s -> s.style == chosen) {
         return found.loads
     }
     true
@@ -239,12 +115,12 @@ fn loads_style(d: Desk, chosen: Text) -> Bool {
 view clock(d: Desk) {
     row(gap: .tight, align: .center) {
         ui.Text(device.time.clock, role: .subheading, numeric: true)
-        if d.timer != "" {
-            ui.Text(d.timer, role: .caption)
-            if d.timer_paused {
+        if device.time.timer != "" {
+            ui.Text(device.time.timer, role: .caption)
+            if device.time.timer_paused {
                 ui.Text("Paused", role: .caption)
             }
-            ui.Text(d.timer_left, role: .caption, numeric: true)
+            ui.Text(device.time.timer_left, role: .caption, numeric: true)
         }
     }
 }
@@ -353,7 +229,7 @@ view bar_part(d: Desk, part: BarPart) {
             }
         }
     } else if part.slot == .agent {
-        for a in d.agents {
+        for a in device.agents.seated {
             agent_chip(d, a)
         }
     } else if part.slot == .status {
@@ -362,9 +238,9 @@ view bar_part(d: Desk, part: BarPart) {
         // them at the tightest gap would share the press between them. What the device does not
         // publish is not drawn at all, so no gap stands for a control that is not there.
         row(gap: .related, align: .center) {
-            if not space.compact and not d.tray.is_empty() {
+            if not space.compact and not device.tray.items.is_empty() {
                 row(gap: .related, align: .center) {
-                    for item in d.tray {
+                    for item in device.tray.items {
                         ui.Button(item.title, role: .bar)
                     }
                 }

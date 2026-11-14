@@ -13,7 +13,7 @@
 /// every other page does.
 view overview(d: Desk) {
     state query: Text = d.spotlight
-    let windows = d.windows.sort_by(w -> w.place)
+    let windows = device.windows.all.sort_by(w -> w.place)
     let here = windows.filter(w -> w.workspace_key == front_workspace(d))
     page(full) {
         stack(gap: .section) {
@@ -76,7 +76,7 @@ view workspaces_here(d: Desk) {
 /// One strip: its windows as places leading to trailing, each at its share of the strip's
 /// width, opening what it shows and carrying its menu of moves. A phone's output holds one place
 /// across, so there the strip's places stand one under the other.
-view picture(d: Desk, windows: List<Win>, strip: Text) {
+view picture(d: Desk, windows: List<device.Window>, strip: Text) {
     let fronts = windows
         .filter(v -> v.strip_key == strip and v.tab_index == 0)
         .sort_by(v -> v.place)
@@ -108,7 +108,7 @@ view picture(d: Desk, windows: List<Win>, strip: Text) {
 }
 
 /// The tabs standing behind `w` on the desk, in their order.
-fn behind_tabs(windows: List<Win>, w: Win) -> List<Win> {
+fn behind_tabs(windows: List<device.Window>, w: device.Window) -> List<device.Window> {
     return windows
         .filter(v -> v.group_key == w.group_key and v.tab_index > 0)
         .sort_by(v -> v.tab_index)
@@ -127,7 +127,7 @@ fn behind_tabs(windows: List<Win>, w: Win) -> List<Win> {
 /// picture and its name, and its commands are the window's own when it comes forward. It is
 /// pictured no wider than its 0.469 slice of what a place may take, so a row of places never
 /// hands a tab behind more width than the window it stands behind.
-view window_place(d: Desk, w: Win, weight: Float, peek: Bool) {
+view window_place(d: Desk, w: device.Window, weight: Float, peek: Bool) {
     let cap = if space.compact {
         100rem
     } else if space.width_class == .expanded or space.width_class == .wide {
@@ -163,7 +163,7 @@ view window_place(d: Desk, w: Win, weight: Float, peek: Bool) {
 
 /// The app a window shows, and the device it runs on when it is not this one: a window on the
 /// person's other device is named with it until it can be pictured live.
-fn app_line(w: Win) -> Text {
+fn app_line(w: device.Window) -> Text {
     if w.device_name != "" {
         return "{w.origin_app} on {w.device_name}"
     }
@@ -172,7 +172,7 @@ fn app_line(w: Win) -> Text {
 
 /// A window's commands, where its place shows them: going there, carrying it to another strip
 /// or workspace, asking about it, and closing it.
-view window_menu(d: Desk, w: Win) {
+view window_menu(d: Desk, w: device.Window) {
     ui.MenuButton("This window", icon: .more_horizontal, icon_only: true, role: .plain) {
         ui.MenuItem("Go there", icon: .arrow_right) {
             on choose: session.focus(window(w))
@@ -207,7 +207,7 @@ view window_menu(d: Desk, w: Win) {
 
 /// What a search finds among the person's windows, in every workspace: each one, going there
 /// or moving it here. What apps hold is the platform search's, not the overview's.
-view found(d: Desk, elsewhere: List<Win>) {
+view found(d: Desk, elsewhere: List<device.Window>) {
     if elsewhere.is_empty() {
         ui.EmptyState("Nothing matches", icon: .search, inline: true)
     } else {
@@ -220,7 +220,7 @@ view found(d: Desk, elsewhere: List<Win>) {
 }
 
 /// One window a search found, as a row that opens there, with the way to bring it here.
-view window_line(d: Desk, w: Win) {
+view window_line(d: Desk, w: device.Window) {
     ui.ListRow(
         w.title,
         secondary: app_line(w),
@@ -250,7 +250,7 @@ view window_line(d: Desk, w: Win) {
 }
 
 /// The strips a list of windows stands on, top to bottom.
-fn window_strips(windows: List<Win>) -> List<Text> {
+fn window_strips(windows: List<device.Window>) -> List<Text> {
     let in_order = windows.sort_by(w -> w.place).map(w -> w.strip_key).filter(s -> s != "")
     return in_order.group(s -> s).map(p -> p.key)
 }
@@ -258,7 +258,7 @@ fn window_strips(windows: List<Win>) -> List<Text> {
 /// The ids of the strips of the workspace `workspace`, top to bottom, as the desk's windows
 /// name them.
 fn strip_keys(d: Desk, workspace: Text) -> List<Text> {
-    let in_order = d.windows
+    let in_order = device.windows.all
         .filter(w -> w.workspace_key == workspace)
         .sort_by(w -> w.place)
         .map(w -> w.strip_key)
@@ -269,7 +269,7 @@ fn strip_keys(d: Desk, workspace: Text) -> List<Text> {
 /// The name of the strip `key`: its own, or the app of the first window on it when it has none,
 /// so no strip is named by where it stands.
 fn strip_name(d: Desk, key: Text) -> Text {
-    if let w = d.windows.filter(w -> w.strip_key == key).sort_by(v -> v.place).first() {
+    if let w = device.windows.all.filter(w -> w.strip_key == key).sort_by(v -> v.place).first() {
         if w.strip != "" {
             return w.strip
         }

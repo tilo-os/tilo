@@ -224,8 +224,8 @@ fn a_key_is_the_shells_only_where_a_surface_answers_it() {
     for case in cases() {
         let name = case.name;
         let mut reading = reading_with_windows();
-        reading.here = case.here.to_owned();
-        reading.switcher_revealed = case.here == "switcher";
+        reading.desk.here = case.here.to_owned();
+        reading.desk.switcher_revealed = case.here == "switcher";
         let (mut part, link) = part_of(&packages, reading, (1280, 800));
         // What the desk was asked while its switcher or its launcher came up is no key's.
         if matches!(case.here, "switcher" | "launcher") {
@@ -270,7 +270,7 @@ fn a_key_is_the_shells_only_where_a_surface_answers_it() {
 #[test]
 fn a_surface_up_makes_the_part_cover_the_outputs() {
     let mut reading = super::tests_support::reading_with_windows();
-    reading.here = "launcher".to_owned();
+    reading.desk.here = "launcher".to_owned();
     let (part, _link) = part_with(reading);
     assert_eq!(
         part.widgets.placement().size,

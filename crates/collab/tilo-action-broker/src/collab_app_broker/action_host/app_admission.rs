@@ -264,7 +264,6 @@ mod invitation_request_tests {
                 "cancel-invitation",
                 "switch-workspace",
                 "show-surface",
-                "stop-agent",
             ] {
                 assert!(
                     !super::invitation_request(&desk(other)) && !super::connect_request(&desk(other)),

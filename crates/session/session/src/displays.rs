@@ -376,6 +376,10 @@ impl Backlights for Screens {
 
 /// The displays as one reads them now: which ones the session shows, how bright each is, and which
 /// one the person works on.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "what the screen says of each edge, read one at a time"
+)]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Reading {
     /// Every display the session shows, the built-in one first.
@@ -387,6 +391,19 @@ pub struct Reading {
     /// ([`Reading::brightness`]), when one can be dimmed: what a slider over the displays shows.
     #[serde(default)]
     pub level: Option<f32>,
+    /// Whether the pointer is at, or resting against, the top edge: a bar that hides until it is
+    /// reached for shows while this holds.
+    #[serde(default)]
+    pub bar_reached: bool,
+    /// Whether a window stands where a top bar rides.
+    #[serde(default)]
+    pub bar_covered: bool,
+    /// Whether the pointer is at the bottom edge: a dock there shows while this holds.
+    #[serde(default)]
+    pub dock_reached: bool,
+    /// Whether a window stands where a dock rides.
+    #[serde(default)]
+    pub dock_covered: bool,
 }
 
 impl Reading {
@@ -455,6 +472,9 @@ struct Inner {
     dimmed: Vec<(String, f32)>,
     /// The software-dimmed generation `dimmed` was worked out from, when the controls can tell.
     dim_generation: Option<u64>,
+    /// What the screen says of its edges, and whether that moved since the last pass.
+    edges: tilo_session_core::shell::ScreenEdges,
+    edges_moved: bool,
 }
 
 /// One display the compositor shows.
@@ -491,6 +511,10 @@ impl Inner {
                 .collect(),
             focused: self.focused.clone(),
             level: None,
+            bar_reached: self.edges.bar_reached,
+            bar_covered: self.edges.bar_covered,
+            dock_reached: self.edges.dock_reached,
+            dock_covered: self.edges.dock_covered,
         };
         reading.level = reading.brightness();
         reading
@@ -750,7 +774,26 @@ fn level_of(level: f64) -> Result<f32, DoorError> {
     }
 }
 
+impl Displays {
+    /// What the screen says of its edges now: the pointer at an edge, and a window standing where
+    /// a bar or a dock there rides. What a bar or dock that shows only sometimes follows.
+    /// Whether they moved.
+    pub(crate) fn set_edges(&self, edges: tilo_session_core::shell::ScreenEdges) -> bool {
+        let mut inner = self.inner.borrow_mut();
+        if inner.edges == edges {
+            return false;
+        }
+        inner.edges = edges;
+        inner.edges_moved = true;
+        true
+    }
+}
+
 impl Service for Displays {
+    fn poll(&mut self) -> bool {
+        std::mem::take(&mut self.inner.borrow_mut().edges_moved)
+    }
+
     fn resources(&self) -> Vec<ResourceSpec> {
         let mut resource =
             offer::<DisplaysAction>(ResourceSpec::new(RESOURCE, KIND, t("session-displays")));

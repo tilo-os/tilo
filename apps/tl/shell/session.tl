@@ -8,7 +8,7 @@
 ///
 /// The window `w` as the session publishes it: its tab's resource, whose own actions focus and
 /// close it.
-fn window(w: Win) -> session.Window {
+fn window(w: device.Window) -> session.Window {
     return resource("desktop:tab:{w.key}", of: session.Window)
 }
 

@@ -25,9 +25,6 @@ fn reading() -> DeskReading {
                 current: false,
             },
         ],
-        // The desk styles every installed package offers: the four the shell ships, as the
-        // session publishes them (shell.md §6), so the switch lists them.
-        styles: crate::shell_part::tests_support::shipped_styles(),
         ..DeskReading::default()
     }
 }
@@ -918,29 +915,32 @@ fn a_surface_of_the_desks_stands_over_the_windows() {
 }
 
 /// The overview over a window on each of `strips`, the first window's on the first strip.
-fn overview_with(strips: &[&str]) -> DeskReading {
-    DeskReading {
-        here: "overview".to_owned(),
+fn overview_with(strips: &[&str]) -> super::tests_support::Staged {
+    super::tests_support::Staged {
+        desk: DeskReading {
+            here: "overview".to_owned(),
+            ..reading()
+        },
         windows: strips
             .iter()
             .enumerate()
-            .map(|(at, strip)| WindowReading {
-                key: (at + 7).to_string(),
-                title: format!("Window {at}"),
-                origin_app: "so.tilo.notes".to_owned(),
-                app_key: "so.tilo.notes".to_owned(),
-                icon: "app_window".to_owned(),
-                strip: (*strip).to_owned(),
-                strip_key: at.to_string(),
-                workspace: "Desk".to_owned(),
-                workspace_key: "1".to_owned(),
-                recency: i64::try_from(at).unwrap(),
-                focused: at == 0,
-                preview: "none".to_owned(),
-                ..WindowReading::default()
+            .map(|(at, strip)| {
+                serde_json::json!({
+                    "key": (at + 7).to_string(),
+                    "title": format!("Window {at}"),
+                    "origin_app": "so.tilo.notes",
+                    "app_key": "so.tilo.notes",
+                    "icon": "app_window",
+                    "strip": strip,
+                    "strip_key": at.to_string(),
+                    "workspace": "Desk",
+                    "workspace_key": "1",
+                    "recency": at,
+                    "focused": at == 0,
+                    "preview": "none",
+                })
             })
             .collect(),
-        ..reading()
     }
 }
 
@@ -1238,13 +1238,20 @@ fn the_switcher_pictures_each_window_above_its_own_title() {
     );
     // Holding Alt+Tab opens the switcher: every window the desk holds, in the walk's order.
     let mut reading = super::tests_support::reading_with_windows();
-    reading.here = "switcher".to_owned();
-    reading.switcher_revealed = true;
-    for (at, window) in reading.windows.iter_mut().enumerate() {
-        window.recency = i64::try_from(at).unwrap_or(0) + 1;
-        window.preview = "live".to_owned();
+    reading.desk.here = "switcher".to_owned();
+    reading.desk.switcher_revealed = true;
+    for (at, window) in reading
+        .windows
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .enumerate()
+    {
+        window["recency"] = serde_json::json!(at + 1);
+        window["preview"] = serde_json::json!("live");
     }
-    link.publish(reading);
+    super::tests_support::publish_windows(&link, &reading.windows);
+    link.publish(reading.desk);
     for _ in 0..6 {
         part.prepare_frame();
         part.draw();
@@ -1346,27 +1353,28 @@ fn the_bars_people_stay_who_is_here_across_a_commit() {
 #[test]
 fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
     let _settled = ui::motion::testing::settled();
-    let windows: Vec<WindowReading> = [(7, 0.5, "wide"), (8, 0.25, "narrow")]
+    let windows: serde_json::Value = [(7, 0.5, "wide"), (8, 0.25, "narrow")]
         .into_iter()
         .enumerate()
-        .map(|(at, (key, share, title))| WindowReading {
-            key: key.to_string(),
-            title: title.to_owned(),
-            origin_app: "so.tilo.notes".to_owned(),
-            app_key: "so.tilo.notes".to_owned(),
-            icon: "app_window".to_owned(),
-            strip: "Main".to_owned(),
-            strip_key: "1".to_owned(),
-            workspace: "Desk".to_owned(),
-            workspace_key: "1".to_owned(),
-            group_key: key.to_string(),
-            share,
-            local: true,
-            place: i64::try_from(at).unwrap(),
-            recency: i64::try_from(at).unwrap(),
-            focused: at == 0,
-            preview: "live".to_owned(),
-            ..WindowReading::default()
+        .map(|(at, (key, share, title))| {
+            serde_json::json!({
+                "key": key.to_string(),
+                "title": title,
+                "origin_app": "so.tilo.notes",
+                "app_key": "so.tilo.notes",
+                "icon": "app_window",
+                "strip": "Main",
+                "strip_key": "1",
+                "workspace": "Desk",
+                "workspace_key": "1",
+                "group_key": key.to_string(),
+                "share": share,
+                "local": true,
+                "place": at,
+                "recency": at,
+                "focused": at == 0,
+                "preview": "live",
+            })
         })
         .collect();
     let (mut part, link) = part_with(reading());
@@ -1375,9 +1383,9 @@ fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
         previews.clone(),
         std::rc::Rc::new(|key: &str| key.parse::<u64>().ok()),
     );
+    super::tests_support::publish_windows(&link, &windows);
     link.publish(DeskReading {
         here: "overview".to_owned(),
-        windows,
         ..reading()
     });
     for _ in 0..6 {
@@ -1470,20 +1478,21 @@ fn a_part_on_a_scaled_output_paints_at_that_scale() {
 /// `patches=0`) — the record change never marked the boundary that read it.
 #[test]
 fn the_desks_preset_reaches_the_screen() {
-    let mut desk = reading();
-    desk.windows = vec![WindowReading {
-        key: "11".to_owned(),
-        title: "Release planning".to_owned(),
-        origin_app: "Notes".to_owned(),
-        app_key: "so.tilo.notes".to_owned(),
-        icon: "notebook".to_owned(),
-        strip: "Main".to_owned(),
-        workspace: "Desk".to_owned(),
-        recency: 1,
-        focused: true,
-        local: true,
-        ..WindowReading::default()
-    }];
+    let desk = super::tests_support::Staged {
+        desk: reading(),
+        windows: serde_json::json!([{
+            "key": "11",
+            "title": "Release planning",
+            "origin_app": "Notes",
+            "app_key": "so.tilo.notes",
+            "icon": "notebook",
+            "strip": "Main",
+            "workspace": "Desk",
+            "recency": 1,
+            "focused": true,
+            "local": true,
+        }]),
+    };
     let (mut part, link) = super::tests_support::part_as(desk, None);
     link.publish_arrangement(one_window_arrangement());
     for _ in 0..6 {
@@ -1527,9 +1536,8 @@ fn the_desks_preset_reaches_the_screen() {
 /// and offers them without a restart (shell.md §6).
 #[test]
 fn the_style_switch_lists_the_styles_a_later_reading_carries() {
-    let mut desk = reading();
-    desk.styles = Vec::new();
-    let (mut part, link) = super::tests_support::part_as(desk, None);
+    let (mut part, link) = super::tests_support::part_as(reading(), None);
+    super::tests_support::publish_styles(&link, &serde_json::json!([]));
     for _ in 0..4 {
         part.prepare_frame();
     }
@@ -1539,9 +1547,10 @@ fn the_style_switch_lists_the_styles_a_later_reading_carries() {
         labels.iter().any(|l| l == "Showing Strips"),
         "the bar shows before the styles come: {labels:?}"
     );
-    let mut with_styles = reading();
-    with_styles.styles = crate::shell_part::tests_support::shipped_styles();
-    link.publish(with_styles);
+    super::tests_support::publish_styles(
+        &link,
+        &crate::shell_part::tests_support::shipped_styles(),
+    );
     for _ in 0..6 {
         part.prepare_frame();
     }

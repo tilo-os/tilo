@@ -22,9 +22,9 @@ view launcher(d: Desk) {
     // so the launcher is the way in to all of them without a search.
     let apps = apps_matching(d, query)
     let windows = if typed {
-        d.windows.matching(query).sort_by(w -> w.recency).take(10)
+        device.windows.all.matching(query).sort_by(w -> w.recency).take(10)
     } else {
-        d.windows.sort_by(w -> w.recency).take(8)
+        device.windows.all.sort_by(w -> w.recency).take(8)
     }
     ui.FloatingPanel {
         header: {
@@ -96,12 +96,12 @@ view launcher(d: Desk) {
 /// The installed apps whose name or package id holds what the person typed, in name order: the
 /// one list the field filters, so typing narrows the apps as it narrows the windows. A typed
 /// query that matches nothing leaves the list empty, which is what the empty state says.
-fn apps_matching(d: Desk, query: Text) -> List<App> {
+fn apps_matching(d: Desk, query: Text) -> List<device.App> {
     let needle = query.trim().lower()
     if needle == "" {
-        return d.apps.sort_by(a -> a.name)
+        return device.apps.installed.sort_by(a -> a.name)
     }
-    d.apps
+    device.apps.installed
         .filter(a -> a.name.lower().contains(needle) or a.key.lower().contains(needle))
         .sort_by(a -> a.name)
 }
@@ -118,7 +118,7 @@ action open_first(d: Desk, query: Text) {
 /// One installed app: its name, what it is for, and the glyph it shows. A press opens it,
 /// through the app's own `open` the dock's press and an agent's step run, so the launcher opens
 /// what it lists the one way.
-view app_row(a: App) {
+view app_row(a: device.App) {
     ui.ListRow(
         a.name,
         secondary: if a.description != "" { a.description } else { a.key },
@@ -144,7 +144,7 @@ fn front_strip() -> Text {
 }
 
 /// One window the search found: what it is, what it shows, and where it is.
-view window_row(w: Win) {
+view window_row(w: device.Window) {
     ui.ListRow(
         w.title,
         secondary: w.origin_app,

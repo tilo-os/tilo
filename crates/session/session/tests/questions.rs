@@ -1107,15 +1107,12 @@ fn door_answers(
 /// a presence of its own.
 fn seated_agents(session: &Session) -> Vec<String> {
     session
-        .read(tilo_surface_host::shell_part::DESK_RESOURCE)
-        .and_then(|desk| desk.get("agents").cloned())
-        .and_then(|agents| {
-            serde_json::from_value::<Vec<tilo_surface_host::shell_part::AgentReading>>(agents).ok()
-        })
+        .read("session:agents")
+        .and_then(|agents| agents.get("seated").and_then(Value::as_array).cloned())
         .unwrap_or_default()
         .into_iter()
-        .filter(|agent| agent.seat)
-        .map(|agent| agent.key)
+        .filter(|agent| agent["seat"] == true)
+        .map(|agent| agent["key"].as_str().unwrap_or_default().to_owned())
         .collect()
 }
 

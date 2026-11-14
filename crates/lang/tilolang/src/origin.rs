@@ -108,27 +108,6 @@ pub const KINDS: &[OriginKind] = &[
                 "The person at this device, by their name.",
             ),
             field(
-                "timer",
-                "Text",
-                "The timer or stopwatch Clocks runs, by its name: its label, or `Timer` or \
-                 `Stopwatch` when the app named none; empty when none floats.",
-            ),
-            field(
-                "timer_left",
-                "Text",
-                "What the timer reads: what it has left, or what the stopwatch has run.",
-            ),
-            field(
-                "timer_paused",
-                "Bool",
-                "Whether the timer or stopwatch is paused.",
-            ),
-            field(
-                "timer_stopwatch",
-                "Bool",
-                "Whether the running activity is a stopwatch rather than a timer.",
-            ),
-            field(
                 "ask",
                 "Text",
                 "The question the session puts to the person about themselves; empty when none \
@@ -173,36 +152,10 @@ pub const KINDS: &[OriginKind] = &[
                  `switcher`, `launcher`, `centre` or `composer`.",
             ),
             field(
-                "agents",
-                "Collection<session.agent>",
-                "The person's agents here, and what each is on and did.",
-            ),
-            field(
                 "spotlight",
                 "Text",
                 "What the person last typed in the shell's search, so the shell opens where they \
                  left off.",
-            ),
-            field(
-                "windows",
-                "Collection<session.window>",
-                "The windows of every strip of the workspace in front, most recently used first.",
-            ),
-            field(
-                "tray",
-                "Collection<session.tray_item>",
-                "The running applications' tray items, in the order they registered.",
-            ),
-            field(
-                "apps",
-                "Collection<session.application>",
-                "The applications installed on this device, each the launcher lists and opens.",
-            ),
-            field(
-                "styles",
-                "Collection<session.desk_style>",
-                "The desk styles every installed package offers, as the session finds them: \
-                 each a view of the arrangement, listed by its own words.",
             ),
             field(
                 "runs",
@@ -313,72 +266,6 @@ pub const KINDS: &[OriginKind] = &[
                 "change",
                 "Text",
                 "What changed it, as its app labels the action; empty for a reference.",
-            ),
-        ],
-    },
-    OriginKind {
-        name: "session.window",
-        doc: "A window of the desk: a tab of a strip in the workspace in front.",
-        derived: true,
-        fields: &[
-            field(
-                "key",
-                "Text",
-                "The tab's id, as moving or closing it names it.",
-            ),
-            field("title", "Text", "Its title."),
-            field("origin_app", "Text", "The app it shows, by its name here."),
-            field("icon", "Text", "The app's glyph, as the icon set names it."),
-            field("strip", "Text", "The strip it is in, by its name."),
-            field("workspace", "Text", "The workspace it is in, by its name."),
-            field(
-                "recency",
-                "Int",
-                "Where it stands in the walk a switcher takes: 1 is the window in front, then \
-                 the ones it was in front of, then the rest along their strips.",
-            ),
-            field(
-                "seen",
-                "Int",
-                "How many changes of its the person has not seen.",
-            ),
-            field("focused", "Bool", "Whether it has focus now."),
-            field(
-                "preview",
-                "Text",
-                "Whether it may be pictured: `live`, `withheld` (it holds secrets) or `none`.",
-            ),
-        ],
-    },
-    OriginKind {
-        name: "session.agent",
-        doc: "An agent here for the person, or that acted for them: a collaborator shown as one \
-              when the person's setting says so, and a task's own run.",
-        derived: true,
-        fields: &[
-            field("key", "Text", "The agent's id."),
-            field("name", "Text", "Its name here."),
-            field(
-                "state",
-                "Text",
-                "`running`, `waiting` (for the person) or `done`.",
-            ),
-            field("doing", "Text", "What it is on, in a few words."),
-            field(
-                "mark",
-                "Text",
-                "What it last did to what the person is looking at, in a few words.",
-            ),
-            field(
-                "unseen",
-                "Int",
-                "How many changes of its the person has not seen.",
-            ),
-            field(
-                "seat",
-                "Bool",
-                "Whether it is seated at the person's agent door now, a client they admitted, \
-                 rather than a run's own agent.",
             ),
         ],
     },
@@ -595,90 +482,6 @@ pub const KINDS: &[OriginKind] = &[
         fields: &[
             field("key", "Text", "Who they are, by their live presence's id."),
             field("name", "Text", "Their name here."),
-        ],
-    },
-    OriginKind {
-        name: "session.tray_item",
-        doc: "A running application's tray item: what the bar shows, and what a press on it \
-              reaches.",
-        derived: true,
-        fields: &[
-            field("key", "Text", "The item's key, which a press on it names."),
-            field("title", "Text", "The app's own words for it."),
-            field(
-                "menu",
-                "Bool",
-                "Whether choosing it opens its menu rather than its window.",
-            ),
-        ],
-    },
-    OriginKind {
-        name: "session.application",
-        doc: "An application installed on this device, as the person's launcher lists it: its \
-              package id, its name in the person's language, the glyph it shows, and how it opens.",
-        derived: true,
-        fields: &[
-            field("key", "Text", "The app, by its package id."),
-            field("name", "Text", "Its name in the person's language."),
-            field(
-                "icon",
-                "Text",
-                "The glyph it shows, by the platform icon's kebab-case name.",
-            ),
-            field(
-                "category",
-                "Text",
-                "Its category (`work`, `media`, `play`, `system`), empty when it named none.",
-            ),
-            field(
-                "description",
-                "Text",
-                "What it is for, in a few words; empty when it offers none.",
-            ),
-        ],
-    },
-    OriginKind {
-        name: "session.desk_style",
-        doc: "A desk style: a view of the arrangement that an installed package declares \
-              (shell.md §6). The session finds every installed package's, so the person's \
-              switch lists them and their choice names one by its view reference.",
-        derived: true,
-        fields: &[
-            field(
-                "key",
-                "Text",
-                "The style, by the view reference it names: what the session keeps it by.",
-            ),
-            field(
-                "style",
-                "Text",
-                "The view reference: a package and a view, as `Viewing.style` names it \
-                 (`so.tilo.shell:strips`, `me.styles:timeline`).",
-            ),
-            field("package", "Text", "The package that declares it."),
-            field(
-                "name",
-                "Text",
-                "The view's own name, as its declaration writes it.",
-            ),
-            field(
-                "line",
-                "Text",
-                "The view's doc line, in its author's words: what the switch lists it by.",
-            ),
-            field(
-                "loads",
-                "Bool",
-                "Whether the style loads: false for one whose package does not compile against \
-                 the shell and the session, or whose view failed when it ran, so the switch can \
-                 say so and the desk shows the built-in strips until it is fixed.",
-            ),
-            field(
-                "reason",
-                "Text",
-                "Why the style does not load, in the runtime's words, when it does not; empty \
-                 when it does.",
-            ),
         ],
     },
     OriginKind {

@@ -42,12 +42,10 @@ use crate::{Placement, WidgetHost};
 /// What a shell reads of the session and the names the session publishes it by: every host's,
 /// so the shell's views and the session name one desk.
 pub use tilo_session_core::shell::{
-    ARRANGEMENT_RESOURCE, AgentReading, AppReading, ArrangementPlaceReading,
-    ArrangementQueryReading, ArrangementReading, ArrangementRefReading, ArrangementRowReading,
-    ArrangementStripReading, ArrangementWorkspaceReading, Ask, AskReading, CHROME_RESOURCE,
-    DESK_RESOURCE, DeskReading, DeskStyleReading, ORIGIN, PersonReading, SHELL_APP, SHELL_RECORD,
-    ScreenEdges, TimerReading, TrayReading, WindowReading, WindowRect, WorkspaceReading, reach_pad,
-    screen_edges,
+    ARRANGEMENT_RESOURCE, ArrangementPlaceReading, ArrangementQueryReading, ArrangementReading,
+    ArrangementRefReading, ArrangementRowReading, ArrangementStripReading,
+    ArrangementWorkspaceReading, Ask, AskReading, CHROME_RESOURCE, DESK_RESOURCE, DeskReading,
+    ORIGIN, PersonReading, SHELL_APP, SHELL_RECORD, WorkspaceReading,
 };
 
 mod host;
@@ -359,16 +357,6 @@ impl SessionLink {
     /// The session published `reading`: the shell writes it on its next frame when it differs
     /// from the last. Whether it did.
     pub fn publish(&self, reading: DeskReading) -> bool {
-        // What the desk reading names is the desk; what the screen says of its edges comes
-        // with it, published by [`Self::publish_edges`], so the reading keeps the last word on
-        // it: a desk change does not put the edges back to rest.
-        let mut reading = reading;
-        if let Some(was) = self.reading.borrow().as_ref() {
-            reading.bar_reached = was.bar_reached;
-            reading.bar_covered = was.bar_covered;
-            reading.dock_reached = was.dock_reached;
-            reading.dock_covered = was.dock_covered;
-        }
         if self.reading.borrow().as_ref() == Some(&reading) {
             return false;
         }
@@ -423,31 +411,6 @@ impl SessionLink {
     #[must_use]
     pub fn has_asks(&self) -> bool {
         !self.asked.borrow().is_empty()
-    }
-
-    /// Publish what the screen says of its edges (`edges`), folded into the desk reading the
-    /// session publishes: the pointer at an edge and a window standing where a bar or a dock
-    /// there would. Published before the desk so a frame that moves both writes them once.
-    pub fn publish_edges(&self, edges: ScreenEdges) {
-        let Some(mut reading) = self.reading.borrow().clone() else {
-            return;
-        };
-        if reading.bar_reached == edges.bar_reached
-            && reading.bar_covered == edges.bar_covered
-            && reading.dock_reached == edges.dock_reached
-            && reading.dock_covered == edges.dock_covered
-        {
-            return;
-        }
-        reading.bar_reached = edges.bar_reached;
-        reading.bar_covered = edges.bar_covered;
-        reading.dock_reached = edges.dock_reached;
-        reading.dock_covered = edges.dock_covered;
-        // Written here, not through [`Self::publish`]: that keeps the edges the reading before
-        // it held, which is what a desk change must not overwrite, and these are the edges
-        // themselves.
-        *self.reading.borrow_mut() = Some(reading);
-        self.fresh.set(true);
     }
 
     /// The surface the desk shows now (`none` at rest): what the part covers the outputs for.
@@ -568,31 +531,17 @@ impl SessionOrigin {
         };
         let desk = kind("desk")?;
         let field = |ty: &OriginType, name: &str| ty.field(name).map(str::to_owned);
-        let timer = reading.timer.clone().unwrap_or_default();
         let ask = reading.ask.clone().unwrap_or_default();
         let fields = [
             ("person", text(&reading.person)),
             ("workspace", text(&reading.workspace)),
             ("strip", text(&reading.strip)),
-            // What the screen says of the edges a bar or dock that shows only sometimes follows.
-            // They are the desk's, derived with the rest of it: the session makes them again every
-            // start, so they are never the person's record and never need committing.
-            ("bar_reached", Value::Bool(reading.bar_reached)),
-            ("bar_covered", Value::Bool(reading.bar_covered)),
-            ("dock_reached", Value::Bool(reading.dock_reached)),
-            ("dock_covered", Value::Bool(reading.dock_covered)),
             ("here", text(&reading.here)),
             // The switcher's panel: whether it shows yet (a flick draws nothing), and which
             // windows its walk crosses.
             ("switcher_revealed", Value::Bool(reading.switcher_revealed)),
             ("switcher_scope", text(&reading.switcher_scope)),
             ("spotlight", text(&reading.spotlight)),
-            // The timer Clocks runs: its name and what it reads. Empty names mean no timer, so
-            // the clock shows the time alone; paused and stopwatch say how to read it.
-            ("timer", text(&reading.timer_name())),
-            ("timer_left", text(&reading.timer_left())),
-            ("timer_paused", Value::Bool(timer.paused)),
-            ("timer_stopwatch", Value::Bool(timer.stopwatch)),
             // The ask on the person's avatar: its words, and whether it stands open.
             ("ask", text(&ask.question)),
             ("ask_detail", text(&ask.detail)),
@@ -603,38 +552,6 @@ impl SessionOrigin {
             .into_iter()
             .filter_map(|(name, now)| Some((field(desk, name)?, now)));
         let mut writes: Vec<OriginWrite> = self.mirror.set(root, named).into_iter().collect();
-        // The running applications' tray items: each's key and the app's own words for it.
-        writes.extend(self.mirror.sync(
-            &reading.tray,
-            root,
-            field(desk, "tray").as_deref(),
-            kind("tray_item").ok(),
-            |item| item.key.clone(),
-            |item| {
-                vec![
-                    ("key", text(&item.key)),
-                    ("title", text(&item.title)),
-                    ("menu", Value::Bool(item.menu)),
-                ]
-            },
-        ));
-        // The installed applications: what the launcher lists and opens.
-        writes.extend(self.mirror.sync(
-            &reading.apps,
-            root,
-            field(desk, "apps").as_deref(),
-            kind("application").ok(),
-            |app| app.key.clone(),
-            |app| {
-                vec![
-                    ("key", text(&app.key)),
-                    ("name", text(&app.name)),
-                    ("icon", text(&app.icon)),
-                    ("category", text(&app.category)),
-                    ("description", text(&app.description)),
-                ]
-            },
-        ));
         writes.extend(self.mirror.sync(
             &reading.workspaces,
             root,
@@ -656,72 +573,6 @@ impl SessionOrigin {
             kind("person").ok(),
             |p| p.key.clone(),
             |p| vec![("key", text(&p.key)), ("name", text(&p.name))],
-        ));
-        writes.extend(self.mirror.sync(
-            &reading.windows,
-            root,
-            field(desk, "windows").as_deref(),
-            kind("window").ok(),
-            |w| w.key.clone(),
-            |w| {
-                vec![
-                    ("key", text(&w.key)),
-                    ("title", text(&w.title)),
-                    ("origin_app", text(&w.origin_app)),
-                    ("app_key", text(&w.app_key)),
-                    ("icon", text(&w.icon)),
-                    ("strip", text(&w.strip)),
-                    ("strip_key", text(&w.strip_key)),
-                    ("workspace", text(&w.workspace)),
-                    ("workspace_key", text(&w.workspace_key)),
-                    ("group_key", text(&w.group_key)),
-                    ("tab_index", Value::Int(w.tab_index)),
-                    ("share", Value::Float(w.share)),
-                    ("local", Value::Bool(w.local)),
-                    ("device", text(&w.device)),
-                    ("device_name", text(&w.device_name)),
-                    ("place", Value::Int(w.place)),
-                    ("recency", Value::Int(w.recency)),
-                    ("focused", Value::Bool(w.focused)),
-                    ("preview", text(&w.preview)),
-                    ("not_responding", Value::Bool(w.not_responding)),
-                ]
-            },
-        ));
-        writes.extend(self.mirror.sync(
-            &reading.agents,
-            root,
-            field(desk, "agents").as_deref(),
-            kind("agent").ok(),
-            |a| a.key.clone(),
-            |a| {
-                vec![
-                    ("key", text(&a.key)),
-                    ("name", text(&a.name)),
-                    ("state", text(&a.state)),
-                    ("doing", text(&a.doing)),
-                    ("mark", text(&a.mark)),
-                    ("unseen", Value::Int(a.unseen)),
-                ]
-            },
-        ));
-        writes.extend(self.mirror.sync(
-            &reading.styles,
-            root,
-            field(desk, "styles").as_deref(),
-            kind("desk_style").ok(),
-            |s| s.style.clone(),
-            |s| {
-                vec![
-                    ("key", text(&s.style)),
-                    ("style", text(&s.style)),
-                    ("package", text(&s.package)),
-                    ("name", text(&s.name)),
-                    ("line", text(&s.line)),
-                    ("loads", Value::Bool(s.loads)),
-                    ("reason", text(&s.reason)),
-                ]
-            },
         ));
         Ok(writes)
     }

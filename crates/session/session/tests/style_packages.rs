@@ -15,8 +15,6 @@ use std::time::Duration;
 
 use tilo_compositor::{KeyRepeat, OutputConfig};
 use tilo_session::{Options, Session};
-use tilo_session_core::shell::DeskReading;
-use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
@@ -42,13 +40,8 @@ fn session() -> Session {
     session
 }
 
-fn desk(session: &Session) -> DeskReading {
-    serde_json::from_value(session.read(DESK_RESOURCE).expect("the desk")).expect("the desk reads")
-}
-
 fn style_state(session: &Session, style: &str) -> Option<(bool, String)> {
-    desk(session)
-        .styles
+    crate::common::styles(session)
         .into_iter()
         .find(|found| found.style == style)
         .map(|found| (found.loads, found.reason))
@@ -209,8 +202,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
         &mut session,
         "the switch names the edited copy",
         |session| {
-            desk(session)
-                .styles
+            crate::common::styles(session)
                 .iter()
                 .any(|style| style.style == copy && style.line == "My strips" && style.loads)
         },
@@ -306,7 +298,9 @@ fn the_repl_makes_a_style_with_the_same_call() {
     let copy = format!("{}:strips", tilo_session::style_packages::COPY_ID);
     // The copy is offered by the switch, as it is from the person's own press.
     crate::common::until(&mut session, "the copy is offered", |session| {
-        desk(session).styles.iter().any(|style| style.style == copy)
+        crate::common::styles(session)
+            .iter()
+            .any(|style| style.style == copy)
     });
     // The REPL switches to it by the same door, and the desk draws the copy.
     let (answer, failed) = repl.run(

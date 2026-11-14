@@ -211,6 +211,10 @@ session-bluetooth-timed-out = Der Umzug hat zu lange gedauert.
 session-bluetooth-unknown = Das ist keine Bluetooth-Adresse.
 session-notifications = Benachrichtigungszentrum
 session-time = Uhrzeit
+session-windows = Fenster
+session-tray = Statusleiste
+session-agents = Agenten
+session-styles = Stile
 session-notifications-dismiss = Die Benachrichtigung verwerfen
 session-notifications-act = Die Aktion der Benachrichtigung ausführen
 session-notifications-clear = Das Benachrichtigungszentrum leeren
@@ -314,8 +318,8 @@ paste-undone-trouble = { $landed } von { $total } waren schon eingefügt. Die bl
 ## Person, der Tray-Eintrag einer laufenden Anwendung und wie die Personenliste heißt.
 session-desk-answer-ask = Antworten
 session-desk-ask-later = Später fragen
-session-desk-open = Öffnen
-session-desk-stop-agent = Stoppen
+session-tray-open = Öffnen
+session-agents-stop = Stoppen
 session-people = Personen
 
 ## Wie der Sperrbildschirm heißt, solange er oben ist.

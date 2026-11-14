@@ -10,6 +10,7 @@ pub(super) fn publish_platform_roots(link: &SessionLink) {
         link.publish_reading(resource, &ty, serde_json::json!({}));
     }
     publish_time(link, "4:28 PM");
+    publish_styles(link, &shipped_styles());
 }
 
 /// The time the session publishes, to the minute.
@@ -32,7 +33,7 @@ pub(super) fn publish_notices(link: &SessionLink, notices: &serde_json::Value) {
 
 /// The four desk styles `so.tilo.shell` ships, as the session lists them: a view of the
 /// arrangement each, named by its doc line (shell.md §6).
-pub(super) fn shipped_styles() -> Vec<DeskStyleReading> {
+pub(super) fn shipped_styles() -> serde_json::Value {
     [
         ("strips", "Strips"),
         ("frames", "Frames"),
@@ -40,51 +41,100 @@ pub(super) fn shipped_styles() -> Vec<DeskStyleReading> {
         ("desktop", "Desktop"),
     ]
     .into_iter()
-    .map(|(name, line)| DeskStyleReading {
-        style: format!("so.tilo.shell:{name}"),
-        package: "so.tilo.shell".to_owned(),
-        name: name.to_owned(),
-        line: line.to_owned(),
-        loads: true,
-        reason: String::new(),
+    .map(|(name, line)| {
+        serde_json::json!({
+            "style": format!("so.tilo.shell:{name}"),
+            "package": "so.tilo.shell",
+            "name": name,
+            "line": line,
+            "loads": true,
+            "reason": "",
+        })
     })
     .collect()
 }
 
+/// The desk styles the session publishes.
+pub(super) fn publish_styles(link: &SessionLink, styles: &serde_json::Value) {
+    link.publish_reading(
+        "session:styles",
+        "so.tilo.device#Styles",
+        serde_json::json!({ "offered": styles }),
+    );
+}
+
+/// The windows the session publishes, each with every field the session writes: what a window
+/// leaves out reads as nothing (an empty name, no place, not focused).
+pub(super) fn publish_windows(link: &SessionLink, windows: &serde_json::Value) {
+    let nothing = serde_json::json!({
+        "key": "", "title": "", "origin_app": "", "app_key": "", "icon": "", "strip": "",
+        "strip_key": "", "workspace": "", "workspace_key": "", "group_key": "", "tab_index": 0,
+        "share": 0.0, "local": false, "device": "", "device_name": "", "place": 0, "recency": 0,
+        "focused": false, "preview": "", "not_responding": false,
+    });
+    let all: Vec<serde_json::Value> = windows
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|window| {
+            let mut full = nothing.clone();
+            if let (Some(full), Some(window)) = (full.as_object_mut(), window.as_object()) {
+                full.extend(window.clone());
+            }
+            full
+        })
+        .collect();
+    link.publish_reading(
+        "session:windows",
+        "so.tilo.device#Windows",
+        serde_json::json!({ "all": all }),
+    );
+}
+
+/// What the session publishes for a part to draw: the desk, and the windows on it.
+pub(super) struct Staged {
+    pub(super) desk: DeskReading,
+    pub(super) windows: serde_json::Value,
+}
+
+impl From<DeskReading> for Staged {
+    fn from(desk: DeskReading) -> Self {
+        Self {
+            desk,
+            windows: serde_json::json!([]),
+        }
+    }
+}
+
+/// A window of the desk, as the session publishes it, standing in the workspace `1`.
+pub(super) fn window(key: &str, title: &str, app: &str, strip: &str) -> serde_json::Value {
+    serde_json::json!({
+        "key": key,
+        "title": title,
+        "origin_app": app,
+        "strip": strip,
+        "workspace": "Desk",
+        "workspace_key": "1",
+    })
+}
+
 /// A desk at rest with two windows and two workspaces.
-pub(super) fn reading_with_windows() -> DeskReading {
-    DeskReading {
-        person: "Pat".to_owned(),
-        workspace: "Desk".to_owned(),
-        strip: "Main".to_owned(),
-        workspaces: vec![WorkspaceReading {
-            key: "1".to_owned(),
-            name: "Desk".to_owned(),
-            current: true,
-        }],
-        styles: shipped_styles(),
-        windows: vec![
-            WindowReading {
-                key: "11".to_owned(),
-                title: "Release planning".to_owned(),
-                origin_app: "Notes".to_owned(),
-                strip: "Main".to_owned(),
-                workspace: "Desk".to_owned(),
-                workspace_key: "1".to_owned(),
-                focused: true,
-                ..WindowReading::default()
-            },
-            WindowReading {
-                key: "12".to_owned(),
-                title: "Inbox".to_owned(),
-                origin_app: "Mail".to_owned(),
-                strip: "Main".to_owned(),
-                workspace: "Desk".to_owned(),
-                workspace_key: "1".to_owned(),
-                ..WindowReading::default()
-            },
-        ],
-        ..DeskReading::default()
+pub(super) fn reading_with_windows() -> Staged {
+    let mut release = window("11", "Release planning", "Notes", "Main");
+    release["focused"] = serde_json::json!(true);
+    Staged {
+        desk: DeskReading {
+            person: "Pat".to_owned(),
+            workspace: "Desk".to_owned(),
+            strip: "Main".to_owned(),
+            workspaces: vec![WorkspaceReading {
+                key: "1".to_owned(),
+                name: "Desk".to_owned(),
+                current: true,
+            }],
+            ..DeskReading::default()
+        },
+        windows: serde_json::json!([release, window("12", "Inbox", "Mail", "Main")]),
     }
 }
 
@@ -97,12 +147,15 @@ pub(super) fn compiled() -> Vec<Compiled> {
 }
 
 /// A part over `reading`, its outputs set.
-pub(super) fn part_with(reading: DeskReading) -> (ShellPart, Rc<SessionLink>) {
+pub(super) fn part_with(reading: impl Into<Staged>) -> (ShellPart, Rc<SessionLink>) {
     part_on(reading, (1280, 800))
 }
 
 /// A part over `reading` on one output `size` logical pixels big.
-pub(super) fn part_on(reading: DeskReading, size: (u32, u32)) -> (ShellPart, Rc<SessionLink>) {
+pub(super) fn part_on(
+    reading: impl Into<Staged>,
+    size: (u32, u32),
+) -> (ShellPart, Rc<SessionLink>) {
     part_at(compiled(), reading, None, size)
 }
 
@@ -110,7 +163,7 @@ pub(super) fn part_on(reading: DeskReading, size: (u32, u32)) -> (ShellPart, Rc<
 /// `packages` ([`compiled`]): its link, its record and its instance are made for it alone.
 pub(super) fn part_of(
     packages: &[Compiled],
-    reading: DeskReading,
+    reading: impl Into<Staged>,
     size: (u32, u32),
 ) -> (ShellPart, Rc<SessionLink>) {
     part_at(packages.to_vec(), reading, None, size)
@@ -118,7 +171,7 @@ pub(super) fn part_of(
 
 /// A part over `reading`, its outputs set, its wells reporting to `wells`.
 pub(super) fn part_as(
-    reading: DeskReading,
+    reading: impl Into<Staged>,
     wells: Option<ui::widget::Wells>,
 ) -> (ShellPart, Rc<SessionLink>) {
     part_at(compiled(), reading, wells, (1280, 800))
@@ -128,7 +181,7 @@ pub(super) fn part_as(
 /// reporting to `wells`.
 fn part_at(
     packages: Vec<Compiled>,
-    reading: DeskReading,
+    reading: impl Into<Staged>,
     wells: Option<ui::widget::Wells>,
     size: (u32, u32),
 ) -> (ShellPart, Rc<SessionLink>) {
@@ -140,7 +193,9 @@ fn part_at(
         .clone();
     let link = Rc::new(SessionLink::default());
     publish_platform_roots(&link);
-    link.publish(reading);
+    let staged: Staged = reading.into();
+    publish_windows(&link, &staged.windows);
+    link.publish(staged.desk);
     let mut part = ShellPart::new(
         ShellIdentity {
             app: &app,

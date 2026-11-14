@@ -153,8 +153,7 @@ fn desk(session: &Session) -> DeskReading {
 
 /// The title of the window in front.
 fn front(session: &Session) -> String {
-    desk(session)
-        .windows
+    crate::common::windows(session)
         .into_iter()
         .find(|window| window.focused)
         .expect("a window is in front")
@@ -487,7 +486,7 @@ fn a_workspace_too_full_for_cards_shows_the_page_the_walk_reached() {
     tree.active_group.insert(StripId(5), 100);
     handle.replace_tree(tree);
     session.step(REFRESH).expect("a turn of the session");
-    assert_eq!(desk(&session).windows.len(), 14);
+    assert_eq!(crate::common::windows(&session).len(), 14);
 
     hold_alt_tab(&mut session);
     let page = session.window_switcher().card_rects();
@@ -653,7 +652,7 @@ fn one_window_opens_no_walk() {
     }];
     handle.replace_tree(tree);
     session.step(REFRESH).expect("a turn of the session");
-    assert_eq!(desk(&session).windows.len(), 1);
+    assert_eq!(crate::common::windows(&session).len(), 1);
 
     key(&mut session, KEY_LEFTALT, true);
     key(&mut session, KEY_TAB, true);

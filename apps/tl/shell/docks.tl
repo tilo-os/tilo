@@ -40,7 +40,7 @@ view dock_run(s: Shell, d: Desk) {
                 for item in s.dock_items {
                     if item.pinned or s.dock_running {
                         ui.DragItem(item, title: item.title) {
-                            on activate: open_item(s, d, item.key)
+                            on activate: open_item(s, item.key)
                             dock_tile(s, d, item)
                         }
                     }
@@ -60,7 +60,7 @@ view dock_run(s: Shell, d: Desk) {
                     for item in s.dock_items {
                         if item.pinned or s.dock_running {
                             ui.DragItem(item, title: item.title) {
-                                on activate: open_item(s, d, item.key)
+                                on activate: open_item(s, item.key)
                                 dock_tile(s, d, item)
                             }
                         }
@@ -77,7 +77,7 @@ view dock_run(s: Shell, d: Desk) {
                     for item in s.dock_items {
                         if item.pinned or s.dock_running {
                             ui.DragItem(item, title: item.title) {
-                                on activate: open_item(s, d, item.key)
+                                on activate: open_item(s, item.key)
                                 dock_tile(s, d, item)
                             }
                         }
@@ -94,7 +94,7 @@ view dock_run(s: Shell, d: Desk) {
 /// of the person's devices is not a window of this desk's dock, and an app the record already
 /// holds (pinned, or pinned and running) stands in the run, once.
 fn unfiled_running(s: Shell, d: Desk) -> List<DockItem> {
-    let windows = d.windows.filter(w -> w.local).sort_by(w -> w.recency)
+    let windows = device.windows.all.filter(w -> w.local).sort_by(w -> w.recency)
     return windows
         .filter(w -> front_of_its_app(windows, w))
         .filter(w -> not s.dock_items.any(i -> i.key == w.app_key))
@@ -103,7 +103,7 @@ fn unfiled_running(s: Shell, d: Desk) -> List<DockItem> {
 
 /// Whether `w` is the window of its app the person was in last: the first of `windows` showing
 /// that app, they being in the order of the walk.
-fn front_of_its_app(windows: List<Win>, w: Win) -> Bool {
+fn front_of_its_app(windows: List<device.Window>, w: device.Window) -> Bool {
     if let front = windows.find(v -> v.app_key == w.app_key) {
         return front.key == w.key
     }
@@ -112,7 +112,7 @@ fn front_of_its_app(windows: List<Win>, w: Win) -> Bool {
 
 /// The dock's item for the running window `w`: the window's app, by its `app_key`, named as the
 /// window names it, with the window's own glyph.
-fn running_item(w: Win) -> DockItem {
+fn running_item(w: device.Window) -> DockItem {
     return DockItem(
         key: w.app_key,
         title: w.origin_app,
@@ -147,8 +147,8 @@ view dock_running_tiles(s: Shell, d: Desk, running: List<DockItem>) {
 /// It takes the app's key and not the item: an item the shell's record holds reaches an action as
 /// a record reference, and the press names the one thing it needs, so a run's item reaches it
 /// without a `DockItem` parameter to fit.
-action open_item(s: Shell, desk: Desk, key: Text (label: "App")) {
-    if let w = desk.windows.find(w -> w.app_key == key) {
+action open_item(s: Shell, key: Text (label: "App")) {
+    if let w = device.windows.all.find(w -> w.app_key == key) {
         session.focus(window: window(w))
     } else if key == "launcher" {
         device.show_surface(device.desk, surface: "launcher")
@@ -170,6 +170,6 @@ view dock_tile(s: Shell, d: Desk, item: DockItem) {
         dot: item.attention,
         alert: item.attention,
     ) {
-        on press: open_item(s, d, item.key)
+        on press: open_item(s, item.key)
     }
 }

@@ -14,7 +14,6 @@
 
 use std::collections::BTreeSet;
 
-use tilo_session_core::shell::DeskStyleReading;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::runtime::meta::{Meta, Ty};
 
@@ -83,7 +82,7 @@ pub enum News {
 /// The styles the shell's own package offers — the four that ship — from the packages the shell
 /// runs, whether they came from the store or this build's fallback copy (`shell.md` §6). The
 /// switch always offers them, so a device with no store still shows a desk.
-pub fn of_shell(packages: &[tilolang_tilo::tilolang::Compiled]) -> Vec<DeskStyleReading> {
+pub fn of_shell(packages: &[tilolang_tilo::tilolang::Compiled]) -> Vec<DeskStyle> {
     let metas: Vec<(String, Meta)> = packages
         .iter()
         .map(|package| (package.meta.app.clone(), package.meta.clone()))
@@ -100,7 +99,7 @@ pub fn of_shell(packages: &[tilolang_tilo::tilolang::Compiled]) -> Vec<DeskStyle
 /// reads is one whose views are declared, and the shell's runtime finds them by the type they
 /// take. `false` for one whose payload does not read, so the switch can say so without the
 /// style drawing anything.
-pub fn installed(catalog: &package_store::Catalog) -> Vec<DeskStyleReading> {
+pub fn installed(catalog: &package_store::Catalog) -> Vec<DeskStyle> {
     let Ok(apps) = app_catalogue::apps::read(catalog) else {
         return Vec::new();
     };
@@ -163,8 +162,8 @@ pub fn module_from_store(app: &str) -> Option<std::sync::Arc<[u8]>> {
 
 /// One app whose module did not read: a style the switch says it cannot load, named by the
 /// package, so a person who installed it sees why rather than seeing nothing.
-fn unreadable(package: &str) -> DeskStyleReading {
-    DeskStyleReading {
+fn unreadable(package: &str) -> DeskStyle {
+    DeskStyle {
         style: format!("{package}:"),
         package: package.to_owned(),
         name: String::new(),
@@ -179,7 +178,7 @@ fn unreadable(package: &str) -> DeskStyleReading {
 /// declared once, by the package that owns it (`so.tilo.shell`); another package's style names
 /// it as `shell.Arrangement`, so `modules` is read to know which names hold the arrangement,
 /// never a list in code (`shell.md` §6).
-fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<DeskStyleReading> {
+fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<DeskStyle> {
     // The arrangement type as any view names it: the package declaring it, and the name the
     // declaring package gives it. `parse_ty`, below, turns a style's parameter into the same
     // app and name, whether the style writes `Arrangement` (the declaring package) or
@@ -229,7 +228,7 @@ fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<Desk
                         .any(|(app, name)| app == &key.app && name == &key.name)
             ))
         })
-        .map(|v| DeskStyleReading {
+        .map(|v| DeskStyle {
             style: format!("{package}:{}", v.name),
             package: package.to_owned(),
             name: v.name.clone(),
@@ -374,4 +373,32 @@ mod tests {
             "the broken style reads as its package, never as nothing"
         );
     }
+}
+
+/// A desk style: a view of the arrangement an installed package declares (shell.md §6).
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub struct DeskStyle {
+    /// The view reference: a package and a view (`so.tilo.shell:strips`), as `Viewing.style`
+    /// names it.
+    pub style: String,
+    /// The package that declares it.
+    pub package: String,
+    /// The view's own name, as its declaration writes it.
+    pub name: String,
+    /// The view's doc line, in its author's words: what the switch lists it by.
+    pub line: String,
+    /// Whether the style loads: false for one whose package does not compile against the shell
+    /// and the session, or whose view failed when it ran (`shell.md` §6).
+    pub loads: bool,
+    /// Why the style does not load, in the runtime's words; empty when it does.
+    pub reason: String,
 }

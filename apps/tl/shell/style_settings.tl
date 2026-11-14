@@ -112,7 +112,7 @@ view style_settings_body(d: Desk) {
         frames_style_settings(s)
     } else if chosen == "so.tilo.shell:spaces" {
         spaces_style_settings(s)
-    } else if let declared = d.styles.find(x -> x.style == chosen) {
+    } else if let declared = device.styles.offered.find(x -> x.style == chosen) {
         // A style another package declares: its own settings are its own record's, which the
         // system cannot read (`shell.md` §6: "A style an agent writes gets settings the same
         // way: by declaring actions on its own record"). Its description stands here, and

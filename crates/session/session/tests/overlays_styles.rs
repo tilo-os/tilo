@@ -343,12 +343,13 @@ fn the_launcher_lists_apps_filters_and_opens_notes_on_enter() {
             .iter()
             .any(|label| label.starts_with("Showing "))
     });
-    // The apps the session reads from the store: each a `session.application` the launcher lists.
+    // The apps the session reads from the store, as the launcher lists them.
     until(&mut session, |session| {
-        desk(session)
-            .apps
-            .iter()
-            .any(|app| app.key == "so.tilo.lang.notes")
+        session.read("session:apps").is_some_and(|apps| {
+            apps["installed"]
+                .as_array()
+                .is_some_and(|apps| apps.iter().any(|app| app["key"] == "so.tilo.lang.notes"))
+        })
     });
     for (key, style) in styles() {
         show_style(&mut session, key);
@@ -368,8 +369,7 @@ fn the_launcher_lists_apps_filters_and_opens_notes_on_enter() {
         // Enter opens the first app: the desk starts Notes, through its own `open-app`.
         tap(&mut session, KEY_ENTER);
         until(&mut session, |session| {
-            desk(session)
-                .windows
+            crate::common::windows(session)
                 .iter()
                 .any(|window| window.app_key == "so.tilo.lang.notes")
         });

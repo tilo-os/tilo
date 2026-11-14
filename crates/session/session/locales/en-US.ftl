@@ -207,6 +207,10 @@ session-bluetooth-timed-out = The move took too long.
 session-bluetooth-unknown = That is not a Bluetooth address.
 session-notifications = Notification centre
 session-time = Time
+session-windows = Windows
+session-tray = Tray
+session-agents = Agents
+session-styles = Styles
 session-notifications-dismiss = Dismiss the notification
 session-notifications-act = Run the notification's action
 session-notifications-clear = Clear the notification centre
@@ -309,8 +313,8 @@ paste-undone-trouble = { $landed } of { $total } were already pasted. Those are 
 ## application's tray item, and what the roster is called to assistive technology.
 session-desk-answer-ask = Answer
 session-desk-ask-later = Ask me later
-session-desk-open = Open
-session-desk-stop-agent = Stop
+session-tray-open = Open
+session-agents-stop = Stop
 session-people = People
 
 ## What the lock screen is called while it is up.

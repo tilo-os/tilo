@@ -1647,6 +1647,30 @@
             "option": "float"
           },
           "readonly": true
+        },
+        {
+          "path": "bar_reached",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "bar_covered",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "dock_reached",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "dock_covered",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
         }
       ],
       "types": [
@@ -1924,6 +1948,346 @@
           "stored": "value",
           "type": "text",
           "readonly": true
+        },
+        {
+          "path": "timer",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "timer_left",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "timer_paused",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        }
+      ]
+    },
+    {
+      "kind": "apps",
+      "label": "Apps",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "installed",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "App"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "App",
+          "doc": "An application installed on this device: its package id, which `open-app` names, its name in the person's language, its glyph, and its category and description when it named them.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "icon",
+              "type": "text"
+            },
+            {
+              "name": "category",
+              "type": "text"
+            },
+            {
+              "name": "description",
+              "type": "text"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "windows",
+      "label": "Windows",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "all",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Window"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Window",
+          "doc": "A window of the desk: a tab of a strip of one of its workspaces.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "origin_app",
+              "type": "text"
+            },
+            {
+              "name": "app_key",
+              "type": "text"
+            },
+            {
+              "name": "icon",
+              "type": "text"
+            },
+            {
+              "name": "strip",
+              "type": "text"
+            },
+            {
+              "name": "strip_key",
+              "type": "text"
+            },
+            {
+              "name": "workspace",
+              "type": "text"
+            },
+            {
+              "name": "workspace_key",
+              "type": "text"
+            },
+            {
+              "name": "group_key",
+              "type": "text"
+            },
+            {
+              "name": "tab_index",
+              "type": "int"
+            },
+            {
+              "name": "share",
+              "type": "float"
+            },
+            {
+              "name": "local",
+              "type": "bool"
+            },
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "device_name",
+              "type": "text"
+            },
+            {
+              "name": "place",
+              "type": "int"
+            },
+            {
+              "name": "recency",
+              "type": "int"
+            },
+            {
+              "name": "focused",
+              "type": "bool"
+            },
+            {
+              "name": "preview",
+              "type": "text"
+            },
+            {
+              "name": "not_responding",
+              "type": "bool"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "tray",
+      "label": "Tray",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "open-tray-item",
+          "label": "Open",
+          "description": "Open or close the running application's tray item `key`: its window, or its menu when the item is one",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "key",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "items",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "TrayItem"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "TrayItem",
+          "doc": "A running application's tray item, as the bar shows it.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "menu",
+              "type": "bool"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "agents",
+      "label": "Agents",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "stop-agent",
+          "label": "Stop",
+          "description": "End the agent `agent`'s work here: the connection the person admitted closes and its presence leaves the bar",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "agent",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "seated",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Agent"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Agent",
+          "doc": "An agent here for the person.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "state",
+              "type": "text"
+            },
+            {
+              "name": "doing",
+              "type": "text"
+            },
+            {
+              "name": "mark",
+              "type": "text"
+            },
+            {
+              "name": "unseen",
+              "type": "int"
+            },
+            {
+              "name": "seat",
+              "type": "bool"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "styles",
+      "label": "Styles",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "offered",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "DeskStyle"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "DeskStyle",
+          "doc": "A desk style: a view of the arrangement an installed package declares (shell.md §6).",
+          "fields": [
+            {
+              "name": "style",
+              "type": "text"
+            },
+            {
+              "name": "package",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "line",
+              "type": "text"
+            },
+            {
+              "name": "loads",
+              "type": "bool"
+            },
+            {
+              "name": "reason",
+              "type": "text"
+            }
+          ]
         }
       ]
     },
@@ -1958,19 +2322,6 @@
           "description": "Put the question waiting on the person's avatar off for now",
           "kind": "outside",
           "params": []
-        },
-        {
-          "id": "open-tray-item",
-          "label": "Open",
-          "description": "Open or close the running application's tray item `key`: its window, or its menu when the item is one",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "key",
-              "required": true,
-              "type": "text"
-            }
-          ]
         },
         {
           "id": "invitations",
@@ -2087,19 +2438,6 @@
           "params": [
             {
               "name": "surface",
-              "required": true,
-              "type": "text"
-            }
-          ]
-        },
-        {
-          "id": "stop-agent",
-          "label": "Stop",
-          "description": "End the agent `agent`'s work here: the connection the person admitted closes and its presence leaves the bar",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "agent",
               "required": true,
               "type": "text"
             }

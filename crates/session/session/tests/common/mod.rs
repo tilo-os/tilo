@@ -1019,3 +1019,19 @@ pub fn place_the_inbox(session: &mut Session, root: &Path) {
         |session| session.shell_says(SUBJECT),
     );
 }
+
+/// The desk's windows, as `session:windows` publishes them.
+pub fn windows(session: &Session) -> Vec<tilo_session::desk_windows::Window> {
+    session
+        .read("session:windows")
+        .and_then(|windows| serde_json::from_value(windows["all"].clone()).ok())
+        .expect("the session publishes its windows")
+}
+
+/// The desk styles every installed package offers, as `session:styles` publishes them.
+pub fn styles(session: &Session) -> Vec<tilo_session::desk_styles::DeskStyle> {
+    session
+        .read("session:styles")
+        .and_then(|styles| serde_json::from_value(styles["offered"].clone()).ok())
+        .expect("the session publishes its styles")
+}

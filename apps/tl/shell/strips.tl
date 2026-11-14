@@ -51,7 +51,7 @@ fn maximized_strips(a: Arrangement) -> List<ArrangementStrip> {
 /// this is the page Settings shows.
 view style_switch(v: Viewing, d: Desk) {
     row(gap: .tight, align: .center, wrap: true) {
-        for style in d.styles {
+        for style in device.styles.offered {
             if style_listed(style) {
                 ui.Chip(style_label(style), selected: v.style == style.style) {
                     on press: show_style(v, style.style)
@@ -65,7 +65,7 @@ view style_switch(v: Viewing, d: Desk) {
 /// its doc line, or its view's name when its author wrote none. A style a package offers but
 /// cannot name — a package that carries no description that reads — is named by its package, so
 /// no menu lists a blank row a person cannot read or pick.
-fn style_label(style: DeskStyle) -> Text {
+fn style_label(style: device.DeskStyle) -> Text {
     if style.line != "" {
         style.line
     } else if style.name != "" { style.name } else { style.package }
@@ -74,7 +74,7 @@ fn style_label(style: DeskStyle) -> Text {
 /// Whether a style is one a person can pick: a named style, or one whose package is named. A
 /// style nothing names (no view, no doc line, no package) stands for nothing on the desk, so
 /// the switch lists none: an empty row is a band of the panel with nothing in it.
-fn style_listed(style: DeskStyle) -> Bool {
+fn style_listed(style: device.DeskStyle) -> Bool {
     style.line != "" or style.name != "" or style.package != ""
 }
 
@@ -82,7 +82,7 @@ fn style_listed(style: DeskStyle) -> Bool {
 /// (`style_label`): one name for a style in the bar and in Settings, never a different one in the
 /// seat from the one in the list.
 fn style_title(v: Viewing, d: Desk) -> Text {
-    if let chosen = d.styles.find(s -> s.style == style_of(v)) {
+    if let chosen = device.styles.offered.find(s -> s.style == style_of(v)) {
         return style_label(chosen)
     }
     "Strips"
@@ -99,7 +99,7 @@ view style_menu(v: Viewing, d: Desk) {
         role: .bar,
         icon_only: space.compact,
     ) {
-        for style in d.styles {
+        for style in device.styles.offered {
             if style_listed(style) {
                 ui.MenuItem(style_label(style), checked: v.style == style.style) {
                     on choose: show_style(v, style.style)

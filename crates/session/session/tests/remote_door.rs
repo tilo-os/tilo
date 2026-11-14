@@ -247,16 +247,12 @@ impl ThisBox {
     /// The agents the desk seats now, by the key its presence names each.
     fn seated(&self) -> Vec<String> {
         self.session
-            .read(tilo_surface_host::shell_part::DESK_RESOURCE)
-            .and_then(|desk| desk.get("agents").cloned())
-            .and_then(|agents| {
-                serde_json::from_value::<Vec<tilo_surface_host::shell_part::AgentReading>>(agents)
-                    .ok()
-            })
+            .read("session:agents")
+            .and_then(|agents| agents.get("seated").and_then(Value::as_array).cloned())
             .unwrap_or_default()
             .into_iter()
-            .filter(|agent| agent.seat)
-            .map(|agent| agent.key)
+            .filter(|agent| agent["seat"] == true)
+            .map(|agent| agent["key"].as_str().unwrap_or_default().to_owned())
             .collect()
     }
 
@@ -428,7 +424,7 @@ fn an_agent_the_person_lets_in_works_here_as_their_agent_via_its_device_until_th
     // The person's Stop on its seat ends the connection on the other device.
     b.session
         .invoke(
-            tilo_surface_host::shell_part::DESK_RESOURCE,
+            "session:agents",
             "stop-agent",
             json!({"agent": named}).as_object().unwrap(),
         )

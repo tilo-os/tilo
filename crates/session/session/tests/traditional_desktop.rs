@@ -235,8 +235,8 @@ fn a_dock_item_press_opens_or_focuses_what_it_stands_for() {
 /// The app of the window in front on the desk, as the session publishes it: `None` while no
 /// window is.
 fn focused_app(session: &Session) -> Option<String> {
-    let desk = session.read("session:desk")?;
-    desk["windows"]
+    let windows = session.read("session:windows")?;
+    windows["all"]
         .as_array()?
         .iter()
         .find(|window| window["focused"] == true)

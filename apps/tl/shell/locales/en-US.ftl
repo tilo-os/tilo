@@ -24,16 +24,6 @@ d-5mipdtxu = Switcher scope
 d-foayl4ai = Spotlight
     .doc = What the person typed in the shell's search, which opens the launcher where they left off.
 
-d-rlrql4ir = Timer
-    .doc = The timer or stopwatch Clocks runs, by its name: its label, or `Timer` or `Stopwatch` when the app named none; empty when none floats.
-
-d-m4heyzat = Timer left
-    .doc = What the timer reads: what it has left, or what the stopwatch has run.
-
-d-pql2t5r3 = Timer paused
-
-d-qb4cqhjk = Timer stopwatch
-
 d-zxfieu2y = Ask
     .doc = The question the person is asked about themselves; empty when none waits.
 
@@ -54,96 +44,9 @@ d-vbyis266 = Workspaces
 
 d-xu2jijql = People
 
-d-g4t5njqq = Bar reached
-    .doc = The pointer at the top edge, and a window standing where the bar rides: what a bar that shows only sometimes follows.
-
-d-mvfeip6u = Bar covered
-
-d-pjnfirs3 = Dock reached
-    .doc = The pointer at the bottom edge, and a window standing where the dock rides.
-
-d-prsypg4e = Dock covered
-
-d-twcpnt5t = Agents
-
-d-5kokd6gv = Windows
-
-d-pdaqdidq = Tray
-    .doc = The running applications' tray items, in the order they registered.
-
-d-s7dh3s7h = Apps
-    .doc = The applications installed on this device: what the launcher lists and opens.
-
-d-n2fzxj5u = Styles
-    .doc = The desk styles every installed package offers, as the session publishes them: each a view of the arrangement (`shell.md` §6), listed by its own words.
-
 d-4jk2lkpt-filter-switcher_revealed = Switcher revealed
 
-d-4jk2lkpt-filter-timer_paused = Timer paused
-
-d-4jk2lkpt-filter-timer_stopwatch = Timer stopwatch
-
 d-4jk2lkpt-filter-ask_open = Ask open
-
-d-4jk2lkpt-filter-bar_reached = Bar reached
-
-d-4jk2lkpt-filter-bar_covered = Bar covered
-
-d-4jk2lkpt-filter-dock_reached = Dock reached
-
-d-4jk2lkpt-filter-dock_covered = Dock covered
-
-d-zxwtaxaw = Desk style
-    .doc = A desk style: a view of the arrangement an installed app declares.
-    .noun = { $count ->
-        [one] desk style
-       *[other] desk styles
-    }
-
-d-ly2aksp3 = Key
-    .doc = The style's view reference, which the record keeps it by.
-
-d-t6ojc3kt = Style
-    .doc = The view reference: a package and a view, what `Viewing.style` names.
-
-d-yxdj6rhs = Package
-    .doc = The package that declares it.
-
-d-uew43mty = Name
-    .doc = The view's own name, as its declaration writes it.
-
-d-rhx3oobw = Line
-    .doc = The view's doc line, in its author's words: what the switch lists it by.
-
-d-ifgxec27 = Loads
-    .doc = Whether the style loads: false for one whose app is not here or does not work with this desk, or whose view failed when it ran, so the switch can say so and the desk shows the built-in strips until it is fixed.
-
-d-eihyiyeb = Reason
-    .doc = Why the style does not load, in the words it failed with, when it does not; empty when it does.
-
-d-zxwtaxaw-filter-loads = Loads
-
-d-dkwmlyh7 = App
-    .doc = An application installed on this device, as the launcher lists it: its package id, its name in the person's language, the glyph it shows, and how it opens.
-    .noun = { $count ->
-        [one] app
-       *[other] apps
-    }
-
-d-wabxc4xe = Key
-    .doc = Its package id, which `open_app` names it by.
-
-d-dhizmikp = Name
-    .doc = Its name in the person's interface language.
-
-d-bkmyu6to = Icon
-    .doc = The glyph it shows, by the platform icon's kebab-case name.
-
-d-fxhx35ly = Category
-    .doc = Its category (`work`, `media`, `play`, `system`), empty when it named none.
-
-d-vebrnbn2 = Description
-    .doc = What it is for, in a few words; empty when it offers none.
 
 d-bynckgvt = Workspace
     .doc = A workspace on this device.
@@ -160,21 +63,6 @@ d-ce523tqy = Current
 
 d-bynckgvt-filter-current = Current
 
-d-tlbg2fms = Tray item
-    .doc = A running application's tray item: what the bar shows, and what a press on it reaches.
-    .noun = { $count ->
-        [one] tray item
-       *[other] tray items
-    }
-
-d-o3wuotce = Key
-
-d-e5qbz5cz = Title
-
-d-lsd5bmss = Menu
-
-d-tlbg2fms-filter-menu = Menu
-
 d-bqittbss = Person
     .doc = Someone else here in the workspace in front.
     .noun = { $count ->
@@ -185,104 +73,6 @@ d-bqittbss = Person
 d-vfhh3oax = Key
 
 d-lmoug2df = Name
-
-d-r7dcmwzl = Win
-    .doc = A window of the desk: a tab of a strip in the workspace in front.
-    .noun = { $count ->
-        [one] win
-       *[other] wins
-    }
-
-d-dfgqyodj = Key
-
-d-by5gisol = Title
-
-d-v5xdn5a6 = Origin app
-
-d-zscvpgbm = App key
-    .doc = The app it shows, shared by two windows of one app: the switcher's app scope crosses the windows holding it.
-
-d-drnqlrp5 = Icon
-
-d-mjnpzf6r = Strip
-
-d-g3ddlvlc = Strip key
-    .doc = Its strip's id, as moving a window there names the strip.
-
-d-hnoh7dgq = Workspace
-
-d-c7yq7qkl = Workspace key
-    .doc = Its workspace's id, as switching to it names the workspace.
-
-d-bard6ca3 = Group key
-    .doc = The window it is a tab of: a group's tabs are one window on the desk, and its other tabs stand behind it.
-
-d-lbxt5665 = Tab index
-    .doc = Its place among its group's tabs: 0 for the tab in front, then the tabs behind it in their order.
-
-d-kiwhpw3z = Share
-    .doc = Its share of its strip's width, 0..1: the width the window keeps on the desk.
-
-d-hm2x5otu = Local
-    .doc = Whether it runs on this device: false for a window on another of the person's devices, or on a peer's.
-
-d-wxi227u2 = Device
-    .doc = The device that runs it, when it is not this one: its key, empty when it is not known.
-
-d-aadqdflh = Device name
-    .doc = That device's name, as its certificate labels it.
-
-d-ctnewsrr = Place
-    .doc = Where it stands in the picture of its workspace: 1 for the first tab of the first group of the first strip, on along them, strips top to bottom.
-
-d-z3pjamxl = Recency
-
-d-a5fwclo5 = Focused
-
-d-tb2jierp = Preview
-
-d-4agha6k5 = Not responding
-    .doc = Whether its app stopped answering: its card says so, and offers to keep waiting for the app or to quit it.
-
-d-r7dcmwzl-filter-tab_index = Tab index
-
-d-r7dcmwzl-filter-share = Share
-
-d-r7dcmwzl-filter-local = Local
-
-d-r7dcmwzl-filter-place = Place
-
-d-r7dcmwzl-filter-recency = Recency
-
-d-r7dcmwzl-filter-focused = Focused
-
-d-r7dcmwzl-filter-not_responding = Not responding
-
-d-labby3mp = Agent
-    .doc = An agent here for the person, or that acted for them.
-    .noun = { $count ->
-        [one] agent
-       *[other] agents
-    }
-
-d-njbk3cds = Key
-
-d-4nhbpuss = Name
-
-d-6zpjzgvl = State
-
-d-zcdb3jtl = Doing
-
-d-ty5fvze2 = Mark
-
-d-gbehvj6x = Unseen
-
-d-p6gfsj72 = Seat
-    .doc = Whether it is seated at the person's agent door now, a client they admitted, rather than a run's own agent.
-
-d-labby3mp-filter-unseen = Unseen
-
-d-labby3mp-filter-seat = Seat
 
 d-qhf2pyze = Arrangement
     .doc = The person's arrangement: what is open where.
@@ -955,8 +745,6 @@ d-5yz5iwzs-item = Item
 d-aitkuflo = Open item
     .doc = What a press on a dock item does, by the app the item stands for: a window of that app on this desk comes to the front, so the desk says which window the person is in and the top bar's commands are its own; the window is the one the item was drawn for, so a press never opens a second copy.
 
-d-aitkuflo-desk = Desk
-
 d-aitkuflo-key = App
 
 d-5giytccr = Open first
@@ -1000,9 +788,6 @@ d-bmd7xmln = A query place
 d-bmd7xmln-strip = Strip
 
 d-bmd7xmln-text = Text
-
-d-yd725hjw = A installed apps
-    .doc = The applications installed on this device, as the launcher lists them: the ones the desk's shots and its layouts show.
 
 d-5o2gn6hf = A style settings
     .doc = A desk of one note in the style named, with that place in front, and the style's own settings open over it: what a person sees who opens them from the bar's style menu.

@@ -1,8 +1,8 @@
-//! This device's desk as a resource of the session's: the time in the person's style, who they
-//! are, their notifications, the workspaces on this device and the strip in front, and the
-//! tasks running for them. A shell's views read it (as `session.desk` resources,
-//! [`tilo_session_core::shell`]), and so does a script or an agent, through the door, by the same
-//! address: one reading for every reader.
+//! This device's desk as resources of the session's: who the person is, the workspaces on this
+//! device and the strip in front, the surface up over the windows, and the device's lists — its
+//! windows, the tray, the agents at the person's door and the desk styles. A shell's views read
+//! them, and so does a script or an agent, through the door, by the same addresses: one reading
+//! for every reader.
 
 use std::rc::Rc;
 
@@ -27,19 +27,127 @@ use crate::desk_windows::{reaching, windows};
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct DeskKey {
     /// The revisions and the names the reading is made of.
-    reading: (u64, u64, u64, u64, u64, u64, String),
-    /// The agents seated at the person's agent door.
-    agents: u64,
+    reading: (u64, u64, u64, u64, String),
     /// Whether the switcher's panel shows: it comes up on its own while Alt is held, with no
     /// revision of its own to say so.
     revealed: bool,
-    /// The windows whose app stopped answering ([`DesktopHandle::unresponsive_revision`]).
-    not_responding: u64,
-    /// The desk styles' revision: a package installed or taken away moves it (shell.md §6).
-    styles: u64,
-    /// The app lists' generation: an app installed or taken away moves the launcher's list of
-    /// them. The lists' own worker reads them, so this is its latest reading's identity.
-    apps: usize,
+}
+
+/// What the device's lists are made from ([`Desk::lists_key`]), one entry per resource: the
+/// windows, the tray, the agents and the styles. An entry that moved is a reading that moved.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ListsKey([(u64, u64, u64, bool); 4]);
+
+/// The desk's windows, every workspace's: what the switcher, the dock and the launcher list.
+pub(crate) const WINDOWS_RESOURCE: &str = "session:windows";
+/// The running applications' tray items.
+pub(crate) const TRAY_RESOURCE: &str = "session:tray";
+/// The agents the person admitted at their agent door.
+pub(crate) const AGENTS_RESOURCE: &str = "session:agents";
+/// The desk styles every installed package offers.
+pub(crate) const STYLES_RESOURCE: &str = "session:styles";
+
+/// The windows as a view of another language reads them (`device.windows`).
+#[must_use]
+pub fn windows_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<crate::desk_windows::Windows, tilo_resource::NoEffect>(
+        "windows", "Windows",
+    )
+}
+
+/// The tray as a view of another language reads it (`device.tray`).
+#[must_use]
+pub fn tray_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Tray, TrayEffect>("tray", "Tray")
+}
+
+/// The agents as a view of another language reads them (`device.agents`).
+#[must_use]
+pub fn agents_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<crate::agent_door::Agents, AgentsEffect>(
+        "agents", "Agents",
+    )
+}
+
+/// The desk styles as a view of another language reads them (`device.styles`).
+#[must_use]
+pub fn styles_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<OfferedStyles, tilo_resource::NoEffect>(
+        "styles", "Styles",
+    )
+}
+
+/// The running applications' tray items, in the order they registered.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct Tray {
+    pub items: Vec<TrayItem>,
+}
+
+/// A running application's tray item, as the bar shows it.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct TrayItem {
+    /// The item's key, which a press on it names.
+    pub key: String,
+    /// The app's own words for it.
+    pub title: String,
+    /// Whether choosing it opens its menu rather than its window.
+    pub menu: bool,
+}
+
+/// The desk styles every installed package offers (shell.md §6).
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct OfferedStyles {
+    pub offered: Vec<crate::desk_styles::DeskStyle>,
+}
+
+/// What the tray offers.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.session.tray")]
+pub(crate) enum TrayEffect {
+    /// Open or close the running application's tray item `key`: its window, or its menu when the
+    /// item is one
+    #[effect(row, label = "session-tray-open")]
+    OpenTrayItem { key: String },
+}
+
+/// What the agents offer.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.session.agents")]
+pub(crate) enum AgentsEffect {
+    /// End the agent `agent`'s work here: the connection the person admitted closes and its
+    /// presence leaves the bar
+    #[effect(label = "session-agents-stop")]
+    StopAgent {
+        #[param("The agent, by the key its presence names it")]
+        agent: String,
+    },
 }
 
 /// The kind of the desk's resource: the origin kind a shell's type holds.
@@ -82,10 +190,6 @@ pub(crate) enum DeskEffect {
     /// Put the question waiting on the person's avatar off for now
     #[effect(row, label = "session-desk-ask-later")]
     PutOffAsk,
-    /// Open or close the running application's tray item `key`: its window, or its menu when the
-    /// item is one
-    #[effect(row, label = "session-desk-open")]
-    OpenTrayItem { key: String },
     /// The invitations this device's person made into a workspace that can still be
     /// redeemed, in the words the workspace's host lists them by
     Invitations {
@@ -149,13 +253,6 @@ pub(crate) enum DeskEffect {
             "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`"
         )]
         surface: String,
-    },
-    /// End the agent `agent`'s work here: the connection the person admitted closes and its
-    /// presence leaves the bar
-    #[effect(label = "session-desk-stop-agent")]
-    StopAgent {
-        #[param("The agent, by the key its presence names it")]
-        agent: String,
     },
     /// Close the surface `surface`, when it is the one up.
     CloseSurface {
@@ -382,7 +479,7 @@ impl Surfaces {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Styles {
     pub(crate) revision: u64,
-    pub(crate) list: Vec<shell::DeskStyleReading>,
+    pub(crate) list: Vec<crate::desk_styles::DeskStyle>,
     /// The store's registry the list was read at: a store that reads the same is not read again,
     /// and what the log says of it is said only when it changes.
     pub(crate) registry: Option<crate::desk_styles::Registry>,
@@ -418,6 +515,8 @@ pub(crate) struct Desk {
     /// (shell.md §6): what the person's switch offers. The session fills it from its package
     /// store, and moves it when a package is installed or taken away.
     pub(crate) styles: std::rc::Rc<std::cell::RefCell<Styles>>,
+    /// What the lists were last published from.
+    pub(crate) lists: Option<ListsKey>,
 }
 
 /// The pieces a session's desk is made of, once: the same seats, surfaces and records reach the
@@ -452,6 +551,7 @@ pub(crate) fn desk_from(shared: Shared) -> impl Fn() -> Desk {
         engine: shared.engine.clone(),
         asks: Rc::clone(&shared.asks),
         styles: Rc::clone(&styles),
+        lists: None,
     }
 }
 
@@ -465,24 +565,53 @@ impl Desk {
                 self.sync
                     .as_ref()
                     .map_or(0, |sync| sync.here().borrow().revision()),
-                self.activities.board().revision(),
                 self.handle.personal_ask_revision(),
-                self.tray.as_ref().map_or(0, |tray| tray.revision()),
                 self.surfaces.overlays.revision(),
                 self.surfaces.overlays.here(),
             ),
-            styles: self.styles.borrow().revision,
-            // The app lists' generation: the worker reads them again when the store moves and
-            // hands out a new one, so an install or a removal moves this — and, the generation
-            // being a rising count, never a freed reading's reused address.
-            apps: crate::app_icons::app_lists_snapshot().map_or(0, |(generation, _)| {
-                usize::try_from(generation).unwrap_or(usize::MAX)
-            }),
-            agents: self.seats.revision(),
             revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
-            // Which apps stopped answering is the compositor's, published through the handle beside
-            // the tree: it changes without the tree moving.
-            not_responding: self.handle.unresponsive_revision(),
+        }
+    }
+
+    /// What the lists are made from, without making them.
+    fn lists_key(&self) -> ListsKey {
+        ListsKey([
+            (
+                self.handle.revision(),
+                // Which apps stopped answering is the compositor's: it changes without the tree.
+                self.handle.unresponsive_revision(),
+                self.surfaces.overlays.revision(),
+                self.surfaces.overlays.revealed(std::time::Instant::now()),
+            ),
+            (
+                self.tray.as_ref().map_or(0, |tray| tray.revision()),
+                0,
+                0,
+                false,
+            ),
+            (self.seats.revision(), 0, 0, false),
+            (self.styles.borrow().revision, 0, 0, false),
+        ])
+    }
+
+    /// The reading of one of the lists, by its resource.
+    fn list(&self, resource: &str) -> Option<Value> {
+        match resource {
+            WINDOWS_RESOURCE => Some(reading(&crate::desk_windows::Windows {
+                all: self
+                    .handle
+                    .read(|tree| self.windows_reaching(tree, std::time::Instant::now())),
+            })),
+            TRAY_RESOURCE => Some(reading(&Tray {
+                items: self.tray_items(),
+            })),
+            AGENTS_RESOURCE => Some(reading(&crate::agent_door::Agents {
+                seated: self.seats.readings(),
+            })),
+            STYLES_RESOURCE => Some(reading(&OfferedStyles {
+                offered: self.styles.borrow().list.clone(),
+            })),
+            _ => None,
         }
     }
 
@@ -499,7 +628,7 @@ impl Desk {
         &self,
         tree: &DesktopTree,
         now: std::time::Instant,
-    ) -> Vec<shell::WindowReading> {
+    ) -> Vec<crate::desk_windows::Window> {
         let mut windows = windows(tree, &self.handle);
         // The app as people know it, never the id: a window is named by what it shows, and its
         // `app_title` is a person's own name for the window, not its app's name.
@@ -518,7 +647,6 @@ impl Desk {
 
     /// The desk now.
     pub(crate) fn reading(&self) -> DeskReading {
-        let instant = std::time::Instant::now();
         let people = self.handle.read(|tree| {
             self.sync.as_ref().map_or_else(Vec::new, |sync| {
                 sync.people(tree, &self.notes, &|app: &str| {
@@ -534,7 +662,6 @@ impl Desk {
         });
         self.handle.read(|tree| DeskReading {
             person: self.person.clone(),
-            timer: self.timer(),
             ask: self.handle.personal_ask().map(|ask| shell::AskReading {
                 question: ask.title,
                 detail: ask.body,
@@ -555,53 +682,10 @@ impl Desk {
                 })
                 .collect(),
             here: self.surfaces.overlays.here(),
-            switcher_revealed: self.surfaces.overlays.revealed(instant),
+            switcher_revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
             switcher_scope: self.surfaces.overlays.scope().name().to_owned(),
             spotlight: self.surfaces.overlays.spotlight(),
-            windows: self.windows_reaching(tree, instant),
-            agents: self.seats.readings(),
-            apps: crate::app_icons::app_lists_snapshot()
-                .map(|(_, lists)| {
-                    lists
-                        .applications
-                        .iter()
-                        .map(|app| shell::AppReading {
-                            key: app.id.clone(),
-                            name: app.title.clone(),
-                            icon: ui::icons::app_glyph(&app.id, app.category.as_deref())
-                                .name()
-                                .to_owned(),
-                            category: app.category.clone().unwrap_or_default(),
-                            description: app.description.clone().unwrap_or_default(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
             people,
-            tray: self.tray_items(),
-            styles: self.styles.borrow().list.clone(),
-            // What the screen says of its edges moves without the desk; the link publishes it
-            // beside this reading and carries it over (`SessionLink::publish_edges`).
-            ..DeskReading::default()
-        })
-    }
-
-    /// The floating timer as the web shell reads it: Clocks' summary while it floats over the
-    /// windows.
-    fn timer(&self) -> Option<shell::TimerReading> {
-        let published = self.activities.published(crate::chrome::CLOCKS_APP)?;
-        if !published.overlay {
-            return None;
-        }
-        let summary = published.summary?;
-        let countdown = summary.countdown.unwrap_or_default();
-        Some(shell::TimerReading {
-            activity_id: (!summary.id.is_empty()).then(|| summary.id.clone()),
-            label: summary.title.clone(),
-            remaining_secs: u64::try_from(countdown).unwrap_or_default(),
-            stopwatch: summary.kind == ui::live_activity::Kind::Stopwatch,
-            // A paused timer is one with time still to run before it is due.
-            paused: summary.tone == ui::live_activity::Tone::Neutral && countdown > 0,
         })
     }
 
@@ -627,11 +711,11 @@ impl Desk {
 
     /// The running applications' tray items, in the order they registered: each's key, the app's
     /// own words for it, and whether choosing it opens a menu rather than its window.
-    fn tray_items(&self) -> Vec<shell::TrayReading> {
+    fn tray_items(&self) -> Vec<TrayItem> {
         self.tray.as_ref().map_or_else(Vec::new, |tray| {
             tray.snapshot()
                 .into_iter()
-                .map(|item| shell::TrayReading {
+                .map(|item| TrayItem {
                     key: item.key,
                     title: if item.title.trim().is_empty() {
                         item.id
@@ -944,11 +1028,45 @@ pub(crate) fn desk_spec(label: String) -> ResourceSpec {
 
 impl Service for Desk {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![desk_spec(self.person.clone())]
+        let kind = tilo_action_policy::roles::SESSION_KIND;
+        vec![
+            desk_spec(self.person.clone()),
+            ResourceSpec::new(WINDOWS_RESOURCE, kind, crate::i18n::t("session-windows")),
+            offer::<TrayEffect>(ResourceSpec::new(
+                TRAY_RESOURCE,
+                kind,
+                crate::i18n::t("session-tray"),
+            )),
+            offer::<AgentsEffect>(ResourceSpec::new(
+                AGENTS_RESOURCE,
+                kind,
+                crate::i18n::t("session-agents"),
+            )),
+            ResourceSpec::new(STYLES_RESOURCE, kind, crate::i18n::t("session-styles")),
+        ]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
-        (resource == DESK_RESOURCE).then(|| reading(&self.reading()))
+        if resource == DESK_RESOURCE {
+            return Some(reading(&self.reading()));
+        }
+        self.list(resource)
+    }
+
+    fn poll(&mut self) -> bool {
+        let now = self.lists_key();
+        if self.lists.as_ref() == Some(&now) {
+            return false;
+        }
+        self.lists = Some(now);
+        true
+    }
+
+    /// The instant the switcher's panel comes up while Alt is held: the windows' reading marks
+    /// the one the walk reached then.
+    fn wakes_in(&self) -> Option<std::time::Duration> {
+        self.next_deadline()
+            .map(|at| at.saturating_duration_since(std::time::Instant::now()))
     }
 
     fn invoke(
@@ -957,8 +1075,24 @@ impl Service for Desk {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError> {
-        if resource != DESK_RESOURCE {
-            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+        match resource {
+            TRAY_RESOURCE => {
+                let TrayEffect::OpenTrayItem { key } =
+                    decode::<TrayEffect>(&self.resources(), resource, action, arguments)?;
+                return self.open_tray_item(&key);
+            }
+            AGENTS_RESOURCE => {
+                let AgentsEffect::StopAgent { agent } =
+                    decode::<AgentsEffect>(&self.resources(), resource, action, arguments)?;
+                if !self.seats.stop(&agent) {
+                    return Err(DoorError::InvalidArguments(format!(
+                        "no agent {agent} works here"
+                    )));
+                }
+                return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+            }
+            DESK_RESOURCE => {}
+            _ => return Err(DoorError::Unknown(ActionAddress::new(resource, action))),
         }
         let effect = decode(&self.resources(), resource, action, arguments)?;
         match &effect {
@@ -970,7 +1104,6 @@ impl Service for Desk {
                 self.handle.put_off_personal_ask();
                 return Ok(Started::Done(tilo_actions::ActionOutput::default()));
             }
-            DeskEffect::OpenTrayItem { key } => return self.open_tray_item(key),
             _ => {}
         }
         if let Some(answer) = self.invitation(&effect) {
@@ -991,14 +1124,6 @@ impl Service for Desk {
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if self.show(&effect) {
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if let DeskEffect::StopAgent { agent } = &effect {
-            if !self.seats.stop(agent) {
-                return Err(DoorError::InvalidArguments(format!(
-                    "no agent {agent} works here"
-                )));
-            }
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::CloseSurface { surface } = &effect {

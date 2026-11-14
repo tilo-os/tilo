@@ -5,7 +5,6 @@
 use super::*;
 use serde_json::json;
 use tilo_desktop::desk_verbs::DESK_RESOURCE;
-use tilo_surface_host::shell_part::DESK_RESOURCE as DESK_READING;
 
 /// The app that stops answering, and one that keeps working.
 const STUCK: &str = "org.example.Stuck";
@@ -40,16 +39,19 @@ fn click(session: &mut Session, rect: (i32, i32, i32, i32)) {
     }
 }
 
-/// The desk's reading of its windows, as the overview and the bar read them.
+/// The desk's windows, as the overview and the bar read them.
 fn windows_reading(session: &Session) -> Vec<serde_json::Value> {
     session
-        .read(DESK_READING)
-        .unwrap_or_else(|| panic!("the session publishes its desk"))
-        .get("windows")
+        .read(WINDOWS)
+        .unwrap_or_else(|| panic!("the session publishes its windows"))
+        .get("all")
         .and_then(serde_json::Value::as_array)
         .cloned()
-        .expect("the desk reads its windows")
+        .expect("the windows read as a list")
 }
+
+/// The resource the session publishes the desk's windows on.
+const WINDOWS: &str = "session:windows";
 
 /// The windows the desk says stopped answering.
 fn not_responding(session: &Session) -> Vec<String> {
@@ -115,7 +117,7 @@ fn a_window_whose_app_stopped_answering_says_so_and_the_person_can_wait_or_quit_
         not_responding(&session).len(),
         1,
         "the reading every view of the desk reads says so: {:?}",
-        session.read(DESK_READING)
+        session.read(WINDOWS)
     );
 
     // Wait: the app is given another period, and the card goes.

@@ -1641,7 +1641,9 @@ impl Session {
         shared
             .services
             .borrow_mut()
-            .add(Box::new(crate::time::Served::default()));
+            .add(Box::new(crate::time::Served::new(Rc::clone(
+                &shared.activities,
+            ))));
         // The session's own diagnostics: the profiler and the heap trim, which
         // the device admin and a person's own scripts read and drive through
         // the same door as the desktop's other actions.

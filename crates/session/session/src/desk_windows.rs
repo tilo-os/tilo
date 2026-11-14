@@ -2,9 +2,56 @@
 //! the one in front first, with where each stands and what may be pictured of it. The desk's
 //! resource publishes these readings, and the switcher's panel shows the walk over them.
 
+use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{DesktopTree, Strip, Tab, WindowGroup, Workspace};
 use tilo_desktop_surface::DesktopHandle;
-use tilo_session_core::shell;
+
+/// The desk's windows as `session:windows` publishes them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct Windows {
+    /// Every workspace's windows, in the order Alt+Tab walks them.
+    pub all: Vec<Window>,
+}
+
+/// A window of the desk: a tab of a strip of one of its workspaces.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct Window {
+    pub key: String,
+    pub title: String,
+    /// The app's name, as people know it.
+    pub origin_app: String,
+    /// The app's id: the switcher's app scope crosses the windows that share it.
+    pub app_key: String,
+    pub icon: String,
+    pub strip: String,
+    /// Its strip's id, as moving a window there names the strip.
+    pub strip_key: String,
+    pub workspace: String,
+    /// Its workspace's id, as switching to it names the workspace.
+    pub workspace_key: String,
+    /// The window it is a tab of: a group's other tabs stand behind it.
+    pub group_key: String,
+    /// Its place among its group's tabs: `0` for the tab in front.
+    pub tab_index: i64,
+    /// Its share of its strip's width, 0..1.
+    pub share: f64,
+    /// Whether it runs on this device.
+    pub local: bool,
+    /// The device that runs it, when it is not this one: its hex key, empty when not known.
+    pub device: String,
+    /// That device's name, as its certificate labels it.
+    pub device_name: String,
+    /// Where it stands in the picture of its workspace: 1 for the first tab of the first group
+    /// of the first strip, on along them.
+    pub place: i64,
+    /// Where it stands in the walk Alt+Tab takes: 1 is the window in front.
+    pub recency: i64,
+    pub focused: bool,
+    /// Whether it may be pictured: `live`, `withheld` (it holds secrets) or `none`.
+    pub preview: String,
+    /// Whether its app stopped answering the compositor's pings.
+    pub not_responding: bool,
+}
 
 /// What a window with no title is called.
 fn untitled() -> String {
@@ -34,7 +81,7 @@ struct Standing<'a> {
 /// `handle` says what may be pictured: a window whose app holds secrets shows its app's glyph
 /// instead of its picture (`withheld`), and one that is not this device's window shows neither
 /// (`none`).
-fn window_reading(tab: &Tab, at: Standing<'_>, handle: &DesktopHandle) -> shell::WindowReading {
+fn window_reading(tab: &Tab, at: Standing<'_>, handle: &DesktopHandle) -> Window {
     use tilo_desktop_model::TileContent;
     let app = match &tab.tile {
         TileContent::Foreign { app_id, .. }
@@ -61,7 +108,7 @@ fn window_reading(tab: &Tab, at: Standing<'_>, handle: &DesktopHandle) -> shell:
         } => (false, host.clone(), host_label.clone()),
         _ => (true, String::new(), String::new()),
     };
-    shell::WindowReading {
+    Window {
         key: tab.id.to_string(),
         title: if title.is_empty() {
             untitled()
@@ -100,7 +147,7 @@ fn window_reading(tab: &Tab, at: Standing<'_>, handle: &DesktopHandle) -> shell:
 /// their order. Each window says where it stands (`place`), the workspace, strip and group it is
 /// in, its tab's place in the group and the share of the strip it keeps, so a picture can be drawn
 /// where the window stands.
-pub(crate) fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell::WindowReading> {
+pub(crate) fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<Window> {
     let Some(front) = tree.active_workspace() else {
         return Vec::new();
     };
@@ -211,7 +258,7 @@ pub(crate) fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell::
 /// window shows has. The walk, the mark the reading carries and the commit all count from this one
 /// list.
 pub(crate) fn walked(
-    windows: &[shell::WindowReading],
+    windows: &[Window],
     scope: crate::overlays::SwitcherScope,
 ) -> (Vec<usize>, Option<usize>) {
     use crate::overlays::SwitcherScope;
@@ -221,7 +268,7 @@ pub(crate) fn walked(
     let application = here.map(|window| window.app_key.clone());
     // The walk crosses the workspace in front alone: a window of another workspace is read and
     // searched, but Alt+Tab never takes the person out of the workspace they are in.
-    let here = |window: &shell::WindowReading| {
+    let here = |window: &Window| {
         workspace
             .as_ref()
             .is_none_or(|workspace| &window.workspace_key == workspace)
@@ -246,10 +293,7 @@ pub(crate) fn walked(
 
 /// The window the walk has reached, of `windows`: its place among them, where it stands to be
 /// lifted and where Alt let go lands. `None` while no walk is up.
-pub(crate) fn reaching(
-    overlays: &crate::overlays::Overlays,
-    windows: &[shell::WindowReading],
-) -> Option<usize> {
+pub(crate) fn reaching(overlays: &crate::overlays::Overlays, windows: &[Window]) -> Option<usize> {
     let (walked, front) = walked(windows, overlays.scope());
     overlays
         .reached(walked.len(), front)

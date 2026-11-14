@@ -23,8 +23,6 @@ use std::time::Duration;
 
 use tilo_compositor::{KeyRepeat, OutputConfig};
 use tilo_session::{Options, Session};
-use tilo_session_core::shell::DeskReading;
-use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
@@ -48,16 +46,6 @@ fn session() -> Session {
         rate: 0,
     });
     session
-}
-
-/// The desk as the session publishes it on its door: what an agent reads.
-fn desk(session: &Session) -> DeskReading {
-    serde_json::from_value(
-        session
-            .read(DESK_RESOURCE)
-            .expect("the session publishes its desk"),
-    )
-    .expect("the desk reads as the shell's desk")
 }
 
 /// Run frames until `done` holds.
@@ -107,8 +95,7 @@ impl Drop for Scratch {
 
 /// The style `style` (`app:view`) as the session publishes it: whether it loads and why not.
 fn style_state(session: &Session, style: &str) -> Option<(bool, String)> {
-    desk(session)
-        .styles
+    crate::common::styles(session)
         .into_iter()
         .find(|found| found.style == style)
         .map(|found| (found.loads, found.reason))
@@ -132,7 +119,7 @@ fn the_four_shipped_styles_are_listed_and_drawn() {
     });
     // The styles the session read from its store: the shell's own four, each a view of the
     // arrangement, listed by its doc line.
-    let styles = desk(&session).styles;
+    let styles = crate::common::styles(&session);
     assert!(!styles.is_empty(), "the desk offers styles: {styles:?}");
     for name in ["strips", "frames", "spaces", "desktop"] {
         let found = styles
@@ -209,12 +196,11 @@ view timeline(a: shell.Arrangement) {
     // The store moved, so the session reads it again: the styles it lists now hold the person's
     // own beside the shell's four.
     until(&mut session, |session| {
-        desk(session)
-            .styles
+        crate::common::styles(session)
             .iter()
             .any(|style| style.style == "atest.timeline:timeline")
     });
-    let styles = desk(&session).styles;
+    let styles = crate::common::styles(&session);
     let own = styles
         .iter()
         .find(|style| style.style == "atest.timeline:timeline")

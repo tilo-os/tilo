@@ -65,6 +65,11 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("displays", "Displays", "session:displays"),
     ("notifications", "Notifications", "session:notifications"),
     ("time", "Time", "session:time"),
+    ("apps", "Apps", "session:apps"),
+    ("windows", "Windows", "session:windows"),
+    ("tray", "Tray", "session:tray"),
+    ("agents", "Agents", "session:agents"),
+    ("styles", "Styles", "session:styles"),
     ("desk", "Desk", "session:desk"),
 ];
 const SETTINGS_ROOTS: &[(&str, &str, &str)] = &[

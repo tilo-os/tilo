@@ -47,101 +47,11 @@ pub struct PersonReading {
     pub name: String,
 }
 
-/// A window of the desk: a tab of a strip of one of its workspaces, as the desk's reading
-/// names it.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct WindowReading {
-    pub key: String,
-    pub title: String,
-    pub origin_app: String,
-    /// The app it shows, as two windows of one app share it: the walk's app scope crosses
-    /// the windows holding it.
-    pub app_key: String,
-    pub icon: String,
-    pub strip: String,
-    /// Its strip's id, as moving a window there names the strip.
-    pub strip_key: String,
-    pub workspace: String,
-    /// Its workspace's id, as switching to it names the workspace.
-    pub workspace_key: String,
-    /// The window it is a tab of: a group's tabs are one window on the desk, and its other
-    /// tabs stand behind it.
-    pub group_key: String,
-    /// Its place among its group's tabs: `0` for the tab in front, then the tabs behind it in
-    /// their order.
-    pub tab_index: i64,
-    /// Its share of its strip's width, 0..1: the width the window keeps on the desk, so a
-    /// picture of the strip keeps the desk's proportions.
-    pub share: f64,
-    /// Whether it runs on this device: false for a window on another of the person's devices,
-    /// or on a peer's.
-    pub local: bool,
-    /// The device that runs it, when it is not this one: its hex device key, empty when the
-    /// device is not known.
-    pub device: String,
-    /// That device's name, as its certificate labels it.
-    pub device_name: String,
-    /// Where it stands in the picture of its workspace: 1 for the first tab of the first group
-    /// of the first strip, on along them, strips top to bottom and groups leading to trailing.
-    pub place: i64,
-    /// Where it stands in the walk Alt+Tab takes: 1 is the window in front, then the ones it
-    /// was in front of, then the rest along their strips; windows of the other workspaces
-    /// come after them, as the walk crosses the workspace in front alone.
-    pub recency: i64,
-    pub focused: bool,
-    /// Whether it may be pictured: `live`, `withheld` (it holds secrets) or `none`.
-    pub preview: String,
-    /// Whether its app stopped answering the compositor's pings: its window says so, and
-    /// offers to wait for the app or quit it.
-    #[serde(default)]
-    pub not_responding: bool,
-}
-
-/// An agent here for the person, or that acted for them, as the desk's reading names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentReading {
-    pub key: String,
-    pub name: String,
-    /// `running`, `waiting` (for the person) or `done`.
-    pub state: String,
-    pub doing: String,
-    pub mark: String,
-    pub unseen: i64,
-    /// Whether it is seated at the person's agent door now, a client they admitted, rather
-    /// than a run's own agent.
-    #[serde(default)]
-    pub seat: bool,
-}
-
-/// A timer or stopwatch running in Clocks, as the bar's clock reads it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TimerReading {
-    /// The activity's id, which a press on the clock's controls names.
-    #[serde(default)]
-    pub activity_id: Option<String>,
-    /// Its label, such as `Tea`.
-    pub label: String,
-    /// What the timer has left, or the stopwatch has run, in seconds.
-    pub remaining_secs: u64,
-    #[serde(default)]
-    pub stopwatch: bool,
-    #[serde(default)]
-    pub paused: bool,
-}
-
 /// The reading of [`DESK_RESOURCE`]: the fields of the `session.desk` kind
 /// (`tilolang::origin::KINDS`), as JSON on the door.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "the desk's reading is its fields, each read as the shell needs it"
-)]
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeskReading {
     pub person: String,
-    /// The timer or stopwatch Clocks shows, when one runs: what the bar's clock reads beside
-    /// the time, and the controls pressed on it name.
-    #[serde(default)]
-    pub timer: Option<TimerReading>,
     /// The question the session puts to the person about themselves, waiting on their own
     /// avatar until they answer it or put it off.
     #[serde(default)]
@@ -165,64 +75,9 @@ pub struct DeskReading {
     /// What the person last typed in the shell's search.
     #[serde(default)]
     pub spotlight: String,
-    /// The windows of every strip of the workspace in front, most recently used first.
-    #[serde(default)]
-    pub windows: Vec<WindowReading>,
-    /// The person's agents here, and what each is on and did.
-    #[serde(default)]
-    pub agents: Vec<AgentReading>,
     /// The others here in the workspace in front: its collaborators.
     #[serde(default)]
     pub people: Vec<PersonReading>,
-    /// Whether the pointer is at, or resting against, the top edge of the output: a shell's bar
-    /// that hides until it is reached for shows while this holds.
-    #[serde(default)]
-    pub bar_reached: bool,
-    /// Whether a window stands where a top bar rides: a bar that hides while a window overlaps
-    /// it hides while this holds.
-    #[serde(default)]
-    pub bar_covered: bool,
-    /// Whether the pointer is at the bottom edge of the output: a dock there shows while this
-    /// holds.
-    #[serde(default)]
-    pub dock_reached: bool,
-    /// Whether a window stands where a dock rides.
-    #[serde(default)]
-    pub dock_covered: bool,
-    /// The running applications' tray items, in the order they registered.
-    #[serde(default)]
-    pub tray: Vec<TrayReading>,
-    /// The applications installed on this device, as the launcher lists and opens them.
-    #[serde(default)]
-    pub apps: Vec<AppReading>,
-    /// The desk styles every installed package offers, as the session finds them (shell.md
-    /// §6): each a view of the arrangement, listed by its own doc line, so the person's switch
-    /// offers every style wherever it was written.
-    #[serde(default)]
-    pub styles: Vec<DeskStyleReading>,
-}
-
-/// A desk style, as the desk's reading names it: a view of the arrangement an installed
-/// package declares (shell.md §6).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeskStyleReading {
-    /// The view reference: a package and a view (`so.tilo.shell:strips`), as `Viewing.style`
-    /// names it.
-    pub style: String,
-    /// The package that declares it.
-    pub package: String,
-    /// The view's own name, as its declaration writes it.
-    pub name: String,
-    /// The view's doc line, in its author's words: what the switch lists it by.
-    pub line: String,
-    /// Whether the style loads: false for one whose package does not compile against the shell
-    /// and the session, or whose view failed when it ran, so the switch can say so and the desk
-    /// shows the built-in strips until it is fixed (`shell.md` §6).
-    pub loads: bool,
-    /// Why the style does not load, in the runtime's words, when it does not; empty when it
-    /// does.
-    #[serde(default)]
-    pub reason: String,
 }
 
 /// The arrangement's readings, which a shell reads beside the desk's: what the person arranged.
@@ -230,32 +85,6 @@ pub use crate::arrangement::{
     ArrangementPlaceReading, ArrangementQueryReading, ArrangementReading, ArrangementRefReading,
     ArrangementRowReading, ArrangementStripReading, ArrangementWorkspaceReading,
 };
-
-/// A running application's tray item, as the bar shows it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrayReading {
-    /// The item's key, which a press on it names.
-    pub key: String,
-    /// The app's own words for it.
-    pub title: String,
-    /// Whether choosing it opens its menu rather than its window.
-    #[serde(default)]
-    pub menu: bool,
-}
-
-/// An application installed on this device, as the launcher lists it (a `session.application`):
-/// its package id which `open-app` names, its name in the person's language, its glyph, and its
-/// category and description when it named them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppReading {
-    pub key: String,
-    pub name: String,
-    pub icon: String,
-    #[serde(default)]
-    pub category: String,
-    #[serde(default)]
-    pub description: String,
-}
 
 /// A question the session puts to the person about themselves, waiting on their own avatar.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,33 +97,6 @@ pub struct AskReading {
     pub answer: String,
     /// Shown as the popover; `false` while it waits as the avatar's dot.
     pub open: bool,
-}
-
-impl DeskReading {
-    /// The timer Clocks runs, by its name: its label (`Tea`), or what it is when the app
-    /// named none (`Timer`, `Stopwatch`). Empty when no timer floats.
-    #[must_use]
-    pub fn timer_name(&self) -> String {
-        let Some(timer) = &self.timer else {
-            return String::new();
-        };
-        if !timer.label.is_empty() {
-            return timer.label.clone();
-        }
-        if timer.stopwatch {
-            "Stopwatch".to_owned()
-        } else {
-            "Timer".to_owned()
-        }
-    }
-
-    /// What the timer reads: what it has left, or what the stopwatch has run.
-    #[must_use]
-    pub fn timer_left(&self) -> String {
-        self.timer.as_ref().map_or_else(String::new, |timer| {
-            ui::format::timecode(timer.remaining_secs)
-        })
-    }
 }
 
 /// What a shell asked of the session: an invocation on the door, its arguments as any caller's

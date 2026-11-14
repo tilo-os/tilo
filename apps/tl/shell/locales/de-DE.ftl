@@ -23,16 +23,6 @@ d-5mipdtxu = Bereich des Wechslers
 d-foayl4ai = Suche
     .doc = Was die Person in die Suche der Shell getippt hat, die den Launcher dort öffnet, wo sie aufgehört hat.
 
-d-rlrql4ir = Timer
-    .doc = Der Timer oder die Stoppuhr, die Clocks laufen lässt, nach ihrem Namen: ihrer Beschriftung, oder `Timer` bzw. `Stoppuhr`, wenn die App keine nannte; leer, wenn keiner schwimmt.
-
-d-m4heyzat = Timer übrig
-    .doc = Was der Timer anzeigt: was ihm bleibt oder was die Stoppuhr gelaufen ist.
-
-d-pql2t5r3 = Timer pausiert
-
-d-qb4cqhjk = Timer Stoppuhr
-
 d-zxfieu2y = Frage
     .doc = Die Frage, die der Person über sie selbst gestellt wird; leer, wenn keine wartet.
 
@@ -53,71 +43,9 @@ d-vbyis266 = Arbeitsbereiche
 
 d-xu2jijql = Personen
 
-d-g4t5njqq = Leiste erreicht
-    .doc = Der Zeiger an der oberen Kante und ein Fenster, das steht, wo die Leiste fährt: was eine Leiste befolgt, die nur manchmal zeigt.
-
-d-mvfeip6u = Leiste verdeckt
-
-d-pjnfirs3 = Dock erreicht
-    .doc = Der Zeiger an der unteren Kante und ein Fenster, das steht, wo das Dock fährt.
-
-d-prsypg4e = Dock verdeckt
-
-d-twcpnt5t = Agenten
-
-d-5kokd6gv = Fenster
-
-d-pdaqdidq = Infobereich
-    .doc = Die Einträge laufender Anwendungen im Infobereich, in der Reihenfolge, in der sie sich registriert haben.
-
-d-n2fzxj5u = Stile
-    .doc = Die Schreibtischstile, die die installierten Apps anbieten: jeder eine Ansicht der Anordnung, aufgeführt nach seinen eigenen Worten.
-
 d-4jk2lkpt-filter-switcher_revealed = Wechsler gezeigt
 
-d-4jk2lkpt-filter-timer_paused = Timer pausiert
-
-d-4jk2lkpt-filter-timer_stopwatch = Timer Stoppuhr
-
 d-4jk2lkpt-filter-ask_open = Frage offen
-
-d-4jk2lkpt-filter-bar_reached = Leiste erreicht
-
-d-4jk2lkpt-filter-bar_covered = Leiste verdeckt
-
-d-4jk2lkpt-filter-dock_reached = Dock erreicht
-
-d-4jk2lkpt-filter-dock_covered = Dock verdeckt
-
-d-zxwtaxaw = Schreibtischstil
-    .doc = Ein Schreibtischstil: eine Ansicht der Anordnung, die eine installierte App deklariert.
-    .noun = { $count ->
-        [one] Schreibtischstil
-       *[other] Schreibtischstile
-    }
-
-d-ly2aksp3 = Schlüssel
-    .doc = Die Ansichtsreferenz des Stils, nach der der Datensatz ihn hält.
-
-d-t6ojc3kt = Stil
-    .doc = Die Ansichtsreferenz: ein Paket und eine Ansicht, was `Viewing.style` nennt.
-
-d-yxdj6rhs = Paket
-    .doc = Das Paket, das ihn deklariert.
-
-d-uew43mty = Name
-    .doc = Der eigene Name der Ansicht, wie ihre Deklaration ihn schreibt.
-
-d-rhx3oobw = Zeile
-    .doc = Die Dok-Zeile der Ansicht, in den Worten ihres Autors: wonach der Umschalter sie auflistet.
-
-d-ifgxec27 = Lädt
-    .doc = Ob der Stil lädt: falsch für einen, dessen App nicht hier ist oder nicht mit diesem Schreibtisch zusammenarbeitet, oder dessen Ansicht beim Laufen scheiterte, damit der Umschalter es sagen kann und der Schreibtisch die eingebauten Leisten zeigt, bis es behoben ist.
-
-d-eihyiyeb = Grund
-    .doc = Warum der Stil nicht lädt, in den Worten, mit denen er scheiterte, wenn er es nicht tut; leer, wenn er lädt.
-
-d-zxwtaxaw-filter-loads = Lädt
 
 d-bynckgvt = Arbeitsbereich
     .doc = Ein Arbeitsbereich auf diesem Gerät.
@@ -134,21 +62,6 @@ d-ce523tqy = Aktuell
 
 d-bynckgvt-filter-current = Aktuell
 
-d-tlbg2fms = Eintrag im Infobereich
-    .doc = Der Eintrag einer laufenden Anwendung im Infobereich: was die Leiste zeigt und was ein Druck darauf erreicht.
-    .noun = { $count ->
-        [one] Eintrag im Infobereich
-       *[other] Einträge im Infobereich
-    }
-
-d-o3wuotce = Schlüssel
-
-d-e5qbz5cz = Titel
-
-d-lsd5bmss = Menü
-
-d-tlbg2fms-filter-menu = Menü
-
 d-bqittbss = Person
     .doc = Jemand anderes hier im Arbeitsbereich vorn.
     .noun = { $count ->
@@ -159,104 +72,6 @@ d-bqittbss = Person
 d-vfhh3oax = Schlüssel
 
 d-lmoug2df = Name
-
-d-r7dcmwzl = Fenster
-    .doc = Ein Fenster des Schreibtischs: ein Tab einer Leiste im Arbeitsbereich vorn.
-    .noun = { $count ->
-        [one] Fenster
-       *[other] Fenster
-    }
-
-d-dfgqyodj = Schlüssel
-
-d-by5gisol = Titel
-
-d-v5xdn5a6 = Ursprungs-App
-
-d-zscvpgbm = Schlüssel der App
-    .doc = Die App, die es zeigt, geteilt von zwei Fenstern einer App: der App-Bereich des Wechslers kreuzt die Fenster, die sie halten.
-
-d-drnqlrp5 = Symbol
-
-d-mjnpzf6r = Leiste
-
-d-g3ddlvlc = Schlüssel der Leiste
-    .doc = Die Kennung seiner Leiste, wie das Verschieben eines Fensters dorthin die Leiste nennt.
-
-d-hnoh7dgq = Arbeitsbereich
-
-d-c7yq7qkl = Schlüssel des Arbeitsbereichs
-    .doc = Die Kennung seines Arbeitsbereichs, wie das Wechseln dorthin den Arbeitsbereich nennt.
-
-d-bard6ca3 = Schlüssel der Gruppe
-    .doc = Das Fenster, dessen Tab es ist: die Tabs einer Gruppe sind ein Fenster auf dem Schreibtisch, und ihre anderen Tabs stehen dahinter.
-
-d-lbxt5665 = Index des Tabs
-    .doc = Sein Platz unter den Tabs seiner Gruppe: 0 für den Tab vorn, dann die Tabs dahinter in ihrer Reihenfolge.
-
-d-kiwhpw3z = Anteil
-    .doc = Sein Anteil an der Breite seiner Leiste, 0..1: die Breite, die das Fenster auf dem Schreibtisch behält.
-
-d-hm2x5otu = Lokal
-    .doc = Ob es auf diesem Gerät läuft: falsch für ein Fenster auf einem anderen Gerät der Person oder auf dem eines Peers.
-
-d-wxi227u2 = Gerät
-    .doc = Das Gerät, das es laufen lässt, wenn es nicht dieses ist: sein Schlüssel, leer, wenn er nicht bekannt ist.
-
-d-aadqdflh = Name des Geräts
-    .doc = Der Name dieses Geräts, wie sein Zertifikat ihn beschriftet.
-
-d-ctnewsrr = Platz
-    .doc = Wo es im Bild seines Arbeitsbereichs steht: 1 für den ersten Tab der ersten Gruppe der ersten Leiste, weiter an ihnen entlang, Leisten von oben nach unten.
-
-d-z3pjamxl = Zuletzt benutzt
-
-d-a5fwclo5 = Im Fokus
-
-d-tb2jierp = Vorschau
-
-d-4agha6k5 = Antwortet nicht
-    .doc = Ob seine App aufgehört hat zu antworten: seine Karte sagt es und bietet an, weiter auf die App zu warten oder sie zu beenden.
-
-d-r7dcmwzl-filter-tab_index = Index des Tabs
-
-d-r7dcmwzl-filter-share = Anteil
-
-d-r7dcmwzl-filter-local = Lokal
-
-d-r7dcmwzl-filter-place = Platz
-
-d-r7dcmwzl-filter-recency = Zuletzt benutzt
-
-d-r7dcmwzl-filter-focused = Im Fokus
-
-d-r7dcmwzl-filter-not_responding = Antwortet nicht
-
-d-labby3mp = Agent
-    .doc = Ein Agent, der für die Person hier ist oder für sie gehandelt hat.
-    .noun = { $count ->
-        [one] Agent
-       *[other] Agenten
-    }
-
-d-njbk3cds = Schlüssel
-
-d-4nhbpuss = Name
-
-d-6zpjzgvl = Zustand
-
-d-zcdb3jtl = Tätigkeit
-
-d-ty5fvze2 = Zeichen
-
-d-gbehvj6x = Ungesehen
-
-d-p6gfsj72 = Sitz
-    .doc = Ob er gerade an der Agententür der Person sitzt, ein Client, den sie zugelassen hat, statt der eigene Agent eines Laufs.
-
-d-labby3mp-filter-unseen = Ungesehen
-
-d-labby3mp-filter-seat = Sitz
 
 d-qhf2pyze = Anordnung
     .doc = Die Anordnung der Person: was offen ist und wo.
@@ -858,8 +673,6 @@ d-5yz5iwzs-item = Eintrag
 d-aitkuflo = Eintrag öffnen
     .doc = Was ein Druck auf einen Dock-Eintrag tut, nach der App, für die der Eintrag steht: ein Fenster dieser App auf diesem Schreibtisch kommt nach vorn, sodass der Schreibtisch sagt, in welchem Fenster die Person ist, und die Befehle der oberen Leiste seine eigenen sind; das Fenster ist das, für das der Eintrag gezeichnet wurde, sodass ein Druck nie eine zweite Kopie öffnet.
 
-d-aitkuflo-desk = Schreibtisch
-
 d-aitkuflo-key = App
 
 d-zm35wbjg = Ein Arbeitsbereich
@@ -1212,9 +1025,6 @@ d-bmd7xmln-strip = Spalte
 
 d-bmd7xmln-text = Text
 
-d-yd725hjw = Die installierten Apps
-    .doc = Die auf diesem Gerät installierten Anwendungen, wie der Launcher sie auflistet: die, die die Aufnahmen und die Layouts des Schreibtischs zeigen.
-
 d-gncm64rz = Stileinstellungen als Blatt
     .w-settings-for = Einstellungen für { $style_title }
     .w-close = Schließen
@@ -1269,31 +1079,6 @@ d-cijhlzxf = Fensterbefehle
 
 d-yx7doxgr = Traditionelle Leiste
     .w-tilo = Tilo
-
-d-s7dh3s7h = Apps
-    .doc = Die auf diesem Gerät installierten Anwendungen: was der Starter auflistet und öffnet.
-
-d-dkwmlyh7 = App
-    .doc = Eine auf diesem Gerät installierte Anwendung, wie der Starter sie auflistet: ihre Paket-ID, ihr Name in der Sprache der Person, das Symbol, das sie zeigt, und wie sie sich öffnet.
-    .noun = { $count ->
-        [one] App
-       *[other] Apps
-    }
-
-d-wabxc4xe = Schlüssel
-    .doc = Ihre Paket-ID, unter der `open_app` sie nennt.
-
-d-dhizmikp = Name
-    .doc = Ihr Name in der Oberflächensprache der Person.
-
-d-bkmyu6to = Symbol
-    .doc = Das Symbol, das sie zeigt, nach dem Kebab-Case-Namen des Plattformsymbols.
-
-d-fxhx35ly = Kategorie
-    .doc = Ihre Kategorie (`work`, `media`, `play`, `system`), leer, wenn sie keine nennt.
-
-d-vebrnbn2 = Beschreibung
-    .doc = Wofür sie da ist, in wenigen Worten; leer, wenn sie keine anbietet.
 
 d-if7lamna = Anfragen
     .doc = Die Anfragen, die die Arbeitsfläche aufstellt, während eine App sie beantwortet, nach dem Platz, der jede zeigt: was die Person eingegeben hat, was sie gefunden hat oder warum nichts (shell.md §8).

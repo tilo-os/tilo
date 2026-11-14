@@ -159,7 +159,7 @@ mod desk_resource;
 mod desk_restore;
 #[cfg(target_os = "linux")]
 pub mod desk_styles;
-mod desk_windows;
+pub mod desk_windows;
 #[cfg(target_os = "linux")]
 pub mod desktop_services;
 #[cfg(target_os = "linux")]

@@ -796,23 +796,18 @@ fn the_overviews_strips_are_read_once_each_in_the_order_they_stand() {
     );
 }
 
-/// The session writes what the screen says of its edges, as it does every turn: one fact on
-/// the shell's own record, through the origin write the session's door applies
-/// (`SessionLink::publish_edges`), which the host then commits.
+/// The session publishes what the screen says of its edges on its displays, as it does every
+/// turn: one fact, the rest of the screen at rest.
 fn set_screen(r: &mut Replica, field: &str, on: bool) {
-    // What the screen says is the desk's reading, which the session writes on the desk: the
-    // person's shell record keeps their own settings, not the screen's momentary facts.
-    let root = r.host.root_record(APP, "4jk2lkpt").unwrap();
-    let meta = r.host.package(APP).unwrap().meta;
-    let id = crate::fixtures::field_id(&meta, "Desk", field);
-    let writes = vec![OriginWrite::Set {
-        target: root,
-        fields: vec![(id, Value::Bool(on))],
-    }];
+    let displays = tilolang_tilo::runtime::ResourceRef::parse_id(
+        "session:displays",
+        "so.tilo.device#Displays",
+    )
+    .unwrap();
     r.host
         .runtime()
-        .apply_origin("session", writes, None)
-        .expect("the screen's facts are the session's to write");
+        .set_reading(&displays, &serde_json::json!({ field: on }).to_string())
+        .expect("the session publishes its displays");
     r.commit();
 }
 

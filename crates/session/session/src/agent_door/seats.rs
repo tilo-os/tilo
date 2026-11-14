@@ -281,11 +281,11 @@ impl Seats {
         true
     }
 
-    /// The agents seated here now, as the desk's shell lists them.
-    pub(crate) fn readings(&self) -> Vec<tilo_session_core::shell::AgentReading> {
+    /// The agents seated here now, as `session:agents` lists them.
+    pub(crate) fn readings(&self) -> Vec<Agent> {
         self.here()
             .into_iter()
-            .map(|seated| tilo_session_core::shell::AgentReading {
+            .map(|seated| Agent {
                 key: seated.agent,
                 name: seated.name,
                 state: "running".to_owned(),
@@ -344,4 +344,42 @@ pub(crate) struct Working {
     pub(crate) changed: Vec<(String, String)>,
     /// The app it is working in now, when it says.
     pub(crate) app: Option<String>,
+}
+
+/// The agents the person admitted at their agent door, as `session:agents` publishes them.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct Agents {
+    pub seated: Vec<Agent>,
+}
+
+/// An agent here for the person.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct Agent {
+    pub key: String,
+    pub name: String,
+    /// `running`, `waiting` (for the person) or `done`.
+    pub state: String,
+    pub doing: String,
+    pub mark: String,
+    pub unseen: i64,
+    /// Whether it is seated at the person's agent door now, a client they admitted.
+    pub seat: bool,
 }

@@ -547,7 +547,7 @@ fn shows(when: Showing, reached: Bool, covered: Bool) -> Bool {
 /// Whether the top bar shows now: the person's settings, and what the screen says of its edge
 /// (the desk's reading, which the session writes).
 fn bar_shows(s: Shell, d: Desk) -> Bool {
-    s.bar_shown and shows(s.bar_showing, d.bar_reached, d.bar_covered)
+    s.bar_shown and shows(s.bar_showing, device.displays.bar_reached, device.displays.bar_covered)
 }
 
 /// Whether the desk's bar lists the window in front's actions now: the traditional desktop's
@@ -584,5 +584,6 @@ fn bar_is_traditional(s: Shell) -> Bool {
 
 /// Whether the dock shows now.
 fn dock_shows(s: Shell, d: Desk) -> Bool {
-    s.dock_shown and shows(s.dock_showing, d.dock_reached, d.dock_covered)
+    s.dock_shown
+        and shows(s.dock_showing, device.displays.dock_reached, device.displays.dock_covered)
 }

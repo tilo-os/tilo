@@ -304,6 +304,61 @@ pub(crate) struct SessionControls {
     reading: Rc<RefCell<ControlsReading>>,
     /// The reading last reported, so a pass that changed nothing is no revision.
     published: RefCell<Option<ControlsReading>>,
+    /// The app lists' generation last reported: an app installed or taken away moves it.
+    apps: u64,
+}
+
+/// The applications installed on this device, as `session:apps` publishes them: what the
+/// launcher lists and opens.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub(crate) struct Apps {
+    pub installed: Vec<App>,
+}
+
+/// An application installed on this device: its package id, which `open-app` names, its name in
+/// the person's language, its glyph, and its category and description when it named them.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub(crate) struct App {
+    pub key: String,
+    pub name: String,
+    /// The glyph it shows, by the platform icon's kebab-case name.
+    pub icon: String,
+    /// `work`, `media`, `play` or `system`; empty when it named none.
+    pub category: String,
+    pub description: String,
+}
+
+impl Apps {
+    fn installed() -> Self {
+        let installed = crate::app_icons::app_lists_snapshot()
+            .map(|(_, lists)| {
+                lists
+                    .applications
+                    .iter()
+                    .map(|app| App {
+                        key: app.id.clone(),
+                        name: app.title.clone(),
+                        icon: ui::icons::app_glyph(&app.id, app.category.as_deref())
+                            .name()
+                            .to_owned(),
+                        category: app.category.clone().unwrap_or_default(),
+                        description: app.description.clone().unwrap_or_default(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { installed }
+    }
+}
+
+/// The apps as a view of another language reads them (`device.apps`).
+#[must_use]
+pub(crate) fn apps_surface() -> tilo_actions::surface::Surface {
+    tilo_resource::surface::reading_surface::<Apps, tilo_resource::NoEffect>("apps", "Apps")
 }
 
 impl SessionControls {
@@ -315,6 +370,7 @@ impl SessionControls {
             commands,
             reading,
             published: RefCell::new(None),
+            apps: 0,
         }
     }
 
@@ -329,7 +385,7 @@ impl SessionControls {
                 "on": reading.zoom > settings_store::magnifier::OFF,
                 "zoom": reading.zoom,
             })),
-            APPS_RESOURCE => Some(json!({})),
+            APPS_RESOURCE => Some(tilo_service::reading(&Apps::installed())),
             _ => None,
         }
     }
@@ -359,10 +415,12 @@ impl Service for SessionControls {
     }
 
     fn poll(&mut self) -> bool {
+        let apps = crate::app_icons::app_lists_snapshot().map_or(0, |(generation, _)| generation);
+        let apps_moved = std::mem::replace(&mut self.apps, apps) != apps;
         let now = self.reading.borrow().clone();
         let mut published = self.published.borrow_mut();
         if published.as_ref() == Some(&now) {
-            return false;
+            return apps_moved;
         }
         *published = Some(now);
         true

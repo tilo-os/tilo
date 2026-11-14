@@ -402,15 +402,15 @@ fn allow(session: &mut Session, choice: usize) {
 /// desk names it, and the workspace it works in.
 fn seated(session: &Session) -> Vec<(String, String, String)> {
     session
-        .read(tilo_surface_host::shell_part::DESK_RESOURCE)
-        .and_then(|desk| desk.get("agents").cloned())
-        .and_then(|agents| {
-            serde_json::from_value::<Vec<tilo_surface_host::shell_part::AgentReading>>(agents).ok()
-        })
+        .read("session:agents")
+        .and_then(|agents| agents.get("seated").and_then(Value::as_array).cloned())
         .unwrap_or_default()
         .into_iter()
-        .filter(|agent| agent.seat)
-        .map(|agent| (agent.key, agent.name, agent.doing))
+        .filter(|agent| agent["seat"] == true)
+        .map(|agent| {
+            let text = |field: &str| agent[field].as_str().unwrap_or_default().to_owned();
+            (text("key"), text("name"), text("doing"))
+        })
         .collect()
 }
 
@@ -686,11 +686,7 @@ fn two_programs_of_one_name_are_two_agents() {
     let mut stop = Map::new();
     stop.insert("agent".to_owned(), json!("claude-code@host#1"));
     session
-        .invoke(
-            tilo_surface_host::shell_part::DESK_RESOURCE,
-            "stop-agent",
-            &stop,
-        )
+        .invoke("session:agents", "stop-agent", &stop)
         .expect("the person's Stop");
     crate::common::wait_for(&mut session, "the first agent to stop", |session| {
         let keys: Vec<String> = seated(session).into_iter().map(|(key, ..)| key).collect();

@@ -27,7 +27,7 @@ mod service_steps;
 mod task_hosts;
 
 use environments::Origin;
-pub(crate) use seats::{Seats, Working};
+pub(crate) use seats::{Agents, Seats, Working};
 pub(crate) use service_steps::invoke_service_step;
 use service_steps::{arguments_of, change_through, with_turn_beside};
 pub(crate) use task_hosts::TaskHosts;

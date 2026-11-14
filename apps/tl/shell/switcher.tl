@@ -20,7 +20,9 @@
 /// Every choice it offers is the session's action: going to a window is `session.focus`, the
 /// same as a press on its strip.
 view switcher(d: Desk) {
-    let desk = d.windows.filter(w -> w.workspace_key == front_workspace(d)).sort_by(w -> w.recency)
+    let desk = device.windows.all
+        .filter(w -> w.workspace_key == front_workspace(d))
+        .sort_by(w -> w.recency)
     let pick = desk.find(w -> w.focused)
     let front_app = if let p = pick { p.app_key } else { "" }
     let windows = if d.switcher_scope == "app" {
@@ -88,14 +90,14 @@ fn page_size(compact: Bool, width: Float, height: Float) -> Int {
 /// A window's place in the walk over `windows`: one for the first one it visits. The walk's own
 /// order (`recency`) is the desk's, so two windows of one app keep their places among the rest
 /// and the app's page counts them alone.
-fn walk_place(windows: List<Win>, w: Win) -> Int {
+fn walk_place(windows: List<device.Window>, w: device.Window) -> Int {
     return windows.filter(v -> v.recency <= w.recency).len()
 }
 
 /// One window of the walk: its picture or its app's glyph, its title, and the app it shows.
 /// The card the walk has reached is the lifted one. A narrow display stands the picture beside
 /// the names rather than over them, so a phone shows a page of windows rather than one.
-view window_card(w: Win) {
+view window_card(w: device.Window) {
     ui.Card(item: w, selected: w.focused, min: if space.compact { 5rem } else { 11rem }) {
         if space.compact {
             row(gap: .tight, align: .center) {
@@ -116,7 +118,7 @@ view window_card(w: Win) {
 }
 
 /// The window's title and the app it shows, under its picture or beside it.
-view window_names(w: Win) {
+view window_names(w: device.Window) {
     stack(gap: .tight) {
         ui.Text(w.title, role: .label, lines: 1, truncate)
         ui.Text(w.origin_app, role: .caption, secondary: true, lines: 1, truncate)
@@ -126,7 +128,7 @@ view window_names(w: Win) {
 /// What a window's card shows of the window itself: its live picture where this names it, over the
 /// app's glyph. A window that may not be pictured (its app holds secrets) shows the glyph alone,
 /// marked as withheld.
-view window_face(w: Win) {
+view window_face(w: device.Window) {
     layers(min: if space.compact { 4rem } else { 11rem }, aspect: 1.6) {
         window_picture(w)
     }
@@ -138,7 +140,7 @@ view window_face(w: Win) {
 ///
 /// Every place a window is pictured frames this at the window's shape: the switcher's cards and
 /// the overview's places, so the same window never looks like two things.
-view window_picture(w: Win) {
+view window_picture(w: device.Window) {
     layers {
         ui.WindowPreview(w.key)
         if w.preview != "live" {
