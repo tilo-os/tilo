@@ -103,6 +103,7 @@ impl Runs {
             .map(|place| ShellSelection {
                 anchor: place.anchor.clone(),
                 head: place.head.clone(),
+                composing: false,
             });
         let said = |voice: &mut Voice| {
             voice.activity = Some(line);

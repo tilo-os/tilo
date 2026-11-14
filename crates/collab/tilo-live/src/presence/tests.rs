@@ -241,6 +241,7 @@ tilo_test_env::scenario! {
                 selection: Some(ShellSelection {
                     anchor: head.into(),
                     head: head.into(),
+                    composing: false,
                 }),
                 chat: None,
                 reaction: None,

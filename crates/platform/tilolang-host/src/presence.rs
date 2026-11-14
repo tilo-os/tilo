@@ -155,18 +155,67 @@ impl Presence {
         }
     }
 
-    /// Someone other than the person at each resource of the app, by the resource's id.
+    /// Someone other than the person at each resource of the app, by the resource's id: where
+    /// their selection is, or their caret, which is how a selection of nothing reaches a device
+    /// from another one.
     fn peers(&self) -> HashMap<String, String> {
-        self.heard
+        let selected = self
+            .heard
             .selections
             .iter()
-            .filter_map(|(key, at)| match key {
-                PresenceKey::Resource { app, id, .. } if *app == self.app => at
-                    .iter()
-                    .find(|(user, _)| *user != self.me)
-                    .map(|(user, _)| (id.clone(), user.key())),
-                _ => None,
-            })
-            .collect()
+            .map(|(key, at)| (key, at.iter().map(|(user, _)| user).collect::<Vec<_>>()));
+        let caret = self
+            .heard
+            .carets
+            .iter()
+            .map(|(key, at)| (key, at.iter().map(|(user, _)| user).collect::<Vec<_>>()));
+        let mut peers = HashMap::new();
+        for (key, users) in selected.chain(caret) {
+            if let PresenceKey::Resource { app, id, .. } = key
+                && *app == self.app
+                && let Some(user) = users.into_iter().find(|user| **user != self.me)
+            {
+                peers.entry(id.clone()).or_insert_with(|| user.key());
+            }
+        }
+        peers
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const APP: &str = "so.tilo.lang.chat";
+
+    fn channel() -> PresenceKey {
+        PresenceKey::resource(APP, "channel-1", "TextChannel")
+    }
+
+    fn heard(presence: &mut Presence, user: &str, payload: PresencePayload) {
+        presence.take(&CollabEvent::RemotePresenceUpdate {
+            member: MemberId::person(user),
+            key: channel(),
+            payload,
+        });
+    }
+
+    #[test]
+    fn someone_at_a_resource_by_their_caret_is_there_as_by_their_selection() {
+        let mut presence = Presence::new(APP, "bo");
+        // Another device hands a selection of nothing over as a caret.
+        heard(&mut presence, "ada", PresencePayload::Caret { pos: 0 });
+        heard(&mut presence, "bo", PresencePayload::Caret { pos: 0 });
+        assert_eq!(
+            presence.peers(),
+            HashMap::from([("channel-1".to_owned(), MemberId::person("ada").key())])
+        );
+        let mut selected = Presence::new(APP, "bo");
+        heard(
+            &mut selected,
+            "ada",
+            PresencePayload::Selection { start: 0, end: 0 },
+        );
+        assert_eq!(selected.peers(), presence.peers());
     }
 }

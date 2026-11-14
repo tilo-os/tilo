@@ -217,6 +217,7 @@ mod tests {
                 selection: Some(crate::presence::ShellSelection {
                     anchor: "0102".into(),
                     head: "0304".into(),
+                    composing: false,
                 }),
                 chat: Some(crate::presence::ShellChat {
                     text: "here".into(),
