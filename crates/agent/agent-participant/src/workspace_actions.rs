@@ -1426,7 +1426,6 @@ impl Worker {
             JOIN_WAIT
         };
         let deadline = queued.checked_add(bound).unwrap_or(queued);
-        self.awaiting(workspace_id, true);
         self.joining
             .entry(workspace_id)
             .or_default()
@@ -1435,6 +1434,9 @@ impl Worker {
                 deadline,
                 job,
             });
+        // A change that landed before the workspace was asked to wake this
+        // thread woke nobody; `resume` looks again now that it is.
+        self.resume(workspace_id);
     }
 
     /// Run the requests waiting for `workspace_id`, its change just arrived:
