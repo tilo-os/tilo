@@ -94,9 +94,10 @@ pub fn bounded(attachments: &[DraftAttachment]) -> Vec<DraftAttachment> {
 ///
 pub fn stage_file(
     content: &ContentStore,
-    file: std::fs::File,
-    display_name: &str,
+    source: ui::portal::OpenedFile,
 ) -> Result<DraftAttachment, String> {
+    let display_name = source.display_name().to_owned();
+    let file = source.into_file();
     let metadata = file
         .metadata()
         .map_err(|error| format!("could not inspect selected file: {error}"))?;
@@ -114,7 +115,7 @@ pub fn stage_file(
     if bytes.len() > MAX_ATTACHMENT_BYTES {
         return Err("attachments are limited to 32 MiB".into());
     }
-    stage_bytes(content, &bytes, display_name)
+    stage_bytes(content, &bytes, &display_name)
 }
 
 /// Store already bounded bytes under their canonical identity.  This is used
@@ -211,8 +212,10 @@ mod tests {
             let content = ContentStore::memory();
             let staged = stage_file(
                 &content,
-                std::fs::File::open(path.path()).unwrap(),
-                "../report.txt",
+                ui::portal::OpenedFile::new(
+                    std::fs::File::open(path.path()).unwrap(),
+                    "../report.txt",
+                ),
             )
             .unwrap();
             assert!(valid_content_id(&staged.content_id));

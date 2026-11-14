@@ -23,6 +23,10 @@ pub use location::{InvalidVPath, Location, VPath, VirtualRoot};
 /// this process has one mounted.
 pub const WORKSPACE_MOUNT: &str = "/var/workspace";
 
+/// The file a Tilo Linux session writes the people and devices it certifies
+/// to: what an app showing who a file is shared with names them from.
+pub const TRUSTED_IDENTITIES: &str = "/run/tilo/identity-projection/trusted-identities.json";
+
 /// The directory, at the root of the device's files, that holds one tree per
 /// workspace: `<files>/.workspaces/<workspace id>`. The device's files are
 /// one namespace (`fs` serves one per device); a workspace's own files are
@@ -770,6 +774,14 @@ impl UserDir {
     #[must_use]
     pub fn resolve(self) -> Option<PathBuf> {
         platform::user_dir(self)
+    }
+
+    /// The directory the environment alone names: `$XDG_<NAME>_DIR` when set,
+    /// non-empty and absolute. Reads no `user-dirs.dirs`, so a caller that
+    /// must not read files (an app's startup) can still honour the variable.
+    #[must_use]
+    pub fn from_environment(self) -> Option<PathBuf> {
+        absolute(var(self.env_var()))
     }
 
     #[must_use]

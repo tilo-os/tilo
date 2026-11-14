@@ -18,7 +18,7 @@ D1 = 1
 D2 = 3
 
 [apps.calendar]
-D2 = 5
+D2 = 4
 
 [apps.camera]
 D1 = 1
@@ -54,7 +54,6 @@ D2 = 5
 [apps.file-explorer]
 D1 = 2
 D2 = 9
-R3 = 3
 
 [apps.firewall]
 D1 = 1
@@ -162,7 +161,7 @@ D2 = 9
 W3 = 8
 
 [sdk.tilo-app]
-R1 = 22
+R1 = 21
 
 [sdk.tilo-app-state]
 R1 = 9

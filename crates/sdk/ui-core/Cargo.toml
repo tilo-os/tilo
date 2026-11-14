@@ -213,6 +213,11 @@ tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
 # The content store a host lends a component (`HostContext::content`), in every
 # build.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
+# A workspace file is its content manifest, and its bytes decide the app that
+# opens it (`content.rs`): both are content operations an app names through
+# the toolkit.
+fs-content = { version = "0.1.0", path = "../../system/fs-content" }
+tilo-content-types = { version = "0.1.0", path = "../../system/content-types" }
 # The `native` build takes the launcher's content-store capability at launch
 # (`launch.rs`).
 tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }

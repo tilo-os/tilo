@@ -15,9 +15,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use fs_protocol::files::FileNodeKind;
-use fs_protocol::tree::{FILES_APP, ROOT_ID, TREE_KIND, Tree, TreeEntry};
+use fs_protocol::tree::{ROOT_ID, Tree, TreeEntry};
 use ui::carry_out::{ContentLinkAsk, ContentLinkFile, Offers};
-use ui::framework::{Dispatcher, Live, People, ResourceApp, ViewCx, WorkspaceRecord};
+use ui::framework::{Dispatcher, Live, People, PersonRecord, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::icons::Icon;
 use ui::tilo_actions::remote::ApplicationLaunch;
@@ -106,7 +106,7 @@ struct Shown {
 /// bytes decide, as they do wherever a workspace lands a file in an app, and
 /// the name only says which of them are text.
 fn opening_app(head: &[u8], name: &str) -> Option<String> {
-    let landing = tilo_content_types::landing(head, name)?;
+    let landing = ui::content::landing(head, name)?;
     Some(format!("so.tilo.{}", landing.app))
 }
 
@@ -114,7 +114,7 @@ fn opening_app(head: &[u8], name: &str) -> Option<String> {
 pub struct TreeBrowser {
     live: Live<FilesWindow>,
     /// The workspace's tree, as the page holds it.
-    tree: Option<WorkspaceRecord<fs_protocol::tree::FilesTree>>,
+    tree: Option<PersonRecord<fs_protocol::tree::FilesTree>>,
     /// What the workspace calls the people its nodes name.
     people: People,
     /// The window's own record, which the open folder is set in.
@@ -140,7 +140,9 @@ impl TreeBrowser {
         let read: Option<Reads> = cx.content().map(|content| {
             Rc::new(move |hash: &str| {
                 content.read(hash).and_then(|bytes| {
-                    fs_content::whole(bytes, u64::MAX, |chunk| content.read(&hex::encode(chunk)))
+                    ui::content::manifest::whole(bytes, u64::MAX, |chunk| {
+                        content.read(&hex::encode(chunk))
+                    })
                 })
             }) as Rc<dyn Fn(&str) -> Option<Vec<u8>>>
         });
@@ -149,10 +151,7 @@ impl TreeBrowser {
             .map(|content| Rc::new(move |bytes: &[u8]| content.put(bytes).ok()) as Keeps);
         let mut browser = Self {
             live: cx.live().clone(),
-            tree: cx.shared_record::<fs_protocol::tree::FilesTree>(
-                FILES_APP,
-                &collab_types::person_record_id(TREE_KIND),
-            ),
+            tree: cx.shared_person::<fs_protocol::tree::FilesTree>(),
             people: cx.people(),
             dispatch: cx.dispatcher(),
             read,
@@ -185,7 +184,7 @@ impl TreeBrowser {
     /// names moved; open what the person asked for once its bytes are here.
     fn refresh(&mut self) -> bool {
         self.open_what_arrived();
-        let tree = self.tree.as_ref().map(WorkspaceRecord::get);
+        let tree = self.tree.as_ref().map(PersonRecord::get);
         let folder = self.folder(tree.as_deref());
         let names = self.people.revision().get();
         let moved = self.shown.as_ref().is_none_or(|shown| {
@@ -337,7 +336,7 @@ impl TreeBrowser {
         let id = id.to_owned();
         row.on_view(move || {
             let file = tree
-                .read(|doc| fs_protocol::tree::document_file(doc, &id, &tilo_content::NoContent))
+                .read(|doc| fs_protocol::tree::document_file(doc, &id, &ui::content::NoContent))
                 .flatten();
             if let Some(hash) = file.as_deref().and_then(|file| keep(file)) {
                 asked.borrow_mut().push(Asked {
@@ -449,7 +448,7 @@ impl TreeBrowser {
     /// Hand the file `ask` names to the app that opens what its bytes are.
     fn hand_off(&self, ask: &Asked, bytes: &[u8]) {
         let head = bytes
-            .get(..bytes.len().min(tilo_content_types::HEAD_BYTES))
+            .get(..bytes.len().min(ui::content::HEAD_BYTES))
             .unwrap_or(bytes);
         let Some(app) = opening_app(head, &ask.name) else {
             tracing::info!("no app in this page opens {}", ask.name);

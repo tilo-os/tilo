@@ -2,21 +2,18 @@
 
 // A page links the app's library and mounts it in the desk; the file manager
 // is the program a computer runs.
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "thin")]
+#[cfg(all(feature = "desktop", feature = "thin"))]
 extern crate runtime_dylib;
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "runtime-engine")]
+#[cfg(all(feature = "desktop", feature = "runtime-engine"))]
 extern crate tilo_archive_engine;
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "runtime-engine")]
+#[cfg(all(feature = "desktop", feature = "runtime-engine"))]
 extern crate tilo_pdf_engine;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "desktop")]
 fn main() {
     tracing_subscriber::fmt::init();
     ui::framework::run::<file_explorer::FileExplorerShell>();
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "desktop"))]
 fn main() {}

@@ -13,7 +13,9 @@
 //! `tilo-app.toml`, with a `platform-reason`, instead of excusing individual
 //! lines. Rules that cannot matter for its targets are skipped: the web
 //! run-time traps when web is not a target, platform paths and OS tools for
-//! `tilo-os` apps.
+//! `tilo-os` apps. An app with two surfaces selects them with a feature: a
+//! web build compiles only the features its `web-features` names, so the
+//! code its desktop defaults gate is never the page's.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
@@ -502,10 +504,15 @@ fn package_findings(
         );
     }
     // A web-only rule counts only the code a web build compiles: code under a
-    // feature named after another platform (`#[cfg(feature = "tilo-os")]`) is
-    // that platform's alone.
+    // feature that build leaves off (`#[cfg(feature = "desktop")]`) is that
+    // build's alone.
+    let absent: Vec<&str> = NOT_WEB_FEATURES
+        .iter()
+        .copied()
+        .chain(cargo.web_absent.iter().map(String::as_str))
+        .collect();
     let mut on_web = BTreeSet::new();
-    for (file, tokens) in modules_without(&cargo.roots(dir), NOT_WEB_FEATURES)? {
+    for (file, tokens) in modules_without(&cargo.roots(dir), &absent)? {
         let relative = file.strip_prefix(dir).unwrap_or(&file).to_path_buf();
         let mut hits = Vec::new();
         scanner.scan(tokens, &mut hits);
@@ -1055,6 +1062,8 @@ struct CargoFacts {
     native_idents: BTreeSet<String>,
     lib_path: Option<PathBuf>,
     bin_paths: Vec<PathBuf>,
+    /// The app's features its web build leaves off.
+    web_absent: Vec<String>,
 }
 
 impl CargoFacts {
@@ -1076,6 +1085,7 @@ impl CargoFacts {
                 .flatten()
                 .filter_map(|bin| table_path(Some(bin)))
                 .collect(),
+            web_absent: web_absent(&manifest),
         };
         facts.target_sections(&manifest, &text, table);
         let sdk_aliases = facts.dependencies(app_dir, &manifest, &text, table, model_packages);
@@ -1447,6 +1457,50 @@ pub(crate) fn manifest_key_line(text: &str, table: &str, key: &str) -> usize {
 /// Features that name a platform other than the web: the code they gate is
 /// compiled for that platform alone, never for the web.
 const NOT_WEB_FEATURES: &[&str] = &["tilo-os", "linux", "macos"];
+
+/// The app's features its web build leaves off: its
+/// `[package.metadata.tilo] web-features` lists the features the page build
+/// selects, on top of no defaults (`tools/web/generate_web_desktop.py`), so
+/// every other feature of the package is that build's absence. An app that
+/// declares none builds its page from the defaults it always uses.
+fn web_absent(manifest: &toml::Table) -> Vec<String> {
+    let Some(web_features) = manifest
+        .get("package")
+        .and_then(|package| package.get("metadata"))
+        .and_then(|metadata| metadata.get("tilo"))
+        .and_then(|tilo| tilo.get("web-features"))
+        .and_then(toml::Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let Some(features) = manifest.get("features").and_then(toml::Value::as_table) else {
+        return Vec::new();
+    };
+    // What the page selects, and what those selections turn on.
+    let mut on: BTreeSet<&str> = web_features
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .collect();
+    let mut queue: Vec<&str> = on.iter().copied().collect();
+    while let Some(name) = queue.pop() {
+        let entries = features
+            .get(name)
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(toml::Value::as_str);
+        for entry in entries.filter(|entry| !entry.contains(['/', ':'])) {
+            if on.insert(entry) {
+                queue.push(entry);
+            }
+        }
+    }
+    features
+        .keys()
+        .filter(|name| name.as_str() != "default" && !on.contains(name.as_str()))
+        .cloned()
+        .collect()
+}
 
 /// Every file of the module trees rooted at `roots` with its test-only items
 /// removed, skipping modules that only exist under `cfg(test)`.

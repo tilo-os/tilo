@@ -20,9 +20,42 @@ name = "file-explorer"
 path = "src/main.rs"
 
 [features]
+# The file manager on a computer: the device's mounts, archives and a window
+# toolkit. A page's Files is the workspace's tree alone (`src/tree.rs`), over
+# the session, so a web build leaves the feature off
+# (`[package.metadata.tilo] web-features`).
+default = ["desktop"]
+desktop = [
+    "dep:accounts",
+    "dep:automerge",
+    "dep:cap-fs-ext",
+    "dep:cap-std",
+    "dep:cloud-source",
+    "dep:ed25519-dalek",
+    "dep:host-fs",
+    "dep:runtime-portal",
+    "dep:sha2",
+    "dep:taffy",
+    "dep:tilo-archive",
+    "dep:tilo-automation",
+    "dep:tilo-clock",
+    "dep:tilo-cloud-files",
+    "dep:tilo-files",
+    "dep:tilo-mime",
+    "dep:tilo-paths",
+    "dep:tilo-pdf",
+    "dep:tilo-thumbnail",
+    "dep:tilo-user-identity",
+    "dep:tokio",
+    "dep:tracing-subscriber",
+    "dep:vello",
+    "dep:winit",
+    "dep:wire-frame",
+    "dep:zip",
+]
 # The folders the screenshot scenarios browse: development runs, captures and
 # tests only, never a release.
-samples = []
+samples = ["desktop"]
 thin = ["dep:runtime-dylib"]
 # Reach the PDF and archive engines through their engine libraries in the
 # runtime bundle (libtilo_pdf_engine.so, libtilo_archive_engine.so under
@@ -32,23 +65,20 @@ thin = ["dep:runtime-dylib"]
 # engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
 runtime-engine = ["thin", "tilo-pdf-engine/thin", "tilo-archive-engine/thin"]
 
+[package.metadata.tilo]
+# The page's Files is the workspace's tree, not the file manager: a web build
+# compiles no default feature.
+web-features = []
+
 # The app keeps two surfaces of the one Files app: the file manager on a
 # computer, which browses the mounts of the device, and the workspace's files
 # in a page, which are the Files record a workspace holds (`src/tree.rs`).
-# Only what both use is declared here; the manager's crates are below, under
-# the architectures it runs on.
+# Only what both use is declared here; the manager's crates are `desktop`'s.
 [dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 # File records: the tree a workspace's files are, and the kinds of node in it.
 fs-protocol = { path = "../../crates/system/fs-protocol", features = ["documents"] }
-# A file of the workspace's tree is its content manifest and the chunks it lists.
-fs-content = { path = "../../crates/system/fs-content" }
-tilo-content = { path = "../../crates/system/content" }
-# Which app opens what a file's bytes are, as the workspace's landing decides it.
-tilo-content-types = { path = "../../crates/system/content-types" }
-# The id a workspace's tree record has on every device.
-collab-types = { path = "../../crates/collab/collab-types" }
 chrono = { workspace = true, default-features = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -56,57 +86,58 @@ tracing.workspace = true
 hex.workspace = true
 uuid.workspace = true
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The workspace-hack's native feature set does not build for wasm32.
-workspace-hack = { version = "0.1" }
-tilo-clock = { path = "../../crates/platform/tilo-clock" }
+tilo-clock = { path = "../../crates/platform/tilo-clock", optional = true }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-pdf-engine = { path = "../../crates/runtime/engines/pdf", optional = true }
 tilo-archive-engine = { path = "../../crates/runtime/engines/archive", optional = true }
-tilo-automation = { path = "../../crates/collab/automation" }
-accounts = { path = "../../crates/system/accounts" }
+tilo-automation = { path = "../../crates/collab/automation", optional = true }
+accounts = { path = "../../crates/system/accounts", optional = true }
 # Remote account folders are named exactly as the storage daemon's cloud
 # service names its mounts (`cloud_source::tree::mount_names`).
-cloud-source = { path = "../../crates/system/cloud-source" }
-tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
-ed25519-dalek.workspace = true
-runtime-portal = { path = "../../crates/runtime/runtime-portal" }
+cloud-source = { path = "../../crates/system/cloud-source", optional = true }
+tilo-user-identity = { path = "../../crates/collab/tilo-user-identity", optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+runtime-portal = { path = "../../crates/runtime/runtime-portal", optional = true }
 # Credential-free cloud browsing and independent streamed imports.
-tilo-cloud-files = { path = "../../crates/platform/tilo-cloud-files" }
-tokio = { workspace = true, features = ["rt", "net", "io-util"] }
+tilo-cloud-files = { path = "../../crates/platform/tilo-cloud-files", optional = true }
+tokio = { workspace = true, features = ["rt", "net", "io-util"], optional = true }
 # Share- and recipient-control frames.
-wire-frame = { path = "../../crates/system/wire-frame", features = ["tokio"] }
-sha2.workspace = true
+wire-frame = { path = "../../crates/system/wire-frame", features = ["tokio"], optional = true }
+sha2 = { workspace = true, optional = true }
 # Shared thumbnail generator and cache. PDF previews come from the PDF engine
 # (tilo-pdf), which Files hands to it; video remains a badge in this crate.
-tilo-thumbnail = { path = "../../crates/media/thumbnail" }
-tilo-mime = { path = "../../crates/platform/tilo-mime" }
+tilo-thumbnail = { path = "../../crates/media/thumbnail", optional = true }
+tilo-mime = { path = "../../crates/platform/tilo-mime", optional = true }
 # Reads the Tilo FUSE driver's `user.tilo.sync` extended attribute so the file
 # manager can show each workspace file's sync/hydration state, and performs
 # no-replace renames, private staging and trash management.
-host-fs = { path = "../../crates/system/host-fs" }
+host-fs = { path = "../../crates/system/host-fs", optional = true }
 # Reading a PDF's text, through the portable engine. Document formats are
 # Writer's: it links the codecs and converts files.
-tilo-pdf = { path = "../../crates/platform/tilo-pdf" }
+tilo-pdf = { path = "../../crates/platform/tilo-pdf", optional = true }
 # Archives: browsing into, extracting and packing them. A thin release build
 # loads it from libtilo_archive_engine.so (`runtime-engine`).
-tilo-archive = { path = "../../crates/platform/tilo-archive" }
+tilo-archive = { path = "../../crates/platform/tilo-archive", optional = true }
 # The `--shots` demo seeds write a zip.
-zip.workspace = true
+zip = { workspace = true, optional = true }
 # Home, config, cache and the localized user folders.
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
+tilo-paths = { path = "../../crates/platform/tilo-paths", optional = true }
 # Change notification for the open directory (inotify, FSEvents), so an idle
 # window re-reads nothing on a timer.
-tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
-tracing-subscriber.workspace = true
+tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"], optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 # Needed by `FileExplorerWidget`'s `Widget` impl — matches the crate set
 # terminal pulls in for the same reason.
-automerge.workspace = true
-cap-std = "3.4.6"
-cap-fs-ext = "3.4.6"
-vello.workspace = true
-winit.workspace = true
-taffy.workspace = true
+automerge = { workspace = true, optional = true }
+cap-std = { version = "3.4.6", optional = true }
+cap-fs-ext = { version = "3.4.6", optional = true }
+vello = { workspace = true, optional = true }
+winit = { workspace = true, optional = true }
+taffy = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Tests build their image fixtures.

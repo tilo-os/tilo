@@ -126,7 +126,7 @@ struct HeldSend {
 enum AccountsPersist {
     /// A page keeps no account store of its own: the person's accounts
     /// record is all it reads.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "live")]
     Profile(std::path::PathBuf),
     #[cfg(test)]
     Sandbox(Arc<tempfile::TempDir>),
@@ -147,7 +147,7 @@ impl AccountsPersist {
 
     fn root(&self) -> Option<std::path::PathBuf> {
         match self {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "live")]
             AccountsPersist::Profile(root) => Some(root.clone()),
             #[cfg(test)]
             AccountsPersist::Sandbox(dir) => Some(dir.path().to_path_buf()),
@@ -163,7 +163,7 @@ impl AccountsPersist {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "live")]
 fn wake_through(slot: &Arc<std::sync::Mutex<Option<ui::WakeHandle>>>) -> crate::engine::Wake {
     let slot = Arc::clone(slot);
     Arc::new(move || {
@@ -426,7 +426,7 @@ impl MailApp {
     /// A window someone uses on a device that reaches mail servers: the
     /// accounts of the host's profile, and the engine worker that keeps them
     /// current. No fabricated messages.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "live")]
     pub(crate) fn for_window(
         storage: &ui::storage::AppStorage,
         content: Option<ContentStore>,
@@ -468,7 +468,7 @@ impl MailApp {
     /// record) and queues what needs a server in the mailbox's outboxes,
     /// which a device holding the account carries out. A page opens no
     /// sockets and no account vault, so it starts no engine.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(feature = "live"))]
     pub(crate) fn for_window(
         _storage: &ui::storage::AppStorage,
         content: Option<ContentStore>,
@@ -1160,9 +1160,8 @@ impl MailApp {
                     return;
                 }
                 let name = source.display_name().to_string();
-                let result =
-                    crate::attachment_store::stage_file(&self.content, source.into_file(), &name)
-                        .and_then(|attachment| self.compose.add_attachment(attachment));
+                let result = crate::attachment_store::stage_file(&self.content, source)
+                    .and_then(|attachment| self.compose.add_attachment(attachment));
                 Some(staged_notice(name, result))
             }
             Ok(OpenFileOutcome::Cancelled) => {

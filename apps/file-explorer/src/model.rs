@@ -15,8 +15,6 @@ use fs_protocol::{
     SYNC_XATTR, SyncState, THUMB_XATTR,
 };
 
-pub const WORKSPACE_ROOT: &str = "/var/workspace";
-
 pub fn read_sync_state(path: &Path) -> Option<SyncState> {
     match xattr::get(path, SYNC_XATTR) {
         Ok(Some(bytes)) => SyncState::from_xattr(&bytes),
@@ -694,7 +692,7 @@ pub fn workspace_roots() -> Vec<PathBuf> {
     if let Some(v) = std::env::var_os("TILO_WORKSPACE_ROOTS") {
         return parse_workspace_roots(&v);
     }
-    let p = PathBuf::from(WORKSPACE_ROOT);
+    let p = PathBuf::from(tilo_paths::WORKSPACE_MOUNT);
     let mut roots = if p.exists() { vec![p] } else { Vec::new() };
     if let Some(received) = user_home().map(|home| home.join("Shared"))
         && received.exists()
@@ -710,7 +708,7 @@ pub fn workspace_record_authority_roots() -> Vec<PathBuf> {
     if let Some(value) = std::env::var_os("TILO_WORKSPACE_ROOTS") {
         return parse_workspace_roots(&value);
     }
-    let root = PathBuf::from(WORKSPACE_ROOT);
+    let root = PathBuf::from(tilo_paths::WORKSPACE_MOUNT);
     root.exists().then_some(root).into_iter().collect()
 }
 

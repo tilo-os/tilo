@@ -63,9 +63,7 @@ pub(super) struct Services {
 impl Services {
     /// The sources of the home this window runs in, their journals kept in `store`.
     pub(super) fn new(store: Option<Arc<MigrationStore>>) -> Self {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .filter(|home| home.is_absolute());
+        let home = tilo_paths::home().filter(|home| home.is_absolute());
         Self::at(store, service_sources::config_root(), home)
     }
 

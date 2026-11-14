@@ -358,6 +358,17 @@ fn app_crate_manifest(project: &Project) -> Result<String> {
     let mut app = toml::Table::new();
     app.insert("package".into(), project.package.clone().into());
     app.insert("path".into(), project.app_dir.display().to_string().into());
+    // The page build compiles the features the app declares for it, never its
+    // desktop defaults (tools/web/generate_web_desktop.py).
+    if let Some(features) = app_manifest
+        .get("package")
+        .and_then(|package| package.get("metadata"))
+        .and_then(|metadata| metadata.get("tilo"))
+        .and_then(|tilo| tilo.get("web-features"))
+    {
+        app.insert("default-features".into(), false.into());
+        app.insert("features".into(), features.clone());
+    }
     dependencies.insert("app".into(), app.into());
 
     let mut target = toml::Table::new();

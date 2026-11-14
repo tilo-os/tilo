@@ -1,11 +1,21 @@
 //! Content by address: the store a host lends an app (`ViewCx::content`), and in a native process the
 //! device store the launcher handed it, so an app or a headless agent reaches content through the
 //! toolkit rather than through the store crates.
+//!
+//! A workspace file is the manifest of its chunks, and its first bytes name the app that opens
+//! it: both are content questions, answered here too.
 
 pub use tilo_content::{
-    ContentStore, content_address, is_sealed, opened_as, valid_hash, valid_reference,
+    ContentStore, NoContent, content_address, is_sealed, opened_as, valid_hash, valid_reference,
 };
 pub use tilo_content_device::{PublicCopy, PublicState};
+pub use tilo_content_types::{HEAD_BYTES, Landing, Takes, landing};
+
+/// A workspace file whose content is a manifest: the chunks it lists, each
+/// read by its own hash.
+pub mod manifest {
+    pub use fs_content::{is_manifest, whole};
+}
 
 /// The device's one copy of the public file `name` (a catalogue the filesystem daemon mirrors for every
 /// app and workspace), when this host keeps such copies: `None` on one that keeps none (the web).

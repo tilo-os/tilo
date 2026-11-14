@@ -12,8 +12,7 @@ use tilo_user_identity::{
 };
 
 pub const TRUSTED_IDENTITIES_ENV: &str = "TILO_TRUSTED_IDENTITIES";
-pub const DEFAULT_TRUSTED_IDENTITIES_PATH: &str =
-    "/run/tilo/identity-projection/trusted-identities.json";
+pub const DEFAULT_TRUSTED_IDENTITIES_PATH: &str = tilo_paths::TRUSTED_IDENTITIES;
 pub const MAX_TRUSTED_IDENTITIES_BYTES: u64 = MAX_TRUSTED_IDENTITY_PROJECTION_BYTES;
 pub const MAX_IDENTITY_LABEL_BYTES: usize = MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES;
 

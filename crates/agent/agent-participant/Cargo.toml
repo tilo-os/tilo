@@ -58,7 +58,7 @@ contacts = { path = "../../../apps/contacts" }
 diffmerge = { path = "../../../apps/diffmerge" }
 ebook = { path = "../../../apps/ebook" }
 feeds = { path = "../../../apps/feeds" }
-file-explorer = { path = "../../../apps/file-explorer" }
+file-explorer = { path = "../../../apps/file-explorer", default-features = false, features = [] }
 hex-editor = { path = "../../../apps/hex-editor" }
 mail = { path = "../../../apps/mail", default-features = false, features = [] }
 maps = { path = "../../../apps/maps" }

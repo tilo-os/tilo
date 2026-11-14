@@ -7,42 +7,55 @@
 //! headers, bodies, attachment names and where each message is on its
 //! server. It is a cache: losing it costs one full fetch, nothing else.
 
+#[cfg(feature = "live")]
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "live")]
 use serde::{Deserialize, Serialize};
 
 use crate::model::Message;
 
+#[cfg(feature = "live")]
 const VERSION: u32 = 1;
 
 pub(crate) const KEEP: usize = 5_000;
 
+#[cfg(feature = "live")]
 #[derive(Serialize, Deserialize)]
 struct Kept {
     version: u32,
     messages: Vec<Message>,
 }
 
+/// The mail this device has fetched, kept in its cache area. A page keeps
+/// none: the workspace's copies record holds what its person has.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Store {
+    #[cfg(feature = "live")]
     root: Option<PathBuf>,
+    #[cfg(feature = "live")]
     writer: std::sync::Arc<std::sync::OnceLock<Option<Sender<Write>>>>,
 }
 
+#[cfg(feature = "live")]
 type Write = (PathBuf, Option<Vec<Message>>, Vec<(PathBuf, Vec<u8>)>);
+#[cfg(feature = "live")]
 type Sender<T> = std::sync::mpsc::Sender<T>;
 
 impl Store {
-    #[cfg(not(target_arch = "wasm32"))]
+    /// A store that keeps nothing here, for a device with no cache area.
+    pub(crate) fn nowhere() -> Self {
+        Self::default()
+    }
+}
+
+#[cfg(feature = "live")]
+impl Store {
     pub(crate) fn at(root: PathBuf) -> Self {
         Self {
             root: Some(root),
             writer: std::sync::Arc::default(),
         }
-    }
-
-    pub(crate) fn nowhere() -> Self {
-        Self::default()
     }
 
     fn writer(&self) -> Option<&Sender<Write>> {
@@ -172,6 +185,39 @@ impl Store {
     }
 }
 
+/// A page keeps no mail on a device: what its person has is the workspace's
+/// copies record, read over the session.
+#[cfg(not(feature = "live"))]
+#[allow(
+    clippy::unused_self,
+    reason = "a page's store keeps nothing, so no method reads it"
+)]
+impl Store {
+    pub(crate) fn load(&self, _account: &str) -> Vec<Message> {
+        Vec::new()
+    }
+
+    pub(crate) fn save(
+        &self,
+        _account: &str,
+        _messages: Vec<Message>,
+    ) -> Vec<(crate::model::MessageId, usize)> {
+        Vec::new()
+    }
+
+    pub(crate) fn attachment(
+        &self,
+        _account: &str,
+        _message: crate::model::MessageId,
+        _index: usize,
+    ) -> Option<Vec<u8>> {
+        None
+    }
+
+    pub(crate) fn forget(&self, _account: &str) {}
+}
+
+#[cfg(feature = "live")]
 fn attachment_names(messages: &[Message]) -> std::collections::HashSet<String> {
     messages
         .iter()
@@ -186,6 +232,7 @@ fn attachment_names(messages: &[Message]) -> std::collections::HashSet<String> {
         .collect()
 }
 
+#[cfg(feature = "live")]
 fn prune(folder: &Path, kept: &std::collections::HashSet<String>) -> std::io::Result<()> {
     let entries = match std::fs::read_dir(folder) {
         Ok(entries) => entries,
@@ -202,6 +249,7 @@ fn prune(folder: &Path, kept: &std::collections::HashSet<String>) -> std::io::Re
     Ok(())
 }
 
+#[cfg(feature = "live")]
 fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if path.exists() {
         return Ok(());
@@ -214,6 +262,7 @@ fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&partial, path)
 }
 
+#[cfg(feature = "live")]
 fn remove_dir(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_dir_all(path) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
@@ -221,6 +270,7 @@ fn remove_dir(path: &Path) -> std::io::Result<()> {
     }
 }
 
+#[cfg(feature = "live")]
 fn remove(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
@@ -228,6 +278,7 @@ fn remove(path: &Path) -> std::io::Result<()> {
     }
 }
 
+#[cfg(feature = "live")]
 fn write(path: &Path, messages: Vec<Message>) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(&Kept {
         version: VERSION,
@@ -242,6 +293,7 @@ fn write(path: &Path, messages: Vec<Message>) -> std::io::Result<()> {
     std::fs::rename(&partial, path)
 }
 
+#[cfg(feature = "live")]
 fn file_stem(account: &str) -> String {
     account
         .chars()

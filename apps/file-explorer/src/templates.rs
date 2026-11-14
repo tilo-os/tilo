@@ -9,13 +9,10 @@ use std::thread::Thread;
 use ui::lock::MutexRecover as _;
 
 pub fn templates_dir() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("XDG_TEMPLATES_DIR") {
-        let p = p.trim();
-        if !p.is_empty() {
-            return Some(PathBuf::from(p));
-        }
-    }
-    tilo_paths::home().map(|h| h.join("Templates"))
+    let templates = tilo_paths::UserDir::Templates;
+    templates
+        .from_environment()
+        .or_else(|| tilo_paths::home().map(|home| home.join(templates.conventional_name())))
 }
 
 pub fn list_templates(dir: &Path) -> Vec<PathBuf> {

@@ -443,21 +443,19 @@ pub fn spawn_waking(
 ) -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
     let (req_tx, req_rx) = std::sync::mpsc::channel::<EngineRequest>();
     let (evt_tx, evt_rx) = std::sync::mpsc::channel::<EngineEvent>();
-    std::thread::Builder::new()
-        .name("mail-engine".into())
-        .spawn(move || {
-            while let Ok(req) = req_rx.recv() {
-                let kind = req.kind();
-                let request_id = req.request_id();
-                backend.handle(req, &evt_tx);
-                // `MailEngine::handle` is synchronous from the worker's point
-                // of view (the live backend blocks on each request), so
-                // this terminal acknowledgement cannot overtake its result.
-                let _ = evt_tx.send(EngineEvent::Completed { request_id, kind });
-                wake();
-            }
-        })
-        .expect("spawn mail engine worker");
+    ui::rt::spawn_thread("mail-engine", move || {
+        while let Ok(req) = req_rx.recv() {
+            let kind = req.kind();
+            let request_id = req.request_id();
+            backend.handle(req, &evt_tx);
+            // `MailEngine::handle` is synchronous from the worker's point
+            // of view (the live backend blocks on each request), so
+            // this terminal acknowledgement cannot overtake its result.
+            let _ = evt_tx.send(EngineEvent::Completed { request_id, kind });
+            wake();
+        }
+    })
+    .expect("spawn mail engine worker");
     (req_tx, evt_rx)
 }
 

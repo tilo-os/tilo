@@ -109,6 +109,11 @@ impl<P: Resource> PersonRecord<P> {
         read(&self.get())
     }
 
+    /// Read the record's document; `None` while its owner is busy.
+    pub fn read<T>(&self, read: impl FnOnce(&ui_core::automerge::AutoCommit) -> T) -> Option<T> {
+        self.record().read(read)
+    }
+
     /// Why the record stopped reading as `P`, if it did: the state is then
     /// the last one that read, and a view shows this instead of it. Its
     /// published actions say the same.

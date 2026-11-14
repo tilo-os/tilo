@@ -32,6 +32,10 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
+# A page builds MIME too (drafts, and the sends a capable device delivers),
+# but has no hostname to read: the `live` build names Message-IDs from it, and
+# Mail names every Message-ID itself.
+mail-builder = { version = "0.4.4", default-features = false }
 tilo-mime = { path = "../../crates/platform/tilo-mime" }
 fnv.workspace = true
 hex.workspace = true
@@ -109,14 +113,6 @@ rcgen = { workspace = true, optional = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-mail-builder = "0.4.4"
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-# A page builds MIME too (drafts, and the sends a capable device delivers),
-# but has no hostname to read: without its default `gethostname` feature
-# mail-builder pulls no native socket stack, and Mail names every
-# Message-ID itself.
-mail-builder = { version = "0.4.4", default-features = false }
 
 [features]
 # The sample mailboxes the screenshot scenarios and tests show: development
@@ -137,7 +133,7 @@ runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-contact-directory-e
 default = ["live"]
 # Compile the IMAP/SMTP backend and remote avatar fetch; requires a TLS/async
 # stack and a configured account at runtime.
-live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util"]
+live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util", "mail-builder/gethostname"]
 
 # The test IMAP and SMTP servers (`fake_servers`), for other crates' tests of
 # what talks to mail servers through this engine. Never in a release.

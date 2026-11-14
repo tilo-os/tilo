@@ -211,10 +211,12 @@ severity = "warn"
 # `wire-frame` is the tree's one socket framer, std-only and portable: an app
 # that speaks a protocol over a stream a platform crate opened frames it with
 # these bytes rather than carrying a framer of its own.
+# `tilo-dav` is the WebDAV client of Tilo's apps: Account probes and Calendar
+# sync speak it on every target, and its bounded parsing is not an internal.
 # `tilo-view-macros` is the SDK's `#[view]` attribute: an app declares a view as
 # a Rust function of its resource with it, which is how a view is written and
 # registered on every target.
-allowed-packages = ["tilo-app", "runtime-dylib", "provider-settings-ui", "tilo-rich-text", "tilo-page-raster", "tilo-recurrence", "wire-frame", "tilo-view-macros"]
+allowed-packages = ["tilo-app", "runtime-dylib", "provider-settings-ui", "tilo-rich-text", "tilo-page-raster", "tilo-recurrence", "wire-frame", "tilo-dav", "tilo-view-macros"]
 # `vendor/*` holds forks of third-party crates (winit, vello, …), which stand
 # in for the upstream crate an app would otherwise depend on.
 # `crates/runtime/engines/*` are engine libraries beside the runtime,

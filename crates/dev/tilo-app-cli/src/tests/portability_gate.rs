@@ -40,6 +40,65 @@ fn write_baseline(root: &Path, table: &str) {
     std::fs::write(path.join("app_portability_baseline.toml"), table).unwrap();
 }
 
+/// A workspace with one app that runs everywhere and keeps its device code
+/// behind a feature its page build leaves off.
+fn web_featured_workspace(root: &Path, declared: bool) {
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"apps/*\"]\n",
+    )
+    .unwrap();
+    let app = root.join("apps/tree");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::write(
+        app.join("Cargo.toml"),
+        "[package]\nname = \"tree\"\nversion = \"0.1.0\"\n\n\
+         [features]\ndefault = [\"desktop\"]\ndesktop = []\n"
+            .to_owned()
+            + if declared {
+                "\n[package.metadata.tilo]\nweb-features = []\n"
+            } else {
+                ""
+            },
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("tilo-app.toml"),
+        "[package]\nid = \"so.tilo.tree\"\nversion = \"0.1.0\"\nkind = \"app\"\n\
+         platforms = [\"linux\", \"macos\", \"web\"]\n\n\
+         [publisher]\n\
+         identity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\n\
+         signature = \"\"\n\n\
+         [sandbox]\nnamespaces = [\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]\n\
+         seccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n\
+         [sandbox.net]\nmode = \"off\"\n\n\
+         [entrypoint]\nbin = \"bin/tree\"\ntype = \"gui\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("src/lib.rs"),
+        "#[cfg(feature = \"desktop\")]\npub fn cache() -> std::fs::File { todo!() }\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn the_gate_counts_only_the_code_an_apps_web_build_compiles() {
+    let root = tempfile::tempdir().unwrap();
+    web_featured_workspace(root.path(), true);
+    let gate = portability::gate(root.path()).unwrap();
+    assert!(gate.passed(), "{}", gate.render());
+
+    web_featured_workspace(root.path(), false);
+    let gate = portability::gate(root.path()).unwrap();
+    let grown = gate.render();
+    assert!(!gate.passed(), "{grown}");
+    assert!(
+        grown.contains("app portability FAILED: platform code in an app that runs everywhere"),
+        "{grown}"
+    );
+}
+
 #[test]
 fn the_portability_gate_counts_every_app_against_its_shrink_only_baseline() {
     let root = tempfile::tempdir().unwrap();
