@@ -22,13 +22,6 @@ fn staged() -> TestApp<TlApp> {
     TestApp::<TlApp>::capture_at(Some("a week of notes"), NARROW).expect("the scenario stages")
 }
 
-/// The same scene in a window a person drives: the same fixtures and the same note open, with the
-/// theme's motion playing as it plays live.
-fn driven() -> TestApp<TlApp> {
-    crate::support::installed("notes");
-    TestApp::<TlApp>::drive_at("a week of notes", NARROW).expect("the scenario stages")
-}
-
 /// Mail at a phone's width with its inbox staged, in a window a person drives: the scenario's
 /// conversation opens beside the list, which at this width stands in front of it.
 fn mail_driven() -> TestApp<TlApp> {
@@ -241,20 +234,6 @@ fn a_push_in_a_narrow_window_settles_within_its_motion_and_then_asks_for_no_fram
     );
 }
 
-/// Notes back at its list, settled, with the scenario's note open behind it.
-fn at_the_list() -> TestApp<TlApp> {
-    let mut app = driven();
-    let motion = push_motion(app.harness());
-    assert_settles(&mut app, motion, "the staged note");
-    app.harness().key("Escape");
-    assert_settles(&mut app, motion, "back at the list");
-    assert!(
-        !app.harness().targets().contains_key("nav-shell-back"),
-        "the list is in front"
-    );
-    app
-}
-
 /// The accessibility node of the list row whose name contains `name`.
 fn row_node(harness: &FrameHarness, name: &str) -> ui::accesskit::NodeId {
     harness
@@ -385,28 +364,6 @@ fn moving_through_the_list_with_the_keyboard_selects_and_enter_opens_at_once() {
     assert!(
         !app.harness().frame_schedule().needs_animation_frame,
         "a key lands the push at once: {}",
-        asking(app.harness())
-    );
-}
-
-#[test]
-fn an_open_from_search_or_an_agent_lands_in_front_at_once() {
-    let mut app = at_the_list();
-    let anchor = tilolang_app::resource::search_entries()
-        .into_iter()
-        .find(|entry| entry.title.contains("Groceries"))
-        .and_then(|entry| entry.anchor)
-        .expect("search finds the note");
-    app.call("open", serde_json::json!({ "anchor": anchor }))
-        .expect("the window opens the hit");
-    app.frame();
-    assert!(
-        app.harness().targets().contains_key("nav-shell-back"),
-        "the hit's note is in front"
-    );
-    assert!(
-        !app.harness().frame_schedule().needs_animation_frame,
-        "nobody's hand moved it, so it lands at once: {}",
         asking(app.harness())
     );
 }

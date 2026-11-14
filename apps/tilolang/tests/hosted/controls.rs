@@ -588,3 +588,76 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
         "the press marked the task's field"
     );
 }
+
+impl crate::change_marks::Driven for super::Session {
+    fn harness(&mut self) -> &mut ui::headless::FrameHarness {
+        self.window.harness()
+    }
+
+    fn settle(&mut self) {
+        super::Session::settle(self);
+    }
+}
+
+impl super::Session {
+    /// The harness window.
+    pub(crate) fn harness(&mut self) -> &mut ui::headless::FrameHarness {
+        self.window.harness()
+    }
+
+    /// Read the instance's record as it is now, after everything the window did was taken in.
+    pub(crate) fn read<R>(&mut self, read: impl FnOnce(&mut ui::tilo_resource::Doc) -> R) -> R {
+        self.settle();
+        read(&mut self.instance().record().doc())
+    }
+
+    /// Invoke `action` of the published `resource` at the door the broker delivers to, as
+    /// `invoker` (the person at the window when `None`), within `ambient`: the task the invoker
+    /// carries out, recorded with every change it makes. Answers what the operation answered.
+    pub(crate) fn invoke(
+        &mut self,
+        invoker: Option<ui::tilo_actions::ActionInvoker>,
+        ambient: Option<&ui::tilo_actions::ActionContext>,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ui::tilo_actions::ActionOutput, String> {
+        let actor = invoker.map_or_else(|| self.person.clone(), |invoker| invoker.actor);
+        let id = self.invoked;
+        self.invoked += 1;
+        self.inbox()
+            .borrow_mut()
+            .push_back(CollabEvent::Invocation {
+                id,
+                invocation: ui::tilo_actions::InvocationId::new(),
+                resource: resource.to_owned(),
+                action: action.to_owned(),
+                argument: Some(format!(
+                    "{}{}",
+                    ui::tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::Value::Object(arguments.clone())
+                )),
+                actor,
+                context: ambient.cloned().map(Box::new),
+            });
+        self.settle();
+        let answered = self
+            .sent
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|request| match request {
+                CollabRequest::UpdateInvocation {
+                    id: answered,
+                    update,
+                } if *answered == id && update.is_terminal() => Some(update.clone()),
+                _ => None,
+            });
+        match answered {
+            Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+            Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) => Err(error.message),
+            Some(other) => Err(format!("{other:?}")),
+            None => Err(format!("the door answered nothing of `{action}`")),
+        }
+    }
+}

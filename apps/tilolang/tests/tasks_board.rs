@@ -800,7 +800,7 @@ fn shots() {
 /// What an agent's action looks like to a person watching the window, as the broker shows an
 /// agent at work: `action` of the published `resource`, applying, by the run's agent.
 fn agent_acting(
-    app: &mut ui::framework::testing::HostedApp,
+    app: &mut impl crate::change_marks::Driven,
     resource: &str,
     action: &str,
 ) -> ui::tilo_actions::SemanticInteraction {
@@ -841,7 +841,7 @@ fn agent_acting(
 
 /// Shows `event` in the window and lets the agent's mark come to rest, as a frame does.
 fn show_acting(
-    app: &mut ui::framework::testing::HostedApp,
+    app: &mut impl crate::change_marks::Driven,
     event: ui::tilo_actions::SemanticInteraction,
 ) {
     let (agent, _) = crate::change_marks::run();
@@ -880,11 +880,20 @@ fn title_field() -> String {
         .to_owned()
 }
 
+/// Where a window keys the title of `task`: the task, by the id the app publishes it under, and
+/// the field it is bound to.
+fn title_key(task: &str) -> ui::presence::PresenceKey {
+    ui::presence::PresenceKey::Widget {
+        path: ["tilolang", task, title_field().as_str()]
+            .map(|segment| ui::presence::PathSegment::Field(segment.to_owned()))
+            .to_vec(),
+    }
+}
+
 /// The window's tasks, opened: Ada's own task in her inbox, and the published tasks list.
-fn a_task_of_adas(title: &str) -> (ui::framework::testing::HostedApp, String) {
+fn a_task_of_adas(title: &str) -> (crate::hosted::Session, String) {
     use crate::change_marks::{action_id, settle};
-    let mut app =
-        ui::framework::testing::HostedApp::open(crate::support::installed("tasks"), "ada").unwrap();
+    let mut app = crate::hosted::Session::new("so.tilo.lang.tasks", "ada", |_| {});
     settle(&mut app);
     crate::change_marks::choose(&mut app, "Inbox");
     let root = app
@@ -894,7 +903,7 @@ fn a_task_of_adas(title: &str) -> (ui::framework::testing::HostedApp, String) {
     let add = action_id(&mut app, &tasks, "New task");
     let mut args = serde_json::Map::new();
     args.insert("title".to_owned(), title.into());
-    app.invoke(None, None, &tasks, &add, &args, false).unwrap();
+    app.invoke(None, None, &tasks, &add, &args).unwrap();
     settle(&mut app);
     let task = crate::change_marks::published_with(&mut app, &tasks, "Complete");
     (app, task)
@@ -977,15 +986,8 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
     args.insert("field".to_owned(), "title".into());
     args.insert("value".to_owned(), "Buy oat milk and bread".into());
     let event = agent_acting(&mut app, &task, &edit);
-    app.invoke(
-        Some(agent.clone()),
-        Some(&ambient),
-        &task,
-        &edit,
-        &args,
-        false,
-    )
-    .unwrap();
+    app.invoke(Some(agent.clone()), Some(&ambient), &task, &edit, &args)
+        .unwrap();
     settle(&mut app);
     show_acting(&mut app, event);
     if let Some(dir) = crate::change_marks::shots_dir() {
@@ -1010,11 +1012,8 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
     );
     let [cx, cy, _, ch] = caret.rect;
     assert!(
-        cx > field[0] + field[2] / 3.0
-            && cx < field[0] + field[2]
-            && cy >= field[1] - 1.0
-            && cy + ch <= field[1] + field[3] + 1.0,
-        "the caret ends what the agent wrote, inside the title: {:?} in {field:?}",
+        cy >= field[1] - 1.0 && cy + ch <= field[1] + field[3] + 1.0,
+        "the agent's caret stands in the title: {:?} in {field:?}",
         caret.rect
     );
     // What it wrote stands in its colour beside the words that were there before.
@@ -1025,6 +1024,30 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
     assert!(
         written > kept.saturating_add(8),
         "the words the agent wrote stand in its colour: {written} vs {kept}"
+    );
+    // The caret ends what it wrote: where a caret after the title's last letter stands, as Bo's
+    // window places his there.
+    let words = "Buy oat milk and bread";
+    let key = title_key(&task);
+    app.harness().update_presence(|presence| {
+        let bo = ui::permissions::UserId("bo".into());
+        presence.names.insert(bo.clone(), "Bo".into());
+        presence.set_caret(&key, bo, words.len());
+        true
+    });
+    settle(&mut app);
+    let snapshot = app.harness().inspection();
+    let end = snapshot
+        .root
+        .nodes()
+        .into_iter()
+        .find(|node| node.path == "presence-mark-bo")
+        .map(|node| node.rect)
+        .unwrap_or_else(|| panic!("Bo's caret is drawn in the title"));
+    assert!(
+        (cx - end[0]).abs() <= 1.0,
+        "the caret ends what the agent wrote: {:?}, where the words end: {end:?}",
+        caret.rect
     );
 }
 
@@ -1041,13 +1064,7 @@ fn a_person_writing_in_a_title_is_seen_there() {
     app.harness()
         .click_at(row[0] + row[2] / 2.0, row[1] + row[3] / 2.0);
     settle(&mut app);
-    // Where Bo's window keys the title: the task, by the id the app publishes it under, and the
-    // field it is bound to.
-    let key = ui::presence::PresenceKey::Widget {
-        path: ["tilolang", task.as_str(), title_field().as_str()]
-            .map(|segment| ui::presence::PathSegment::Field(segment.to_owned()))
-            .to_vec(),
-    };
+    let key = title_key(&task);
     app.harness().update_presence(|presence| {
         let bo = ui::permissions::UserId("bo".into());
         presence.names.insert(bo.clone(), "Bo".into());

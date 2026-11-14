@@ -20,18 +20,36 @@ pub(crate) fn run() -> (ActionInvoker, ActionContext) {
     )
 }
 
-pub(crate) fn settle(app: &mut HostedApp) {
-    for _ in 0..12 {
-        app.harness()
-            .settle_for_capture(ui::time::Duration::from_millis(300));
-        app.harness().relayout();
+/// A window a test drives: the in-process framework's, or a session's hosted one.
+pub(crate) trait Driven {
+    /// The frame harness the window is drawn in.
+    fn harness(&mut self) -> &mut ui::headless::FrameHarness;
+    /// Its frames until it is at rest.
+    fn settle(&mut self);
+}
+
+impl Driven for HostedApp {
+    fn harness(&mut self) -> &mut ui::headless::FrameHarness {
+        HostedApp::harness(self)
     }
+
+    fn settle(&mut self) {
+        for _ in 0..12 {
+            self.harness()
+                .settle_for_capture(ui::time::Duration::from_millis(300));
+            self.harness().relayout();
+        }
+    }
+}
+
+pub(crate) fn settle(app: &mut impl Driven) {
+    app.settle();
 }
 
 /// The window's change marks: the control in its header naming who changed what it shows ("Helper
 /// (agent) changed 2 notes"), with the rect it takes. A window's mark is a button led by the
 /// faces of everyone who changed what it shows, its label saying what they changed and how many.
-pub(crate) fn marks(app: &mut HostedApp) -> Vec<(String, [f64; 4])> {
+pub(crate) fn marks(app: &mut impl Driven) -> Vec<(String, [f64; 4])> {
     let snapshot = app.harness().inspection();
     let all = snapshot.root.nodes();
     all.into_iter()
@@ -48,7 +66,7 @@ pub(crate) fn marks(app: &mut HostedApp) -> Vec<(String, [f64; 4])> {
 
 /// The list's rows: each one's title, rect and whether it carries a change mark (what it says
 /// to assistive technology names who changed it).
-pub(crate) fn rows(app: &mut HostedApp) -> Vec<(String, [f64; 4], bool)> {
+pub(crate) fn rows(app: &mut impl Driven) -> Vec<(String, [f64; 4], bool)> {
     let snapshot = app.harness().inspection();
     let all = snapshot.root.nodes();
     all.into_iter()
@@ -68,7 +86,7 @@ pub(crate) fn rows(app: &mut HostedApp) -> Vec<(String, [f64; 4], bool)> {
 
 /// Chooses the sidebar's place `label`, as a person does: a row a change takes out of the
 /// place it stood in is read where it went.
-pub(crate) fn choose(app: &mut HostedApp, label: &str) {
+pub(crate) fn choose(app: &mut impl Driven, label: &str) {
     fn place<'a>(node: &'a ui::a11y::AccessNode, label: &str) -> Option<&'a ui::a11y::AccessNode> {
         if node.role == ui::a11y::Role::TreeItem
             && node
@@ -97,7 +115,7 @@ pub(crate) fn choose(app: &mut HostedApp, label: &str) {
 
 /// A reference to the published resource of `app` labelled `label`, as an action's argument
 /// names one.
-pub(crate) fn reference(app_id: &str, app: &mut HostedApp, label: &str) -> serde_json::Value {
+pub(crate) fn reference(app_id: &str, app: &mut impl Driven, label: &str) -> serde_json::Value {
     fn flattened(
         resources: &[ui::tilo_actions::ResourceSpec],
     ) -> Vec<&ui::tilo_actions::ResourceSpec> {
@@ -121,7 +139,7 @@ pub(crate) fn reference(app_id: &str, app: &mut HostedApp, label: &str) -> serde
 }
 
 /// The rows standing in for removed items: their titles.
-pub(crate) fn removed_rows(app: &mut HostedApp) -> Vec<String> {
+pub(crate) fn removed_rows(app: &mut impl Driven) -> Vec<String> {
     let snapshot = app.harness().inspection();
     let all = snapshot.root.nodes();
     all.into_iter()
@@ -138,7 +156,7 @@ pub(crate) fn removed_rows(app: &mut HostedApp) -> Vec<String> {
 }
 
 /// The id of the action labelled `label` the published resource `resource` offers.
-pub(crate) fn action_id(app: &mut HostedApp, resource: &str, label: &str) -> String {
+pub(crate) fn action_id(app: &mut impl Driven, resource: &str, label: &str) -> String {
     fn flattened(
         resources: &[ui::tilo_actions::ResourceSpec],
     ) -> Vec<&ui::tilo_actions::ResourceSpec> {
@@ -160,7 +178,7 @@ pub(crate) fn action_id(app: &mut HostedApp, resource: &str, label: &str) -> Str
 
 /// How far the pixels of `rect` stray from grey at most: a mark in someone's colour does,
 /// the neutral window around it does not.
-pub(crate) fn chroma_in(app: &mut HostedApp, rect: [f64; 4]) -> u8 {
+pub(crate) fn chroma_in(app: &mut impl Driven, rect: [f64; 4]) -> u8 {
     let pixels = app.harness().render_rgba();
     let snapshot = app.harness().inspection();
     let [width, _] = snapshot.viewport;
@@ -207,7 +225,7 @@ pub(crate) fn shots_dir() -> Option<std::path::PathBuf> {
 }
 
 /// The first resource under `under` that offers the action labelled `label`: an item.
-pub(crate) fn published_with(app: &mut HostedApp, under: &str, label: &str) -> String {
+pub(crate) fn published_with(app: &mut impl Driven, under: &str, label: &str) -> String {
     fn flattened(
         resources: &[ui::tilo_actions::ResourceSpec],
     ) -> Vec<&ui::tilo_actions::ResourceSpec> {
@@ -234,7 +252,7 @@ pub(crate) fn published_with(app: &mut HostedApp, under: &str, label: &str) -> S
 }
 
 /// The rect of the `widget` whose name begins with `name`.
-pub(crate) fn named(app: &mut HostedApp, widget: &str, name: &str) -> [f64; 4] {
+pub(crate) fn named(app: &mut impl Driven, widget: &str, name: &str) -> [f64; 4] {
     let snapshot = app.harness().inspection();
     let all = snapshot.root.nodes();
     let names: Vec<String> = all
@@ -260,7 +278,7 @@ pub(crate) fn named(app: &mut HostedApp, widget: &str, name: &str) -> [f64; 4] {
 }
 
 /// The rect of the text field holding `text`.
-pub(crate) fn text_field(app: &mut HostedApp, text: &str) -> [f64; 4] {
+pub(crate) fn text_field(app: &mut impl Driven, text: &str) -> [f64; 4] {
     let snapshot = app.harness().inspection();
     let all = snapshot.root.nodes();
     all.into_iter()
