@@ -648,23 +648,27 @@ fn execute(doc: &mut Doc, action: &DynAction, who: &str) -> Result<(), String> {
 }
 
 /// Commit `action`, which `host`'s store wrote, as a window's record does: what the store wrote
-/// is its change.
+/// is its change, in each chunk it wrote ([`crate::chunk::Chunks::parts_of`]).
 fn commit(host: &Host, action: &DynAction, who: &str) -> Result<(), String> {
     let (action, context) = bench_step(action, who);
-    let encoded = action.encode().map_err(|e| e.to_string())?;
-    host.with_schemas(|| {
-        host.store()
-            .commit_action(
-                crate::chunk::FIRST,
-                (&action, Some(&action)),
-                encoded,
-                who.as_bytes(),
-                context,
-                |_, _| (),
-            )
-            .0
-    })
-    .map_err(|e| e.to_string())
+    let parts = host.store().with_record(|chunks| chunks.parts_of(&action));
+    for (chunk, part) in parts {
+        let encoded = part.encode().map_err(|e| e.to_string())?;
+        host.with_schemas(|| {
+            host.store()
+                .commit_action(
+                    chunk,
+                    (&part, Some(&part)),
+                    encoded,
+                    who.as_bytes(),
+                    context.clone(),
+                    |_, _| (),
+                )
+                .0
+        })
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn root_id(shape: &Shape) -> String {

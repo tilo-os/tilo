@@ -200,16 +200,24 @@ impl TiloStore {
     fn catch_up(&self, chunk: ChunkNo) -> bool {
         let mut inner = self.mutate();
         if !inner.chunks.is_seen(chunk) {
-            // A chunk the holder started by writing into it: read as any chunk is attached.
-            let Some(doc) = inner.chunks.take_attached(chunk) else {
-                return false;
-            };
-            let moved = inner.attach_document(chunk, doc);
-            drop(inner);
-            if moved {
-                self.changing().notify_all();
+            if inner.local.iter().any(|write| write.chunk == chunk) {
+                // A chunk the store started with its own writes: it read every one of them as it
+                // wrote them, so it has seen the chunk from its start, and the holder's commit is
+                // taken in as any change of a chunk it reads is.
+                inner.chunks.set_seen(chunk, Vec::new());
+            } else {
+                // A chunk the holder started with writes the store did not make: read whole, as
+                // any chunk is attached.
+                let Some(doc) = inner.chunks.take_attached(chunk) else {
+                    return false;
+                };
+                let moved = inner.attach_document(chunk, doc);
+                drop(inner);
+                if moved {
+                    self.changing().notify_all();
+                }
+                return moved;
             }
-            return moved;
         }
         let Some(doc) = inner.chunks.mirror(chunk) else {
             return false;

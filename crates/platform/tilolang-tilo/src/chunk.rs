@@ -48,7 +48,7 @@ use automerge::{ReadDoc, Value as AmValue};
 
 use tilo_actions::ActionError;
 
-use crate::action::DynEdit;
+use crate::action::{DynAction, DynEdit};
 use crate::reads::map_at;
 
 type Doc = tilo_resource::Doc;
@@ -466,6 +466,37 @@ impl Chunks {
                 |item| self.chunk_of_item(item),
             )
         })
+    }
+
+    /// `action` by the chunk each of its edits is written in ([`Self::chunk_of`]): per chunk,
+    /// the action with that chunk's edits alone. Each part is what the chunk's change records, so
+    /// a peer replaying it on the chunk it was written in reproduces the same change.
+    ///
+    /// The parts come in the order they are committed: the chunks above the record first, the
+    /// record's own last. Committing a part derives the action's writes still open again, and
+    /// the record's part of an action that also writes above it is the manifest's run, which
+    /// derives nothing; committed last, the items above are not derived twice.
+    #[must_use]
+    pub fn parts_of(&self, action: &DynAction) -> Vec<(ChunkNo, DynAction)> {
+        let mut edits: BTreeMap<ChunkNo, Vec<DynEdit>> = BTreeMap::new();
+        for edit in &action.edits {
+            edits
+                .entry(self.chunk_of(edit))
+                .or_default()
+                .push(edit.clone());
+        }
+        let record = edits.remove(&FIRST);
+        edits
+            .into_iter()
+            .chain(record.map(|edits| (FIRST, edits)))
+            .map(|(chunk, edits)| {
+                let part = DynAction {
+                    edits,
+                    ..action.clone()
+                };
+                (chunk, part)
+            })
+            .collect()
     }
 
     /// The chunk holding the item `item`, by the `$items` map its id is kept in: chunk [`FIRST`]

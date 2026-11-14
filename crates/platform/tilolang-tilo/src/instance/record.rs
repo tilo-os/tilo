@@ -33,7 +33,7 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::Doc;
 
 use super::Instance;
-use crate::action::{DynAction, DynEdit};
+use crate::action::DynAction;
 use crate::chunk::{self, ChunkNo, Chunks, FIRST, Stamps};
 pub use crate::history::{HostHistoryEdit, HostWords, register};
 use crate::publish::{COMMIT, HOST_RESOURCE};
@@ -1550,15 +1550,9 @@ impl InstanceRecord {
         invoker: &ActionInvoker,
         ambient: Option<&ActionContext>,
     ) -> Result<(), RecordError> {
-        let parts = self.parts_of(action);
+        let parts = self.read(|chunks| chunks.parts_of(action));
         let mut wrote: Vec<(ChunkNo, Vec<ChangeHash>)> = Vec::new();
-        for (chunk, edits) in parts {
-            // The part is what its change records, so a peer replaying it on the chunk it was
-            // written in reproduces the same change.
-            let part = DynAction {
-                edits,
-                ..action.clone()
-            };
+        for (chunk, part) in parts {
             let encoded = part
                 .encode()
                 .map_err(|error| RecordError::Refused(error.to_string()))?;
@@ -1602,20 +1596,6 @@ impl InstanceRecord {
             }
         }
         self.chunks.reread_placement();
-    }
-
-    /// The edits of `action` by the chunk they are written in ([`Chunks::chunk_of`]).
-    fn parts_of(&self, action: &DynAction) -> BTreeMap<ChunkNo, Vec<DynEdit>> {
-        let mut parts: BTreeMap<ChunkNo, Vec<DynEdit>> = BTreeMap::new();
-        self.read(|chunks| {
-            for edit in &action.edits {
-                parts
-                    .entry(chunks.chunk_of(edit))
-                    .or_default()
-                    .push(edit.clone());
-            }
-        });
-        parts
     }
 
     /// Apply `action`, encoded as `encoded`, to the chunk `chunk` as one step of its own,

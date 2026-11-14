@@ -1978,6 +1978,14 @@ impl Inner {
         // A run's manifest is written before what it places reads it: the next edit of the same
         // action sees the run the last one recorded.
         let manifest = matches!(edit.bare(), DynEdit::RunChunk { .. });
+        // A run the write starts is in a chunk the manifest did not name: the action's writes
+        // into it are what it holds, not a chunk to wait for.
+        let starts = match edit.bare() {
+            DynEdit::RunChunk { chunk, .. } => {
+                (!self.chunks.placement().chunks().contains(chunk)).then_some(*chunk)
+            }
+            _ => None,
+        };
         let action = self.next_ticket;
         let mut held = self.local.iter().filter(|write| {
             write.chunk == chunk && write.action == action && write.derived == derived
@@ -2002,6 +2010,9 @@ impl Inner {
         let applied = apply_edits(doc, app, std::slice::from_ref(&edit), &edit_seed(index));
         if manifest {
             self.chunks.reread_placement();
+        }
+        if let Some(started) = starts {
+            self.chunks.open(started);
         }
         let mut write = LocalWrite {
             app: AppId::from(app),

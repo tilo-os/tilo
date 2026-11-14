@@ -902,6 +902,84 @@ fn a_run_that_fails_leaves_nothing_in_any_chunk() {
     );
 }
 
+/// Cards a person adds past a full run start the next chunk and go on in it: each add is written
+/// once, as the change the store wrote, in the new chunk as in the record's manifest, and the new
+/// chunk is taken in as it was written, never read again whole.
+#[test]
+fn cards_added_past_a_full_run_are_each_written_once_into_the_next_chunk() {
+    let (_host, mut docs, meta, root, ids) = board();
+    let inserted = bulk(&mut docs, &meta, &root, 2048);
+    let route = RouteSpec::app(BOARD_APP, uuid::Uuid::new_v4());
+    let wire = Wire::default();
+    let platform = Rc::new(Board {
+        ids: RefCell::new(ids),
+    });
+    let mut ada = window("ada", &route, &platform, &wire, docs.chunks());
+    catch_up(&mut ada);
+    let host = ada.instance.host().unwrap();
+    let add = host
+        .package(BOARD_APP)
+        .unwrap()
+        .meta
+        .actions
+        .iter()
+        .find(|action| action.name == "add")
+        .unwrap()
+        .id
+        .clone();
+    let board = host.root_of(BOARD_APP).unwrap();
+    let field = field_id(&meta, "Board", "left");
+    let before = host.store().stats();
+
+    for text in ["one", "two"] {
+        let first = host.next_ticket();
+        host.runtime()
+            .invoke_action(
+                &Principal::new("ada"),
+                (
+                    add.as_str(),
+                    vec![
+                        tilolang_tilo::runtime::Value::resource(&board),
+                        tilolang_tilo::runtime::Value::Text(text.to_owned()),
+                    ],
+                ),
+            )
+            .unwrap();
+        let queued =
+            tilolang_tilo::instance::queue_commits(&host, &ada.instance.outgoing(), first, None);
+        assert_eq!(ada.workspace.commit(&mut ada.instance).unwrap(), queued);
+        catch_up(&mut ada);
+    }
+
+    assert!(
+        ada.workspace.chunk(1).is_some(),
+        "the cards went on in chunk 1"
+    );
+    let after = host.store().stats();
+    assert_eq!(
+        after.written_once,
+        before.written_once + 4,
+        "each add is written once in each of its two chunks"
+    );
+    assert_eq!(
+        after.attaches, before.attaches,
+        "the new chunk is not read again whole"
+    );
+    let cards = left(&host, &root, &field);
+    assert_eq!(
+        cards[..2048],
+        inserted[..],
+        "the run's cards are where they were"
+    );
+    assert_eq!(
+        cards.len(),
+        2050,
+        "each added card once: {:?}",
+        &cards[2048..]
+    );
+    assert_ne!(cards[2048], cards[2049]);
+}
+
 #[test]
 fn a_part_the_workspace_refuses_takes_back_the_chunks_it_wrote_before_it() {
     let (_host, mut docs, meta, root, ids) = board();
