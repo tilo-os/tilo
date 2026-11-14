@@ -41,8 +41,6 @@ use tilo_session_client::{Cmd, Enrolled, Event, Outbox, SayPresence, Topic};
 #[cfg(target_os = "linux")]
 use super::{Enrolling, Entering};
 #[cfg(target_os = "linux")]
-use crate::channels::ChannelLink;
-#[cfg(target_os = "linux")]
 use crate::content;
 #[cfg(target_os = "linux")]
 use crate::device_actions::DeviceActions;
@@ -54,6 +52,8 @@ use crate::platform::fabric::DeviceId;
 use crate::platform::fabric::FabricRuntime;
 #[cfg(target_os = "linux")]
 use crate::platform::fabric::{Continuity, SessionFabric};
+#[cfg(target_os = "linux")]
+use crate::workspace_keys::KeyLink;
 #[cfg(target_os = "linux")]
 use tilo_action_broker::record_content::ContentSources;
 #[cfg(target_os = "linux")]
@@ -108,7 +108,7 @@ fn wait_for_bound(
 #[cfg(target_os = "linux")]
 fn attach_bound(
     live: &mut Option<crate::live::Live>,
-    link: Option<&Arc<ChannelLink>>,
+    link: Option<&Arc<KeyLink>>,
     outbox: HostOutbox,
     endpoint: Option<&iroh::Endpoint>,
 ) -> Option<Arc<dyn SayPresence>> {
@@ -362,7 +362,7 @@ pub(crate) struct Seat {
     engine: Option<Arc<Engine>>,
     /// What the session's channels hear and say on this plane. What the engine holds, so a session
     /// that runs no channel service has none.
-    link: Option<Arc<ChannelLink>>,
+    link: Option<Arc<KeyLink>>,
     /// The member's devices the plane heard at another peer protocol version since the last
     /// call: what the person is answered.
     versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
@@ -1841,7 +1841,7 @@ struct Hosted {
     commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
     host_events: std::sync::mpsc::Receiver<HostEvent>,
     engine: Option<Arc<Engine>>,
-    link: Option<Arc<ChannelLink>>,
+    link: Option<Arc<KeyLink>>,
     versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
     fabric: Option<Arc<SessionFabric>>,
     device_actions: Arc<std::sync::OnceLock<DeviceActions>>,

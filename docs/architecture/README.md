@@ -72,7 +72,7 @@ names are stable even when directories move.
 | History, search | `crates/sdk/tilo-history`, `crates/sdk/search` |
 | Example apps, one idea each | `examples/apps` |
 | First-party apps | `apps/` ([list](../../apps/README.md)) |
-| Identity, MLS channels, action policy, collaboration state | `crates/collab/` (`tilo-user-identity`, `channel-crypto`, `action-policy`, `tilo-peer-state`) |
+| Identity, MLS groups, action policy, collaboration state | `crates/collab/` (`tilo-user-identity`, `key-group`, `action-policy`, `tilo-peer-state`) |
 | Automerge (vendored fork) | `vendor/automerge`, used through `crates/doc/tilo-automerge` |
 | Files and storage | `crates/system/fs`, `crates/system/fs-native` |
 | Compositor and shell | `crates/session/session` |

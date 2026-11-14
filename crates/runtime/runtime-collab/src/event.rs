@@ -10,7 +10,7 @@
 //! [`NoCustody`], where that variant cannot occur, and the toolkit fills in
 //! its own custody type.
 
-use crate::route::{ChannelAccessState, RouteSpec};
+use crate::route::{KeyAccessState, RouteSpec};
 use collab_types::DocumentMutation;
 use collab_types::SignedOp;
 use collab_types::presence::{Member, PresenceKey, PresencePayload};
@@ -109,9 +109,9 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
     /// before its welcome arrives), was removed, or cannot join. While a
     /// route is not open the SDK holds edits and incoming ciphertext on the
     /// device instead of dropping them; apps show the state.
-    ChannelAccess {
+    KeyAccess {
         route: RouteSpec,
-        state: ChannelAccessState,
+        state: KeyAccessState,
     },
     /// A validated signed document envelope from another peer. For cleartext
     /// routes the mutation kind is inside the outer signed payload. For an

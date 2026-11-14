@@ -1818,7 +1818,7 @@ impl Owning {
     /// workspace. Nothing goes out for a workspace no member reached here.
     pub fn carry_governance(&self, message: &NeighbourMsg) {
         if let Some(workspace) = message
-            .channel_workspace()
+            .governance_workspace()
             .and_then(tilo_desktop_model::WorkspaceId::parse)
         {
             self.carry(workspace, self.signer.device_public_key(), message.clone());
@@ -1915,7 +1915,7 @@ const NOT_WORKSPACE_STATE: &str =
 /// Whether `message` is a channel's governance: a frame of its group, or a
 /// device asking to join it.
 fn channel_governance(message: &NeighbourMsg) -> bool {
-    message.channel_workspace().is_some()
+    message.governance_workspace().is_some()
 }
 
 /// Whether `authored` is the other end's already: the device `remote` sent it

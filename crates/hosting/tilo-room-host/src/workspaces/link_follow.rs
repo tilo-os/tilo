@@ -111,7 +111,7 @@ impl Workspaces {
         message: &neighbour_wire::NeighbourMsg,
     ) {
         if !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. })
-            && message.channel_workspace().is_none()
+            && message.governance_workspace().is_none()
         {
             return;
         }

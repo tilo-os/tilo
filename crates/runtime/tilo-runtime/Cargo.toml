@@ -47,7 +47,7 @@ anyhow.workspace = true
 automerge.workspace = true
 base64.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.
-channel-crypto = { path = "../../collab/channel-crypto" }
+key-group = { path = "../../collab/key-group" }
 blake3.workspace = true
 # The bytes and content addresses a joined workspace's files hydrate with.
 bytes.workspace = true

@@ -57,7 +57,7 @@ impl RouteSpec {
 
 /// What an endpoint's route can do with content, as apps see it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChannelAccessState {
+pub enum KeyAccessState {
     /// No channel encryption applies to this endpoint (a test harness).
     Unencrypted,
     /// End-to-end encrypted; content flows.
@@ -75,7 +75,7 @@ pub enum ChannelAccessState {
     NoSecretStore,
 }
 
-impl ChannelAccessState {
+impl KeyAccessState {
     /// Whether content currently flows.
     pub fn is_open(self) -> bool {
         matches!(self, Self::Unencrypted | Self::Encrypted)

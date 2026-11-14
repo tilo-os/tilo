@@ -11,7 +11,7 @@
 //! workspace, and [`join_proof`] keeps the signed proof it presents there.
 //!
 //! Hosts supply their committed workspaces and channel service through
-//! [`broker::WorkspaceMembership`] and [`broker::ChannelKeySource`].
+//! [`broker::WorkspaceMembership`] and [`broker::GroupKeySource`].
 
 #![cfg_attr(
     target_family = "wasm",

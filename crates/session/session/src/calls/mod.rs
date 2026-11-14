@@ -507,7 +507,7 @@ pub(crate) struct Sources {
     /// transport, which carries no call.
     pub(crate) endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
     /// This device's channel keys: the ones a call in the channel seals its audio with.
-    pub(crate) keys: Option<tilo_channels::ChannelKeyProvider>,
+    pub(crate) keys: Option<tilo_workspace_keys::KeyProvider>,
     /// The devices `workspace` admits, which a call's roster names.
     pub(crate) roster: Option<Admitted>,
     /// The person's prompts: the microphone is asked for through them.
@@ -540,7 +540,7 @@ impl Sources {
     pub(crate) fn carrier(
         calls: Arc<Calls>,
         endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
-        keys: Option<tilo_channels::ChannelKeyProvider>,
+        keys: Option<tilo_workspace_keys::KeyProvider>,
         roster: Admitted,
         questions: Option<tilo_service::Questions>,
         person: Option<String>,
@@ -666,19 +666,19 @@ fn call_keys(
     workspace_id: WorkspaceId,
 ) -> Result<
     (
-        tilo_channels::ChannelKeyAccess,
-        Option<channel_crypto::ChannelContentKeys>,
+        tilo_workspace_keys::SharedKeys,
+        Option<key_group::ContentKeys>,
     ),
     Issue,
 > {
     let access = sources
         .keys
         .as_ref()
-        .and_then(tilo_channels::ChannelKeyProvider::get)
+        .and_then(tilo_workspace_keys::KeyProvider::get)
         .ok_or(Issue::Unavailable)?;
     let keys = match access.access(workspace_id).0 {
-        tilo_channels::ChannelAccess::Ready(keys) => Some(keys),
-        tilo_channels::ChannelAccess::Waiting => None,
+        tilo_workspace_keys::KeyAccess::Ready(keys) => Some(keys),
+        tilo_workspace_keys::KeyAccess::Waiting => None,
         _ => return Err(Issue::Unavailable),
     };
     Ok((access, keys))
@@ -789,7 +789,7 @@ impl MediaSession for Call {
 /// The channel's keys and who may read them, and what the workspace's governance admitted at the
 /// same time: what seals this call's frames.
 struct Current {
-    keys: channel_crypto::ChannelContentKeys,
+    keys: key_group::ContentKeys,
     roster: LiveRoster,
 }
 
@@ -816,7 +816,7 @@ struct Shared {
     /// This device's key: whose pictures the app's are.
     own: [u8; 32],
     /// Where the channel's keys come from when its membership moves.
-    access: tilo_channels::ChannelKeyAccess,
+    access: tilo_workspace_keys::SharedKeys,
     /// The workspace id the channel's keys and governance are read by.
     workspace_id: WorkspaceId,
     workspace: String,
@@ -1255,9 +1255,9 @@ impl Shared {
             .map(|admitted| LiveRoster::new(admitted(&self.workspace)));
         let (granted, _) = self.access.access(self.workspace_id);
         let keys = match granted {
-            tilo_channels::ChannelAccess::Ready(keys) => Some(keys),
+            tilo_workspace_keys::KeyAccess::Ready(keys) => Some(keys),
             // Keys still on their way keep a joining call joining.
-            tilo_channels::ChannelAccess::Waiting => None,
+            tilo_workspace_keys::KeyAccess::Waiting => None,
             // A channel this device may no longer read, or has no store for,
             // carries no call: one that held its keys ends, and one that
             // never did says it cannot be carried here.

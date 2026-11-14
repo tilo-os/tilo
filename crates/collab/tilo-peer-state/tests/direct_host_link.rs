@@ -11,7 +11,6 @@
 use crate::common::{addr, device, localhost_endpoint};
 
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
-use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::CommitNamed as _;
 use collab_types::{
     ContentRetention, Ed25519PublicKey, MlsAccessRequestV1, OpKind, SignedOp, document_artifact_id,
@@ -19,6 +18,7 @@ use collab_types::{
 };
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
+use key_group::{ContentKeys, KeyGroup, MemberKey};
 use neighbour_wire::{NeighbourMsg, peer_handle};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -74,14 +74,14 @@ async fn until(sync: &DirectSync, step: &str, done: impl Fn(&StatePeer) -> bool 
 
 /// One edit of `key`, sealed under the record's content keys: what a store
 /// keeps and only a key holder reads.
-fn sealed(key: &SigningKey, keys: &ChannelContentKeys, text: &str) -> NeighbourMsg {
+fn sealed(key: &SigningKey, keys: &ContentKeys, text: &str) -> NeighbourMsg {
     sealed_at(key, keys, text, web_time::SystemTime::now(), 1)
 }
 
 /// [`sealed`], written at `when` as the author's `seq`th op.
 fn sealed_at(
     key: &SigningKey,
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
     text: &str,
     when: web_time::SystemTime,
     seq: u64,
@@ -230,7 +230,7 @@ async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_stor
 
     // A sealed edit reaches the host, which keeps it as the history a member
     // that was away catches up from; the host holds no channel key.
-    let keys = ChannelGroup::create(workspace_id(), MemberKey::generate("owner").unwrap())
+    let keys = KeyGroup::create(workspace_id(), MemberKey::generate("owner").unwrap())
         .unwrap()
         .content_keys()
         .unwrap();
@@ -559,7 +559,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     // What the device writes, or hears of the workspace another way, it sends to its members, and
     // keeps for the ones that link later: a member that linked after the device wrote never heard
     // of the write.
-    let keys = ChannelGroup::create(workspace_id(), MemberKey::generate("owner").unwrap())
+    let keys = KeyGroup::create(workspace_id(), MemberKey::generate("owner").unwrap())
         .unwrap()
         .content_keys()
         .unwrap();
@@ -745,7 +745,7 @@ async fn what_the_host_wrote_long_ago_reaches_a_member_that_links_later() {
         )
         .unwrap();
     let host = DirectSync::new(govern, host_key.clone());
-    let keys = ChannelGroup::create(workspace_id(), MemberKey::generate("owner").unwrap())
+    let keys = KeyGroup::create(workspace_id(), MemberKey::generate("owner").unwrap())
         .unwrap()
         .content_keys()
         .unwrap();

@@ -21,7 +21,6 @@
 )]
 
 pub mod arrivals;
-pub mod channels;
 pub mod client;
 mod clock;
 pub mod content;
@@ -47,6 +46,7 @@ pub mod session;
 pub mod surfaces;
 pub mod voice;
 pub mod way_in;
+pub mod workspace_keys;
 
 pub use arrivals::Arrivals;
 pub use client::{Client, Presence};

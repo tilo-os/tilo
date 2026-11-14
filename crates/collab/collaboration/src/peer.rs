@@ -43,7 +43,7 @@ pub trait PeerTransport {
     fn install_document_encryption(
         &mut self,
         _: RouteSpec,
-        _: channel_crypto::ChannelGroup,
+        _: key_group::KeyGroup,
     ) -> Result<(), String> {
         Err("document encryption unavailable".into())
     }

@@ -56,7 +56,7 @@ fn legacy_handoff_preserves_metadata_refusal_ownership_and_disconnection() {
     }
     assert!(matches!(identity.sign_collaboration_join("room"),
         Err(NotAvailable::ConnectionFailed(error)) if error.kind() == io::ErrorKind::PermissionDenied));
-    assert!(matches!(identity.channel_keys("room", "app", "record", 0),
+    assert!(matches!(identity.group_keys("room", "app", "record", 0),
         Err(NotAvailable::ConnectionFailed(error)) if error.kind() == io::ErrorKind::Unsupported));
     worker.join().unwrap();
     assert!(identity.sign(b"disconnected").is_err());

@@ -784,7 +784,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         &self,
         route: &tilo_peer_state::document_frame::DocumentRoute,
         create: bool,
-    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
+    ) -> Option<Result<key_group::ContentKeys, String>> {
         self.host_device
             .runtime
             .block_on(self.workspaces.as_ref()?.own_route_keys(route, create))

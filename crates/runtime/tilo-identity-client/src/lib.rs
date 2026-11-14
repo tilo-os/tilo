@@ -172,7 +172,7 @@ pub mod wire {
         /// this device is admitted to its encrypted channel. `known_generation` is the
         /// generation the caller already holds, which answers without keys when
         /// unchanged. Appended, so earlier requests keep their encoding.
-        ChannelKeys {
+        GroupKeys {
             workspace_id: String,
             app_id: String,
             record_id: String,
@@ -181,7 +181,7 @@ pub mod wire {
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    pub enum ChannelAccess {
+    pub enum KeyAccess {
         Ready,
         /// Asked the channel's participants for access and not admitted yet.
         Waiting,
@@ -209,12 +209,12 @@ pub mod wire {
         Signature(Vec<u8>),
         Denied(String),
         Error(String),
-        /// Answer to [`Request::ChannelKeys`]. `keys` holds the encoded
+        /// Answer to [`Request::GroupKeys`]. `keys` holds the encoded
         /// content keys when `access` is ready and `generation` differs
         /// from the caller's; it is empty otherwise. Appended so earlier
         /// responses keep their encoding.
-        ChannelKeys {
-            access: ChannelAccess,
+        GroupKeys {
+            access: KeyAccess,
             generation: u64,
             keys: Vec<u8>,
         },
@@ -233,7 +233,7 @@ pub mod wire {
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct ChannelKeysReply {
-        pub access: ChannelAccess,
+        pub access: KeyAccess,
         pub generation: u64,
         /// Encoded content keys; `None` when unchanged or not ready.
         pub keys: Option<Vec<u8>>,

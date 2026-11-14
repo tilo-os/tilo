@@ -18,7 +18,7 @@ use tilo_relay_protocol::WorkspaceId;
 /// admitted the session to its workspace.
 #[derive(Default)]
 pub(super) struct HostGovernance {
-    pub(super) inbound: Mutex<Vec<tilo_channels::InboundChannelGovernance>>,
+    pub(super) inbound: Mutex<Vec<tilo_workspace_keys::InboundGovernance>>,
     outbound: Mutex<BTreeMap<WorkspaceId, neighbour_wire::NeighbourMsg>>,
 }
 
@@ -37,7 +37,7 @@ impl HostGovernance {
     }
 }
 
-impl tilo_channels::GovernanceTransport for HostGovernance {
+impl tilo_workspace_keys::GovernanceTransport for HostGovernance {
     fn publish(&self, message: neighbour_wire::NeighbourMsg) -> bool {
         use neighbour_wire::NeighbourMsg;
         // A reader commits nothing.
@@ -49,7 +49,7 @@ impl tilo_channels::GovernanceTransport for HostGovernance {
         true
     }
 
-    fn take_inbound(&self) -> Vec<tilo_channels::InboundChannelGovernance> {
+    fn take_inbound(&self) -> Vec<tilo_workspace_keys::InboundGovernance> {
         std::mem::take(&mut *self.inbound.lock_recover())
     }
 }

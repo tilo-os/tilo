@@ -421,7 +421,7 @@ pub(crate) fn derived_uuid(domain: &[u8], parts: &[&str]) -> uuid::Uuid {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EncryptionScheme {
     /// Version 1: an MLS application message at `epoch`
-    /// (`channel_crypto::ChannelGroup::encrypt`). Readable only by members
+    /// (`key_group::KeyGroup::encrypt`). Readable only by members
     /// holding that epoch's ratchet state, and only once per receiver.
     MlsApplication,
     /// Version 2: an XChaCha20-Poly1305 `tilo-seal` envelope under the
@@ -573,7 +573,7 @@ impl SignedOp {
     }
 
     /// Construct an unsigned op carrying an MLS ciphertext payload. The
-    /// caller has already encrypted via `ChannelGroup::encrypt`; the
+    /// caller has already encrypted via `KeyGroup::encrypt`; the
     /// ciphertext goes into `payload`, the matching `epoch` into
     /// `encryption`. Sign with [`crate::crypto::sign_op`] as usual.
     pub fn new_unsigned_with_encryption(

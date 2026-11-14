@@ -109,16 +109,15 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             let frame = collab_types::DocumentFrame::decode(&envelope.payload).ok()?;
             return Some((channel, frame.retention().into()));
         }
-        // Channel governance is replayable state a device that was offline
-        // must still receive, and none of it is content: the channel's
-        // genesis, its newest frame, and the latest access request of each
+        // Governance is replayable state a device that was offline must
+        // still receive, and none of it is content: the group's genesis, its newest frame, and the latest access request of each
         // device. Each genesis is kept for good: of two, every participant
         // follows the lower. Every later frame replaces the one before: a
         // joining device needs only the commit that adds it, and one that
         // missed a commit asks again. The participant that wrote the winner
         // of two commits on one epoch publishes it again, so the newest is
         // the winner. Keeping every commit and Welcome
-        // made each newcomer replay the channel's whole history, every
+        // made each newcomer replay the group's whole history, every
         // Welcome carrying the group's ratchet tree.
         NeighbourMsg::MlsGovernance { frame, .. } => {
             let mut route = b"mls-governance\0".to_vec();
@@ -212,7 +211,7 @@ mod tests {
         host_retains_every_segment_of_a_large_snapshot_after_its_checkpoint();
         host_retains_content_key_ciphertext_by_its_signed_class();
         only_a_sealed_compaction_stands_alone();
-        host_retains_channel_governance_per_channel_and_device();
+        host_retains_governance_per_device();
         host_persists_state_but_never_late_session_actions();
         channel_digests_are_stable();
         retention_wire_bytes_are_frozen();
@@ -305,9 +304,9 @@ mod tests {
         );
     }
 
-    /// A device that was offline gets a channel's geneses and newest frame,
-    /// and every participant each device's latest request.
-    fn host_retains_channel_governance_per_channel_and_device() {
+    /// A device that was offline gets the workspace's geneses and newest
+    /// frame, and every committer each device's latest request.
+    fn host_retains_governance_per_device() {
         use collab_types::{
             MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame, WorkspaceId,
         };

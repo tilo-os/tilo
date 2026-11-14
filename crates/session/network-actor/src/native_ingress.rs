@@ -188,7 +188,7 @@ pub(super) fn carried(msg: &NeighbourMsg) -> Option<Carried> {
         NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some() => {
             Some(Carried::Link)
         }
-        _ if is_channel_governance(msg) || is_record_content(msg) => Some(Carried::Link),
+        _ if is_governance(msg) || is_record_content(msg) => Some(Carried::Link),
         NeighbourMsg::AppDocument { .. } => Some(Carried::Publication),
         NeighbourMsg::SyncReq { .. } | NeighbourMsg::SyncResp { .. } => Some(Carried::Nowhere),
         _ => None,
@@ -197,8 +197,8 @@ pub(super) fn carried(msg: &NeighbourMsg) -> Option<Carried> {
 
 /// Whether `msg` is a workspace's channel governance: a frame of a channel's
 /// group, a device asking to join one, or the host's word that one has none.
-pub(super) fn is_channel_governance(msg: &NeighbourMsg) -> bool {
-    msg.channel_workspace().is_some()
+pub(super) fn is_governance(msg: &NeighbourMsg) -> bool {
+    msg.governance_workspace().is_some()
 }
 
 /// Whether `msg` is about a record's content: a member asking the workspace
@@ -248,7 +248,7 @@ impl ActorState {
         {
             tracing::debug!(ws = %ws, %error, "kept for the workspace's next link");
         }
-        if !is_channel_governance(msg) {
+        if !is_governance(msg) {
             self.tell_unsynced(ws);
         }
     }
@@ -298,7 +298,7 @@ impl ActorState {
         // with the rest of what the channel service hears.
         if let Some(members) = &self.members
             && heard.report.is_ok()
-            && !is_channel_governance(&heard.message)
+            && !is_governance(&heard.message)
         {
             members.carry(link.scope.workspace(), heard.author, heard.message.clone());
         }
@@ -374,7 +374,7 @@ impl ActorState {
         heard: tilo_peer_state::direct::Heard,
     ) {
         if (heard.report.is_err() && !is_record_content(&heard.message))
-            || is_channel_governance(&heard.message)
+            || is_governance(&heard.message)
         {
             return;
         }

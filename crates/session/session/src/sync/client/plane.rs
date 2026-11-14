@@ -13,7 +13,7 @@ use tilo_session_client::plane::Event;
 
 use super::adopt::{enter, redeem};
 use super::{
-    ChannelLink, DeviceActions, Engine, Enrolled, HostCmd, HostEvent, PeerDocuments, endpoint_for,
+    DeviceActions, Engine, Enrolled, HostCmd, HostEvent, KeyLink, PeerDocuments, endpoint_for,
 };
 use tilo_network_actor::WorkspaceId;
 
@@ -144,7 +144,7 @@ impl Serving {
     /// bound, and what answers beside the workspaces' traffic.
     pub(crate) fn new(
         bound: Bound,
-        link: Option<Arc<ChannelLink>>,
+        link: Option<Arc<KeyLink>>,
         actions: Arc<std::sync::OnceLock<DeviceActions>>,
         protocols: tilo_network_actor::local_host::Protocols,
         documents: Option<super::PeerDocuments>,
@@ -165,7 +165,7 @@ impl Serving {
 /// they use, this device's action plane, and whatever else the session was handed — this device as
 /// an exit for the person's other devices.
 pub(crate) struct Beside {
-    pub(crate) link: Option<Arc<ChannelLink>>,
+    pub(crate) link: Option<Arc<KeyLink>>,
     pub(crate) actions: Arc<std::sync::OnceLock<DeviceActions>>,
     /// The protocols the session answers besides its own, handed over before the endpoint binds: an
     /// endpoint's protocols are fixed once it is bound, so whatever answers on it is here from the
@@ -408,7 +408,7 @@ struct Asking {
     endpoint: iroh::Endpoint,
     plane: tokio::sync::mpsc::Sender<NetCmd>,
     events: tokio::sync::mpsc::Sender<NetEvent>,
-    link: Option<Arc<ChannelLink>>,
+    link: Option<Arc<KeyLink>>,
     engine: Option<Arc<Engine>>,
     identity: Option<HostIdentity>,
 }
@@ -627,7 +627,7 @@ fn heard(
     arrivals: std::sync::mpsc::Sender<Event>,
     host_events: std::sync::mpsc::Sender<HostEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
-    link: Option<Arc<ChannelLink>>,
+    link: Option<Arc<KeyLink>>,
     documents: Option<PeerDocuments>,
 ) -> (
     tokio::sync::mpsc::Sender<NetEvent>,
@@ -707,7 +707,7 @@ enum Taken {
 /// holds up the collaboration plane.
 async fn take_in(
     mut replayed: tokio::sync::mpsc::UnboundedReceiver<Taken>,
-    link: Option<Arc<ChannelLink>>,
+    link: Option<Arc<KeyLink>>,
     documents: Option<PeerDocuments>,
 ) {
     while let Some(taken) = replayed.recv().await {
@@ -758,7 +758,7 @@ async fn take_in(
 /// Admit one session's inputs, as one commit of the workspace they belong to.
 async fn admit(
     inputs: Vec<tilo_network_actor::native_ingress::Input>,
-    link: Option<&ChannelLink>,
+    link: Option<&KeyLink>,
     documents: Option<&PeerDocuments>,
 ) {
     let Some(workspace) = inputs

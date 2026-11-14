@@ -510,12 +510,12 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             }
             "DocumentSnapshotRequested"
         }
-        CollabEvent::ChannelAccess { route, .. } => {
+        CollabEvent::KeyAccess { route, .. } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
                 meter.string_capacity(record);
             }
-            "ChannelAccess"
+            "KeyAccess"
         }
         CollabEvent::RemoteCursorMoved { user_id, .. } => {
             meter.string_capacity(user_id);

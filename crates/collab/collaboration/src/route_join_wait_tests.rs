@@ -45,7 +45,7 @@ fn a_route_whose_first_read_never_answers_holds_up_nothing_else() {
     assert!(
         !events.iter().any(|event| matches!(
             event,
-            CollabEvent::ChannelAccess { route, .. } if *route == stuck
+            CollabEvent::KeyAccess { route, .. } if *route == stuck
         )),
         "nothing said of the stuck route yet"
     );
@@ -53,9 +53,9 @@ fn a_route_whose_first_read_never_answers_holds_up_nothing_else() {
         events.iter().any(|event| {
             matches!(
                 event,
-                CollabEvent::ChannelAccess {
+                CollabEvent::KeyAccess {
                     route,
-                    state: crate::ChannelAccessState::Unavailable,
+                    state: crate::KeyAccessState::Unavailable,
                 } if *route == stuck
             )
         })

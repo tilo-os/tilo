@@ -266,7 +266,7 @@ struct SessionCtx<'a> {
     /// handed to an agent is never handed back.
     agent: &'a std::sync::OnceLock<String>,
     /// The connection's device only follows its channel groups
-    /// ([`Envelope::ChannelReader`]): its replays carry no device's request
+    /// ([`Envelope::KeyFollower`]): its replays carry no device's request
     /// to be admitted to one. Said once, it stays.
     channel_reader: &'a std::sync::atomic::AtomicBool,
     /// The execution the host minted for this connection: an agent's or a

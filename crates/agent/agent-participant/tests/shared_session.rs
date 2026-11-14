@@ -281,7 +281,7 @@ async fn receive_until(
             agent.control().info().tasks,
             agent.known_records(),
             agent.app(route).map(body),
-            agent.peer().status().channels,
+            agent.peer().status().key_state,
         );
         agent.pump();
         let own = browser.engine().identity().device_cert.device_public_key;

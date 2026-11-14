@@ -465,16 +465,16 @@ hardware is not recorded here.
 
 ## P1-3 — MLS does not rekey on member removal
 
-`crates/collab/channel-crypto/src/group.rs:399-404` (as found) — `remove_member` is a `todo!()`. The design
+`crates/collab/key-group/src/group.rs:399-404` (as found) — `remove_member` is a `todo!()`. The design
 guarantee is that the group key rotates on *every* membership change; removal is the case that
 matters, and it panics. The in-source workaround is "mint a fresh channel and invite only the
 desired members".
 
-Historically `channel-crypto` was a **dev-dependency** of the session, so MLS was
+Historically `key-group` was a **dev-dependency** of the session, so MLS was
 compiled only for tests and absent from application endpoints.
 
 **Library defect resolved; production integration remains open.**
-`ChannelGroup::remove_member` now creates and merges an OpenMLS removal commit
+`KeyGroup::remove_member` now creates and merges an OpenMLS removal commit
 and returns its serialized bytes for fan-out. Existing members process the same
 commit, and the removed member becomes inactive after processing it. The
 two-member convenience admission now refuses once an existing peer would need
@@ -485,7 +485,7 @@ a commit, so multi-party admission cannot silently discard epoch state. Held by
 `multi_party_add_cannot_drop_the_commit`). Production brokers now validate
 route-bound signed metadata and relay opaque MLS payloads byte-for-byte, while
 `ui::collaboration` can encrypt/decrypt after a trusted caller installs the
-exact route's `ChannelGroup`. The crypto layer now supplies vault-key-sealed
+exact route's `KeyGroup`. The crypto layer now supplies vault-key-sealed
 atomic OpenMLS state, signed revision-bound governance frames, a durable
 targeted Welcome/commit/removal journal, partial-failure rollback, and a
 snapshot-acknowledged plaintext gate. The session now has a broker-internal,
@@ -494,7 +494,7 @@ tying those primitives to role admission/revocation. Production broker startup
 installs the Secret Service provider with no automatic file-key fallback; a sealed owner-only
 file store is used only when `TILO_SECRETS_DIR` is set explicitly (headless machines;
 `crates/platform/tilo-secrets/src/lib.rs`, acknowledged in
-`crates/session/client/src/channels/vault.rs`). Its document
+`crates/session/client/src/workspace_keys/vault.rs`). Its document
 store fsyncs encrypted compaction snapshots before minting route-bound receipts;
 restart, wrong-route and tamper behavior are covered by hermetic provider tests.
 The remaining work at the time was user-facing device/member provisioning and
@@ -503,17 +503,17 @@ acknowledges the already durable targeted governance outbox. The ciphertext
 document relay is intentionally not that adapter; it must never broadcast
 Welcome bytes.
 
-**Production adapter now present.** `crates/collab/tilo-action-broker/src/channel_encryption.rs`
-runs a participant (`channel_crypto::ChannelPeer`) for every channel a device takes part in: it
+**Production adapter now present.** `crates/collab/tilo-action-broker/src/workspace_keys.rs`
+runs a participant (`key_group::GroupPeer`) for every workspace a device takes part in: it
 reconciles each MLS group with the workspace's access policy, so an invite, a removal, a role change
-that ends access or a revoked device becomes a commit (`ChannelPeer::reconcile`, which stages
-removals and admissions in one commit through `ChannelGroup::stage_commit`), and it publishes the
+that ends access or a revoked device becomes a commit (`GroupPeer::reconcile`, which stages
+removals and admissions in one commit through `KeyGroup::stage_commit`), and it publishes the
 commit over the workspace transport (`NeighbourMsg::MlsGovernance`) until the transport takes it. Held by
 that module's `an_announced_revocation_is_enforced_at_once_and_idle_groups_park`,
 `a_new_channel_is_encrypted_from_creation_and_follows_the_policy`,
 `delivery_survives_a_network_outage` and
 `observing_live_keys_never_opens_a_channel_or_rejoins_after_removal`, plus
-`channel-crypto/tests/content_history.rs::removed_member_cannot_read_content_sealed_after_removal`.
+`key-group/tests/content_history.rs::removed_member_cannot_read_content_sealed_after_removal`.
 Participants admit per workspace; Read inside a workspace is no key boundary, see `P1-11`.
 Provisioning and recovery UX were not assessed by this reconciliation.
 
@@ -742,7 +742,7 @@ since changed to `panic = "unwind"` so the compositor can restart its collaborat
 **Residual:** `OffscreenRenderer::render` still `expect`s internally (`crates/sdk/ui-core/src/offscreen.rs`, the
 `render_to_texture` and buffer-map paths). Those were nominally inside the same dead
 `catch_unwind`s, so nothing regressed, but a mid-render driver failure still aborts a release
-build. The `catch_unwind` pair in `crates/collab/channel-crypto/src/group.rs:237,379` (now `:523`,
+build. The `catch_unwind` pair in `crates/collab/key-group/src/group.rs:237,379` (now `:523`,
 `:710`) was checked
 and is *not* the same defect: it absorbs an openmls `debug_assert!(false, …)` that only fires in
 debug builds, which is where `catch_unwind` works.

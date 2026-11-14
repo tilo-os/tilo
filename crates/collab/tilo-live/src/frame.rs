@@ -1,8 +1,8 @@
 //! A stream's frames: the lane and source they belong to, the track they are
 //! sealed under, sealing them, and opening what arrives.
 
-use channel_crypto::{ChannelContentKeys, MEDIA_STREAM_TAG_LEN, SenderMediaKeys};
 use collab_types::scope::Scope;
+use key_group::{ContentKeys, MEDIA_STREAM_TAG_LEN, SenderMediaKeys};
 use tilo_seal::SymmetricKey;
 use tilo_seal::live::FrameCipher;
 
@@ -90,13 +90,13 @@ pub enum Refusal {
 #[derive(Clone)]
 pub enum PlaneKeys {
     /// The scope's channel content keys.
-    Channel(ChannelContentKeys),
+    Channel(ContentKeys),
     /// One sender's media keys, for the streams it may publish.
     Sender(SenderMediaKeys),
 }
 
-impl From<ChannelContentKeys> for PlaneKeys {
-    fn from(keys: ChannelContentKeys) -> Self {
+impl From<ContentKeys> for PlaneKeys {
+    fn from(keys: ContentKeys) -> Self {
         Self::Channel(keys)
     }
 }
@@ -379,7 +379,7 @@ fn aad(epoch: u64, seq: u32, stream: Stream, track: &TrackName) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use channel_crypto::{ChannelGroup, MemberKey};
+    use key_group::{KeyGroup, MemberKey};
 
     use super::*;
     use crate::roster::Roster;
@@ -387,9 +387,9 @@ mod tests {
     const WORKSPACE: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
     const DEVICE: [u8; 32] = [3; 32];
 
-    fn keys() -> ChannelContentKeys {
+    fn keys() -> ContentKeys {
         let workspace = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
-        ChannelGroup::create(workspace, MemberKey::generate("owner").unwrap())
+        KeyGroup::create(workspace, MemberKey::generate("owner").unwrap())
             .unwrap()
             .content_keys()
             .unwrap()

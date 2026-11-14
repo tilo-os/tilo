@@ -2,9 +2,9 @@
 //! key accepts only a verified compaction of exactly the writes it holds.
 use super::*;
 use crate::{InputDisposition, TransportOrigin, peer_handle};
-use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::CommitNamed as _;
 use collab_types::{ContentRetention, EncryptionMetadata, SealedCompaction};
+use key_group::{ContentKeys, KeyGroup, MemberKey};
 use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
@@ -24,7 +24,7 @@ struct Fixture {
     editor: SigningKey,
     authority: DeviceCert,
     /// The record channel's group, whose content keys key holders use.
-    group: ChannelGroup,
+    group: KeyGroup,
     now: SystemTime,
 }
 
@@ -111,7 +111,7 @@ fn fixture() -> Fixture {
     {
         host.receive_from(origin(&owner), message, now).unwrap();
     }
-    let group = ChannelGroup::create(channel(), MemberKey::generate("owner").unwrap()).unwrap();
+    let group = KeyGroup::create(channel(), MemberKey::generate("owner").unwrap()).unwrap();
     Fixture {
         host,
         owner,
@@ -124,11 +124,11 @@ fn fixture() -> Fixture {
 }
 
 impl Fixture {
-    fn keys(&self) -> ChannelContentKeys {
+    fn keys(&self) -> ContentKeys {
         self.group.content_keys().unwrap()
     }
 
-    fn rotate(&mut self) -> ChannelContentKeys {
+    fn rotate(&mut self) -> ContentKeys {
         let member = MemberKey::generate("member").unwrap();
         self.group
             .add_member(member.fresh_key_package().unwrap())
@@ -258,7 +258,7 @@ impl Author {
 fn write(
     peer: &StatePeer,
     key: &SigningKey,
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
     plaintext: &[u8],
     now: SystemTime,
 ) -> NeighbourMsg {
@@ -280,7 +280,7 @@ fn write(
 /// channel and replays to a device joining the workspace.
 fn checkpoint(
     peer: &StatePeer,
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
     key: &SigningKey,
     now: SystemTime,
 ) -> NeighbourMsg {
@@ -309,7 +309,7 @@ fn admit(peer: &mut StatePeer, key: &SigningKey, message: NeighbourMsg, now: Sys
 }
 
 /// A key holder's opener: any epoch it holds, compactions included.
-fn open(keys: &ChannelContentKeys, op: &SignedOp) -> Result<Vec<u8>, String> {
+fn open(keys: &ContentKeys, op: &SignedOp) -> Result<Vec<u8>, String> {
     let metadata = op.encryption.ok_or("not sealed")?;
     let ciphertext = collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
     keys.open_content(op.artifact, &metadata, &ciphertext)
@@ -320,7 +320,7 @@ fn open(keys: &ChannelContentKeys, op: &SignedOp) -> Result<Vec<u8>, String> {
 /// A compaction of a record small enough for one op.
 fn mint(
     peer: &mut StatePeer,
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
     key: &SigningKey,
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
@@ -333,7 +333,7 @@ fn mint(
 /// A compaction and the segments it names, as the messages that carry them.
 fn mint_pieces(
     peer: &mut StatePeer,
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
     key: &SigningKey,
     now: SystemTime,
 ) -> Result<Vec<NeighbourMsg>, String> {
@@ -358,7 +358,7 @@ fn mint_pieces(
 /// A compaction of `superseded`, sealed with `keys` but not signed.
 fn wrapper(
     peer: &StatePeer,
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
     superseded: &[SignedOp],
 ) -> (SealedCompaction, EncryptionMetadata) {
     let snapshot = DocumentMutation::Snapshot(peer.document(APP, RECORD).unwrap())
@@ -601,7 +601,7 @@ fn a_history_missing_a_write_opens_without_it_and_keeps_what_waits_for_it() {
     // The write after it does not open with the keys this key holder has.
     let late = write(&f.host, &f.other, &keys, &second, now);
     admit(&mut f.host, &f.other, late, now);
-    let foreign = ChannelGroup::create(channel(), MemberKey::generate("other").unwrap())
+    let foreign = KeyGroup::create(channel(), MemberKey::generate("other").unwrap())
         .unwrap()
         .content_keys()
         .unwrap();
@@ -1937,7 +1937,7 @@ fn a_compaction_folds_its_writes_exact_evidence_into_one_mark_per_writer() {
 }
 
 fn sealer(
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
     record: &str,
 ) -> impl FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> {
     let artifact = collab_types::document_artifact_id(APP, WORKSPACE, record);
@@ -2002,7 +2002,7 @@ fn the_key_holder_seals_a_record_held_in_the_clear_from_its_next_write_on() {
 fn the_key_holder_writes_a_new_records_genesis_sealed() {
     let f = fixture();
     let record = "tab:2";
-    let group = ChannelGroup::create(
+    let group = KeyGroup::create(
         collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
         MemberKey::generate("owner").unwrap(),
     )
@@ -2281,7 +2281,7 @@ fn a_record_larger_than_one_op_compacts_in_segments_and_stays_writable() {
 
 /// `f`'s key holder compacts its record, and `f`'s keyless host takes the set, the segments
 /// first: the payload bytes of the set.
-fn compact_set(f: &mut Fixture, keys: &ChannelContentKeys, now: SystemTime) -> usize {
+fn compact_set(f: &mut Fixture, keys: &ContentKeys, now: SystemTime) -> usize {
     let owner = f.owner.clone();
     let mut holder = f.host.clone();
     let pieces = mint_pieces(&mut holder, keys, &owner, now).unwrap();
@@ -2601,7 +2601,7 @@ fn checkpoints_written_as_changes_fill_a_sealed_history_with_copies_of_the_recor
 fn captured(
     f: &Fixture,
     peer: &StatePeer,
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
 ) -> Result<AutoCommit, crate::PeerDocumentReadError> {
     peer.capture_document(
         f.authority.device_public_key,

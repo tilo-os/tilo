@@ -1,4 +1,4 @@
-//! The browser as a `channel-crypto` member of the workspace's group: it asks
+//! The browser as a `key-group` member of the workspace's group: it asks
 //! for access with its device key, joins from the Welcome of the member that
 //! admitted it, and then opens a native device's sealed documents and seals
 //! its own. The workspace's host created the workspace, so it founds the group.
@@ -16,12 +16,12 @@
 use tilo_session_client::{Cmd, Outbox};
 
 use automerge::AutoCommit;
-use channel_crypto::{Access, ChannelPeer};
 use collab_types::{
     DocumentFrame, Ed25519PublicKey, OpKind, SignedOp, document_artifact_id,
     document_attestation_id,
 };
 use ed25519_dalek::SigningKey;
+use key_group::{Access, GroupPeer};
 use neighbour_wire::NeighbourMsg;
 use tilo_relay::{Inbound, RelayCoeditSession};
 use tilo_session_client::PeerStore as _;
@@ -34,7 +34,7 @@ use crate::support::{
 };
 
 /// The epoch `peer` seals under.
-fn epoch(peer: &ChannelPeer) -> u64 {
+fn epoch(peer: &GroupPeer) -> u64 {
     match peer.access() {
         Access::Ready { epoch } => epoch,
         other => panic!("not in the group: {other:?}"),
@@ -221,7 +221,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     // browser vouches only for devices whose certificate the host relayed,
     // and holds a commit adding any other until its certificate arrives.
     let phone_session = session(&host, &root, &phone).await;
-    let mut phone_peer = ChannelPeer::waiting(
+    let mut phone_peer = GroupPeer::waiting(
         None,
         collab_types::WorkspaceId::parse(crate::support::WORKSPACE).unwrap(),
         Box::new(phone.key.clone()),
@@ -368,7 +368,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
         laptop.browser_edit(&browser).await,
         DocumentFrame::Whole(edit),
         "the page's channels:\n{}",
-        peer.status().channels
+        peer.status().key_state
     );
     peer.close();
     host.relay.shutdown().await;

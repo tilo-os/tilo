@@ -35,8 +35,8 @@ use tilo_lock::MutexRecover as _;
 use tilo_network_actor::local_host::Protocols;
 use tilo_user_identity::{DeviceCert, EndpointDelegation};
 
-use crate::channels::{self, Device};
 use crate::engine::Engine;
+use crate::workspace_keys::{self, Device};
 
 /// The scope one workspace's live plane carries.
 fn scope_of(workspace: WorkspaceId) -> Scope {
@@ -165,7 +165,7 @@ impl SessionAuthorization for Permit {
         }
         // The workspace's membership as it is now: a device it removed, or one whose certificate
         // ran out, is not admitted any more.
-        let Ok(devices) = channels::devices_of(&self.engine, self.workspace) else {
+        let Ok(devices) = workspace_keys::devices_of(&self.engine, self.workspace) else {
             return false;
         };
         if !devices.iter().any(|device| device.device == name.device()) {
@@ -224,7 +224,7 @@ pub(crate) trait MediaKeysLender: Send + Sync {
         &self,
         workspace: WorkspaceId,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Option<channel_crypto::SenderMediaKeys>> + Send + '_>,
+        Box<dyn std::future::Future<Output = Option<key_group::SenderMediaKeys>> + Send + '_>,
     >;
 }
 
@@ -244,7 +244,7 @@ impl Shared {
         let Peer(_) = peer;
         let grant = grant::Native::parse(proof).ok_or(Denied)?;
         let workspace = WorkspaceId::parse(&live::workspace_id(grant.workspace)).ok_or(Denied)?;
-        let devices = channels::devices_of(&self.engine, workspace).map_err(|_| Denied)?;
+        let devices = workspace_keys::devices_of(&self.engine, workspace).map_err(|_| Denied)?;
         let host = self.engine.host_of(workspace);
         let request = bind(peer, &grant, &devices, host, self.device, now_ns())?;
         // A device that sealed under an epoch this relay already moved past would publish nothing
@@ -276,7 +276,7 @@ impl Shared {
     /// This workspace's devices, and the one among them that may relay its live plane; `None` —
     /// after withdrawing the plane — when the membership is unknown or names no relay.
     fn relay_for(&self, workspace: WorkspaceId) -> Option<(Vec<Device>, [u8; 32])> {
-        let devices = match channels::devices_of(&self.engine, workspace) {
+        let devices = match workspace_keys::devices_of(&self.engine, workspace) {
             Ok(devices) => devices,
             Err(error) => {
                 tracing::warn!(%workspace, %error, "the live plane's membership is unknown");
@@ -297,7 +297,7 @@ impl Shared {
 
     /// The keys of this device's own streams in `workspace`, lent by its host, when this session
     /// has a lender and the host answers in time.
-    async fn lent(&self, workspace: WorkspaceId) -> Option<channel_crypto::SenderMediaKeys> {
+    async fn lent(&self, workspace: WorkspaceId) -> Option<key_group::SenderMediaKeys> {
         let lender = Arc::clone(self.lender.get()?);
         match tokio::time::timeout(LEND_PATIENCE, lender.lend(workspace)).await {
             Ok(Some(lent)) if lent.sender() == self.device => Some(lent),

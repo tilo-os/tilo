@@ -25,7 +25,7 @@ fn key(seed: u8) -> ed25519_dalek::SigningKey {
 }
 
 /// A device's retained frames for `mutation`, as a page signs them;
-/// `sealed` stands in for channel-crypto ciphertext.
+/// `sealed` stands in for key-group ciphertext.
 fn device_frames(seed: u8, mutation: &DocumentMutation, sealed: bool, seq: u64) -> Vec<Vec<u8>> {
     signed_frames(
         &key(seed),
@@ -1380,7 +1380,7 @@ fn written_in_the_clear(store: &WorkspaceStore) -> HashSet<(automerge::ActorId, 
 
 /// A key holder's opener for `keys`, as [`Compactor::fold_with_keys`] reads.
 fn keyed_opener(
-    keys: &channel_crypto::ChannelContentKeys,
+    keys: &key_group::ContentKeys,
 ) -> impl Fn(&collab_types::SignedOp) -> Option<Vec<u8>> + '_ {
     |op| {
         let metadata = op.encryption?;
@@ -1391,11 +1391,11 @@ fn keyed_opener(
     }
 }
 
-fn node_keys() -> channel_crypto::ChannelContentKeys {
+fn node_keys() -> key_group::ContentKeys {
     let route = route();
-    channel_crypto::ChannelGroup::create(
+    key_group::KeyGroup::create(
         collab_types::WorkspaceId::parse(&route.cluster_id).unwrap(),
-        channel_crypto::MemberKey::generate("node").unwrap(),
+        key_group::MemberKey::generate("node").unwrap(),
     )
     .unwrap()
     .content_keys()
@@ -1407,7 +1407,7 @@ fn node_keys() -> channel_crypto::ChannelContentKeys {
 /// sealed snapshot and removing what it holds would.
 fn keyed_round(
     store: &WorkspaceStore,
-    keys: &channel_crypto::ChannelContentKeys,
+    keys: &key_group::ContentKeys,
     removes: bool,
 ) -> Option<Replaced> {
     let open = keyed_opener(keys);
@@ -1449,7 +1449,7 @@ fn keyed_round(
 /// when it retains nothing in the clear.
 fn sealed_changes(
     store: &WorkspaceStore,
-    keys: &channel_crypto::ChannelContentKeys,
+    keys: &key_group::ContentKeys,
 ) -> Option<HashSet<(automerge::ActorId, u64)>> {
     let open = keyed_opener(keys);
     let retained = store.channel_entries(&channel()).unwrap();

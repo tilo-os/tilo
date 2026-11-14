@@ -178,13 +178,13 @@ impl Asked {
 /// host's workspace keys) derive them at the current epoch, sealed to
 /// `device`.
 async fn lend(
-    keys: &dyn tilo_room_host::workspaces::ChannelKeys,
+    keys: &dyn tilo_room_host::workspaces::GroupKeys,
     workspace: &str,
     device: [u8; 32],
 ) -> Result<serde_json::Value, ActionHostError> {
     let unavailable = |reason: String| ActionHostError::Unavailable { reason };
     let content = keys
-        .channel_keys(workspace, false)
+        .group_keys(workspace, false)
         .await
         .ok_or_else(|| unavailable("this host takes no part in the workspace's media".to_owned()))?
         .map_err(|error| {
@@ -225,25 +225,25 @@ fn argument_of<T: serde::de::DeserializeOwned>(
 mod tests {
     use super::*;
 
-    use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
+    use key_group::{ContentKeys, KeyGroup, MemberKey};
     use tilo_live::frame::Stream;
-    use tilo_room_host::workspaces::{ChannelKeys, ChannelKeysAnswerFuture};
+    use tilo_room_host::workspaces::{GroupKeys, GroupKeysAnswerFuture};
 
     const WORKSPACE: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
     /// A host holding the workspace's keys, and no other's.
-    struct Holding(ChannelContentKeys);
+    struct Holding(ContentKeys);
 
-    impl ChannelKeys for Holding {
-        fn channel_keys<'a>(&'a self, workspace: &'a str, _: bool) -> ChannelKeysAnswerFuture<'a> {
+    impl GroupKeys for Holding {
+        fn group_keys<'a>(&'a self, workspace: &'a str, _: bool) -> GroupKeysAnswerFuture<'a> {
             let answer = (workspace == WORKSPACE).then(|| Ok(self.0.clone()));
             Box::pin(std::future::ready(answer))
         }
     }
 
-    fn media() -> ChannelContentKeys {
+    fn media() -> ContentKeys {
         let workspace = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
-        ChannelGroup::create(workspace, MemberKey::generate("host").unwrap())
+        KeyGroup::create(workspace, MemberKey::generate("host").unwrap())
             .unwrap()
             .content_keys()
             .unwrap()
@@ -252,15 +252,11 @@ mod tests {
     fn opened(
         answer: serde_json::Value,
         device: &ed25519_dalek::SigningKey,
-    ) -> channel_crypto::SenderMediaKeys {
+    ) -> key_group::SenderMediaKeys {
         let lent: MediaKeys = serde_json::from_value(answer).unwrap();
         let sender = device.verifying_key().to_bytes();
-        channel_crypto::SenderMediaKeys::open_with(
-            device,
-            sender,
-            &hex::decode(lent.sealed).unwrap(),
-        )
-        .expect("the device it was lent to opens it")
+        key_group::SenderMediaKeys::open_with(device, sender, &hex::decode(lent.sealed).unwrap())
+            .expect("the device it was lent to opens it")
     }
 
     #[tokio::test]
@@ -305,12 +301,8 @@ mod tests {
         let other = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
         let lent: MediaKeys = serde_json::from_value(answer).unwrap();
         assert!(
-            channel_crypto::SenderMediaKeys::open_with(
-                &other,
-                key,
-                &hex::decode(lent.sealed).unwrap()
-            )
-            .is_err(),
+            key_group::SenderMediaKeys::open_with(&other, key, &hex::decode(lent.sealed).unwrap())
+                .is_err(),
             "what carries the answer to the VM reads none of it"
         );
     }

@@ -752,20 +752,15 @@ fn a_held_revision_is_checked_from_heads_with_the_read_permission() {
 const SECRET: &str = "only key holders read this";
 
 /// A channel's key holder, and its content keys before and after a rotation.
-fn rotated_channel() -> (
-    channel_crypto::ChannelContentKeys,
-    channel_crypto::ChannelContentKeys,
-) {
+fn rotated_channel() -> (key_group::ContentKeys, key_group::ContentKeys) {
     let channel = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
-    let mut group = channel_crypto::ChannelGroup::create(
-        channel,
-        channel_crypto::MemberKey::generate("governor").unwrap(),
-    )
-    .unwrap();
+    let mut group =
+        key_group::KeyGroup::create(channel, key_group::MemberKey::generate("governor").unwrap())
+            .unwrap();
     let before = group.content_keys().unwrap();
     group
         .add_member(
-            channel_crypto::MemberKey::generate("reader")
+            key_group::MemberKey::generate("reader")
                 .unwrap()
                 .fresh_key_package()
                 .unwrap(),
@@ -775,17 +770,14 @@ fn rotated_channel() -> (
 }
 
 /// Commit a write sealed under `keys`, as an SDK app seals it, at `now`.
-fn commit_sealed(
-    joined: &Enrolled,
-    keys: &channel_crypto::ChannelContentKeys,
-) -> collab_types::SignedOp {
+fn commit_sealed(joined: &Enrolled, keys: &key_group::ContentKeys) -> collab_types::SignedOp {
     commit_sealed_as(joined, keys, collab_types::ContentRetention::Delta)
 }
 
 /// Commit a write sealed under `keys` with the signed storage class `class`.
 fn commit_sealed_as(
     joined: &Enrolled,
-    keys: &channel_crypto::ChannelContentKeys,
+    keys: &key_group::ContentKeys,
     class: collab_types::ContentRetention,
 ) -> collab_types::SignedOp {
     let OwnerCommitRequest {

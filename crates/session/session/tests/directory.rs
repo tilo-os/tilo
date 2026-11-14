@@ -1993,7 +1993,7 @@ fn wait_until_their_pointer(
             lounge
                 .page
                 .as_ref()
-                .map(|page| page.status().channels)
+                .map(|page| page.status().key_state)
                 .unwrap_or_default()
         );
     }
@@ -2160,7 +2160,7 @@ fn a_workspace_joined_brings_the_chat_written_before_it() {
     // never came.
     let read = crate::common::wait_maybe_past(
         &mut session,
-        tilo_channels::asking_again_wait(),
+        tilo_workspace_keys::asking_again_wait(),
         |session| {
             (chat_here(session, &lounge.workspace).as_deref() == Some("Coffee's on")).then_some(())
         },
@@ -2221,7 +2221,7 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
     // service's next ask is answered.
     let read = crate::common::wait_maybe_past(
         &mut session,
-        tilo_channels::asking_again_wait(),
+        tilo_workspace_keys::asking_again_wait(),
         |session| {
             chat_here(session, &lounge.workspace)
                 .is_some()

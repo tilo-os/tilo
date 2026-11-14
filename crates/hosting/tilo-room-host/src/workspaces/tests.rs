@@ -1469,7 +1469,7 @@ async fn the_owner_restricts_until_a_time_and_lifts_it() {
 
 /// A relay certified with `capabilities`, a workspace it governs, and one of
 /// the workspace's member devices, with the channel route that member asks for.
-struct AskedForAChannel {
+struct AskedForKeys {
     /// The relay's state.
     state: tempfile::TempDir,
     relay: crate::workspaces::fixtures::TestHost,
@@ -1481,7 +1481,7 @@ struct AskedForAChannel {
 /// Start a relay certified with `capabilities`, create a workspace on it, admit
 /// a member device of the person, and hand the workspace that device's MLS
 /// access request for the workspace's group, as its runtime sends one.
-async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedForAChannel {
+async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedForKeys {
     a_member_asks_for_a_channel_through(capabilities, super::Carried::Unkept).await
 }
 
@@ -1490,7 +1490,7 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
 async fn a_member_asks_for_a_channel_through(
     capabilities: DeviceCapabilities,
     carried: super::Carried,
-) -> AskedForAChannel {
+) -> AskedForKeys {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(capabilities);
     let relay = test_host(&dir.path().join("relay"), &key, &cert).await;
@@ -1503,11 +1503,11 @@ async fn a_member_asks_for_a_channel_through(
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
     admit_view_reader(&workspaces, &created.workspace, &key, &member).await;
     let channel = collab_types::WorkspaceId::parse(&created.workspace).unwrap();
-    let vault = channel_crypto::VaultKey::new([3; 32]);
+    let vault = key_group::VaultKey::new([3; 32]);
     let member_dir = dir.path().join("member");
     std::fs::create_dir_all(&member_dir).unwrap();
-    let request = channel_crypto::ChannelPeer::waiting(
-        Some(std::sync::Arc::new(channel_crypto::Files::new(&member_dir))),
+    let request = key_group::GroupPeer::waiting(
+        Some(std::sync::Arc::new(key_group::Files::new(&member_dir))),
         channel,
         Box::new(member_key.clone()),
         &vault,
@@ -1526,7 +1526,7 @@ async fn a_member_asks_for_a_channel_through(
         .absorb_carried(&created.workspace, member.device_public_key, &body, carried)
         .await
         .unwrap();
-    AskedForAChannel {
+    AskedForKeys {
         state: dir,
         relay,
         workspaces,
@@ -1535,7 +1535,7 @@ async fn a_member_asks_for_a_channel_through(
     }
 }
 
-impl AskedForAChannel {
+impl AskedForKeys {
     /// Whether the workspace kept the member's request among the records it
     /// retains for the devices that take part in its channels.
     async fn retains_the_request(&self) -> bool {

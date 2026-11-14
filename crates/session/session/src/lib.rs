@@ -63,7 +63,7 @@ mod settings_steps;
 // table every host asks, named here as the session always has.
 pub use tilo_session_client::gate as workspace_gate;
 // This device's workspaces, and the sealed channels their records travel in.
-pub use tilo_session_client::{channels, engine, membership};
+pub use tilo_session_client::{engine, membership, workspace_keys};
 
 // The Linux host's effects: the compositor, the services it starts, the
 // devices and the processes. A web host provides these through `platform`.

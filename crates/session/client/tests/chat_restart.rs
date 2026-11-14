@@ -317,7 +317,7 @@ async fn reads_whole(
                     "CHAT-RESTART history of {:?}:\n{}\npage: {}\nfailures: {:?}",
                     route.record,
                     history(host, workspace, workspace_id, route).await,
-                    page.status().channels,
+                    page.status().key_state,
                     page.status().failures
                 );
             }

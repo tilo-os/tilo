@@ -61,8 +61,8 @@ tilo-session-core = { path = "../core" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 # This device's channels: the groups its workspaces' sealed records are in, and the governance that
 # settles who reads each one.
-tilo-channels = { path = "../../collab/channels" }
-channel-crypto = { path = "../../collab/channel-crypto" }
+tilo-workspace-keys = { path = "../../collab/workspace-keys" }
+key-group = { path = "../../collab/key-group" }
 # The channel state and ingress gates a workspace's sealed records are held to, as the broker keeps
 # them on every host.
 tilo-broker-core = { path = "../../collab/broker-core" }

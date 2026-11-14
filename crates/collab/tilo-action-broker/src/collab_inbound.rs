@@ -314,8 +314,8 @@ mod tests {
 
     /// The gate of a workspace that requires encryption: its group's, which
     /// every record of the workspace seals under.
-    fn gate() -> channel_crypto::ChannelGate {
-        channel_crypto::ChannelGate {
+    fn gate() -> key_group::SealGate {
+        key_group::SealGate {
             encryption_required: true,
         }
     }
@@ -475,7 +475,7 @@ mod tests {
     /// the writes it was shown in the order it was shown them.
     fn member_takes(writes: &[SignedOp]) -> MemberTook {
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        channels.lock().unwrap().register_channel_gate(
+        channels.lock().unwrap().register_gate(
             collab_types::WorkspaceId::parse("workspace").unwrap(),
             gate(),
         );
@@ -552,7 +552,7 @@ mod tests {
             op
         };
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        channels.lock().unwrap().register_channel_gate(
+        channels.lock().unwrap().register_gate(
             collab_types::WorkspaceId::parse("workspace").unwrap(),
             gate(),
         );

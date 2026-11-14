@@ -645,7 +645,7 @@ pub async fn admitted(peer: &Link) {
 pub fn keyed(peer: &Link, route: &DocumentRoute) -> bool {
     let prefix = format!("route {}/{}:", route.app_id, route.record);
     peer.status()
-        .channels
+        .key_state
         .lines()
         .any(|line| line.starts_with(&prefix) && line.contains(": ready;"))
 }
@@ -733,7 +733,7 @@ async fn in_replica<T>(
             peer.engine()
                 .record(&route.cluster_id, &route.app_id, &route.record)
                 .map(|bytes| bytes.map(|bytes| bytes.len())),
-            peer.status().channels,
+            peer.status().key_state,
             peer.status().failures
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -754,7 +754,7 @@ pub async fn durable(peer: &Link) {
             std::time::Instant::now() < deadline,
             "timed out waiting for the writes to be durable; pending {}; channels:\n{}\nfailures: {:?}",
             peer.status().outgoing_pending,
-            peer.status().channels,
+            peer.status().key_state,
             peer.status().failures
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -765,7 +765,7 @@ pub async fn durable(peer: &Link) {
 /// says it: `None` while it refused nothing.
 pub fn refused(peer: &Link) -> Option<String> {
     peer.status()
-        .channels
+        .key_state
         .lines()
         .find(|line| line.starts_with("refused "))
         .map(str::to_owned)

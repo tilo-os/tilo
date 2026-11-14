@@ -1,0 +1,105 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "key-group"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "A workspace's MLS group: its members, epochs and content keys."
+
+[lib]
+name = "key_group"
+path = "src/lib.rs"
+
+# Per-group MLS group encryption. Each group is one MLS group;
+# the group key rotates on every membership change via openmls's
+# epoch counter. The crate wraps openmls in a narrow API focused on
+# the operations Tilo needs (create / add member via Welcome / join /
+# encrypt / decrypt) and stays pure Rust + in-memory — persistence
+# and the broker-side wire layering are out of scope.
+
+[dependencies]
+hex.workspace = true
+collab-types = { version = "0.1.0", path = "../collab-types" }
+# Crash-safe, owner-only state replacement.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+
+# OpenMLS. Pin the minor version so an upstream API change receives an
+# explicit review before it changes this crate's public surface.
+openmls = "0.9"
+# Rust-Crypto-backed crypto provider for openmls. The provider owns
+# the in-memory key+state storage; we use it for both group state
+# and per-member signing-key persistence (via `SignatureKeyPair::store`).
+openmls_rust_crypto = "0.6"
+# Basic credential (= identity name) implementation; we don't ship
+# X.509 credentials.
+openmls_basic_credential = "0.6"
+# Trait crate — pulled in for the `OpenMlsProvider` trait, needed to
+# call `.storage()` on `OpenMlsRustCrypto`.
+openmls_traits = "0.6"
+# TLS-codec for serialising MlsMessage{In,Out}: Welcome bytes ride
+# the wire as TLS-serialised opaque blobs.
+
+thiserror.workspace = true
+# Per-stream media keys are a keyed hash of the epoch's content key.
+blake3.workspace = true
+serde.workspace = true
+postcard.workspace = true
+zeroize.workspace = true
+# Content keys, key-history bundles and persisted state are sealed through
+# the shared construction.
+tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
+# One device's media keys are sealed to its identity key: the Ed25519 key
+# every device already has is turned into the X25519 one a box is addressed
+# to, as the device fabric does for the secrets it replicates.
+ed25519-dalek.workspace = true
+
+# OpenMLS reads randomness and the clock through JavaScript on wasm, and
+# refuses to build there without being told those APIs exist. getrandom is
+# named for the same reason: its 0.2 line, which openmls_basic_credential
+# reaches through ed25519-dalek, has no wasm32-unknown-unknown backend unless
+# the `js` feature selects the page's `crypto.getRandomValues`, and a peer that
+# builds this crate alone does not build tilo-ui beside it to name that.
+[target.'cfg(target_family = "wasm")'.dependencies]
+openmls = { version = "0.9", features = ["js"] }
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+# Used in the integration test that wraps a ciphertext inside a
+# SignedOp envelope and verifies the signature round-trips.
+collab-types = { path = "../collab-types" }
+# Outer-signature path in the SignedOp test needs a concrete
+# `SigningKey` type. Same major version tilo-collab-types is on.
+ed25519-dalek = { workspace = true, features = ["serde"] }
+tempfile.workspace = true
+# Drives a peer's asynchronous calls.
+pollster.workspace = true
+# CPU instructions per per-group operation, deterministic across machines.
+iai-callgrind = "=0.16.1"
+
+[[bench]]
+name = "per_group"
+path = "benches/per_group.rs"
+harness = false
+
+[[bench]]
+name = "instructions"
+path = "benches/instructions.rs"
+harness = false
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+openmls = { version = "0.9", features = ["js"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

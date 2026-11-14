@@ -102,7 +102,7 @@ fn install_logging() {
     // an earlier build saved upgraded in place, or a copied machine joining
     // as itself.
     let filter = EnvFilter::try_from_env("TILO_RELAY_LOG")
-        .unwrap_or_else(|_| EnvFilter::new("tilo_relay=info,tilo_channels=info,warn"));
+        .unwrap_or_else(|_| EnvFilter::new("tilo_relay=info,tilo_workspace_keys=info,warn"));
     fmt()
         .with_env_filter(filter)
         .with_target(true)

@@ -31,7 +31,7 @@ const OPS: [WorkspaceOperation; 11] = [
     WorkspaceOperation::RemoteAction,
     WorkspaceOperation::DelegateMembership,
     WorkspaceOperation::Publish,
-    WorkspaceOperation::ChannelAccess,
+    WorkspaceOperation::KeyAccess,
 ];
 
 /// One decision as a letter, so a row reads as the planes in order.
@@ -209,7 +209,7 @@ fn decide_matrix() {
     };
     let none = || -> Setup { Box::new(|_, _| {}) };
     // Subscribe, State, Replay, Live, ContentDiscovery, Compute, Environment, RemoteAction,
-    // DelegateMembership, Publish, ChannelAccess
+    // DelegateMembership, Publish, KeyAccess
     let cases = vec![
         Case {
             name: "owner's member device",

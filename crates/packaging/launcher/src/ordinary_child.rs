@@ -1447,7 +1447,7 @@ mod command_tests {
             );
         }
 
-        phase private_target_routing_codec_refuses_unknown_authority_and_unbounded_groups;
+        phase private_target_routing_codec_refuses_unknown_authority_and_unbounded_channels;
         {
             let wire = RoutedCommandWire {
                 command: command(),

@@ -327,7 +327,7 @@ fn state_timing_steps(host: bool, delta: &[u8]) -> (&'static str, &'static str) 
 /// with the frame its own key package came in, and everything else is a change.
 pub(super) fn plane_of(envelope: &Envelope) -> WorkspaceOperation {
     if carries_channel_access(envelope) {
-        WorkspaceOperation::ChannelAccess
+        WorkspaceOperation::KeyAccess
     } else {
         WorkspaceOperation::Publish
     }

@@ -43,7 +43,7 @@ pub const SHARE_WINDOW: &str = "share-window";
 pub const END_WINDOW_SHARE: &str = "end-window-share";
 
 /// What [`MEDIA_KEYS`] answers: one sender's media keys
-/// (`channel_crypto::SenderMediaKeys`), sealed to its device key, in their
+/// (`key_group::SenderMediaKeys`), sealed to its device key, in their
 /// wire encoding as hex.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

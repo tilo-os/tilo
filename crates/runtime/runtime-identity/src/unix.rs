@@ -1255,13 +1255,13 @@ impl SigningIdentity {
     }
 
     /// Ask the workspace-bound identity broker for the content keys of one
-    /// document route; see [`crate::wire::Request::ChannelKeys`].
+    /// document route; see [`crate::wire::Request::GroupKeys`].
     ///
     /// # Errors
     ///
     /// Returns [`NotAvailable::ConnectionFailed`] if this is not a
     /// workspace-bound broker connection or the broker refuses the route.
-    pub fn channel_keys(
+    pub fn group_keys(
         &self,
         workspace_id: &str,
         app_id: &str,
@@ -1270,7 +1270,7 @@ impl SigningIdentity {
     ) -> Result<crate::wire::ChannelKeysReply, NotAvailable> {
         match &self.source {
             SigningSource::ActionBroker(stream) => {
-                stream.channel_keys(workspace_id, app_id, record_id, known_generation)
+                stream.group_keys(workspace_id, app_id, record_id, known_generation)
             }
             SigningSource::Local(_)
             | SigningSource::LocalThreshold(_)

@@ -94,7 +94,7 @@ impl AsyncBrokerSigningIdentity {
         .await
     }
 
-    pub async fn channel_keys(
+    pub async fn group_keys(
         &mut self,
         workspace_id: &str,
         app_id: &str,
@@ -102,7 +102,7 @@ impl AsyncBrokerSigningIdentity {
         known_generation: u64,
     ) -> Result<wire::ChannelKeysReply, NotAvailable> {
         let response = self
-            .exchange(&wire::Request::ChannelKeys {
+            .exchange(&wire::Request::GroupKeys {
                 workspace_id: workspace_id.to_owned(),
                 app_id: app_id.to_owned(),
                 record_id: record_id.to_owned(),

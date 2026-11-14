@@ -3162,7 +3162,7 @@ fn remember_governance(
     ws: WorkspaceId,
     msg: &NeighbourMsg,
 ) {
-    if !native_ingress::is_channel_governance(msg) {
+    if !native_ingress::is_governance(msg) {
         return;
     }
     let (Some((channel, Retention::Checkpoint)), Ok(bytes)) =

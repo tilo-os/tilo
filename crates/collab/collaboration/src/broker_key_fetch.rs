@@ -19,7 +19,7 @@ pub(super) fn answered_keys(
             tracing::warn!(?error, "collab: identity service refused channel keys");
             KeysAnswer {
                 reply: runtime_identity::wire::ChannelKeysReply {
-                    access: runtime_identity::wire::ChannelAccess::Unavailable,
+                    access: runtime_identity::wire::KeyAccess::Unavailable,
                     generation,
                     keys: None,
                 },
@@ -97,7 +97,7 @@ pub(super) async fn certified_channel_keys(
     endpoint_channel_keys(
         std::sync::Arc::new(
             move |workspace_id: &str, app_id: &str, record_id: &str, generation: u64| {
-                identity.channel_keys(workspace_id, app_id, record_id, generation)
+                identity.group_keys(workspace_id, app_id, record_id, generation)
             },
         ),
         queries,

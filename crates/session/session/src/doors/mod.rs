@@ -28,9 +28,8 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 use settings_sections::network_usage::{ConnectionKind, Reading};
-use tilo_channels::ChannelKeyProvider;
 use tilo_identity_host::broker::{
-    ChannelKeySource, IdentityBrokerHandle, PersonRecordKinds, WorkspaceMembership,
+    GroupKeySource, IdentityBrokerHandle, PersonRecordKinds, WorkspaceMembership,
 };
 use tilo_portal::PortalCaller;
 use tilo_service::{Questions, Services};
@@ -38,6 +37,7 @@ use tilo_system_stats::Grant;
 use tilo_system_stats::hub::Hub;
 use tilo_system_stats::protocol::Handoff;
 use tilo_system_stats::server::{Prompter, Server};
+use tilo_workspace_keys::KeyProvider;
 
 use crate::plane::DeskAuthority;
 
@@ -221,7 +221,7 @@ pub(crate) struct Serving {
     /// its buffers.
     pub render_node: Option<std::path::PathBuf>,
     /// Where the identity service finds this device's channel keys.
-    pub keys: ChannelKeyProvider,
+    pub keys: KeyProvider,
     /// What a capability is asked through, when there is anyone to ask.
     pub questions: Option<Questions>,
     /// The person's answers, which the portal keeps: an answer given to one question stands for the
@@ -312,10 +312,7 @@ impl Doors {
 }
 
 /// The identity service at the launcher's socket for it, signing in the workspace the desk shows.
-fn identity(
-    desk: Option<Arc<DeskAuthority>>,
-    keys: ChannelKeyProvider,
-) -> Option<IdentityBrokerHandle> {
+fn identity(desk: Option<Arc<DeskAuthority>>, keys: KeyProvider) -> Option<IdentityBrokerHandle> {
     // An app reaches its identity the way it reaches its actions: over the plane this session
     // serves it. A session that serves none has nothing to sign in.
     let desk = desk?;
@@ -325,7 +322,7 @@ fn identity(
     }
     let path = launcher::services::socket_for(launcher::services::IDENTITY_SERVICE);
     let membership = desk as Arc<dyn WorkspaceMembership>;
-    let keys = Arc::new(keys) as Arc<dyn ChannelKeySource>;
+    let keys = Arc::new(keys) as Arc<dyn GroupKeySource>;
     match tilo_identity_host::broker::spawn(path, membership, keys, Arc::new(InstalledApps::read()))
     {
         Ok(handle) => {

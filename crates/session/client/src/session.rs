@@ -231,14 +231,10 @@ fn session_task(
     let record = store.load().unwrap_or_default();
     let vault = store.channel_vault().unwrap_or_else(rand::random);
     let replicas = crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store));
-    let channel_state = crate::custody::StoredChannels::load(store.as_ref());
-    let gates = Arc::new(tilo_channels::Gates::default());
-    let channels = tilo_channels::ChannelKeyAccess::new(open_channels(
-        &replicas,
-        &channel_state,
-        vault,
-        &signer,
-        &gates,
+    let key_state = crate::custody::StoredKeys::load(store.as_ref());
+    let gates = Arc::new(tilo_workspace_keys::Gates::default());
+    let workspace_keys = tilo_workspace_keys::SharedKeys::new(open_keys(
+        &replicas, &key_state, vault, &signer, &gates,
     ));
     let engine = Arc::new(crate::engine::Engine::holding(
         replicas.owner(),
@@ -246,8 +242,8 @@ fn session_task(
         tilo_identity_host::custody::HostIdentity::kept(config.cert.clone(), Arc::clone(&signer)),
         Arc::new(crate::custody::SessionCustody),
     ));
-    engine.keys().set(Some(channels.clone()));
-    engine.held_writes().lock().extend(channel_state.held());
+    engine.keys().set(Some(workspace_keys.clone()));
+    engine.held_writes().lock().extend(key_state.held());
     #[cfg(feature = "toolkit")]
     crate::surfaces::decide_with_kept_surfaces();
     let task = Task {
@@ -267,14 +263,14 @@ fn session_task(
         placing: BTreeMap::new(),
         planes: plane::Planes::default(),
         record,
-        channels,
+        workspace_keys,
         governance: HostGovernance::default(),
         outbound_due: false,
         answered: Vec::new(),
         arrived: Vec::new(),
         let_go: BTreeSet::new(),
         held_inbound: BTreeMap::new(),
-        channel_state,
+        key_state,
         route_keys: BTreeMap::new(),
         new_keys: Vec::new(),
         keys_generation: 0,
@@ -399,11 +395,11 @@ struct Task {
     record: PeerRecord,
     /// This device's side of the workspaces' encrypted channels: the engine every participant runs,
     /// here as a reader that asks for access and follows the participants' commits.
-    channels: tilo_channels::ChannelKeyAccess,
+    workspace_keys: tilo_workspace_keys::SharedKeys,
     /// What the channels say to and hear from the host.
     governance: HostGovernance,
     /// The channels' state and the writes held for their keys, in the store.
-    channel_state: crate::custody::StoredChannels,
+    key_state: crate::custody::StoredKeys,
     /// Every route this session opened, and the keys it holds for it.
     route_keys: BTreeMap<DocumentRoute, RouteKeys>,
     /// Routes whose keys arrived since the session last acted on them.
@@ -1479,7 +1475,7 @@ impl Task {
                 self.kept.insert(workspace_id, kept);
                 true
             }
-            Command::Client(Cmd::InstallChannelKeys(route, _)) => {
+            Command::Client(Cmd::InstallGroupKeys(route, _)) => {
                 // The engine holds them already ([`crate::Link`] hands them over): settled with
                 // the next channel changes, the same way as keys the channel's own governance
                 // hands this session. The channel's records are sealed with them, and so is a
@@ -1684,7 +1680,7 @@ impl Task {
         // A page only follows its channel groups: said first, so no replay
         // this session asks for carries every member's request to be
         // admitted to one, which only a device that admits others reads.
-        let mut sent_ok = client.send(Envelope::ChannelReader).is_ok();
+        let mut sent_ok = client.send(Envelope::KeyFollower).is_ok();
         // A plane's grant is its session's token: the planes of the last
         // session ended with it, and every workspace's is joined again with
         // this one ([`Self::settle_planes`]).
@@ -2000,14 +1996,14 @@ impl Task {
         if all {
             self.read_all_keys();
         }
-        self.channels.pump_at(&self.governance, now);
-        if self.channels.generation() != self.keys_generation {
+        self.workspace_keys.pump_at(&self.governance, now);
+        if self.workspace_keys.generation() != self.keys_generation {
             self.read_all_keys();
         }
     }
 
     fn read_all_keys(&mut self) {
-        self.keys_generation = self.channels.generation();
+        self.keys_generation = self.workspace_keys.generation();
         let routes: Vec<DocumentRoute> = self
             .route_keys
             .iter()
@@ -2028,7 +2024,7 @@ impl Task {
         if self.keys_of(route).is_none() {
             return false;
         }
-        let change = self.channels.workspace_change(workspace);
+        let change = self.workspace_keys.workspace_change(workspace);
         let installed = match self.route_keys.get(route) {
             Some(RouteKeys::Engine(held)) => *held == change,
             Some(RouteKeys::Handed) => true,
@@ -2044,9 +2040,9 @@ impl Task {
 
     /// Store channel state and held edits when either changed, so a
     /// reloaded page keeps its access and what it wrote before the keys.
-    fn persist_channels(&self, held_changed: bool) {
+    fn persist_keys(&self, held_changed: bool) {
         if held_changed {
-            self.channel_state.hold(
+            self.key_state.hold(
                 self.engine
                     .held_writes()
                     .lock()
@@ -2055,7 +2051,7 @@ impl Task {
                     .collect(),
             );
         }
-        if let Err(error) = self.channel_state.save(self.store.as_ref()) {
+        if let Err(error) = self.key_state.save(self.store.as_ref()) {
             self.fail_on(FailureSubject::Storage, "storage-transaction-failed", error);
         }
     }
@@ -2068,8 +2064,8 @@ impl Task {
         let mut delivered = true;
         self.keep_arrived();
         self.retire_answered();
-        if self.channels.signing() {
-            self.channels.signatures().await;
+        if self.workspace_keys.signing() {
+            self.workspace_keys.signatures().await;
             self.pump_channels(false);
         }
         if let Some(client) = client {
@@ -2090,16 +2086,16 @@ impl Task {
                 break;
             }
         }
-        self.persist_channels(false);
-        let channels = self.describe_channels();
-        if self.reports.read(|status| status.channels != channels) {
-            self.reports.change(|status| status.channels = channels);
+        self.persist_keys(false);
+        let key_state = self.describe_keys();
+        if self.reports.read(|status| status.key_state != key_state) {
+            self.reports.change(|status| status.key_state = key_state);
         }
         delivered
     }
 
-    /// The channels' diagnostics: each workspace, route, plane and held write.
-    fn describe_channels(&self) -> String {
+    /// The key state's diagnostics: each workspace, route, plane and held write.
+    fn describe_keys(&self) -> String {
         let mut channels = self.replicas.describe();
         for (route, keys) in &self.route_keys {
             let state = match keys {
@@ -2136,26 +2132,30 @@ impl Task {
 
 /// This device's channels as a reader: its state in `state`, sealed under
 /// `vault`, signed by its custody, and their readers its workspaces'.
-fn open_channels(
+fn open_keys(
     replicas: &crate::replica::Replicas,
-    state: &crate::custody::StoredChannels,
+    state: &crate::custody::StoredKeys,
     vault: [u8; 32],
     signer: &Arc<dyn DeviceSigner>,
-    gates: &Arc<tilo_channels::Gates>,
-) -> tilo_channels::ChannelEncryption {
-    let directory = || Box::new(crate::channels::OwnerDirectory::reader(replicas.owner()));
-    tilo_channels::ChannelEncryption::open(
-        tilo_channels::ChannelEncryptionConfig {
+    gates: &Arc<tilo_workspace_keys::Gates>,
+) -> tilo_workspace_keys::WorkspaceKeys {
+    let directory = || {
+        Box::new(crate::workspace_keys::OwnerDirectory::reader(
+            replicas.owner(),
+        ))
+    };
+    tilo_workspace_keys::WorkspaceKeys::open(
+        tilo_workspace_keys::KeysConfig {
             state: Arc::new(state.clone()),
-            vault: channel_crypto::VaultKey::new(vault),
+            vault: key_group::VaultKey::new(vault),
             signer: Arc::clone(signer),
-            role: tilo_channels::Role::Reader,
+            role: tilo_workspace_keys::KeyRole::Follower,
         },
         directory(),
-        Arc::clone(gates) as Arc<dyn tilo_channels::ChannelGates>,
+        Arc::clone(gates) as Arc<dyn tilo_workspace_keys::GateRegistry>,
     )
     .unwrap_or_else(|_| {
-        tilo_channels::ChannelEncryption::without_store(directory(), Arc::clone(gates) as _)
+        tilo_workspace_keys::WorkspaceKeys::without_store(directory(), Arc::clone(gates) as _)
     })
 }
 
@@ -2181,7 +2181,7 @@ impl Task {
     }
 
     /// The keys this device seals and opens `route`'s content with, as its engine holds them.
-    fn keys_of(&self, route: &DocumentRoute) -> Option<channel_crypto::ChannelContentKeys> {
+    fn keys_of(&self, route: &DocumentRoute) -> Option<key_group::ContentKeys> {
         let workspace = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)?;
         match self.engine.seal_keys(workspace) {
             Ok(crate::engine::SealKeys::Here(keys)) => Some(keys),

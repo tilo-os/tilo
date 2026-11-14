@@ -134,8 +134,8 @@ tilo-content = { path = "../../system/content" }
 getrandom.workspace = true
 # This device's channels: the groups its records are sealed in, and the keys an endpoint reads one
 # with. Every host runs the engine; where its state is kept is the host's.
-tilo-channels = { path = "../../collab/channels" }
-channel-crypto = { path = "../../collab/channel-crypto" }
+tilo-workspace-keys = { path = "../../collab/workspace-keys" }
+key-group = { path = "../../collab/key-group" }
 rand_core.workspace = true
 # A schedule's fire time is claimed by one of the person's devices, ranked by
 # the same hash everywhere, and the vault derives its channel state key.

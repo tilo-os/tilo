@@ -32,7 +32,7 @@ impl Workspaces {
     ///
     /// The messages could not be retained, or this host holds no such
     /// workspace.
-    pub async fn publish_channel_governance(
+    pub async fn publish_governance(
         &self,
         workspace: &str,
         messages: Vec<neighbour_wire::NeighbourMsg>,
@@ -110,14 +110,14 @@ impl Workspaces {
     /// request was written to the workspace twice, a second job on its
     /// one-at-a-time queue for every request a crowd sends, and sent twice
     /// to every device that admits others.
-    pub(super) async fn take_channel_governance(
+    pub(super) async fn take_governance(
         &self,
         workspace: &str,
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
         carried: Carried,
     ) -> Result<(), String> {
-        if message.channel_workspace() != Some(workspace) {
+        if message.governance_workspace() != Some(workspace) {
             return Ok(());
         }
         let state = self

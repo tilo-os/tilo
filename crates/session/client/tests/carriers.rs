@@ -21,10 +21,10 @@
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Event, Events, Link, Outbox, TransportPhase, VoiceEvent};
 
-use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::presence::Presence;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use key_group::{ContentKeys, KeyGroup, MemberKey};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::{Carrier, Host, answer_pairing, certify, pending_pairings};
 use tilo_relay_protocol::Envelope;
@@ -313,8 +313,8 @@ fn plane_route() -> DocumentRoute {
 }
 
 /// The scope's keys, as the workspace's members derive them.
-fn plane_keys() -> ChannelContentKeys {
-    ChannelGroup::create(
+fn plane_keys() -> ContentKeys {
+    KeyGroup::create(
         collab_types::WorkspaceId::new(),
         MemberKey::generate("ada").unwrap(),
     )
@@ -331,13 +331,13 @@ async fn the_workspace_admits_the_device_and_its_live_plane_carries_it(carrier: 
 
     // The workspace's governance admits the page.
     let page = page(&ada.host, carrier, key, &cert, &host_cert);
-    page.send(Cmd::InstallChannelKeys(plane_route(), keys.clone()))
+    page.send(Cmd::InstallGroupKeys(plane_route(), keys.clone()))
         .unwrap();
     page.join_placed(WORKSPACE, "Workspace").unwrap();
     in_workspace(&page, crate::support::workspace()).await;
     let laptop = ada.laptop_peer(&host_cert).await;
     laptop
-        .send(Cmd::InstallChannelKeys(plane_route(), keys.clone()))
+        .send(Cmd::InstallGroupKeys(plane_route(), keys.clone()))
         .unwrap();
     in_workspace(&laptop, crate::support::workspace()).await;
 

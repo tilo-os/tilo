@@ -557,7 +557,7 @@ workspace-hack = { version = "0.1" }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 chrono = { workspace = true, features = ["wasmbind"] }
 getrandom = { workspace = true, features = ["wasm_js"] }
-# The RustCrypto stack under channel-crypto and the identity ceremony draws entropy
+# The RustCrypto stack under key-group and the identity ceremony draws entropy
 # through getrandom 0.2, which needs its JS backend named in the browser.
 getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
 uuid = { workspace = true, features = ["js"] }

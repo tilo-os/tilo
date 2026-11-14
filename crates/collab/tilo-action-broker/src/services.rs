@@ -911,8 +911,8 @@ pub struct HostServices {
     /// in their own process.
     pub record_content: Option<Arc<crate::record_content::RouteContent>>,
     /// This device's channel encryption service, which tells each route's endpoint when its
-    /// channel keys changed (`channelKeysChanged`).
-    pub channel_keys: Option<crate::channel_encryption::ChannelKeyProvider>,
+    /// channel keys changed (`groupKeysChanged`).
+    pub group_keys: Option<crate::workspace_keys::KeyProvider>,
     /// Where an admitted offloadable action runs (`tilo_actions::offload`); without it every one
     /// runs here.
     pub action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
@@ -975,7 +975,7 @@ impl HostServices {
         "app_consents",
         "launchable_catalogue",
         "record_content",
-        "channel_keys",
+        "group_keys",
         "action_offload",
         "own_device",
         "workspace_nodes",

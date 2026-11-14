@@ -234,7 +234,7 @@ runtime-fs = { path = "../../runtime/runtime-fs" }
 collab-types = { path = "../../collab/collab-types" }
 # A node takes part in the encrypted channels of the rooms it governs, through
 # the one channel service every device runs.
-channel-crypto = { path = "../../collab/channel-crypto" }
+key-group = { path = "../../collab/key-group" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The room host every device runs, which the relay embeds. Every relay build

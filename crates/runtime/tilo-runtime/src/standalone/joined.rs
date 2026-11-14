@@ -13,12 +13,10 @@ use std::{
     time::SystemTime,
 };
 use tilo_action_broker::{
-    channel_encryption::{
-        ChannelKeyProvider, GovernancePark, GovernanceTransport, InboundChannelGovernance,
-    },
     collab_broker::FanoutState,
     collab_core::BrokerChannels,
     collab_inbound::{self, RemoteDocument},
+    workspace_keys::{GovernancePark, GovernanceTransport, InboundGovernance, KeyProvider},
 };
 use tilo_desktop_model::{Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::custody::HostIdentity;
@@ -63,12 +61,12 @@ pub(super) struct Joined {
     /// The profile's record-content service, once the broker runs.
     content: std::sync::OnceLock<Arc<tilo_action_broker::record_content::RouteContent>>,
     /// Channel governance the sessions received, for the channel service.
-    governance: Mutex<Vec<InboundChannelGovernance>>,
+    governance: Mutex<Vec<InboundGovernance>>,
     /// Wakes the channel service's pump when governance arrives.
     governance_wake: Arc<GovernancePark>,
     /// This device's channel keys, once the channel service runs: the only
     /// renewer of its sealed writes that expire in custody.
-    keys: ChannelKeyProvider,
+    keys: KeyProvider,
     /// The workspace host this profile runs, once it runs.
     own_host: std::sync::OnceLock<hosted::OwnHost>,
     /// This value, for the futures its commits answer with.
@@ -135,7 +133,7 @@ impl Joined {
         let owner = tilo_peer_state::owner::open_file(&profile.join(JOINED_WORKSPACES))
             .map_err(io::Error::other)?;
         let executions = super::execution::ExecutionPins::new(&owner);
-        let keys = ChannelKeyProvider::default();
+        let keys = KeyProvider::default();
         owner.keep_sealed_histories(Arc::new(tilo_session_client::engine::HistoryKeys(
             keys.clone(),
         )));
@@ -354,7 +352,7 @@ impl Joined {
     }
 
     /// The slot the channel service fills with this device's channel keys.
-    pub(super) fn channel_keys(&self) -> ChannelKeyProvider {
+    pub(super) fn group_keys(&self) -> KeyProvider {
         self.keys.clone()
     }
 
@@ -372,7 +370,7 @@ impl Joined {
         now: u64,
     ) -> Option<std::collections::BTreeSet<collab_types::Ed25519PublicKey>> {
         let at = std::time::SystemTime::UNIX_EPOCH
-            .checked_add(tilo_action_broker::channel_encryption::policy_instant(now))
+            .checked_add(tilo_action_broker::workspace_keys::policy_instant(now))
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         let holders = self
             .owner
@@ -604,7 +602,7 @@ impl Joined {
     /// Hand the channel governance a workspace host running on this device
     /// took in to this device's channel service, which settles the groups from
     /// it as it does from what its own sessions hear.
-    pub(super) fn take_channel_governance(&self, messages: Vec<NeighbourMsg>) {
+    pub(super) fn take_governance(&self, messages: Vec<NeighbourMsg>) {
         for message in messages {
             self.receive_governance(message);
         }
@@ -622,7 +620,7 @@ impl Joined {
     /// Workspace members' presence carries channel governance; nothing else of it
     /// concerns this host.
     fn receive_governance(&self, message: NeighbourMsg) {
-        let Some(inbound) = InboundChannelGovernance::from_message(message) else {
+        let Some(inbound) = InboundGovernance::from_message(message) else {
             return;
         };
         if let Ok(mut governance) = self.governance.lock() {
@@ -782,14 +780,14 @@ impl OwnerCommitService for Joined {
 /// presence out; it is signed end to end.
 impl GovernanceTransport for Joined {
     fn publish(&self, message: NeighbourMsg) -> bool {
-        let workspace = message.channel_workspace().and_then(WorkspaceId::parse);
+        let workspace = message.governance_workspace().and_then(WorkspaceId::parse);
         let Some(live) = workspace.and_then(|workspace| self.live(workspace)) else {
             return false;
         };
         live.send(message).is_ok()
     }
 
-    fn take_inbound(&self) -> Vec<InboundChannelGovernance> {
+    fn take_inbound(&self) -> Vec<InboundGovernance> {
         self.governance
             .lock()
             .map(|mut governance| std::mem::take(&mut *governance))

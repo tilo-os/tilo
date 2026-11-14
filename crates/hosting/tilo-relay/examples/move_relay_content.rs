@@ -123,7 +123,7 @@ struct Report {
 
 fn log_filter() -> tracing_subscriber::EnvFilter {
     tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "warn,tilo_channels=info".into())
+        .unwrap_or_else(|_| "warn,tilo_workspace_keys=info".into())
 }
 
 fn main() -> ExitCode {

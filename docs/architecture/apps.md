@@ -153,7 +153,7 @@ Today the framework runs inside the app process:
 - **Native apps:** every one built on the SDK's runner (about sixty under `apps/`,
   from activity to word-processor) loads the identity broker the launcher passed
   in, obtains a signed join proof for the workspace, requests content keys
-  (`tilo-identity-host` `channel_keys`), and opens, signs and syncs documents
+  (`tilo-identity-host` `group_keys`), and opens, signs and syncs documents
   itself, through `crates/collab/collaboration` (`sdk_join_identity`, `join_native`).
 - **Tilolang apps:** they are closer. Their code is a WebAssembly module that
   imports only the `tl` operations, and it runs in a tilolang host per workspace

@@ -45,7 +45,7 @@ runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-
 tilo-desktop-model = { path = "../../session/desktop-model" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 collab-types = { path = "../collab-types" }
-channel-crypto = { path = "../channel-crypto" }
+key-group = { path = "../key-group" }
 # The channel service's governance messages and wall clock.
 neighbour-wire = { path = "../neighbour-wire" }
 tilo-clock = { path = "../../platform/tilo-clock" }
@@ -55,7 +55,7 @@ tilo-actions = { path = "../actions" }
 # The broker's half every host runs: the step seam, the route, the receipts.
 tilo-broker-core = { path = "../broker-core" }
 # The channel engine every host runs: this broker enforces its channels' plaintext gates.
-tilo-channels = { path = "../channels" }
+tilo-workspace-keys = { path = "../workspace-keys" }
 # Shortcuts: checking, running and describing them at the action door.
 tilo-automation = { path = "../automation" }
 # The device keymap a shortcut's keyboard trigger is checked against.
@@ -76,7 +76,7 @@ workspace-hack = { version = "0.1" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 [dev-dependencies]
 # The channel engine's tests read what its gates refuse through this broker.
-tilo-channels = { path = "../channels", features = ["test-support"] }
+tilo-workspace-keys = { path = "../workspace-keys", features = ["test-support"] }
 runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
 # The disclosure regression reaches the real verifier and durable registry store over HTTPS.
 registry-server = { path = "../../packaging/registry-server" }

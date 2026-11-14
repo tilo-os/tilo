@@ -6,9 +6,9 @@ use std::sync::Arc;
 use tilo_desktop_model::WorkspaceId as DeskWorkspaceId;
 use tilo_network_actor::{HostIdentity, NetCmd, NetEvent};
 
-use crate::channels::ChannelLink;
 use crate::engine::Engine;
 use crate::sync::{Enrolling, Entering, REDEEM_WITHIN, SETTLE_WITHIN};
+use crate::workspace_keys::KeyLink;
 
 /// Come into the workspace the desk made a slot for, through its door or with an invitation: this
 /// device becomes a member of the workspace, takes in what it held before it arrived, and takes part
@@ -22,7 +22,7 @@ pub(super) async fn redeem(
     plane: &tokio::sync::mpsc::Sender<NetCmd>,
     events: &tokio::sync::mpsc::Sender<NetEvent>,
     request: Enrolling,
-    link: Option<&ChannelLink>,
+    link: Option<&KeyLink>,
 ) -> Result<(), String> {
     let topic = request.workspace_id;
     // Renewal precedes presentation: a device that slept past the end of its certificate joins with
@@ -213,7 +213,7 @@ async fn through_door(
 pub(super) async fn take_part_in(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     workspace_id: DeskWorkspaceId,
-    link: Option<&ChannelLink>,
+    link: Option<&KeyLink>,
     plane: &tokio::sync::mpsc::Sender<NetCmd>,
     events: &tokio::sync::mpsc::Sender<NetEvent>,
 ) -> Result<(), String> {
@@ -252,7 +252,7 @@ pub(super) async fn enter(
     plane: &tokio::sync::mpsc::Sender<NetCmd>,
     events: &tokio::sync::mpsc::Sender<NetEvent>,
     request: Entering,
-    link: Option<&ChannelLink>,
+    link: Option<&KeyLink>,
 ) -> Result<(), String> {
     let topic = request.workspace_id;
     identity.current_material(topic)?;

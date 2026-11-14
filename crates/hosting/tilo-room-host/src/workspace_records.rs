@@ -323,7 +323,7 @@ impl WorkspaceRecords {
                 let message: neighbour_wire::NeighbourMsg =
                     postcard::from_bytes(&retained.body).ok()?;
                 message
-                    .channel_workspace()
+                    .governance_workspace()
                     .is_some()
                     .then_some((retained.author, message))
             })

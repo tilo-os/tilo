@@ -122,9 +122,9 @@ pub struct PeerStatus {
     pub device: [u8; 32],
     /// Bumped on every change.
     pub generation: u64,
-    /// This page's channel state, one line per workspace, certificate and
+    /// This page's key state, one line per workspace, certificate and
     /// route, for diagnostics.
-    pub channels: String,
+    pub key_state: String,
     /// The members each joined workspace's governance lists, by workspace, by
     /// person id: what someone no longer among them made on the workspace's
     /// desktop is released ([`tilo_desktop_model::ownership::released`]).
@@ -157,7 +157,7 @@ impl PeerStatus {
             outgoing_pending: 0,
             device,
             generation: 0,
-            channels: String::new(),
+            key_state: String::new(),
             room_members: BTreeMap::new(),
             room_devices: BTreeMap::new(),
             room_joined: BTreeMap::new(),
@@ -582,7 +582,7 @@ impl std::fmt::Debug for Link {
 impl Outbox for Link {
     fn send(&self, command: Cmd) -> Result<(), Closed> {
         // The replica's readers read with them from now on, not once the session got to them.
-        if let Cmd::InstallChannelKeys(route, keys) = &command
+        if let Cmd::InstallGroupKeys(route, keys) = &command
             && let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)
         {
             self.engine.hand_keys(workspace, keys.clone());

@@ -260,7 +260,7 @@ impl Worker {
                 .get_mut(&workspace_id)
                 .ok_or("the workspace was not joined")?
                 .peer
-                .send(Cmd::InstallChannelKeys(route.clone(), keys))?;
+                .send(Cmd::InstallGroupKeys(route.clone(), keys))?;
         }
         let workspace = self
             .workspaces
@@ -498,7 +498,7 @@ impl Worker {
         {
             workspace
                 .peer
-                .send(Cmd::InstallChannelKeys(index_route.clone(), keys?))?;
+                .send(Cmd::InstallGroupKeys(index_route.clone(), keys?))?;
         }
         workspace
             .wait_for(

@@ -157,7 +157,7 @@ pub(super) async fn handle_envelope(
                 peer, session, subscribed, request_id, &label,
             )))
         }
-        Envelope::ChannelReader => {
+        Envelope::KeyFollower => {
             session
                 .channel_reader
                 .store(true, std::sync::atomic::Ordering::Relaxed);

@@ -72,7 +72,7 @@ ignore = [
     # crypto-bigint 0.5 arrives only through elliptic-curve 0.13 for the NIST
     # curves hpke-rs-rust-crypto 0.7 (behind openmls_rust_crypto and tilo-seal)
     # compiles in. Tilo never selects them: tilo-seal uses DhKem25519 and
-    # channel-crypto's one MLS ciphersuite is X25519/Ed25519. The bans below
+    # key-group's one MLS ciphersuite is X25519/Ed25519. The bans below
     # keep crypto-bigint 0.5 behind elliptic-curve and refuse vulnerable 0.7.
     "RUSTSEC-2026-0387",
 ]

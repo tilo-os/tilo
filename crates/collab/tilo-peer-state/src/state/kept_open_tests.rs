@@ -11,7 +11,7 @@ use std::cell::Cell;
 fn read_kept(
     peer: &StatePeer,
     reader: [u8; 32],
-    keys: &[&ChannelContentKeys],
+    keys: &[&ContentKeys],
     kept: &mut KeptRecord,
 ) -> Result<(AutoCommit, usize), crate::PeerDocumentReadError> {
     let opened = Cell::new(0_usize);
@@ -37,7 +37,7 @@ fn peer_now() -> SystemTime {
 }
 
 /// Open `op` with whichever of `keys` holds its epoch.
-fn open_any(keys: &[&ChannelContentKeys], op: &SignedOp) -> Result<Vec<u8>, String> {
+fn open_any(keys: &[&ContentKeys], op: &SignedOp) -> Result<Vec<u8>, String> {
     let epoch = op.encryption.ok_or("not sealed")?.epoch;
     let keys = keys
         .iter()
@@ -47,7 +47,7 @@ fn open_any(keys: &[&ChannelContentKeys], op: &SignedOp) -> Result<Vec<u8>, Stri
 }
 
 /// The record as a whole read of `peer` opens it with `keys`.
-fn read_whole(peer: &StatePeer, reader: [u8; 32], keys: &[&ChannelContentKeys]) -> AutoCommit {
+fn read_whole(peer: &StatePeer, reader: [u8; 32], keys: &[&ContentKeys]) -> AutoCommit {
     let capture = peer
         .capture_document(
             reader,
@@ -64,7 +64,7 @@ fn read_whole(peer: &StatePeer, reader: [u8; 32], keys: &[&ChannelContentKeys]) 
 fn changes_after(
     peer: &StatePeer,
     reader: [u8; 32],
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
     kept: &mut KeptRecord,
     heads: &[[u8; 32]],
 ) -> Option<Vec<u8>> {

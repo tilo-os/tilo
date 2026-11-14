@@ -161,11 +161,11 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
         .unwrap();
     assert_eq!(board.workspace_id, workspace());
     let route = route();
-    let creator = channel_crypto::ChannelPeer::create_now(
+    let creator = key_group::GroupPeer::create_now(
         None,
         collab_types::WorkspaceId::parse(&route.cluster_id).unwrap(),
         Box::new(bob.clone()),
-        &channel_crypto::VaultKey::new([7; 32]),
+        &key_group::VaultKey::new([7; 32]),
     )
     .unwrap();
     let peer = enter(
@@ -185,7 +185,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
     )
     .await;
     let events = peer.events();
-    peer.send(Cmd::InstallChannelKeys(
+    peer.send(Cmd::InstallGroupKeys(
         route.clone(),
         creator.content_keys().unwrap(),
     ))

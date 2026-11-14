@@ -1453,7 +1453,7 @@ async fn a_member_linked_directly_hears_the_nodes_channel_governance() {
     let request =
         collab_types::MlsAccessRequestV1::signed(channel, vec![1, 2, 3], 1, &key).unwrap();
     workspaces
-        .publish_channel_governance(
+        .publish_governance(
             &created.workspace,
             vec![neighbour_wire::NeighbourMsg::MlsAccessRequest {
                 workspace: created.workspace.clone(),
@@ -2279,7 +2279,7 @@ async fn a_desk_linking_later_holds_every_part_a_page_wrote_before_the_link_kept
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     // The host after the restart holds the channel keys the one before it took part with.
-    let keys = std::sync::Arc::<crate::workspaces::fixtures::TestChannelKeys>::default();
+    let keys = std::sync::Arc::<crate::workspaces::fixtures::TestGroupKeys>::default();
     let relay = crate::workspaces::fixtures::test_host_holding(
         dir.path(),
         &key,
@@ -2384,7 +2384,7 @@ async fn a_desk_linking_later_holds_every_part_a_page_wrote_before_the_link_kept
 async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let keys = std::sync::Arc::<crate::workspaces::fixtures::TestChannelKeys>::default();
+    let keys = std::sync::Arc::<crate::workspaces::fixtures::TestGroupKeys>::default();
     let relay = crate::workspaces::fixtures::test_host_holding(
         dir.path(),
         &key,
@@ -2704,7 +2704,7 @@ async fn a_store_holding_a_stuck_write_is_repaired_when_its_relay_starts() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     // The relay after the restart holds the channel keys the one before it took part with.
-    let keys = std::sync::Arc::<crate::workspaces::fixtures::TestChannelKeys>::default();
+    let keys = std::sync::Arc::<crate::workspaces::fixtures::TestGroupKeys>::default();
     let relay = crate::workspaces::fixtures::test_host_holding(
         dir.path(),
         &key,

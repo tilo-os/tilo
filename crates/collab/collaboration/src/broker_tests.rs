@@ -94,7 +94,7 @@ fn plain_route_keys() -> SharedRouteKeys {
     ))
 }
 
-fn group_route_keys(group: channel_crypto::ChannelGroup) -> SharedRouteKeys {
+fn group_route_keys(group: key_group::KeyGroup) -> SharedRouteKeys {
     let keys = plain_route_keys();
     keys.lock().unwrap().install_group(group);
     keys
@@ -230,7 +230,7 @@ pub struct Captures {
     pub directory_ack: Option<Arc<tokio::sync::Notify>>,
     pub action_catalogue_fixture: Option<Vec<String>>,
     pub action_catalogue_subscriptions: usize,
-    /// The channel service whose changes `Changed { ChannelKeys }`
+    /// The channel service whose changes `Changed { GroupKeys }`
     /// follows; without one the host refuses the wait.
     pub key_changes: Option<Arc<tokio::sync::watch::Sender<u64>>>,
     /// Answers this channel's private service requests, as the session
@@ -772,7 +772,7 @@ impl FakeHost {
                 Err(error) => answered(Err(error)),
             },
             Operation::Changed {
-                of: wire::Changes::ChannelKeys,
+                of: wire::Changes::GroupKeys,
                 after,
                 ..
             } => {
@@ -1273,7 +1273,7 @@ fn host_identity_fixture(
     host_identity_fixture_with_keys(certificate, replies, None)
 }
 
-/// A scripted identity service. `ChannelKeys` requests arrive on the
+/// A scripted identity service. `GroupKeys` requests arrive on the
 /// endpoint's own refresh cadence, so they are answered from `keys`
 /// (or as unavailable) without consuming the scripted `replies`.
 fn host_identity_fixture_with_keys(
@@ -1309,17 +1309,17 @@ fn host_identity_fixture_with_keys(
                 .extend_from_slice(&framing.encode(&body).unwrap());
             let asks_keys = matches!(
                 postcard::from_bytes::<runtime_identity::wire::Request>(&body),
-                Ok(runtime_identity::wire::Request::ChannelKeys { .. })
+                Ok(runtime_identity::wire::Request::GroupKeys { .. })
             );
             let response = if asks_keys {
                 match &keys {
-                    Some((generation, keys)) => Response::ChannelKeys {
-                        access: runtime_identity::wire::ChannelAccess::Ready,
+                    Some((generation, keys)) => Response::GroupKeys {
+                        access: runtime_identity::wire::KeyAccess::Ready,
                         generation: *generation,
                         keys: keys.clone(),
                     },
-                    None => Response::ChannelKeys {
-                        access: runtime_identity::wire::ChannelAccess::Unavailable,
+                    None => Response::GroupKeys {
+                        access: runtime_identity::wire::KeyAccess::Unavailable,
                         generation: 0,
                         keys: Vec::new(),
                     },
@@ -1398,15 +1398,15 @@ fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
             .unwrap();
         assert!(matches!(
             FRAMING.read_value::<_, Request>(&mut host).unwrap(),
-            Some(Request::ChannelKeys { workspace_id, app_id, record_id, known_generation })
+            Some(Request::GroupKeys { workspace_id, app_id, record_id, known_generation })
                 if workspace_id == expected_workspace && app_id == "notes"
                     && record_id == "page" && known_generation == 3
         ));
         FRAMING
             .write_value(
                 &mut host,
-                &Response::ChannelKeys {
-                    access: runtime_identity::wire::ChannelAccess::Removed,
+                &Response::GroupKeys {
+                    access: runtime_identity::wire::KeyAccess::Removed,
                     generation: 4,
                     keys: Vec::new(),
                 },
@@ -1436,8 +1436,8 @@ fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
     };
     assert_eq!(signer.device_certificate(), Some(b"fixture".as_slice()));
     assert_eq!(signer.signing_public_key(), [5; 32]);
-    let keys = signer.channel_keys(&workspace, "notes", "page", 3).unwrap();
-    assert_eq!(keys.access, runtime_identity::wire::ChannelAccess::Removed);
+    let keys = signer.group_keys(&workspace, "notes", "page", 3).unwrap();
+    assert_eq!(keys.access, runtime_identity::wire::KeyAccess::Removed);
     assert_eq!(keys.generation, 4);
     let error = signer
         .sign_collaboration_op(&workspace, "notes", "page", b"operation")
@@ -1559,9 +1559,9 @@ tilo_test_env::scenario! {
         let (requests_tx, requests_rx) = mpsc::sync_channel(1);
         let cluster_id = Uuid::new_v4();
         let channel = collab_types::WorkspaceId::parse(&cluster_id.to_string()).unwrap();
-        let keys = channel_crypto::ChannelGroup::create(
+        let keys = key_group::KeyGroup::create(
             channel,
-            channel_crypto::MemberKey::generate("device").unwrap(),
+            key_group::MemberKey::generate("device").unwrap(),
         )
         .unwrap()
         .content_keys()
@@ -1637,7 +1637,7 @@ tilo_test_env::scenario! {
             matches!(&requests[1], runtime_identity::wire::Request::CollaborationJoin { workspace_id } if workspace_id == &cluster_id.to_string())
         );
         assert!(
-            matches!(&requests[2], runtime_identity::wire::Request::ChannelKeys { app_id, record_id, .. } if app_id == "so.tilo.notes" && record_id == "note"),
+            matches!(&requests[2], runtime_identity::wire::Request::GroupKeys { app_id, record_id, .. } if app_id == "so.tilo.notes" && record_id == "note"),
             "a joined route asks for its channel keys before its first edit"
         );
         let op = requests.iter().find(|request| is_op(request)).unwrap();
@@ -2640,13 +2640,13 @@ struct RefusedDocumentIdentity;
 /// Keys for a fresh channel group, as a ready identity service answers.
 #[cfg(unix)]
 fn ready_channel_keys() -> runtime_identity::wire::ChannelKeysReply {
-    let group = channel_crypto::ChannelGroup::create(
+    let group = key_group::KeyGroup::create(
         collab_types::WorkspaceId::new(),
-        channel_crypto::MemberKey::generate("device").unwrap(),
+        key_group::MemberKey::generate("device").unwrap(),
     )
     .unwrap();
     runtime_identity::wire::ChannelKeysReply {
-        access: runtime_identity::wire::ChannelAccess::Ready,
+        access: runtime_identity::wire::KeyAccess::Ready,
         generation: 1,
         keys: Some(group.content_keys().unwrap().to_bytes().unwrap().to_vec()),
     }
@@ -2654,7 +2654,7 @@ fn ready_channel_keys() -> runtime_identity::wire::ChannelKeysReply {
 
 #[cfg(unix)]
 impl SdkCertifiedIdentity for RefusedDocumentIdentity {
-    fn channel_keys(
+    fn group_keys(
         &self,
         _: &str,
         _: &str,
@@ -2697,7 +2697,7 @@ struct KeyedIdentity {
 
 #[cfg(unix)]
 impl SdkCertifiedIdentity for KeyedIdentity {
-    fn channel_keys(
+    fn group_keys(
         &self,
         _: &str,
         _: &str,
@@ -2732,12 +2732,12 @@ impl SdkCertifiedIdentity for KeyedIdentity {
 #[cfg(unix)]
 struct AnsweringIdentity {
     asked: Arc<std::sync::atomic::AtomicUsize>,
-    access: Option<runtime_identity::wire::ChannelAccess>,
+    access: Option<runtime_identity::wire::KeyAccess>,
 }
 
 #[cfg(unix)]
 impl SdkCertifiedIdentity for AnsweringIdentity {
-    fn channel_keys(
+    fn group_keys(
         &self,
         _: &str,
         _: &str,
@@ -2782,7 +2782,7 @@ include!("held_outbound_tests.rs");
 /// pushed change must still make it ask afterwards.
 #[cfg(unix)]
 #[cfg(test)]
-fn asks_while_waiting(access: Option<runtime_identity::wire::ChannelAccess>, on_timer: bool) {
+fn asks_while_waiting(access: Option<runtime_identity::wire::KeyAccess>, on_timer: bool) {
     let changes = Arc::new(tokio::sync::watch::Sender::new(0_u64));
     let broker = FakeBroker {
         captures: Arc::new(std::sync::Mutex::new(Captures {
@@ -2886,7 +2886,7 @@ fn a_member_waiting_for_keys_shows_the_cleartext_the_broker_admitted() {
             participant_kind: "person",
             signer: SdkDocumentSigner::Certified(Arc::new(AnsweringIdentity {
                 asked: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-                access: Some(runtime_identity::wire::ChannelAccess::Waiting),
+                access: Some(runtime_identity::wire::KeyAccess::Waiting),
             })),
         }),
     )
@@ -2922,8 +2922,8 @@ fn a_member_waiting_for_keys_shows_the_cleartext_the_broker_admitted() {
 #[test]
 #[cfg(unix)]
 fn a_route_the_channel_service_answered_waits_for_its_push() {
-    use runtime_identity::wire::ChannelAccess;
-    for access in [ChannelAccess::Waiting, ChannelAccess::Unavailable] {
+    use runtime_identity::wire::KeyAccess;
+    for access in [KeyAccess::Waiting, KeyAccess::Unavailable] {
         asks_while_waiting(Some(access), false);
     }
 }
@@ -2934,7 +2934,7 @@ fn a_route_the_channel_service_answered_waits_for_its_push() {
 #[test]
 #[cfg(unix)]
 fn a_refused_question_or_a_removal_is_still_asked_on_the_timer() {
-    for access in [None, Some(runtime_identity::wire::ChannelAccess::Removed)] {
+    for access in [None, Some(runtime_identity::wire::KeyAccess::Removed)] {
         asks_while_waiting(access, true);
     }
 }
@@ -3015,7 +3015,7 @@ impl SlowIdentity {
 
 #[cfg(unix)]
 impl SdkCertifiedIdentity for SlowIdentity {
-    fn channel_keys(
+    fn group_keys(
         &self,
         _: &str,
         _: &str,
@@ -3034,7 +3034,7 @@ impl SdkCertifiedIdentity for SlowIdentity {
                 .unwrap();
         }
         Ok(runtime_identity::wire::ChannelKeysReply {
-            access: runtime_identity::wire::ChannelAccess::Ready,
+            access: runtime_identity::wire::KeyAccess::Ready,
             generation: 1,
             keys: first.then(|| self.keys.clone()),
         })
@@ -3073,11 +3073,9 @@ fn a_slow_identity_service_never_holds_up_incoming_ops() {
     let workspace = cluster.to_string();
     let channel = collab_types::WorkspaceId::parse(&workspace).unwrap();
     let artifact = collab_types::document_artifact_id(app_id, &workspace, "");
-    let group = channel_crypto::ChannelGroup::create(
-        channel,
-        channel_crypto::MemberKey::generate("device").unwrap(),
-    )
-    .unwrap();
+    let group =
+        key_group::KeyGroup::create(channel, key_group::MemberKey::generate("device").unwrap())
+            .unwrap();
     let frame = collab_types::DocumentMutation::Incremental(b"remote change".to_vec())
         .encode()
         .unwrap();
@@ -3175,7 +3173,7 @@ struct ClusterRefusingIdentity {
 
 #[cfg(unix)]
 impl SdkCertifiedIdentity for ClusterRefusingIdentity {
-    fn channel_keys(
+    fn group_keys(
         &self,
         _: &str,
         app_id: &str,
@@ -4244,9 +4242,9 @@ tilo_test_env::scenario! {
         assert!(mgr.primary_route().is_none());
         assert_eq!(mgr.requested_primary_route(), Some(&route));
         let channel = collab_types::WorkspaceId::parse(&route.cluster_id.to_string()).unwrap();
-        let group = channel_crypto::ChannelGroup::create(
+        let group = key_group::KeyGroup::create(
             channel,
-            channel_crypto::MemberKey::generate("owner").unwrap(),
+            key_group::MemberKey::generate("owner").unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -5093,11 +5091,11 @@ tilo_test_env::scenario! {
     {
         let channel = collab_types::WorkspaceId::new();
         let artifact = collab_types::ArtifactId::new();
-        let alice_key = channel_crypto::MemberKey::generate("alice").unwrap();
-        let bob_key = channel_crypto::MemberKey::generate("bob").unwrap();
-        let mut alice = channel_crypto::ChannelGroup::create(channel, alice_key).unwrap();
+        let alice_key = key_group::MemberKey::generate("alice").unwrap();
+        let bob_key = key_group::MemberKey::generate("bob").unwrap();
+        let mut alice = key_group::KeyGroup::create(channel, alice_key).unwrap();
         let addition = alice.admit(bob_key.fresh_key_package().unwrap()).unwrap();
-        let bob = channel_crypto::ChannelGroup::process_welcome_with_history(
+        let bob = key_group::KeyGroup::process_welcome_with_history(
             channel,
             &addition.welcome,
             &addition.key_history,
@@ -5227,7 +5225,7 @@ tilo_test_env::scenario! {
         );
 
         // A member added afterwards reads the op from history.
-        let carol_key = channel_crypto::MemberKey::generate("carol").unwrap();
+        let carol_key = key_group::MemberKey::generate("carol").unwrap();
         let addition = {
             let mut keys = alice_endpoint.lock().unwrap();
             let super::super::route_keys::Keys::Group(group) = &mut keys.keys else {
@@ -5235,7 +5233,7 @@ tilo_test_env::scenario! {
             };
             group.admit(carol_key.fresh_key_package().unwrap()).unwrap()
         };
-        let carol = channel_crypto::ChannelGroup::process_welcome_with_history(
+        let carol = key_group::KeyGroup::process_welcome_with_history(
             channel,
             &addition.welcome,
             &addition.key_history,
@@ -5299,9 +5297,9 @@ tilo_test_env::scenario! {
         let workspace = cluster.to_string();
         let channel = collab_types::WorkspaceId::parse(&workspace).unwrap();
         let artifact = collab_types::document_artifact_id(app_id, &workspace, "");
-        let mut alice = channel_crypto::ChannelGroup::create(
+        let mut alice = key_group::KeyGroup::create(
             channel,
-            channel_crypto::MemberKey::generate("alice").unwrap(),
+            key_group::MemberKey::generate("alice").unwrap(),
         )
         .unwrap();
         let history: Vec<Vec<u8>> = (1..=20_u64)
@@ -5331,9 +5329,9 @@ tilo_test_env::scenario! {
                 postcard::to_stdvec(&op).unwrap()
             })
             .collect();
-        let carol_key = channel_crypto::MemberKey::generate("carol").unwrap();
+        let carol_key = key_group::MemberKey::generate("carol").unwrap();
         let addition = alice.admit(carol_key.fresh_key_package().unwrap()).unwrap();
-        let carol = channel_crypto::ChannelGroup::process_welcome_with_history(
+        let carol = key_group::KeyGroup::process_welcome_with_history(
             channel,
             &addition.welcome,
             &addition.key_history,

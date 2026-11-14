@@ -793,10 +793,10 @@ impl NeighbourMsg {
     /// Postcard variant index of [`NeighbourMsg::MlsAccessRequest`].
     pub const MLS_ACCESS_REQUEST_TAG: u8 = 21;
 
-    /// Whether `bytes` encode a frame of channel governance
+    /// Whether `bytes` encode a governance frame
     /// ([`NeighbourMsg::MlsGovernance`]), reading only the variant tag as
     /// [`Self::is_app_document`] does.
-    pub fn is_channel_governance(bytes: &[u8]) -> bool {
+    pub fn is_governance(bytes: &[u8]) -> bool {
         const _: () = assert!(NeighbourMsg::MLS_GOVERNANCE_TAG < 0x80);
         bytes.first() == Some(&Self::MLS_GOVERNANCE_TAG)
     }
@@ -854,11 +854,10 @@ impl NeighbourMsg {
         }
     }
 
-    /// The workspace a channel's governance names: a frame of a channel's
-    /// group, a device asking to join one, or a host's word that one has none.
-    /// `None` for any other message.
+    /// The workspace a governance message names: a frame of the workspace's
+    /// group, or a device asking to join it. `None` for any other message.
     #[must_use]
-    pub fn channel_workspace(&self) -> Option<&str> {
+    pub fn governance_workspace(&self) -> Option<&str> {
         match self {
             Self::MlsGovernance { workspace, .. } | Self::MlsAccessRequest { workspace, .. } => {
                 Some(workspace)
@@ -1019,7 +1018,7 @@ mod tests {
         all.extend(fixtures_window_views());
         all.extend(fixtures_input_permissions_and_identity());
         all.extend(fixtures_app_crdt_and_scrollback());
-        all.extend(fixtures_channel_governance());
+        all.extend(fixtures_governance());
         all.push((
             "live presence",
             NeighbourMsg::LivePresence {
@@ -1081,7 +1080,7 @@ mod tests {
 
     /// Channel governance, with fixed ids and signatures so the golden
     /// bytes stay reproducible (these fixtures are not verified).
-    fn fixtures_channel_governance() -> Vec<(&'static str, NeighbourMsg)> {
+    fn fixtures_governance() -> Vec<(&'static str, NeighbourMsg)> {
         use collab_types::{
             Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame,
             Signature, WorkspaceId,
@@ -1089,7 +1088,7 @@ mod tests {
         let workspace = WorkspaceId::from_u128(0x5555_5555_5555_5555_5555_5555_5555_5555);
         vec![
             (
-                "channel governance frame",
+                "governance frame",
                 NeighbourMsg::MlsGovernance {
                     workspace: WORKSPACE.into(),
                     frame: Box::new(MlsGovernanceFrame {
@@ -1111,7 +1110,7 @@ mod tests {
                 },
             ),
             (
-                "channel access request",
+                "access request",
                 NeighbourMsg::MlsAccessRequest {
                     workspace: WORKSPACE.into(),
                     request: Box::new(MlsAccessRequestV1 {
@@ -1431,17 +1430,13 @@ mod tests {
     /// The channel-governance tag peeks agree with a full decode on a real
     /// encoding of every variant.
     #[test]
-    fn channel_governance_tags_match_encoding() {
+    fn governance_tags_match_encoding() {
         let (mut governance, mut requests) = (0, 0);
         for (case, message) in fixtures() {
             let bytes = postcard::to_allocvec(&message).unwrap();
             let is_governance = matches!(message, NeighbourMsg::MlsGovernance { .. });
             let is_request = matches!(message, NeighbourMsg::MlsAccessRequest { .. });
-            assert_eq!(
-                NeighbourMsg::is_channel_governance(&bytes),
-                is_governance,
-                "{case}"
-            );
+            assert_eq!(NeighbourMsg::is_governance(&bytes), is_governance, "{case}");
             assert_eq!(
                 NeighbourMsg::is_access_request(&bytes),
                 is_request,
@@ -1454,7 +1449,7 @@ mod tests {
             governance > 0 && requests > 0,
             "no channel governance fixture"
         );
-        assert!(!NeighbourMsg::is_channel_governance(&[]));
+        assert!(!NeighbourMsg::is_governance(&[]));
         assert!(!NeighbourMsg::is_access_request(&[]));
     }
 
@@ -1649,7 +1644,7 @@ mod tests {
             ),
         ),
         (
-            "channel governance frame",
+            "governance frame",
             concat!(
                 "142436623366396131302d303030302d343030302d383030302d303030303030",
                 "3030303030630210555555555555555555555555555555550707070707070707",
@@ -1664,7 +1659,7 @@ mod tests {
             ),
         ),
         (
-            "channel access request",
+            "access request",
             concat!(
                 "152436623366396131302d303030302d343030302d383030302d303030303030",
                 "3030303030630110555555555555555555555555555555550202020202020202",

@@ -129,14 +129,14 @@ impl BrokerSigningIdentity {
     /// The content keys of one document route. The host checks the route against
     /// the connection's launch binding and the caller's live role, and never hands
     /// out the keys of another app or workspace.
-    pub fn channel_keys(
+    pub fn group_keys(
         &self,
         workspace_id: &str,
         app_id: &str,
         record_id: &str,
         known_generation: u64,
     ) -> Result<wire::ChannelKeysReply, NotAvailable> {
-        channel_keys_reply(self.exchange(&wire::Request::ChannelKeys {
+        channel_keys_reply(self.exchange(&wire::Request::GroupKeys {
             workspace_id: workspace_id.to_owned(),
             app_id: app_id.to_owned(),
             record_id: record_id.to_owned(),
@@ -212,7 +212,7 @@ impl BrokerMetadata {
             wire::Response::Denied(reason) | wire::Response::Error(reason) => {
                 Err(permission_denied(reason))
             }
-            wire::Response::Signature(_) | wire::Response::ChannelKeys { .. } => Err(invalid_data(
+            wire::Response::Signature(_) | wire::Response::GroupKeys { .. } => Err(invalid_data(
                 "identity broker returned an invalid metadata response",
             )),
         }
@@ -256,7 +256,7 @@ pub(super) fn channel_keys_reply(
     response: wire::Response,
 ) -> Result<wire::ChannelKeysReply, NotAvailable> {
     match response {
-        wire::Response::ChannelKeys {
+        wire::Response::GroupKeys {
             access,
             generation,
             keys,
@@ -418,18 +418,18 @@ mod tests {
     fn channel_keys_carry_the_route_and_report_every_access_state() {
         let (stream, output) = channel(&[
             metadata(),
-            wire::Response::ChannelKeys {
-                access: wire::ChannelAccess::Ready,
+            wire::Response::GroupKeys {
+                access: wire::KeyAccess::Ready,
                 generation: 4,
                 keys: vec![1, 2, 3],
             },
-            wire::Response::ChannelKeys {
-                access: wire::ChannelAccess::Ready,
+            wire::Response::GroupKeys {
+                access: wire::KeyAccess::Ready,
                 generation: 4,
                 keys: Vec::new(),
             },
-            wire::Response::ChannelKeys {
-                access: wire::ChannelAccess::Waiting,
+            wire::Response::GroupKeys {
+                access: wire::KeyAccess::Waiting,
                 generation: 5,
                 keys: Vec::new(),
             },
@@ -438,31 +438,31 @@ mod tests {
         ]);
         let identity = BrokerSigningIdentity::from_connected_io(stream).expect("metadata");
         let ready = identity
-            .channel_keys("workspace", "so.tilo.notes", "record", 0)
+            .group_keys("workspace", "so.tilo.notes", "record", 0)
             .unwrap();
-        assert_eq!(ready.access, wire::ChannelAccess::Ready);
+        assert_eq!(ready.access, wire::KeyAccess::Ready);
         assert_eq!(ready.keys.as_deref(), Some([1, 2, 3].as_slice()));
         let unchanged = identity
-            .channel_keys("workspace", "so.tilo.notes", "record", 4)
+            .group_keys("workspace", "so.tilo.notes", "record", 4)
             .unwrap();
         assert_eq!(unchanged.keys, None);
         let waiting = identity
-            .channel_keys("workspace", "so.tilo.notes", "record", 4)
+            .group_keys("workspace", "so.tilo.notes", "record", 4)
             .unwrap();
-        assert_eq!(waiting.access, wire::ChannelAccess::Waiting);
+        assert_eq!(waiting.access, wire::KeyAccess::Waiting);
         assert_eq!(
-            error_kind(identity.channel_keys("workspace", "so.tilo.notes", "record", 5)),
+            error_kind(identity.group_keys("workspace", "so.tilo.notes", "record", 5)),
             io::ErrorKind::PermissionDenied
         );
         assert_eq!(
-            error_kind(identity.channel_keys("workspace", "so.tilo.notes", "record", 5)),
+            error_kind(identity.group_keys("workspace", "so.tilo.notes", "record", 5)),
             io::ErrorKind::InvalidData
         );
         let captured = output.lock().expect("output").clone();
         let mut requests = Cursor::new(captured);
         let _ = read_frame::<wire::Request>(&mut requests).expect("metadata request");
         match read_frame::<wire::Request>(&mut requests).expect("keys request") {
-            wire::Request::ChannelKeys {
+            wire::Request::GroupKeys {
                 workspace_id,
                 app_id,
                 record_id,

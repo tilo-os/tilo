@@ -408,33 +408,33 @@ async fn clocked_waits_share_their_recheck_ticks() {
 /// yet ends once the key arrives, with nothing written to the record.
 #[tokio::test]
 async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
-    use tilo_channels::{ChannelKeyAccess, testing};
+    use tilo_workspace_keys::{SharedKeys, testing};
     let workspace = Arc::new(testing::Workspace::default());
     let workspace_id = tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap();
     let policy = testing::Policy::readers([1, 2]);
     let dirs = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
     let [founder, reader] = [0_u8, 1].map(|id| {
         let seed = id + 1;
-        let service = tilo_channels::ChannelEncryption::open(
-            tilo_channels::ChannelEncryptionConfig {
-                state: Arc::new(tilo_channels::ChannelsDir::new(
+        let service = tilo_workspace_keys::WorkspaceKeys::open(
+            tilo_workspace_keys::KeysConfig {
+                state: Arc::new(tilo_workspace_keys::KeyDir::new(
                     dirs[usize::from(id)].path(),
                 )),
-                vault: channel_crypto::VaultKey::new([seed; 32]),
+                vault: key_group::VaultKey::new([seed; 32]),
                 signer: Arc::new(testing::key(seed)),
-                role: tilo_channels::Role::Participant,
+                role: tilo_workspace_keys::KeyRole::Committer,
             },
             Box::new(testing::Directory {
                 policy: policy.clone(),
                 founds: Arc::new(std::sync::atomic::AtomicBool::new(id == 0)),
             }),
-            Arc::new(tilo_channels::Gates::default()),
+            Arc::new(tilo_workspace_keys::Gates::default()),
         )
         .unwrap();
         let endpoint = testing::Endpoint::join(&workspace, workspace_id, usize::from(id));
-        (ChannelKeyAccess::new(service), endpoint)
+        (SharedKeys::new(service), endpoint)
     });
-    let keys = tilo_channels::ChannelKeyProvider::default();
+    let keys = tilo_workspace_keys::KeyProvider::default();
     keys.set(Some(reader.0.clone()));
     let keys_here = || {
         keys.get()
@@ -442,7 +442,7 @@ async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
             .is_some_and(|keys| keys.is_ok())
     };
     let mut now = tilo_clock::now();
-    let mut pass = |(access, endpoint): &(ChannelKeyAccess, testing::Endpoint)| {
+    let mut pass = |(access, endpoint): &(SharedKeys, testing::Endpoint)| {
         now = now.checked_add(Duration::from_secs(60)).unwrap();
         access.access(workspace_id);
         access.pump_at(endpoint, now);

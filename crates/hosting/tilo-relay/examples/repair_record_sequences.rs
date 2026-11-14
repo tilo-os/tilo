@@ -128,7 +128,7 @@ fn args() -> anyhow::Result<Args> {
 
 fn log_filter() -> tracing_subscriber::EnvFilter {
     tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "warn,tilo_channels=info".into())
+        .unwrap_or_else(|_| "warn,tilo_workspace_keys=info".into())
 }
 
 fn main() -> ExitCode {
@@ -1120,7 +1120,7 @@ mod tests {
         reason = "in a test these are the assertion"
     )]
 
-    use tilo_room_host::workspaces::fixtures::{TestChannelKeys, governor, test_host_holding};
+    use tilo_room_host::workspaces::fixtures::{TestGroupKeys, governor, test_host_holding};
     use tilo_room_host::workspaces::sealed_fixtures::{SealingMember, member_device};
 
     use super::*;
@@ -1285,7 +1285,7 @@ mod tests {
         let _ = tilo_agent_participant::AppCatalogue::native();
         // The device's channel keys outlive the host, as its channel service
         // keeps them across a restart.
-        let keys = std::sync::Arc::new(TestChannelKeys::default());
+        let keys = std::sync::Arc::new(TestGroupKeys::default());
         let relay =
             test_host_holding(scratch.path(), &key, &cert, std::sync::Arc::clone(&keys)).await;
         let workspaces = relay.workspaces().clone();
@@ -1387,7 +1387,7 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
         let _ = tilo_agent_participant::AppCatalogue::native();
-        let keys = std::sync::Arc::new(TestChannelKeys::default());
+        let keys = std::sync::Arc::new(TestGroupKeys::default());
         let relay =
             test_host_holding(scratch.path(), &key, &cert, std::sync::Arc::clone(&keys)).await;
         let workspaces = relay.workspaces().clone();

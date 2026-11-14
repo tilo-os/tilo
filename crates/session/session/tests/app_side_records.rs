@@ -79,7 +79,7 @@ impl Binges {
                 "NativeJoin",
                 "CollaborationManager::for_record",
             ],
-            Self::Keys => &["channel_keys", "ChannelKeyProvider", "install_channel_keys"],
+            Self::Keys => &["group_keys", "KeyProvider", "install_channel_keys"],
             Self::Storage => &[
                 "DocStore",
                 "DocOwner",

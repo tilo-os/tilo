@@ -20,9 +20,9 @@ use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_user_identity::DeviceCapabilities;
 
 use super::{Client, Enrolling, Entering, Entry, OwnPresence};
-use crate::channels::ChannelLink;
 use crate::engine::Engine;
 use crate::platform::fabric::Continuity;
+use crate::workspace_keys::KeyLink;
 
 /// One session's side of the workspace: its engine, and its plane.
 struct Device {
@@ -49,7 +49,7 @@ impl Device {
             )
             .expect("the session's engine opens"),
         );
-        engine.attach_link(ChannelLink::new());
+        engine.attach_link(KeyLink::new());
         let plane = Client::start(
             Entry {
                 identity: Some(identity),

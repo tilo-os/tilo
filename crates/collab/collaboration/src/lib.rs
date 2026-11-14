@@ -726,7 +726,7 @@ pub use runtime_collab::{ExportedAction, ExportedInput};
 
 pub use runtime_collab::{ActionCatalogue, BrokerActionSurface, CatalogueChange};
 
-pub use runtime_collab::route::{ChannelAccessState, RouteSpec};
+pub use runtime_collab::route::{KeyAccessState, RouteSpec};
 
 /// The custody types only this toolkit's endpoint mints: the committed
 /// captures its collaboration events carry.
@@ -1481,7 +1481,7 @@ impl CollaborationManager {
     pub fn install_document_encryption(
         &mut self,
         route: RouteSpec,
-        group: channel_crypto::ChannelGroup,
+        group: key_group::KeyGroup,
     ) -> Result<(), String> {
         if group.workspace().to_string() != route.cluster_id.to_string() {
             return Err("MLS group does not belong to the requested document route".into());

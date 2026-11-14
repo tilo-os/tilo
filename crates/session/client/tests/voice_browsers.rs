@@ -18,10 +18,10 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tilo_session_client::{Cmd, Event, Events, Link, Outbox, VoiceEvent};
 
-use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::WorkspaceId;
 use collab_types::scope::Scope;
 use iroh::{Endpoint, RelayMode, SecretKey};
+use key_group::{ContentKeys, KeyGroup, MemberKey};
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
 use tilo_live::live::Track;
@@ -42,8 +42,8 @@ const TICK: Duration = Duration::from_millis(20);
 const HEARTBEAT_TICKS: u64 = 250;
 /// The workspace scope's content keys, as its members derive them: what seals
 /// every frame the page and the native device exchange.
-fn channel_keys(channel: collab_types::WorkspaceId) -> ChannelContentKeys {
-    ChannelGroup::create(channel, MemberKey::generate("alice").unwrap())
+fn group_keys(channel: collab_types::WorkspaceId) -> ContentKeys {
+    KeyGroup::create(channel, MemberKey::generate("alice").unwrap())
         .unwrap()
         .content_keys()
         .unwrap()
@@ -212,7 +212,7 @@ impl Native {
     async fn start(
         governed: &crate::call::GovernedCall,
         page: [u8; 32],
-        keys: &ChannelContentKeys,
+        keys: &ContentKeys,
     ) -> Self {
         let device = governed.laptop.key.verifying_key().to_bytes();
         assert_ne!(
@@ -334,9 +334,9 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
 
     // The plane's frames are sealed with the workspace scope's keys; the page
     // holds them as a workspace member, and so does the device it calls.
-    let keys = channel_keys(collab_types::WorkspaceId::new());
+    let keys = group_keys(collab_types::WorkspaceId::new());
     page.peer
-        .send(Cmd::InstallChannelKeys(
+        .send(Cmd::InstallGroupKeys(
             plane_route(&governed.cluster_id),
             keys.clone(),
         ))

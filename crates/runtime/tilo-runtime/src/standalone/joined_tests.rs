@@ -776,13 +776,11 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
     // key holders have: this member's owner and the host keep only its
     // ciphertext, and the governor receives it sealed.
     let channel = collab_types::WorkspaceId::parse(&workspace.to_string()).unwrap();
-    let content = channel_crypto::ChannelGroup::create(
-        channel,
-        channel_crypto::MemberKey::generate("governor").unwrap(),
-    )
-    .unwrap()
-    .content_keys()
-    .unwrap();
+    let content =
+        key_group::KeyGroup::create(channel, key_group::MemberKey::generate("governor").unwrap())
+            .unwrap()
+            .content_keys()
+            .unwrap();
     let mut doc = AutoCommit::load(&chat).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "secret", SECRET).unwrap();
@@ -986,7 +984,7 @@ fn a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device() {
     // channel service reads what the app wrote.
     let keys = session
         .joined
-        .channel_keys()
+        .group_keys()
         .get()
         .expect("the joined device runs its channel service");
     let plaintext = tilo_rt::app()

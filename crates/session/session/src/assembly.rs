@@ -358,7 +358,7 @@ pub(crate) struct Shared {
     /// This device's channels of those workspaces' sealed records, and the
     /// devices each one admits: kept for as long as the session runs.
     #[cfg(target_os = "linux")]
-    pub(crate) _channels: Option<crate::channels::Channels>,
+    pub(crate) _workspace_keys: Option<crate::workspace_keys::KeyService>,
     /// The person's own workspaces, as all their devices hold the list of
     /// them: `None` when this computer has no identity to keep it for.
     #[cfg(target_os = "linux")]

@@ -202,7 +202,7 @@ impl crate::live::MediaKeysLender for HostLends {
         &self,
         workspace: tilo_desktop_model::WorkspaceId,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Option<channel_crypto::SenderMediaKeys>> + Send + '_>,
+        Box<dyn std::future::Future<Output = Option<key_group::SenderMediaKeys>> + Send + '_>,
     > {
         Box::pin(async move {
             if workspace.to_string() != self.asking.workspace {
@@ -214,7 +214,7 @@ impl crate::live::MediaKeysLender for HostLends {
                 .await?;
             let lent: environment_device::MediaKeys = serde_json::from_value(answer).ok()?;
             let sealed = hex::decode(lent.sealed).ok()?;
-            match channel_crypto::SenderMediaKeys::open_with(
+            match key_group::SenderMediaKeys::open_with(
                 &self.key,
                 self.key.verifying_key().to_bytes(),
                 &sealed,

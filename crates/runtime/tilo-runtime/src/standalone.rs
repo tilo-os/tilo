@@ -18,7 +18,6 @@
 //! in its own workspace file, the invocation journal and
 //! collaboration history.
 
-mod channels;
 #[cfg(target_os = "macos")]
 mod confirm;
 mod execution;
@@ -30,6 +29,7 @@ mod media_import;
 mod media_import_tests;
 pub mod take_work;
 mod workspace;
+mod workspace_keys;
 mod workspaces;
 
 use crate::remote_door::PersonalDevices;
@@ -80,7 +80,7 @@ pub struct Standalone {
     policy_origin: tilo_action_broker::policy_clock::PolicyOrigin,
     broker: BrokerHandle,
     joined: Arc<Joined>,
-    _channels: channels::Channels,
+    _workspace_keys: workspace_keys::KeyService,
     _identity: IdentityBrokerHandle,
     workspace: String,
     actor: String,
@@ -162,7 +162,7 @@ impl Standalone {
         let channels = Arc::new(Mutex::new(channels(root)));
         let fanout = Arc::new(FanoutState::new());
         stage("opening the joined workspaces and channel keys");
-        let (joined, channel_keys) = joined_workspaces_and_keys(
+        let (joined, group_keys) = joined_workspaces_and_keys(
             root,
             (&workspace_id, workspace.governs()),
             storage,
@@ -177,7 +177,7 @@ impl Standalone {
                 root,
                 &workspace,
                 &joined,
-                &channel_keys.keys,
+                &group_keys.keys,
                 (&apps, dev),
             )?)
         } else {
@@ -204,7 +204,7 @@ impl Standalone {
         let identity_broker = identity_service(
             identity_socket.clone(),
             Arc::clone(&workspaces) as Arc<dyn WorkspaceMembership>,
-            Arc::new(channel_keys.keys.clone()),
+            Arc::new(group_keys.keys.clone()),
             &apps,
             dev,
         )?;
@@ -219,7 +219,7 @@ impl Standalone {
                 apps: &apps,
                 media: &media,
                 joined: &joined,
-                keys: &channel_keys.keys,
+                keys: &group_keys.keys,
                 device,
                 personal: personal.sync.clone(),
             },
@@ -263,7 +263,7 @@ impl Standalone {
             broker,
             remote_doors: remote_doors(&joined, &personal.sync),
             joined,
-            _channels: channel_keys,
+            _workspace_keys: group_keys,
             _identity: identity_broker,
             workspace: workspace_id,
             actor,
@@ -339,7 +339,7 @@ struct BrokerParts<'a> {
     apps: &'a Arc<apps::Apps>,
     media: &'a profile::MediaHost,
     joined: &'a Arc<Joined>,
-    keys: &'a tilo_action_broker::channel_encryption::ChannelKeyProvider,
+    keys: &'a tilo_action_broker::workspace_keys::KeyProvider,
     device: [u8; 32],
     personal: PersonalSync,
 }
@@ -405,7 +405,7 @@ fn broker_services(
         record_content: Some(record_content),
         // The service the identity service answers key requests from:
         // endpoints ask again when it says a channel changed.
-        channel_keys: Some(parts.keys.clone()),
+        group_keys: Some(parts.keys.clone()),
         action_offload,
         personal: Some(parts.personal),
         ..HostServices::default()
@@ -1261,7 +1261,7 @@ fn place_own_workspace(
     profile: &Path,
     workspace: &ProfileWorkspace,
     joined: &Arc<Joined>,
-    keys: &tilo_action_broker::channel_encryption::ChannelKeyProvider,
+    keys: &tilo_action_broker::workspace_keys::KeyProvider,
     (apps, dev): (&Arc<apps::Apps>, bool),
 ) -> io::Result<(
     Arc<tilo_room_host::host::WorkspaceHost>,
@@ -1291,7 +1291,10 @@ fn place_own_workspace(
                     revocations: tilo_user_identity::RevocationList::new(),
                 },
                 joined.endpoint(),
-                Some(channels::DeviceChannelKeys::device(keys.clone(), joined)),
+                Some(workspace_keys::DeviceGroupKeys::device(
+                    keys.clone(),
+                    joined,
+                )),
             ))
             .map_err(io::Error::other)?,
     );
@@ -1354,7 +1357,7 @@ fn joined_workspaces_and_keys(
     storage: IdentityStorage,
     broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
     listen: Option<u16>,
-) -> io::Result<(Arc<Joined>, channels::Channels)> {
+) -> io::Result<(Arc<Joined>, workspace_keys::KeyService)> {
     let custody = tilo_identity_host::broker::trusted_current_device(workspace)?;
     let channels = Arc::clone(&broker.0);
     let joined = joined_workspaces(
@@ -1364,7 +1367,7 @@ fn joined_workspaces_and_keys(
         broker,
         listen,
     )?;
-    let keys = channels::open(
+    let keys = workspace_keys::open(
         profile,
         WorkspaceId::parse(workspace)
             .ok_or_else(|| io::Error::other("invalid runtime workspace"))?,
@@ -1449,7 +1452,7 @@ fn listen_endpoint(
 fn identity_service(
     socket: PathBuf,
     workspaces: Arc<dyn WorkspaceMembership>,
-    keys: Arc<dyn tilo_identity_host::broker::ChannelKeySource>,
+    keys: Arc<dyn tilo_identity_host::broker::GroupKeySource>,
     apps: &Arc<apps::Apps>,
     dev: bool,
 ) -> io::Result<tilo_identity_host::broker::IdentityBrokerHandle> {

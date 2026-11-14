@@ -38,7 +38,7 @@ impl Task {
         if self.keys_of(route).is_some() {
             self.outbound_due = true;
         } else {
-            self.persist_channels(true);
+            self.persist_keys(true);
         }
     }
 
@@ -82,7 +82,7 @@ impl Task {
                 });
             });
         }
-        self.persist_channels(true);
+        self.persist_keys(true);
         self.release_barriers();
     }
 
@@ -124,9 +124,9 @@ impl Task {
             return false;
         }
         // The state carrying these keys is written before a write sealed
-        // under them leaves ([`ChannelPeer::save_deferred`]): an admission
+        // under them leaves ([`GroupPeer::save_deferred`]): an admission
         // taken in a moment ago survives a page that reloads now.
-        self.channels.save_pending();
+        self.workspace_keys.save_pending();
         let artifact = route.artifact();
         let author = self.signer.device_public_key();
         let now = crate::clock::system_time(tilo_clock::unix_now_ns());

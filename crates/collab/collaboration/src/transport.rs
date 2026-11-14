@@ -119,7 +119,7 @@ pub enum TransportCommand {
     /// Exactly one result must be sent on `reply`.
     InstallDocumentEncryption {
         route: RouteSpec,
-        group: Box<channel_crypto::ChannelGroup>,
+        group: Box<key_group::KeyGroup>,
         reply: mpsc::SyncSender<Result<(), String>>,
     },
     /// Register this application's pull action directory on the primary

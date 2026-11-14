@@ -3,14 +3,14 @@
 //! the ciphertext as the record's history and goes on governing: the next
 //! person is still let in, and so is one after the relay restarts.
 use super::*;
-use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::ContentRetention;
+use key_group::{KeyGroup, MemberKey};
 
 /// Seal `message`, a member's cleartext write, as its author's page does
 /// once it holds the record channel's content keys.
 fn sealed(
     message: NeighbourMsg,
-    group: &ChannelGroup,
+    group: &KeyGroup,
     key: &ed25519_dalek::SigningKey,
 ) -> NeighbourMsg {
     let NeighbourMsg::AppDocument {
@@ -145,7 +145,7 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     // Bob's write leaves his device sealed; the governor takes it in.
     let workspaces = relay.workspaces().unwrap();
     let mut followed = workspaces.record_writes();
-    let group = ChannelGroup::create(
+    let group = KeyGroup::create(
         collab_types::WorkspaceId::parse(&room.workspace).unwrap(),
         MemberKey::generate("bob").unwrap(),
     )

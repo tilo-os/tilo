@@ -29,8 +29,8 @@ tracing.workspace = true
 # The wall clock a policy question is decided at, as every host reads it.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The channels a workspace's records are sealed in: the gate a governance state keeps.
-tilo-channels = { version = "0.1.0", path = "../channels" }
-channel-crypto = { version = "0.1.0", path = "../channel-crypto" }
+tilo-workspace-keys = { version = "0.1.0", path = "../workspace-keys" }
+key-group = { version = "0.1.0", path = "../key-group" }
 # A record id, as the document history names it.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 uuid.workspace = true

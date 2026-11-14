@@ -533,7 +533,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     // among them), not a note's, so this waits on the two routes themselves.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     let channels = loop {
-        let channels = page.status().channels;
+        let channels = page.status().key_state;
         let ready = [(CHAT_APP, ""), (DESKTOP_APP, DESKTOP_RECORD)]
             .into_iter()
             .all(|(app, record)| {
@@ -668,7 +668,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     println!(
         "the second page heard {live_seen} live frame(s) from {} device(s); its channels:\n{}",
         live_peers.len(),
-        second.status().channels
+        second.status().key_state
     );
     println!(
         "CHECK second page: the first page's ({:02x?}) pointer over tab {tab:#x} at {seen:?}",
@@ -756,7 +756,7 @@ async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
     println!(
         "the second page heard {live_seen} live frame(s) from {} device(s), the pointer after {elapsed:?}; its channels:\n{}",
         live_peers.len(),
-        other.status().channels
+        other.status().key_state
     );
     assert!(
         seen.is_some_and(
@@ -872,7 +872,7 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
 async fn wait_for_plane(page: &Link) {
     let started = tokio::time::Instant::now();
     loop {
-        let channels = page.status().channels;
+        let channels = page.status().key_state;
         if channels
             .lines()
             .any(|line| line.starts_with("plane ") && line.contains(" epoch "))

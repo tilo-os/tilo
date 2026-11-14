@@ -35,10 +35,10 @@ use tilo_broker_core::services::{
     ContentStoreServices, SearchIndexServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
 };
 use tilo_broker_core::steps::HostStepServices;
-use tilo_channels::ChannelKeyProvider;
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Services, Started, Wake};
+use tilo_workspace_keys::KeyProvider;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::activity_provider::ActivityWire;
@@ -272,7 +272,7 @@ pub struct Sealed {
     pub broker: std::sync::Arc<Mutex<BrokerChannels>>,
     /// Where an endpoint follows when a route's keys change, when this
     /// session's channel service runs.
-    pub keys: Option<ChannelKeyProvider>,
+    pub keys: Option<KeyProvider>,
 }
 
 /// What this session hands the broker besides the link and the launcher: the
@@ -1189,7 +1189,7 @@ fn seams(
         // This session's channel keys, when it holds workspaces: a route's keys
         // reach its apps through them, and an endpoint follows their changes
         // here instead of asking again every second.
-        channel_keys: Seam::when(sealed.keys),
+        group_keys: Seam::when(sealed.keys),
         // An offloadable action runs where the workspace's devices would run
         // it sooner.
         action_offload: Seam::when(action_offload),

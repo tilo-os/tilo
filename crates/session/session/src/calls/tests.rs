@@ -12,19 +12,19 @@ use std::time::{Duration, Instant};
 
 use crate::platform::fabric::Continuity;
 use crate::sync::Event;
-use channel_crypto::{ChannelGroup, MemberKey, VaultKey};
 use collab_types::Ed25519PublicKey;
 use collab_types::presence::{Availability, Payload, Presence};
 use iroh::EndpointId;
+use key_group::{KeyGroup, MemberKey, VaultKey};
 use runtime_collab::native_media::{Command, Request, State};
 use tilo_broker_core::collab_core::BrokerChannels;
-use tilo_channels::{
-    ChannelAccess, ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
-    ChannelKeyProvider, GovernanceTransport, InboundChannelGovernance,
-};
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_network_actor::HostIdentity;
+use tilo_workspace_keys::{
+    GovernanceTransport, InboundGovernance, KeyAccess, KeyDirectory, KeyProvider, KeysConfig,
+    SharedKeys, WorkspaceKeys,
+};
 
 use super::*;
 use crate::sync::{Client, Entry, OwnPresence};
@@ -135,7 +135,7 @@ struct Directory {
     admitted: std::collections::BTreeSet<Ed25519PublicKey>,
 }
 
-impl ChannelDirectory for Directory {
+impl KeyDirectory for Directory {
     fn allowed_devices(
         &self,
         _workspace: WorkspaceId,
@@ -151,19 +151,19 @@ impl ChannelDirectory for Directory {
 /// One channel's keys, as the device `device` of the workspace whose vault key is `vault` runs
 /// holds them: the same service every device runs, with the channel's keys still on their way until
 /// someone founds them.
-fn keys(device: u8, vault: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile::TempDir) {
+fn keys(device: u8, vault: u8, admitted: &[u8]) -> (KeyProvider, tempfile::TempDir) {
     let directory = tempfile::tempdir().expect("a directory to keep channel state in");
     let gates = Arc::new(tilo_broker_core::collab_core::BrokerGates(Arc::new(
         Mutex::new(BrokerChannels::default()),
     )));
-    let encryption = ChannelEncryption::open(
-        ChannelEncryptionConfig {
-            state: Arc::new(tilo_channels::ChannelsDir::new(
+    let encryption = WorkspaceKeys::open(
+        KeysConfig {
+            state: Arc::new(tilo_workspace_keys::KeyDir::new(
                 directory.path().join("channels"),
             )),
             vault: VaultKey::new([vault; 32]),
             signer: std::sync::Arc::new(test_relay::signing_key(device)),
-            role: tilo_channels::Role::Participant,
+            role: tilo_workspace_keys::KeyRole::Committer,
         },
         Box::new(Directory {
             admitted: admitted.iter().copied().map(key).collect(),
@@ -171,8 +171,8 @@ fn keys(device: u8, vault: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile
         gates,
     )
     .expect("a channel service");
-    let provider = ChannelKeyProvider::default();
-    provider.set(Some(ChannelKeyAccess::new(encryption)));
+    let provider = KeyProvider::default();
+    provider.set(Some(SharedKeys::new(encryption)));
     (provider, directory)
 }
 
@@ -183,13 +183,13 @@ fn keys(device: u8, vault: u8, admitted: &[u8]) -> (ChannelKeyProvider, tempfile
     clippy::future_not_send,
     reason = "the channel service is driven from the test's own thread, and the test runtime does not need it to be Send"
 )]
-async fn founded(keys: &ChannelKeyProvider) {
+async fn founded(keys: &KeyProvider) {
     struct Nowhere;
     impl GovernanceTransport for Nowhere {
         fn publish(&self, _message: neighbour_wire::NeighbourMsg) -> bool {
             false
         }
-        fn take_inbound(&self) -> Vec<InboundChannelGovernance> {
+        fn take_inbound(&self) -> Vec<InboundGovernance> {
             Vec::new()
         }
     }
@@ -199,7 +199,7 @@ async fn founded(keys: &ChannelKeyProvider) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         access.pump(&Nowhere);
-        if matches!(access.access(workspace_id()).0, ChannelAccess::Ready(_)) {
+        if matches!(access.access(workspace_id()).0, KeyAccess::Ready(_)) {
             return;
         }
         assert!(
@@ -417,9 +417,9 @@ fn relay() -> Arc<Relay> {
 }
 
 /// The workspace scope's content keys, as its own channel hands them to its members.
-fn workspace_keys() -> channel_crypto::ChannelContentKeys {
+fn workspace_keys() -> key_group::ContentKeys {
     let channel = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
-    ChannelGroup::create(channel, MemberKey::generate("owner").expect("a member key"))
+    KeyGroup::create(channel, MemberKey::generate("owner").expect("a member key"))
         .expect("the workspace's channel")
         .content_keys()
         .expect("the workspace's keys")
@@ -430,7 +430,7 @@ fn plane(
     relay: &Relay,
     device: [u8; 32],
     devices: &[[u8; 32]],
-    keys: &channel_crypto::ChannelContentKeys,
+    keys: &key_group::ContentKeys,
 ) -> Arc<Plane> {
     Arc::new(
         Plane::local(
@@ -447,7 +447,7 @@ fn plane(
     )
 }
 
-fn carrier(client: &Client, keys: &ChannelKeyProvider, heard_on: Option<Arc<Plane>>) -> Carrier {
+fn carrier(client: &Client, keys: &KeyProvider, heard_on: Option<Arc<Plane>>) -> Carrier {
     let calls = Calls::new();
     calls.follow(client, None);
     let probe = Arc::new(Mutex::new(Vec::new()));
@@ -1010,7 +1010,7 @@ fn a_locked_screen_stops_the_share_at_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_call_joins_while_the_channels_keys_are_still_on_their_way() {
+async fn a_call_joins_while_the_workspace_keys_are_still_on_their_way() {
     let person = person_key();
     // This desk's device is not the one its workspace is governed by, and its channel's keys have
     // not reached it yet.

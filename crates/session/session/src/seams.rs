@@ -30,7 +30,7 @@ use tilo_broker_core::services::{
     WorkspaceGovernanceServices, WorkspaceNodeActions,
 };
 use tilo_broker_core::steps::{ContinuationServices, HostStepServices};
-use tilo_channels::ChannelKeyProvider;
+use tilo_workspace_keys::KeyProvider;
 
 /// What this session serves of one seam.
 pub(crate) enum Seam<T> {
@@ -147,7 +147,7 @@ seams! {
     app_consents: Arc<dyn AppConsents>,
     launchable_catalogue: PathBuf,
     record_content: Arc<tilo_action_broker::record_content::RouteContent>,
-    channel_keys: ChannelKeyProvider,
+    group_keys: KeyProvider,
     action_offload: Arc<dyn tilo_actions::offload::ActionOffload>,
     own_device: Arc<dyn OwnDeviceActions>,
     workspace_nodes: Arc<dyn WorkspaceNodeActions>,

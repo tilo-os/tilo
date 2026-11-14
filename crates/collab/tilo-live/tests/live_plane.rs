@@ -26,9 +26,9 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use iroh::endpoint::{Connection, VarInt};
 use iroh::{Endpoint, EndpointAddr, RelayMode};
+use key_group::{ContentKeys, KeyGroup, MemberKey};
 use tilo_live::frame::PlaneKeys;
 use tilo_live::grant;
 use tilo_live::live::{self, Namespace, Track};
@@ -52,10 +52,10 @@ fn scope() -> Scope {
 
 /// The workspace's content keys at epoch 1, as its group hands them to its
 /// members.
-fn keys() -> ChannelContentKeys {
+fn keys() -> ContentKeys {
     let workspace = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
     let owner = MemberKey::generate("owner").unwrap();
-    ChannelGroup::create(workspace, owner)
+    KeyGroup::create(workspace, owner)
         .unwrap()
         .content_keys()
         .unwrap()

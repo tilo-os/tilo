@@ -25,7 +25,6 @@ use crate::assembly::{Session, Shared};
 
 pub use crate::automation::FinishedShortcutRun;
 pub use crate::bars::BarShown;
-pub use crate::channels::ChannelLink;
 pub use crate::clock_wait::ClockWait;
 pub use crate::config::SessionConfig;
 pub use crate::controls::{
@@ -48,6 +47,7 @@ pub use crate::search::{AppActions, SearchOptions};
 pub use crate::setup::BeforeDesk;
 pub use crate::vpn::Vpn;
 pub use crate::wake::{Seams as WakeSeams, WakeInterfaces};
+pub use crate::workspace_keys::KeyLink;
 pub use tilo_service::{Service, Services};
 
 use crate::doors::plane::{mount_services, start_action_plane};
@@ -622,7 +622,7 @@ impl Session {
         // this device's own.
         let channels_fanout =
             std::sync::Arc::new(tilo_action_broker::collab_broker::FanoutState::new());
-        let channel_link = crate::channels::ChannelLink::new();
+        let key_link = crate::workspace_keys::KeyLink::new();
         // Search reads the workspaces' records off the records themselves,
         // with no window of their app running: what this device holds is
         // found before anything changes, and every change after it. The same
@@ -645,9 +645,9 @@ impl Session {
         });
         let channels = engine.as_ref().and_then(|engine| {
             let settled = record_index.clone();
-            crate::channels::Channels::open(
+            crate::workspace_keys::KeyService::open(
                 engine,
-                std::sync::Arc::clone(&channel_link),
+                std::sync::Arc::clone(&key_link),
                 std::sync::Arc::clone(&channels_broker),
                 move || {
                     if let Some(index) = &settled {
@@ -1590,7 +1590,7 @@ impl Session {
             notes,
             membership_fed: std::cell::RefCell::new(None),
             landings,
-            _channels: channels,
+            _workspace_keys: channels,
             personal,
             clipboard,
             arrangement,

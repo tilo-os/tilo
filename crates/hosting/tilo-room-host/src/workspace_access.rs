@@ -139,7 +139,7 @@ pub enum WorkspaceOperation {
     /// A device asking one of the workspace's channels for access: the plane
     /// its own key package arrives on (see the module documentation). The
     /// channel's group admits the devices its record's readers name.
-    ChannelAccess,
+    KeyAccess,
     /// Discovering the workspace's content endpoints.
     ContentDiscovery,
     Compute,
@@ -169,7 +169,7 @@ impl WorkspaceOperation {
     const fn carries_changes(self) -> bool {
         matches!(
             self,
-            Self::Subscribe | Self::State | Self::Publish | Self::Replay | Self::ChannelAccess
+            Self::Subscribe | Self::State | Self::Publish | Self::Replay | Self::KeyAccess
         )
     }
 
@@ -177,11 +177,9 @@ impl WorkspaceOperation {
         match self {
             Self::Subscribe | Self::Compute => OwnerDevice::Enrol,
             Self::ContentDiscovery | Self::Environment | Self::Live => OwnerDevice::Admit,
-            Self::State
-            | Self::Publish
-            | Self::Replay
-            | Self::RemoteAction
-            | Self::ChannelAccess => OwnerDevice::Refuse,
+            Self::State | Self::Publish | Self::Replay | Self::RemoteAction | Self::KeyAccess => {
+                OwnerDevice::Refuse
+            }
             #[cfg(any(test, feature = "agents"))]
             Self::DelegateMembership => OwnerDevice::Refuse,
         }
@@ -617,7 +615,7 @@ fn grant_decision(
             | WorkspaceOperation::State
             | WorkspaceOperation::Publish
             | WorkspaceOperation::Replay
-            | WorkspaceOperation::ChannelAccess
+            | WorkspaceOperation::KeyAccess
             | WorkspaceOperation::RemoteAction
             | WorkspaceOperation::Live
             | WorkspaceOperation::ContentDiscovery

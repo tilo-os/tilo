@@ -3,7 +3,7 @@ mod capture;
 use super::{
     Arc, CrdtRoute, Duration, JoinedChannel, Ordering, Rc, RouteAccess, Weak, identity_reads_record,
 };
-use crate::channel_encryption::ChannelKeyProvider;
+use crate::workspace_keys::KeyProvider;
 pub(super) use capture::Budget;
 pub use capture::DocumentBytes;
 use runtime_collab::committed_document::{MAX_DOCUMENT_BYTES, Reply, Request};
@@ -906,12 +906,12 @@ fn captured_unchanged(
 /// device opens once it has, with nothing written to the record.
 async fn hold_until_changed(
     wake: &tokio::sync::Notify,
-    keys: Option<&ChannelKeyProvider>,
+    keys: Option<&KeyProvider>,
     mut arm: impl FnMut(),
     mut check: impl FnMut() -> Result<Option<bool>, String>,
 ) -> Result<(), String> {
     // Read before the first check, so keys arriving while it runs are seen.
-    let mut keyed = keys.map(ChannelKeyProvider::generation);
+    let mut keyed = keys.map(KeyProvider::generation);
     loop {
         arm();
         let Some(announced) = check()? else {
@@ -1067,7 +1067,7 @@ impl JoinedChannel {
             }
         }
         let keys = (self.record_read() == RecordRead::Sealed)
-            .then(|| self.state.services.channel_keys.clone())
+            .then(|| self.state.services.group_keys.clone())
             .flatten();
         // The context the last whole check passed with, and the announcement
         // epoch it read before it: while nothing was announced since, nothing

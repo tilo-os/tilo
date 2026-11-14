@@ -6893,7 +6893,7 @@ impl AppBrokerState {
             CollabEvent::ScrollbackBatch { .. }
             | CollabEvent::HistoryAgents { .. }
             | CollabEvent::DocumentSnapshotRequested { .. }
-            | CollabEvent::ChannelAccess { .. }
+            | CollabEvent::KeyAccess { .. }
             | CollabEvent::CommittedDocument { .. }
             | CollabEvent::RecordUnavailable { .. }
             | CollabEvent::Invocation { .. }

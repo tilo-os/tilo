@@ -1,14 +1,14 @@
 use super::SdkCertifiedIdentity;
 
 impl SdkCertifiedIdentity for runtime_identity_host::SigningIdentity {
-    fn channel_keys(
+    fn group_keys(
         &self,
         workspace_id: &str,
         app_id: &str,
         record_id: &str,
         known_generation: u64,
     ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
-        runtime_identity_host::SigningIdentity::channel_keys(
+        runtime_identity_host::SigningIdentity::group_keys(
             self,
             workspace_id,
             app_id,

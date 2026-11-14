@@ -5,12 +5,12 @@ use super::*;
 use crate::owner::testing::{governed_fixture_at, member_key};
 use crate::owner::{NativeCommittedView, SealedHistoryKeys, WriteRefusal};
 use automerge::{ActorId, ChangeHash};
-use channel_crypto::ChannelContentKeys;
 use collab_types::{ContentRetention, DocumentMutation, EncryptionMetadata, OpKind, SignedOp};
+use key_group::ContentKeys;
 use std::collections::BTreeSet;
 
 /// The chat record's channel keys, as a member holding them compacts with.
-pub(super) struct Held(pub(super) ChannelContentKeys);
+pub(super) struct Held(pub(super) ContentKeys);
 
 impl SealedHistoryKeys for Held {
     fn open(&self, _: WorkspaceId, write: &SignedOp) -> Result<Vec<u8>, String> {
@@ -45,7 +45,7 @@ impl SealedHistoryKeys for Held {
     }
 }
 
-fn open(keys: &ChannelContentKeys, write: &SignedOp) -> Result<Vec<u8>, String> {
+fn open(keys: &ContentKeys, write: &SignedOp) -> Result<Vec<u8>, String> {
     let ciphertext = collab_types::sealed_ciphertext(write).map_err(|error| error.to_string())?;
     keys.open_content(
         write.artifact,
@@ -57,7 +57,7 @@ fn open(keys: &ChannelContentKeys, write: &SignedOp) -> Result<Vec<u8>, String> 
 }
 
 fn seal_delta(
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
 ) -> impl FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + '_ {
     |plaintext| {
         keys.seal_content(
@@ -107,7 +107,7 @@ fn base(owner: &NativeWorkspaceOwner, workspace: WorkspaceId) -> Vec<u8> {
 async fn write(
     owner: &NativeWorkspaceOwner,
     workspace: WorkspaceId,
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
     changes: Vec<u8>,
     now: SystemTime,
 ) -> Result<usize, String> {
@@ -120,7 +120,7 @@ async fn write(
 async fn write_all(
     owner: &NativeWorkspaceOwner,
     workspace: WorkspaceId,
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
     changes: Vec<Vec<u8>>,
     now: SystemTime,
 ) -> Result<usize, WriteRefusal> {
@@ -198,7 +198,7 @@ fn answer(
 fn written_at(
     host: &mut crate::StatePeer,
     base: &[u8],
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
     governor_key: &ed25519_dalek::SigningKey,
     now: SystemTime,
 ) -> Vec<NeighbourMsg> {
@@ -241,17 +241,13 @@ async fn drain(
     }
 }
 
-fn opened(
-    owner: &NativeWorkspaceOwner,
-    workspace: WorkspaceId,
-    keys: &ChannelContentKeys,
-) -> AutoCommit {
+fn opened(owner: &NativeWorkspaceOwner, workspace: WorkspaceId, keys: &ContentKeys) -> AutoCommit {
     owner
         .with_current(workspace, |view| Ok(opened_in(view.peer(), keys)))
         .unwrap()
 }
 
-fn opened_in(peer: &crate::StatePeer, keys: &ChannelContentKeys) -> AutoCommit {
+fn opened_in(peer: &crate::StatePeer, keys: &ContentKeys) -> AutoCommit {
     let record = peer
         .publication()
         .opened_document(APP, "", &mut |write| open(keys, write))
@@ -261,7 +257,7 @@ fn opened_in(peer: &crate::StatePeer, keys: &ChannelContentKeys) -> AutoCommit {
     AutoCommit::load(&record.document).unwrap()
 }
 
-fn history(peer: &crate::StatePeer, keys: &ChannelContentKeys) -> Vec<(u64, bool)> {
+fn history(peer: &crate::StatePeer, keys: &ContentKeys) -> Vec<(u64, bool)> {
     let opened = peer
         .publication()
         .opened_history(APP, "", &mut |write| open(keys, write))
@@ -596,7 +592,7 @@ fn joins_after(
     late: &Enrolled,
     sent: &[NeighbourMsg],
     peers: Vec<NeighbourMsg>,
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
     everything: &BTreeSet<String>,
 ) {
     let compaction = sent
@@ -631,7 +627,7 @@ fn joins_after(
 /// compacts it at the host.
 fn compacted_at(
     host: &mut crate::StatePeer,
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
     governor_key: &ed25519_dalek::SigningKey,
     now: SystemTime,
 ) -> NeighbourMsg {
@@ -758,7 +754,7 @@ fn is_compaction(message: &NeighbourMsg) -> bool {
 fn holds_every_write(
     owner: &NativeWorkspaceOwner,
     workspace: WorkspaceId,
-    keys: &ChannelContentKeys,
+    keys: &ContentKeys,
     written: &BTreeSet<String>,
     when: &str,
 ) {

@@ -16,16 +16,16 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context as _, Result, bail};
 use automerge::ChangeHash;
-use channel_crypto::ChannelContentKeys;
 use collab_types::document_transfer::{DocumentFrame, DocumentReassembler};
 use collab_types::{
     ContentRetention, DocumentMutation, EncryptionMetadata, OpKind, SignedOp, document_artifact_id,
     document_attestation_id, next_unordered_document_sequence, sign_op,
 };
+use key_group::ContentKeys;
 use runtime_collab::{CertifiedJoinIdentity, ChannelHandle, CollabClient, OpEvent};
 use tilo_identity_client::BrokerSigningIdentity;
 use tilo_identity_client::wire::{
-    ChannelAccess, HANDSHAKE_FRAMING, Handshake, PRESENTATION_VERSION, PresentationHandshake,
+    HANDSHAKE_FRAMING, Handshake, KeyAccess, PRESENTATION_VERSION, PresentationHandshake,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -136,7 +136,7 @@ async fn serve_once(
                     publisher.publish_whole(namespace).await?;
                 }
             }
-            keys_at = keys.changed(runtime_collab::wire::Changes::ChannelKeys, keys_after) => {
+            keys_at = keys.changed(runtime_collab::wire::Changes::GroupKeys, keys_after) => {
                 keys_after = keys_at.context("the session says when the record's keys change")?;
                 publisher.keys_changed(namespace).await?;
             }
@@ -172,7 +172,7 @@ struct TreePublisher {
     /// What this device may do with the record's content: seal it, wait for its keys, or write it
     /// unsealed.
     access: Access,
-    keys: Option<ChannelContentKeys>,
+    keys: Option<ContentKeys>,
     /// The service generation the keys were answered at: what this device asks from when it asks
     /// again, so an unchanged answer means no new keys.
     generation: u64,
@@ -548,7 +548,7 @@ impl TreePublisher {
             let retention = ContentRetention::of_frame(&frame);
             match keys.seal_content(self.artifact(), retention, &frame) {
                 Ok((metadata, sealed)) => return Ok((sealed, Some(metadata))),
-                Err(channel_crypto::Error::MissingContentKey(_)) if attempt == 0 => {
+                Err(key_group::Error::MissingContentKey(_)) if attempt == 0 => {
                     // The channel moved to an epoch this device has not been
                     // handed yet: ask for the keys again and seal under them.
                     self.refresh_keys().await;
@@ -590,25 +590,23 @@ impl TreePublisher {
         let record = Self::record();
         let generation = self.generation;
         let asked = tokio::task::spawn_blocking(move || {
-            signer.channel_keys(&cluster, FILES_APP, &record, generation)
+            signer.group_keys(&cluster, FILES_APP, &record, generation)
         })
         .await;
         match asked {
             Ok(Ok(reply)) => match (reply.access, reply.keys.as_deref()) {
-                (ChannelAccess::Ready, Some(bytes)) => {
-                    match ChannelContentKeys::from_bytes(bytes) {
-                        Ok(keys) => {
-                            self.keys = Some(keys);
-                            self.generation = reply.generation;
-                            self.access = Access::Sealed;
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "the tree's content keys do not decode");
-                        }
+                (KeyAccess::Ready, Some(bytes)) => match ContentKeys::from_bytes(bytes) {
+                    Ok(keys) => {
+                        self.keys = Some(keys);
+                        self.generation = reply.generation;
+                        self.access = Access::Sealed;
                     }
-                }
+                    Err(error) => {
+                        tracing::warn!(%error, "the tree's content keys do not decode");
+                    }
+                },
                 // Keys reported unchanged: the ones held still open the record.
-                (ChannelAccess::Ready, None) => {
+                (KeyAccess::Ready, None) => {
                     self.access = if self.keys.is_some() {
                         Access::Sealed
                     } else {

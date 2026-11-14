@@ -856,7 +856,7 @@ fn request_id(kind: &[u8], key: &[u8; 32], now_ns: u64) -> [u8; 32] {
 /// A workspace the operator just created holds no channel yet, and its records
 /// are sealed from their first write, so each seed's genesis waits for the
 /// group the host's channel service creates for it: the wait is bounded by the
-/// service (`crate::channels::OPEN_WAIT`, longer than the group may take to be
+/// service (`crate::workspace_keys::OPEN_WAIT`, longer than the group may take to be
 /// founded), and each app is named in the error when its keys never come.
 pub(crate) async fn seed_apps(
     workspaces: &Workspaces,

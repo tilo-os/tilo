@@ -349,8 +349,8 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
              roster: {:?}\nretained by the agent: {:?}\nmember: {}\npage: {}",
             workspaces.agents(&workspace.workspace).await,
             retained_by(&hosted, workspace.workspace_id, agent_key).await,
-            member.peer.status().channels,
-            page.peer.status().channels,
+            member.peer.status().key_state,
+            page.peer.status().key_state,
         );
     };
     eprintln!(

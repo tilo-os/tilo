@@ -9,7 +9,7 @@ use super::super::route_keys::RouteKeys;
 
 /// How soon a route waiting for keys is asked about again after anything
 /// changed, and how often every route is asked when the broker does not say
-/// when keys change (`channelKeysChanged`).
+/// when keys change (`groupKeysChanged`).
 const CHANNEL_KEY_REFRESH: Duration = Duration::from_secs(1);
 
 /// The longest a route waiting for keys goes unasked while nothing changes,
@@ -50,7 +50,7 @@ impl KeyRound {
 /// When an endpoint asks the identity service for its routes' keys.
 ///
 /// A route holding keys is asked only when told to: the broker resolves the
-/// route's pending `channelKeysChanged` the moment its channel's keys or
+/// route's pending `groupKeysChanged` the moment its channel's keys or
 /// this device's access change, ciphertext arrives its keys can't open, or
 /// the broker refuses an edit sealed under them (`send_document_frame`). An
 /// endpoint whose routes all hold keys therefore never wakes for them.
@@ -71,7 +71,7 @@ impl KeyRound {
 /// access request to a participant's welcome, re-checks a workspace whose
 /// governance is unknown whenever the workspace tree announces a change of its authority
 /// or governance, and retries a channel it failed to open on its own
-/// backoff, resolving the route's `channelKeysChanged` each time. So it is
+/// backoff, resolving the route's `groupKeysChanged` each time. So it is
 /// not asked on a timer either.
 ///
 /// A route waiting for keys is asked on a timer only when nothing will tell
@@ -84,7 +84,7 @@ impl KeyRound {
 /// every route every [`CHANNEL_KEY_REFRESH`], as before.
 pub(super) struct KeySchedule {
     /// Whether the broker says when keys change. Assumed until a route's
-    /// `channelKeysChanged` is refused.
+    /// `groupKeysChanged` is refused.
     pushed: bool,
     /// Routes told to ask since the last round.
     pub(super) marked: std::collections::BTreeSet<String>,

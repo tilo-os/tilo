@@ -107,13 +107,13 @@ State that names the old device itself, rather than being sealed to its key,
 cannot be re-sealed into the new one's, so it is dropped and rebuilt from the
 device's peers:
 
-- **Channel membership.** Each MLS group the copy holds names the source's
-  device as its member. The relay's channel member files (sealed under a key
+- **Group membership.** Each MLS group the copy holds names the source's
+  device as its member. The relay's group member files (sealed under a key
   its device key derives) are dropped at re-key; a session's (sealed under the
-  person's own vault) are dropped where the channel service finds them naming
-  another device (`channel_crypto::Error::OtherDevice`). Neither is ever used,
+  person's own vault) are dropped where the key service finds them naming
+  another device (`key_group::Error::OtherDevice`). Neither is ever used,
   so the branch takes no leaf of its source's and cannot act as it. The
-  branch then asks for each channel as itself, and a participant admits it
+  branch then asks for each workspace's keys as itself, and a committer admits it
   with a `Welcome` and the key history, as for any further device of a member.
   The source stays the member it was.
 - **Workspace membership.** The workspaces on the copied desk are held as the
@@ -258,7 +258,7 @@ choice, recorded in the same resource.
 
 ### Keys follow membership
 
-Content is sealed under content keys (`channel-crypto`), one per key epoch.
+Content is sealed under content keys (`key-group`), one per key epoch.
 The key epoch's group is an MLS group whose members are exactly the
 workspace's participant devices: a projection of `workspace.members`, never a
 second record of who belongs.
@@ -398,7 +398,7 @@ the desk's actions; a branch of another workspace is refused at the agent door.
 
 - **Records, with their history.** Every record the source holds on this
   device is read whole and written into the branch as its founding write,
-  sealed under the branch's own channel keys. Each document is forked under a
+  sealed under the branch's own keys. Each document is forked under a
   writer of its own and gets one more change naming the branch as its
   workspace; its record id stays (an id names a document only inside its
   workspace, so references between the workspace's records keep working) and
@@ -438,8 +438,8 @@ the desk's actions; a branch of another workspace is refused at the agent door.
 - Each person's own place in the workspace's tilolang apps, one record for all
   of them.
 - Membership and governance: the branch's are new — a new workspace id, its
-  only member the person who branched it, as owner, its own channel keys. No
-  other member, invitation, pending invitation or channel state carries over.
+  only member the person who branched it, as owner, its own keys. No
+  other member, invitation, pending invitation or key state carries over.
 - Other people's windows, who is here (presence), and the source's history of
   effects and its shortcuts.
 
@@ -459,7 +459,7 @@ animation) belong in the toolkit, so every app has them.
 
 Chat keeps its messages in a chain of `ChatPart` records
 (`tilo_app::framework::chain`), because one record outgrows what a snapshot
-can carry: a snapshot folds a channel only up to 16 MiB, and a fold always
+can carry: a snapshot folds a record only up to 16 MiB, and a fold always
 carries the record's whole history.
 
 The chain stays in the SDK, as one resource. Segmenting one record's history
@@ -477,7 +477,7 @@ that resource instead of enumerating parts themselves.
 
 ## What a unit and a workspace's keys cost
 
-Measured, not estimated: `channel-crypto`'s `per_channel` bench for a
+Measured, not estimated: `key-group`'s `per_group` bench for a
 workspace's group, `tilo-app-state`'s `record_cost` for a unit and its document, and
 `tilolang-tilo`'s `index_units` for the index. Numbers are medians on a
 x86_64 development container, three samples; instruction counts repeat on any
@@ -619,10 +619,10 @@ the model but instead of it:
   hosts holding them. The person's own records are in no workspace: their
   store is
   one cluster per person, derived from the root key, and the readers of its
-  channels are the identity's certified devices that are not revoked — the
+  group are the identity's certified devices that are not revoked — the
   identity decides, and no governor or workspace takes part. Any of those
-  devices creates a channel's group and admits the others
-  (`channel_crypto::ChannelPeer`), as a workspace's participants do.
+  devices creates the group and admits the others
+  (`key_group::GroupPeer`), as a workspace's participants do.
 - **Settings outside the model.** `Settings<T>` with Personal, DeviceLocal and
   Shared scopes, the settings registry and `settings.json`. Settings are
   resources.

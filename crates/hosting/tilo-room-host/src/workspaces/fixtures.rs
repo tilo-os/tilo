@@ -11,12 +11,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
+use key_group::{ContentKeys, KeyGroup, MemberKey};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-use super::{ChannelKeys, ChannelKeysAnswerFuture, DeviceChannels, PreAdmitRequest, Workspaces};
+use super::{DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, PreAdmitRequest, Workspaces};
 use crate::host::{HostConfig, HostIdentity, WorkspaceHost};
 
 /// A host certified only to host workspaces: it governs them without taking part in
@@ -104,12 +104,12 @@ impl TestHost {
 /// record, as the channel service of the device a page or a bot runs on does,
 /// and answers with the same keys every time after.
 #[derive(Default)]
-pub struct TestChannelKeys {
-    held: Mutex<BTreeMap<String, ChannelContentKeys>>,
+pub struct TestGroupKeys {
+    held: Mutex<BTreeMap<String, ContentKeys>>,
 }
 
-impl ChannelKeys for TestChannelKeys {
-    fn channel_keys<'a>(&'a self, workspace: &'a str, create: bool) -> ChannelKeysAnswerFuture<'a> {
+impl GroupKeys for TestGroupKeys {
+    fn group_keys<'a>(&'a self, workspace: &'a str, create: bool) -> GroupKeysAnswerFuture<'a> {
         Box::pin(async move {
             let held = {
                 let keys = self.held.lock().expect("the fixture's keys");
@@ -121,7 +121,7 @@ impl ChannelKeys for TestChannelKeys {
             if !create {
                 return Some(Err("this channel has no keys yet".into()));
             }
-            let keys = ChannelGroup::create(
+            let keys = KeyGroup::create(
                 collab_types::WorkspaceId::parse(workspace).expect("a workspace id"),
                 MemberKey::generate(workspace).expect("a fixture member key"),
             )
@@ -187,13 +187,13 @@ pub async fn test_host_holding(
     state_root: &Path,
     key: &SigningKey,
     cert: &DeviceCert,
-    keys: Arc<TestChannelKeys>,
+    keys: Arc<TestGroupKeys>,
 ) -> TestHost {
     host_on(
         state_root,
         key,
         cert,
-        Some(DeviceChannels { keys, sink: None }),
+        Some(DeviceKeyGroups { keys, sink: None }),
         None,
     )
     .await
@@ -205,7 +205,7 @@ async fn host_on(
     state_root: &Path,
     key: &SigningKey,
     cert: &DeviceCert,
-    channels: Option<DeviceChannels>,
+    channels: Option<DeviceKeyGroups>,
     grants: Option<usize>,
 ) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)

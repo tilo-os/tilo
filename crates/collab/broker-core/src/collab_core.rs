@@ -84,7 +84,7 @@ pub struct BrokerChannels {
     /// consulted on every local and peer document ingress. Registered before the first op of a
     /// channel is accepted and refreshed on every membership change; the broker holds the gate,
     /// never a key.
-    pub gates: tilo_channels::Gates,
+    pub gates: tilo_workspace_keys::Gates,
     /// Durable history of content-key ciphertext, so members (including
     /// ones added later) can page back past the in-memory window.
     pub history: Option<crate::collab_history::CollabHistoryStore>,
@@ -115,10 +115,10 @@ impl BrokerChannels {
     }
 
     /// Install or refresh a workspace's ingress gate.
-    pub fn register_channel_gate(
+    pub fn register_gate(
         &mut self,
         workspace: collab_types::WorkspaceId,
-        gate: channel_crypto::ChannelGate,
+        gate: key_group::SealGate,
     ) {
         self.gates.register(workspace, gate);
     }
@@ -407,14 +407,10 @@ pub fn apply_redaction_from_envelope(
 #[derive(Clone, Default)]
 pub struct BrokerGates(pub Arc<Mutex<BrokerChannels>>);
 
-impl tilo_channels::ChannelGates for BrokerGates {
-    fn register_channel_gate(
-        &self,
-        workspace: collab_types::WorkspaceId,
-        gate: channel_crypto::ChannelGate,
-    ) {
+impl tilo_workspace_keys::GateRegistry for BrokerGates {
+    fn register_gate(&self, workspace: collab_types::WorkspaceId, gate: key_group::SealGate) {
         if let Ok(mut channels) = self.0.lock() {
-            channels.register_channel_gate(workspace, gate);
+            channels.register_gate(workspace, gate);
         }
     }
 }

@@ -80,8 +80,7 @@ pub use own::OwnWorkspaceOffer;
 #[cfg(any(feature = "agents", feature = "web"))]
 pub(crate) mod sealed_records;
 pub use device_keys::{
-    ChannelKeys, ChannelKeysAnswer, ChannelKeysAnswerFuture, ChannelSink, DeviceChannels,
-    DeviceKeys,
+    DeviceKeyGroups, DeviceKeys, GroupKeys, GroupKeysAnswer, GroupKeysAnswerFuture, KeySink,
 };
 #[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
 pub use sealed_records::fixtures as sealed_fixtures;
@@ -911,7 +910,7 @@ pub(crate) struct WorkspaceServices {
     /// The channel service of the device this host runs on, when the
     /// embedder runs one: the host seals and opens the records of the
     /// workspaces it governs with its keys and admits nobody.
-    pub(crate) channels: Option<DeviceChannels>,
+    pub(crate) channels: Option<DeviceKeyGroups>,
 }
 
 /// The workspaces this relay governs.
@@ -1199,9 +1198,9 @@ impl Workspaces {
         &self,
         route: &tilo_peer_state::document_frame::DocumentRoute,
         create: bool,
-    ) -> ChannelKeysAnswer {
+    ) -> GroupKeysAnswer {
         let device = self.device_keys()?;
-        device.channel_keys(&route.cluster_id, create).await
+        device.group_keys(&route.cluster_id, create).await
     }
 
     /// Every record this host holds of `workspace`, by the app whose document
@@ -2191,8 +2190,8 @@ impl Workspaces {
         message: neighbour_wire::NeighbourMsg,
         carried: Carried,
     ) -> Result<Option<neighbour_wire::NeighbourMsg>, String> {
-        if message.channel_workspace().is_some() {
-            self.take_channel_governance(workspace, author, message, carried)
+        if message.governance_workspace().is_some() {
+            self.take_governance(workspace, author, message, carried)
                 .await?;
             return Ok(None);
         }
@@ -2263,7 +2262,7 @@ impl Workspaces {
         // device's channel governance like any member's, for the other
         // participants: the host keeps no channels to have it already.
         if author == host.cert.device_public_key
-            && message.channel_workspace().is_none()
+            && message.governance_workspace().is_none()
             && !matches!(
                 message,
                 neighbour_wire::NeighbourMsg::AppDocument { .. }

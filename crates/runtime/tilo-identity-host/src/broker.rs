@@ -21,7 +21,7 @@ use tilo_action_policy::{ActionKind, Answer};
 use tilo_clock::unix_now;
 use wire_frame::FrameError;
 
-pub use crate::sources::{ChannelKeySource, ChannelKeys, PersonRecordKinds, WorkspaceMembership};
+pub use crate::sources::{GroupKeySource, GroupKeys, PersonRecordKinds, WorkspaceMembership};
 use tilo_desktop_model::{Workspace, WorkspaceId};
 
 use tilo_lock::MutexRecover as _;
@@ -119,7 +119,7 @@ fn close_clients(clients: &Mutex<HashMap<u64, UnixStream>>) {
 pub fn spawn(
     path: PathBuf,
     tree: Arc<dyn WorkspaceMembership>,
-    channels: Arc<dyn ChannelKeySource>,
+    groups: Arc<dyn GroupKeySource>,
     person: Arc<dyn PersonRecordKinds>,
 ) -> io::Result<IdentityBrokerHandle> {
     let _ = std::fs::remove_file(&path);
@@ -138,7 +138,7 @@ pub fn spawn(
                     Ok(_) if thread_stop.load(Ordering::Acquire) => break,
                     Ok((stream, _)) => {
                         let tree = Arc::clone(&tree);
-                        let channels = Arc::clone(&channels);
+                        let groups = Arc::clone(&groups);
                         let person = Arc::clone(&person);
                         let cancellation = match stream.try_clone() {
                             Ok(cancellation) => cancellation,
@@ -155,7 +155,7 @@ pub fn spawn(
                         match thread::Builder::new()
                             .name("tilo-identity-client".into())
                             .spawn(move || {
-                                serve(stream, &*tree, &*channels, &*person);
+                                serve(stream, &*tree, &*groups, &*person);
                                 drop(connection);
                             })
                         {
@@ -172,7 +172,7 @@ pub fn spawn(
             }
             // Admission has stopped: also close clients accepted concurrently
             // with the handle's first cancellation sweep, then release every
-            // client's membership and channel ownership before retirement.
+            // client's membership and group ownership before retirement.
             close_clients(&thread_clients);
             for worker in workers {
                 let _ = worker.join();
@@ -189,7 +189,7 @@ pub fn spawn(
 fn serve(
     mut stream: UnixStream,
     tree: &dyn WorkspaceMembership,
-    channels: &dyn ChannelKeySource,
+    groups: &dyn GroupKeySource,
     person: &dyn PersonRecordKinds,
 ) {
     // Darwin inherits the listener's nonblocking flag on accept. This worker
@@ -258,15 +258,15 @@ fn serve(
                 &record_id,
                 &unsigned_op,
             ),
-            Request::ChannelKeys {
+            Request::GroupKeys {
                 workspace_id,
                 app_id,
                 record_id,
                 known_generation,
-            } => channel_keys(
+            } => group_keys(
                 tree,
-                channels,
-                &ChannelKeyRoute {
+                groups,
+                &GroupKeyRoute {
                     bound: Bound {
                         workspace: &workspace,
                         app_id: &handshake.app_id,
@@ -547,9 +547,9 @@ fn sign_collaboration_op(
     Response::Signature(device.sign(&signing_bytes).to_bytes().to_vec())
 }
 
-/// The route a [`Request::ChannelKeys`] names, with the launch binding it
+/// The route a [`Request::GroupKeys`] names, with the launch binding it
 /// must match.
-struct ChannelKeyRoute<'a> {
+struct GroupKeyRoute<'a> {
     bound: Bound<'a>,
     workspace_id: &'a str,
     app_id: &'a str,
@@ -559,11 +559,11 @@ struct ChannelKeyRoute<'a> {
 /// Hand an app the content keys of one route of its own launch, only while
 /// this device is trusted and its person may read the workspace. The keys
 /// open the route's content and nothing else: no MLS secret leaves the
-/// channel service, and another app's or workspace's route is refused.
-fn channel_keys(
+/// key service, and another app's or workspace's route is refused.
+fn group_keys(
     tree: &dyn WorkspaceMembership,
-    channels: &dyn ChannelKeySource,
-    route: &ChannelKeyRoute<'_>,
+    groups: &dyn GroupKeySource,
+    route: &GroupKeyRoute<'_>,
     known_generation: u64,
 ) -> Response {
     let bound = &route.bound;
@@ -578,7 +578,7 @@ fn channel_keys(
         && collab_types::workspace_record(route.app_id, route.record_id).is_none())
         || (!launch_workspace && !bound.keeps_person_record(route.record_id))
     {
-        return Response::Denied("channel keys requested for a different launch route".into());
+        return Response::Denied("group keys requested for a different launch route".into());
     }
     let launch = bound.workspace.to_string();
     let profile = match identity_in(tree, bound.workspace) {
@@ -586,7 +586,7 @@ fn channel_keys(
         Err(reason) => return Response::Error(reason),
     };
     if !launch_workspace && !bound.in_personal_cluster(&profile, route.workspace_id) {
-        return Response::Denied("channel keys requested for a different launch route".into());
+        return Response::Denied("group keys requested for a different launch route".into());
     }
     // The same trust check as signing, served from memory while none of the
     // files it reads changed (`join_proof`): one `stat` of each instead of
@@ -624,16 +624,16 @@ fn channel_keys(
     let Some(workspace) = WorkspaceId::parse(route.workspace_id)
         .filter(|workspace| workspace.to_string() == route.workspace_id)
     else {
-        return Response::Denied("channel keys requested for an invalid workspace".into());
+        return Response::Denied("group keys requested for an invalid workspace".into());
     };
-    match channels.access(workspace, known_generation) {
-        None => Response::ChannelKeys {
-            access: runtime_identity::wire::ChannelAccess::Unavailable,
+    match groups.access(workspace, known_generation) {
+        None => Response::GroupKeys {
+            access: runtime_identity::wire::KeyAccess::Unavailable,
             generation: 0,
             keys: Vec::new(),
         },
         Some(Err(error)) => Response::Error(error),
-        Some(Ok((access, generation, keys))) => Response::ChannelKeys {
+        Some(Ok((access, generation, keys))) => Response::GroupKeys {
             access,
             generation,
             keys,
@@ -1662,13 +1662,13 @@ params = []
             );
             assert!(
                 identity
-                    .channel_keys(&own_cluster, "so.tilo.notes", &watched, 0)
+                    .group_keys(&own_cluster, "so.tilo.notes", &watched, 0)
                     .is_ok(),
                 "the keys of a record of the person's the app declares are asked for"
             );
             assert!(
                 identity
-                    .channel_keys(&own_cluster, "so.tilo.notes", &undeclared, 0)
+                    .group_keys(&own_cluster, "so.tilo.notes", &undeclared, 0)
                     .is_err(),
                 "not those of a kind it does not declare"
             );
@@ -1722,15 +1722,15 @@ params = []
     }
 
     /// A key service holding keys for every workspace.
-    struct ReadyChannels;
-    impl ChannelKeySource for ReadyChannels {
+    struct ReadyGroups;
+    impl GroupKeySource for ReadyGroups {
         fn access(
             &self,
             _workspace: WorkspaceId,
             _known_generation: u64,
-        ) -> Option<Result<ChannelKeys, String>> {
+        ) -> Option<Result<GroupKeys, String>> {
             Some(Ok((
-                runtime_identity::wire::ChannelAccess::Ready,
+                runtime_identity::wire::KeyAccess::Ready,
                 1,
                 vec![1, 2, 3],
             )))
@@ -1738,7 +1738,7 @@ params = []
     }
 
     tilo_test_env::scenario! {
-        fn channel_keys_for_an_app;
+        fn group_keys_for_an_app;
 
         phase an_app_opened_in_the_persons_own_cluster_gets_the_keys_of_their_records;
         // An app opened in the person's own store (Settings) is answered the
@@ -1753,10 +1753,10 @@ params = []
             let own = own_cluster.to_string();
             let app_id = "so.tilo.notes";
             let watched = collab_types::person_record_id("notes.watched");
-            let answer = channel_keys(
+            let answer = group_keys(
                 &WorkspaceTree::default().shared(),
-                &ReadyChannels,
-                &ChannelKeyRoute {
+                &ReadyGroups,
+                &GroupKeyRoute {
                     bound: Bound {
                         workspace: &own_cluster,
                         app_id,
@@ -1769,7 +1769,7 @@ params = []
                 0,
             );
             assert!(
-                matches!(answer, Response::ChannelKeys { .. }),
+                matches!(answer, Response::GroupKeys { .. }),
                 "the person reads their own cluster: {answer:?}"
             );
         }
@@ -1785,10 +1785,10 @@ params = []
             .expect("the person's store");
             let launch = workspace.to_string();
             let keys_of = |owner: &str| {
-                channel_keys(
+                group_keys(
                     &WorkspaceTree::default().shared(),
-                    &ReadyChannels,
-                    &ChannelKeyRoute {
+                    &ReadyGroups,
+                    &GroupKeyRoute {
                         bound: Bound {
                             workspace: &workspace,
                             app_id: "so.tilo.lang.today",
@@ -1803,7 +1803,7 @@ params = []
             };
             let tasks = keys_of("so.tilo.lang.tasks");
             assert!(
-                matches!(tasks, Response::ChannelKeys { .. }),
+                matches!(tasks, Response::GroupKeys { .. }),
                 "Today reads Tasks' record: {tasks:?}"
             );
             let chat = keys_of("so.tilo.lang.chat");
@@ -1813,7 +1813,7 @@ params = []
             );
         }
 
-        phase channel_keys_trust_check_reads_identity_files_once_and_sees_revocation;
+        phase group_keys_trust_check_reads_identity_files_once_and_sees_revocation;
         // Answering an app's key request checks this device's trust from the
         // identity files while they are unchanged without reading them again,
         // and still refuses keys on the very next request after a revocation.
@@ -1830,10 +1830,10 @@ params = []
             tree.desktop.workspaces.push(committed);
             let tree = tree.shared();
             let ask = || {
-                channel_keys(
+                group_keys(
                     &tree,
-                    &ReadyChannels,
-                    &ChannelKeyRoute {
+                    &ReadyGroups,
+                    &GroupKeyRoute {
                         bound: bound(&workspace, app_id),
                         workspace_id: &fixture.workspace,
                         app_id,
@@ -1845,7 +1845,7 @@ params = []
             let fleet_loads = crate::device_fleet::loads_on_this_thread();
             let derived = crate::join_proof::tests::mints(|| {
                 for _ in 0..3 {
-                    assert!(matches!(ask(), Response::ChannelKeys { .. }));
+                    assert!(matches!(ask(), Response::GroupKeys { .. }));
                 }
             });
             assert_eq!(

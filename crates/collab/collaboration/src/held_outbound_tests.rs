@@ -8,20 +8,20 @@ struct AccessThenKeysIdentity {
 
 #[cfg(unix)]
 impl SdkCertifiedIdentity for AccessThenKeysIdentity {
-    fn channel_keys(
+    fn group_keys(
         &self,
         _: &str,
         _: &str,
         _: &str,
         generation: u64,
     ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
-        use runtime_identity::wire::ChannelAccess;
+        use runtime_identity::wire::KeyAccess;
         let ready = self.ready.load(std::sync::atomic::Ordering::Acquire);
         Ok(runtime_identity::wire::ChannelKeysReply {
             access: if ready {
-                ChannelAccess::Ready
+                KeyAccess::Ready
             } else {
-                ChannelAccess::Waiting
+                KeyAccess::Waiting
             },
             generation,
             keys: ready.then(|| self.keys.clone()),
@@ -56,11 +56,9 @@ fn an_edit_held_for_channel_keys_goes_out_when_the_keys_arrive() {
     let app_id = "so.tilo.test";
     let cluster = Uuid::new_v4();
     let channel = collab_types::WorkspaceId::parse(&cluster.to_string()).unwrap();
-    let group = channel_crypto::ChannelGroup::create(
-        channel,
-        channel_crypto::MemberKey::generate("device").unwrap(),
-    )
-    .unwrap();
+    let group =
+        key_group::KeyGroup::create(channel, key_group::MemberKey::generate("device").unwrap())
+            .unwrap();
     let changes = Arc::new(tokio::sync::watch::Sender::new(0_u64));
     let broker = FakeBroker {
         captures: Arc::new(std::sync::Mutex::new(Captures {

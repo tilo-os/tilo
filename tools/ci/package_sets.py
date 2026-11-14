@@ -55,7 +55,7 @@ def example_apps(packages: dict[str, dict], root: Path) -> set[str]:
 
 # Crates the page runtime compiles for the browser that reach wasm-bindgen only
 # through others, with the features the web build gives them: the arguments
-# that build each as tilo-browser-runtime's dependency on it does. channel-crypto
+# that build each as tilo-browser-runtime's dependency on it does. key-group
 # is here for its own wasm target table: the getrandom backend that makes a peer
 # built without tilo-ui compile belongs to it, so it is built alone to hold that.
 # tilo-peer-state is the peer core a page holds its workspaces through, as
@@ -63,7 +63,7 @@ def example_apps(packages: dict[str, dict], root: Path) -> set[str]:
 # browser.
 WASM_ALSO = {
     "tilo-session-client": ("--no-default-features", "--features", "toolkit"),
-    "channel-crypto": (),
+    "key-group": (),
     "tilo-peer-state": (),
 }
 

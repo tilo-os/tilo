@@ -560,9 +560,9 @@ mod tests {
             "the subscriber holds exactly the op the broker admitted"
         );
         // The workspace's group requires encryption from now on.
-        channels.lock().unwrap().register_channel_gate(
+        channels.lock().unwrap().register_gate(
             collab_types::WorkspaceId::parse(&route.cluster_id).unwrap(),
-            channel_crypto::ChannelGate {
+            key_group::SealGate {
                 encryption_required: true,
             },
         );

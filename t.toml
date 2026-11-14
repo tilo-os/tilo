@@ -189,7 +189,7 @@ requires = ["arch=x86_64"]
 wrapper = ["bash", "-c", "export TILO_TEST_ASSET_CACHE=\"$CARGO_TARGET_DIR/test-assets\" TILO_NTFS_SOURCE_CACHE=\"$CARGO_TARGET_DIR/ntfs-source\"; exec bash tools/with-test-environment.sh \"$@\"", "examples"]
 args = ["--locked", "--examples"]
 packages = [
-    "accounts", "agent", "app-cli", "browser", "calculator", "channel-crypto", "code-editor",
+    "accounts", "agent", "app-cli", "browser", "calculator", "key-group", "code-editor",
     "containers", "discord-worker", "file-explorer", "imager", "launcher", "local-model-service",
     "notes", "osk", "runtime-bundle", "runtime-portal", "scratchpad", "settings", "store",
     "tilo-agent-participant", "tilo-app", "tilo-bluez", "tilo-browser-compute",

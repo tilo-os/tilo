@@ -401,7 +401,7 @@ async fn seal_keys(
     engine: &Engine,
     workspace: WorkspaceId,
     until: Instant,
-) -> Result<channel_crypto::ChannelContentKeys, String> {
+) -> Result<key_group::ContentKeys, String> {
     loop {
         let mut events = events(engine);
         match engine.seal_keys(workspace)? {
@@ -1215,7 +1215,7 @@ mod tests {
     /// Write `doc` into `workspace` as `record` of `app` , sealed, as an app's first write is.
     fn write(
         engine: &Engine,
-        keys: &channel_crypto::ChannelContentKeys,
+        keys: &key_group::ContentKeys,
         workspace: WorkspaceId,
         (app, record): (&str, &str),
         doc: &mut AutoCommit,
@@ -1247,9 +1247,9 @@ mod tests {
         let (from, to) = ids();
         pollster::block_on(engine.found(WorkspaceSlot(1), from, "Research", None));
         pollster::block_on(engine.found(WorkspaceSlot(2), to, "Research branch", None));
-        let keys = channel_crypto::ChannelGroup::create(
+        let keys = key_group::KeyGroup::create(
             collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
-            channel_crypto::MemberKey::generate("owner").unwrap(),
+            key_group::MemberKey::generate("owner").unwrap(),
         )
         .unwrap()
         .content_keys()
@@ -1332,9 +1332,9 @@ mod tests {
         let (from, to) = ids();
         pollster::block_on(engine.found(WorkspaceSlot(1), from, "Research", None));
         pollster::block_on(engine.found(WorkspaceSlot(2), to, "Research branch", None));
-        let keys = channel_crypto::ChannelGroup::create(
+        let keys = key_group::KeyGroup::create(
             collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
-            channel_crypto::MemberKey::generate("owner").unwrap(),
+            key_group::MemberKey::generate("owner").unwrap(),
         )
         .unwrap()
         .content_keys()
@@ -1404,13 +1404,11 @@ mod tests {
         pollster::block_on(engine.found(WorkspaceSlot(2), to, "Research branch", None));
         assert!(engine.holds(from) && engine.holds(to));
         let channel = collab_types::WorkspaceId::parse(&to.to_string()).unwrap();
-        let keys = channel_crypto::ChannelGroup::create(
-            channel,
-            channel_crypto::MemberKey::generate("owner").unwrap(),
-        )
-        .unwrap()
-        .content_keys()
-        .unwrap();
+        let keys =
+            key_group::KeyGroup::create(channel, key_group::MemberKey::generate("owner").unwrap())
+                .unwrap()
+                .content_keys()
+                .unwrap();
         let notes = ("so.tilo.notes", "uuid-plan");
         let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
         let mut plan = record(FROM, "plan");

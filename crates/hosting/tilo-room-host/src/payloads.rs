@@ -123,7 +123,7 @@ pub trait ShellPayloads: Send + Sync + 'static {
 
     /// Whether `body` is a device's request to be admitted to a channel's
     /// group: what only a device that admits others acts on. A device that
-    /// only follows its groups ([`crate::transport::Envelope::ChannelReader`])
+    /// only follows its groups ([`crate::transport::Envelope::KeyFollower`])
     /// is sent none. Read off the body's first bytes, without decoding it.
     /// The default, for an adapter that knows no channel governance, is
     /// `false`: every device is sent the body.

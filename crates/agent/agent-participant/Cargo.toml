@@ -107,7 +107,7 @@ collab-types = { path = "../../collab/collab-types" }
 # frames a browser and a native shell say theirs in.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The keys a workspace's sealed record is opened with, and the live track a presence frame took.
-channel-crypto = { path = "../../collab/channel-crypto" }
+key-group = { path = "../../collab/key-group" }
 tilo-live = { path = "../../collab/tilo-live" }
 postcard = { workspace = true, features = ["use-std"] }
 automerge.workspace = true

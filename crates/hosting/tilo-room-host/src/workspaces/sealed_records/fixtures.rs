@@ -7,9 +7,9 @@
     reason = "a fixture failing is its test failing"
 )]
 
-use channel_crypto::ChannelContentKeys;
 use collab_types::{ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
+use key_group::ContentKeys;
 use neighbour_wire::NeighbourMsg;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
@@ -88,7 +88,7 @@ pub async fn plaintext_record(
 /// record sealed, as a page does once a participant admitted it.
 pub struct SealingMember {
     key: SigningKey,
-    keys: ChannelContentKeys,
+    keys: ContentKeys,
     route: (String, String),
     /// The app surface the member's writes name, as its page names it.
     pub(crate) surface: Option<[u8; 32]>,

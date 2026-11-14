@@ -486,10 +486,10 @@ mod tests {
     fn planed(
         engine: &Engine,
     ) -> (
-        Arc<tilo_session_client::channels::ChannelLink>,
+        Arc<tilo_session_client::workspace_keys::KeyLink>,
         tokio::sync::mpsc::UnboundedReceiver<tilo_session_client::Cmd>,
     ) {
-        let link = tilo_session_client::channels::ChannelLink::new();
+        let link = tilo_session_client::workspace_keys::KeyLink::new();
         let (said, heard) = tokio::sync::mpsc::unbounded_channel();
         link.attach(Arc::new(said));
         engine.attach_link(Arc::clone(&link));

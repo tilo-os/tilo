@@ -14,9 +14,9 @@
 //! governor's copy follows that checkpoint like any other member write, and
 //! no device's history waits for someone else to fold it.
 
-use channel_crypto::ChannelContentKeys;
 use collab_types::{ArtifactId, ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
+use key_group::ContentKeys;
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::StatePeer;
 
@@ -31,7 +31,7 @@ const COMPACTION_RETRY: usize = 256;
 
 /// The content keys of one record's channel, as the node holds them.
 pub(super) struct RecordKeys {
-    keys: ChannelContentKeys,
+    keys: ContentKeys,
     artifact: ArtifactId,
 }
 
@@ -167,9 +167,9 @@ impl GovernedWorkspace {
     /// The workspace's content keys as the device this host runs on holds
     /// them, without opening a group it has none of: `None` when this host
     /// runs on a device that takes part in no group of the workspace.
-    pub(super) async fn route_keys(&self) -> Option<Result<ChannelContentKeys, String>> {
+    pub(super) async fn route_keys(&self) -> Option<Result<ContentKeys, String>> {
         let device = self.device.as_ref()?;
-        device.channel_keys(self.workspace(), false).await
+        device.group_keys(self.workspace(), false).await
     }
 
     /// Whether this host holds the workspace's keys: it can then read sealed
@@ -291,7 +291,7 @@ pub(super) async fn whole_document(
             .ok_or_else(|| "the host holds no copy of it".to_owned());
     }
     let device = device.ok_or("it is sealed and this host has no channel keys")?;
-    let keys = match device.channel_keys(workspace, false).await {
+    let keys = match device.group_keys(workspace, false).await {
         None => return Err("it is sealed for a channel this host holds no keys of".to_owned()),
         Some(Err(error)) => return Err(format!("its channel's keys did not open: {error}")),
         Some(Ok(keys)) => keys,
@@ -342,7 +342,7 @@ pub(crate) async fn unsent_writes(
     let Some(device) = device else {
         return Vec::new();
     };
-    let Some(Ok(keys)) = device.channel_keys(workspace, false).await else {
+    let Some(Ok(keys)) = device.group_keys(workspace, false).await else {
         return Vec::new();
     };
     let keys = RecordKeys {
@@ -530,11 +530,10 @@ impl crate::compaction::ParticipantKeys for Workspaces {
     fn keys<'a>(
         &'a self,
         route: &'a crate::compaction::Route,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ChannelContentKeys>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ContentKeys>> + Send + 'a>> {
         Box::pin(async move {
             let device = self.device_keys()?;
-            device.channel_keys(&route.cluster_id, false).await?.ok()
+            device.group_keys(&route.cluster_id, false).await?.ok()
         })
     }
 
@@ -570,7 +569,7 @@ impl Workspaces {
         let Some(device) = self.device_keys() else {
             return false;
         };
-        matches!(device.channel_keys(workspace, true).await, Some(Ok(_)))
+        matches!(device.group_keys(workspace, true).await, Some(Ok(_)))
     }
 
     /// Everything the governor's copy holds of `record` of `app` in
@@ -858,7 +857,7 @@ impl Workspaces {
             return workspace.record_keys(app, record).await;
         };
         let keys = device
-            .channel_keys(name, true)
+            .group_keys(name, true)
             .await
             .ok_or("the record is sealed and this host takes part in no channel")??;
         Ok(Some(RecordKeys {

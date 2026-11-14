@@ -82,7 +82,7 @@ impl WorkspaceRecordsLink for Membership {
         &self,
         route: &DocumentRoute,
         create: bool,
-    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
+    ) -> Option<Result<key_group::ContentKeys, String>> {
         self.member
             .runtime
             .block_on(self.workspaces.own_route_keys(route, create))

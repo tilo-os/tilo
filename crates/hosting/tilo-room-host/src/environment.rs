@@ -114,7 +114,7 @@ impl EnvironmentScope {
                     | WorkspaceOperation::Replay
                     | WorkspaceOperation::Live
                     | WorkspaceOperation::RemoteAction
-                    | WorkspaceOperation::ChannelAccess
+                    | WorkspaceOperation::KeyAccess
             )
     }
 
@@ -638,7 +638,7 @@ mod tests {
             WorkspaceOperation::Replay,
             WorkspaceOperation::Live,
             WorkspaceOperation::RemoteAction,
-            WorkspaceOperation::ChannelAccess,
+            WorkspaceOperation::KeyAccess,
         ] {
             assert!(scope().admits(workspace(), op), "{op:?}");
         }

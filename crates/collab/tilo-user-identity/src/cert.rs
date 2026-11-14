@@ -737,21 +737,13 @@ impl DeviceCapabilities {
     }
 
     /// Whether a workspace governed by a device with these capabilities has
-    /// that governor take part in its channels, wherever it runs (a person's
-    /// device or a relay): the workspace's records are then sealed channels
-    /// each member opens itself, never documents the governor commits in the
-    /// clear. The workspace host and every member decide this the same way.
+    /// that governor hold the workspace's keys, wherever it runs (a person's
+    /// device or a relay): the workspace's records are then sealed, and each
+    /// member opens them itself. The workspace host and every member decide
+    /// this the same way.
     #[must_use]
-    pub const fn takes_part_in_workspace_channels(&self) -> bool {
+    pub const fn holds_workspace_keys(&self) -> bool {
         self.can_own_workspaces
-    }
-
-    /// The name the old shell and the room host still call it by; it goes
-    /// when they do.
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn takes_part_in_room_channels(&self) -> bool {
-        self.takes_part_in_workspace_channels()
     }
 
     /// Capability set for the user's primary device (holds root

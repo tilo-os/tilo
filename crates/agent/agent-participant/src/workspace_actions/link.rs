@@ -129,7 +129,7 @@ pub trait WorkspaceRecordsLink: Send + Sync {
         &self,
         _route: &DocumentRoute,
         _create: bool,
-    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
+    ) -> Option<Result<key_group::ContentKeys, String>> {
         None
     }
     /// Every record this host holds of the workspace whose channels are

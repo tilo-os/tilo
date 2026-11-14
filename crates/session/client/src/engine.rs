@@ -25,7 +25,6 @@ use std::sync::Arc;
 use tilo_clock::time::SystemTime;
 
 use tilo_action_policy::WorkspacePolicy;
-use tilo_channels::{ChannelAccess, ChannelKeyProvider};
 use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
@@ -43,11 +42,12 @@ use tilo_peer_state::owner::{DocumentRead, History, Holding};
 use tilo_peer_state::owner::{FileHost, open_file_with, owner_file_of};
 use tilo_peer_state::{KeptRecord, Member};
 use tilo_user_identity::RevocationList;
+use tilo_workspace_keys::{KeyAccess, KeyProvider};
 
-use crate::channels;
 use crate::custody::Custody;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::identity;
+use crate::workspace_keys;
 
 /// The engine's record, under this device's state directory: the name an earlier build kept it
 /// under, so the state it wrote is still read.
@@ -142,7 +142,7 @@ impl FileHost for Slots {
 /// the wait for them, or this device's own lack of a secret store to hold any.
 pub enum SealKeys {
     /// The keys this device seals the record's writes with.
-    Here(channel_crypto::ChannelContentKeys),
+    Here(key_group::ContentKeys),
     /// The keys are not here yet: the answer arrives as the workspace's other messages do, and the
     /// write waits for it.
     Waiting,
@@ -171,13 +171,13 @@ pub struct Engine {
     /// Where the workspaces' channels find this device's keys, once the channel service is running:
     /// the session opens the workspaces before it opens the service, and every reader of a sealed
     /// record goes through this.
-    keys: ChannelKeyProvider,
+    keys: KeyProvider,
     /// How this host proves this device still has custody of a workspace before it commits there.
     custody: Arc<dyn crate::custody::Custody>,
     /// The workspace transport of this session's collaboration plane, once it runs: a record the
     /// workspace's hosts send only once asked is asked for here, and the plane is gone while this
     /// is `None` .
-    link: std::sync::Mutex<Option<Arc<channels::ChannelLink>>>,
+    link: std::sync::Mutex<Option<Arc<workspace_keys::KeyLink>>>,
     /// The desk's workspaces this device could not found here: founding one is asked for again only
     /// by a later session, not by every pass over the desk.
     unfounded: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
@@ -198,7 +198,7 @@ pub struct Engine {
     handed: std::sync::Mutex<RouteKeys>,
     /// The keys each record's channel last gave this device: they seal and open while the channel
     /// asks for access again.
-    channel_keys: std::sync::Mutex<RouteKeys>,
+    group_keys: std::sync::Mutex<RouteKeys>,
     /// Sealed records as this device last opened them for a reader, so the next read opens only
     /// what was sealed since: a record its apps follow is opened once per write, not whole per read.
     kept: std::sync::Mutex<KeptRecords>,
@@ -233,7 +233,7 @@ fn kept_under<K: Default>(kept: Option<(KeysUsed, K)>, used: &KeysUsed) -> K {
 }
 
 /// Keys, by workspace.
-type RouteKeys = BTreeMap<WorkspaceId, channel_crypto::ChannelContentKeys>;
+type RouteKeys = BTreeMap<WorkspaceId, key_group::ContentKeys>;
 
 /// Opens one sealed write of a record into its plaintext.
 type OpenSealed<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>;
@@ -300,7 +300,7 @@ impl std::fmt::Debug for Engine {
 /// This device's channel keys, as its owner compacts the sealed histories of its records with
 /// them wherever it writes, linked or not
 /// ([`NativeWorkspaceOwner::keep_sealed_histories`]).
-pub struct HistoryKeys(pub ChannelKeyProvider);
+pub struct HistoryKeys(pub KeyProvider);
 
 impl tilo_peer_state::owner::SealedHistoryKeys for HistoryKeys {
     fn open(
@@ -349,7 +349,7 @@ impl Engine {
         identity: HostIdentity,
         custody: Arc<dyn Custody>,
     ) -> Self {
-        let keys = ChannelKeyProvider::default();
+        let keys = KeyProvider::default();
         owner.keep_sealed_histories(Arc::new(HistoryKeys(keys.clone())));
         Self {
             owner,
@@ -364,7 +364,7 @@ impl Engine {
             directed: None,
             arrivals: Arc::new(crate::arrivals::Arrivals::default()),
             handed: std::sync::Mutex::default(),
-            channel_keys: std::sync::Mutex::default(),
+            group_keys: std::sync::Mutex::default(),
             held: HeldWrites::default(),
             kept: std::sync::Mutex::default(),
             named_hosts: std::sync::Mutex::default(),
@@ -617,13 +617,13 @@ impl Engine {
     }
 
     /// The first second after `now` at which a read of `workspace`'s records can be decided
-    /// differently with nothing written ([`crate::channels::next_policy_change`]).
+    /// differently with nothing written ([`crate::workspace_keys::next_policy_change`]).
     ///
     /// # Errors
     /// `workspace` names no workspace.
     pub fn next_policy_change(&self, workspace: &str, now: u64) -> Result<Option<u64>, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        Ok(crate::channels::next_policy_change(
+        Ok(crate::workspace_keys::next_policy_change(
             &self.owner,
             workspace,
             now,
@@ -672,11 +672,11 @@ impl Engine {
         let sealed = self.owner.with_current(workspace, |view| {
             Ok(view.peer().publication().is_sealed_record(app, record))
         })?;
-        let keys: Option<tilo_channels::HistoryKeys> = if sealed {
+        let keys: Option<tilo_workspace_keys::HistoryKeys> = if sealed {
             match self.route_access(workspace) {
                 None => None,
-                Some(ChannelAccess::Ready(keys)) => Some(keys.into()),
-                Some(ChannelAccess::Waiting | ChannelAccess::Removed) => {
+                Some(KeyAccess::Ready(keys)) => Some(keys.into()),
+                Some(KeyAccess::Waiting | KeyAccess::Removed) => {
                     // Nothing opened under keys this device no longer holds answers a read
                     // until the record's channel gives it keys again.
                     self.kept.lock_recover().remove(&(
@@ -686,12 +686,12 @@ impl Engine {
                     ));
                     return Ok(None);
                 }
-                Some(ChannelAccess::NoSecretStore) => {
+                Some(KeyAccess::NoSecretStore) => {
                     return Err(
                         "this device has no secret store, so it holds no channel keys".to_owned(),
                     );
                 }
-                Some(ChannelAccess::Unavailable) => {
+                Some(KeyAccess::Unavailable) => {
                     return Err("this device takes part in no channel of the record".to_owned());
                 }
             }
@@ -716,11 +716,12 @@ impl Engine {
         // opened under other keys than these — the channel rotated, as removing a member rotates
         // it — is let go, and the record opens whole under the keys held now.
         let used: KeysUsed = [
-            keys.as_ref().map(tilo_channels::HistoryKeys::generation),
+            keys.as_ref()
+                .map(tilo_workspace_keys::HistoryKeys::generation),
             history
                 .as_ref()
                 .and_then(|history| history.as_ref().ok())
-                .map(tilo_channels::HistoryKeys::generation),
+                .map(tilo_workspace_keys::HistoryKeys::generation),
         ];
         let mut kept = kept_under(self.kept.lock_recover().remove(&key), &used);
         let read = read(
@@ -976,7 +977,7 @@ impl Engine {
         (app, record): (&str, &str),
         changes: &[u8],
         founding: bool,
-        sealed: Option<&channel_crypto::ChannelContentKeys>,
+        sealed: Option<&key_group::ContentKeys>,
     ) -> Result<tilo_peer_state::owner::AppWrite, String> {
         use tilo_broker_core::custody::OwnerCustody as _;
         let device = self.identity.device_cert.device_public_key;
@@ -1054,21 +1055,21 @@ impl Engine {
     /// its channel's — taking part in it asks the workspace's devices for access the first time,
     /// and its governance answers with the group — and while the channel asks again, the ones it
     /// last gave. `None` without a channel service.
-    fn route_access(&self, workspace: WorkspaceId) -> Option<ChannelAccess> {
+    fn route_access(&self, workspace: WorkspaceId) -> Option<KeyAccess> {
         let at = workspace;
         if let Some(handed) = self.handed.lock_recover().get(&at) {
-            return Some(ChannelAccess::Ready(handed.clone()));
+            return Some(KeyAccess::Ready(handed.clone()));
         }
         let access = self.keys.get()?.access(workspace).0;
-        let mut kept = self.channel_keys.lock_recover();
+        let mut kept = self.group_keys.lock_recover();
         Some(match access {
-            ChannelAccess::Ready(keys) => {
+            KeyAccess::Ready(keys) => {
                 kept.insert(at, keys.clone());
-                ChannelAccess::Ready(keys)
+                KeyAccess::Ready(keys)
             }
-            ChannelAccess::Waiting => kept.get(&at).map_or(ChannelAccess::Waiting, |keys| {
-                ChannelAccess::Ready(keys.clone())
-            }),
+            KeyAccess::Waiting => kept
+                .get(&at)
+                .map_or(KeyAccess::Waiting, |keys| KeyAccess::Ready(keys.clone())),
             gone => {
                 kept.remove(&at);
                 gone
@@ -1087,24 +1088,24 @@ impl Engine {
     pub fn seal_keys(&self, workspace: WorkspaceId) -> Result<SealKeys, String> {
         Ok(match self.route_access(workspace) {
             None => return Err("this session's channel service is not running".to_owned()),
-            Some(ChannelAccess::Ready(keys)) => SealKeys::Here(keys),
+            Some(KeyAccess::Ready(keys)) => SealKeys::Here(keys),
             // Asked and not admitted yet, or admitted nowhere the governance here can name:
             // either way the keys are not here yet.
-            Some(ChannelAccess::Waiting | ChannelAccess::Unavailable) => SealKeys::Waiting,
-            Some(ChannelAccess::Removed) => {
+            Some(KeyAccess::Waiting | KeyAccess::Unavailable) => SealKeys::Waiting,
+            Some(KeyAccess::Removed) => {
                 return Err("the workspace removed this device from its group".to_owned());
             }
-            Some(ChannelAccess::NoSecretStore) => SealKeys::NoSecretStore,
+            Some(KeyAccess::NoSecretStore) => SealKeys::NoSecretStore,
         })
     }
 
     /// The devices the workspace `workspace` admits, by the publisher each of their
-    /// sessions is known by ([`channels::roster_of`]).
+    /// sessions is known by ([`workspace_keys::roster_of`]).
     /// # Errors
     /// The workspace is not held here, or its governance cannot be read.
     pub fn roster(&self, workspace: &str) -> Result<Vec<String>, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        channels::roster_of(self, workspace).map(|roster| {
+        workspace_keys::roster_of(self, workspace).map(|roster| {
             roster
                 .into_iter()
                 .map(|(device, _)| device.to_string())
@@ -1116,7 +1117,7 @@ impl Engine {
     /// certified and has not removed may reach a call in it.
     pub fn roster_devices(&self, workspace: &str) -> Result<Vec<[u8; 32]>, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        channels::roster_of(self, workspace).map(|roster| {
+        workspace_keys::roster_of(self, workspace).map(|roster| {
             roster
                 .into_iter()
                 .map(|(device, _)| *device.as_bytes())
@@ -1525,7 +1526,7 @@ impl Engine {
 
     /// Where a read asks the workspaces' hosts for a record they send only once asked: the plane
     /// this session's channels travel on.
-    pub fn attach_link(&self, link: Arc<channels::ChannelLink>) {
+    pub fn attach_link(&self, link: Arc<workspace_keys::KeyLink>) {
         // The devices that take part in a workspace through this one hear its channels' governance
         // through this one alone, and what they say reaches the channels here and the workspace's
         // own host through it.
@@ -1544,7 +1545,7 @@ impl Engine {
 
     /// Where this device's channels hear its workspaces' governance and tell which devices each
     /// admits: the plane's side of them, `None` when this session runs no channel service.
-    pub fn link(&self) -> Option<Arc<channels::ChannelLink>> {
+    pub fn link(&self) -> Option<Arc<workspace_keys::KeyLink>> {
         self.link.lock_recover().clone()
     }
 
@@ -1557,11 +1558,11 @@ impl Engine {
 
     /// Read `workspace`'s records with `keys` from now on: the workspace's host handed them to this
     /// device, which takes no part in the workspace's group.
-    pub fn hand_keys(&self, workspace: WorkspaceId, keys: channel_crypto::ChannelContentKeys) {
+    pub fn hand_keys(&self, workspace: WorkspaceId, keys: key_group::ContentKeys) {
         self.handed.lock_recover().insert(workspace, keys);
     }
 
-    pub fn keys(&self) -> ChannelKeyProvider {
+    pub fn keys(&self) -> KeyProvider {
         self.keys.clone()
     }
 
@@ -1759,10 +1760,7 @@ impl tilo_broker_core::custody::OwnerCustody for Engine {
             && self
                 .owner
                 .with_current(workspace_id, |view| {
-                    Ok(!view
-                        .workspace_host()
-                        .capabilities
-                        .takes_part_in_room_channels())
+                    Ok(!view.workspace_host().capabilities.holds_workspace_keys())
                 })
                 .unwrap_or(false)
     }

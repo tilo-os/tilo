@@ -1175,7 +1175,7 @@ impl Workspace {
                 None => {}
                 Some(Ok(keys)) => {
                     self.peer
-                        .send(Cmd::InstallChannelKeys(route, keys))
+                        .send(Cmd::InstallGroupKeys(route, keys))
                         .map_err(|closed| ActionHostError::Unavailable {
                             reason: closed.to_string(),
                         })?;
@@ -2697,7 +2697,7 @@ impl Worker {
                 .get(&workspace_id)
                 .ok_or_else(|| refused("the workspace was not joined".into()))?
                 .peer
-                .send(Cmd::InstallChannelKeys(route.clone(), keys))
+                .send(Cmd::InstallGroupKeys(route.clone(), keys))
                 .map_err(|closed| refused(closed.to_string()))?;
         }
         if let Some(mutation) = genesis {

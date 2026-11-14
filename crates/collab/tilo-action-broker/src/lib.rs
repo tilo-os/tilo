@@ -6,9 +6,9 @@ mod broker_error;
 pub mod certificate_authority;
 /// The channel engine every host runs: its groups, the governance that settles them, and the
 /// keys an endpoint reads a sealed record with.
-pub use tilo_channels as channel_encryption;
+pub use tilo_workspace_keys as workspace_keys;
 /// When a re-check of what was already admitted is due, and the announcements it waits on.
-pub use tilo_channels::schedule as policy_schedule;
+pub use tilo_workspace_keys::schedule as policy_schedule;
 pub mod collab_app_broker;
 pub mod collab_broker;
 /// The workspaces' governance state and their durable op history, held on every host.

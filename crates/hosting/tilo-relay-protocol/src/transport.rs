@@ -680,7 +680,7 @@ pub enum Envelope {
     /// admits others acts on; a newcomer to a workspace of hundreds would
     /// download one per member. Said once, before the session subscribes,
     /// and it stays for the session.
-    ChannelReader,
+    KeyFollower,
 }
 
 impl Envelope {
@@ -741,7 +741,7 @@ impl Envelope {
             Self::AgentRunStopped => "AgentRunStopped",
             Self::Entered(_) => "Entered",
             Self::HostSaid { .. } => "HostSaid",
-            Self::ChannelReader => "ChannelReader",
+            Self::KeyFollower => "KeyFollower",
         }
     }
 
@@ -802,7 +802,7 @@ impl Envelope {
             | Self::AgentRunAnswer { .. }
             | Self::AgentRunStopped
             | Self::Entered(_)
-            | Self::ChannelReader
+            | Self::KeyFollower
             | Self::FetchGrant { .. } => None,
         }
     }

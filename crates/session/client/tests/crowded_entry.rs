@@ -639,7 +639,7 @@ impl Member {
             assert!(
                 waiting.elapsed() < Duration::from_secs(240),
                 "{name}'s page never held the desktop's keys; its channels:\n{}",
-                page.status().channels
+                page.status().key_state
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -1132,7 +1132,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         assert!(
             Instant::now() < deadline,
             "the guest never had the desktop: {}",
-            page.status().channels
+            page.status().key_state
         );
         tokio::time::sleep(Duration::from_millis(2)).await;
     }

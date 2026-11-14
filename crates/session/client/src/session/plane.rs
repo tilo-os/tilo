@@ -31,7 +31,7 @@ use tilo_relay_client::Carrier;
 use tilo_relay_client::link::{Dialer, Purpose};
 
 use super::{Command, DeviceSigner, Task};
-use channel_crypto::ChannelContentKeys;
+use key_group::ContentKeys;
 use tilo_relay_protocol::WorkspaceId;
 
 /// The message a page shows in its members' place when its live plane cannot
@@ -322,7 +322,7 @@ pub(crate) struct PlaneJoin {
     /// The workspace.
     pub workspace: String,
     /// The workspace's content keys.
-    pub keys: ChannelContentKeys,
+    pub keys: ContentKeys,
     /// The workspace's members.
     pub members: BTreeSet<[u8; 32]>,
 }

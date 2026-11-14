@@ -69,7 +69,6 @@ pub mod agents;
 pub mod browser_actions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
-mod channels;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]
@@ -105,6 +104,7 @@ pub mod state_lock;
 #[cfg(feature = "web")]
 pub mod web;
 pub mod workspace_join;
+mod workspace_keys;
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

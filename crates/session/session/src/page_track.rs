@@ -284,7 +284,7 @@ mod over_the_plane {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use channel_crypto::{ChannelGroup, MemberKey};
+    use key_group::{KeyGroup, MemberKey};
     use tilo_live::live::Track;
     use tilo_live::plane::{Join, Plane};
     use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
@@ -317,9 +317,9 @@ mod over_the_plane {
 
     /// The workspace scope's content keys, as its own channel hands them to
     /// its members.
-    fn keys() -> channel_crypto::ChannelContentKeys {
+    fn keys() -> key_group::ContentKeys {
         let channel = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
-        ChannelGroup::create(channel, MemberKey::generate("owner").expect("a member key"))
+        KeyGroup::create(channel, MemberKey::generate("owner").expect("a member key"))
             .expect("the workspace's channel")
             .content_keys()
             .expect("the workspace's keys")
@@ -330,7 +330,7 @@ mod over_the_plane {
         relay: &Relay,
         device: [u8; 32],
         devices: &[[u8; 32]],
-        keys: &channel_crypto::ChannelContentKeys,
+        keys: &key_group::ContentKeys,
     ) -> Arc<Plane> {
         Arc::new(
             Plane::local(

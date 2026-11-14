@@ -9,7 +9,7 @@
 //! the held ciphertext is opened, in order.
 //!
 //! Once a route holds keys it asks again only when told its channel changed
-//! (`channelKeysChanged`), when ciphertext arrives that its keys can't open,
+//! (`groupKeysChanged`), when ciphertext arrives that its keys can't open,
 //! or when the broker refuses an edit sealed under them; see
 //! `broker::key_schedule::KeySchedule`.
 //!
@@ -23,7 +23,7 @@ use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, SignedOp};
 use runtime_collab::OpAdmission;
 use zeroize::Zeroizing;
 
-use super::ChannelAccessState;
+use super::KeyAccessState;
 
 /// Most edits held while waiting for access, and most bytes.
 const MAX_HELD_OUTBOUND: usize = 4096;
@@ -39,12 +39,12 @@ pub(super) enum Keys {
     /// ask for: every write is refused, none is sent unencrypted.
     Unsealable,
     /// Channel keys requested and not held.
-    Pending(ChannelAccessState),
+    Pending(KeyAccessState),
     /// A group installed explicitly on this endpoint.
-    Group(Box<channel_crypto::ChannelGroup>),
+    Group(Box<key_group::KeyGroup>),
     /// Content keys from the identity service, at a service generation.
     Content {
-        keys: channel_crypto::ChannelContentKeys,
+        keys: key_group::ContentKeys,
         generation: u64,
     },
 }
@@ -108,8 +108,8 @@ pub(super) struct RouteKeys {
     held_outbound_bytes: usize,
     held_inbound: InboundHold<Arrived>,
     /// The state and key generation held ops were last decided under.
-    decided_under: Option<(ChannelAccessState, u64)>,
-    reported: Option<ChannelAccessState>,
+    decided_under: Option<(KeyAccessState, u64)>,
+    reported: Option<KeyAccessState>,
     /// The generation of the keys that last failed to open held ciphertext
     /// and asked for newer ones: asked once per generation.
     asked_for_held: Option<u64>,
@@ -123,7 +123,7 @@ pub(super) struct RouteKeys {
 impl RouteKeys {
     /// Keys of a route whose endpoint has an identity service to ask.
     pub(super) fn requested() -> Self {
-        Self::with(Keys::Pending(ChannelAccessState::WaitingForAccess))
+        Self::with(Keys::Pending(KeyAccessState::WaitingForAccess))
     }
 
     /// Keys of a harness route with no identity service.
@@ -167,7 +167,7 @@ impl RouteKeys {
     /// yet) or it was removed, whose rejoin each question asks for again.
     pub(super) fn asks_on_timer(&self) -> bool {
         match self.keys {
-            Keys::Pending(ChannelAccessState::Removed) => true,
+            Keys::Pending(KeyAccessState::Removed) => true,
             Keys::Pending(_) => !self.answered,
             _ => false,
         }
@@ -200,17 +200,17 @@ impl RouteKeys {
         }
     }
 
-    pub(super) fn state(&self) -> ChannelAccessState {
+    pub(super) fn state(&self) -> KeyAccessState {
         match &self.keys {
-            Keys::Plain => ChannelAccessState::Unencrypted,
-            Keys::Unsealable => ChannelAccessState::Unavailable,
+            Keys::Plain => KeyAccessState::Unencrypted,
+            Keys::Unsealable => KeyAccessState::Unavailable,
             Keys::Pending(state) => *state,
-            Keys::Group(_) | Keys::Content { .. } => ChannelAccessState::Encrypted,
+            Keys::Group(_) | Keys::Content { .. } => KeyAccessState::Encrypted,
         }
     }
 
     /// The content secret of the members these keys belong to
-    /// ([`channel_crypto::ChannelContentKeys::record_content_secret`]), while
+    /// ([`key_group::ContentKeys::record_content_secret`]), while
     /// the current epoch's key is held.
     pub(super) fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {
         match &self.keys {
@@ -221,7 +221,7 @@ impl RouteKeys {
     }
 
     /// The state, once per change, for the app.
-    pub(super) fn take_state_change(&mut self) -> Option<ChannelAccessState> {
+    pub(super) fn take_state_change(&mut self) -> Option<KeyAccessState> {
         let state = self.state();
         (self.reported != Some(state)).then(|| {
             self.reported = Some(state);
@@ -230,22 +230,22 @@ impl RouteKeys {
     }
 
     /// Install an explicitly provisioned group.
-    pub(super) fn install_group(&mut self, group: channel_crypto::ChannelGroup) {
+    pub(super) fn install_group(&mut self, group: key_group::KeyGroup) {
         self.keys = Keys::Group(Box::new(group));
     }
 
     /// Apply what the identity service answered.
     pub(super) fn update(
         &mut self,
-        access: runtime_identity::wire::ChannelAccess,
+        access: runtime_identity::wire::KeyAccess,
         generation: u64,
         encoded: Option<&[u8]>,
     ) {
-        use runtime_identity::wire::ChannelAccess as Wire;
+        use runtime_identity::wire::KeyAccess as Wire;
         match access {
             Wire::Ready => {
                 if let Some(encoded) = encoded {
-                    match channel_crypto::ChannelContentKeys::from_bytes(encoded) {
+                    match key_group::ContentKeys::from_bytes(encoded) {
                         Ok(keys) => self.keys = Keys::Content { keys, generation },
                         Err(error) => {
                             tracing::warn!(%error, "collab: identity service sent malformed channel keys");
@@ -253,10 +253,10 @@ impl RouteKeys {
                     }
                 }
             }
-            Wire::Waiting => self.keys = Keys::Pending(ChannelAccessState::WaitingForAccess),
-            Wire::Removed => self.keys = Keys::Pending(ChannelAccessState::Removed),
-            Wire::Unavailable => self.keys = Keys::Pending(ChannelAccessState::Unavailable),
-            Wire::NoSecretStore => self.keys = Keys::Pending(ChannelAccessState::NoSecretStore),
+            Wire::Waiting => self.keys = Keys::Pending(KeyAccessState::WaitingForAccess),
+            Wire::Removed => self.keys = Keys::Pending(KeyAccessState::Removed),
+            Wire::Unavailable => self.keys = Keys::Pending(KeyAccessState::Unavailable),
+            Wire::NoSecretStore => self.keys = Keys::Pending(KeyAccessState::NoSecretStore),
         }
     }
 
@@ -275,7 +275,7 @@ impl RouteKeys {
                         .into(),
                 );
             }
-            Keys::Pending(ChannelAccessState::Removed) => {
+            Keys::Pending(KeyAccessState::Removed) => {
                 return Sealed::Refused("this device was removed from the channel".into());
             }
             Keys::Pending(_) => return Sealed::Hold,
@@ -287,7 +287,7 @@ impl RouteKeys {
             // The epoch's key has not reached this device (yet), or a commit
             // is being processed: waiting fixes it, so the edit is held and
             // sent once keys arrive rather than failing the whole channel.
-            Err(channel_crypto::Error::MissingContentKey(_)) => Sealed::Hold,
+            Err(key_group::Error::MissingContentKey(_)) => Sealed::Hold,
             Err(error) => Sealed::Refused(format!("content encryption failed: {error}")),
         }
     }
@@ -417,13 +417,13 @@ impl RouteKeys {
 /// arrive, so the op waits like one of a missing epoch; held ciphertext makes
 /// the route ask for keys again.
 fn opened(
-    opened: Result<Zeroizing<Vec<u8>>, channel_crypto::Error>,
+    opened: Result<Zeroizing<Vec<u8>>, key_group::Error>,
     branch_keys: bool,
 ) -> Result<Option<Zeroizing<Vec<u8>>>, Unopened> {
     match opened {
         Ok(plaintext) => Ok(Some(plaintext)),
-        Err(channel_crypto::Error::MissingContentKey(_)) => Err(Unopened::Later),
-        Err(channel_crypto::Error::ContentCrypto(_)) if branch_keys => Err(Unopened::Later),
+        Err(key_group::Error::MissingContentKey(_)) => Err(Unopened::Later),
+        Err(key_group::Error::ContentCrypto(_)) if branch_keys => Err(Unopened::Later),
         Err(_) => Err(Unopened::Never(Never::Undecryptable)),
     }
 }
@@ -432,12 +432,12 @@ fn opened(
 mod tests {
     use super::*;
     use collab_types::{AttestationId, Ed25519PublicKey, OpKind, WorkspaceId};
-    use runtime_identity::wire::ChannelAccess as Wire;
+    use runtime_identity::wire::KeyAccess as Wire;
 
-    fn keys(workspace: WorkspaceId) -> (channel_crypto::ChannelGroup, Vec<u8>) {
-        let group = channel_crypto::ChannelGroup::create(
+    fn keys(workspace: WorkspaceId) -> (key_group::KeyGroup, Vec<u8>) {
+        let group = key_group::KeyGroup::create(
             workspace,
-            channel_crypto::MemberKey::generate("device").unwrap(),
+            key_group::MemberKey::generate("device").unwrap(),
         )
         .unwrap();
         let bytes = group.content_keys().unwrap().to_bytes().unwrap().to_vec();
@@ -492,7 +492,7 @@ mod tests {
             let mut route = RouteKeys::requested();
             assert_eq!(
                 route.take_state_change(),
-                Some(ChannelAccessState::WaitingForAccess)
+                Some(KeyAccessState::WaitingForAccess)
             );
             assert_eq!(route.take_state_change(), None);
             assert!(matches!(
@@ -515,7 +515,7 @@ mod tests {
             route.update(Wire::Ready, 7, Some(&encoded));
             assert_eq!(
                 route.take_state_change(),
-                Some(ChannelAccessState::Encrypted)
+                Some(KeyAccessState::Encrypted)
             );
             assert_eq!(route.generation(), 7);
             assert_eq!(
@@ -737,7 +737,7 @@ mod tests {
     fn removal_refuses_new_edits_and_other_states_hold_them() {
         let mut route = RouteKeys::requested();
         route.update(Wire::Removed, 3, None);
-        assert_eq!(route.state(), ChannelAccessState::Removed);
+        assert_eq!(route.state(), KeyAccessState::Removed);
         assert!(matches!(
             route.seal(ArtifactId::new(), ContentRetention::Delta, vec![1]),
             Sealed::Refused(_)

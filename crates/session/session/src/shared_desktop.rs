@@ -172,12 +172,12 @@ enum Sealing {
     /// Its workspace commits the documents of its records itself: the write goes in the clear.
     Clear,
     /// Its members' sealed channels: the write is sealed with their keys.
-    Sealed(channel_crypto::ChannelContentKeys),
+    Sealed(key_group::ContentKeys),
 }
 
 impl Sealing {
     /// The record channel's keys, where the write is sealed.
-    fn keys(&self) -> Option<&channel_crypto::ChannelContentKeys> {
+    fn keys(&self) -> Option<&key_group::ContentKeys> {
         match self {
             Self::Clear => None,
             Self::Sealed(keys) => Some(keys),
@@ -2390,9 +2390,9 @@ mod tests {
         );
         desktops.attach_engine(&engine);
         // The workspace's keys, as the key service hands them to this device.
-        let keys = channel_crypto::ChannelGroup::create(
+        let keys = key_group::KeyGroup::create(
             workspace,
-            channel_crypto::MemberKey::generate("owner").expect("a member key"),
+            key_group::MemberKey::generate("owner").expect("a member key"),
         )
         .expect("the workspace's group")
         .content_keys()

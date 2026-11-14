@@ -424,8 +424,7 @@ impl Task {
     ) {
         match message {
             message @ neighbour_wire::NeighbourMsg::MlsGovernance { .. } => {
-                if let Some(inbound) =
-                    tilo_channels::InboundChannelGovernance::from_message(message)
+                if let Some(inbound) = tilo_workspace_keys::InboundGovernance::from_message(message)
                 {
                     self.governance.inbound.lock_recover().push(inbound);
                     self.pump_channels(false);

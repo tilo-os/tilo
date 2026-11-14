@@ -371,7 +371,7 @@ pub enum Cmd {
     Write(DocumentRoute, Vec<Vec<u8>>),
     /// Hold these keys as a route's channel keys, as if a participant had admitted this session to
     /// the channel: for an application endpoint of a device that takes part in it.
-    InstallChannelKeys(DocumentRoute, channel_crypto::ChannelContentKeys),
+    InstallGroupKeys(DocumentRoute, key_group::ContentKeys),
     /// Publish one canonical live frame of the workspace on the topic, sealed with the keys of the
     /// record it names; dropped while disconnected or without those keys.
     Live(Topic, Vec<u8>),

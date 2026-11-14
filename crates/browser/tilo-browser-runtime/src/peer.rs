@@ -28,7 +28,6 @@ use std::sync::Arc;
 
 use js_sys::{Function, Promise, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
-use tilo_channels::VAULT_SECRET_APP as CHANNEL_VAULT_APP;
 use tilo_live::live::Track;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::https::{HttpClient, HttpFuture};
@@ -42,6 +41,7 @@ use tilo_session_client::device::{Device, HostRefusal};
 use tilo_session_client::{Events, FailureSubject, Link, LocalState};
 use tilo_session_client::{PeerConfig, PeerRecord, PeerStore};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
+use tilo_workspace_keys::VAULT_SECRET_APP as CHANNEL_VAULT_APP;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
@@ -184,12 +184,12 @@ struct DurablePeerStore {
     store: Rc<durable_store::MemoryStore>,
     key: durable_store::StorageKey,
     /// Channel membership and the edits held for it, beside the record.
-    channels_key: durable_store::StorageKey,
+    groups_key: durable_store::StorageKey,
     /// The workspaces the peer holds, beside the record.
     workspaces_key: durable_store::StorageKey,
     /// What the keys of the runs of custody kept beside the workspaces begin with.
     runs_prefix: String,
-    /// Seals the member state in `channels_key`. The page keeps it in the
+    /// Seals the member state in `groups_key`. The page keeps it in the
     /// platform secret store ([`channel_vault`]), never in this one.
     channel_vault: [u8; 32],
 }
@@ -228,10 +228,10 @@ impl DurablePeerStore {
                 crate::storage::PROFILE_WORKSPACE,
                 hex::encode(user_public_key),
             ),
-            channels_key: durable_store::StorageKey::document(
+            groups_key: durable_store::StorageKey::document(
                 PEER_PACKAGE,
                 crate::storage::PROFILE_WORKSPACE,
-                format!("{}.channels", hex::encode(user_public_key)),
+                format!("{}.groups", hex::encode(user_public_key)),
             ),
             workspaces_key: durable_store::StorageKey::document(
                 PEER_PACKAGE,
@@ -262,14 +262,14 @@ impl PeerStore for DurablePeerStore {
 
     fn load_channels(&self) -> Option<Vec<u8>> {
         use durable_store::DurableStore as _;
-        Some(self.store.read(&self.channels_key).ok()??.bytes)
+        Some(self.store.read(&self.groups_key).ok()??.bytes)
     }
 
     fn save_channels(&self, bytes: &[u8]) -> Result<(), String> {
         use durable_store::DurableStore as _;
         self.store
             .write(
-                &self.channels_key,
+                &self.groups_key,
                 durable_store::WriteOp::Replace(bytes.to_vec()),
                 None,
             )
@@ -1881,7 +1881,7 @@ impl WasmPeer {
     /// senders may govern it, and each route's membership.
     #[wasm_bindgen(js_name = channelDiagnostics)]
     pub fn channel_diagnostics(&self) -> String {
-        self.handle.status().channels
+        self.handle.status().key_state
     }
 
     /// Call `listener()` whenever the snapshot may have changed.

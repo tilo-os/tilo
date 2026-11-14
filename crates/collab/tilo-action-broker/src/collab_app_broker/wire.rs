@@ -701,14 +701,14 @@ impl JoinedChannel {
                 );
                 nearby_transfer_change(services, &context, after)
             }
-            Changes::ChannelKeys => {
+            Changes::GroupKeys => {
                 let route = self.record_route();
                 if route.app_id.is_empty() || route.cluster_id.is_empty() {
                     return Err(BrokerError::failed(
                         "channel keys belong to a certified app route".into(),
                     ));
                 }
-                let keys = services.channel_keys.clone().ok_or_else(|| {
+                let keys = services.group_keys.clone().ok_or_else(|| {
                     BrokerError::unimplemented("this host has no channel service to follow".into())
                 })?;
                 let workspace = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)

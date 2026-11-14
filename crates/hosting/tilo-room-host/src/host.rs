@@ -156,7 +156,7 @@ impl HostSessions {
         identity: HostIdentity,
         endpoint: Endpoint,
         governs: bool,
-        channels: Option<crate::workspaces::DeviceChannels>,
+        channels: Option<crate::workspaces::DeviceKeyGroups>,
         wrap: impl FnOnce(
             &WorkspaceRegistry,
             Option<Arc<dyn AppServingPlane>>,
@@ -263,7 +263,7 @@ impl HostSessions {
         identity: &HostIdentity,
         endpoint: Endpoint,
         revocations: Arc<std::sync::RwLock<RevocationList>>,
-        channels: Option<crate::workspaces::DeviceChannels>,
+        channels: Option<crate::workspaces::DeviceKeyGroups>,
     ) -> crate::workspaces::WorkspaceServices {
         crate::workspaces::WorkspaceServices {
             channels,
@@ -412,7 +412,7 @@ fn take_part(compactor: &crate::compaction::Compactor, workspaces: &crate::works
 /// keep their records in the clear in the workspace document instead of sealed
 /// channels.
 fn say_when_unsealed(governs: bool, cert: &DeviceCert) {
-    if governs && !cert.capabilities.takes_part_in_workspace_channels() {
+    if governs && !cert.capabilities.holds_workspace_keys() {
         tracing::error!(
             device = %cert.device_label,
             "this host's certificate cannot own workspaces, so the rooms it governs are not sealed; re-enroll it with the own capability"
@@ -519,7 +519,7 @@ impl WorkspaceHost {
         cfg: HostConfig,
         identity: HostIdentity,
         endpoint: Endpoint,
-        channels: Option<crate::workspaces::DeviceChannels>,
+        channels: Option<crate::workspaces::DeviceKeyGroups>,
     ) -> Result<Self, HostError> {
         if matches!(cfg.trust_policy, TrustPolicy::AllowAny) {
             return Err(HostError::Identity(

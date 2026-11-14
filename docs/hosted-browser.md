@@ -138,9 +138,9 @@ command.
   the device publishes on the live plane is sealed, and the workspace's media
   keys open every call, presence and window of the workspace, so the device
   is never given them. It asks the relay instead, which certified it and
-  takes part in the workspace's channels: the relay derives, at the media
-  channel's current epoch, the per-sender keys of that one device's
-  presence, window and page streams (`channel_crypto::SenderMediaKeys`),
+  holds the workspace's keys: the relay derives, at the workspace group's
+  current epoch, the per-sender keys of that one device's
+  presence, window and page streams (`key_group::SenderMediaKeys`),
   exactly the keys a member derives to open them, seals them to the device's
   key so nothing that carries the answer into the VM reads them, and answers
   only the device it placed in that workspace. The session seals its tracks

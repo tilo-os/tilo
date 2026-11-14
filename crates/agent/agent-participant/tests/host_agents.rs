@@ -521,7 +521,7 @@ impl Page {
                     "the page shows {:?}, not {want:?}: agents {:#?}, browser channels {}",
                     sheet_names(&self.app),
                     status.agents,
-                    browser.peer.status().channels
+                    browser.peer.status().key_state
                 );
             }
             tokio::time::sleep(Duration::from_millis(50)).await;

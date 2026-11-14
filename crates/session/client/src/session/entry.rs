@@ -153,7 +153,7 @@ impl Task {
             .entering
             .as_ref()
             .and_then(|entering| tilo_desktop_model::WorkspaceId::parse(&entering.workspace));
-        let channels = self.channels.clone();
+        let channels = self.workspace_keys.clone();
         async move {
             channels
                 .ask_on_entry(workspace?, tilo_clock::now(), tilo_clock::unix_now())

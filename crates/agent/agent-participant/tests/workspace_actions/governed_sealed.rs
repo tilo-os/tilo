@@ -99,7 +99,7 @@ async fn until_authored(browser: &mut Browser, route: &DocumentRoute, author: [u
             Instant::now() < deadline,
             "the member never opened the host's change to {}: {:?}",
             route.record,
-            browser.peer.status().channels
+            browser.peer.status().key_state
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }

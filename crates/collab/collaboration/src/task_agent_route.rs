@@ -47,7 +47,7 @@ fn inherited_channel_keys() -> super::EndpointChannelKeys {
                         "a task agent's channel keys need its launcher's identity service: {error}"
                     )))
                 })?;
-            identity.channel_keys(workspace_id, app_id, record_id, generation)
+            identity.group_keys(workspace_id, app_id, record_id, generation)
         },
     )
 }

@@ -313,7 +313,7 @@ pub enum Changes {
     /// The person's speaker groups (the Settings app's).
     Speakers,
     /// The channel's encryption keys.
-    ChannelKeys,
+    GroupKeys,
     /// Nearby transfers this app sees.
     NearbyTransfers,
     /// The person's drives (the Files app's).

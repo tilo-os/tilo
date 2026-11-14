@@ -219,11 +219,7 @@ pub(crate) trait ParticipantKeys: Send + Sync {
         &'a self,
         route: &'a Route,
     ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Option<channel_crypto::ChannelContentKeys>>
-                + Send
-                + 'a,
-        >,
+        Box<dyn std::future::Future<Output = Option<key_group::ContentKeys>> + Send + 'a>,
     >;
 
     /// The writes of `route`'s record stuck behind a change their own writer never sent, as the
@@ -609,7 +605,7 @@ impl Compactor {
         &self,
         workspace: &SharedWorkspace,
         (workspace_id, channel): ChannelKey,
-        keys: &Arc<channel_crypto::ChannelContentKeys>,
+        keys: &Arc<key_group::ContentKeys>,
         min_tail: usize,
         unsent: &[collab_types::SignedOp],
     ) -> Result<Option<(Folded, Vec<Vec<u8>>)>, String> {
@@ -1528,10 +1524,7 @@ pub(crate) fn document_frames(
 /// writes it replaces.
 fn sealed_document_frames(
     payloads: &dyn ShellPayloads,
-    (key, keys): (
-        &ed25519_dalek::SigningKey,
-        &channel_crypto::ChannelContentKeys,
-    ),
+    (key, keys): (&ed25519_dalek::SigningKey, &key_group::ContentKeys),
     workspace_id: WorkspaceId,
     route: &Route,
     snapshot: &[u8],
@@ -1551,10 +1544,7 @@ fn sealed_document_frames(
 /// written as the fold's own writes ([`sealed_document_frames`]).
 fn sealed_compaction_frames(
     payloads: &dyn ShellPayloads,
-    (key, keys): (
-        &ed25519_dalek::SigningKey,
-        &channel_crypto::ChannelContentKeys,
-    ),
+    (key, keys): (&ed25519_dalek::SigningKey, &key_group::ContentKeys),
     workspace_id: WorkspaceId,
     entries: &[ChannelEntry],
     folded: &Folded,
@@ -1641,10 +1631,7 @@ fn sealed_compaction_frames(
 
 fn frames_of(
     payloads: &dyn ShellPayloads,
-    (key, keys): (
-        &ed25519_dalek::SigningKey,
-        Option<&channel_crypto::ChannelContentKeys>,
-    ),
+    (key, keys): (&ed25519_dalek::SigningKey, Option<&key_group::ContentKeys>),
     workspace_id: WorkspaceId,
     route: &Route,
     snapshot: &[u8],

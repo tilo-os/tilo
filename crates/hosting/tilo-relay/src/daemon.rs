@@ -198,7 +198,7 @@ pub struct Relay {
     /// This device's part in the channels of the workspaces it governs:
     /// absent when its certificate does not let it own workspaces, and so it
     /// holds no channel keys.
-    _channels: Option<Arc<crate::channels::Channels>>,
+    _workspace_keys: Option<Arc<crate::workspace_keys::KeyService>>,
     /// The packet relay this host runs for the pages it serves, when it runs
     /// one ([`RelayConfig::packet_relay`]).
     packet_server: Option<iroh_relay::server::Server>,
@@ -560,13 +560,13 @@ impl Relay {
         // A relay whose device may own workspaces takes part in every channel of
         // the workspaces it governs, as one participant beside their members; a
         // relay whose device may not keeps no channel keys at all.
-        let channels = (governs_rooms
-            && identity
-                .device_cert
-                .capabilities
-                .takes_part_in_workspace_channels())
+        let workspace_keys = (governs_rooms
+            && identity.device_cert.capabilities.holds_workspace_keys())
         .then(|| {
-            crate::channels::Channels::open(&cfg.state_root, identity.device_signing_key.clone())
+            crate::workspace_keys::KeyService::open(
+                &cfg.state_root,
+                identity.device_signing_key.clone(),
+            )
         })
         .transpose()?
         .map(Arc::new);
@@ -591,13 +591,15 @@ impl Relay {
             identity.clone(),
             endpoint.clone(),
             governs_rooms,
-            channels.as_ref().map(|channels| channels.device()),
+            workspace_keys
+                .as_ref()
+                .map(|workspace_keys| workspace_keys.device()),
             |_workspaces, rest| rest,
         )
         .await?;
         let governed = governed.map(|governed| governed.workspaces);
-        if let (Some(channels), Some(governed)) = (&channels, &governed) {
-            channels.attach(governed);
+        if let (Some(workspace_keys), Some(governed)) = (&workspace_keys, &governed) {
+            workspace_keys.attach(governed);
         }
         let workspaces = sessions.workspaces.clone();
         let metrics = sessions.metrics.clone();
@@ -721,7 +723,7 @@ impl Relay {
             web,
             workspaces: governed,
             content,
-            _channels: channels,
+            _workspace_keys: workspace_keys,
             packet_server: packet_relay,
         })
     }

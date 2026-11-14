@@ -74,7 +74,7 @@ fn held(peer: &Link) -> Option<String> {
     let note = crate::support::route();
     let held = format!("held {}/{}:", note.app_id, note.record);
     peer.status()
-        .channels
+        .key_state
         .lines()
         .find(|line| line.starts_with(&held))
         .map(str::to_owned)

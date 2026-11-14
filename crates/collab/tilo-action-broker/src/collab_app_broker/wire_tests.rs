@@ -585,7 +585,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
             );
             for of in [
                 Changes::Speakers,
-                Changes::ChannelKeys,
+                Changes::GroupKeys,
                 Changes::NearbyTransfers,
                 Changes::Drives,
                 Changes::Applications,

@@ -7,10 +7,10 @@
     reason = "each test binary uses a different subset of the device"
 )]
 
-use channel_crypto::{Access, ChannelPeer, PeerEvent, VaultKey};
 use collab_types::{
     DocumentFrame, Ed25519PublicKey, EncryptionMetadata, SignedOp, document_artifact_id,
 };
+use key_group::{Access, GroupPeer, PeerEvent, VaultKey};
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::daemon::Relay;
@@ -73,7 +73,7 @@ pub fn vault() -> VaultKey {
 
 pub struct NativeDevice {
     pub device: Device,
-    pub peer: ChannelPeer,
+    pub peer: GroupPeer,
     pub session: RelayCoeditSession,
     workspace: WorkspaceId,
     delivery: u64,
@@ -92,10 +92,8 @@ impl NativeDevice {
         workspace: WorkspaceId,
     ) -> Self {
         let state = tempfile::tempdir().unwrap();
-        let peer = ChannelPeer::waiting(
-            Some(std::sync::Arc::new(channel_crypto::Files::new(
-                state.path(),
-            ))),
+        let peer = GroupPeer::waiting(
+            Some(std::sync::Arc::new(key_group::Files::new(state.path()))),
             collab_types::WorkspaceId::parse(&workspace.to_string()).unwrap(),
             Box::new(device.key.clone()),
             &vault(),
@@ -246,7 +244,7 @@ impl NativeDevice {
         let keys = self.peer.content_keys()?;
         match keys.open_content(op.artifact, metadata, &op.payload) {
             Ok(clear) => Some(clear.to_vec()),
-            Err(channel_crypto::Error::MissingContentKey(_)) => None,
+            Err(key_group::Error::MissingContentKey(_)) => None,
             Err(error) => panic!("the write does not open: {error}"),
         }
     }

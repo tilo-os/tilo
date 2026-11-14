@@ -372,9 +372,9 @@ impl Replicas {
     /// channels' directory names them; `None` while the workspace's
     /// governance does not answer.
     pub(crate) fn participants(&self, route: &DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> {
-        use tilo_channels::ChannelDirectory as _;
+        use tilo_workspace_keys::KeyDirectory as _;
         let workspace = WorkspaceId::parse(&route.cluster_id)?;
-        crate::channels::OwnerDirectory::reader(self.owner())
+        crate::workspace_keys::OwnerDirectory::reader(self.owner())
             .allowed_devices(workspace, tilo_clock::unix_now())
     }
 

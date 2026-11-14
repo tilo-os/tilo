@@ -19,8 +19,8 @@ use tilo_user_identity::{RevocationList, UserIdentity};
 /// The workspace the fixtures here hold.
 const WS: WorkspaceId = WorkspaceId::from_u128(7);
 
-mod channel_replay;
 mod crowd_replay;
+mod governance_replay;
 mod replay_boundary;
 mod sealed;
 mod supersede;

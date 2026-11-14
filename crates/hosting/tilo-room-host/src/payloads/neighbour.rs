@@ -81,7 +81,7 @@ impl ShellPayloads for NeighbourPayloads {
             return None;
         }
         let kind = match &msg {
-            msg if msg.channel_workspace().is_some() => CheckpointKind::Governance,
+            msg if msg.governance_workspace().is_some() => CheckpointKind::Governance,
             NeighbourMsg::PersonalWorkspaces {
                 user_public_key, ..
             } => CheckpointKind::Directory {
@@ -98,7 +98,7 @@ impl ShellPayloads for NeighbourPayloads {
 
     fn audience(&self, body: &[u8]) -> Option<BTreeSet<[u8; 32]>> {
         // Only a channel's commit has an audience: nothing else is decoded.
-        if !NeighbourMsg::is_channel_governance(body) {
+        if !NeighbourMsg::is_governance(body) {
             return None;
         }
         let msg = postcard::from_bytes::<NeighbourMsg>(body).ok()?;

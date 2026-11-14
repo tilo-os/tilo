@@ -85,9 +85,9 @@ async fn hears(
 /// One write of `key`'s device sealed under keys nobody here holds: what a
 /// host keeps in the history its members catch up from.
 fn sealed(key: &SigningKey) -> NeighbourMsg {
-    let keys = channel_crypto::ChannelGroup::create(
+    let keys = key_group::KeyGroup::create(
         collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
-        channel_crypto::MemberKey::generate("owner").unwrap(),
+        key_group::MemberKey::generate("owner").unwrap(),
     )
     .unwrap()
     .content_keys()

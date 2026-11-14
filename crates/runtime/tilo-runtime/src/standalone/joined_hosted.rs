@@ -350,7 +350,7 @@ impl Joined {
             )
             .map_err(|error| error.to_string())?;
         let keys = self
-            .channel_keys()
+            .group_keys()
             .get()
             .ok_or("this device holds no channel keys")?
             .record_keys(workspace)

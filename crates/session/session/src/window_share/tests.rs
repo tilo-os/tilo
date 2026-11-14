@@ -27,7 +27,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use channel_crypto::{ChannelGroup, MemberKey};
+use key_group::{KeyGroup, MemberKey};
 use tilo_live::plane::{Join, Plane};
 use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
 use tilo_live::roster::Roster as LiveRoster;
@@ -87,7 +87,7 @@ const HEIGHT: i32 = 800;
 struct LivePlanes {
     runtime: tokio::runtime::Runtime,
     relay: Arc<Relay>,
-    keys: channel_crypto::ChannelContentKeys,
+    keys: key_group::ContentKeys,
     joined: Mutex<Vec<([u8; 32], Arc<Plane>)>>,
 }
 
@@ -112,11 +112,10 @@ fn live_planes() -> &'static LivePlanes {
             Arc::new(Relay::new(Arc::new(Nobody)))
         };
         let channel = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
-        let keys =
-            ChannelGroup::create(channel, MemberKey::generate("owner").expect("a member key"))
-                .expect("the workspace's channel")
-                .content_keys()
-                .expect("the workspace's keys");
+        let keys = KeyGroup::create(channel, MemberKey::generate("owner").expect("a member key"))
+            .expect("the workspace's channel")
+            .content_keys()
+            .expect("the workspace's keys");
         LivePlanes {
             runtime,
             relay,

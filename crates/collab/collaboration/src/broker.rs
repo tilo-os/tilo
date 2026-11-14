@@ -982,7 +982,7 @@ enum SdkCommand {
     PublicationBarrier(Arc<BarrierReplies>),
     InstallEncryption {
         spec: RouteSpec,
-        group: Box<channel_crypto::ChannelGroup>,
+        group: Box<key_group::KeyGroup>,
         reply: mpsc::SyncSender<Result<(), String>>,
     },
     PublishActionDirectory {
@@ -2125,7 +2125,7 @@ impl std::fmt::Debug for CertifiedEndpointIdentity {
     )
 )]
 trait SdkCertifiedIdentity: Send + Sync {
-    fn channel_keys(
+    fn group_keys(
         &self,
         workspace_id: &str,
         app_id: &str,
@@ -2148,14 +2148,14 @@ trait SdkCertifiedIdentity: Send + Sync {
 }
 
 impl SdkCertifiedIdentity for std::sync::Arc<runtime_identity::BrokerSigningIdentity> {
-    fn channel_keys(
+    fn group_keys(
         &self,
         workspace_id: &str,
         app_id: &str,
         record_id: &str,
         known_generation: u64,
     ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
-        runtime_identity::BrokerSigningIdentity::channel_keys(
+        runtime_identity::BrokerSigningIdentity::group_keys(
             self.as_ref(),
             workspace_id,
             app_id,
@@ -3627,7 +3627,7 @@ fn follow_channel_keys(
         let mut after = 0;
         loop {
             match channel
-                .changed(runtime_collab::wire::Changes::ChannelKeys, after)
+                .changed(runtime_collab::wire::Changes::GroupKeys, after)
                 .await
             {
                 Ok(change) if change != after => {
@@ -3819,9 +3819,9 @@ async fn drive_shovel(
                             .join_failed(&key, reason.clone());
                         note_route_join(&inbound_tx.state, &spec, Err(reason.clone()));
                         inbound_tx.state.notify_events();
-                        let _ = inbound_tx.send_reply(CollabEvent::ChannelAccess {
+                        let _ = inbound_tx.send_reply(CollabEvent::KeyAccess {
                             route: spec,
-                            state: crate::ChannelAccessState::Unavailable,
+                            state: crate::KeyAccessState::Unavailable,
                         });
                         for (_, waited) in std::mem::take(&mut waiting) {
                             refuse_unjoined(waited.command, &reason, &inbound_tx.state, &key);
@@ -4314,7 +4314,7 @@ async fn install_sdk_encryption(
     context: SdkJoinContext<'_>,
     routes: &mut std::collections::HashMap<String, SdkRoute>,
     spec: RouteSpec,
-    group: channel_crypto::ChannelGroup,
+    group: key_group::KeyGroup,
 ) -> Result<(), String> {
     let key = spec.channel_id();
     ensure_sdk_route(&context, routes, &spec, "").await?;
@@ -6013,7 +6013,7 @@ async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigne
         }
         LocalSdkDocumentSigner::Host(identity) => {
             identity
-                .channel_keys(&workspace_id, &route.spec.app_id, record_id, generation)
+                .group_keys(&workspace_id, &route.spec.app_id, record_id, generation)
                 .await
         }
         LocalSdkDocumentSigner::Inherited(
@@ -6055,7 +6055,7 @@ async fn refresh_keys(
             let identity = std::sync::Arc::clone(identity);
             std::sync::Arc::new(
                 move |workspace_id: &str, app_id: &str, record_id: &str, generation: u64| {
-                    identity.channel_keys(workspace_id, app_id, record_id, generation)
+                    identity.group_keys(workspace_id, app_id, record_id, generation)
                 },
             )
         }

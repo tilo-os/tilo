@@ -208,7 +208,7 @@ impl Workspaces {
 
 fn replay_source(
     source: &DocumentRoute,
-    keys: Option<&channel_crypto::ChannelContentKeys>,
+    keys: Option<&key_group::ContentKeys>,
     primary_governor: Option<[u8; 32]>,
     retained: Vec<crate::workspace_records::RetainedBody>,
 ) -> Result<Vec<u8>, String> {

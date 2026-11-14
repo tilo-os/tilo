@@ -272,3 +272,23 @@ reason = "the offer is one round on a live connection, answered inside the askin
 file = "crates/collab/neighbour-wire/src/lib.rs"
 enum = "NeighbourMsg"
 reason = "a workspace has one MLS group, so an access request names no record and the routed request is gone; the peer protocol version is bumped, and stored formats change with the code"
+
+[[break]]
+file = "crates/runtime/runtime-collab/src/wire.rs"
+enum = "Changes"
+reason = "`ChannelKeys` is renamed `GroupKeys` at the same index: postcard writes no names, so the bytes read the same"
+
+[[break]]
+file = "crates/runtime/tilo-identity-client/src/lib.rs"
+enum = "Request"
+reason = "`ChannelKeys` is renamed `GroupKeys` at the same index: postcard writes no names, so the bytes read the same"
+
+[[break]]
+file = "crates/runtime/tilo-identity-client/src/lib.rs"
+enum = "Response"
+reason = "`ChannelKeys` is renamed `GroupKeys` at the same index: postcard writes no names, so the bytes read the same"
+
+[[break]]
+file = "crates/hosting/tilo-relay-protocol/src/transport.rs"
+enum = "Envelope"
+reason = "`ChannelReader` is renamed `KeyFollower` at the same index: postcard writes no names, so the bytes read the same"

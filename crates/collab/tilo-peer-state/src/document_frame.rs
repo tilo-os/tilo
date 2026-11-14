@@ -7,10 +7,10 @@
 use std::collections::BTreeMap;
 
 use crate::join::WorkspaceId;
-use channel_crypto::ChannelContentKeys;
 use collab_types::{
     DocumentFrame, DocumentMutation, DocumentMutationKind, SignedOp, document_artifact_id,
 };
+use key_group::ContentKeys;
 use neighbour_wire::NeighbourMsg;
 
 /// One document route: application, workspace (cluster) and record.
@@ -220,7 +220,7 @@ pub fn claimed_changes(body: &[u8]) -> Vec<[u8; 32]> {
 pub fn open_frame(
     body: &[u8],
     author: [u8; 32],
-    keys: Option<&ChannelContentKeys>,
+    keys: Option<&ContentKeys>,
 ) -> Result<Option<OpenedDocument>, DocumentError> {
     let Ok(NeighbourMsg::AppDocument {
         app_id,
@@ -323,11 +323,11 @@ mod tests {
             cluster_id: "room".into(),
             record: "record".into(),
         };
-        let creator = channel_crypto::ChannelPeer::create_now(
-            Some(std::sync::Arc::new(channel_crypto::Files::new(dir.path()))),
+        let creator = key_group::GroupPeer::create_now(
+            Some(std::sync::Arc::new(key_group::Files::new(dir.path()))),
             collab_types::WorkspaceId::new(),
             Box::new(ed25519_dalek::SigningKey::from_bytes(&[7; 32])),
-            &channel_crypto::VaultKey::new([8; 32]),
+            &key_group::VaultKey::new([8; 32]),
         )
         .unwrap();
         let keys = creator.content_keys().unwrap();

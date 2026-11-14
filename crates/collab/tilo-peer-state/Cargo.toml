@@ -51,7 +51,7 @@ tilo-automation = { path = "../automation" }
 # A bot installed from the directory names the listing it came from.
 registry-types = { path = "../../packaging/registry-types" }
 # Document frames are sealed and opened with a route's channel content keys.
-channel-crypto = { path = "../channel-crypto" }
+key-group = { path = "../key-group" }
 # The relay's workspace a peer syncs through, and a frame's retained entry id.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 parking_lot.workspace = true

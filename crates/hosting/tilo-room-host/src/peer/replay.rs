@@ -282,7 +282,7 @@ impl ReplayFilter {
     /// - the copy addressed to this device that its replay already wrote
     ///   ahead of its batches ([`ReplayCatchup::address`]);
     /// - a device's request to be admitted to a channel's group, for a
-    ///   device that admits no one ([`Envelope::ChannelReader`]): every
+    ///   device that admits no one ([`Envelope::KeyFollower`]): every
     ///   member's is retained, so it would be one per member;
     /// - a device's identity hello that says nothing the workspace's
     ///   governance, which the replay carries, does not

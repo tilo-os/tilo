@@ -199,7 +199,7 @@ async fn chat_read_by_guest(
         assert!(
             Instant::now() < deadline,
             "the chat never landed whole at the guest (refused: {refusals:?}); its channels:\n{}",
-            page.status().channels
+            page.status().key_state
         );
         tokio::time::sleep(Duration::from_millis(1)).await;
     }

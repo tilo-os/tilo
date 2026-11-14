@@ -2132,7 +2132,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "channel-crypto"
+name = "key-group"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -2682,7 +2682,7 @@ name = "collaboration"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "channel-crypto",
+ "key-group",
  "collab-types",
  "durable-store",
  "ed25519-dalek 3.0.0",
@@ -17152,7 +17152,7 @@ version = "0.1.0"
 dependencies = [
  "app-cli",
  "blake3",
- "channel-crypto",
+ "key-group",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "futures",
@@ -17190,7 +17190,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-broker-core",
- "tilo-channels",
+ "tilo-workspace-keys",
  "tilo-clock",
  "tilo-content",
  "tilo-desktop-model",
@@ -17304,7 +17304,7 @@ dependencies = [
  "calendar",
  "camera",
  "canvas",
- "channel-crypto",
+ "key-group",
  "chat",
  "chip-design",
  "chrono",
@@ -17958,7 +17958,7 @@ dependencies = [
 name = "tilo-broker-core"
 version = "0.1.0"
 dependencies = [
- "channel-crypto",
+ "key-group",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
@@ -17976,7 +17976,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
- "tilo-channels",
+ "tilo-workspace-keys",
  "tilo-clock",
  "tilo-desktop-model",
  "tilo-failure",
@@ -18037,7 +18037,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "tilo-channels",
+ "tilo-workspace-keys",
  "tilo-clock",
  "tilo-content",
  "tilo-cpu-raster",
@@ -18167,10 +18167,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-channels"
+name = "tilo-workspace-keys"
 version = "0.1.0"
 dependencies = [
- "channel-crypto",
+ "key-group",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "neighbour-wire",
@@ -19307,7 +19307,7 @@ dependencies = [
  "bao-tree",
  "blake3",
  "bytes",
- "channel-crypto",
+ "key-group",
  "clap",
  "cloud-source",
  "cloud-source-dav",
@@ -19750,7 +19750,7 @@ name = "tilo-live"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "channel-crypto",
+ "key-group",
  "collab-types",
  "hex",
  "iroh",
@@ -20618,7 +20618,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
- "channel-crypto",
+ "key-group",
  "collab-types",
  "durable-store",
  "ed25519-dalek 3.0.0",
@@ -20912,7 +20912,7 @@ dependencies = [
  "blake3",
  "bounded-command",
  "bytes",
- "channel-crypto",
+ "key-group",
  "chat",
  "clap",
  "collab-types",
@@ -21227,7 +21227,7 @@ name = "tilo-room-host"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "channel-crypto",
+ "key-group",
  "chat",
  "collab-types",
  "ed25519-dalek 3.0.0",
@@ -21315,7 +21315,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bytes",
- "channel-crypto",
+ "key-group",
  "chrono",
  "collab-types",
  "console-control",
@@ -21619,7 +21619,7 @@ dependencies = [
  "block-devices",
  "bounded-command",
  "browser-continuity",
- "channel-crypto",
+ "key-group",
  "chat",
  "chrono",
  "collab-types",
@@ -21678,7 +21678,7 @@ dependencies = [
  "tilo-bluez",
  "tilo-broker-core",
  "tilo-capture-studio",
- "tilo-channels",
+ "tilo-workspace-keys",
  "tilo-cli-kit",
  "tilo-clock",
  "tilo-color-pipeline",
@@ -21797,7 +21797,7 @@ dependencies = [
  "blake3",
  "bounded-command",
  "bytes",
- "channel-crypto",
+ "key-group",
  "chat",
  "collab-types",
  "ed25519-dalek 3.0.0",
@@ -21832,7 +21832,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-broker-core",
- "tilo-channels",
+ "tilo-workspace-keys",
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
@@ -27496,7 +27496,7 @@ dependencies = [
  "chacha20 0.9.1",
  "chacha20poly1305 0.10.1",
  "chacha20poly1305 0.11.0",
- "channel-crypto",
+ "key-group",
  "chat",
  "chinese-number",
  "chinese-variant",
@@ -28592,7 +28592,7 @@ dependencies = [
  "tilo-caps",
  "tilo-capture",
  "tilo-capture-studio",
- "tilo-channels",
+ "tilo-workspace-keys",
  "tilo-chromium-blocker",
  "tilo-cli-kit",
  "tilo-clipboard",

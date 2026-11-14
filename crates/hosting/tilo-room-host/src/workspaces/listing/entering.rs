@@ -353,7 +353,7 @@ impl Workspaces {
         tokio::spawn(async move {
             let taking = crate::timing::start();
             if let Err(error) = workspaces
-                .take_channel_governance(&workspace, device, request, Carried::Unkept)
+                .take_governance(&workspace, device, request, Carried::Unkept)
                 .await
             {
                 tracing::warn!(%workspace, %error, "an entry's channel request was not taken");

@@ -160,7 +160,7 @@ doc = false
 "chacha20-0_9_1" = { package = "chacha20", version = "^0.9.1", default-features = false, features = ["zeroize"] }
 "chacha20poly1305-0_10_1" = { package = "chacha20poly1305", version = "^0.10.1", default-features = false, features = ["alloc", "default", "getrandom", "rand_core"] }
 "chacha20poly1305-0_11_0" = { package = "chacha20poly1305", version = "^0.11.0", default-features = false, features = ["alloc", "zeroize"] }
-"channel-crypto" = { path = "../../../crates/collab/channel-crypto", default-features = false, features = [] }
+"key-group" = { path = "../../../crates/collab/key-group", default-features = false, features = [] }
 "chat" = { path = "../../../apps/chat", default-features = false, features = ["default", "samples", "video"] }
 "chinese-number-0_7_8" = { package = "chinese-number", version = "^0.7.8", default-features = false, features = ["num-bigint", "num-traits", "number-to-chinese"] }
 "chinese-variant-1_1_6" = { package = "chinese-variant", version = "^1.1.6", default-features = false, features = ["default"] }
@@ -1145,7 +1145,7 @@ doc = false
 "tilo-caps" = { path = "../../../crates/sdk/tilo-caps", default-features = false, features = [] }
 "tilo-capture" = { path = "../../../crates/platform/tilo-capture", default-features = false, features = ["avfoundation", "camera", "default", "scanner", "test-support"] }
 "tilo-capture-studio" = { path = "../../../crates/session/capture-studio", default-features = false, features = [] }
-"tilo-channels" = { path = "../../../crates/collab/channels", default-features = false, features = ["test-support"] }
+"tilo-workspace-keys" = { path = "../../../crates/collab/workspace-keys", default-features = false, features = ["test-support"] }
 "tilo-chromium-blocker" = { path = "../../../crates/browser/chromium-blocker", default-features = false, features = [] }
 "tilo-cli-kit" = { path = "../../../crates/runtime/cli", default-features = false, features = [] }
 "tilo-clipboard" = { path = "../../../crates/platform/tilo-clipboard", default-features = false, features = [] }
@@ -1705,7 +1705,7 @@ doc = false
 "chacha20-0_9_1" = { package = "chacha20", version = "^0.9.1", default-features = false, features = ["zeroize"] }
 "chacha20poly1305-0_10_1" = { package = "chacha20poly1305", version = "^0.10.1", default-features = false, features = ["alloc", "default", "getrandom", "rand_core"] }
 "chacha20poly1305-0_11_0" = { package = "chacha20poly1305", version = "^0.11.0", default-features = false, features = ["alloc", "zeroize"] }
-"channel-crypto" = { path = "../../../crates/collab/channel-crypto", default-features = false, features = [] }
+"key-group" = { path = "../../../crates/collab/key-group", default-features = false, features = [] }
 "chrono-0_4_45" = { package = "chrono", version = "^0.4.45", default-features = false, features = ["alloc", "clock", "default", "iana-time-zone", "js-sys", "now", "oldtime", "serde", "std", "wasm-bindgen", "wasmbind", "winapi", "windows-link"] }
 "cipher-0_4_4" = { package = "cipher", version = "^0.4.4", default-features = false, features = ["zeroize"] }
 "cipher-0_5_2" = { package = "cipher", version = "^0.5.2", default-features = false, features = ["alloc", "block-buffer", "block-padding", "rand_core", "stream-wrapper", "zeroize"] }
@@ -2791,7 +2791,7 @@ doc = false
 "chacha20-0_9_1" = { package = "chacha20", version = "^0.9.1", default-features = false, features = ["zeroize"] }
 "chacha20poly1305-0_10_1" = { package = "chacha20poly1305", version = "^0.10.1", default-features = false, features = ["alloc", "default", "getrandom", "rand_core"] }
 "chacha20poly1305-0_11_0" = { package = "chacha20poly1305", version = "^0.11.0", default-features = false, features = ["alloc", "zeroize"] }
-"channel-crypto" = { path = "../../../crates/collab/channel-crypto", default-features = false, features = [] }
+"key-group" = { path = "../../../crates/collab/key-group", default-features = false, features = [] }
 "chat" = { path = "../../../apps/chat", default-features = false, features = ["default", "samples", "video"] }
 "chinese-number-0_7_8" = { package = "chinese-number", version = "^0.7.8", default-features = false, features = ["num-bigint", "num-traits", "number-to-chinese"] }
 "chinese-variant-1_1_6" = { package = "chinese-variant", version = "^1.1.6", default-features = false, features = ["default"] }
@@ -3766,7 +3766,7 @@ doc = false
 "tilo-caps" = { path = "../../../crates/sdk/tilo-caps", default-features = false, features = [] }
 "tilo-capture" = { path = "../../../crates/platform/tilo-capture", default-features = false, features = ["avfoundation", "camera", "default", "scanner", "test-support"] }
 "tilo-capture-studio" = { path = "../../../crates/session/capture-studio", default-features = false, features = [] }
-"tilo-channels" = { path = "../../../crates/collab/channels", default-features = false, features = ["test-support"] }
+"tilo-workspace-keys" = { path = "../../../crates/collab/workspace-keys", default-features = false, features = ["test-support"] }
 "tilo-chromium-blocker" = { path = "../../../crates/browser/chromium-blocker", default-features = false, features = [] }
 "tilo-cli-kit" = { path = "../../../crates/runtime/cli", default-features = false, features = [] }
 "tilo-clipboard" = { path = "../../../crates/platform/tilo-clipboard", default-features = false, features = [] }
@@ -4324,7 +4324,7 @@ doc = false
 "chacha20-0_9_1" = { package = "chacha20", version = "^0.9.1", default-features = false, features = ["zeroize"] }
 "chacha20poly1305-0_10_1" = { package = "chacha20poly1305", version = "^0.10.1", default-features = false, features = ["alloc", "default", "getrandom", "rand_core"] }
 "chacha20poly1305-0_11_0" = { package = "chacha20poly1305", version = "^0.11.0", default-features = false, features = ["alloc", "zeroize"] }
-"channel-crypto" = { path = "../../../crates/collab/channel-crypto", default-features = false, features = [] }
+"key-group" = { path = "../../../crates/collab/key-group", default-features = false, features = [] }
 "chrono-0_4_45" = { package = "chrono", version = "^0.4.45", default-features = false, features = ["alloc", "clock", "default", "iana-time-zone", "js-sys", "now", "oldtime", "serde", "std", "wasm-bindgen", "wasmbind", "winapi", "windows-link"] }
 "cipher-0_4_4" = { package = "cipher", version = "^0.4.4", default-features = false, features = ["zeroize"] }
 "cipher-0_5_2" = { package = "cipher", version = "^0.5.2", default-features = false, features = ["alloc", "block-buffer", "block-padding", "rand_core", "stream-wrapper", "zeroize"] }

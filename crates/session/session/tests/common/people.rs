@@ -1981,7 +1981,8 @@ impl Chat<'_> {
         // and the suite's hang bound, and each answer it is woken by is its progress.
         let deadline = Instant::now()
             .checked_add(
-                tilo_channels::asking_again_wait().saturating_add(tilo_test_env::hang_bound()),
+                tilo_workspace_keys::asking_again_wait()
+                    .saturating_add(tilo_test_env::hang_bound()),
             )
             .expect("the wait's bound fits in an Instant");
         let mut after = None;
