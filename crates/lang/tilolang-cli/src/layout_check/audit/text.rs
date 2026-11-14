@@ -276,7 +276,7 @@ fn prompt_fits(widget: &dyn Widget, keys: &[String], out: &mut Vec<Problem>) {
     else {
         return;
     };
-    if f64::from(fit.width) <= f64::from(fit.room) + EPSILON {
+    if f64::from(fit.width) <= f64::from(fit.limit) + EPSILON {
         return;
     }
     out.push(Problem {
@@ -286,7 +286,7 @@ fn prompt_fits(widget: &dyn Widget, keys: &[String], out: &mut Vec<Problem>) {
         id: widget.test_id().map(str::to_owned),
         detail: format!(
             "prompts {:?} {:.0} wide, has {:.0}",
-            fit.shown, fit.width, fit.room
+            fit.shown, fit.width, fit.limit
         ),
     });
 }
