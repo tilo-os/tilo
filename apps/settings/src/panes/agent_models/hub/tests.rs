@@ -278,7 +278,7 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
         "closing the search returns the pane to what it showed before"
     );
 
-    crate::effects::show_pane(&mut app, Category::DEFAULT);
+    crate::effects::show_pane(&mut app, Category::opening());
     app.settle();
     let offer = app
         .with_widget::<crate::window::Inspected, _>(|settings| InPlace::of(settings))

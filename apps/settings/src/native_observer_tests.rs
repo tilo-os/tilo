@@ -75,13 +75,9 @@ fn shows_setting(app: &mut App, id: &str) -> bool {
     walk(app.harness().root_widget(), setting)
 }
 
-fn shell(app: &mut App) -> (bool, bool, vello::kurbo::Rect) {
+fn shell(app: &mut App) -> (bool, bool) {
     app.with_widget::<ui::widget::NavShell, _>(|shell| {
-        (
-            !shell.geometry().stack.is_empty(),
-            shell.is_sidebar_open(),
-            shell.geometry().back,
-        )
+        (!shell.geometry().stack.is_empty(), shell.is_sidebar_open())
     })
     .expect("settings shows its shell")
 }
@@ -200,13 +196,9 @@ fn search_preserves_the_pane_but_category_switch_replaces_it() {
 #[test]
 fn narrow_search_shows_what_it_finds_in_front_of_the_list() {
     let mut h = mounted(440, 820);
-    let (narrow, _, back) = shell(&mut h);
+    let (narrow, sidebar_open) = shell(&mut h);
     assert!(narrow);
-    // Reach the list using the real narrow back control, not a screenshot override.
-    assert!(back.width() > 0.0);
-    h.harness().click_at(back.center().x, back.center().y);
-    h.settle();
-    assert!(shell(&mut h).1);
+    assert!(sidebar_open, "a narrow window opens on the list");
     let all = sidebar_row_count(h.harness().root_widget());
     let mut search = ui::widget::SearchDriver::default();
     bar_search(&mut h, &mut search, "zqx");

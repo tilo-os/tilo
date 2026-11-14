@@ -43,8 +43,8 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
         let mut app = crate::support::window((1200, 1800));
         assert_eq!(
             crate::support::selected(&mut app),
-            Category::Network,
-            "opens on Network"
+            Category::opening(),
+            "opens on the first page that reads no device service"
         );
         let heads = app.read_document(ui::tilo_resource::heads_of);
         app.settle();

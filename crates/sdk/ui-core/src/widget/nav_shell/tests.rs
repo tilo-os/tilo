@@ -486,17 +486,12 @@ tilo_test_env::scenario! {
                         );
                     }
                 }
-                let front = h.root::<NavShell>().front_pane();
-                if g.stack.is_empty() || front != NavPane::Sidebar {
-                    assert!(
-                        (g.toggle.x0 - m.inset).abs() < 0.5,
-                        "{scale}x {width}: the toggle leads ({:?})",
-                        g.toggle
-                    );
-                    assert!(g.toggle.y0 > 0.0 && g.toggle.y1 < g.header_height);
-                } else {
-                    assert_eq!(g.toggle, Rect::ZERO, "{scale}x {width}: the places lead");
-                }
+                assert!(
+                    (g.toggle.x0 - m.inset).abs() < 0.5,
+                    "{scale}x {width}: the toggle leads ({:?})",
+                    g.toggle
+                );
+                assert!(g.toggle.y0 > 0.0 && g.toggle.y1 < g.header_height);
                 assert_eq!(
                     g.back,
                     Rect::ZERO,
@@ -968,7 +963,10 @@ tilo_test_env::scenario! {
         assert_eq!(g.sidebar, SidebarPlacement::Screen);
         assert_eq!(g.stack, [NavPane::Sidebar, NavPane::Content]);
         assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
-        assert_eq!(g.toggle, Rect::ZERO, "a sidebar screen has no toggle");
+        assert!(
+            g.toggle.width() > 0.0,
+            "the sidebar's screen carries the toggle that puts it away"
+        );
         assert_eq!(child_rect(&h, "sidebar").map(|r| r.width()), Some(360.0));
 
         h.root_mut::<NavShell>().show(NavPane::Content);

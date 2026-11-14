@@ -102,7 +102,7 @@ fn budget(label: &str, p50: u64, limit_us: u64) {
 }
 
 fn mount() -> crate::support::Window {
-    mount_on(Category::DEFAULT)
+    mount_on(Category::opening())
 }
 
 fn mount_on(category: Category) -> crate::support::Window {

@@ -69,7 +69,7 @@ impl Chrome {
             }),
             selection: LocalState::new(Some(selected.slug().to_owned())),
             title: LocalState::new(String::new()),
-            pane: LocalState::new(NavPane::Content),
+            pane: LocalState::new(NavPane::Sidebar),
             filter: LocalState::new(String::new()),
             searched: RefCell::default(),
             value_follows: crate::setting::Follows::default(),
@@ -700,7 +700,7 @@ mod tests {
         app.harness()
             .relayout_themed((w, h), theme)
             .expect("settings lays out");
-        if category != Category::DEFAULT {
+        if category != Category::opening() {
             crate::effects::show_pane(&mut app, category);
         }
         app.settle();
@@ -792,7 +792,7 @@ mod tests {
 
     fn sidebar_hover_damage_for_theme(theme: ui::Theme) {
         let mut app = mounted_in(
-            Category::DEFAULT,
+            Category::opening(),
             (1200, 700),
             theme.with_reduce_motion(true),
         );
@@ -931,10 +931,13 @@ mod tests {
         );
     }
 
+    /// A wide window opens beside the list on a page every device fills:
+    /// one that reads no device service, which a device without it would
+    /// show empty.
     #[test]
-    fn category_selection_starts_on_the_default() {
-        let mut app = mounted(Category::DEFAULT, (1200, 760));
-        assert_eq!(selected(&mut app), Category::DEFAULT);
+    fn a_wide_window_opens_on_a_page_no_absent_service_empties() {
+        let mut app = mounted(Category::opening(), (1200, 760));
+        assert_eq!(selected(&mut app), Category::Appearance);
         crate::effects::show_pane(&mut app, Category::Users);
         app.settle();
         assert_eq!(selected(&mut app), Category::Users);
@@ -1027,19 +1030,19 @@ mod tests {
         assert_responsive_layouts(vec![
             (
                 "wide docks an open sidebar",
-                |size| mounted(Category::DEFAULT, size),
+                |size| mounted(Category::opening(), size),
                 (1200, 760),
                 Some(false),
                 Some(true),
                 Back::Unchecked,
             ),
             (
-                "narrow collapse keeps the content",
-                |size| mounted(Category::DEFAULT, size),
+                "narrow opens on the list",
+                |size| mounted(Category::opening(), size),
                 (440, 820),
                 Some(true),
-                Some(false),
-                Back::Present,
+                Some(true),
+                Back::Absent,
             ),
             (
                 "narrow content shot drills into content",
@@ -1110,7 +1113,7 @@ mod tests {
 
         {
             let mut app = mounted_in(
-                Category::DEFAULT,
+                Category::opening(),
                 (1800, 900),
                 ui::Theme::dark().with_text_scale(2.0),
             );
@@ -1125,7 +1128,7 @@ mod tests {
                 "sidebar tracks the same scale as its custom-painted rows: {sidebar:?}"
             );
             let mut compact = mounted_in(
-                Category::DEFAULT,
+                Category::opening(),
                 (900, 844),
                 ui::Theme::dark().with_text_scale(2.0),
             );
@@ -1136,7 +1139,7 @@ mod tests {
         }
 
         {
-            let mut app = mounted(Category::DEFAULT, (440, 820));
+            let mut app = mounted(Category::opening(), (440, 820));
             let back = shell(&mut app).back;
             app.harness().click_at(back.center().x, back.center().y);
             app.settle();
@@ -1151,7 +1154,7 @@ mod tests {
                         .find(|category| node.label() == Some(category.label().as_str()))?;
                     let bounds = node.bounds()?;
                     (node.role() == ui::accesskit::Role::TreeItem
-                        && *category != Category::DEFAULT
+                        && *category != Category::opening()
                         && bounds.y0 >= 0.0
                         && bounds.y1 <= 820.0)
                         .then_some(bounds)
@@ -1178,7 +1181,7 @@ mod tests {
                     .into_iter()
                     .any(|child| shows(child, setting))
         }
-        let mut app = mounted(Category::DEFAULT, (1200, 760));
+        let mut app = mounted(Category::opening(), (1200, 760));
         assert_eq!(
             app.harness().native_input_snapshot().unwrap()["search_query"],
             "",
@@ -1233,7 +1236,7 @@ mod tests {
     #[test]
     fn chrome_draws_no_app_header_and_keeps_its_landmark() {
         {
-            let mut app = mounted(Category::DEFAULT, (1200, 760));
+            let mut app = mounted(Category::opening(), (1200, 760));
             let shell = shell(&mut app);
             let names: Vec<&str> = shell
                 .children

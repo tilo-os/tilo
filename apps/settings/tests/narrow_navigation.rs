@@ -43,21 +43,15 @@ fn choosing_the_open_category_from_the_narrow_list_shows_it() {
     app.settle();
 
     assert!(
-        clickable(&mut app, "Back", AkRole::Button),
-        "a narrow window opens on the pane, with a Back arrow"
+        !clickable(&mut app, "Back", AkRole::Button),
+        "a narrow window opens on the category list, which nothing stands before"
     );
-    assert!(
-        !clickable(&mut app, "Network", AkRole::TreeItem),
-        "the category list is one screen back"
-    );
-
-    activate(&mut app, "Back", AkRole::Button);
     assert!(
         clickable(&mut app, "Network", AkRole::TreeItem),
-        "Back shows the category list"
+        "a narrow window opens on the category list"
     );
 
-    activate(&mut app, "Network", AkRole::TreeItem);
+    activate(&mut app, "Appearance", AkRole::TreeItem);
     let back = clickable(&mut app, "Back", AkRole::Button);
     let network = clickable(&mut app, "Network", AkRole::TreeItem);
     let diagnostics = if back && !network {
@@ -135,7 +129,6 @@ fn the_manifest_scenario_names_are_on_the_narrow_list() {
         .resize(NARROW)
         .expect("settings lays out narrow");
     app.settle();
-    activate(&mut app, "Back", AkRole::Button);
     let exposed: Vec<String> = app
         .harness()
         .a11y_nodes()

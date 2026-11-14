@@ -124,15 +124,11 @@ impl FrameHarness {
             )
         })?;
         let geometry = shell.geometry();
-        let front_is_sidebar = shell.front_pane() == NavPane::Sidebar;
         let bar = match button {
             Some(button) => button.shown,
-            // The bar shows the way back in the button's place: hidden on a screen in front of
-            // the sidebar's own, and shown on the sidebar's own screen, which is what Back there
-            // returns to. A shell whose own row is the bar may hold neither on that screen: the
-            // person leaves it by choosing what it lists, and nothing on the row says where the
-            // sidebar stands but the row the shell laid out.
-            None => geometry.sidebar == SidebarPlacement::Screen && front_is_sidebar,
+            // The bar shows the way back in the button's place, on a screen in front of the
+            // sidebar's own: the sidebar is hidden there.
+            None => false,
         };
         let frame = match geometry.sidebar {
             SidebarPlacement::None => false,

@@ -233,14 +233,14 @@ mod tests {
         let mut other = TestApp::<SettingsShell>::new().expect("another ordinary window");
         assert_eq!(
             other.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
-            Some(Category::DEFAULT),
+            Some(Category::opening()),
             "a launch belongs to its window, not a global pane mailbox"
         );
         let mut invalid = TestApp::<SettingsShell>::launched(&["--shots"])
             .expect("an argument that is not a Settings link");
         assert_eq!(
             invalid.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
-            Some(Category::DEFAULT),
+            Some(Category::opening()),
             "the original non-link argument never selects a pane"
         );
     }

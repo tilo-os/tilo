@@ -68,7 +68,7 @@ fn clicking_a_category_navigates_to_its_pane_and_leaves_the_record_alone() {
         let mut app = window(VIEWPORT);
         assert_eq!(
             selected(&mut app),
-            Category::DEFAULT,
+            Category::opening(),
             "{target:?}: starts on the default category"
         );
         click(&mut app, target);
@@ -84,9 +84,9 @@ fn clicking_a_category_navigates_to_its_pane_and_leaves_the_record_alone() {
             row_is_active(&mut app, &target.label()),
             "the {target:?} row must be active after navigating to it"
         );
-        if target != Category::DEFAULT {
+        if target != Category::opening() {
             assert!(
-                !row_is_active(&mut app, &Category::DEFAULT.label()),
+                !row_is_active(&mut app, &Category::opening().label()),
                 "the previously-active default row must no longer be highlighted after navigating to {target:?}"
             );
         }

@@ -61,7 +61,7 @@ impl SettingsApp {
         account_root.recover_mutation_or_warn();
         let mut app = Self {
             me: Weak::new(),
-            selected: Cell::new(Category::DEFAULT),
+            selected: Cell::new(Category::opening()),
             area_reads: crate::effects::AreaReads::of(false),
             storage: ui::storage::AppStorage::for_app(
                 <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID,

@@ -705,17 +705,14 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         None
     };
     let back_leads = back_column.is_some() && !sidebar_open;
-    let toggle_leads = match g.sidebar {
-        SidebarPlacement::Docked | SidebarPlacement::Drawer => true,
-        SidebarPlacement::Screen => front_pane != NavPane::Sidebar,
-        SidebarPlacement::None => false,
-    };
+    // Every screen carries the window's controls: the sidebar's own screen holds the toggle that
+    // puts it away, as a screen in front of it holds Back.
     if hh > 0.0
         && !push_back
         && !back_leads
         && inputs.has_sidebar
         && !inputs.toggle_in_bar
-        && toggle_leads
+        && g.sidebar != SidebarPlacement::None
     {
         // Pinned to the window's top-leading corner, on the sidebar while it shows docked and on
         // the next column otherwise, so it never chases a sliding edge.

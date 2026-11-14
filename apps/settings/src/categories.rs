@@ -126,11 +126,23 @@ impl Category {
     #[cfg(not(feature = "tilo-os"))]
     pub const ALL: &'static [Category] = Self::WEB;
 
-    #[cfg(feature = "tilo-os")]
-    pub const DEFAULT: Category = Category::Network;
-
-    #[cfg(not(feature = "tilo-os"))]
-    pub const DEFAULT: Category = Category::Appearance;
+    /// The page a window opens on: the first in the list that reads no
+    /// device service, so it is of use on every device. A page that reads
+    /// one (Network, Bluetooth) is empty where the service is absent.
+    #[must_use]
+    pub fn opening() -> Category {
+        let reads_device = |category: &Category| {
+            crate::area::registry()
+                .live_areas
+                .iter()
+                .any(|area| area.pane == *category)
+        };
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|category| !reads_device(category))
+            .unwrap_or(Category::Appearance)
+    }
 
     pub fn section(self) -> Section {
         match self {
