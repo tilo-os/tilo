@@ -1,118 +1,18 @@
-//! Bounded immutable-history query handling. This owns no visibility
-//! admission; callers obtain their snapshot and scope under current authority.
-use super::RecordHistorySnapshot;
-use fs_protocol::{
-    ContentRevisionV1, FileVersionAttributionV1,
-    files::{
-        FileHistoryPageV1, FileHistoryReadErrorV1 as Error, FileHistoryReadQueryV1 as Query,
-        FileHistoryReadResponseV1, FileHistoryReadScopeV1 as Scope,
-        FileHistoryReadValueV1 as Value, MAX_HISTORY_PAGE_VERSIONS, MAX_HISTORY_READ_BYTES,
-    },
-};
-impl RecordHistorySnapshot {
-    pub(crate) fn read_query(
-        self,
-        scope: Scope,
-        current_revision: Option<ContentRevisionV1>,
-        query: Query,
-        attributions: &[FileVersionAttributionV1],
-    ) -> Result<Value, Error> {
-        // Who caused one version, when an agent did, as its own signing
-        // device recorded it.
-        let attribution_of = |version_id| {
-            attributions
-                .iter()
-                .find(|attributed: &&FileVersionAttributionV1| attributed.version_id == version_id)
-        };
-        match query {
-            Query::Page { cursor } => {
-                let start = match cursor {
-                    None => 0,
-                    Some((expected, id)) => {
-                        if expected != scope.frontier {
-                            return Err(Error::Stale);
-                        }
-                        self.versions
-                            .iter()
-                            .position(|v| v.id == id)
-                            .and_then(|i| i.checked_add(1))
-                            .ok_or(Error::InvalidRequest)?
-                    }
-                };
-                let remaining = self.versions.get(start..).ok_or(Error::InvalidRequest)?;
-                let mut count = remaining.len().min(MAX_HISTORY_PAGE_VERSIONS);
-                loop {
-                    let versions = remaining
-                        .get(..count)
-                        .ok_or(Error::InvalidRequest)?
-                        .to_vec();
-                    let next_after = if remaining.len() > count {
-                        versions.last().map(|v| v.id)
-                    } else {
-                        None
-                    };
-                    let attributions = versions
-                        .iter()
-                        .filter_map(|version| attribution_of(version.id))
-                        .cloned()
-                        .collect();
-                    let value = Value::Page(FileHistoryPageV1 {
-                        scope,
-                        versions,
-                        total_versions: self.versions.len() as u64,
-                        heads: self.heads.clone(),
-                        current_revision,
-                        next_after,
-                        attributions,
-                    });
-                    let size = serde_json::to_vec(&FileHistoryReadResponseV1 {
-                        schema_version: 1,
-                        result: Ok(value.clone()),
-                    })
-                    .map_err(|_| Error::Unavailable)?
-                    .len();
-                    if size <= MAX_HISTORY_READ_BYTES {
-                        return Ok(value);
-                    }
-                    count = count
-                        .checked_sub(1)
-                        .filter(|count| *count > 0)
-                        .ok_or(Error::TooLarge)?;
-                }
-            }
-            Query::Version {
-                frontier: expected,
-                version_id,
-            } => {
-                if scope.frontier != expected {
-                    return Err(Error::Stale);
-                }
-                let version = self
-                    .versions
-                    .into_iter()
-                    .find(|v| v.id == version_id)
-                    .ok_or(Error::MissingVersion)?;
-                let attribution =
-                    attribution_of(version_id).map(|attributed| attributed.attribution.clone());
-                Ok(Value::Version {
-                    scope,
-                    version,
-                    attribution,
-                })
-            }
-            Query::Preview { .. } => Err(Error::InvalidRequest),
-        }
-    }
-}
+//! The bounded history read query, proven against the snapshot the filesystem serves.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use fs_protocol::{
-        ConflictStatus, ContentHash, Ed25519PublicKey, FileActor, FileProvenance, FileRecordId,
-        FileVersionId, FileVersionV1,
-    };
-    use uuid::Uuid;
+
+use fs_protocol::files::{
+    FileHistoryReadErrorV1 as Error, FileHistoryReadQueryV1 as Query,
+    FileHistoryReadScopeV1 as Scope, FileHistoryReadValueV1 as Value,
+    MAX_HISTORY_PAGE_VERSIONS,
+};
+use fs_protocol::history::RecordHistorySnapshot;
+use fs_protocol::projection::MAX_PROJECTED_VERSIONS;
+use fs_protocol::{
+    ConflictStatus, ContentHash, Ed25519PublicKey, FileActor,
+    FileProvenance, FileRecordId, FileVersionAttributionV1, FileVersionId, FileVersionV1,
+};
+use uuid::Uuid;
 
     /// The snapshot a record with `count` versions has: each version its
     /// parent's child, all metadata-only.
@@ -312,4 +212,3 @@ mod tests {
             assert_eq!(attribution, None, "the person's own version");
         }
     }
-}

@@ -18812,6 +18812,7 @@ dependencies = [
  "blake3",
  "chrono",
  "collab-types",
+ "fs-protocol",
  "hex",
  "neighbour-wire",
  "postcard",

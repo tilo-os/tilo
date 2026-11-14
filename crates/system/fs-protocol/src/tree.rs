@@ -362,6 +362,26 @@ pub fn free_name(tree: &Tree, parent: &str, wanted: &str) -> String {
         .unwrap_or_else(|| wanted.to_owned())
 }
 
+/// Where `id` is in `tree`, as `docs/plan.md`: what a history row names a file
+/// by. The root itself reads as the empty path.
+#[must_use]
+pub fn path_of(tree: &Tree, id: &str) -> String {
+    let mut names: Vec<String> = Vec::new();
+    let mut at = id.to_owned();
+    while at != ROOT_ID {
+        let Some(node) = tree.node(&at) else {
+            break;
+        };
+        names.push(String::from_utf8_lossy(node.name.as_bytes()).into_owned());
+        match node.parent.clone() {
+            Some(parent) if parent != at => at = parent,
+            _ => break,
+        }
+    }
+    names.reverse();
+    names.join("/")
+}
+
 /// The live folder named `name` in `parent`, when `tree` holds one.
 #[must_use]
 pub fn folder_named(tree: &Tree, parent: &str, name: &str) -> Option<String> {

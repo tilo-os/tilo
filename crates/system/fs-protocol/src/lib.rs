@@ -16,6 +16,7 @@
 
 pub mod file_invite;
 pub mod files;
+pub mod history;
 pub mod projection;
 pub mod tree;
 
