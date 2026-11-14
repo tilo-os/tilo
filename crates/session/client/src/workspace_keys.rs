@@ -307,11 +307,14 @@ impl KeyLink {
     }
 
     /// Take in what `peer`, one of the person's devices, said on the session between the two: a
-    /// group's frames go to the key service as the host's do, which judges them alike; an ask for
-    /// them is answered with this device's own, when the workspace admits `peer`.
+    /// group's frames and access requests go to the key service as the host's do, which judges
+    /// them alike; an ask for frames is answered with this device's own, when the workspace admits
+    /// `peer`.
     pub fn heard_from_sibling(&self, peer: [u8; 32], message: &NeighbourMsg) {
         match message {
-            NeighbourMsg::MlsGovernance { .. } => self.heard(message),
+            NeighbourMsg::MlsGovernance { .. } | NeighbourMsg::MlsAccessRequest { .. } => {
+                self.heard(message);
+            }
             NeighbourMsg::MlsGovernanceWanted {
                 workspace,
                 from_epoch,
@@ -555,8 +558,11 @@ impl GovernanceTransport for KeyLink {
         let Some(workspace) = governance_workspace(&message) else {
             return false;
         };
-        // The members linked to this device hear it from this device alone.
+        // The members linked to this device hear it from this device alone, and the person's other
+        // devices hear it whether the workspace's host is there or not: a device of theirs that
+        // fell behind asks them to be admitted again, and is admitted by them.
         self.carry_to_members(&message);
+        self.tell_siblings(message.clone());
         self.say(workspace, message)
     }
 

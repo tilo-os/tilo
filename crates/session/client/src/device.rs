@@ -67,12 +67,26 @@ impl Device {
     /// A session for the device `config` certifies, in no workspace yet.
     #[must_use]
     pub fn over(config: PeerConfig, signer: Arc<dyn DeviceSigner>, label: &str) -> Self {
+        Self::over_with(config, signer, label, None)
+    }
+
+    /// [`Self::over`] for a device whose own key service is `keys`, when it has one: the session
+    /// reads and asks with those ([`crate::start_session_with_keys`]).
+    #[must_use]
+    pub fn over_with(
+        config: PeerConfig,
+        signer: Arc<dyn DeviceSigner>,
+        label: &str,
+        keys: Option<tilo_workspace_keys::SharedKeys>,
+    ) -> Self {
+        let store = Arc::new(MemoryPeerStore::default()) as Arc<dyn PeerStore>;
         Self {
-            peer: crate::session::start_session(
-                config.clone(),
-                signer,
-                Arc::new(MemoryPeerStore::default()) as Arc<dyn PeerStore>,
-            ),
+            peer: match keys {
+                Some(keys) => {
+                    crate::session::start_session_with_keys(config.clone(), signer, store, keys)
+                }
+                None => crate::session::start_session(config.clone(), signer, store),
+            },
             cert: config.cert,
             host_cert: config.host_cert,
             workspace_id: WorkspaceId::from_u128(0),

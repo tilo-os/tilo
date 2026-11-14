@@ -15,8 +15,8 @@
 //! for the device at the other end, and only when it is signed by a root
 //! this device acts for too. From then on the stream carries what is for the
 //! person's own devices alone: codec adverts, the person's workspace list,
-//! the frames of a workspace's key group one of them lacks and its ask for
-//! them, and a renewed hello when a certificate or a revocation changes. Every
+//! what each says of a workspace's key group (its frames, access requests
+//! and asks for frames it lacks), and a renewed hello when a certificate or a revocation changes. Every
 //! further bidirectional stream carries one personal fabric frame
 //! ([`fabric_link`]); nearby transfers stream on the same connection.
 //!
@@ -382,7 +382,13 @@ impl ActorState {
                             sibling.caps_advert.replace(fingerprint) != Some(fingerprint)
                         })
                     }
-                    NeighbourMsg::PersonalWorkspaces { .. } => true,
+                    // The person's workspace list, and a workspace's key group as one of the
+                    // person's devices says it: its frames, an access request, and an ask for
+                    // frames it lacks. The key service judges those as it judges a host's.
+                    NeighbourMsg::PersonalWorkspaces { .. }
+                    | NeighbourMsg::MlsGovernance { .. }
+                    | NeighbourMsg::MlsAccessRequest { .. }
+                    | NeighbourMsg::MlsGovernanceWanted { .. } => true,
                     // Where the person's workspaces are hosted, as the device that holds
                     // them says: how a device copied from it, or one that holds none of
                     // them yet, finds each workspace's host.
@@ -395,10 +401,6 @@ impl ActorState {
                             sibling.hosts_advert.replace(fingerprint) != Some(fingerprint)
                         })
                     }
-                    // A group's frames one of the person's devices lacked, and its ask for them:
-                    // the key service judges the frames as it judges a host's.
-                    NeighbourMsg::MlsGovernance { .. }
-                    | NeighbourMsg::MlsGovernanceWanted { .. } => true,
                     _ => {
                         tracing::warn!(peer = %peer, kind = msg.kind(), "a device of the person sent what its session does not carry");
                         false

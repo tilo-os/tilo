@@ -89,6 +89,7 @@ fn a_record_sent_before_the_pages_admission_is_read_once_it_is_admitted() {
         config,
         Arc::new(Key(device_key)),
         Arc::new(crate::MemoryPeerStore::default()),
+        None,
     );
     let events = link.events();
     let answer = postcard::to_stdvec(

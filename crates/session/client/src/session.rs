@@ -214,17 +214,33 @@ pub fn start_session(
     signer: Arc<dyn DeviceSigner>,
     store: Arc<dyn PeerStore>,
 ) -> Link {
-    let (task, link, receiver) = session_task(config, signer, store);
+    let (task, link, receiver) = session_task(config, signer, store, None);
+    n0_future::task::spawn(task.run(receiver));
+    link
+}
+
+/// [`start_session`] for a session of a device whose own key service is `keys`: it reads and asks
+/// with those, and settles none of its own. A device holds one place in a workspace's key group,
+/// and a second service under the same device key would take that place from the first each time
+/// it asked to be admitted.
+pub fn start_session_with_keys(
+    config: PeerConfig,
+    signer: Arc<dyn DeviceSigner>,
+    store: Arc<dyn PeerStore>,
+    keys: tilo_workspace_keys::SharedKeys,
+) -> Link {
+    let (task, link, receiver) = session_task(config, signer, store, Some(keys));
     n0_future::task::spawn(task.run(receiver));
     link
 }
 
 /// The session [`start_session`] runs, the link to it and its command queue,
-/// before it runs.
+/// before it runs: over `keys` when the device's own key service settles them.
 fn session_task(
     config: PeerConfig,
     signer: Arc<dyn DeviceSigner>,
     store: Arc<dyn PeerStore>,
+    keys: Option<tilo_workspace_keys::SharedKeys>,
 ) -> (Task, Link, mpsc::UnboundedReceiver<Command>) {
     let (commands, receiver) = mpsc::unbounded_channel();
     let reports = Reports::connecting(config.cert.device_public_key);
@@ -232,10 +248,14 @@ fn session_task(
     let vault = store.channel_vault().unwrap_or_else(rand::random);
     let replicas = crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store));
     let key_state = crate::custody::StoredKeys::load(store.as_ref());
-    let gates = Arc::new(tilo_workspace_keys::Gates::default());
-    let workspace_keys = tilo_workspace_keys::SharedKeys::new(open_keys(
-        &replicas, &key_state, vault, &signer, &gates,
-    ));
+    // The transport this session settles its own keys over; none when the device's service does.
+    let governance = keys.is_none().then(HostGovernance::default);
+    let workspace_keys = keys.unwrap_or_else(|| {
+        let gates = Arc::new(tilo_workspace_keys::Gates::default());
+        tilo_workspace_keys::SharedKeys::new(open_keys(
+            &replicas, &key_state, vault, &signer, &gates,
+        ))
+    });
     let engine = Arc::new(crate::engine::Engine::holding(
         replicas.owner(),
         Arc::default(),
@@ -264,7 +284,7 @@ fn session_task(
         planes: plane::Planes::default(),
         record,
         workspace_keys,
-        governance: HostGovernance::default(),
+        governance,
         outbound_due: false,
         answered: Vec::new(),
         arrived: Vec::new(),
@@ -397,8 +417,9 @@ struct Task {
     /// This device's side of the workspaces' encrypted channels: the engine every participant runs,
     /// here as a reader that asks for access and follows the participants' commits.
     workspace_keys: tilo_workspace_keys::SharedKeys,
-    /// What the channels say to and hear from the host.
-    governance: HostGovernance,
+    /// What the channels say to and hear from the host: `None` when the device's own key service
+    /// settles [`Self::workspace_keys`] ([`start_session_with_keys`]).
+    governance: Option<HostGovernance>,
     /// The channels' state and the writes held for their keys, in the store.
     key_state: crate::custody::StoredKeys,
     /// Every route this session opened, and the keys it holds for it.
@@ -2003,7 +2024,9 @@ impl Task {
         if all {
             self.read_all_keys();
         }
-        self.workspace_keys.pump_at(&self.governance, now);
+        if let Some(governance) = &self.governance {
+            self.workspace_keys.pump_at(governance, now);
+        }
         if self.workspace_keys.generation() != self.keys_generation {
             self.read_all_keys();
         }

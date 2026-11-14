@@ -423,10 +423,13 @@ impl Task {
         author: [u8; 32],
     ) {
         match message {
+            // Taken in by a session that settles its own keys; the device's own key service hears
+            // the workspace's governance on its own plane.
             message @ neighbour_wire::NeighbourMsg::MlsGovernance { .. } => {
                 if let Some(inbound) = tilo_workspace_keys::InboundGovernance::from_message(message)
+                    && let Some(governance) = &self.governance
                 {
-                    self.governance.inbound.lock_recover().push(inbound);
+                    governance.inbound.lock_recover().push(inbound);
                     self.pump_channels(false);
                 }
             }

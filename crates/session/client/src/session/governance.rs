@@ -94,7 +94,10 @@ impl Task {
         };
         let device = self.config.cert.device_public_key;
         let mut delivered = true;
-        for (workspace_id, message) in self.governance.take_for(admitted) {
+        let Some(governance) = &self.governance else {
+            return true;
+        };
+        for (workspace_id, message) in governance.take_for(admitted) {
             if let Some(envelope) = governance_envelope(device, workspace_id, &message) {
                 delivered &= client.send(envelope).is_ok();
             }

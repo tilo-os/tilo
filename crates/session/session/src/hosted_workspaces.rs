@@ -103,7 +103,10 @@ impl HostedWorkspaces {
             return Arc::clone(host);
         }
         let identity = self.0.engine.identity();
-        let device = Device::over(
+        // It reads and asks with this device's own keys: the device holds one place in each
+        // workspace's key group, which a second key service of its own would take each time it
+        // asked to be admitted.
+        let device = Device::over_with(
             PeerConfig {
                 host: tilo_relay_client::Host::at(placed.host.endpoint_addr.clone()),
                 cert: identity.device_cert.clone(),
@@ -113,6 +116,7 @@ impl HostedWorkspaces {
             },
             Arc::clone(&identity.signer),
             &identity.device_cert.device_label,
+            self.0.engine.keys().get(),
         );
         let host = Arc::new(Host {
             device,
