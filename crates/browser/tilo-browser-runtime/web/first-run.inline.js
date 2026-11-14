@@ -71,6 +71,10 @@ globalThis.__tiloSetupPaint=function(){
  if(step==='expired'){put('first-run-prompt',fresh);return;}
  put('first-run-prompt',shown.prompt);
  screen.dataset.copied=String(setup.copied===true);
+ // An agent took the code without a copy: the heading says what it is doing.
+ screen.dataset.handed=String(setup.handed===true);
+ var who=(setup.polled&&setup.polled.agent)||'Your agent',names=screen.querySelectorAll('.fr-hand-agent');
+ for(var j=0;j<names.length;j++)names[j].textContent=who;
  var lines=shown.lines||[],list=$('first-run-steps');
  for(var i=0;i<lines.length;i++){
   var line=lines[i],item=document.createElement('li');

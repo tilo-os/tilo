@@ -27,7 +27,11 @@
  * agent, never presses the button. So a shown code is followed at once
  * (`watchShown`, the follow that has the host keep it) and followed quietly
  * again every couple of seconds while it is on the screen; an agent that
- * used it moves the screen on to its steps, as a copied prompt does.
+ * used it moves the screen on to its steps, as a copied prompt does. Nothing
+ * was copied there, so the screen says what the agent is doing instead of
+ * asking for a paste (`handed`). A prompt kept from before a reload that
+ * this page cannot follow any more is not looked at in silence either: after
+ * a while the screen says so, and reloading makes a fresh code.
  *
  * - **Copy prompt** copies `setupPrompt`, shown above it. The code names a
  *   pairing link to this tab, which holds the person's new root: the
@@ -78,6 +82,9 @@ export const FOLLOW_MS = 1000;
  * uses it: slower than the active follow, quick enough that an agent that
  * took the code without the button shows its steps at once. */
 export const SHOWN_FOLLOW_MS = 2000;
+/** How long a prompt kept from before a reload may stay one this page cannot
+ * follow before the screen says so, with the reload that makes a fresh one. */
+export const KEPT_LOST_MS = 15_000;
 /** How long the host gets to make a code before the screen says it did not. */
 export const MAKE_MS = 15_000;
 /** How long the page gets to offer codes at all (its runtime loading) before the screen says so. */
@@ -286,7 +293,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   const kindOf = mode => (mode === 'sign-in' ? 'signIn' : 'setup');
   const host = hostOf(site);
   const codes = {};
-  for (const kind of ['setup', 'signIn']) codes[kind] = {make: null, resume: null, made: null, making: false, error: null, renew: null, round: 0};
+  for (const kind of ['setup', 'signIn']) codes[kind] = {make: null, resume: null, made: null, making: false, error: null, renew: null, round: 0, note: null};
   // A setup kept for later (the person arrived by an invitation) or over
   // (the person's card shows the setup again) is on the start once this
   // screen shows it. Storage keeps that step until the person takes a code
@@ -298,7 +305,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   if (held(state.step)) state = {step: 'start'};
   let closed = false;
   // What the screen shows now, kept with the setup for the next first paint.
-  const frame = {offer: null, prompt: null, lines: null, heading: null, mode: 'setup', copied: false};
+  const frame = {offer: null, prompt: null, lines: null, heading: null, mode: 'setup', copied: false, handed: false};
   const keepFrame = () => {
     if (closed) return;
     const kept = readSetup(storage);
@@ -316,6 +323,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       if (typeof args[1]?.text === 'string') frame.prompt = args[1].text;
       frame.mode = args[0];
       frame.copied = args[1]?.copied === true;
+      frame.handed = args[1]?.handed === true;
     } else if (name === 'expired' && typeof args[1]?.text === 'string') frame.prompt = args[1].text;
     else if (name === 'steps') frame.lines = args[0];
     else if (name === 'connected') frame.heading = args[0]?.heading ?? null;
@@ -426,16 +434,19 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     // The fresh prompt is on the screen now, and works however it leaves it.
     watchShown();
   };
-  // What the screen shows of `kind`'s code now: its text, or why there is none.
+  // What the screen shows of `kind`'s code now: its text, and why it is a
+  // new one when the last could not be followed (`note`), or why there is
+  // none at all.
   const show = kind => {
     const at = codes[kind];
     const text = at.made ? prompts[kind](at.made.code, {site}) : null;
     // A page that did not load is said once, in the setup's box, whose
     // button reloads it: the sign-in beside it waits on the same load.
     const unloaded = !at.make && at.error?.code === 'not-loaded';
-    view.offer(kind, at.made ? {text, code: at.made.code}
+    const note = at.note ? {note: at.note} : {};
+    view.offer(kind, at.made ? {text, code: at.made.code, ...note}
       : unloaded && kind !== 'setup' ? {}
-      : at.error ? {problem: setupFailure(at.error, {site}), ...(unloaded ? {reload: true} : {})} : {note: codeWait(site)});
+      : at.error ? {problem: setupFailure(at.error, {site}), ...(unloaded ? {reload: true} : {})} : {note: at.note ?? codeWait(site)});
     if (kind === 'setup' && manualShown) showManual();
     if (expiredKind === kind) drawExpired();
     watchShown();
@@ -446,17 +457,40 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     && (state.step === 'start' || (state.step === 'expired' && expiredKind === kind));
   let watchRound = 0;
   let watchTimer = null;
+  // When a prompt kept from before a reload was first found to be one this
+  // page cannot follow (`KEPT_LOST_MS` says how long that may go unsaid).
+  let lostSince = null;
   const stopWatch = () => {
     ++watchRound;
     clear(watchTimer);
     watchTimer = null;
+  };
+  // A prompt kept from before a reload that this page cannot follow at all
+  // (it could not be linked to this tab's pairing again): said in its box,
+  // rather than looked at every couple of seconds without a word. The page
+  // makes a fresh code in its place once it can, and otherwise the box's
+  // button reloads it, which makes one.
+  const lostKept = () => {
+    lostSince = null;
+    const at = codes.setup;
+    at.made = null;
+    at.note = null;
+    if (at.make) {
+      at.note = 'This tab couldn’t follow that prompt. Here’s a new one.';
+      show('setup');
+      void prepare('setup');
+      return;
+    }
+    at.error = {code: 'not-loaded'};
+    show('setup');
   };
   // Keep what is on the screen and follow it quietly: the host keeps a code
   // from its tab's first follow, and a code a person copies by hand or types
   // must be one it knows. Until a computer uses it the code is followed at
   // `SHOWN_FOLLOW_MS`; once one does, the screen steps on exactly as it does
   // for a prompt copied with the button, and nothing is said of a copy that
-  // did not happen.
+  // did not happen. A kept prompt this page cannot follow at all is said
+  // after a while (`lostKept`), never looked at in silence forever.
   const watchShown = () => {
     stopWatch();
     if (closed) return;
@@ -465,6 +499,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       watchTimer = null;
       if (round !== watchRound || closed) return;
       let showing = false;
+      let lost = false;
       for (const kind of Object.keys(codes)) {
         const at = codes[kind];
         // Shown by the manual setup's panel, which follows that same code
@@ -479,6 +514,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
           // A page that cannot follow codes yet looks again once it can; a
           // host that did not answer, too (asking for the prompt says so).
           if (round !== watchRound || closed) return;
+          if (error?.code === 'not-loaded' && made.early) lost = true;
           continue;
         }
         if (round !== watchRound || closed) return;
@@ -486,8 +522,13 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
         // A code the host forgot is replaced when it is renewed; one nobody
         // used is simply looked at again.
         if (polled?.expired || !polled?.resolved) continue;
-        use(kind, modeOf(kind), made, prompts[kind](made.code, {site}), true);
+        use(kind, modeOf(kind), made, prompts[kind](made.code, {site}),
+          {handed: true, agent: polled.agent || null});
       }
+      if (lost) {
+        lostSince ??= now();
+        if (now() - lostSince >= KEPT_LOST_MS) { lostKept(); return; }
+      } else lostSince = null;
       if (showing && round === watchRound && !closed) {
         watchTimer = later(() => { void look(); }, SHOWN_FOLLOW_MS);
       }
@@ -523,6 +564,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     at.round += 1;
     at.making = false;
     at.error = null;
+    at.note = null;
     at.made = made;
     renewIn('setup', made);
     show('setup');
@@ -681,6 +723,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     following = null;
     expiredKind = null;
     manualShown = false;
+    for (const kind of Object.keys(codes)) codes[kind].note = null;
     view.start();
     if (keep) save({step: 'start', code: null, polled: null, copied: false, manual: false});
     if (!adoptOffer()) show('setup');
@@ -713,7 +756,8 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       manualShown = false;
       expiredKind = null;
       following = null;
-      view.waiting(mode, {text: prompts[kind](next.code.code, {site}), copied: next.copied === true, manual: next.manual === true});
+      view.waiting(mode, {text: prompts[kind](next.code.code, {site}), copied: next.copied === true, manual: next.manual === true,
+        ...(next.handed ? {handed: true, agent: next.polled?.agent ?? null} : {})});
       view.steps(stepLines(next.polled ?? null, mode));
       const steps = next.polled?.steps ?? [];
       if (steps.includes('failed') && !steps.includes('entered')) view.agentFailed(next.polled.detail || `${next.polled.agent || 'Your agent'} did not say why.`);
@@ -738,21 +782,25 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       show('setup');
     }
   };
-  // The code `kind` shows, taken into use: the screen shows the paste
-  // instructions beside its prompt and follows it, and the page makes the
-  // next one for another try.
-  const use = (kind, mode, made, text, copied) => {
+  // The code `kind` shows, taken into use: the screen shows what is happening
+  // beside its prompt and follows it, and the page makes the next one for
+  // another try. `handed` says an agent got the code without a copy in this
+  // tab (typed, or copied by hand), so the screen asks for no paste and says
+  // nothing was copied; `agent` is the computer's name, once it said one.
+  const use = (kind, mode, made, text, {copied = false, handed = false, agent = null} = {}) => {
     const mine = ++attempt;
     stopWatch();
     manualShown = false;
     expiredKind = null;
-    view.waiting(mode, {text, copied});
+    lostSince = null;
+    codes[kind].note = null;
+    view.waiting(mode, {text, copied, ...(handed ? {handed: true, agent} : {})});
     view.agentFailed(null);
     view.net(null);
-    if (!copied) view.problem(setupFailure({code: 'copy-failed'}, {site}));
+    if (!copied && !handed) view.problem(setupFailure({code: 'copy-failed'}, {site}));
     view.steps(stepLines(null, mode));
     following = made.code;
-    save({step: 'waiting', mode, code: made.saved ? {...made.saved, kind} : null, copied, manual: false, polled: null,
+    save({step: 'waiting', mode, code: made.saved ? {...made.saved, kind} : null, copied, handed, manual: false, polled: null,
       ...(kind === 'setup' ? {offer: null} : {})});
     follow(made, mode, mine);
     codes[kind].made = null;
@@ -781,7 +829,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     try { writing = Promise.resolve(clipboard.copy(text)); } catch (error) { writing = Promise.reject(error); }
     return writing.then(() => true, error => { console.warn('first run: copy', error); return false; }).then(copied => {
       if (closed) return copied;
-      use(kind, mode, made, text, copied);
+      use(kind, mode, made, text, {copied});
       return copied;
     });
   };
@@ -819,7 +867,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     copiedByHand() {
       const at = codes.setup;
       if (closed || !at.made) return;
-      use('setup', 'setup', at.made, prompts.setup(at.made.code, {site}), true);
+      use('setup', 'setup', at.made, prompts.setup(at.made.code, {site}), {copied: true});
     },
     /** Make the code that could not be made, or copy a fresh one after one
      * expired or failed (a click of its own). */
@@ -962,7 +1010,12 @@ export function domView(document) {
   };
   const notes = {setup: 'first-run-offer-note', signIn: 'first-run-sign-in-note'};
   return {
-    start() { state(''); this.manual(false); $('first-run-heading').focus({preventScroll: true}); },
+    start() {
+      state('');
+      this.manual(false);
+      $('first-run').dataset.handed = 'false';
+      $('first-run-heading').focus({preventScroll: true});
+    },
     offer(kind, {text = null, note = null, problem = null, reload = false}) {
       // Whether a code is ready, for tests and tools driving the page.
       $('first-run').dataset[kind === 'setup' ? 'setup' : 'signIn'] = text ? 'ready' : problem ? 'failed' : 'waiting';
@@ -985,7 +1038,7 @@ export function domView(document) {
       $(root.dataset.firstRun ? 'first-run-problem' : notes[kind]).textContent = text;
       say(text);
     },
-    waiting(mode, {text = null, copied = false, manual = false} = {}) {
+    waiting(mode, {text = null, copied = false, manual = false, handed = false, agent = null} = {}) {
       state('waiting', mode);
       if (text !== null) showPrompt($('first-run-prompt'), text);
       for (const id of ['first-run-problem', 'first-run-left', 'first-run-net']) $(id).textContent = '';
@@ -993,9 +1046,17 @@ export function domView(document) {
       $('first-run').dataset.agentFailed = 'false';
       $('first-run').dataset.manual = String(manual);
       $('first-run').dataset.copied = String(copied);
+      // An agent took the code without a copy here: the screen says what it
+      // is doing, in place of the paste instructions (index.html).
+      $('first-run').dataset.handed = String(handed);
+      const who = agent || 'Your agent';
+      for (const span of $('first-run').querySelectorAll('.fr-hand-agent')) span.textContent = who;
       this.copied(false);
-      say(manual ? 'Your computer is setting Tilo up…' : copied ? 'Prompt copied. Paste it into your agent.' : 'Copy the prompt, then paste it into your agent.');
-      $('first-run-heading-wait').focus({preventScroll: true});
+      say(manual ? 'Your computer is setting Tilo up…'
+        : handed ? `${who} is ${mode === 'sign-in' ? 'signing this tab in' : 'setting up Tilo'}…`
+        : copied ? 'Prompt copied. Paste it into your agent.' : 'Copy the prompt, then paste it into your agent.');
+      $(handed ? (mode === 'sign-in' ? 'first-run-heading-hand-sign-in' : 'first-run-heading-hand') : 'first-run-heading-wait')
+        .focus({preventScroll: true});
     },
     copied(ok, which = 'prompt') {
       if (which === 'prompt' && ok) $('first-run').dataset.copied = 'true';
@@ -1033,10 +1094,16 @@ export function domView(document) {
       $('first-run-problem').textContent = note ?? '';
       $('first-run-net').textContent = '';
       $('first-run').dataset.copied = 'false';
+      $('first-run').dataset.handed = 'false';
       say(text ? 'That prompt ran out before an agent used it. Here is a fresh one: copy it to try again.' : note ?? '');
     },
     problem(text) { $('first-run-problem').textContent = text; },
-    failed(text, mode) { state('failed', mode); $('first-run-problem').textContent = text; say(text); },
+    failed(text, mode) {
+      state('failed', mode);
+      $('first-run').dataset.handed = 'false';
+      $('first-run-problem').textContent = text;
+      say(text);
+    },
     connected({mode, heading}) {
       state('connected', mode);
       $('first-run').dataset.skipped = 'false';
