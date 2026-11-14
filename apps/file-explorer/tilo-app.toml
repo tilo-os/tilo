@@ -31,11 +31,12 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-required = ["files.paths"]
-optional = ["clipboard", "app-files", "secrets", "threads", "media.decode", "processes", "open-uri"]
+# Paths are what it browses on a computer; a page has none and shows the
+# workspace's tree instead.
+optional = ["files.paths", "clipboard", "app-files", "secrets", "threads", "media.decode", "processes", "open-uri", "files.save"]
 
 [resources]
-kinds = ["files.folder", "tilo.accounts", "files.recent", "files.tree"]
+kinds = ["files.folder", "tilo.accounts", "files.recent", "files.tree", "files.workspace"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

@@ -41,11 +41,20 @@ pub struct FilesWindow {
 #[resource(
     kind = "files.workspace",
     label = "files-workspace-window",
-    search = FilesWindow::search
+    search = FilesWindow::search,
+    read_content = FilesWindow::read_document
 )]
 impl FilesWindow {}
 
 impl FilesWindow {
+    /// What the record holds: the folder the window shows.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+
     /// Nothing: a workspace's files are found by name and by what their text
     /// holds in the tree's own search source, not as rows of this record.
     fn search(_: &Self) -> Vec<ui::tilo_resource::SearchEntry> {
@@ -231,7 +240,9 @@ impl TreeBrowser {
 
     /// Where the open folder is, and the way up to the folder holding it.
     fn crumbs(&self, tree: Option<&Tree>, folder: &str) -> Box<dyn ui::widget::Widget> {
-        let mut row = Row::new().with_id("files-tree-crumbs").with_gap(8.0);
+        let mut row = Row::new()
+            .with_id("files-tree-crumbs")
+            .with_rhythm(ui::tokens::Rhythm::Related);
         if folder != ROOT_ID {
             let parent = tree
                 .and_then(|tree| tree.node(folder))
@@ -260,7 +271,15 @@ impl TreeBrowser {
     ) -> Box<dyn ui::widget::Widget> {
         let name = Self::name_of(node);
         let is_folder = node.kind == FileNodeKind::Directory;
-        let mut row = ListRow::new(id.to_owned(), name.clone()).secondary(Self::details(node));
+        // How large it is, when it changed and who changed it are each their
+        // own part of the row, not one line joined by a separator.
+        let mut row = ListRow::new(id.to_owned(), name.clone());
+        if let Some(changed) = Self::changed_of(node) {
+            row = row.secondary(changed);
+        }
+        if let Some(size) = Self::size_of(node) {
+            row = row.value(size);
+        }
         // Getting it out of the workspace onto this computer: the file, or
         // the folder as one zip of everything in it.
         if let Some(download) = download {
@@ -401,19 +420,15 @@ impl TreeBrowser {
         String::from_utf8_lossy(node.name.as_bytes()).into_owned()
     }
 
-    /// What a row says under the entry's name: how large a file is and when
-    /// it last changed.
-    fn details(node: &TreeEntry) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        if node.kind == FileNodeKind::File {
-            parts.push(format_bytes(node.size));
-        }
-        if let Some(at) =
-            chrono::DateTime::from_timestamp_millis(i64::try_from(node.mtime).unwrap_or(i64::MAX))
-        {
-            parts.push(format_datetime(at.with_timezone(&chrono::Local)));
-        }
-        parts.join(" · ")
+    /// How large a file is; a folder has no size of its own.
+    fn size_of(node: &TreeEntry) -> Option<String> {
+        (node.kind == FileNodeKind::File).then(|| format_bytes(node.size))
+    }
+
+    /// When the entry last changed.
+    fn changed_of(node: &TreeEntry) -> Option<String> {
+        chrono::DateTime::from_timestamp_millis(i64::try_from(node.mtime).unwrap_or(i64::MAX))
+            .map(|at| format_datetime(at.with_timezone(&chrono::Local)))
     }
 
     /// The path of `folder` from the workspace's root, as `a / b`.
@@ -542,75 +557,48 @@ impl ActionControls for TreeBrowser {
 
 #[cfg(test)]
 mod tests {
-    use ui::automerge::transaction::Transactable as _;
-    use ui::automerge::{AutoCommit, ObjId, ObjType, ROOT};
-
     use super::*;
     use fs_protocol::files::FileNameV1;
-    use fs_protocol::tree::{
-        AUTHOR_KEY, HASH_KEY, KIND_KEY, MTIME_KEY, NAME_KEY, NODES_KEY, PARENT_KEY, RECORD_ID_KEY,
-        SIZE_KEY,
-    };
 
-    /// A node of the tree `doc` holds: `id` under `parent`, called `name`.
+    /// A node `id` under `parent`, called `name`, last written by Ada: a file
+    /// when it has content, else a folder.
     fn node(
-        doc: &mut AutoCommit,
-        nodes: &ObjId,
         id: &str,
         parent: &str,
         name: &str,
-        file: Option<(&str, u64)>,
-    ) {
-        let entry = doc.put_object(nodes, id, ObjType::Map).unwrap();
-        doc.put(&entry, PARENT_KEY, parent).unwrap();
-        doc.put(&entry, NAME_KEY, name.as_bytes().to_vec()).unwrap();
-        doc.put(&entry, RECORD_ID_KEY, uuid::Uuid::new_v4().to_string())
-            .unwrap();
-        doc.put(&entry, AUTHOR_KEY, "ada".to_owned()).unwrap();
-        doc.put(&entry, MTIME_KEY, 1_767_225_600_000_u64).unwrap();
-        if let Some((hash, size)) = file {
-            doc.put(&entry, KIND_KEY, "file").unwrap();
-            doc.put(&entry, HASH_KEY, hash).unwrap();
-            doc.put(&entry, SIZE_KEY, size).unwrap();
-        } else {
-            doc.put(&entry, KIND_KEY, "dir").unwrap();
-            doc.put(&entry, SIZE_KEY, 0_u64).unwrap();
-        }
+        file: Option<(String, u64)>,
+    ) -> (String, TreeEntry) {
+        let (kind, hash, size) = match file {
+            Some((hash, size)) => (FileNodeKind::File, Some(hash), size),
+            None => (FileNodeKind::Directory, None, 0),
+        };
+        let entry = TreeEntry {
+            parent: Some(parent.to_owned()),
+            name: FileNameV1(name.as_bytes().to_vec()),
+            kind,
+            hash,
+            size,
+            mtime: 1_767_225_600_000,
+            author: Some("ada".to_owned()),
+            record_id: None,
+        };
+        (id.to_owned(), entry)
     }
 
     /// A workspace's tree: `docs/` holding `plan.md` and `scan.pdf`, and
     /// `notes.txt` beside it, written by Ada.
     fn workspace() -> Tree {
-        let mut doc = AutoCommit::new();
-        let map = doc.put_object(&ROOT, NODES_KEY, ObjType::Map).unwrap();
-        node(&mut doc, &map, "docs", ROOT_ID, "docs", None);
-        let (plan, scan, notes) = ("ab".repeat(32), "cd".repeat(32), "ef".repeat(32));
-        node(
-            &mut doc,
-            &map,
-            "plan",
-            "docs",
-            "plan.md",
-            Some((plan.as_str(), 2048)),
-        );
-        node(
-            &mut doc,
-            &map,
-            "scan",
-            "docs",
-            "scan.pdf",
-            Some((scan.as_str(), 4096)),
-        );
-        node(
-            &mut doc,
-            &map,
-            "notes",
-            ROOT_ID,
-            "notes.txt",
-            Some((notes.as_str(), 12)),
-        );
-        <fs_protocol::tree::FilesTree as ui::tilo_resource::Resource>::read(&doc)
-            .expect("the tree reads")
+        Tree {
+            root_record_id: None,
+            nodes: [
+                node("docs", ROOT_ID, "docs", None),
+                node("plan", "docs", "plan.md", Some(("ab".repeat(32), 2048))),
+                node("scan", "docs", "scan.pdf", Some(("cd".repeat(32), 4096))),
+                node("notes", ROOT_ID, "notes.txt", Some(("ef".repeat(32), 12))),
+            ]
+            .into_iter()
+            .collect(),
+        }
     }
 
     #[test]
@@ -626,12 +614,10 @@ mod tests {
         assert_eq!(plan.kind, FileNodeKind::File);
         assert_eq!(plan.size, 2048);
         assert_eq!(plan.author.as_deref(), Some("ada"));
-        let details = TreeBrowser::details(plan);
-        assert!(details.starts_with("2 kB"), "{details}");
-        assert!(
-            details.contains(" · "),
-            "the size, then when it changed: {details}"
-        );
+        assert_eq!(TreeBrowser::size_of(plan).as_deref(), Some("2 kB"));
+        assert!(TreeBrowser::changed_of(plan).is_some(), "when it changed");
+        let docs = tree.node("docs").expect("the docs folder");
+        assert_eq!(TreeBrowser::size_of(docs), None, "a folder has no size");
         assert_eq!(
             TreeBrowser::name_of(&TreeEntry {
                 name: FileNameV1(b"stra\xc3\x9fe.txt".to_vec()),
