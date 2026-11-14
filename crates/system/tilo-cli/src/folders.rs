@@ -98,6 +98,9 @@ pub enum Switch {
 /// # Errors
 /// This computer is not logged in, or the change could not be kept or applied.
 pub fn run(cmd: FoldersCmd, json: bool) -> Result<ExitCode> {
+    if !crate::login::logged_in() {
+        bail!("{}", crate::login::NOT_LOGGED_IN);
+    }
     let dir = crate::login::device_dir()?;
     let home = tilo_paths::home().context("HOME is missing")?;
     match cmd {
