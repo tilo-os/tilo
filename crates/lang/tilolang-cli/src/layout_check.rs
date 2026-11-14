@@ -958,6 +958,12 @@ fn spawn_worker<'scope, 'env>(
 
 /// Wait for any other layout check on this machine to finish, and hold the machine until this one
 /// has: the lock lives as long as the returned guard.
+///
+/// What it protects is the machine's cores, not anything a check writes: a check fans out to as
+/// many workers as it has units of work (up to the machine's parallelism), and the tests are
+/// processes of their own that nextest starts together, so without the lock several of their pools
+/// would run at once and their sum is what the machine would have to run. The lock is per user and
+/// machine (`XDG_RUNTIME_DIR`), so every check in a container meets every other.
 fn machine_lock() -> Result<advisory_lock::FileLock, String> {
     use advisory_lock::{FileLock, LockMode, TryLockError};
     let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, Into::into);
@@ -973,15 +979,23 @@ fn machine_lock() -> Result<advisory_lock::FileLock, String> {
     }
 }
 
+/// The workers a run of `units` starts: one per unit of work, and never more than the machine lays
+/// out at once. What a check spends is its units — one scenario laid out every way — so a check
+/// that names one app starts a pool that app's scenarios fill rather than one per core; a worker
+/// takes the next unit when it is free, and a worker over the units would only wait on `next`
+/// holding a worker's stack.
+fn workers(units: usize) -> usize {
+    let at_once = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    at_once.min(units)
+}
+
 /// Run every unit of `units` at the same time, each on a worker of its own, and return what each
 /// found in the order given.
 fn run(apps: &[App], units: &[Unit], options: &Options) -> Result<Vec<Found>, String> {
     if units.is_empty() {
         return Ok(Vec::new());
     }
-    let workers = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .min(units.len());
+    let workers = workers(units.len());
     let taken: Vec<Mutex<Option<Result<Found, String>>>> =
         units.iter().map(|_| Mutex::new(None)).collect();
     // The costliest units first: a worker takes the next one when it is free, so the sweep ends
