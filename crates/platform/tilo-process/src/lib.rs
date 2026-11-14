@@ -178,32 +178,28 @@ mod tests {
     use super::*;
     use tilo_platform_caps::Feature as _;
 
-    tilo_test_env::scenario! {
-        fn a_process_has_what_this_targets_column_says;
-
-        phase availability_matches_the_table_for_this_target;
-        {
-            let column = if cfg!(target_family = "wasm") {
-                2
-            } else {
-                usize::from(cfg!(target_os = "macos"))
-            };
-            for feature in [Feature::ProcessId, Feature::Rendezvous] {
-                assert_eq!(availability(feature), feature.targets()[column]);
-            }
+    #[test]
+    fn availability_matches_the_table_for_this_target() {
+        let column = if cfg!(target_family = "wasm") {
+            2
+        } else {
+            usize::from(cfg!(target_os = "macos"))
+        };
+        for feature in [Feature::ProcessId, Feature::Rendezvous] {
+            assert_eq!(availability(feature), feature.targets()[column]);
         }
+    }
 
-        phase native_processes_have_an_id;
-        {
-            assert_eq!(id().is_some(), cfg!(not(target_family = "wasm")));
-        }
+    #[test]
+    fn native_processes_have_an_id() {
+        assert_eq!(id().is_some(), cfg!(not(target_family = "wasm")));
+    }
 
-        phase open_files_are_counted_only_where_the_system_lists_them;
-        {
-            let own = id().unwrap_or(0);
-            assert_eq!(open_file_count(own).is_some(), cfg!(target_os = "linux"));
-            assert_eq!(open_file_count(u32::MAX), None);
-            assert!(probe_process_table().is_ok());
-        }
+    #[test]
+    fn open_files_are_counted_only_where_the_system_lists_them() {
+        let own = id().unwrap_or(0);
+        assert_eq!(open_file_count(own).is_some(), cfg!(target_os = "linux"));
+        assert_eq!(open_file_count(u32::MAX), None);
+        assert!(probe_process_table().is_ok());
     }
 }
