@@ -12727,7 +12727,7 @@
           "event": {},
           "chat": {},
           "context": {},
-          "room": {},
+          "workspace": {},
           "emoji": {}
         },
         "required": [
