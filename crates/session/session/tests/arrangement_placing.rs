@@ -22,7 +22,7 @@
 
 use std::rc::Rc;
 use std::time::Duration;
-use tilo_session_core::arrangement;
+use tilo_session_core::layout;
 
 use tilo_actions::{ActionAddress, OperationKind, ResourceSpec, ResourceViewSpec};
 use tilo_compositor::OutputConfig;
@@ -150,7 +150,7 @@ fn placed(session: &mut Session, key: u64) -> arrangement::PlaceReading {
 
 /// The arrangement the session's layout holds now, as a shell reads it.
 fn arrangement(session: &Session) -> arrangement::Reading {
-    session.arrangement().borrow().reading()
+    session.layout().borrow().reading()
 }
 
 /// The place of the arrangement `key` names.
@@ -219,7 +219,7 @@ fn a_resource_a_view_and_a_point_make_an_arrangement_entry() {
 
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "place",
             serde_json::json!({
                 "workspace": workspace,
@@ -275,7 +275,7 @@ fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
     };
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "place",
             serde_json::json!({
                 "workspace": workspace,
@@ -301,7 +301,7 @@ fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
     // same way.
     assert!(
         session.resources().iter().any(|resource| {
-            resource.id.as_str() == "shell:arrangement"
+            resource.id.as_str() == "shell:layout"
                 && resource.actions.iter().any(|action| action.id == "place")
         }),
         "the arranging action is published"
@@ -400,7 +400,7 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
 
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "place-found",
             serde_json::json!({"text": "inbox", "x": 320, "y": 96})
                 .as_object()
@@ -447,7 +447,7 @@ fn text_that_finds_nothing_asks_the_kept_agent_instead_of_being_dropped() {
     let before = arrangement(&session).places.len();
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "place-found",
             serde_json::json!({"text": "nothing is called this", "x": 0, "y": 0})
                 .as_object()
@@ -505,7 +505,7 @@ fn a_workspace_with_no_row_yet_takes_a_place_and_the_row_it_stands_in() {
 
     let placed = session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "place",
             serde_json::json!({
                 "resource": "tl:so.tilo.lang.mail:inbox",
@@ -572,7 +572,7 @@ fn a_place_asked_to_float_stands_above_the_windows_at_its_corner() {
 
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "place",
             serde_json::json!({
                 "workspace": workspace,
@@ -632,7 +632,7 @@ fn the_system_open_brings_what_is_placed_forward() {
     };
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "place",
             serde_json::json!({
                 "workspace": workspace,
@@ -652,7 +652,7 @@ fn the_system_open_brings_what_is_placed_forward() {
 
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "open",
             serde_json::json!({ "resource": "tl:so.tilo.lang.mail:inbox" })
                 .as_object()
@@ -687,7 +687,7 @@ fn the_system_open_stands_a_new_place() {
 
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "open",
             serde_json::json!({ "resource": "tl:so.tilo.lang.mail:inbox" })
                 .as_object()
@@ -767,7 +767,7 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
     let open = |session: &mut Session, resource: &str, beside: &str| {
         session
             .invoke(
-                "shell:arrangement",
+                "shell:layout",
                 "open",
                 serde_json::json!({ "resource": resource, "beside": beside })
                     .as_object()
@@ -905,7 +905,7 @@ fn the_open_brings_a_place_of_the_same_root_forward_rather_than_standing_a_secon
     let open = |session: &mut Session, resource: &str| {
         session
             .invoke(
-                "shell:arrangement",
+                "shell:layout",
                 "open",
                 serde_json::json!({ "resource": resource })
                     .as_object()

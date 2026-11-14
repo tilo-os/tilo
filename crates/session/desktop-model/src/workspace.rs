@@ -14,10 +14,10 @@ use tilo_action_policy::{
 };
 
 use crate::app::AppId;
-use crate::arrangement::Arrangement;
 use crate::capability::Capability;
 use crate::ids::WorkspaceId;
 use crate::layout::Strip;
+use crate::layout::WorkspaceLayout;
 use crate::present::Present;
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::shared_surfaces::SharedSurfaces;
@@ -31,9 +31,9 @@ pub struct Workspace {
     pub strips: Vec<Strip>,
     /// Whether the workspace shows its strips or its canvas, and where each
     /// window group stands on the canvas: the same windows, arranged on a
-    /// 2D surface ([`crate::arrangement`]).
-    #[serde(default, skip_serializing_if = "Arrangement::is_default")]
-    pub arrangement: Arrangement,
+    /// 2D surface ([`crate::layout`]).
+    #[serde(default, skip_serializing_if = "WorkspaceLayout::is_default")]
+    pub layout: WorkspaceLayout,
     /// The workspace's members: its people with their roles, the agents
     /// admitted in it and its bots, each with the colour it wears everywhere.
     /// Placed from [`Workspace::policy`] and presence before a surface reads
@@ -107,7 +107,7 @@ struct StoredWorkspace {
     name: String,
     strips: Vec<Strip>,
     #[serde(default)]
-    arrangement: Arrangement,
+    layout: WorkspaceLayout,
     #[serde(skip_deserializing, default)]
     members: Vec<Member>,
     #[serde(default)]
@@ -142,7 +142,7 @@ impl From<StoredWorkspace> for Workspace {
             id: identity,
             name: stored.name,
             strips: stored.strips,
-            arrangement: stored.arrangement,
+            layout: stored.layout,
             members: stored.members,
             present: Vec::new(),
             policy,
@@ -945,7 +945,7 @@ impl Workspace {
             id,
             name: name.into(),
             strips: Vec::new(),
-            arrangement: Arrangement::default(),
+            layout: WorkspaceLayout::default(),
             members: Vec::new(),
             present: Vec::new(),
             policy: WorkspacePolicy::unowned(id.to_string(), &Grantee::role(Role::Owner)),
@@ -981,7 +981,7 @@ impl Workspace {
             id,
             name,
             strips: _,
-            arrangement: _,
+            layout: _,
             members,
             present,
             policy,
@@ -999,7 +999,7 @@ impl Workspace {
             id: *id,
             name: name.clone(),
             strips: Vec::new(),
-            arrangement: Arrangement::default(),
+            layout: WorkspaceLayout::default(),
             members: members.clone(),
             present: present.clone(),
             policy: policy.clone(),

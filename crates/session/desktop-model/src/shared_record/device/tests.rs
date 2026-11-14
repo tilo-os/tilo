@@ -3,8 +3,8 @@ use tilo_automerge::ApplyIncoming as _;
 use std::collections::BTreeSet;
 
 use super::*;
-use crate::arrangement::{FloatCorner, FloatPlace};
 use crate::ids::StripId;
+use crate::layout::{FloatCorner, FloatPlace};
 use crate::width::WindowWidth;
 
 const LAPTOP: &str = "aa";
@@ -696,7 +696,7 @@ fn float_of(doc: &AutoCommit, group: u64) -> Option<FloatPlace> {
         .tree
         .workspaces
         .iter()
-        .find_map(|workspace| workspace.arrangement.float_of(group))
+        .find_map(|workspace| workspace.layout.float_of(group))
 }
 
 /// The device's workspace with `doc` folded in as `kept`.
@@ -717,13 +717,13 @@ tilo_test_env::scenario! {
         // A window the laptop floats is written floating, and the pc hears it
         // wherever it shows that window.
         laptop.change(|w| {
-            assert!(w.arrangement.set_float(NOTES_GROUP, Some(float)));
+            assert!(w.layout.set_float(NOTES_GROUP, Some(float)));
         });
         assert_eq!(float_of(&laptop.doc, NOTES_GROUP), Some(float));
         pc.hear(&mut laptop);
         assert_eq!(float_of(&pc.doc, NOTES_GROUP), Some(float));
         assert_eq!(
-            pc.workspace.arrangement.float_of(NOTES_GROUP),
+            pc.workspace.layout.float_of(NOTES_GROUP),
             Some(float)
         );
 
@@ -731,11 +731,11 @@ tilo_test_env::scenario! {
         // back in its strip, as a float the record says nothing about is the
         // record's to drop.
         pc.change(|w| {
-            assert!(w.arrangement.set_float(NOTES_GROUP, None));
+            assert!(w.layout.set_float(NOTES_GROUP, None));
         });
         assert_eq!(float_of(&pc.doc, NOTES_GROUP), None);
         laptop.hear(&mut pc);
-        assert_eq!(laptop.workspace.arrangement.float_of(NOTES_GROUP), None);
+        assert_eq!(laptop.workspace.layout.float_of(NOTES_GROUP), None);
         assert_eq!(float_of(&laptop.doc, NOTES_GROUP), None);
     }
 
@@ -744,16 +744,16 @@ tilo_test_env::scenario! {
         let (mut laptop, mut pc) = two_devices();
         let float = FloatPlace::new(FloatCorner::BottomLeft, 8, 16, 320, 200);
         laptop.change(|w| {
-            w.arrangement.set_float(NOTES_GROUP, Some(float));
+            w.layout.set_float(NOTES_GROUP, Some(float));
         });
         pc.hear(&mut laptop);
 
         // The laptop floats a window it had in its strip: the fold its write
         // makes lays the float down, so the write records it, and the pc hears.
-        laptop.workspace.arrangement.set_float(NOTES_GROUP, None);
+        laptop.workspace.layout.set_float(NOTES_GROUP, None);
         let floated = FloatPlace::new(FloatCorner::TopLeft, 12, 6, 500, 400);
         laptop.change(|w| {
-            w.arrangement.set_float(EDITOR_GROUP, Some(floated));
+            w.layout.set_float(EDITOR_GROUP, Some(floated));
         });
         let writing = folded(
             &laptop,
@@ -765,25 +765,25 @@ tilo_test_env::scenario! {
                 writing: true,
             },
         );
-        assert_eq!(writing.arrangement.float_of(EDITOR_GROUP), Some(floated));
+        assert_eq!(writing.layout.float_of(EDITOR_GROUP), Some(floated));
         assert_eq!(float_of(&laptop.doc, EDITOR_GROUP), Some(floated));
         pc.hear(&mut laptop);
         assert_eq!(
-            pc.workspace.arrangement.float_of(EDITOR_GROUP),
+            pc.workspace.layout.float_of(EDITOR_GROUP),
             Some(floated)
         );
 
         // A viewer folds what the record says: a float it can not account for is
         // the record's to drop.
-        pc.workspace.arrangement.set_float(EDITOR_GROUP, None);
+        pc.workspace.layout.set_float(EDITOR_GROUP, None);
         let reading = folded(&pc, &laptop.doc, &Kept::NOTHING);
-        assert_eq!(reading.arrangement.float_of(EDITOR_GROUP), Some(floated));
+        assert_eq!(reading.layout.float_of(EDITOR_GROUP), Some(floated));
         laptop.doc.rollback();
         laptop.change(|w| {
-            w.arrangement.set_float(EDITOR_GROUP, None);
+            w.layout.set_float(EDITOR_GROUP, None);
         });
         let reading = folded(&pc, &laptop.doc, &Kept::NOTHING);
-        assert_eq!(reading.arrangement.float_of(EDITOR_GROUP), None);
+        assert_eq!(reading.layout.float_of(EDITOR_GROUP), None);
     }
 
     phase a_window_the_record_does_not_hold_yet_floats_where_the_device_showing_it_put_it;
@@ -802,7 +802,7 @@ tilo_test_env::scenario! {
         assert!(
             laptop
                 .workspace
-                .arrangement
+                .layout
                 .set_float(opened_group, Some(float))
         );
 
@@ -822,6 +822,6 @@ tilo_test_env::scenario! {
             .find(|group| group.id == opened_group)
             .expect("the window the laptop opened stays");
         assert!(kept.tabs.iter().any(|tab| tab.id == opened));
-        assert_eq!(shown.arrangement.float_of(opened_group), Some(float));
+        assert_eq!(shown.layout.float_of(opened_group), Some(float));
     }
 }

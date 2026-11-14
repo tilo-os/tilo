@@ -581,7 +581,7 @@ impl Registry {
 
     /// The offered view `named` (its id or name, optionally written `package:view`) that draws
     /// a resource of `ty`, when `ty` holds the session's arrangement (`origin:
-    /// session.arrangement`) and the view is declared by a package other than the one holding
+    /// session.layout`) and the view is declared by a package other than the one holding
     /// the type: a *desk style* (`shell.md` §6). A style is a view of the arrangement, and the
     /// arrangement's type belongs to `so.tilo.shell`, so a style in any installed package — the
     /// shipped four, a person's own, an agent's — is found here by the type its view takes,
@@ -655,7 +655,7 @@ impl Registry {
             .iter()
             .find(|t| t.id == info.id)
             .and_then(|t| t.origin.as_deref())
-            == Some("session.arrangement")
+            == Some("session.layout")
     }
 
     /// What a new resource of this type starts out with.

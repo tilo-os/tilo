@@ -1,14 +1,14 @@
-//! The person's arrangement as a shell reads it: the reading's types, the layout `reading_of`
+//! The person's layout as a shell reads it: the reading's types, the layout `reading_of`
 //! turns into one, and the catalogue of what a place shows ([`Catalog`]).
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::ResourceSpec;
-use tilo_desktop_model::{GroupId, Layout, Tab, TabId, TileContent};
+use tilo_desktop_model::{GroupId, Layout as Tree, Tab, TabId, TileContent};
 
 use super::{Names, Target};
-/// A workspace the person's layout shows, as their arrangement names it.
+/// A workspace the person's layout shows, as their layout names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrangementWorkspaceReading {
     pub key: String,
@@ -18,7 +18,7 @@ pub struct ArrangementWorkspaceReading {
     pub current: bool,
 }
 
-/// A row of the layout, as the person's arrangement names it.
+/// A row of the layout, as the person's layout names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrangementRowReading {
     pub key: String,
@@ -29,7 +29,7 @@ pub struct ArrangementRowReading {
     pub current: bool,
 }
 
-/// A strip of the layout, as the person's arrangement names it.
+/// A strip of the layout, as the person's layout names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -73,7 +73,7 @@ pub struct ArrangementStripReading {
     pub shell: String,
 }
 
-/// A place of the layout, as the person's arrangement names it.
+/// A place of the layout, as the person's layout names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrangementPlaceReading {
     pub key: String,
@@ -92,7 +92,7 @@ pub struct ArrangementPlaceReading {
     pub shell: String,
 }
 
-/// The person's arrangement as a shell's views read it, by key: every workspace, its rows, every
+/// The person's layout as a shell's views read it, by key: every workspace, its rows, every
 /// window group and every window, each as the layout has it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrangementReading {
@@ -148,8 +148,8 @@ pub struct ArrangementRefReading {
     pub kind: String,
 }
 
-/// The person's arrangement as a shell's views read it: what [`Arrangement::reading`] answers and
-/// [`Arrangement::resources`] publishes a resource of.
+/// The person's layout as a shell's views read it: what [`Layout::reading`] answers and
+/// [`Layout::resources`] publishes a resource of.
 pub type Reading = ArrangementReading;
 /// A workspace of [`Reading`].
 pub type WorkspaceReading = ArrangementWorkspaceReading;
@@ -240,15 +240,15 @@ fn collect_targets(resource: &ResourceSpec, out: &mut BTreeMap<String, Target>) 
     }
 }
 
-/// The shell this build's arrangement is: what every row, strip and place of a reading says it was
+/// The shell this build's layout is: what every row, strip and place of a reading says it was
 /// made by, so a person running a shell of their own reads what this one made and it reads theirs.
 const SHELL: &str = "so.tilo.shell.strips";
 
-/// The layout `tree` as the person's arrangement, by key: every workspace, its rows, every window
+/// The layout `tree` as the person's layout, by key: every workspace, its rows, every window
 /// group and every window, each as the layout has it, with what each window shows (`records`) and
 /// what the resource it shows is called (`catalog`).
 pub(super) fn reading_of(
-    tree: &Layout,
+    tree: &Tree,
     records: &BTreeMap<TabId, String>,
     catalog: &Catalog,
     names: &Names,
@@ -276,8 +276,8 @@ pub(super) fn reading_of(
                 current: at == front,
             });
             for group in &row.window_groups {
-                let canvas = workspace.arrangement.place_of(group.id);
-                let float = workspace.arrangement.float_of(group.id);
+                let canvas = workspace.layout.place_of(group.id);
+                let float = workspace.layout.float_of(group.id);
                 reading.strips.push(StripReading {
                     key: group.id.to_string(),
                     workspace: workspace.id().to_string(),

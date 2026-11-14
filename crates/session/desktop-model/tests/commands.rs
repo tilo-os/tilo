@@ -140,7 +140,7 @@ tilo_test_env::scenario! {
     // The place runs on from the strip's windows, and a place already given is kept.
     {
         let mut workspace = workspace_with_group();
-        let held = workspace.arrangement.place_of(20);
+        let held = workspace.layout.place_of(20);
         assert_eq!(held, None, "nothing has placed this window yet");
         apply_command(
             &mut workspace,
@@ -154,13 +154,13 @@ tilo_test_env::scenario! {
         .unwrap();
         let opened = workspace.strips[0].window_groups[1].id;
         let place = workspace
-            .arrangement
+            .layout
             .place_of(opened)
             .expect("the window the layout opened stands on the canvas");
         assert!(place.width > 0 && place.height > 0, "{place:?}");
         // The group that was there took one too, at the strip's first point.
         let first = workspace
-            .arrangement
+            .layout
             .place_of(20)
             .expect("the window that was there stands too");
         assert_eq!((first.x, first.y), (0, 0), "a strip starts at its corner");
@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
         );
 
         // A place someone gave is never moved: the layout only fills in what none stands on.
-        let given = tilo_desktop_model::arrangement::CanvasPlace::new(-400, 250, 640, 480);
+        let given = tilo_desktop_model::layout::CanvasPlace::new(-400, 250, 640, 480);
         apply_command(
             &mut workspace,
             &DesktopCommand::PlaceGroup {
@@ -181,7 +181,7 @@ tilo_test_env::scenario! {
             &mut create,
         )
         .unwrap();
-        assert_eq!(workspace.arrangement.place_of(opened), Some(given));
+        assert_eq!(workspace.layout.place_of(opened), Some(given));
         apply_command(
             &mut workspace,
             &DesktopCommand::OpenApp {
@@ -193,7 +193,7 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         assert_eq!(
-            workspace.arrangement.place_of(opened),
+            workspace.layout.place_of(opened),
             Some(given),
             "a window that stands where the person put it is not moved"
         );

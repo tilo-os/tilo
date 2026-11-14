@@ -21,16 +21,16 @@ use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::record::DynValue;
 
-/// A package whose root holds a kind its origin derives (`session.arrangement`).
+/// A package whose root holds a kind its origin derives (`session.layout`).
 const SHELL: &str = r#"app so.tilo.test.shell "Shell"
 
-type Layout (origin: session.arrangement) {
+type Layout (origin: session.layout) {
   clock: Text merge register
   workspace: Text merge register
   workspaces: Collection<Workspace>
 }
 
-type Workspace (origin: session.arrangement_workspace) {
+type Workspace (origin: session.layout_workspace) {
   key: Text merge register
   name: Text merge register
 }
@@ -102,7 +102,7 @@ fn layout_field(host: &Host, name: &str) -> String {
     );
     types
         .iter()
-        .find(|t| t.kind == "session.arrangement")
+        .find(|t| t.kind == "session.layout")
         .unwrap()
         .fields
         .iter()

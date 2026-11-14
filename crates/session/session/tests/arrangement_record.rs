@@ -19,7 +19,7 @@
 )]
 
 use std::time::Duration;
-use tilo_session_core::arrangement;
+use tilo_session_core::layout;
 
 use tilo_compositor::InputEvent;
 use tilo_session::{Options, Session};
@@ -79,7 +79,7 @@ fn undone(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
 
 /// The arrangement the session's layout holds now, as a shell reads it.
 fn arrangement(session: &Session) -> arrangement::Reading {
-    session.arrangement().borrow().reading()
+    session.layout().borrow().reading()
 }
 
 /// An id as the arrangement reads it out: its whole number.
@@ -222,8 +222,8 @@ fn the_persons_drag_is_in_their_record_attributed_and_undone() {
 }
 
 /// The action that moves `place` to the row `row` .
-fn move_to(place: u64, row: u64) -> arrangement::ArrangementAction {
-    arrangement::ArrangementAction::Move {
+fn move_to(place: u64, row: u64) -> arrangement::LayoutAction {
+    arrangement::LayoutAction::Move {
         place,
         row,
         before: None,
@@ -232,13 +232,13 @@ fn move_to(place: u64, row: u64) -> arrangement::ArrangementAction {
 }
 
 /// The action that floats `place` where the person let it go.
-fn float_at(place: u64, float: tilo_desktop_model::FloatPlace) -> arrangement::ArrangementAction {
-    arrangement::ArrangementAction::Float { place, float }
+fn float_at(place: u64, float: tilo_desktop_model::FloatPlace) -> arrangement::LayoutAction {
+    arrangement::LayoutAction::Float { place, float }
 }
 
 /// The action that snaps the floating `place` back where it stands.
-fn snap_back(place: u64) -> arrangement::ArrangementAction {
-    arrangement::ArrangementAction::Snap {
+fn snap_back(place: u64) -> arrangement::LayoutAction {
+    arrangement::LayoutAction::Snap {
         place,
         row: None,
         before: None,
@@ -658,7 +658,7 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
         "it did not move under the person's typing"
     );
     assert_eq!(
-        session.arrangement().borrow().waiting(),
+        session.layout().borrow().waiting(),
         1,
         "and it waits rather than dropping"
     );
@@ -672,7 +672,7 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
         })
         .unwrap();
     let deadline = tilo_test_env::hang_deadline();
-    while session.arrangement().borrow().waiting() > 0 {
+    while session.layout().borrow().waiting() > 0 {
         assert!(
             std::time::Instant::now() < deadline,
             "the waiting move never ran"
@@ -737,7 +737,7 @@ fn the_arrangement_reads_out_by_key_for_the_shells_views() {
     step(&mut session);
     let window = open_window(&mut session, "org.example.Notes");
     step(&mut session);
-    let reading = session.arrangement().borrow().reading();
+    let reading = session.layout().borrow().reading();
     let key = window.to_string();
     let place = reading
         .places
@@ -775,7 +775,7 @@ fn a_place_reads_out_named_by_its_window_and_its_app_never_an_id() {
     step(&mut session);
     let window = open_window_called(&mut session, "org.example.TextEditor", "Groceries");
     step(&mut session);
-    let reading = session.arrangement().borrow().reading();
+    let reading = session.layout().borrow().reading();
     let place = reading
         .places
         .iter()
@@ -793,7 +793,7 @@ fn a_place_reads_out_named_by_its_window_and_its_app_never_an_id() {
 
     let untitled = open_window_called(&mut session, "org.example.TextEditor", "");
     step(&mut session);
-    let reading = session.arrangement().borrow().reading();
+    let reading = session.layout().borrow().reading();
     let place = reading
         .places
         .iter()
@@ -809,7 +809,7 @@ fn a_place_reads_out_named_by_its_window_and_its_app_never_an_id() {
     // its slug.
     let slug = open_window_called(&mut session, "org.example.TextEditor", "text editor");
     step(&mut session);
-    let reading = session.arrangement().borrow().reading();
+    let reading = session.layout().borrow().reading();
     let place = reading
         .places
         .iter()
@@ -844,7 +844,7 @@ fn a_move_the_reading_shows_is_undone_to_where_it_was() {
         &serde_json::json!({"row": row_resource(second)}),
     );
     let key = window.to_string();
-    let reading = session.arrangement().borrow().reading();
+    let reading = session.layout().borrow().reading();
     let strip = reading
         .places
         .iter()
@@ -854,7 +854,7 @@ fn a_move_the_reading_shows_is_undone_to_where_it_was() {
     assert_eq!(strip.row, second.to_string(), "the reading holds the move");
 
     undone(&mut session, |session| {
-        let reading = session.arrangement().borrow().reading();
+        let reading = session.layout().borrow().reading();
         reading
             .places
             .iter()

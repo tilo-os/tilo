@@ -7,7 +7,7 @@
 //! shows; the compositor gets the buffer as a layer. Nothing here renders on its own.
 //!
 //! What the views read of the session comes in as the person's arrangement, whose origin is the
-//! session (`type Arrangement (origin: session.arrangement)`), which [`SessionOrigin`] writes,
+//! session (`type Arrangement (origin: session.layout)`), which [`SessionOrigin`] writes,
 //! and as the readings of the device's resources (`device.overlays`). The views call the
 //! session's actions as an app's (`use so.tilo.session as session`, then `session.overview()`),
 //! each an invocation on its door ([`PlaceInvoker`]). A shell view never reaches the session
@@ -42,10 +42,9 @@ use crate::{Placement, WidgetHost};
 /// What a shell reads of the session and the names the session publishes it by: every host's,
 /// so the shell's views and the session use the same names.
 pub use tilo_session_core::shell::{
-    ARRANGEMENT_RESOURCE, ArrangementPersonReading, ArrangementPlaceReading,
-    ArrangementQueryReading, ArrangementReading, ArrangementRefReading, ArrangementRowReading,
-    ArrangementStripReading, ArrangementWorkspaceReading, Ask, CHROME_RESOURCE, ORIGIN, OVERLAYS,
-    SHELL_APP, SHELL_RECORD,
+    Ask, CHROME_RESOURCE, LAYOUT_RESOURCE, LayoutPersonReading, LayoutPlaceReading,
+    LayoutQueryReading, LayoutReading, LayoutRefReading, LayoutRowReading, LayoutStripReading,
+    LayoutWorkspaceReading, ORIGIN, OVERLAYS, SHELL_APP, SHELL_RECORD,
 };
 
 mod host;
@@ -308,7 +307,7 @@ const EXCHANGES: usize = 8;
 pub struct SessionLink {
     /// The person's arrangement the session last published, and whether the origin has taken
     /// it in.
-    arrangement: RefCell<Option<ArrangementReading>>,
+    arrangement: RefCell<Option<LayoutReading>>,
     arrangement_fresh: Cell<bool>,
     /// The readings of the resources the places name, by their session id: each with its type
     /// as the shell's runtime names another app's (`<app>#<Type>`) and its JSON.
@@ -354,7 +353,7 @@ pub struct SessionLink {
 impl SessionLink {
     /// The session published `reading`, the person's arrangement as it stands now: the shell
     /// writes it on its next frame when it differs from the last. Whether it did.
-    pub fn publish_arrangement(&self, reading: ArrangementReading) -> bool {
+    pub fn publish_arrangement(&self, reading: LayoutReading) -> bool {
         if self.arrangement.borrow().as_ref() == Some(&reading) {
             return false;
         }
@@ -654,7 +653,7 @@ impl SessionOrigin {
     /// The writes that bring the shell's arrangement root from what was written to `reading`.
     fn arrangement_writes(
         &mut self,
-        reading: &ArrangementReading,
+        reading: &LayoutReading,
         root: &ResourceRef,
         types: &[OriginType],
     ) -> Vec<OriginWrite> {
@@ -706,7 +705,7 @@ impl SessionOrigin {
             "arrangement_query",
             query_fields
         );
-        let refs: Vec<ArrangementRefReading> = reading
+        let refs: Vec<LayoutRefReading> = reading
             .queries
             .iter()
             .flat_map(|query| query.matches.iter().cloned())
@@ -1869,7 +1868,7 @@ impl ShellPart {
                 arguments.insert("view".to_owned(), view.into());
             }
             self.origin.borrow().link.ask(Ask {
-                resource: ARRANGEMENT_RESOURCE.to_owned(),
+                resource: LAYOUT_RESOURCE.to_owned(),
                 action: "place".to_owned(),
                 arguments,
                 from: None,

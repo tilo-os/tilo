@@ -8,29 +8,29 @@
 use super::*;
 use tilo_session_core::door::Published;
 
-fn reading() -> ArrangementReading {
-    ArrangementReading {
+fn reading() -> LayoutReading {
+    LayoutReading {
         person: "Pat".to_owned(),
-        rows: vec![ArrangementRowReading {
+        rows: vec![LayoutRowReading {
             key: "r1".to_owned(),
             workspace: "1".to_owned(),
             name: "Main".to_owned(),
             current: true,
-            ..ArrangementRowReading::default()
+            ..LayoutRowReading::default()
         }],
         workspaces: vec![
-            ArrangementWorkspaceReading {
+            LayoutWorkspaceReading {
                 key: "1".to_owned(),
                 name: "Home".to_owned(),
                 current: true,
             },
-            ArrangementWorkspaceReading {
+            LayoutWorkspaceReading {
                 key: "2".to_owned(),
                 name: "Studio".to_owned(),
                 current: false,
             },
         ],
-        ..ArrangementReading::default()
+        ..LayoutReading::default()
     }
 }
 
@@ -343,13 +343,13 @@ fn the_bars_status_reads_the_devices_published_resources() {
 #[test]
 fn the_bars_faces_are_who_is_here_and_the_button_opens_the_roster() {
     let _settled = ui::motion::testing::settled();
-    let (mut part, link) = part_with(ArrangementReading {
+    let (mut part, link) = part_with(LayoutReading {
         people: vec![
-            ArrangementPersonReading {
+            LayoutPersonReading {
                 key: "mia".to_owned(),
                 name: "Mia Clayton".to_owned(),
             },
-            ArrangementPersonReading {
+            LayoutPersonReading {
                 key: "sam".to_owned(),
                 name: "Sam Okafor".to_owned(),
             },
@@ -383,7 +383,7 @@ fn the_bars_faces_are_who_is_here_and_the_button_opens_the_roster() {
 /// of its frame budget; each must land in one turn.
 #[test]
 fn each_change_is_one_turn() {
-    type Change = (&'static str, fn(&mut ArrangementReading, &SessionLink));
+    type Change = (&'static str, fn(&mut LayoutReading, &SessionLink));
     let (mut part, link) = part();
     for _ in 0..4 {
         part.prepare_frame();
@@ -718,24 +718,24 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
 
 /// The person's arrangement: one strip on the shell, its one place a foreign window's (no
 /// record), keyed `p1`.
-fn one_window_arrangement() -> ArrangementReading {
-    ArrangementReading {
+fn one_window_arrangement() -> LayoutReading {
+    LayoutReading {
         person: "Pat".to_owned(),
         people: Vec::new(),
         queries: Vec::new(),
-        workspaces: vec![ArrangementWorkspaceReading {
+        workspaces: vec![LayoutWorkspaceReading {
             key: "w1".to_owned(),
             name: "Home".to_owned(),
             current: true,
         }],
-        rows: vec![ArrangementRowReading {
+        rows: vec![LayoutRowReading {
             key: "r1".to_owned(),
             workspace: "w1".to_owned(),
             name: "Main".to_owned(),
             shell: String::new(),
             current: true,
         }],
-        strips: vec![ArrangementStripReading {
+        strips: vec![LayoutStripReading {
             key: "s1".to_owned(),
             workspace: "w1".to_owned(),
             row: "r1".to_owned(),
@@ -743,13 +743,13 @@ fn one_window_arrangement() -> ArrangementReading {
             placed: true,
             canvas_width: 600,
             canvas_height: 400,
-            ..ArrangementStripReading::default()
+            ..LayoutStripReading::default()
         }],
-        places: vec![ArrangementPlaceReading {
+        places: vec![LayoutPlaceReading {
             key: "p1".to_owned(),
             strip: "s1".to_owned(),
             shows: "Terminal".to_owned(),
-            ..ArrangementPlaceReading::default()
+            ..LayoutPlaceReading::default()
         }],
     }
 }
@@ -1291,7 +1291,7 @@ fn the_bars_people_stay_who_is_here_across_a_commit() {
     let mut now = reading();
     for count in [0_usize, 1, 4, 1] {
         now.people = (0..count)
-            .map(|at| ArrangementPersonReading {
+            .map(|at| LayoutPersonReading {
                 key: format!("p{at}"),
                 name: HERE[at].to_owned(),
             })

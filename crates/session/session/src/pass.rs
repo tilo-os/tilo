@@ -203,7 +203,7 @@ impl Session {
         self.follow_folder_import();
         // What the person is in the middle of, as the session may not move under it (shell.md §1).
         let tilo_compositor::Underway { gesture, typing } = self.compositor.underway();
-        let underway = tilo_session_core::arrangement::Busy { gesture, typing };
+        let underway = tilo_session_core::layout::Busy { gesture, typing };
         self.shared.underway.set(underway);
         // What each window shows, as its app holds the record: the note this pass's session, layout
         // and arrangement are read from.

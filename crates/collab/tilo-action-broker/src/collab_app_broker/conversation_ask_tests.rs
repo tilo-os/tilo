@@ -266,7 +266,7 @@ impl crate::services::HostStepServices for TurnArrangement {
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: tilo_actions::ActionAddress::new(
-                tilo_actions::remote::session_actions::ARRANGEMENT_RESOURCE,
+                tilo_actions::remote::session_actions::LAYOUT_RESOURCE,
                 tilo_actions::remote::session_actions::OPEN,
             ),
             resource_kind: "shell".into(),
@@ -328,7 +328,7 @@ fn arrangement_invoke(
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider: tilo_actions::remote::session_actions::PROVIDER.into(),
                     address: tilo_actions::ActionAddress::new(
-                        tilo_actions::remote::session_actions::ARRANGEMENT_RESOURCE,
+                        tilo_actions::remote::session_actions::LAYOUT_RESOURCE,
                         tilo_actions::remote::session_actions::OPEN,
                     ),
                 },
@@ -356,7 +356,7 @@ fn arrangement_grant(f: &Fixture, answer: tilo_action_policy::Answer) {
         &TreePath::workspace(workspace_id().to_string()),
         tilo_actions::remote::session_actions::PROVIDER,
         "shell",
-        tilo_actions::remote::session_actions::ARRANGEMENT_RESOURCE,
+        tilo_actions::remote::session_actions::LAYOUT_RESOURCE,
         None,
         tilo_actions::remote::session_actions::OPEN,
     );
@@ -564,7 +564,7 @@ fn arrangement_invoke_unserved(
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider: "so.tilo.nowhere".into(),
                     address: tilo_actions::ActionAddress::new(
-                        tilo_actions::remote::session_actions::ARRANGEMENT_RESOURCE,
+                        tilo_actions::remote::session_actions::LAYOUT_RESOURCE,
                         tilo_actions::remote::session_actions::OPEN,
                     ),
                 },

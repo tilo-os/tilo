@@ -2,7 +2,7 @@
 //! (`docs/designs/app-language/shell.md` §8.1, "Any action").
 //!
 //! The agent answering a person's turn arranges the screen as the REPL does: the
-//! arrangement's `place`, `place_at` and `open`, the windows and the notices. Those are
+//! layout's `place`, `place_at` and `open`, the windows and the notices. Those are
 //! published by the session on its own door, on the loop's thread, and this is the
 //! provider its broker answers them under, so one catalogue names them for every caller
 //! that has a broker: the MCP server, a launched agent, and a task's program alike.
@@ -41,11 +41,11 @@ pub const SHOW_INVITE: &str = "show-invite";
 /// (Settings' Devices) offers adding to it this way.
 pub const SHOW_PAIR_DEVICE: &str = "show-pair-device";
 
-/// The resource the person's arrangement is published as: the layout itself, which a place is put
+/// The resource the person's layout is published as: the layout itself, which a place is put
 /// on, brought forward and closed through, and which carries the system's `open`.
-pub const ARRANGEMENT_RESOURCE: &str = "shell:arrangement";
+pub const ARRANGEMENT_RESOURCE: &str = "shell:layout";
 
-/// The system's `open` on the arrangement: resource `resource` placed with its own default view
+/// The system's `open` on the layout: resource `resource` placed with its own default view
 /// beside the place showing `beside` (the conversation of the turn that asked) or beside the
 /// place in front when it names none (`docs/designs/app-language/one-app-model.md` §3, "`open(r)`
 /// places r with its default view, beside where it was asked, for every app"). A resource's own

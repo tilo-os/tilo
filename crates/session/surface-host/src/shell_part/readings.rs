@@ -12,9 +12,9 @@ use tilolang_tilo::records_service::{app_of, placed_records};
 use tilolang_tilo::runtime::{ResourceRef, Value};
 
 use super::{
-    ArrangementPersonReading, ArrangementPlaceReading, ArrangementQueryReading, ArrangementReading,
-    ArrangementRefReading, ArrangementRowReading, ArrangementStripReading,
-    ArrangementWorkspaceReading, Ask, SessionLink, SessionOrigin,
+    Ask, LayoutPersonReading, LayoutPlaceReading, LayoutQueryReading, LayoutReading,
+    LayoutRefReading, LayoutRowReading, LayoutStripReading, LayoutWorkspaceReading, SessionLink,
+    SessionOrigin,
 };
 
 impl SessionLink {
@@ -184,7 +184,7 @@ impl SessionLink {
     /// well. Whether any reading changed.
     pub fn follow_places(
         &self,
-        arrangement: &ArrangementReading,
+        arrangement: &LayoutReading,
         resources: &[ui::tilo_actions::ResourceSpec],
         read: impl Fn(&str) -> Option<serde_json::Value>,
     ) -> bool {
@@ -480,7 +480,7 @@ fn session_arguments(
 
 /// The fields of a canvas query, as it is written into the shell's record. Its refs are the
 /// `refs` collection's, each naming its query by key.
-pub(super) fn query_fields(q: &ArrangementQueryReading) -> Vec<(&'static str, Value)> {
+pub(super) fn query_fields(q: &LayoutQueryReading) -> Vec<(&'static str, Value)> {
     vec![
         ("key", Value::Text(q.key.clone())),
         ("text", Value::Text(q.text.clone())),
@@ -493,7 +493,7 @@ pub(super) fn query_fields(q: &ArrangementQueryReading) -> Vec<(&'static str, Va
 
 /// The fields of a resource a query found, as it is written into the shell's record: its query by
 /// key, its address, its title and its kind.
-pub(super) fn ref_fields(r: &ArrangementRefReading) -> Vec<(&'static str, Value)> {
+pub(super) fn ref_fields(r: &LayoutRefReading) -> Vec<(&'static str, Value)> {
     vec![
         ("key", Value::Text(r.key.clone())),
         ("query", Value::Text(query_of_ref_key(&r.key))),
@@ -514,7 +514,7 @@ fn text(s: &str) -> Value {
 }
 
 /// The fields of an arrangement workspace, as it is written into the shell's record.
-pub(super) fn workspace_fields(w: &ArrangementWorkspaceReading) -> Vec<(&'static str, Value)> {
+pub(super) fn workspace_fields(w: &LayoutWorkspaceReading) -> Vec<(&'static str, Value)> {
     vec![
         ("key", text(&w.key)),
         ("name", text(&w.name)),
@@ -523,7 +523,7 @@ pub(super) fn workspace_fields(w: &ArrangementWorkspaceReading) -> Vec<(&'static
 }
 
 /// The fields of a row, as it is written into the shell's record.
-pub(super) fn row_fields(r: &ArrangementRowReading) -> Vec<(&'static str, Value)> {
+pub(super) fn row_fields(r: &LayoutRowReading) -> Vec<(&'static str, Value)> {
     vec![
         ("key", text(&r.key)),
         ("workspace", text(&r.workspace)),
@@ -534,12 +534,12 @@ pub(super) fn row_fields(r: &ArrangementRowReading) -> Vec<(&'static str, Value)
 }
 
 /// The fields of someone here, as they are written into the shell's record.
-pub(super) fn person_fields(p: &ArrangementPersonReading) -> Vec<(&'static str, Value)> {
+pub(super) fn person_fields(p: &LayoutPersonReading) -> Vec<(&'static str, Value)> {
     vec![("key", text(&p.key)), ("name", text(&p.name))]
 }
 
 /// The fields of a strip, as it is written into the shell's record.
-pub(super) fn strip_fields(s: &ArrangementStripReading) -> Vec<(&'static str, Value)> {
+pub(super) fn strip_fields(s: &LayoutStripReading) -> Vec<(&'static str, Value)> {
     vec![
         ("key", text(&s.key)),
         ("workspace", text(&s.workspace)),
@@ -558,7 +558,7 @@ pub(super) fn strip_fields(s: &ArrangementStripReading) -> Vec<(&'static str, Va
 }
 
 /// The fields of a place, as it is written into the shell's record.
-pub(super) fn place_fields(p: &ArrangementPlaceReading) -> Vec<(&'static str, Value)> {
+pub(super) fn place_fields(p: &LayoutPlaceReading) -> Vec<(&'static str, Value)> {
     vec![
         ("key", text(&p.key)),
         ("strip", text(&p.strip)),

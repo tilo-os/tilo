@@ -101,7 +101,7 @@ fn root_of(session: &Session, app: &str) -> String {
 fn open_beside(session: &mut Session, resource: &str, beside: &str) {
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "open",
             serde_json::json!({ "resource": resource, "beside": beside })
                 .as_object()

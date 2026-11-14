@@ -312,3 +312,8 @@ reason = "a window and the instance it shows speak it over a live connection and
 file = "crates/runtime/runtime-collab/src/lib.rs"
 enum = "TaskRunUpdate"
 reason = "each update travels as JSON, named by its `kind`, on the authenticated task channel between a session and the agent app it hands the run to, and both ship together; the variant named a steering page nothing writes or reads now, so no bytes name it"
+
+[[break]]
+file = "crates/session/desktop-model/src/commands.rs"
+enum = "DesktopCommand"
+reason = "`SetArrangement` is renamed `SetLayout` at the same index: postcard writes no names, so the bytes read the same"

@@ -96,26 +96,26 @@ fn note(service: &mut RecordService, title: &str) -> String {
     note
 }
 
-/// The person's arrangement: one placed strip on the canvas, its one place showing `record` as
+/// The person's layout: one placed strip on the canvas, its one place showing `record` as
 /// the type `shows` through the view `shown_as` (`""`: the type's default view).
-fn arrangement(record: &str, shows: &str, shown_as: &str) -> ArrangementReading {
-    ArrangementReading {
+fn layout(record: &str, shows: &str, shown_as: &str) -> LayoutReading {
+    LayoutReading {
         person: "Pat".to_owned(),
         people: Vec::new(),
         queries: Vec::new(),
-        workspaces: vec![ArrangementWorkspaceReading {
+        workspaces: vec![LayoutWorkspaceReading {
             key: "w1".to_owned(),
             name: "Home".to_owned(),
             current: true,
         }],
-        rows: vec![ArrangementRowReading {
+        rows: vec![LayoutRowReading {
             key: "r1".to_owned(),
             workspace: "w1".to_owned(),
             name: "Main".to_owned(),
             shell: String::new(),
             current: true,
         }],
-        strips: vec![ArrangementStripReading {
+        strips: vec![LayoutStripReading {
             key: "s1".to_owned(),
             workspace: "w1".to_owned(),
             row: "r1".to_owned(),
@@ -123,31 +123,31 @@ fn arrangement(record: &str, shows: &str, shown_as: &str) -> ArrangementReading 
             placed: true,
             canvas_width: 1100,
             canvas_height: 1200,
-            ..ArrangementStripReading::default()
+            ..LayoutStripReading::default()
         }],
-        places: vec![ArrangementPlaceReading {
+        places: vec![LayoutPlaceReading {
             key: "p1".to_owned(),
             strip: "s1".to_owned(),
             shows: shows.to_owned(),
             shown_as: shown_as.to_owned(),
             record: record.to_owned(),
-            ..ArrangementPlaceReading::default()
+            ..LayoutPlaceReading::default()
         }],
     }
 }
 
 /// The notes app's editor, drawing the note `record`.
-fn note_arrangement(record: &str) -> ArrangementReading {
-    arrangement(record, "Note", "note_editor")
+fn note_arrangement(record: &str) -> LayoutReading {
+    layout(record, "Note", "note_editor")
 }
 
 /// The shell part showing `note` in a place, its reading published, drawn.
 fn showing(service: &RecordService, note: &str) -> (ShellPart, Rc<SessionLink>) {
     let (mut part, link) = part_with(reading_with_windows());
-    let arrangement = note_arrangement(note);
-    link.publish_arrangement(arrangement.clone());
+    let layout = note_arrangement(note);
+    link.publish_arrangement(layout.clone());
     assert!(
-        follow(&link, &arrangement, service),
+        follow(&link, &layout, service),
         "the place's record has a reading"
     );
     for _ in 0..4 {
@@ -156,15 +156,15 @@ fn showing(service: &RecordService, note: &str) -> (ShellPart, Rc<SessionLink>) 
     (part, link)
 }
 
-/// What the session hands the shell for `arrangement`'s places, as it does on its turn: the
+/// What the session hands the shell for `layout`'s places, as it does on its turn: the
 /// notes app's package, which the places show, and the readings of the records they name.
 /// Whether a reading changed.
-fn follow(link: &SessionLink, arrangement: &ArrangementReading, service: &RecordService) -> bool {
+fn follow(link: &SessionLink, layout: &LayoutReading, service: &RecordService) -> bool {
     link.publish_packages(BTreeMap::from([(
         NOTES_APP.to_owned(),
         service.module(NOTES_APP).expect("the notes app's module"),
     )]));
-    link.follow_places(arrangement, &service.resources(), |id| service.read(id))
+    link.follow_places(layout, &service.resources(), |id| service.read(id))
 }
 
 /// Run what the shell asked against the note's door, as the session's turn does.
@@ -182,7 +182,7 @@ fn serve(link: &SessionLink, service: &mut RecordService) {
     });
 }
 
-/// The shell's spaces canvas over the arrangement the part holds now: the view the person's
+/// The shell's spaces canvas over the layout the part holds now: the view the person's
 /// Spaces style draws, its places standing as their own views rather than in frames.
 fn canvas(part: &ShellPart) -> tilolang_tilo::runtime::ViewInstance {
     let host = part.instance.host().expect("the shell runs");
@@ -195,7 +195,7 @@ fn canvas(part: &ShellPart) -> tilolang_tilo::runtime::ViewInstance {
         .root_of_layer(
             &app,
             &RootView {
-                root: Some("Arrangement".to_owned()),
+                root: Some("Layout".to_owned()),
                 view: None,
             },
         )
@@ -246,7 +246,7 @@ fn a_place_composes_the_notes_editor_over_the_note_and_an_edit_there_changes_the
     let note = note(&mut service, "Groceries");
 
     let (mut part, link) = showing(&service, &note);
-    let arrangement = note_arrangement(&note);
+    let layout = note_arrangement(&note);
 
     let view = canvas(&part);
     let title_field = field_id(&meta, "Note", "title");
@@ -274,7 +274,7 @@ fn a_place_composes_the_notes_editor_over_the_note_and_an_edit_there_changes_the
     );
 
     // And the place draws the note as it is now.
-    assert!(follow(&link, &arrangement, &service));
+    assert!(follow(&link, &layout, &service));
     for _ in 0..4 {
         part.prepare_frame();
     }
@@ -345,15 +345,15 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     let (mut service, _) = notebook();
     let note = note(&mut service, "Groceries");
     let (mut part, link) = super::tests_support::part_as(reading_with_windows(), None);
-    let mut arrangement = note_arrangement(&note);
+    let mut layout = note_arrangement(&note);
     // The one place names no view: it falls back to its type's default view.
-    let placed = arrangement
+    let placed = layout
         .places
         .first_mut()
-        .expect("the arrangement places the note");
+        .expect("the layout places the note");
     placed.shown_as = String::new();
-    link.publish_arrangement(arrangement.clone());
-    assert!(follow(&link, &arrangement, &service));
+    link.publish_arrangement(layout.clone());
+    assert!(follow(&link, &layout, &service));
     for _ in 0..6 {
         part.prepare_frame();
     }
@@ -590,7 +590,7 @@ fn task_rows(
 /// keeps them for the rest of its run. Whether anything was published.
 fn session_turn(
     link: &SessionLink,
-    arrangement: &ArrangementReading,
+    layout: &LayoutReading,
     workspace: &mut Workspace,
 ) -> bool {
     let mut needed = std::mem::take(&mut workspace.needed);
@@ -598,7 +598,7 @@ fn session_turn(
     let mut apps = needed.clone();
     workspace.needed = needed;
     for ty in tilolang_tilo::records_service::placed_records(
-        arrangement.places.iter().map(|place| place.record.as_str()),
+        layout.places.iter().map(|place| place.record.as_str()),
         &workspace.service.resources(),
     )
     .values()
@@ -614,7 +614,7 @@ fn session_turn(
         }
     }
     let mut changed = link.publish_packages(packages);
-    changed |= link.follow_places(arrangement, &workspace.service.resources(), |id| {
+    changed |= link.follow_places(layout, &workspace.service.resources(), |id| {
         workspace.service.read(id)
     });
     for (id, ty) in link.take_wanted() {
@@ -634,20 +634,20 @@ fn session_turn(
 /// the place holds once its views read the readings the session published.
 fn chat_place(
     mut workspace: Workspace,
-) -> (ShellPart, Rc<SessionLink>, Workspace, ArrangementReading) {
-    let arrangement = arrangement(
+) -> (ShellPart, Rc<SessionLink>, Workspace, LayoutReading) {
+    let layout = layout(
         &format!("tl:{CHAT_APP}:{}", workspace.channel),
         "TextChannel",
         "channel",
     );
     let (mut part, link) = part_with(reading_with_windows());
-    link.publish_arrangement(arrangement.clone());
+    link.publish_arrangement(layout.clone());
     part.prepare_frame();
-    session_turn(&link, &arrangement, &mut workspace);
+    session_turn(&link, &layout, &mut workspace);
     part.prepare_frame();
-    session_turn(&link, &arrangement, &mut workspace);
+    session_turn(&link, &layout, &mut workspace);
     part.prepare_frame();
-    (part, link, workspace, arrangement)
+    (part, link, workspace, layout)
 }
 
 /// The row the chat place draws for the task made from its message, once the session served the
@@ -655,11 +655,11 @@ fn chat_place(
 fn row_once_loaded(
     part: &mut ShellPart,
     link: &SessionLink,
-    arrangement: &ArrangementReading,
+    layout: &LayoutReading,
     workspace: &mut Workspace,
 ) -> tilolang_tilo::runtime::UiNode {
     for _ in 0..8 {
-        session_turn(link, arrangement, workspace);
+        session_turn(link, layout, workspace);
         part.prepare_frame();
         let mut view = canvas(part);
         if let Some(row) = task_rows(&mut view, &workspace.task).pop() {
@@ -692,7 +692,7 @@ fn a_chat_place_waits_for_the_tasks_package_then_ticks_the_task_made_from_its_me
         reading.to_string().contains(&workspace.task.id_string()),
         "the message's reading carries what was made from it: {reading:#}"
     );
-    let (mut part, link, mut workspace, arrangement) = chat_place(workspace);
+    let (mut part, link, mut workspace, layout) = chat_place(workspace);
 
     assert!(
         !link.package_apps().iter().any(|app| app == TASKS_APP),
@@ -714,7 +714,7 @@ fn a_chat_place_waits_for_the_tasks_package_then_ticks_the_task_made_from_its_me
     // The session serves the ask: the tasks package is published as the place's own is, the
     // task's reading with it, and the message's reference to the task draws it through the
     // task's row view.
-    let row = row_once_loaded(&mut part, &link, &arrangement, &mut workspace);
+    let row = row_once_loaded(&mut part, &link, &layout, &mut workspace);
     assert!(
         workspace.needed.contains(TASKS_APP),
         "the tasks package was asked for"
@@ -745,7 +745,7 @@ fn a_chat_place_waits_for_the_tasks_package_then_ticks_the_task_made_from_its_me
         .unwrap();
     workspace.service.settle();
     for _ in 0..8 {
-        session_turn(&link, &arrangement, &mut workspace);
+        session_turn(&link, &layout, &mut workspace);
         part.prepare_frame();
     }
     let mut view = canvas(&part);

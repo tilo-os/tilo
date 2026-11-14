@@ -179,8 +179,8 @@ pub fn may_command(
     match command {
         DesktopCommand::RenameWorkspace { .. } => govern(standing, Governed::Name),
         // How the workspace lays out its windows is everyone's: as much
-        // the workspace's arrangement as its strips.
-        DesktopCommand::CreateStrip { .. } | DesktopCommand::SetArrangement { .. } => {
+        // the workspace's layout as its strips.
+        DesktopCommand::CreateStrip { .. } | DesktopCommand::SetLayout { .. } => {
             govern(standing, Governed::Strips)
         }
         DesktopCommand::RenameStrip { strip, .. }

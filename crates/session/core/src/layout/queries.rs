@@ -5,7 +5,7 @@ use tilo_actions::{ActionSpec, Noun, ParamType, ResourceSpec, ResourceType, Reso
 
 use super::published::{action, count_of, required, text};
 use super::{
-    ArrangementAction, ArrangementQueryReading, ArrangementRefReading, Item, QUERY_KIND,
+    LayoutAction, ArrangementQueryReading, ArrangementRefReading, Item, QUERY_KIND,
     SearchOutcome, Target, Words,
 };
 
@@ -82,7 +82,7 @@ pub(super) fn query_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
                 ParamType::Resource,
                 "The resource the row names",
             )],
-            move |args| ArrangementAction::Show {
+            move |args| LayoutAction::Show {
                 place: count_of(&shown),
                 resource: text(args, "resource"),
                 view: String::new(),
@@ -90,7 +90,7 @@ pub(super) fn query_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
         ),
         action(words, "retry", "Look for it again", Vec::new(), {
             let retried = key.to_owned();
-            move |_| ArrangementAction::RetryQuery {
+            move |_| LayoutAction::RetryQuery {
                 place: count_of(&retried),
             }
         }),

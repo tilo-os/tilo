@@ -345,7 +345,7 @@ fn a_live_canvas_query_places_a_channel_the_client_never_held() {
     // `place-found` action receives it.
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "place-found",
             serde_json::json!({"text": "youtube videos of compositor", "x": 80, "y": 60})
                 .as_object()
@@ -397,10 +397,8 @@ fn record_says(session: &Session, text: &str) -> bool {
 
 /// The query a place of `session` shows, by the place whose record is that query: the session's
 /// own arrangement reading, which the shell draws it from.
-fn query_shown(
-    session: &Session,
-) -> Option<tilo_session_core::arrangement::ArrangementQueryReading> {
-    let arrangement = session.arrangement().borrow();
+fn query_shown(session: &Session) -> Option<tilo_session_core::layout::LayoutQueryReading> {
+    let arrangement = session.layout().borrow();
     let reading = arrangement.reading();
     // The place a query stands in shows the query's own resource (`shell:query:<place>`).
     reading
@@ -414,7 +412,7 @@ fn query_shown(
 fn type_on_canvas(session: &mut Session, text: &str) {
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "place-found",
             serde_json::json!({"text": text, "x": 80, "y": 60})
                 .as_object()

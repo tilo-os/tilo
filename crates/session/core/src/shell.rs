@@ -6,9 +6,9 @@ use std::collections::BTreeMap;
 
 /// The origin the session's resources come from: the first part of their kinds.
 pub const ORIGIN: &str = "session";
-/// The resource the person's arrangement is published on: what a composed view's open becomes a
+/// The resource the person's layout is published on: what a composed view's open becomes a
 /// place on (`place`).
-pub use crate::arrangement::RESOURCE as ARRANGEMENT_RESOURCE;
+pub use crate::layout::RESOURCE as LAYOUT_RESOURCE;
 /// The resource the session's chrome actions are published on.
 pub use tilo_desktop_search::CHROME_RESOURCE;
 
@@ -24,11 +24,10 @@ pub const SHELL_RECORD: &str = "shell";
 /// The package id of the shell a device installs, and the one this build's fallback copy is.
 pub const SHELL_APP: &str = "so.tilo.shell";
 
-/// The arrangement's readings: what the person arranged.
-pub use crate::arrangement::{
-    ArrangementPersonReading, ArrangementPlaceReading, ArrangementQueryReading, ArrangementReading,
-    ArrangementRefReading, ArrangementRowReading, ArrangementStripReading,
-    ArrangementWorkspaceReading,
+/// The layout's readings: what the person arranged.
+pub use crate::layout::{
+    LayoutPersonReading, LayoutPlaceReading, LayoutQueryReading, LayoutReading, LayoutRefReading,
+    LayoutRowReading, LayoutStripReading, LayoutWorkspaceReading,
 };
 
 /// What a shell asked of the session: an invocation on the door, its arguments as any caller's

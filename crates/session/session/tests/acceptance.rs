@@ -3,7 +3,7 @@
 //! that changes how it looks and nothing of where it stands.
 //!
 //! Every step drives the production seams only: the session's own loop, its MCP server, the
-//! arrangement and session it publishes, and the tree the shell lays out for assistive technology
+//! layout and session it publishes, and the tree the shell lays out for assistive technology
 //! (never pixels, but where a step is about looks, the frame the compositor drew).
 //!
 //! A step whose behaviour is not built yet keeps its real test and is marked `#[ignore]` with the
@@ -147,7 +147,7 @@ fn step_2_the_repl_connects_and_lists_the_sessions_resources() {
     let (arranging, failed) = repl.call(
         &mut session,
         "tilo_ls",
-        &json!({"path": "session/arrangement"}),
+        &json!({"path": "session/layout"}),
     );
     assert!(!failed, "{arranging}");
     assert!(
@@ -382,7 +382,7 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
         .expect("the note unpins");
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "place",
             json!({"resource": note, "x": 80, "y": 60})
                 .as_object()
@@ -394,7 +394,7 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     // header) would satisfy a search for the word anywhere; what this step proves is that the bar
     // holds it, so it presses the bar's menu and reads the row it opens.
     let name = crate::common::window_name_of(&session, &note);
-    // The bar draws the window the arrangement names once the shell has read it: the place is
+    // The bar draws the window the layout names once the shell has read it: the place is
     // published as the session arranges it, and the next frame carries it to the bar.
     until(
         &mut session,

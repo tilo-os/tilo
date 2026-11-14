@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use serde_json::Value as Json;
 
-use super::{Arrangement, ArrangementAction, Asked, Busy, Door, locate};
+use super::{Layout, LayoutAction, Asked, Busy, LayoutActions, locate};
 
 /// The view a turn stands on the canvas through (canvas.md §3): the person's line, the agent's
 /// reply under it, its steps folded.
@@ -124,7 +124,7 @@ pub(super) enum TurnRoom {
 }
 
 /// An ask sent from the canvas whose turn does not stand yet: where it stands once Chat said
-/// which message it posted for it ([`Arrangement::stand_asked`]).
+/// which message it posted for it ([`Layout::stand_asked`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct AwaitedTurn {
     /// Who asked.
@@ -148,7 +148,7 @@ pub(super) struct AwaitedTurn {
 /// the resources the session publishes from then on: the turn, and the conversation it is in.
 pub type FindTurn<'a> = &'a dyn Fn(u64) -> Option<(Asked, Vec<tilo_actions::ResourceSpec>)>;
 
-impl Arrangement {
+impl Layout {
     /// Keep the ask the person sent from the canvas, numbered `sent`, until its turn is known:
     /// the turn then stands where they asked ([`Self::stand_asked`]).
     pub(super) fn await_turn(
@@ -227,7 +227,7 @@ impl Arrangement {
         // A step of the turn taken before the turn stood filled the room already.
         let room = room.filter(|_| !ask.room_taken);
         let surface = self.surface_at_strip(ask.strip)?;
-        let action = ArrangementAction::Place {
+        let action = LayoutAction::Place {
             workspace: surface.workspace,
             row: surface.row,
             strip: surface.strip,
@@ -379,14 +379,14 @@ impl Arrangement {
     }
 }
 
-impl Arrangement {
+impl Layout {
     /// The turn asked on the canvas that `action` would cover, by its [`turn_key`], while the
     /// turn stands (canvas.md §3): a `show` that re-points the turn's own place, or a `place` that
     /// joins the strip the turn stands in (`names_strip`: it named one). `None` for a step that
     /// covers no turn.
     pub(super) fn turn_covered_by(
         &self,
-        action: &ArrangementAction,
+        action: &LayoutAction,
         names_strip: bool,
     ) -> Option<String> {
         let turns: Vec<(String, u64)> = self
@@ -410,8 +410,8 @@ impl Arrangement {
             };
             turns.into_iter().find_map(|(key, turn)| {
                 let covered = match action {
-                    ArrangementAction::Show { place, .. } => *place == turn,
-                    ArrangementAction::Place { strip, .. } if names_strip => {
+                    LayoutAction::Show { place, .. } => *place == turn,
+                    LayoutAction::Place { strip, .. } if names_strip => {
                         strip_of(turn) == Some(*strip)
                     }
                     _ => false,
@@ -422,7 +422,7 @@ impl Arrangement {
     }
 }
 
-impl Door {
+impl LayoutActions {
     /// Keep a turn asked on the canvas its own place (canvas.md §3): a step that would show
     /// something else in the turn's place, or join it as a tab, stands what it shows where the
     /// turn's answer goes instead — the room of the rectangle the person dragged while it is
@@ -432,22 +432,22 @@ impl Door {
         &self,
         asked: &str,
         arguments: &serde_json::Map<String, Json>,
-        action: &ArrangementAction,
+        action: &LayoutAction,
     ) -> Result<bool, tilo_actions::DoorError> {
         let names_strip = arguments.get("strip").is_some_and(|strip| !strip.is_null());
-        let (ArrangementAction::Show { resource, view, .. }
-        | ArrangementAction::Place { resource, view, .. }) = action
+        let (LayoutAction::Show { resource, view, .. }
+        | LayoutAction::Place { resource, view, .. }) = action
         else {
             return Ok(false);
         };
         let covered = self
-            .arrangement
+            .layout
             .borrow()
             .turn_covered_by(action, names_strip);
         let Some(turn) = covered else {
             return Ok(false);
         };
-        self.arrangement
+        self.layout
             .borrow_mut()
             .open_place(asked, resource, view, &turn)
             .map_err(|why| tilo_actions::DoorError::Unavailable {

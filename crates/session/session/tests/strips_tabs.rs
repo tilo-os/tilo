@@ -3,7 +3,7 @@
 //! another window's bar, switches between them by click and by the keyboard, and drags one back
 //! out into a window of its own.
 //!
-//! Every one of them is an arranging action of the session's (`shell:arrangement`'s `move`, and
+//! Every one of them is a layout action of the session's (`shell:layout`'s `move`, and
 //! the shell's `split-right`), so a press, a key and an agent change the shell the same way,
 //! attributed and undoable. What stands on screen is read from what the shell lays out for
 //! assistive technology, never from pixels.
@@ -79,7 +79,7 @@ fn keep(session: &mut Session, name: &str) {
 /// The place names only its resource, not a workspace, a row, a strip or a place id: the session
 /// mints those against the surface in front. A device's ids reach past what a JSON number holds (a
 /// person's own key salts them), so they travel as the shell's own, never through the call
-/// (`place_here` in `shell_screen` places the same way, and the arrangement's own `place` reads
+/// (`place_here` in `shell_screen` places the same way, and the layout's own `place` reads
 /// them from the surface when the call names none).
 fn place(session: &mut Session, resource: &str) -> (u64, u64) {
     let before: Vec<String> = crate::common::places(session)
@@ -97,7 +97,7 @@ fn place(session: &mut Session, resource: &str) -> (u64, u64) {
     .unwrap()
     .clone();
     session
-        .invoke("shell:arrangement", "place", &arguments)
+        .invoke("shell:layout", "place", &arguments)
         .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
     let made = crate::common::wait_for(session, "the place is in the record", |session| {
         crate::common::places(session)
@@ -131,7 +131,7 @@ fn front_of(session: &Session, strip: u64) -> Option<u64> {
 /// The name the shell shows the place under `title` by, as the session resolved it: what the
 /// window's bar and its tab read.
 fn shown_as(session: &Session, title: &str) -> String {
-    crate::common::arrangement(session)
+    crate::common::layout(session)
         .places
         .into_iter()
         .find(|place| place.title == title)
@@ -142,7 +142,7 @@ fn shown_as(session: &Session, title: &str) -> String {
 }
 
 /// Tab the place `place` into the strip `strip`, as letting its window's bar go over that
-/// window's bar does: the arrangement's published `move` with the strip it becomes a tab of.
+/// window's bar does: the layout's published `move` with the strip it becomes a tab of.
 fn tab_into(session: &mut Session, place: u64, strip: u64) {
     let row = crate::common::strip(session, strip)
         .expect("the strip reads")

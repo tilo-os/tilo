@@ -18,7 +18,7 @@ use automerge::AutoCommit;
 use automerge::transaction::Transactable as _;
 use tilo_actions::ActionContext;
 use tilo_desktop_model::ownership::Authors;
-use tilo_desktop_model::{Layout, STATE_SCHEMA_VERSION, TabId, desktop_doc, shared_record};
+use tilo_desktop_model::{Layout as Tree, STATE_SCHEMA_VERSION, TabId, desktop_doc, shared_record};
 use ui::permissions::MemberId;
 use ui::state::UndoLog;
 
@@ -34,7 +34,7 @@ pub trait Store {
 
 /// `desktop` as the document keeps it: every window in the form that opens it again, and no window
 /// that opens again in no way.
-pub fn relaunchable(desktop: &Layout) -> Layout {
+pub fn relaunchable(desktop: &Tree) -> Tree {
     let mut desktop = desktop.clone();
     desktop.schema_version = STATE_SCHEMA_VERSION;
     for workspace in &mut desktop.workspaces {
@@ -109,9 +109,9 @@ impl LayoutDocument {
     }
 
     /// The layout the document holds.
-    pub fn tree(&self) -> Option<Layout> {
+    pub fn tree(&self) -> Option<Tree> {
         let doc = self.doc.borrow();
-        let mut tree = Layout::default();
+        let mut tree = Tree::default();
         desktop_doc::rebuild(&doc, &mut tree);
         desktop_doc::rebuild_view(&doc, &mut tree);
         (!tree.workspaces.is_empty()).then_some(tree)
@@ -125,7 +125,7 @@ impl LayoutDocument {
     /// changes of the layout.
     pub fn record(
         &self,
-        desktop: &Layout,
+        desktop: &Tree,
         time: i64,
         records: &[(TabId, String)],
         authors: Option<&Authors>,
@@ -137,7 +137,7 @@ impl LayoutDocument {
     /// next one starts from.
     pub fn record_now(
         &self,
-        desktop: &Layout,
+        desktop: &Tree,
         time: i64,
         records: &[(TabId, String)],
         authors: Option<&Authors>,
@@ -145,13 +145,13 @@ impl LayoutDocument {
         self.write(desktop, time, false, None, records, authors)
     }
 
-    /// Record `desktop` as it stands as `asked`'s arranging action: one change of the layout whose own
+    /// Record `desktop` as it stands as `asked`'s layout action: one change of the layout whose own
     /// entry says who asked and what they did, so the history names it and the step is the person's
     /// to take back. It is a change of the layout and never a frame of a drag: an action asked for is
     /// written as it is made. Whether the layout changed at all.
     pub fn record_action(
         &self,
-        desktop: &Layout,
+        desktop: &Tree,
         time: i64,
         asked: &ActionContext,
         records: &[(TabId, String)],
@@ -162,7 +162,7 @@ impl LayoutDocument {
     /// Record how this device shows `desktop` alone: a host whose workspace holds the layout itself
     /// keeps only the view here, so a reload opens the layout as the workspace has it. Whether
     /// anything was written.
-    pub fn record_view(&self, desktop: &Layout, time: i64) -> bool {
+    pub fn record_view(&self, desktop: &Tree, time: i64) -> bool {
         let mut doc = self.doc.borrow_mut();
         desktop_doc::seed_of_the_view(&mut doc, &relaunchable(desktop));
         if doc.pending_ops() == 0 {
@@ -176,7 +176,7 @@ impl LayoutDocument {
     /// Record `desktop`, and that the windows in `records` show the records they name.
     fn write(
         &self,
-        desktop: &Layout,
+        desktop: &Tree,
         time: i64,
         wait_out_a_drag: bool,
         asked: Option<&ActionContext>,
@@ -296,7 +296,7 @@ impl LayoutDocument {
     }
 
     /// The document itself, for a host that writes one change of the layout its own way — an
-    /// arranging command it received. Whoever holds it commits the change and keeps it.
+    /// layout command it received. Whoever holds it commits the change and keeps it.
     pub fn document_mut(&self) -> std::cell::RefMut<'_, AutoCommit> {
         self.doc.borrow_mut()
     }
@@ -312,7 +312,7 @@ impl LayoutDocument {
 /// Who made each strip and opened each window still on `desktop`: what a window or a strip no
 /// longer there did is no longer anyone's.
 #[must_use]
-pub fn authors_on(desktop: &Layout, authors: &Authors) -> Authors {
+pub fn authors_on(desktop: &Tree, authors: &Authors) -> Authors {
     let live: BTreeSet<u64> = desktop
         .workspaces
         .iter()

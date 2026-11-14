@@ -189,10 +189,10 @@ pub const KINDS: &[OriginKind] = &[
         ],
     },
     OriginKind {
-        name: "session.arrangement",
+        name: "session.layout",
         doc: "The person's own arrangement: what is open where on their desk (shell.md §2), as \
               the session keeps it in their own record. A shell's views read it; every change \
-              is one of the arranging actions on `shell:arrangement`, so nothing writes it \
+              is one of the arranging actions on `shell:layout`, so nothing writes it \
               directly.",
         derived: true,
         fields: &[
@@ -203,43 +203,43 @@ pub const KINDS: &[OriginKind] = &[
             ),
             field(
                 "people",
-                "Collection<session.arrangement_person>",
+                "Collection<session.layout_person>",
                 "The others here in the workspace in front.",
             ),
             field(
                 "workspaces",
-                "Collection<session.arrangement_workspace>",
+                "Collection<session.layout_workspace>",
                 "The workspaces the desk shows.",
             ),
             field(
                 "rows",
-                "Collection<session.arrangement_row>",
+                "Collection<session.layout_row>",
                 "The desk's rows, each a strip across a workspace.",
             ),
             field(
                 "strips",
-                "Collection<session.arrangement_strip>",
+                "Collection<session.layout_strip>",
                 "The strips, each a column of places.",
             ),
             field(
                 "places",
-                "Collection<session.arrangement_place>",
+                "Collection<session.layout_place>",
                 "Every place, showing a resource through a view; each names the strip it is in.",
             ),
             field(
                 "queries",
-                "Collection<session.arrangement_query>",
+                "Collection<session.layout_query>",
                 "The queries the canvas stands while an app answers them.",
             ),
             field(
                 "refs",
-                "Collection<session.arrangement_ref>",
+                "Collection<session.layout_ref>",
                 "The resources those queries found, each naming the query it is of.",
             ),
         ],
     },
     OriginKind {
-        name: "session.arrangement_workspace",
+        name: "session.layout_workspace",
         doc: "A workspace the person's desk shows.",
         derived: true,
         fields: &[
@@ -253,7 +253,7 @@ pub const KINDS: &[OriginKind] = &[
         ],
     },
     OriginKind {
-        name: "session.arrangement_person",
+        name: "session.layout_person",
         doc: "Someone else here in the workspace in front: a person or an agent.",
         derived: true,
         fields: &[
@@ -262,7 +262,7 @@ pub const KINDS: &[OriginKind] = &[
         ],
     },
     OriginKind {
-        name: "session.arrangement_row",
+        name: "session.layout_row",
         doc: "A row of the desk: a strip across a workspace's width, holding columns.",
         derived: true,
         fields: &[
@@ -282,7 +282,7 @@ pub const KINDS: &[OriginKind] = &[
         ],
     },
     OriginKind {
-        name: "session.arrangement_strip",
+        name: "session.layout_strip",
         doc: "A strip: a column of places, with a width, in a row of a workspace.",
         derived: true,
         fields: &[
@@ -323,7 +323,7 @@ pub const KINDS: &[OriginKind] = &[
         ],
     },
     OriginKind {
-        name: "session.arrangement_place",
+        name: "session.layout_place",
         doc: "A place: one window, showing a resource through a view.",
         derived: true,
         fields: &[
@@ -350,12 +350,12 @@ pub const KINDS: &[OriginKind] = &[
         ],
     },
     OriginKind {
-        name: "session.arrangement_query",
+        name: "session.layout_query",
         doc: "A query typed on the canvas: what the person looked for, in which app, and what \
               came of it (shell.md §8, \"Finding what to place\"). Placed like any resource, it \
               shows the search as it runs, the rows it found and what a press on a row places, \
               and why it found nothing or failed. Its `matches` name resources the same way a \
-              place's record does (`session.arrangement_ref`).",
+              place's record does (`session.layout_ref`).",
         derived: true,
         fields: &[
             field("key", "Text", "Its id, as the record names it."),
@@ -379,7 +379,7 @@ pub const KINDS: &[OriginKind] = &[
         ],
     },
     OriginKind {
-        name: "session.arrangement_ref",
+        name: "session.layout_ref",
         doc: "A resource a query found: the same reference a place holds, so a row of matches \
               names what a place shows by the same three words.",
         derived: true,

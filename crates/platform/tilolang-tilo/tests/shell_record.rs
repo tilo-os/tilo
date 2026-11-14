@@ -869,7 +869,7 @@ fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_kee
     scenario(&r, "so.tilo.lang.notes", "a week of notes");
     r.commit();
     let meta = r.host.package(APP).unwrap().meta;
-    // The arrangement is the session's (`origin: session.arrangement`): the scenario writes it
+    // The arrangement is the session's (`origin: session.layout`): the scenario writes it
     // in this host, as the session's reading would, and nothing of it goes to the workspace.
     let arrangement = scenario(&r, APP, "a canvas of spaces");
     let shell = meta

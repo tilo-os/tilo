@@ -130,7 +130,7 @@ fn place(session: &mut Session, resource: &str, x: i64, y: i64, width: i64, heig
     .unwrap()
     .clone();
     session
-        .invoke("shell:arrangement", "place", &arguments)
+        .invoke("shell:layout", "place", &arguments)
         .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
     place.to_string()
 }
@@ -476,7 +476,7 @@ fn opening_beside_a_conversation_opens_it_without_shrinking_the_conversation() {
     // Mail opened beside the conversation, as an agent does for "show me my mails".
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "open",
             json!({ "resource": inbox, "beside": notes[0] })
                 .as_object()

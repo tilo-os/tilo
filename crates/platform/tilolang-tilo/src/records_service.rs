@@ -1214,7 +1214,7 @@ impl Service for RecordService {
     fn connectors(&self) -> Vec<tilo_service::Connector> {
         // A package's types that hold an outside service's resources: the origins the session
         // runs a connector process for, for the app whose manifest the package is
-        // (`crate::origin::origin_types`). The session's own kinds (`session.arrangement`, the types
+        // (`crate::origin::origin_types`). The session's own kinds (`session.layout`, the types
         // the device derives) are written by the session's process, and no connector serves
         // them: only an origin a crate registered a connector's client for gets one.
         let mut connectors: Vec<tilo_service::Connector> = Vec::new();

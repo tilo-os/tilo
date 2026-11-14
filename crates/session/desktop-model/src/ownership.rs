@@ -339,9 +339,9 @@ fn moved_on_canvas(
         .iter()
         .flat_map(|strip| &strip.window_groups)
         .filter(|group| {
-            before.arrangement.place_of(group.id).is_some_and(|was_at| {
+            before.layout.place_of(group.id).is_some_and(|was_at| {
                 after
-                    .and_then(|w| w.arrangement.place_of(group.id))
+                    .and_then(|w| w.layout.place_of(group.id))
                     .is_some_and(|now_at| now_at != was_at)
             })
         })

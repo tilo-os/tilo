@@ -1314,7 +1314,7 @@ impl Layouts {
         before: &Layout,
         tree: &Layout,
         asked: &str,
-        action: &tilo_session_core::arrangement::ArrangementAction,
+        action: &tilo_session_core::layout::LayoutAction,
         shows: &[(tilo_desktop_model::TabId, String)],
     ) {
         self.placed.borrow_mut().extend(shows.iter().cloned());
@@ -1324,7 +1324,7 @@ impl Layouts {
         let Some(person) = self.person.borrow().clone() else {
             return;
         };
-        let message = tilo_session_core::arrangement::step_context(asked, action)
+        let message = tilo_session_core::layout::step_context(asked, action)
             .change_message()
             .unwrap_or_else(|| shared_record::change_message(Some(asked)));
         // What the action did to the person's own view of the workspace (a width, a window made
@@ -2151,9 +2151,9 @@ impl Steps {
     }
 }
 
-impl tilo_session_core::arrangement::Layouts for Steps {
-    fn step(&self, person: &str, redo: bool) -> tilo_session_core::arrangement::Stepped {
-        use tilo_session_core::arrangement::Stepped;
+impl tilo_session_core::layout::Layouts for Steps {
+    fn step(&self, person: &str, redo: bool) -> tilo_session_core::layout::Stepped {
+        use tilo_session_core::layout::Stepped;
         let Some(workspace_id) = self.workspace_id() else {
             return Stepped::None;
         };
@@ -2173,7 +2173,7 @@ impl tilo_session_core::arrangement::Layouts for Steps {
         before: &Layout,
         tree: &Layout,
         asked: &str,
-        action: &tilo_session_core::arrangement::ArrangementAction,
+        action: &tilo_session_core::layout::LayoutAction,
         shows: &[(tilo_desktop_model::TabId, String)],
     ) {
         self.layouts.performed(before, tree, asked, action, shows);

@@ -221,14 +221,14 @@ pub enum DesktopCommand {
     /// strips. The windows and their strips stay as they are; only how the
     /// workspace lays them out changes. Appended last: existing encodings
     /// are unchanged.
-    SetArrangement {
+    SetLayout {
         canvas: bool,
     },
     /// Stand window group `group` at `place` on the workspace's canvas.
     /// Appended last: existing encodings are unchanged.
     PlaceGroup {
         group: u64,
-        place: crate::arrangement::CanvasPlace,
+        place: crate::layout::CanvasPlace,
     },
     /// Put the window closed most recently in this workspace back where it
     /// was, and show it: the close [`Self::CloseTab`] undid. `strip` names
@@ -247,7 +247,7 @@ pub enum DesktopCommand {
     /// where it was. Appended last: existing encodings are unchanged.
     FloatGroup {
         group: u64,
-        float: Option<crate::arrangement::FloatPlace>,
+        float: Option<crate::layout::FloatPlace>,
     },
 }
 
@@ -876,23 +876,19 @@ pub fn apply_command(
                 "a namespace claim changes the workspace's registry, not another workspace".into(),
             );
         }
-        DesktopCommand::SetArrangement { canvas } => {
-            workspace.arrangement.kind = if *canvas {
-                crate::arrangement::ArrangementKind::Canvas
+        DesktopCommand::SetLayout { canvas } => {
+            workspace.layout.kind = if *canvas {
+                crate::layout::LayoutKind::Canvas
             } else {
-                crate::arrangement::ArrangementKind::Strips
+                crate::layout::LayoutKind::Strips
             };
         }
         DesktopCommand::PlaceGroup { group, place } => place_group(workspace, *group, *place)?,
         DesktopCommand::FloatGroup { group, float } => float_group(workspace, *group, *float)?,
     }
     workspace.forget_gone_places();
-    let Workspace {
-        strips,
-        arrangement,
-        ..
-    } = workspace;
-    arrangement.place_missing(strips);
+    let Workspace { strips, layout, .. } = workspace;
+    layout.place_missing(strips);
     Ok(())
 }
 /// Open `app` into the workspace as `placement` says, under ids `mint` gives
@@ -930,7 +926,7 @@ pub const MAX_CANVAS_SIDE: u32 = 16_384;
 fn place_group(
     workspace: &mut Workspace,
     group: u64,
-    place: crate::arrangement::CanvasPlace,
+    place: crate::layout::CanvasPlace,
 ) -> Result<(), String> {
     if !workspace
         .strips
@@ -948,7 +944,7 @@ fn place_group(
         return Err("a window on the canvas needs a size it can be shown at".into());
     }
     // A window's place is no smaller than a window, whatever size was asked for.
-    workspace.arrangement.places.insert(group, place.window());
+    workspace.layout.places.insert(group, place.window());
     Ok(())
 }
 
@@ -956,7 +952,7 @@ fn place_group(
 fn float_group(
     workspace: &mut Workspace,
     group: u64,
-    float: Option<crate::arrangement::FloatPlace>,
+    float: Option<crate::layout::FloatPlace>,
 ) -> Result<(), String> {
     if !workspace
         .strips
@@ -976,8 +972,8 @@ fn float_group(
     {
         return Err("a floating window needs a size and an offset it can be shown at".into());
     }
-    // Set through the arrangement, which raises it to a window's least size.
-    workspace.arrangement.set_float(group, float);
+    // Set through the layout, which raises it to a window's least size.
+    workspace.layout.set_float(group, float);
     Ok(())
 }
 
@@ -1114,12 +1110,8 @@ pub fn move_tab_to_workspace(
     // The window's canvas place went with the strip it left, and the workspace it lands in
     // draws its windows by their places: it takes one there as any other window does.
     if let Some(destination) = tree.workspaces.iter_mut().find(|held| held.id() == to) {
-        let Workspace {
-            strips,
-            arrangement,
-            ..
-        } = destination;
-        arrangement.place_missing(strips);
+        let Workspace { strips, layout, .. } = destination;
+        layout.place_missing(strips);
     }
     Ok(())
 }

@@ -657,7 +657,7 @@ fn reads_only(invocation: &Invocation) -> bool {
 }
 
 /// The door's call for `invocation` of the platform's package `meta`: its declared verb on the
-/// resource the session publishes it as (`shell:arrangement`), with every other argument as the
+/// resource the session publishes it as (`shell:layout`), with every other argument as the
 /// published action takes it, by name, a resource by the id `published_id` gives it. The call
 /// says it is the session's (`published`), which the door sends to the session's own provider. A
 /// loose action (the session's `place`) goes to the resource `addresses` says it is published on.

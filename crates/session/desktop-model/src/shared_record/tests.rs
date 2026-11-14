@@ -1,7 +1,7 @@
 use tilo_automerge::ApplyIncoming as _;
 
 use super::*;
-use crate::arrangement::FloatCorner;
+use crate::layout::FloatCorner;
 use crate::layout::TileContent;
 
 fn tab(id: u64) -> Tab {
@@ -361,9 +361,9 @@ fn group_of(id: u64, tab_id: u64) -> WindowGroup {
 }
 
 fn on_canvas(desktop: &mut SharedDesktop, places: &[(u64, CanvasPlace)]) {
-    let arrangement = &mut desktop.tree.workspaces[0].arrangement;
-    arrangement.kind = ArrangementKind::Canvas;
-    arrangement.places.extend(places.iter().copied());
+    let layout = &mut desktop.tree.workspaces[0].layout;
+    layout.kind = LayoutKind::Canvas;
+    layout.places.extend(places.iter().copied());
 }
 
 tilo_test_env::scenario! {
@@ -377,13 +377,13 @@ tilo_test_env::scenario! {
         assert!(write(&mut doc, &written).unwrap());
         doc.commit();
         let back = read(&doc, None).unwrap();
-        let arrangement = &back.tree.workspaces[0].arrangement;
-        assert_eq!(arrangement.kind, ArrangementKind::Canvas);
+        let layout = &back.tree.workspaces[0].layout;
+        assert_eq!(layout.kind, LayoutKind::Canvas);
         assert_eq!(
-            arrangement.place_of(100),
+            layout.place_of(100),
             Some(CanvasPlace::new(-40, 12, 640, 480))
         );
-        assert_eq!(arrangement.place_of(200), None, "never placed");
+        assert_eq!(layout.place_of(200), None, "never placed");
         assert!(
             !write(&mut doc, &written).unwrap(),
             "unchanged writes nothing"
@@ -399,10 +399,10 @@ tilo_test_env::scenario! {
         assert!(write(&mut doc, &written).unwrap());
         doc.commit();
         let back = read(&doc, None).unwrap();
-        let arrangement = &back.tree.workspaces[0].arrangement;
-        assert_eq!(arrangement.kind, ArrangementKind::Strips);
-        assert_eq!(arrangement.float_of(100), Some(float));
-        assert_eq!(arrangement.float_of(200), None, "never floated");
+        let layout = &back.tree.workspaces[0].layout;
+        assert_eq!(layout.kind, LayoutKind::Strips);
+        assert_eq!(layout.float_of(100), Some(float));
+        assert_eq!(layout.float_of(200), None, "never floated");
         assert!(
             !write(&mut doc, &written).unwrap(),
             "unchanged writes nothing"
@@ -426,10 +426,10 @@ tilo_test_env::scenario! {
         theirs.commit();
         merge(&mut mine, &mut theirs);
         let merged = read(&mine, None).unwrap();
-        let arrangement = &merged.tree.workspaces[0].arrangement;
-        assert_eq!(arrangement.float_of(100), Some(float.at(8, 8)));
+        let layout = &merged.tree.workspaces[0].layout;
+        assert_eq!(layout.float_of(100), Some(float.at(8, 8)));
         assert_eq!(
-            arrangement.float_of(200),
+            layout.float_of(200),
             Some(FloatPlace::new(FloatCorner::TopLeft, 2, 3, 200, 100))
         );
     }
@@ -462,9 +462,9 @@ tilo_test_env::scenario! {
         ben.commit();
         merge(&mut ada, &mut ben);
         let back = read(&ada, None).unwrap();
-        let arrangement = &back.tree.workspaces[0].arrangement;
-        assert_eq!(arrangement.place_of(100).map(|p| p.y), Some(900));
-        assert_eq!(arrangement.place_of(200).map(|p| p.y), Some(900));
+        let layout = &back.tree.workspaces[0].layout;
+        assert_eq!(layout.place_of(100).map(|p| p.y), Some(900));
+        assert_eq!(layout.place_of(200).map(|p| p.y), Some(900));
     }
 
     phase moving_someone_elses_window_on_the_canvas_is_moving_it;
@@ -492,7 +492,7 @@ tilo_test_env::scenario! {
     // line on everyone's layout. Read back, each is a window again, at least a window's least size, and
     // the next write keeps that.
     {
-        use crate::arrangement::{WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH};
+        use crate::layout::{WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH};
         let mut doc = AutoCommit::new();
         let mut written = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
         // Written as an older build or an agent's command left them, past every constructor.
@@ -526,14 +526,14 @@ tilo_test_env::scenario! {
         doc.commit();
 
         let back = read(&doc, None).unwrap();
-        let arrangement = &back.tree.workspaces[0].arrangement;
-        let float = arrangement.float_of(100).unwrap();
+        let layout = &back.tree.workspaces[0].layout;
+        let float = layout.float_of(100).unwrap();
         assert_eq!(
             (float.width, float.height),
             (WINDOW_MIN_WIDTH, 712),
             "a float two pixels wide reads back a window wide"
         );
-        let place = arrangement.place_of(200).unwrap();
+        let place = layout.place_of(200).unwrap();
         assert_eq!(
             (place.x, place.y, place.width, place.height),
             (32, 0, WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT),
@@ -545,7 +545,7 @@ tilo_test_env::scenario! {
         doc.commit();
         let again = read(&doc, None).unwrap();
         assert_eq!(
-            again.tree.workspaces[0].arrangement.float_of(100),
+            again.tree.workspaces[0].layout.float_of(100),
             Some(float)
         );
     }
@@ -553,7 +553,7 @@ tilo_test_env::scenario! {
 
 fn floating(desktop: &mut SharedDesktop, floats: &[(u64, FloatPlace)]) {
     desktop.tree.workspaces[0]
-        .arrangement
+        .layout
         .floats
         .extend(floats.iter().copied());
 }

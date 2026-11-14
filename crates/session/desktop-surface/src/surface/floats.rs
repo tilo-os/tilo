@@ -1,7 +1,7 @@
 //! Windows floating above the shell: where the workspace's record has them,
 //! and what a drag that lifts or snaps one reports.
 //!
-//! The place itself lives in the workspace's arrangement (`float`, next to
+//! The place itself lives in the workspace's layout (`float`, next to
 //! the window's place in its strip), so every member sees the same window
 //! floating in the same spot. The work area a float is anchored to is this
 //! device's, which is why a place keeps its corner and distances rather than
@@ -68,7 +68,7 @@ impl super::DesktopHandle {
 
 #[cfg(any(test, debug_assertions))]
 impl super::DesktopHandle {
-    /// Make the floats the shell asked for as the session's arrangement makes them: the workspace's
+    /// Make the floats the shell asked for as the session's layout makes them: the workspace's
     /// record holds each window where it was asked to float.
     pub fn arrange_asked_floats(&self) {
         let asked = self.take_asked_floats();
@@ -76,7 +76,7 @@ impl super::DesktopHandle {
         for asked in asked {
             for workspace in &mut shared.tree.workspaces {
                 if workspace.tabs().any(|tab| tab.id == asked.tab) {
-                    workspace.arrangement.set_float(asked.group, asked.float);
+                    workspace.layout.set_float(asked.group, asked.float);
                 }
             }
         }
@@ -96,9 +96,7 @@ impl Shared {
             .find(|asked| asked.group == group)
         {
             Some(asked) => asked.float,
-            None => workspace_with(&self.tree, strip)?
-                .arrangement
-                .float_of(group),
+            None => workspace_with(&self.tree, strip)?.layout.float_of(group),
         }
     }
 }
@@ -240,7 +238,7 @@ pub(super) fn dock(shared: &mut Shared, strip: StripId, row: &GroupRow, group: u
         .iter_mut()
         .find(|workspace| workspace.strips.iter().any(|held| held.id == strip))
     {
-        workspace.arrangement.set_float(group, Some(place));
+        workspace.layout.set_float(group, Some(place));
     }
     asked
 }

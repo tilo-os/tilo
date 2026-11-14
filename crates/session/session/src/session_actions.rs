@@ -229,7 +229,7 @@ mod tests {
             .clone();
         assert_eq!(
             placing.address.resource,
-            tilo_session_core::arrangement::RESOURCE,
+            tilo_session_core::layout::RESOURCE,
             "offered on the arrangement the session publishes"
         );
         assert_eq!(

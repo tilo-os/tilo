@@ -416,7 +416,7 @@ fn covering_rows(group: &WindowGroup, fullscreen: bool) -> Vec<Row> {
 fn floating(tree: &Layout, group: GroupId) -> bool {
     tree.workspaces
         .iter()
-        .any(|workspace| workspace.arrangement.float_of(group).is_some())
+        .any(|workspace| workspace.layout.float_of(group).is_some())
 }
 
 /// What lifting the window offers: over the shell, or back in its strip.

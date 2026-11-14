@@ -12,10 +12,10 @@
 //! presets_v1: {key → json},
 //! effect_receipts_v1: {invocation → json},
 //! automations_v1: {shortcut id → json},
-//! arrangement_v1?: "canvas", canvas_v1?: {group id → json place},
+//! kind_v1?: "canvas", canvas_v1?: {group id → json place},
 //! floats_v1?: {group id → json float}, local_v1?: json,
 //! strips: [ { id, name, window_groups: [ { id, tabs: [ { id, title, app_title?, tile_json } ] } ] } ] } ] }`.
-//! Canvas places and floats are the workspace's arrangement, `local_v1` is what only
+//! Canvas places and floats are the workspace's layout, `local_v1` is what only
 //! this device reads, and `view_v1` is how this device shows the layout; none reaches
 //! another device, all are here because it is the one store of the layout.
 use serde::{Deserialize, Serialize};
@@ -29,8 +29,8 @@ use automerge::{
 use tilo_action_policy::{Grant, Grantee, Preset, Role, WorkspacePolicy};
 
 use crate::app::AppKind;
-use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace, FloatPlace};
 use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
+use crate::layout::{CanvasPlace, FloatPlace, LayoutKind, WorkspaceLayout};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::partition::OutputPartition;
 use crate::projection::{
@@ -54,7 +54,7 @@ const TASKS_KEY: &str = "tasks_v1";
 const STRIPS_KEY: &str = "strips";
 pub(crate) const GROUPS_KEY: &str = "window_groups";
 const TABS_KEY: &str = "tabs";
-const ARRANGEMENT_KEY: &str = "arrangement_v1";
+const KIND_KEY: &str = "kind_v1";
 const CANVAS_KEY: &str = "canvas_v1";
 const FLOATS_KEY: &str = "floats_v1";
 const RECORDS_KEY: &str = "window_records_v1";
@@ -322,7 +322,7 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
         WORKSPACE_SCHEDULE_CLAIMS_KEY,
         ws.schedule_claims.iter().map(|claim| (claim.key(), claim)),
     );
-    write_arrangement(doc, entry, &ws.arrangement);
+    write_layout(doc, entry, &ws.layout);
     write_local(doc, entry, ws);
     if let Some(strips) = child_object(doc, entry, STRIPS_KEY, ObjType::List) {
         sync_list(
@@ -346,34 +346,33 @@ fn write_local(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
     }
 }
 
-/// The workspace's arrangement: its kind only when it is not the strips
+/// The workspace's layout: its kind only when it is not the strips
 /// every workspace starts with, and its canvas places and floats once it has
 /// any.
-fn write_arrangement(doc: &mut AutoCommit, entry: &ObjId, arrangement: &Arrangement) {
-    match arrangement.kind {
-        ArrangementKind::Strips => delete_if_present(doc, entry, ARRANGEMENT_KEY),
-        ArrangementKind::Canvas => {
-            let _ =
-                doc.put_str_if_changed(entry, ARRANGEMENT_KEY, ArrangementKind::Canvas.as_str());
+fn write_layout(doc: &mut AutoCommit, entry: &ObjId, layout: &WorkspaceLayout) {
+    match layout.kind {
+        LayoutKind::Strips => delete_if_present(doc, entry, KIND_KEY),
+        LayoutKind::Canvas => {
+            let _ = doc.put_str_if_changed(entry, KIND_KEY, LayoutKind::Canvas.as_str());
         }
     }
-    if !arrangement.places.is_empty() || obj(doc, entry, CANVAS_KEY).is_some() {
+    if !layout.places.is_empty() || obj(doc, entry, CANVAS_KEY).is_some() {
         sync_blob_map(
             doc,
             entry,
             CANVAS_KEY,
-            arrangement
+            layout
                 .places
                 .iter()
                 .map(|(group, place)| (group.to_string(), place)),
         );
     }
-    if !arrangement.floats.is_empty() || obj(doc, entry, FLOATS_KEY).is_some() {
+    if !layout.floats.is_empty() || obj(doc, entry, FLOATS_KEY).is_some() {
         sync_blob_map(
             doc,
             entry,
             FLOATS_KEY,
-            arrangement
+            layout
                 .floats
                 .iter()
                 .map(|(group, float)| (group.to_string(), float)),
@@ -381,13 +380,11 @@ fn write_arrangement(doc: &mut AutoCommit, entry: &ObjId, arrangement: &Arrangem
     }
 }
 
-fn read_arrangement(doc: &AutoCommit, entry: &ObjId) -> Arrangement {
-    Arrangement {
+fn read_layout(doc: &AutoCommit, entry: &ObjId) -> WorkspaceLayout {
+    WorkspaceLayout {
         kind: doc
-            .str_at(entry, ARRANGEMENT_KEY)
-            .map_or(ArrangementKind::Strips, |kind| {
-                ArrangementKind::parse(&kind)
-            }),
+            .str_at(entry, KIND_KEY)
+            .map_or(LayoutKind::Strips, |kind| LayoutKind::parse(&kind)),
         places: read_keyed_blob_map::<CanvasPlace>(doc, entry, CANVAS_KEY)
             .unwrap_or_default()
             .into_iter()
@@ -699,7 +696,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut Layout) {
         ws.effect_receipts = read_effect_receipts(doc, entry);
         ws.shortcuts = read_shortcuts(doc, entry);
         ws.schedule_claims = read_schedule_claims(doc, entry);
-        ws.arrangement = read_arrangement(doc, entry);
+        ws.layout = read_layout(doc, entry);
         if let Some(local) = read_local(doc, entry) {
             local.apply(&mut ws);
         }

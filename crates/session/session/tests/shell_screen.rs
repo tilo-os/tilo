@@ -90,7 +90,7 @@ fn place(session: &mut Session, resource: &str) -> u64 {
     .unwrap()
     .clone();
     session
-        .invoke("shell:arrangement", "place", &arguments)
+        .invoke("shell:layout", "place", &arguments)
         .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
     place
 }
@@ -458,7 +458,7 @@ const OVERVIEW: &str = "Overview";
 /// window's own title and its app's name — and every surface that names a window takes it from
 /// there, so the tests read the name off the same answer they assert on.
 fn shown_as(session: &Session, title: &str) -> String {
-    let reading = session.arrangement().borrow().reading();
+    let reading = session.layout().borrow().reading();
     reading
         .places
         .iter()
@@ -577,7 +577,7 @@ fn place_here(session: &mut Session, resource: &str) -> u64 {
     .unwrap()
     .clone();
     session
-        .invoke("shell:arrangement", "place", &arguments)
+        .invoke("shell:layout", "place", &arguments)
         .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
     until(session, "the place is in the record", |session| {
         crate::common::places(session).len() > before.len()
@@ -829,7 +829,7 @@ fn a_found_resource_opens_as_a_tab_of_the_strip_in_front() {
     // The launcher's "Open as a tab" runs the arranging action with the strip in front named.
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "place-found",
             json!({
                 "text": TITLES[1],

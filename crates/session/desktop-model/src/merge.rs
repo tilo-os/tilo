@@ -4,7 +4,7 @@
 //! by every device in the workspace: a device takes what the others wrote
 //! into its own copy, and what merged in is what its next read sees. The
 //! merge happens here so that the reading a caller holds of its own document
-//! survives it — a shared desktop's writer, a person's arrangement and a
+//! survives it — a shared desktop's writer, a person's layout and a
 //! session's layout all take a record in the same way.
 
 use automerge::AutoCommit;

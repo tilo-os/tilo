@@ -2,7 +2,7 @@
 //! finds, and hugs what it shows up to it (canvas.md §1, §7).
 
 use super::turns::CanvasRect;
-use super::{Arrangement, DEFAULT_HEIGHT, DEFAULT_WIDTH, clamp_coord, clamp_side};
+use super::{Layout, DEFAULT_HEIGHT, DEFAULT_WIDTH, clamp_coord, clamp_side};
 
 /// How wide a thing standing at canvas x `x` with no rectangle of its own stands as far as the
 /// view goes: `want`, or the room from `x` to the trailing edge of what the person sees (`seen`)
@@ -24,7 +24,7 @@ pub(super) fn width_in_view(x: i64, want: i64, seen: Option<CanvasRect>) -> i64 
     }
 }
 
-impl Arrangement {
+impl Layout {
     /// The size a thing found by text stands at, and whether it hugs what it shows: the rectangle
     /// the person dragged (`size`), kept exactly; or, at a click, as tall as what it shows up to
     /// a window's height (`place_at`), and its own width as far as the free room to its right
@@ -62,7 +62,7 @@ impl Arrangement {
         let in_view = width_in_view(at.0, want, seen);
         self.handle
             .read(|tree| {
-                tree.active_workspace()?.arrangement.free_width_at(
+                tree.active_workspace()?.layout.free_width_at(
                     (clamp_coord(at.0), clamp_coord(at.1)),
                     clamp_side(in_view),
                     clamp_side(height),

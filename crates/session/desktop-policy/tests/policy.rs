@@ -659,7 +659,7 @@ fn a_conversation_opens_beside_its_sender() {
         "the desk takes the place beside the sender"
     );
     settle(&mut driver);
-    // The desk asks for the float; the session's arrangement makes the ask.
+    // The desk asks for the float; the session's layout makes the ask.
     policy.handle().arrange_asked_floats();
     settle(&mut driver);
 
@@ -724,7 +724,7 @@ fn a_conversation_opens_beside_its_sender() {
     // sender, never over the message list the person was reading.
     let place = policy
         .handle()
-        .read(|tree| tree.workspaces.first()?.arrangement.float_of(*group));
+        .read(|tree| tree.workspaces.first()?.layout.float_of(*group));
     assert!(
         place.is_some(),
         "the conversation stands over the desk, in the workspace's record"

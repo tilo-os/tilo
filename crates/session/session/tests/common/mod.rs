@@ -28,7 +28,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
-use tilo_session_core::arrangement;
+use tilo_session_core::layout;
 
 use serde_json::{Map, Value, json};
 use tilo_compositor::{InputEvent, OutputConfig};
@@ -618,7 +618,7 @@ pub fn last_step(session: &mut Session, verb: &str) -> String {
         session,
         "the layout's change to reach the workspace",
         |session| {
-            let (who, made) = session.arrangement().borrow_mut().last_step()?;
+            let (who, made) = session.layout().borrow_mut().last_step()?;
             (made == verb).then_some(who)
         },
     )
@@ -871,7 +871,7 @@ pub fn repl_session(
 /// The person's arrangement as a shell reads it: the shell as it stands now,
 /// every workspace, row, strip and place by key.
 pub fn arrangement(session: &Session) -> arrangement::Reading {
-    session.arrangement().borrow().reading()
+    session.layout().borrow().reading()
 }
 
 /// An id as the arrangement reads it out: its whole number.

@@ -32,7 +32,7 @@ mod app_load;
     allow(dead_code, reason = "only the browser page opens an app alone")
 )]
 mod app_page;
-// The shell's arranging actions in the page: its tests run on the host too.
+// The layout and its actions in the page: the tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(
     not(target_arch = "wasm32"),
@@ -41,7 +41,7 @@ mod app_page;
         reason = "only the browser page arranges its shell; the host runs its tests"
     )
 )]
-mod arranging;
+mod layout;
 // Native builds compile it for its tests; the page is its only user.
 #[cfg(target_arch = "wasm32")]
 mod background_work;
@@ -72,9 +72,9 @@ pub(crate) mod page_content;
 #[cfg(target_arch = "wasm32")]
 mod page_files;
 #[cfg(target_arch = "wasm32")]
-pub use arranging::{MakePageLayout, PAGE_LAYOUT, builtin_page_layout};
-#[cfg(target_arch = "wasm32")]
 pub use drops_code::{DROPS, MakeDrops, builtin_drops};
+#[cfg(target_arch = "wasm32")]
+pub use layout::{MakePageLayout, PAGE_LAYOUT, builtin_page_layout};
 #[cfg(target_arch = "wasm32")]
 pub use page_files::{
     DOCUMENT_FILES, DocumentFiles, PDF_WORDS, PdfWords, builtin_document_files, builtin_pdf_words,

@@ -205,20 +205,20 @@ fn the_arrangement_names_itself_in_the_persons_language() {
     let session = seeded_session(root.path());
     speak("de-DE");
     assert_eq!(
-        named_by_id(&session, "shell:arrangement").as_deref(),
+        named_by_id(&session, "shell:layout").as_deref(),
         Some("Layout")
     );
     assert_eq!(
-        named_by_id(&session, "shell:arrangement-record").as_deref(),
+        named_by_id(&session, "shell:layout-record").as_deref(),
         Some("Layoutverlauf")
     );
     speak("en-US");
     assert_eq!(
-        named_by_id(&session, "shell:arrangement").as_deref(),
+        named_by_id(&session, "shell:layout").as_deref(),
         Some("Layout")
     );
     assert_eq!(
-        named_by_id(&session, "shell:arrangement-record").as_deref(),
+        named_by_id(&session, "shell:layout-record").as_deref(),
         Some("Layout history")
     );
 }
@@ -228,7 +228,7 @@ fn the_arrangement_names_itself_in_the_persons_language() {
 fn layout_actions(session: &tilo_session::Session) -> Vec<(String, Vec<String>)> {
     fn find(specs: &[ResourceSpec]) -> Option<Vec<(String, Vec<String>)>> {
         specs.iter().find_map(|spec| {
-            if spec.id.0 == "shell:arrangement" {
+            if spec.id.0 == "shell:layout" {
                 Some(
                     spec.actions
                         .iter()

@@ -828,7 +828,7 @@ impl Placement {
 pub struct Label {
     /// The display, by its monitor as the desktop names it.
     pub monitor: String,
-    /// Its place in the person's arrangement, counting from one.
+    /// Its place in the person's layout, counting from one.
     pub number: usize,
     /// What Settings calls it: the built-in display, or the monitor's model.
     pub name: String,

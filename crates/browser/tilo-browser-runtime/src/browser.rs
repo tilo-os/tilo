@@ -581,7 +581,7 @@ pub(crate) struct Desktop {
     persistence: Rc<crate::desktop::Persistence>,
     /// The person's arrangement of this layout: what the palette, a script and an
     /// agent arrange the windows with, as a session's arrangement does.
-    arrangement: crate::arranging::PageLayout,
+    layout: crate::layout::PageLayout,
     /// Navigation commands name the mount generation they were issued for.
     generation: String,
     /// What the desktop asked of the page since its last status.
@@ -657,7 +657,7 @@ impl Desktop {
         self.revoke_agent_grants();
         self.ask_host_of_nodes();
         self.ask_app_actions();
-        self.arrangement.take_asked_floats();
+        self.layout.take_asked_floats();
         let permissions = self.permissions.borrow();
         self.openings.open(&self.handle, |app, existing| {
             crate::desktop::may_open(&permissions, app, existing)
@@ -745,9 +745,9 @@ impl Desktop {
         };
         // What search reads of the shell is what the shell publishes, so it is read when the shell
         // changed and not on a frame that only drew.
-        let seen = (self.handle.revision(), self.arrangement.is_in());
+        let seen = (self.handle.revision(), self.layout.is_in());
         if self.search.seen.replace(Some(seen)) != Some(seen) {
-            let resources = self.arrangement.resources();
+            let resources = self.layout.resources();
             let (tabs, workspaces) = self.handle.read(|tree| {
                 let workspaces = tree
                     .workspaces
@@ -763,9 +763,7 @@ impl Desktop {
             search.observe(&resources, tabs);
         }
         let refused = search.perform_choices(&self.handle, &mut |own| {
-            self.arrangement
-                .invoke(&own.address, &own.arguments)
-                .map(drop)
+            self.layout.invoke(&own.address, &own.arguments).map(drop)
         });
         for (chosen, error) in refused {
             // A row that could not be carried out opens the palette again, saying why on it.
@@ -1505,8 +1503,8 @@ fn present_desktop(
         images: Rc::clone(&shared.images),
         image_owners: Rc::clone(&shared.image_owners),
         desktop: Some(Desktop {
-            arrangement: crate::arranging::PageLayout::new(
-                &crate::arranging::PAGE_LAYOUT,
+            layout: crate::layout::PageLayout::new(
+                &crate::layout::PAGE_LAYOUT,
                 &config.author(),
                 handle.clone(),
                 persistence.layout(),

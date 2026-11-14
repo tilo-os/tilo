@@ -59,7 +59,7 @@ struct File {
 /// the sound, the network and Bluetooth are `so.tilo.device`'s
 /// ([`crate::shell::device_surfaces`]), so each action is described once, by its owner.
 fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
-    let words: tilo_session_core::arrangement::Words = std::rc::Rc::new(crate::i18n::word);
+    let words: tilo_session_core::layout::Words = std::rc::Rc::new(crate::i18n::word);
     vec![
         (
             tilo_desktop::verbs::chrome_resource(&ui::shortcut_table::ShortcutConfig::default()),
@@ -70,7 +70,7 @@ fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
             Some(<LayoutEffect as Effect>::declaration),
         ),
         (
-            tilo_session_core::arrangement::resources(&words).swap_remove(0),
+            tilo_session_core::layout::resources(&words).swap_remove(0),
             None,
         ),
         // The person's own styles as packages in their workspace: "make it mine", `check`
@@ -104,14 +104,14 @@ fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
     out.push((application(), None));
     // What is already arranged: a place, a strip and a row are resources of their own, each with
     // the actions it offers.
-    let words: tilo_session_core::arrangement::Words = std::rc::Rc::new(crate::i18n::word);
-    out.push((tilo_session_core::arrangement::row_kind_resource(), None));
+    let words: tilo_session_core::layout::Words = std::rc::Rc::new(crate::i18n::word);
+    out.push((tilo_session_core::layout::row_kind_resource(), None));
     out.push((
-        tilo_session_core::arrangement::strip_kind_resource(&words),
+        tilo_session_core::layout::strip_kind_resource(&words),
         None,
     ));
     out.push((
-        tilo_session_core::arrangement::place_kind_resource(&words),
+        tilo_session_core::layout::place_kind_resource(&words),
         None,
     ));
     out

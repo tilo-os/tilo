@@ -9,7 +9,7 @@ use tilo_desktop_model::CanvasPlace;
 
 use super::turns::CanvasRect;
 use super::{
-    Arrangement, ArrangementAction, DEFAULT_HEIGHT, DEFAULT_WIDTH, Door, Item, clamp_side, locate,
+    Layout, LayoutAction, DEFAULT_HEIGHT, DEFAULT_WIDTH, LayoutActions, Item, clamp_side, locate,
 };
 
 /// What an answer's view stands beside: a turn's place, or the rectangle a turn will take
@@ -29,7 +29,7 @@ fn canvas_place(rect: CanvasRect) -> CanvasPlace {
     CanvasPlace::new(at(rect.x), at(rect.y), side(rect.width), side(rect.height))
 }
 
-impl Arrangement {
+impl Layout {
     /// The free spot adjacent to `subject` (trailing, then below, then leading, then above) for a
     /// window of the default size, or the part of it that stands on the screen with `subject` or
     /// is free beside it (`free_place_within`), judged against `seen` (the part of the canvas the
@@ -44,18 +44,18 @@ impl Arrangement {
                 let (workspace, row, group, _) = locate(tree, anchor)?;
                 let held = tree.workspaces.get(workspace)?;
                 let id = held.strips.get(row)?.window_groups.get(group)?.id;
-                let place = held.arrangement.place_of(id)?;
-                held.arrangement.free_place_within(place, size, seen, None)
+                let place = held.layout.place_of(id)?;
+                held.layout.free_place_within(place, size, seen, None)
             }
             Beside::Asked(rect) => {
                 let held = tree.active_workspace()?;
-                held.arrangement
+                held.layout
                     .free_place_within(canvas_place(rect), size, seen, None)
             }
         })
     }
 
-    /// The place `beside` names: a place of the arrangement by its own resource
+    /// The place `beside` names: a place of the layout by its own resource
     /// (`shell:place:<key>`), or the place showing that record, or anything of its root. `None`
     /// for empty text or a resource no place shows.
     pub(super) fn anchor_of(&self, beside: &str) -> Option<u64> {
@@ -93,19 +93,19 @@ impl Arrangement {
             };
             let (workspace, anchor) = group_of(anchor)?;
             let held = tree.workspaces.get(workspace)?;
-            let subject = held.arrangement.place_of(anchor)?;
+            let subject = held.layout.place_of(anchor)?;
             let moved = moving
                 .and_then(group_of)
                 .filter(|(of, _)| *of == workspace)
                 .map(|(_, group)| group);
             let (width, height) = moved
-                .and_then(|group| held.arrangement.place_of(group))
+                .and_then(|group| held.layout.place_of(group))
                 .map_or_else(
                     || (clamp_side(DEFAULT_WIDTH), clamp_side(DEFAULT_HEIGHT)),
                     |own| (own.width, own.height),
                 );
             let free = held
-                .arrangement
+                .layout
                 .free_place_next_to(subject, width, height, moved);
             Some((i64::from(free.x), i64::from(free.y)))
         })
@@ -122,7 +122,7 @@ impl Arrangement {
         };
         self.handle.read(|tree| {
             let held = tree.active_workspace()?;
-            let free = held.arrangement.free_place_next_to(
+            let free = held.layout.free_place_next_to(
                 subject,
                 clamp_side(DEFAULT_WIDTH),
                 clamp_side(DEFAULT_HEIGHT),
@@ -133,7 +133,7 @@ impl Arrangement {
     }
 }
 
-impl Door {
+impl LayoutActions {
     /// Stand what a `place` shows beside what it names, when it names no point, strip or float
     /// but a resource to stand beside: the system's `open` beside it, which stands it in the free
     /// space next to that resource's place, or brings forward the place already showing it.
@@ -142,9 +142,9 @@ impl Door {
         &self,
         asked: &str,
         arguments: &serde_json::Map<String, Json>,
-        action: &ArrangementAction,
+        action: &LayoutAction,
     ) -> Result<bool, tilo_actions::DoorError> {
-        let ArrangementAction::Place { resource, view, .. } = action else {
+        let LayoutAction::Place { resource, view, .. } = action else {
             return Ok(false);
         };
         // A turn's conversation, opened from the turn with no point of its own, stands beside the
@@ -152,7 +152,7 @@ impl Door {
         let beside = match place_beside(arguments) {
             Some(beside) => beside.to_owned(),
             None if !pointed(arguments) => {
-                let conversation = self.arrangement.borrow().conversation_opened_as(resource);
+                let conversation = self.layout.borrow().conversation_opened_as(resource);
                 let Some(conversation) = conversation else {
                     return Ok(false);
                 };
@@ -160,7 +160,7 @@ impl Door {
             }
             None => return Ok(false),
         };
-        self.arrangement
+        self.layout
             .borrow_mut()
             .open_place(asked, resource, view, &beside)
             .map_err(|why| tilo_actions::DoorError::Unavailable {
@@ -194,9 +194,9 @@ impl Door {
                     "a place stands at an x and a y, or beside something".to_owned(),
                 )
             })?;
-        let arrangement = self.arrangement.borrow();
+        let layout = self.layout.borrow();
         let anchor =
-            arrangement
+            layout
                 .anchor_of(beside)
                 .ok_or_else(|| tilo_actions::DoorError::Unavailable {
                     code: "nowhere_to_place".to_owned(),
@@ -207,7 +207,7 @@ impl Door {
                 "a place cannot stand beside itself".to_owned(),
             ));
         }
-        let (at_x, at_y) = arrangement
+        let (at_x, at_y) = layout
             .point_beside(anchor, Some(place))
             .ok_or_else(|| tilo_actions::DoorError::Unavailable {
                 code: "nowhere_to_place".to_owned(),

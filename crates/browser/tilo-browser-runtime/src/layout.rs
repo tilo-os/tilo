@@ -1,10 +1,10 @@
-//! The arrangement in the page: the role is [`tilo_session_core::arrangement`]'s, the one a native
+//! The layout in the page: the role is [`tilo_session_core::layout`]'s, the one a native
 //! session runs, standing on the layout document this page keeps.
 //!
 //! A page has no compositor to say whether the person is mid-gesture, and the palette's index is
 //! the frame's own, which the role cannot reach from here: an action that would wait for the
 //! person's hands never waits, and text typed on the canvas places nothing (the page's palette
-//! opens what it finds instead). Arranging by action — a place moved between rows, a place floated,
+//! opens what it finds instead). Changing the layout by action — a place moved between rows, a place floated,
 //! a strip resized, the person's own undo — is the one attributed change of the layout it is in a
 //! session.
 //!
@@ -15,10 +15,10 @@ use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
 use tilo_desktop_surface::DesktopHandle;
-use tilo_session_core::arrangement::{
-    Arrangement, Ask, AskOrigin, Busy, Door, Find, FindDone, Item, RECORD_RESOURCE, RESOURCE,
-};
 use tilo_session_core::layout::LayoutDocument;
+use tilo_session_core::layout::{
+    Ask, AskOrigin, Busy, Find, FindDone, Item, Layout, LayoutActions, RECORD_RESOURCE, RESOURCE,
+};
 
 /// What the page asks of its layout, as the trait object [`PAGE_LAYOUT`] makes.
 pub(crate) trait LayoutApi {
@@ -32,22 +32,22 @@ pub(crate) trait LayoutApi {
     ) -> Result<serde_json::Value, tilo_actions::DoorError>;
 }
 
-/// The page's arrangement, and the door everything that arranges by action reaches it through.
-struct Arranging {
-    arrangement: Rc<RefCell<Arrangement>>,
-    door: Door,
+/// The page's layout, and the actions everything that changes it by action reaches it through.
+struct PageActions {
+    layout: Rc<RefCell<Layout>>,
+    actions: LayoutActions,
 }
 
-impl Arranging {
-    /// The page's arrangement of `handle`'s layout, whose changes `layout` keeps, naming windows as the
+impl PageActions {
+    /// The page's layout of `handle`'s layout, whose changes `layout` keeps, naming windows as the
     /// bundle's registry names them.
     fn new(person: &str, handle: DesktopHandle, layout: Rc<LayoutDocument>) -> Self {
-        let arrangement = Rc::new(RefCell::new(Arrangement::new(
+        let layout = Rc::new(RefCell::new(Layout::new(
             person,
             handle,
             layout,
             Rc::new(tilo_desktop_search::names::window_name),
-            tilo_session_core::arrangement::source_words(),
+            tilo_session_core::layout::source_words(),
         )));
         // Nothing here answers a search or has an agent to ask, so both seams are honestly empty: a
         // place made by text is the page's palette's to open, never a second index of its own. The
@@ -56,32 +56,28 @@ impl Arranging {
         let ask: Ask = Rc::new(|_: &str| None);
         // No app's search is asked from the page either: a text naming an app's type places nothing.
         let ask_origin: AskOrigin = Rc::new(|_: &str| None);
-        let door = Door::new(
-            Rc::clone(&arrangement),
+        let actions = LayoutActions::new(
+            Rc::clone(&layout),
             Rc::new(Busy::default),
             find,
             ask,
             ask_origin,
         );
-        Self { arrangement, door }
+        Self { layout, actions }
     }
 }
 
-impl LayoutApi for Arranging {
+impl LayoutApi for PageActions {
     fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
-        self.door.resources()
+        self.actions.resources()
     }
 
     fn remember(&self, resources: &[tilo_actions::ResourceSpec]) {
-        self.arrangement
-            .borrow()
-            .targets()
-            .borrow_mut()
-            .take(resources);
+        self.layout.borrow().targets().borrow_mut().take(resources);
     }
 
     fn take_asked_floats(&self) {
-        if let Err(why) = self.arrangement.borrow_mut().take_asked_floats() {
+        if let Err(why) = self.layout.borrow_mut().take_asked_floats() {
             tracing::warn!(why, "a window could not be floated or put back");
         }
     }
@@ -91,7 +87,7 @@ impl LayoutApi for Arranging {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, tilo_actions::DoorError> {
-        let started = self.door.invoke(address, arguments)?;
+        let started = self.actions.invoke(address, arguments)?;
         Ok(match started {
             ui::host_operation::ResourceOperationStart::Completed(output) => {
                 serde_json::json!({"state": "completed", "output": output})
@@ -110,7 +106,7 @@ pub struct MakePageLayout(fn(&str, DesktopHandle, Rc<LayoutDocument>) -> Box<dyn
 /// The layout this build links.
 #[must_use]
 pub fn builtin_page_layout() -> MakePageLayout {
-    MakePageLayout(|person, handle, layout| Box::new(Arranging::new(person, handle, layout)))
+    MakePageLayout(|person, handle, layout| Box::new(PageActions::new(person, handle, layout)))
 }
 
 ui::lazy_code! {
@@ -158,7 +154,7 @@ impl PageLayout {
     }
 
     /// The layout, once its code is in; the actions that waited for it run first.
-    fn arranging(&self) -> Option<&dyn LayoutApi> {
+    fn page_actions(&self) -> Option<&dyn LayoutApi> {
         if let Some(made) = self.made.get() {
             return Some(made.as_ref());
         }
@@ -166,7 +162,7 @@ impl PageLayout {
         made.remember(&self.remembered.take());
         for (address, arguments) in self.waiting.take() {
             if let Err(error) = made.invoke(&address, &arguments) {
-                tracing::warn!(?error, action = %address.action, "an arranging action failed");
+                tracing::warn!(?error, action = %address.action, "a layout action failed");
             }
         }
         Some(self.made.get_or_init(|| made).as_ref())
@@ -174,18 +170,18 @@ impl PageLayout {
 
     /// Whether the layout's code is in.
     pub(crate) fn is_in(&self) -> bool {
-        self.arranging().is_some()
+        self.page_actions().is_some()
     }
 
-    /// What the arrangement publishes now: its own resource, the layout's record, and a resource per
+    /// What the layout publishes now: its own resource, the layout's record, and a resource per
     /// row, strip and place on the layout. Nothing until its code is in.
     pub(crate) fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
-        self.arranging()
+        self.page_actions()
             .map(LayoutApi::resources)
             .unwrap_or_default()
     }
 
-    /// Whether `resource` is one the arrangement publishes: the layout's record, or the arrangement
+    /// Whether `resource` is one the layout publishes: the layout's record, or the layout
     /// and a row, strip or place of it.
     pub(crate) fn holds(resource: &str) -> bool {
         resource == RESOURCE
@@ -195,20 +191,20 @@ impl PageLayout {
                 .any(|item| item.key(resource).is_some())
     }
 
-    /// Hand the arrangement what the page publishes now: what a place made from a resource reads
+    /// Hand the layout what the page publishes now: what a place made from a resource reads
     /// its app and its views from.
     pub(crate) fn remember(&self, resources: &[tilo_actions::ResourceSpec]) {
-        match self.arranging() {
-            Some(arranging) => arranging.remember(resources),
+        match self.page_actions() {
+            Some(actions) => actions.remember(resources),
             None => *self.remembered.borrow_mut() = resources.to_vec(),
         }
     }
 
-    /// Make each window the person floated or put back on the layout their arranging action; the
+    /// Make each window the person floated or put back on the layout their layout action; the
     /// layout keeps what was asked until the code is in.
     pub(crate) fn take_asked_floats(&self) {
-        if let Some(arranging) = self.arranging() {
-            arranging.take_asked_floats();
+        if let Some(actions) = self.page_actions() {
+            actions.take_asked_floats();
         }
     }
 
@@ -222,8 +218,8 @@ impl PageLayout {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, tilo_actions::DoorError> {
-        if let Some(arranging) = self.arranging() {
-            return arranging.invoke(address, arguments);
+        if let Some(actions) = self.page_actions() {
+            return actions.invoke(address, arguments);
         }
         self.waiting
             .borrow_mut()
@@ -260,7 +256,7 @@ mod tests {
     struct Page {
         handle: DesktopHandle,
         layout: Rc<LayoutDocument>,
-        arrangement: PageLayout,
+        layout: PageLayout,
     }
 
     impl Page {
@@ -295,11 +291,11 @@ mod tests {
                 &[],
                 None,
             );
-            let arrangement = PageLayout::new(code, "ada", handle.clone(), Rc::clone(&layout));
+            let layout = PageLayout::new(code, "ada", handle.clone(), Rc::clone(&layout));
             Self {
                 handle,
                 layout,
-                arrangement,
+                layout,
             }
         }
 
@@ -322,9 +318,9 @@ mod tests {
             action: &str,
             arguments: &serde_json::Map<String, serde_json::Value>,
         ) -> serde_json::Value {
-            self.arrangement
+            self.layout
                 .invoke(&ActionAddress::new(resource, action), arguments)
-                .expect("the arrangement carries the action out")
+                .expect("the page layout carries the action out")
         }
 
         /// Whether the window `place` floats above the layout.
@@ -336,7 +332,7 @@ mod tests {
                         .iter()
                         .flat_map(|row| &row.window_groups)
                         .filter(|group| group.tabs.iter().any(|tab| tab.id == place))
-                        .any(|group| workspace.arrangement.floats.contains_key(&group.id))
+                        .any(|group| workspace.layout.floats.contains_key(&group.id))
                 })
             })
         }
@@ -378,24 +374,24 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_pages_layout_is_arranged_by_action;
 
-        phase the_page_publishes_the_layouts_places_as_arranging_resources;
-        // The arrangement publishes the layout's places, rows and record, so the page's palette, a
+        phase the_page_publishes_the_layouts_places_as_resources;
+        // The layout publishes its places's places, rows and record, so the page's palette, a
         // script and an agent can arrange it by action.
         {
             let page = Page::new(&PAGE_LAYOUT);
-            let resources = page.arrangement.resources();
-            let arrangement = resources
+            let resources = page.layout.resources();
+            let layout = resources
                 .iter()
                 .find(|resource| resource.id.as_str() == RESOURCE)
-                .expect("the arrangement is published");
+                .expect("the layout is published");
             let place = Item::Place.resource(&page.window().to_string());
             assert!(
-                arrangement
+                layout
                     .children
                     .iter()
                     .any(|child| child.id.as_str() == place),
                 "the window in front is a place of it: {:?}",
-                arrangement
+                layout
                     .children
                     .iter()
                     .map(|child| child.id.as_str())
@@ -403,7 +399,7 @@ mod tests {
             );
             assert!(
                 PageLayout::holds(&place),
-                "an action on that place reaches the arrangement"
+                "an action on that place reaches the layout"
             );
             assert!(
                 PageLayout::holds(RECORD_RESOURCE),
@@ -411,12 +407,12 @@ mod tests {
             );
             assert!(
                 !PageLayout::holds("so.tilo.notes:record"),
-                "an app's resource is not the arrangement's"
+                "an app's resource is not the layout's"
             );
         }
 
-        phase a_float_through_the_door_is_one_step_the_person_takes_back;
-        // A float invoked through the door floats the page's window as one step of the layout's history,
+        phase a_float_through_the_actions_is_one_step_the_person_takes_back;
+        // A float invoked through the actions floats the page's window as one step of the layout's history,
         // and the person's undo puts it back.
         {
             let page = Page::new(&PAGE_LAYOUT);
@@ -444,7 +440,7 @@ mod tests {
         }
 
         phase an_action_asked_before_the_code_is_in_runs_when_it_arrives;
-        // The arrangement's code comes after the first frame: a float asked before it is accepted,
+        // The layout's code comes after the first frame: a float asked before it is accepted,
         // and the window floats as the code arrives, as one step of the person's.
         {
             static LATE: ui::lazy_code::LazyCode<MakePageLayout> =
@@ -452,7 +448,7 @@ mod tests {
             let page = Page::new(&LATE);
             let place = page.window();
             assert!(
-                page.arrangement.resources().is_empty(),
+                page.layout.resources().is_empty(),
                 "nothing is published before the code is in"
             );
             let accepted = page.invoke(
@@ -468,7 +464,7 @@ mod tests {
             assert!(!page.floating(place), "the float waits for the code");
 
             LATE.install(builtin_page_layout());
-            assert!(page.arrangement.is_in());
+            assert!(page.layout.is_in());
             assert!(page.floating(place), "the float ran as the code arrived");
             assert_eq!(
                 page.layout.last_step("ada"),
@@ -476,13 +472,13 @@ mod tests {
                 "the float is the person's own step"
             );
             assert!(
-                !page.arrangement.resources().is_empty(),
-                "the arrangement publishes the layout once its code is in"
+                !page.layout.resources().is_empty(),
+                "the layout publishes its resources once its code is in"
             );
         }
 
-        phase a_move_through_the_door_changes_the_pages_layout;
-        // A move invoked through the door puts the page's window into the other row, as one step of
+        phase a_move_through_the_actions_changes_the_pages_layout;
+        // A move invoked through the actions puts the page's window into the other row, as one step of
         // the layout's history.
         {
             let page = Page::new(&PAGE_LAYOUT);

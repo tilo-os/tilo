@@ -153,7 +153,7 @@ fn an_undo_takes_back_the_persons_own_change_and_never_another_persons() {
     // Ada takes back her last step: her window is the one that goes, and Bob's is not hers to take.
     let undone = ada_laptop.act_wait(
         "so.tilo.session",
-        "shell:arrangement\u{1f}undo",
+        "shell:layout\u{1f}undo",
         &serde_json::json!({}),
     );
     assert_eq!(

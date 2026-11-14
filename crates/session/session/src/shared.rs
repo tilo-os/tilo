@@ -7,7 +7,7 @@ use tilo_session_core::presence::{Place, Step, Target};
 use tilo_sheets::Seat as _;
 
 use crate::{Shared, workspace_settings};
-use tilo_session_core::arrangement;
+use tilo_session_core::layout;
 
 impl Shared {
     /// Keep what this device shows: the workspace in front and the displays' partition, so the next
@@ -136,7 +136,7 @@ impl Shared {
         let app_resources = self.services.borrow().resources();
         let running: Vec<(
             String,
-            arrangement::ArrangementQueryReading,
+            arrangement::LayoutQueryReading,
             std::collections::BTreeSet<String>,
         )> = arrangement
             .queries_running()
@@ -402,7 +402,7 @@ impl Shared {
                 arguments
             };
             let address =
-                tilo_actions::ActionAddress::new(tilo_session_core::arrangement::RESOURCE, "open");
+                tilo_actions::ActionAddress::new(tilo_session_core::layout::RESOURCE, "open");
             let run = self.doors.invoke_as(
                 &invoker.key(),
                 &address,

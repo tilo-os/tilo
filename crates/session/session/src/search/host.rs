@@ -7,7 +7,7 @@ use std::rc::Rc;
 use crate::Shared;
 use crate::search;
 use tilo_desktop_search::providers::places::Place;
-use tilo_session_core::arrangement::tab_app;
+use tilo_session_core::layout::tab_app;
 
 impl Shared {
     /// Hand search what the session publishes when it changed: read after a frame, as the shell

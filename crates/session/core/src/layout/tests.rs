@@ -76,7 +76,7 @@ fn the_text_places_the_top_result_of_the_hits_a_place_can_show() {
     assert_eq!(
         found_resource(&hits, "Chat", showable).as_deref(),
         Some("tl:so.tilo.lang.chat"),
-        "a hit the arrangement cannot place does not stand in the way of one it can"
+        "a hit the layout cannot place does not stand in the way of one it can"
     );
     assert_eq!(
         found_resource(&hits, "Chat", |_| false),

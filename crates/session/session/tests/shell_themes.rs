@@ -238,7 +238,7 @@ fn place(session: &mut Session, resource: &str, x: i32, y: i32, width: i32, heig
     .expect("an object")
     .clone();
     session
-        .invoke("shell:arrangement", "place", &arguments)
+        .invoke("shell:layout", "place", &arguments)
         .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
 }
 

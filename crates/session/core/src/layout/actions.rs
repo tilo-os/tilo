@@ -1,4 +1,4 @@
-//! The arrangement's action door: what a palette, a script, an agent and the host's own calls
+//! The layout's action door: what a palette, a script, an agent and the host's own calls
 //! reach its actions through.
 
 use std::cell::RefCell;
@@ -8,22 +8,22 @@ use serde_json::Value as Json;
 use tilo_actions::ResourceSpec;
 
 use super::{
-    Arrangement, ArrangementAction, Ask, AskOrigin, Busy, CanvasRect, Find, Found, Pointed,
+    Layout, LayoutAction, Ask, AskOrigin, Busy, CanvasRect, Find, Found, Pointed,
     RECORD_RESOURCE, RESOURCE,
 };
 
-/// The answer an arranging action that asks the record gives: complete, with nothing for the
+/// The answer an layout action that asks the record gives: complete, with nothing for the
 /// caller to read back. A place that stands on a later pass is complete when it is asked, never
 /// left pending (`Accepted` would be, and nothing completes it).
 fn completed() -> ui::host_operation::ResourceOperationStart {
     ui::host_operation::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
 }
 
-/// The arrangement's published side: the one door the palette, a script, an agent and the host's
+/// The layout's published side: the one door the palette, a script, an agent and the host's
 /// own calls reach its actions through, beside the desktop's own.
 #[derive(Clone)]
-pub struct Door {
-    pub(super) arrangement: Rc<RefCell<Arrangement>>,
+pub struct LayoutActions {
+    pub(super) layout: Rc<RefCell<Layout>>,
     /// How the host says whether the person is mid-gesture or typing, as it last saw it.
     busy: Rc<dyn Fn() -> Busy>,
     /// The system's `find` , as the palette and an agent's `tilo` tool run it: what text typed on
@@ -38,19 +38,19 @@ pub struct Door {
     ask_origin: AskOrigin,
 }
 
-impl Door {
-    /// The door over `arrangement` , whose changes wait while `busy` says the person is arranging
+impl LayoutActions {
+    /// The door over `layout` , whose changes wait while `busy` says the person is arranging
     /// or typing.
     #[must_use]
     pub fn new(
-        arrangement: Rc<RefCell<Arrangement>>,
+        layout: Rc<RefCell<Layout>>,
         busy: Rc<dyn Fn() -> Busy>,
         find: Find,
         ask: Ask,
         ask_origin: AskOrigin,
     ) -> Self {
         Self {
-            arrangement,
+            layout,
             busy,
             find,
             ask,
@@ -58,10 +58,10 @@ impl Door {
         }
     }
 
-    /// What the arrangement publishes now, as the host publishes it.
+    /// What the layout publishes now, as the host publishes it.
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
-        self.arrangement.borrow().resources()
+        self.layout.borrow().resources()
     }
 
     /// Carry out `address` with `arguments`.
@@ -84,22 +84,22 @@ impl Door {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
-        // The arrangement publishes its record's undo and redo beside its arranging actions: both
-        // step the record, never decode as an arranging action.
+        // The layout publishes its record's undo and redo beside its layout actions: both
+        // step the record, never decode as an layout action.
         if address.resource == RECORD_RESOURCE
             || (address.resource == RESOURCE && matches!(address.action.as_str(), "undo" | "redo"))
         {
             return self.step(address);
         }
-        let published = self.arrangement.borrow().resources();
+        let published = self.layout.borrow().resources();
         let built = tilo_actions::door::spec_of(&published, &address.resource, &address.action)
             .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
         let encoded = built
             .build_json(arguments)
             .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?;
         let mut action =
-            ArrangementAction::decode(&encoded.type_id, &encoded.payload).ok_or_else(|| {
-                tilo_actions::DoorError::UnregisteredType("tilo.shell.arranging".to_owned())
+            LayoutAction::decode(&encoded.type_id, &encoded.payload).ok_or_else(|| {
+                tilo_actions::DoorError::UnregisteredType("tilo.shell.layout".to_owned())
             })?;
         // An action that names no one is the person's own input: theirs to take back, and never
         // made to wait for themselves.
@@ -120,7 +120,7 @@ impl Door {
             }
             self.place_at_surface(arguments, &mut action)?;
         }
-        if let ArrangementAction::Position { place, x, y } = &mut action {
+        if let LayoutAction::Position { place, x, y } = &mut action {
             self.position_beside(arguments, *place, x, y)?;
         }
         // The person's own change is what their gesture is making; only anyone else's waits for
@@ -141,7 +141,7 @@ impl Door {
         if let Some(step) = self.retried(&action, &asked, busy) {
             return step;
         }
-        self.arrangement
+        self.layout
             .borrow_mut()
             .ask(&asked, action.clone(), busy)
             .map(drop)
@@ -149,26 +149,26 @@ impl Door {
         Ok(self.shown(&action))
     }
 
-    /// What an arranging action that shows a resource answers once it ran: the title of the place
+    /// What an layout action that shows a resource answers once it ran: the title of the place
     /// showing it, as every surface captions it ("All inboxes", canvas.md §7 "Captions name the
     /// thing"), so whoever asked says what it showed by that name (an agent's step line). Any
     /// other action, or one whose place does not stand yet (it waits for the person's gesture),
     /// answers nothing.
-    fn shown(&self, action: &ArrangementAction) -> ui::host_operation::ResourceOperationStart {
+    fn shown(&self, action: &LayoutAction) -> ui::host_operation::ResourceOperationStart {
         let (own, resource) = match action {
-            ArrangementAction::Place {
+            LayoutAction::Place {
                 place, resource, ..
             } => (Some(*place), resource),
-            ArrangementAction::Open { resource, .. } | ArrangementAction::Show { resource, .. } => {
+            LayoutAction::Open { resource, .. } | LayoutAction::Show { resource, .. } => {
                 (None, resource)
             }
             _ => return completed(),
         };
-        let arrangement = self.arrangement.borrow();
-        let places = arrangement.reading().places;
+        let layout = self.layout.borrow();
+        let places = layout.reading().places;
         let title = own
             .into_iter()
-            .chain(arrangement.anchor_of(resource))
+            .chain(layout.anchor_of(resource))
             .find_map(|place| {
                 let key = place.to_string();
                 places.iter().find(|held| held.key == key)
@@ -211,7 +211,7 @@ impl Door {
         find(
             &needle,
             Box::new(move |hits| {
-                if let Err(why) = door.arrangement.borrow_mut().place_found(Found {
+                if let Err(why) = door.layout.borrow_mut().place_found(Found {
                     asked: &asked,
                     text: &text,
                     view: &view,
@@ -239,11 +239,11 @@ impl Door {
     /// `None` for any other action.
     fn found_by_text(
         &self,
-        action: &ArrangementAction,
+        action: &LayoutAction,
         asked: &str,
         busy: Busy,
     ) -> Option<Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError>> {
-        let ArrangementAction::PlaceFound {
+        let LayoutAction::PlaceFound {
             text,
             view,
             strip,
@@ -269,7 +269,7 @@ impl Door {
         });
         self.find_and_place_found(asked, text, view, *strip, ((*x, *y), size, seen), busy);
         // The search is under way and the place stands on a later pass: the door answers as it
-        // always did for an arranging action, which is complete when the ask is taken. Nothing of
+        // always did for an layout action, which is complete when the ask is taken. Nothing of
         // the place is left for the caller to read back, so it is not a pending invocation
         // (`Accepted` would be, and nothing completes it).
         Some(Ok(completed()))
@@ -280,10 +280,10 @@ impl Door {
     /// and the record only ever holds ids. `None` for any other action.
     fn opened(
         &self,
-        action: &ArrangementAction,
+        action: &LayoutAction,
         asked: &str,
     ) -> Option<Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError>> {
-        let ArrangementAction::Open {
+        let LayoutAction::Open {
             resource,
             view,
             beside,
@@ -292,7 +292,7 @@ impl Door {
             return None;
         };
         let opened = self
-            .arrangement
+            .layout
             .borrow_mut()
             .open_place(asked, resource, view, beside);
         Some(match opened {
@@ -306,20 +306,20 @@ impl Door {
 
     /// A query's Retry asks its app again, from the text it holds: the query goes back to
     /// searching, and the app's own search action runs the text once more through `ask_origin`
-    /// (`Arrangement::retry_query`). Resolved here, where the app's action is, never in the
+    /// (`Layout::retry_query`). Resolved here, where the app's action is, never in the
     /// record. `None` for any other action.
     fn retried(
         &self,
-        action: &ArrangementAction,
+        action: &LayoutAction,
         asked: &str,
         busy: Busy,
     ) -> Option<Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError>> {
-        let ArrangementAction::RetryQuery { place } = action else {
+        let LayoutAction::RetryQuery { place } = action else {
             return None;
         };
         let ask_origin = Rc::clone(&self.ask_origin);
         let retried = self
-            .arrangement
+            .layout
             .borrow_mut()
             .retry_query(asked, *place, &*ask_origin, busy);
         Some(match retried {
@@ -350,16 +350,16 @@ impl Door {
     /// the REPL and a reference's activation place the thing, as text typed on the canvas does
     /// (canvas.md §7, "The thing, never the app"). The app's window is `open-app`'s, or the view a
     /// caller names.
-    fn place_as_content(&self, action: &mut ArrangementAction) {
-        let (ArrangementAction::Place { resource, view, .. }
-        | ArrangementAction::Show { resource, view, .. }) = action
+    fn place_as_content(&self, action: &mut LayoutAction) {
+        let (LayoutAction::Place { resource, view, .. }
+        | LayoutAction::Show { resource, view, .. }) = action
         else {
             return;
         };
         if !view.trim().is_empty() {
             return;
         }
-        let targets = self.arrangement.borrow().targets();
+        let targets = self.layout.borrow().targets();
         let place_view = targets
             .borrow()
             .get(resource.trim())
@@ -377,9 +377,9 @@ impl Door {
     fn place_at_surface(
         &self,
         arguments: &serde_json::Map<String, Json>,
-        action: &mut ArrangementAction,
+        action: &mut LayoutAction,
     ) -> Result<(), tilo_actions::DoorError> {
-        let ArrangementAction::Place {
+        let LayoutAction::Place {
             workspace,
             row,
             strip,
@@ -402,7 +402,7 @@ impl Door {
                 "a place names its workspace and its row together, or neither".to_owned(),
             ));
         }
-        let surface = self.arrangement.borrow().surface_at().map_err(|why| {
+        let surface = self.layout.borrow().surface_at().map_err(|why| {
             tilo_actions::DoorError::Unavailable {
                 code: "nowhere_to_place".to_owned(),
                 reason: why,
@@ -428,32 +428,32 @@ impl Door {
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         let person = self.person();
         let stepped = match address.action.as_str() {
-            "undo" => self.arrangement.borrow_mut().undo(&person),
-            "redo" => self.arrangement.borrow_mut().redo(&person),
+            "undo" => self.layout.borrow_mut().undo(&person),
+            "redo" => self.layout.borrow_mut().redo(&person),
             _ => return Err(tilo_actions::DoorError::Unknown(address.clone())),
         };
         if !stepped {
             return Err(tilo_actions::DoorError::Unavailable {
                 code: "nothing_to_undo".to_owned(),
-                reason: "the arrangement has no step left".to_owned(),
+                reason: "the layout has no step left".to_owned(),
             });
         }
         Ok(completed())
     }
 
-    /// The person whose arrangement it is.
+    /// The person whose layout it is.
     fn person(&self) -> String {
-        self.arrangement.borrow().person().to_owned()
+        self.layout.borrow().person().to_owned()
     }
 }
 
-impl crate::door::Published for Door {
+impl crate::door::Published for LayoutActions {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         Self::resources(self)
     }
 
     fn revision(&self) -> Option<u64> {
-        Some(self.arrangement.borrow().revision())
+        Some(self.layout.borrow().revision())
     }
 
     fn invoke(

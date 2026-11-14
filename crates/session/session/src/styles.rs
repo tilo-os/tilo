@@ -1,10 +1,10 @@
 //! The styles every installed package offers (`docs/designs/app-language/shell.md` §6).
 //!
-//! A style is a view of the person's arrangement, and the arrangement's type is the one
-//! whose origin is `session.arrangement`. Any installed tilolang package may declare one: the
+//! A style is a view of the person's layout, and the layout's type is the one
+//! whose origin is `session.layout`. Any installed tilolang package may declare one: the
 //! session reads each installed package's module the way `seeded_apps` reads every app — its
 //! payload from the store row, `Bundle::read`, and the metadata the module embeds — and lists
-//! each view of its that takes the arrangement and nothing else. There is no list of styles in
+//! each view of its that takes the layout and nothing else. There is no list of styles in
 //! code and no keyword: the type is the contract, as it is for every view.
 //!
 //! The list is read when the session starts and again when its package store moved, so a style
@@ -17,8 +17,8 @@ use std::collections::BTreeSet;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::runtime::meta::{Meta, Ty};
 
-/// The origin of the arrangement's type: a view of a type holding it is a style.
-const ARRANGEMENT_ORIGIN: &str = "session.arrangement";
+/// The origin of the layout's type: a view of a type holding it is a style.
+const ARRANGEMENT_ORIGIN: &str = "session.layout";
 
 /// What the person's package store's registry says now.
 ///
@@ -103,10 +103,10 @@ pub fn installed(catalog: &package_store::Catalog) -> Vec<Style> {
     let Ok(apps) = app_catalogue::apps::read(catalog) else {
         return Vec::new();
     };
-    // Every module the store holds, read once: a style is a view of the arrangement, and the
-    // arrangement's type is whose origin says so, wherever it is declared. A package of another
-    // one writes the type with its own name (`shell.Arrangement`), so a style's parameter is
-    // read against the arrangement the modules together declare, not only the package's own.
+    // Every module the store holds, read once: a style is a view of the layout, and the
+    // layout's type is whose origin says so, wherever it is declared. A package of another
+    // one writes the type with its own name (`shell.Layout`), so a style's parameter is
+    // read against the layout the modules together declare, not only the package's own.
     let mut modules = Vec::new();
     let mut broken = Vec::new();
     for app in &apps {
@@ -114,7 +114,7 @@ pub fn installed(catalog: &package_store::Catalog) -> Vec<Style> {
             Ok(bundle) => modules.push((app.app_id.to_string(), bundle.meta)),
             // A package's payload with no tilolang module — a Rust app's, whose payload is a
             // binary and no `app.wasm`, or a wasm that carries no tilolang metadata — offers no
-            // style: it declares no view of the arrangement. The file simply not being there is
+            // style: it declares no view of the layout. The file simply not being there is
             // the Rust app's case (`BundleError::Read` with `NotFound`), which is no more broken
             // than a wasm with no metadata section: both are packages that write no styles, and
             // neither is a blank row in the switch.
@@ -129,8 +129,8 @@ pub fn installed(catalog: &package_store::Catalog) -> Vec<Style> {
             }
         }
     }
-    // The arrangement types, by every module's own name for them: a module of another package
-    // names the arrangement's type as `arrangement_app.Name`, so a style of it holds that name.
+    // The layout types, by every module's own name for them: a module of another package
+    // names the layout's type as `arrangement_app.Name`, so a style of it holds that name.
     let mut out = broken;
     for (package, meta) in &modules {
         out.extend(styles_of(package, meta, &modules));
@@ -173,17 +173,17 @@ fn unreadable(package: &str) -> Style {
     }
 }
 
-/// The views `meta` declares that draw the arrangement: a style is a view whose one
-/// parameter is a record type whose origin is `session.arrangement`. The arrangement's type is
+/// The views `meta` declares that draw the layout: a style is a view whose one
+/// parameter is a record type whose origin is `session.layout`. The layout's type is
 /// declared once, by the package that owns it (`so.tilo.shell`); another package's style names
-/// it as `shell.Arrangement`, so `modules` is read to know which names hold the arrangement,
+/// it as `shell.Layout`, so `modules` is read to know which names hold the layout,
 /// never a list in code (`shell.md` §6).
 fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<Style> {
-    // The arrangement type as any view names it: the package declaring it, and the name the
+    // The layout type as any view names it: the package declaring it, and the name the
     // declaring package gives it. `parse_ty`, below, turns a style's parameter into the same
-    // app and name, whether the style writes `Arrangement` (the declaring package) or
-    // `shell.Arrangement` (another one).
-    let arrangement: Vec<(String, String)> = modules
+    // app and name, whether the style writes `Layout` (the declaring package) or
+    // `shell.Layout` (another one).
+    let layout: Vec<(String, String)> = modules
         .iter()
         .flat_map(|(_, meta)| {
             meta.types
@@ -193,11 +193,11 @@ fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<Styl
         })
         .collect();
     // A module that declares none of its own still offers none: a style must draw the
-    // arrangement this session keeps, and the module's views are found by the type they take.
-    if arrangement.is_empty() {
+    // layout this session keeps, and the module's views are found by the type they take.
+    if layout.is_empty() {
         return Vec::new();
     }
-    // The arrangement type's default view is the screen layer the shell draws a style *through*
+    // The layout type's default view is the screen layer the shell draws a style *through*
     // (`shell_view`): offering it as a style would have it draw itself. Its `show` picks the
     // style, so it is the dispatch, never one of the choices.
     let defaults: BTreeSet<&str> = meta
@@ -209,8 +209,8 @@ fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<Styl
     let rows: BTreeSet<&str> = meta.row_views.iter().map(|r| r.view.as_str()).collect();
     meta.views
         .iter()
-        // A row draws one item, not the arrangement whole; a presented view is a hidden view
-        // of an action; the arrangement's default view is the dispatch. None is a style a
+        // A row draws one item, not the layout whole; a presented view is a hidden view
+        // of an action; the layout's default view is the dispatch. None is a style a
         // person picks.
         .filter(|v| {
             v.presents.is_none()
@@ -223,7 +223,7 @@ fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<Styl
             if matches!(
                 tilolang_tilo::runtime::meta::parse_ty(&only.ty, &meta.app),
                 Ok(Ty::Record(ref key))
-                    if arrangement
+                    if layout
                         .iter()
                         .any(|(app, name)| app == &key.app && name == &key.name)
             ))
@@ -243,7 +243,7 @@ fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<Styl
 mod tests {
     use super::*;
 
-    /// A meta of one arrangement type and the views that draw it, as the store's module carries
+    /// A meta of one layout type and the views that draw it, as the store's module carries
     /// it: what the session reads to find the styles (`shell.md` §6).
     fn meta(types: &serde_json::Value, views: &serde_json::Value) -> Meta {
         serde_json::from_value(serde_json::json!({
@@ -260,10 +260,10 @@ mod tests {
 
     fn arrangement_type() -> serde_json::Value {
         serde_json::json!([{
-            "id": "Arrangement",
-            "name": "Arrangement",
+            "id": "Layout",
+            "name": "Layout",
             "doc": "",
-            "origin": "session.arrangement",
+            "origin": "session.layout",
             "fields": []
         }])
     }
@@ -319,7 +319,7 @@ mod tests {
                 view(
                     "strips",
                     "Strips\n\nThe person's places as windows.",
-                    "Arrangement"
+                    "Layout"
                 ),
                 // A view of another type is no style.
                 view("notes", "Notes", "Layout"),
@@ -330,7 +330,7 @@ mod tests {
         assert_eq!(
             found.iter().map(|s| s.style.as_str()).collect::<Vec<_>>(),
             ["so.tilo.shell:strips"],
-            "only a view of the arrangement is a style: {found:?}"
+            "only a view of the layout is a style: {found:?}"
         );
         assert_eq!(
             found[0].line, "Strips",
@@ -375,7 +375,7 @@ mod tests {
     }
 }
 
-/// A style: a view of the arrangement an installed package declares (shell.md §6).
+/// A style: a view of the layout an installed package declares (shell.md §6).
 #[derive(
     Clone,
     Debug,

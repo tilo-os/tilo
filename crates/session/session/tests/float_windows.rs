@@ -27,7 +27,7 @@ use tilo_compositor::InputEvent;
 use tilo_desktop::verbs::CHROME_RESOURCE;
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
-use tilo_session_core::arrangement::StripReading;
+use tilo_session_core::layout::StripReading;
 use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
 
 use crate::common::until;
@@ -126,7 +126,7 @@ fn drawn_windows(session: &Session) -> Vec<Option<ui::kurbo::Rect>> {
 /// The window `tab` , as the shell's record reads it: the place it keeps, and whether it floats
 /// above the shell.
 fn held(session: &Session, tab: u64) -> StripReading {
-    let reading = session.arrangement().borrow().reading();
+    let reading = session.layout().borrow().reading();
     let key = tab.to_string();
     let place = reading
         .places

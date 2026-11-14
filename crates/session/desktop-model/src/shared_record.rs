@@ -8,7 +8,7 @@
 //! it: an undo keeps a map somebody wrote inside since. Who may change which
 //! entry is [`crate::ownership`]'s rule.
 //! ```text
-//! workspaces: { <id>: { order: f64, workspace: <map, no strips>, arrangement? } }
+//! workspaces: { <id>: { order: f64, workspace: <map, no strips>, layout? } }
 //! strips:     { <id>: { workspace: <id>, order: f64, name, author?,
 //!                       groups: { <id>: { order: f64, place?, float?, windows: { <id>: f64 } } } } }
 //! windows:    { <id>: { tab: <map>, author?, record?, opened_by? } }
@@ -26,8 +26,8 @@ use tilo_sort::CompactSort as _;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace, FloatPlace};
 use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
+use crate::layout::{CanvasPlace, FloatPlace, LayoutKind, WorkspaceLayout};
 use crate::layout::{Strip, Tab, WindowGroup};
 use crate::ownership::SharedDesktop;
 use crate::tree::Layout;
@@ -46,7 +46,7 @@ const NAME: &str = "name";
 const AUTHOR: &str = "author";
 const TAB: &str = "tab";
 const RECORD: &str = "record";
-const ARRANGEMENT: &str = "arrangement";
+const KIND: &str = "kind";
 const PLACE: &str = "place";
 const FLOAT: &str = "float";
 /// The agent run that opened a window ([`crate::ownership::OpenedBy`]). No
@@ -269,10 +269,10 @@ impl Parts {
                 continue;
             };
             workspace.strips.clear();
-            workspace.arrangement = Arrangement {
+            workspace.layout = WorkspaceLayout {
                 kind: entry
-                    .text(ARRANGEMENT)
-                    .map_or(ArrangementKind::Strips, ArrangementKind::parse),
+                    .text(KIND)
+                    .map_or(LayoutKind::Strips, LayoutKind::parse),
                 places: BTreeMap::new(),
                 floats: BTreeMap::new(),
             };
@@ -415,10 +415,10 @@ impl Parts {
                 .collect();
             for group in groups {
                 if let Some(place) = self.places.get(&group) {
-                    workspace.arrangement.places.insert(group, *place);
+                    workspace.layout.places.insert(group, *place);
                 }
                 if let Some(float) = self.floats.get(&group) {
-                    workspace.arrangement.floats.insert(group, *float);
+                    workspace.layout.floats.insert(group, *float);
                 }
             }
         }
@@ -848,12 +848,12 @@ fn held_orders<K: Copy + Eq + std::hash::Hash>(
 }
 
 /// Where a window group stands on the canvas and how it floats, as its entry keeps them.
-fn group_fields(arrangement: &Arrangement, group: u64) -> Vec<(&'static str, Field)> {
-    let place = arrangement
+fn group_fields(layout: &WorkspaceLayout, group: u64) -> Vec<(&'static str, Field)> {
+    let place = layout
         .place_of(group)
         .and_then(|place| serde_json::to_value(place).ok())
         .map(|place| (PLACE, Field::Json(place)));
-    let float = arrangement
+    let float = layout
         .float_of(group)
         .and_then(|float| serde_json::to_value(float).ok())
         .map(|float| (FLOAT, Field::Json(float)));
@@ -876,14 +876,11 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
     for (workspace, order) in workspaces.iter().zip(workspace_orders) {
         let mut bare = workspace.clone();
         bare.strips.clear();
-        bare.arrangement = Arrangement::default();
+        bare.layout = WorkspaceLayout::default();
         let bare = serde_json::to_value(&bare).unwrap_or_default();
         let mut fields = vec![(WORKSPACE, Field::Json(bare))];
-        if workspace.arrangement.kind != ArrangementKind::Strips {
-            fields.push((
-                ARRANGEMENT,
-                Field::Text(workspace.arrangement.kind.as_str().to_owned()),
-            ));
+        if workspace.layout.kind != LayoutKind::Strips {
+            fields.push((KIND, Field::Text(workspace.layout.kind.as_str().to_owned())));
         }
         want.workspaces.insert(
             workspace.id(),
@@ -917,7 +914,7 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
                     Entry {
                         parent: Some((STRIP, strip.id.0)),
                         order,
-                        fields: group_fields(&workspace.arrangement, group.id),
+                        fields: group_fields(&workspace.layout, group.id),
                     },
                 );
                 let ids: Vec<u64> = group.tabs.iter().map(|t| t.id).collect();
@@ -1013,7 +1010,7 @@ fn held(doc: &impl ReadDoc, heads: Option<&[ChangeHash]>) -> Levels<HeldEntry> {
             .collect::<Vec<_>>()
     };
     let mut held = Levels {
-        workspaces: keyed(level(WORKSPACES, &[(WORKSPACE, Json), (ARRANGEMENT, Text)])),
+        workspaces: keyed(level(WORKSPACES, &[(WORKSPACE, Json), (KIND, Text)])),
         strips: keyed(level(
             STRIPS,
             &[(WORKSPACE, Text), (NAME, Text), (AUTHOR, Text)],

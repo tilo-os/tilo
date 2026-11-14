@@ -190,7 +190,7 @@ pub fn remote(
 /// kept in step by a connector process the session runs (`imap`, `youtube`).
 ///
 /// The origins the session itself writes are no connector's (the types whose kinds the device
-/// derives, `session.arrangement`): what writes them runs in the session's own process.
+/// derives, `session.layout`): what writes them runs in the session's own process.
 #[must_use]
 pub fn served(name: &str) -> bool {
     REMOTES

@@ -12,7 +12,6 @@
 
 pub mod app;
 pub mod apps;
-pub mod arrangement;
 pub mod bots;
 pub mod capability;
 pub mod closed_tabs;
@@ -42,10 +41,6 @@ pub mod window_share;
 pub mod workspace;
 
 pub use app::{APP_ID_PREFIX, AppId, AppKind};
-pub use arrangement::{
-    Arrangement, ArrangementKind, CANVAS_BAND, CANVAS_GAP, CANVAS_ROW_GAP, CanvasPlace,
-    FloatCorner, FloatPlace, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
-};
 pub use bots::WorkspaceBot;
 pub use capability::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope};
 pub use closed_tabs::{CLOSED_TABS_PER_WORKSPACE, ClosedTab, ClosedTabs, Leaving, Reopened};
@@ -54,7 +49,10 @@ pub use ids::{
     FileId, GroupId, IdMinter, MintIds, PEER_ID_COUNTER_MASK, PEER_ID_SALT_SHIFT, StripId, TabId,
     TabRef, WorkspaceId, compose_id, counter_of, mint_in_namespace, peer_salt_of,
 };
-pub use layout::{Strip, Tab, TileContent, WindowGroup};
+pub use layout::{
+    CANVAS_BAND, CANVAS_GAP, CANVAS_ROW_GAP, CanvasPlace, FloatCorner, FloatPlace, LayoutKind,
+    Strip, Tab, TileContent, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH, WindowGroup, WorkspaceLayout,
+};
 pub use partition::{Display, OutputPartition};
 pub use present::{Present, Status};
 pub use receipt::WorkspaceEffectReceipt;

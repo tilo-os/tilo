@@ -11,7 +11,7 @@ use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{
     Compositor, DisplayConfig, Error, LoopTurns, NestedConfig, OutputConfig, WindowPolicy,
 };
-use tilo_session_core::arrangement;
+use tilo_session_core::layout;
 
 use tilo_desktop::osd::{Hint, Osd, OsdKind};
 use tilo_desktop::overlays::{Overlays, Slot};
@@ -2263,7 +2263,7 @@ impl Session {
 
     /// The person's arrangement as the shell reads it, with who else is here.
     #[must_use]
-    pub fn arrangement_reading(&self) -> tilo_session_core::shell::ArrangementReading {
+    pub fn arrangement_reading(&self) -> tilo_session_core::shell::LayoutReading {
         self.shared.arrangement_reading()
     }
 

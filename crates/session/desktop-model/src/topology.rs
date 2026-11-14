@@ -298,7 +298,7 @@ impl Layout {
         Some(group.tabs.clone())
     }
 
-    /// Replace one strip's group/tab arrangement with the identity-only
+    /// Replace one strip's group/tab layout with the identity-only
     /// shape a live strip widget reports after a same-strip drag or split.
     /// Tabs keep their content from this tree: the widget names ids, never
     /// tiles. Maximized state stays with the group id that had it. If the

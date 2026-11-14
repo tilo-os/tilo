@@ -1,7 +1,7 @@
-//! styles as views of the arrangement (`docs/designs/app-language/shell.md` §6): every
+//! styles as views of the layout (`docs/designs/app-language/shell.md` §6): every
 //! installed package's styles are published on the shell reading, found by the type they draw,
 //! and the layout draws the person's chosen one through `show`. A style is a view whose first
-//! parameter is the session's arrangement — the type whose origin is `session.arrangement` —
+//! parameter is the session's layout — the type whose origin is `session.layout` —
 //! never a keyword and never a list in code, so a package a person or their agent wrote offers
 //! its styles beside the four the shell ships.
 
@@ -102,8 +102,8 @@ fn style_state(session: &Session, style: &str) -> Option<(bool, String)> {
 }
 
 /// Step 2 of shell.md §6, "Styles are views": the four styles `so.tilo.shell` ships are views of
-/// the arrangement, published on the shell's reading and listed by their doc lines, and the layout
-/// draws the one the person chooses through `show`. Switching keeps the arrangement.
+/// the layout, published on the shell's reading and listed by their doc lines, and the layout
+/// draws the one the person chooses through `show`. Switching keeps the layout.
 #[test]
 fn the_four_shipped_styles_are_listed_and_drawn() {
     let _settled = ui::motion::testing::settled();
@@ -118,7 +118,7 @@ fn the_four_shipped_styles_are_listed_and_drawn() {
             .any(|label| label == "Showing Strips")
     });
     // The styles the session read from its store: the shell's own four, each a view of the
-    // arrangement, listed by its doc line.
+    // layout, listed by its doc line.
     let styles = crate::common::styles(&session);
     assert!(!styles.is_empty(), "the layout offers styles: {styles:?}");
     for name in ["strips", "frames", "spaces", "desktop"] {
@@ -132,7 +132,7 @@ fn the_four_shipped_styles_are_listed_and_drawn() {
             "the {name} style is named: {found:?}"
         );
     }
-    // The switch lists them, and choosing one draws that style's own view of the arrangement.
+    // The switch lists them, and choosing one draws that style's own view of the layout.
     assert!(
         !session.shell_parts().is_empty(),
         "the shell stands on its display: {:?}",
@@ -147,19 +147,19 @@ fn the_four_shipped_styles_are_listed_and_drawn() {
 /// Step 2's part the shell alone cannot show: a style **another** installed package declares
 /// is listed by the switch and, chosen, draws the layout.
 ///
-/// The person's own package writes a view taking `shell.Arrangement` — the arrangement's type,
-/// whose origin is `session.arrangement` — and nothing else. The session finds it by that type,
+/// The person's own package writes a view taking `shell.Layout` — the layout's type,
+/// whose origin is `session.layout` — and nothing else. The session finds it by that type,
 /// never by a list in code, and the layout draws the package's own view once it is chosen.
 ///
 /// This fails without the change: before it `Viewing.showing` was a closed `Preset`, so no
-/// package could offer a style; and a first cut that read the arrangement's name only from the
+/// package could offer a style; and a first cut that read the layout's name only from the
 /// package's own `meta.types` never listed a second package's style at all.
 #[test]
 fn a_style_from_another_installed_package_is_listed_and_draws_the_shell() {
     let _settled = ui::motion::testing::settled();
     let store = crate::common::app_store();
     // The person's own style package, written into a scratch directory and installed into the
-    // store as any package is: a view of the arrangement and nothing else, its one line naming
+    // store as any package is: a view of the layout and nothing else, its one line naming
     // it in the switch.
     let scratch = std::env::temp_dir().join(format!(
         "layout-style-{}-{}",
@@ -179,7 +179,7 @@ fn a_style_from_another_installed_package_is_listed_and_draws_the_shell() {
 use so.tilo.shell as shell
 
 /// Timeline of the layout
-view timeline(a: shell.Arrangement) {
+view timeline(a: shell.Layout) {
     ui.Text("Timeline of {a.places.count()} places")
 }
 "#,
@@ -208,7 +208,7 @@ view timeline(a: shell.Arrangement) {
         "listed by its author's doc line"
     );
     // Choosing it is one action on the person's viewing, as the switch runs, and the layout draws
-    // the package's own view of the arrangement: its words stand on the screen. The bar's style
+    // the package's own view of the layout: its words stand on the screen. The bar's style
     // menu lists every style by the one name it has everywhere (`style_label`), and the person's
     // own stands beside the shell's four.
     //
@@ -307,13 +307,13 @@ fn a_style_whose_package_does_not_load_shows_the_strips_and_a_notice_and_keeps_t
 }
 
 /// The style the broken package held before its module was taken away: a plain style of the
-/// arrangement that compiles and draws against the installed shell.
+/// layout that compiles and draws against the installed shell.
 const WORKING_STYLE: &str = r#"app atest.broken "A broken style"
 
 use so.tilo.shell as shell
 
 /// A broken style of the layout
-view broken(a: shell.Arrangement) {
+view broken(a: shell.Layout) {
     ui.Text("Nothing of the kind: {a.places.count()}")
 }
 "#;
@@ -401,7 +401,7 @@ const TRAPPING: &str = r#"app atest.trapping "A trappng style"
 use so.tilo.shell as shell
 
 /// A trapping style of the layout
-view trapping(a: shell.Arrangement) {
+view trapping(a: shell.Layout) {
     let places = a.places.count()
     ui.Text("at {places / 0} places")
 }
@@ -490,7 +490,7 @@ const WORKING: &str = r#"app atest.trapping "A working style"
 use so.tilo.shell as shell
 
 /// A working style of the layout
-view trapping(a: shell.Arrangement) {
+view trapping(a: shell.Layout) {
     ui.Text("A working style, {a.places.count()} places")
 }
 "#;
@@ -616,7 +616,7 @@ fn the_repl_moves_the_desktops_dock_by_the_styles_own_action() {
     });
     let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
-    // The desktop, through the REPL's own door: the style is a view of the arrangement and the
+    // The desktop, through the REPL's own door: the style is a view of the layout and the
     // switch is `show_style`, an action of the person's viewing record.
     let (answer, failed) = repl.run(
         &mut session,

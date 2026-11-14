@@ -14,7 +14,7 @@ use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
 use tilo_service::Services;
 use tilo_session_core::door::Doors;
-use tilo_session_core::shell::{ArrangementReading, Ask};
+use tilo_session_core::shell::{Ask, LayoutReading};
 
 use crate::device_lists::DeviceLists;
 use crate::displays;
@@ -93,7 +93,7 @@ pub(crate) struct Shell {
     announced: std::cell::RefCell<std::collections::BTreeSet<String>>,
     link: Rc<SessionLink>,
     /// The services' revision and the arrangement the places' readings were last followed at.
-    followed: Option<(u64, ArrangementReading)>,
+    followed: Option<(u64, LayoutReading)>,
     /// The resources whose readings the shell holds for its places, by id, each with its type as
     /// the shell's runtime names another app's (`<app>#<Type>`): what a place names, and what the
     /// views composed there read.
@@ -377,11 +377,7 @@ impl Shell {
     /// resource those views read, as they read it (an item of a collection a reading lists by id).
     /// Each reading is read again only when its service says it moved, so a change costs the shell
     /// only the resources it touched.
-    pub(crate) fn follow_places(
-        &mut self,
-        arrangement: &ArrangementReading,
-        services: &mut Services,
-    ) {
+    pub(crate) fn follow_places(&mut self, arrangement: &LayoutReading, services: &mut Services) {
         let wanted = self.link.take_wanted();
         // A view composed in a place read a resource of a type no loaded package declared: its
         // app's package is published like those a place shows, so the place draws it through that
@@ -511,7 +507,7 @@ impl Shell {
     }
 
     /// Hand the shell the person's arrangement, which its views draw, whenever it changed.
-    pub(crate) fn publish_arrangement(&self, reading: ArrangementReading) {
+    pub(crate) fn publish_arrangement(&self, reading: LayoutReading) {
         self.link.publish_arrangement(reading);
     }
 

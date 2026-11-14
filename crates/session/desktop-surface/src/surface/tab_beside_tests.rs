@@ -206,8 +206,8 @@ fn floats_beside(frame: &mut ui::headless::FrameHarness, handle: &DesktopHandle)
                 .first()?
                 .window_groups
                 .iter()
-                .find(|group| workspace.arrangement.float_of(group.id).is_some())?;
-            Some((group.id, workspace.arrangement.float_of(group.id)?))
+                .find(|group| workspace.layout.float_of(group.id).is_some())?;
+            Some((group.id, workspace.layout.float_of(group.id)?))
         })
         .expect("the window the app opened floats");
     assert_eq!(

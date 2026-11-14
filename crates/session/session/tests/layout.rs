@@ -132,7 +132,7 @@ fn save_layout(seat: &Seat, tree: &Layout) -> Vec<WorkspaceId> {
         until(
             &mut session,
             "the workspace's layout is written",
-            |session| session.arrangement().borrow_mut().last_step().is_some(),
+            |session| session.layout().borrow_mut().last_step().is_some(),
         );
         layout = session.handle().read(Clone::clone);
     }

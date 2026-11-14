@@ -194,7 +194,7 @@ pub trait Service {
     /// taken, each with the actor that asked: an invocation of a resource's `open` changes nothing
     /// of the record, and opening is the system's ([`Open`], shell.md §8, "The canvas composes
     /// views; it opens nothing"). The session places each through its arrangement, attributed to
-    /// that actor and admitted as the same step `shell:arrangement#open` is. A service that
+    /// that actor and admitted as the same step `shell:layout#open` is. A service that
     /// publishes no `open` has nothing to take.
     fn take_open(&mut self) -> Vec<(tilo_actions::ActionInvoker, Open)> {
         Vec::new()

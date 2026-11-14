@@ -9,7 +9,7 @@
 //! the person asked once Chat holds it (`canvas_point.rs`).
 //!
 //! Every step here is the production path: the shell's own `place-found` action on
-//! `shell:arrangement`, pointed at and typed with the pointer and keyboard, and the send as the
+//! `shell:layout`, pointed at and typed with the pointer and keyboard, and the send as the
 //! session carries it out, read back from `session:send-to`'s own reading. Chat's process is not
 //! part of this session, so the message landing in the conversation is proven where Chat runs (the
 //! nested agent story).
@@ -28,7 +28,7 @@ use std::time::Duration;
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 
-use crate::common::{CANVAS, PERSON, arrangement, on_screen, private_home, show_preset, until};
+use crate::common::{CANVAS, PERSON, layout, on_screen, private_home, show_preset, until};
 
 /// A headless session with the shell as the whole screen and the apps a development session seeds,
 /// the framed canvas in front.
@@ -65,7 +65,7 @@ fn a_question_typed_on_the_canvas_is_sent_to_the_workspaces_agent() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
-    let places = arrangement(&session).places.len();
+    let places = layout(&session).places.len();
 
     ask(&mut session, "what is on my task list?");
 
@@ -79,7 +79,7 @@ fn a_question_typed_on_the_canvas_is_sent_to_the_workspaces_agent() {
     );
     assert_eq!(to[0]["name"], "Assistant", "{first}");
     assert_eq!(
-        arrangement(&session).places.len(),
+        layout(&session).places.len(),
         places,
         "the ask stands no place of its own on the canvas"
     );
@@ -129,7 +129,7 @@ fn root_of(session: &Session, app: &str) -> String {
 /// The canvas point of the strip `place` stands in, and its workspace.
 fn canvas_point(
     session: &Session,
-    place: &tilo_session_core::arrangement::PlaceReading,
+    place: &tilo_session_core::layout::PlaceReading,
 ) -> (i64, i64, String) {
     let strip = crate::common::strip(session, crate::common::number(&place.strip))
         .expect("the place has its strip");
@@ -141,9 +141,9 @@ fn placed_as_agent(
     session: &mut Session,
     record: &str,
     arguments: serde_json::Value,
-) -> tilo_session_core::arrangement::PlaceReading {
+) -> tilo_session_core::layout::PlaceReading {
     session
-        .invoke_with_actor(AGENT, "shell:arrangement", "place", &arguments)
+        .invoke_with_actor(AGENT, "shell:layout", "place", &arguments)
         .unwrap_or_else(|error| panic!("the place runs: {error}"));
     crate::common::wait_for(session, format!("{record} placed"), |session| {
         crate::common::places(session)
@@ -173,7 +173,7 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
     );
     let beside = serde_json::json!({"resource": notes_id, "beside": inbox_id});
     let answered = session
-        .invoke_with_actor(AGENT, "shell:arrangement", "place", &beside)
+        .invoke_with_actor(AGENT, "shell:layout", "place", &beside)
         .unwrap_or_else(|error| panic!("the place runs: {error}"));
     let notes = crate::common::wait_for(&mut session, "the notes placed", |session| {
         crate::common::places(session)
@@ -205,10 +205,10 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
         "it stands to the anchor's right: {x} against {anchor_x}"
     );
     // The step is the agent's: the layout's history keeps it as the agent's, and the person's own
-    // steps to take back (`Arrangement::last_step`) are the person's alone, so none is read here.
+    // steps to take back (`Layout::last_step`) are the person's alone, so none is read here.
 
     session
-        .invoke_with_actor(AGENT, "shell:arrangement", "place", &beside)
+        .invoke_with_actor(AGENT, "shell:layout", "place", &beside)
         .unwrap_or_else(|error| panic!("the second place runs: {error}"));
     session.step(Duration::from_millis(1)).expect("a frame");
     let shown = crate::common::places(&session)
@@ -341,7 +341,7 @@ fn moved_and_drawn(session: &mut Session, key: &str) {
         let point = canvas_point(session, &place);
         (point.0 == 1600).then_some(point)
     });
-    assert_eq!((x, y), (1600, 0), "the arrangement holds the point");
+    assert_eq!((x, y), (1600, 0), "the layout holds the point");
     #[allow(clippy::cast_precision_loss, reason = "canvas points are small")]
     let (dx, dy) = ((1600 - bx) as f64, (0 - by) as f64);
     crate::common::wait_for(

@@ -28,7 +28,7 @@ use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::quick_settings;
 use tilo_session::{Options, Service as _, Session};
-use tilo_session_core::shell::{ArrangementPersonReading, ArrangementWorkspaceReading};
+use tilo_session_core::shell::{LayoutPersonReading, LayoutWorkspaceReading};
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
@@ -81,20 +81,20 @@ fn centre(session: &Session) -> tilo_quick_settings::hosted::NotificationCentre 
     .expect("the notifications read as the centre")
 }
 
-/// What the bar names of the person's arrangement: who they are, the workspace and the row in
+/// What the bar names of the person's layout: who they are, the workspace and the row in
 /// front, every workspace and who else is here.
 #[derive(Debug)]
 struct Shell {
     person: String,
     workspace: String,
     strip: String,
-    workspaces: Vec<ArrangementWorkspaceReading>,
-    people: Vec<ArrangementPersonReading>,
+    workspaces: Vec<LayoutWorkspaceReading>,
+    people: Vec<LayoutPersonReading>,
 }
 
-/// The person's arrangement as the session publishes it to the shell.
+/// The person's layout as the session publishes it to the shell.
 fn shell(session: &Session) -> Shell {
-    let reading = session.arrangement_reading();
+    let reading = session.layout_reading();
     let front = reading
         .workspaces
         .iter()

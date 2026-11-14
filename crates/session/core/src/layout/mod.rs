@@ -1,9 +1,9 @@
-//! The person's arrangement as the layout they share with the workspace: what is
+//! The person's layout as the layout they share with the workspace: what is
 //! open where, read off the layout itself, kept in the layout's own record
 //! ([`tilo_desktop_model::shared_record`]) with history and undo, so every member
 //! of the workspace reads the same one. A place's view and its pin are the
 //! window's own ([`tilo_desktop_model::Tab`]).
-//! Each arranging action ([`ArrangementAction`]) is one change of the layout,
+//! Each layout action ([`LayoutAction`]) is one change of the layout,
 //! attributed to whoever asked for it and undone as that one step; what the layout
 //! changes on its own is a change like any other.
 //! One rule is fixed (shell.md §1): nothing moves or takes focus under an ongoing
@@ -17,13 +17,13 @@ use std::rc::Rc;
 use tilo_actions::ResourceSpec;
 use tilo_actions::remote::session_actions;
 use tilo_desktop_model::{
-    ArrangementKind, FloatPlace, GroupId, Layout, Strip, StripId, Tab, TabId, TileContent,
+    Layout as Tree, LayoutKind, FloatPlace, GroupId, Strip, StripId, Tab, TabId, TileContent,
     WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::DesktopHandle;
 
-use crate::layout::LayoutDocument;
-
+mod document;
+pub use document::*;
 mod readings;
 pub use readings::*;
 mod beside;
@@ -61,25 +61,25 @@ const FLOAT_INSET: i64 = 24;
 const FLOAT_WIDTH: u32 = 640;
 const FLOAT_HEIGHT: u32 = 480;
 
-/// The operation type every arranging action carries.
-pub const OPERATION: &str = "tilo.shell.arranging";
-/// The resource the person's arrangement is published as. Its id is the one every door that names
-/// the system's `open` names ([`session_actions::ARRANGEMENT_RESOURCE`]): the broker rewrites a
-/// served app's `open` into the arrangement's own, so the two are one address.
-pub const RESOURCE: &str = session_actions::ARRANGEMENT_RESOURCE;
+/// The operation type every layout action carries.
+pub const OPERATION: &str = "tilo.shell.layout";
+/// The resource the person's layout is published as. Its id is the one every door that names
+/// the system's `open` names ([`session_actions::LAYOUT_RESOURCE`]): the broker rewrites a
+/// served app's `open` into the layout's own, so the two are one address.
+pub const RESOURCE: &str = session_actions::LAYOUT_RESOURCE;
 /// The resource its history is published as: its undo and redo.
-pub const RECORD_RESOURCE: &str = "shell:arrangement-record";
+pub const RECORD_RESOURCE: &str = "shell:layout-record";
 /// The kind of a place's own resource.
-pub const PLACE_KIND: &str = "arrangement.place";
+pub const PLACE_KIND: &str = "layout.place";
 /// The kind of a strip's own resource.
-pub const STRIP_KIND: &str = "arrangement.strip";
+pub const STRIP_KIND: &str = "layout.strip";
 /// The kind of a row's own resource.
-pub const ROW_KIND: &str = "arrangement.row";
+pub const ROW_KIND: &str = "layout.row";
 /// The kind of a query's own resource: what a place shows while its app answers what the person
 /// typed (`session.arrangement_query`, shell.md §8).
-pub const QUERY_KIND: &str = "arrangement.query";
+pub const QUERY_KIND: &str = "layout.query";
 
-/// What a place, a strip or a row of the arrangement is published as a resource of.
+/// What a place, a strip or a row of the layout is published as a resource of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
     Place,
@@ -101,7 +101,7 @@ impl Item {
         }
     }
 
-    /// The resource the arrangement publishes the thing `key` names as.
+    /// The resource the layout publishes the thing `key` names as.
     #[must_use]
     pub fn resource(self, key: &str) -> String {
         format!("{}{key}", self.prefix())
@@ -114,10 +114,10 @@ impl Item {
     }
 }
 
-/// An arranging action: one change of the person's arrangement.
+/// An layout action: one change of the person's layout.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "do", rename_all = "kebab-case")]
-pub enum ArrangementAction {
+pub enum LayoutAction {
     /// Retired: a window of an app stood in a strip, before a place was made from the resource it
     /// shows ([`Self::Place`]). Kept in place because an action already written names a variant by
     /// its position; one that sends it is refused.
@@ -158,12 +158,12 @@ pub enum ArrangementAction {
     Close { place: u64 },
     /// Bring the place `place` in front of the strip it stands in, as choosing its tab does.
     Activate { place: u64 },
-    /// Pin the place `place` (`pinned`), so an agent's arrangement leaves it alone (shell.md §5),
+    /// Pin the place `place` (`pinned`), so an agent's layout leaves it alone (shell.md §5),
     /// or unpin it.
     Pin { place: u64, pinned: bool },
     /// Stand the place `place` at `(x, y)` canvas pixels, keeping every other place where it is:
     /// what a drag that let a place go on the canvas runs (`canvas.md` §6, "moving a window is one
-    /// arranging action", shell.md §2 `move`). The place's strip takes the point; nothing else
+    /// layout action", shell.md §2 `move`). The place's strip takes the point; nothing else
     /// changes. Appended last: existing encodings are unchanged.
     Position { place: u64, x: i64, y: i64 },
     /// Stand the resource `resource` on the canvas as its view `view`
@@ -171,7 +171,7 @@ pub enum ArrangementAction {
     /// The place is the new entry `place`, alone in its own strip `strip`,
     /// in the row `row`; `shows` is the resource's app, resolved here and
     /// never passed in (shell.md §8: showing something is an action on the
-    /// arrangement, not on the resource).
+    /// layout, not on the resource).
     Place {
         workspace: WorkspaceId,
         row: u64,
@@ -273,7 +273,7 @@ pub enum ArrangementAction {
     },
     /// Ask the app the query `place` shows again for what the person typed: the query goes back to
     /// searching and the app's search action runs once more. Resolved where the app's action is
-    /// ([`Door`]), never in the record: the record holds no running query. Appended last.
+    /// ([`LayoutActions`]), never in the record: the record holds no running query. Appended last.
     RetryQuery { place: u64 },
     /// Give the place `place` the size `width` × `height` canvas pixels, its corner where it
     /// stands and every other place where it is: what dragging a place's edge or corner on the
@@ -291,7 +291,7 @@ pub struct Surface {
     pub place: u64,
 }
 
-/// The system's search, as the arrangement reaches it: the same `find` the
+/// The system's search, as the layout reaches it: the same `find` the
 /// palette and an agent's `tilo` tool run. The session sets it, so text typed
 /// on the canvas finds a resource through the one index and the one ranking,
 /// never a search of its own (shell.md §8, "Finding what to place").
@@ -326,7 +326,7 @@ pub fn found_resource(
 /// through its place view, the inbox's list, and "Mail" the same root through its whole window.
 /// `target` reads a resource as the session publishes it, `None` for one no place can show. Text
 /// typed on the canvas and the REPL's `place_found` resolve through it; an agent's `find` leads with
-/// the same resource, and its `place` of it takes the same place view (`Door::place_as_content`).
+/// the same resource, and its `place` of it takes the same place view (`LayoutActions::place_as_content`).
 #[must_use]
 pub fn found_place(
     hits: &[tilo_desktop_search::Hit],
@@ -359,7 +359,7 @@ fn names_app(text: &str, title: &str) -> bool {
 /// "Asking from the canvas"; canvas.md §3): the session sends it as the person to the workspace's
 /// agent, as a send-to box sends, and Chat posts it in their conversation with the agent. It
 /// answers the number the ask goes by: the turn its message opens stands where the person typed
-/// once Chat said which message it posted ([`Arrangement::stand_asked`]). `None` when the session
+/// once Chat said which message it posted ([`Layout::stand_asked`]). `None` when the session
 /// cannot ask — no workspace to ask in, or the send was refused — and the text then fails to
 /// place as it always did.
 pub type Ask = Rc<dyn Fn(&str) -> Option<u64>>;
@@ -437,7 +437,7 @@ pub type SearchOutcome = Result<(), String>;
 type Pointed = ((i64, i64), Option<(i64, i64)>, Option<CanvasRect>);
 
 /// What a text typed on the canvas found, and where it stands: the inputs of
-/// [`Arrangement::place_found`] besides the arrangement itself.
+/// [`Layout::place_found`] besides the layout itself.
 #[derive(Clone, Copy)]
 pub struct Found<'a> {
     /// The person the place is made as.
@@ -494,7 +494,7 @@ fn placeable(hit: &tilo_desktop_search::Hit) -> Option<(&str, &str)> {
 /// Which of `hits` a text typed on the canvas places: the top one that names a resource `shows`
 /// accepts, or the one inside it that carries the same name. This is the one ranking a typed text
 /// and an agent's `find` share, so `find` never leads with another row about the same resource. A
-/// hit the arrangement cannot place does not stand in the way of one it can.
+/// hit the layout cannot place does not stand in the way of one it can.
 #[must_use]
 pub fn placed(
     hits: &[tilo_desktop_search::Hit],
@@ -566,7 +566,7 @@ fn root_of(resource: &str) -> Option<&str> {
     resource.get(..end)
 }
 
-/// A resource as the arrangement makes a place of it: the app publishing it, its views (the primary
+/// A resource as the layout makes a place of it: the app publishing it, its views (the primary
 /// first when it declares one), and what it is called. What `place` resolves a resource id against,
 /// from what the session publishes now.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -634,7 +634,7 @@ impl Target {
     }
 }
 
-impl ArrangementAction {
+impl LayoutAction {
     /// The action as an operation's payload decodes, when it is one.
     #[must_use]
     pub fn decode(type_id: &str, payload: &[u8]) -> Option<Self> {
@@ -659,7 +659,7 @@ pub struct Busy {
 }
 
 impl Busy {
-    /// Whether an arrangement must wait.
+    /// Whether an layout must wait.
     #[must_use]
     pub const fn holds(self) -> bool {
         self.gesture || self.typing
@@ -671,7 +671,7 @@ impl Busy {
 /// device, the registry's names on the page.
 pub type Names = Rc<dyn Fn(&str, &str) -> String>;
 
-/// What a host calls what the arrangement publishes, in the person's language: the message `key`
+/// What a host calls what the layout publishes, in the person's language: the message `key`
 /// of its catalogue with `args`, and `source` where its catalogue holds none.
 pub type Words = Rc<dyn Fn(&str, &[(&str, String)], &str) -> String>;
 
@@ -694,10 +694,10 @@ pub trait Layouts {
     /// by.
     fn acted(
         &self,
-        before: &Layout,
-        tree: &Layout,
+        before: &Tree,
+        tree: &Tree,
         asked: &str,
-        action: &ArrangementAction,
+        action: &LayoutAction,
         shows: &[(TabId, String)],
     );
     /// The record each window shows, by its tab: what a place put on a record was placed on.
@@ -711,7 +711,7 @@ pub enum Stepped {
     /// The step was taken, and the host shows what it came to itself.
     Taken,
     /// The step was taken, and this is the layout it left.
-    Layout(Box<Layout>),
+    Tree(Box<Tree>),
 }
 
 impl Layouts for LayoutDocument {
@@ -722,7 +722,7 @@ impl Layouts for LayoutDocument {
             self.undo(person)
         };
         match stepped.then(|| self.tree()).flatten() {
-            Some(tree) => Stepped::Layout(Box::new(tree)),
+            Some(tree) => Stepped::Tree(Box::new(tree)),
             None => Stepped::None,
         }
     }
@@ -733,16 +733,16 @@ impl Layouts for LayoutDocument {
 
     fn acted(
         &self,
-        _before: &Layout,
-        tree: &Layout,
+        _before: &Tree,
+        tree: &Tree,
         asked: &str,
-        action: &ArrangementAction,
+        action: &LayoutAction,
         shows: &[(TabId, String)],
     ) {
         self.record_action(
             tree,
             ui::time::unix_now_i64(),
-            &crate::arrangement::step_context(asked, action),
+            &crate::layout::step_context(asked, action),
             shows,
         );
     }
@@ -752,24 +752,24 @@ impl Layouts for LayoutDocument {
     }
 }
 
-/// The person's arrangement, and the changes waiting for the person to finish what they are doing.
-pub struct Arrangement {
+/// The person's layout, and the changes waiting for the person to finish what they are doing.
+pub struct Layout {
     /// The person whose record it is.
     person: String,
-    /// The shell itself: what the arrangement reads, and whose change every arranging action is.
+    /// The shell itself: what the layout reads, and whose change every layout action is.
     handle: DesktopHandle,
     /// Where the layout is kept: the record the workspace shares, whose own changes are its history.
     layouts: Rc<dyn Layouts>,
     /// What the host calls a window, by [`Names`].
     names: Names,
-    /// What the host calls what the arrangement publishes, by [`Words`].
+    /// What the host calls what the layout publishes, by [`Words`].
     words: Words,
     /// The resources the session publishes now, by id: what a place made from a resource reads its
     /// app and views from ([`Catalog`]).
     catalog: Rc<RefCell<Catalog>>,
     /// Actions that arrived under a gesture or while the person typed: they run in order once it
     /// ends.
-    waiting: RefCell<VecDeque<(String, ArrangementAction)>>,
+    waiting: RefCell<VecDeque<(String, LayoutAction)>>,
     /// Each turn asked on the canvas, by the message that asked it ([`turn_key`]): where the places
     /// an agent's step in it makes stand. A turn is the session's while it runs, never the
     /// record's: the record holds the places it made.
@@ -792,10 +792,10 @@ pub struct Arrangement {
     query_held: RefCell<BTreeMap<String, std::collections::BTreeSet<String>>>,
 }
 
-impl Arrangement {
-    /// `person` 's arrangement of `handle` 's layout, which `layouts` keeps, naming windows
+impl Layout {
+    /// `person` 's layout of `handle` 's layout, which `layouts` keeps, naming windows
     /// through `names` and what it publishes through `words`. A host brings over whatever an older
-    /// build kept of the arrangement before it makes one: what it holds is the layout.
+    /// build kept of the layout before it makes one: what it holds is the layout.
     #[must_use]
     pub fn new(
         person: &str,
@@ -871,7 +871,7 @@ impl Arrangement {
                 })
             });
             let Some((workspace, row)) = held else {
-                return Err("that strip is not in the arrangement".into());
+                return Err("that strip is not in the layout".into());
             };
             return Ok(Surface {
                 workspace,
@@ -942,8 +942,8 @@ impl Arrangement {
     /// Place the resource a text typed at `at` finds on the canvas, as `asked`'s:
     /// the top of the `hits` the system's search answered for it that a place can
     /// show ([`found_resource`]), resolved against what the session publishes now
-    /// ([`Catalog`]), standing at `at` through the arranging action
-    /// [`ArrangementAction::Place`] — one attributed, undoable change of the
+    /// ([`Catalog`]), standing at `at` through the layout action
+    /// [`LayoutAction::Place`] — one attributed, undoable change of the
     /// person's record (shell.md §8). `view` empty shows the resource's primary
     /// view. `strip` names the strip the found resource joins as a tab (a strip
     /// id on the layout), else it takes a strip of its own.
@@ -953,7 +953,7 @@ impl Arrangement {
     /// comes (`Find`, `FindDone`): this never searches.
     ///
     /// Returns the place's id, or `None` when nothing the text finds is a
-    /// resource the arrangement can place.
+    /// resource the layout can place.
     ///
     /// Text that *asks* — a question ([`tilo_desktop_search::answers::question::asks`]),
     /// or text nothing matches — goes to `ask` instead (shell.md §8.1,
@@ -1024,7 +1024,7 @@ impl Arrangement {
             // What the app held of the kind when it was asked: what it holds of that kind
             // afterwards that it did not hold then is what the search found.
             self.query_held.borrow_mut().insert(key, held);
-            let action = ArrangementAction::Place {
+            let action = LayoutAction::Place {
                 workspace: surface.workspace,
                 row: surface.row,
                 strip: surface.strip,
@@ -1063,7 +1063,7 @@ impl Arrangement {
         // person's to make.
         let (width, height, hugs) = self.found_size(at, size, seen);
         let surface = self.surface_at_strip(strip)?;
-        let action = ArrangementAction::Place {
+        let action = LayoutAction::Place {
             workspace: surface.workspace,
             row: surface.row,
             strip: surface.strip,
@@ -1087,7 +1087,7 @@ impl Arrangement {
     }
 
     /// The place `place` shows what `answer` says, when the app the query asked has answered:
-    /// exactly one match of its type re-points the place at that resource (one arranging step, so
+    /// exactly one match of its type re-points the place at that resource (one layout step, so
     /// Undo puts the query back); several or none leave the query standing with what it found or
     /// did not. The layout is unchanged by this call alone: the re-point is one [Show] step.
     ///
@@ -1123,12 +1123,12 @@ impl Arrangement {
         if state == "one"
             && let Some(only) = query.matches.first().cloned()
         {
-            let action = ArrangementAction::Show {
+            let action = LayoutAction::Show {
                 place,
                 resource: only.address.clone(),
                 view: String::new(),
             };
-            // A query answered while the person drags or types waits, as any arranging action does;
+            // A query answered while the person drags or types waits, as any layout action does;
             // the answer is kept either way and the place re-points when they end.
             if self.ask(asked, action, busy).is_ok() {
                 self.queries.borrow_mut().remove(&place.to_string());
@@ -1188,9 +1188,9 @@ impl Arrangement {
     }
 
     /// Settle the query a place stands with what its app answered, by the query's key: exactly one
-    /// match re-points the place ([`ArrangementAction::Show`], one step Undo takes back), and
+    /// match re-points the place ([`LayoutAction::Show`], one step Undo takes back), and
     /// several, none or a failure leave the query standing with what it found or did not. The one
-    /// arranging step is made as the person's.
+    /// layout step is made as the person's.
     pub fn answer_query_of(&mut self, key: &str, answer: Answer, busy: Busy) {
         let Ok(place) = key.parse::<u64>() else {
             return;
@@ -1247,7 +1247,7 @@ impl Arrangement {
     /// # Errors
     /// Why the place could not be activated at all.
     fn bring_forward(&mut self, asked: &str, place: u64, busy: Busy) -> Result<(), String> {
-        match self.ask(asked, ArrangementAction::Activate { place }, busy) {
+        match self.ask(asked, LayoutAction::Activate { place }, busy) {
             Ok(_) => Ok(()),
             Err(why) if why == "that place is in front already" => Ok(()),
             Err(why) => Err(why),
@@ -1294,7 +1294,7 @@ impl Arrangement {
         };
         if let Some(TurnRoom::Fill(room)) = room {
             let surface = self.surface_at()?;
-            let action = ArrangementAction::Place {
+            let action = LayoutAction::Place {
                 workspace: surface.workspace,
                 row: surface.row,
                 strip: surface.strip,
@@ -1351,7 +1351,7 @@ impl Arrangement {
         // and never above or to the left of it (`shell.md` §3, "a place next to where it came
         // from").
         let (x, y) = at.map_or((0, 0), |at| at);
-        let action = ArrangementAction::Place {
+        let action = LayoutAction::Place {
             workspace: surface.workspace,
             row: surface.row,
             strip: surface.strip,
@@ -1371,8 +1371,8 @@ impl Arrangement {
         Ok(Some(surface.place))
     }
 
-    /// The arrangement as a shell's views read it: every workspace, row, strip and place, each by
-    /// its key, laid out as the shell's arrangement type holds it. This is what the session
+    /// The layout as a shell's views read it: every workspace, row, strip and place, each by
+    /// its key, laid out as the shell's layout type holds it. This is what the session
     /// publishes on its door for a shell to draw, read off the layout as it stands.
     #[must_use]
     pub fn reading(&self) -> Reading {
@@ -1468,7 +1468,7 @@ impl Arrangement {
         })
     }
 
-    /// The arrangement as the session publishes it now: what [`resources`] publishes, with a
+    /// The layout as the session publishes it now: what [`resources`] publishes, with a
     /// resource of its own for every row, strip and place, named by its record key. A press
     /// names the thing it presses (`shell:place:<key>`), so a key is never read as a number,
     /// and a place's own actions act on that place.
@@ -1523,7 +1523,7 @@ impl Arrangement {
         hasher.finish()
     }
 
-    /// The person whose arrangement it is.
+    /// The person whose layout it is.
     #[must_use]
     pub fn person(&self) -> &str {
         &self.person
@@ -1533,11 +1533,11 @@ impl Arrangement {
     /// and undone as one step. Under an ongoing gesture or while the person types it
     /// waits ([`Self::waiting`]) and runs when they end. Returns whether it ran now.
     /// # Errors
-    /// Why the action names something the arrangement does not hold.
+    /// Why the action names something the layout does not hold.
     pub fn ask(
         &mut self,
         asked: &str,
-        action: ArrangementAction,
+        action: LayoutAction,
         busy: Busy,
     ) -> Result<bool, String> {
         if busy.holds() {
@@ -1580,14 +1580,14 @@ impl Arrangement {
     /// input never waits for itself.
     ///
     /// # Errors
-    /// Why the action names something the arrangement does not hold.
-    pub fn ask_person(&mut self, action: &ArrangementAction) -> Result<(), String> {
+    /// Why the action names something the layout does not hold.
+    pub fn ask_person(&mut self, action: &LayoutAction) -> Result<(), String> {
         let person = self.person.clone();
         self.write(&person, action)
     }
 
     /// Make each window the person floated or put back on the layout since the last call their own
-    /// arranging action: [`ArrangementAction::Float`] or [`ArrangementAction::Snap`].
+    /// layout action: [`LayoutAction::Float`] or [`LayoutAction::Snap`].
     ///
     /// # Errors
     /// Why one of them could not be made; the others are made all the same.
@@ -1595,11 +1595,11 @@ impl Arrangement {
         let mut refused = Ok(());
         for asked in self.handle.take_asked_floats() {
             let action = match asked.float {
-                Some(float) => ArrangementAction::Float {
+                Some(float) => LayoutAction::Float {
                     place: asked.tab,
                     float,
                 },
-                None => ArrangementAction::Snap {
+                None => LayoutAction::Snap {
                     place: asked.tab,
                     row: None,
                     before: None,
@@ -1612,13 +1612,13 @@ impl Arrangement {
         refused
     }
 
-    /// Undo `person` 's last change of the arrangement: one step of the layout's own history, taken
+    /// Undo `person` 's last change of the layout: one step of the layout's own history, taken
     /// back in the layout it was made in. Whether there was one.
     pub fn undo(&mut self, person: &str) -> bool {
         self.show(self.layouts.step(person, false))
     }
 
-    /// Redo `person` 's last undone change of the arrangement.
+    /// Redo `person` 's last undone change of the layout.
     pub fn redo(&mut self, person: &str) -> bool {
         self.show(self.layouts.step(person, true))
     }
@@ -1628,7 +1628,7 @@ impl Arrangement {
         match stepped {
             Stepped::None => false,
             Stepped::Taken => true,
-            Stepped::Layout(tree) => {
+            Stepped::Tree(tree) => {
                 self.handle.replace_tree(*tree);
                 true
             }
@@ -1636,8 +1636,8 @@ impl Arrangement {
     }
 
     /// Make `action` one change of the layout, attributed to `asked` as its undo step: what the
-    /// arrangement is, made where the layout is.
-    fn write(&self, asked: &str, action: &ArrangementAction) -> Result<(), String> {
+    /// layout is, made where the layout is.
+    fn write(&self, asked: &str, action: &LayoutAction) -> Result<(), String> {
         // An agent arranges the person's layout like the person does, except where they pinned
         // something: a pinned place is theirs to move (shell.md §5's default, "not what they
         // pinned").
@@ -1654,10 +1654,10 @@ impl Arrangement {
         // A place that shows another resource from now on says so in the layout's own record map,
         // so a restart opens the place on what it shows, as a place put on the canvas does.
         let shows: Vec<(TabId, String)> = match action {
-            ArrangementAction::Place {
+            LayoutAction::Place {
                 place, resource, ..
             }
-            | ArrangementAction::Show {
+            | LayoutAction::Show {
                 place, resource, ..
             } => vec![(*place, resource.clone())],
             _ => Vec::new(),
@@ -1672,11 +1672,11 @@ impl Arrangement {
 
 /// What `action`, asked for by `asked`, is: who asked and what they did, as the change of the layout
 /// it makes names it.
-pub fn step_context(asked: &str, action: &ArrangementAction) -> tilo_actions::ActionContext {
+pub fn step_context(asked: &str, action: &LayoutAction) -> tilo_actions::ActionContext {
     tilo_actions::ActionContext {
         invoker: Some(tilo_actions::ActionInvoker::person(asked.to_owned())),
         what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
-            tilo_actions::ActionKey::new("so.tilo.session", "arrangement", verb(action)),
+            tilo_actions::ActionKey::new("so.tilo.session", "layout", verb(action)),
             std::iter::empty(),
         ))),
         // A step of its own, and when it was made beside the person's steps of other records.
@@ -1689,40 +1689,40 @@ pub fn step_context(asked: &str, action: &ArrangementAction) -> tilo_actions::Ac
 /// asked for it: an agent's move leaves a place the person pinned where it is. Whether anything
 /// changed.
 fn change(
-    tree: &mut Layout,
-    action: &ArrangementAction,
+    tree: &mut Tree,
+    action: &LayoutAction,
     by_the_person: bool,
     catalog: &Rc<RefCell<Catalog>>,
 ) -> Result<bool, String> {
     match action {
-        ArrangementAction::RetiredOpenInto { .. } => {
+        LayoutAction::RetiredOpenInto { .. } => {
             Err("a place is made from the resource it shows, not opened as an app".into())
         }
-        ArrangementAction::Move {
+        LayoutAction::Move {
             place,
             row,
             before,
             strip,
         } => move_place(tree, *place, StripId(*row), *before, *strip, by_the_person),
-        ArrangementAction::Resize { strip, permille } => Ok(resize(tree, *strip, *permille)),
-        ArrangementAction::Maximize { strip, maximized } => maximize(tree, *strip, *maximized),
-        ArrangementAction::Size {
+        LayoutAction::Resize { strip, permille } => Ok(resize(tree, *strip, *permille)),
+        LayoutAction::Maximize { strip, maximized } => maximize(tree, *strip, *maximized),
+        LayoutAction::Size {
             place,
             width,
             height,
         } => size(tree, *place, clamp_side(*width), clamp_side(*height)),
-        ArrangementAction::Close { place } => close(tree, *place),
-        ArrangementAction::Activate { place } => activate(tree, *place),
-        ArrangementAction::Pin { place, pinned } => pin(tree, *place, *pinned),
-        ArrangementAction::Position { place, x, y } => {
+        LayoutAction::Close { place } => close(tree, *place),
+        LayoutAction::Activate { place } => activate(tree, *place),
+        LayoutAction::Pin { place, pinned } => pin(tree, *place, *pinned),
+        LayoutAction::Position { place, x, y } => {
             position(tree, *place, clamp_coord(*x), clamp_coord(*y))
         }
         // Resolved into a `Place` at invocation, where the system's search and what is published
         // now are; the record never holds the words.
-        ArrangementAction::PlaceFound { .. } => {
+        LayoutAction::PlaceFound { .. } => {
             Err("a place found by text is resolved before it reaches the record".into())
         }
-        ArrangementAction::Place {
+        LayoutAction::Place {
             workspace,
             row,
             strip,
@@ -1753,22 +1753,22 @@ fn change(
                 hugs: *hugs,
             },
         ),
-        ArrangementAction::Float { place, float } => float_place(tree, *place, *float),
+        LayoutAction::Float { place, float } => float_place(tree, *place, *float),
         // Resolved into the `Place` (or `Activate`) it makes before it reaches the record, where
         // the layout's ids and the place it stands beside are known.
-        ArrangementAction::Open { .. } => {
+        LayoutAction::Open { .. } => {
             Err("an open is resolved into the place it makes before it reaches the record".into())
         }
-        ArrangementAction::Snap { place, row, before } => {
+        LayoutAction::Snap { place, row, before } => {
             snap_back(tree, *place, *row, *before, by_the_person)
         }
-        ArrangementAction::Show {
+        LayoutAction::Show {
             place,
             resource,
             view,
         } => show_at(tree, catalog, *place, resource, view),
-        // Resolved where the app's own search action is ([`Door`]), never in the record.
-        ArrangementAction::RetryQuery { .. } => {
+        // Resolved where the app's own search action is ([`LayoutActions`]), never in the record.
+        LayoutAction::RetryQuery { .. } => {
             Err("a retried search is resolved before it reaches the record".into())
         }
     }
@@ -1776,7 +1776,7 @@ fn change(
 
 /// Give the strip `strip` the width `permille` of the workspace asks for. Whether the layout
 /// changed.
-fn resize(tree: &mut Layout, strip: GroupId, permille: u32) -> bool {
+fn resize(tree: &mut Tree, strip: GroupId, permille: u32) -> bool {
     let Some(group) = group_mut(tree, strip) else {
         return false;
     };
@@ -1788,28 +1788,28 @@ fn resize(tree: &mut Layout, strip: GroupId, permille: u32) -> bool {
 
 /// Maximize the strip `strip` (`maximized`), or restore it beside its row's other windows.
 /// Whether the layout changed.
-fn maximize(tree: &mut Layout, strip: GroupId, maximized: bool) -> Result<bool, String> {
+fn maximize(tree: &mut Tree, strip: GroupId, maximized: bool) -> Result<bool, String> {
     let group =
-        group_mut(tree, strip).ok_or_else(|| "that strip is not in the arrangement".to_owned())?;
+        group_mut(tree, strip).ok_or_else(|| "that strip is not in the layout".to_owned())?;
     let changed = group.maximized != maximized;
     group.maximized = maximized;
     Ok(changed)
 }
 
 /// Close the place `place`; its window goes with it. Whether the layout changed.
-fn close(tree: &mut Layout, place: u64) -> Result<bool, String> {
+fn close(tree: &mut Tree, place: u64) -> Result<bool, String> {
     if tree.close_tab(place).is_some() {
         Ok(true)
     } else {
-        Err("that place is not in the arrangement".into())
+        Err("that place is not in the layout".into())
     }
 }
 
 /// Bring the place `place` in front of the strip it stands in, as choosing its tab does. Whether
 /// the layout changed.
-fn activate(tree: &mut Layout, place: u64) -> Result<bool, String> {
+fn activate(tree: &mut Tree, place: u64) -> Result<bool, String> {
     let Some(held) = group_holding(tree, place) else {
-        return Err("that place is not in the arrangement".into());
+        return Err("that place is not in the layout".into());
     };
     if held.active_tab == place {
         return Err("that place is in front already".into());
@@ -1818,13 +1818,13 @@ fn activate(tree: &mut Layout, place: u64) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Pin the place `place` (`pinned`), so an agent's arrangement leaves it alone, or unpin it.
+/// Pin the place `place` (`pinned`), so an agent's layout leaves it alone, or unpin it.
 /// Whether the layout changed.
-fn pin(tree: &mut Layout, place: u64, pinned: bool) -> Result<bool, String> {
+fn pin(tree: &mut Tree, place: u64, pinned: bool) -> Result<bool, String> {
     let Some(tab) = group_holding(tree, place)
         .and_then(|held| held.tabs.iter_mut().find(|tab| tab.id == place))
     else {
-        return Err("that place is not in the arrangement".into());
+        return Err("that place is not in the layout".into());
     };
     let changed = tab.pinned != pinned;
     tab.pinned = pinned;
@@ -1832,18 +1832,18 @@ fn pin(tree: &mut Layout, place: u64, pinned: bool) -> Result<bool, String> {
 }
 
 /// Move the place `place` to `(x, y)` on its workspace's canvas. Whether the layout changed.
-fn position(tree: &mut Layout, place: u64, x: i32, y: i32) -> Result<bool, String> {
+fn position(tree: &mut Tree, place: u64, x: i32, y: i32) -> Result<bool, String> {
     let (held, group) = holding(tree, place)?;
-    Ok(held.arrangement.set_position(group, x, y))
+    Ok(held.layout.set_position(group, x, y))
 }
 
 /// Give the place `place` the canvas size `width` × `height`; whether the desk changed.
-fn size(tree: &mut Layout, place: u64, width: u32, height: u32) -> Result<bool, String> {
+fn size(tree: &mut Tree, place: u64, width: u32, height: u32) -> Result<bool, String> {
     let Some((workspace, row, group, _)) = locate(tree, place) else {
-        return Err("that place is not in the arrangement".into());
+        return Err("that place is not in the layout".into());
     };
     let Some(held) = tree.workspaces.get_mut(workspace) else {
-        return Err("that place is not in the arrangement".into());
+        return Err("that place is not in the layout".into());
     };
     let Some(id) = held
         .strips
@@ -1851,29 +1851,29 @@ fn size(tree: &mut Layout, place: u64, width: u32, height: u32) -> Result<bool, 
         .and_then(|strip| strip.window_groups.get(group))
         .map(|group| group.id)
     else {
-        return Err("that place is not in the arrangement".into());
+        return Err("that place is not in the layout".into());
     };
-    Ok(held.arrangement.set_size(id, width, height))
+    Ok(held.layout.set_size(id, width, height))
 }
 
 /// Float the place `place` above its workspace's windows at `float` .
-fn float_place(tree: &mut Layout, place: u64, float: FloatPlace) -> Result<bool, String> {
+fn float_place(tree: &mut Tree, place: u64, float: FloatPlace) -> Result<bool, String> {
     let (held, group) = holding(tree, place)?;
-    Ok(held.arrangement.set_float(group, Some(float)))
+    Ok(held.layout.set_float(group, Some(float)))
 }
 
 /// Snap the floating place `place` back among its workspace's windows,
 /// moving it into `row` before `before` when a drop named one; left out, it
 /// returns to the strip it stands in, unchanged. Whether the layout changed.
 fn snap_back(
-    tree: &mut Layout,
+    tree: &mut Tree,
     place: u64,
     row: Option<u64>,
     before: Option<u64>,
     by_the_person: bool,
 ) -> Result<bool, String> {
     let (held, group) = holding(tree, place)?;
-    let mut changed = held.arrangement.set_float(group, None);
+    let mut changed = held.layout.set_float(group, None);
     if let Some(row) = row {
         changed |= move_place(tree, place, StripId(row), before, None, by_the_person)?;
     }
@@ -1881,7 +1881,7 @@ fn snap_back(
 }
 
 /// The workspace of `tree` holding the window `place`, and the group it stands in.
-fn holding(tree: &mut Layout, place: u64) -> Result<(&mut Workspace, GroupId), String> {
+fn holding(tree: &mut Tree, place: u64) -> Result<(&mut Workspace, GroupId), String> {
     tree.workspaces
         .iter_mut()
         .find_map(|held| {
@@ -1893,12 +1893,12 @@ fn holding(tree: &mut Layout, place: u64) -> Result<(&mut Workspace, GroupId), S
                 .id;
             Some((held, group))
         })
-        .ok_or_else(|| "that place is not in the arrangement".to_owned())
+        .ok_or_else(|| "that place is not in the layout".to_owned())
 }
 
 /// The window `place` and where it stands in `tree`: its workspace, its row,
 /// its group and its index in that group.
-fn locate(tree: &Layout, place: u64) -> Option<(usize, usize, usize, usize)> {
+fn locate(tree: &Tree, place: u64) -> Option<(usize, usize, usize, usize)> {
     tree.workspaces
         .iter()
         .enumerate()
@@ -1919,7 +1919,7 @@ fn locate(tree: &Layout, place: u64) -> Option<(usize, usize, usize, usize)> {
 }
 
 /// The group holding the window `place` of `tree` , wherever it stands.
-fn group_holding(tree: &mut Layout, place: u64) -> Option<&mut WindowGroup> {
+fn group_holding(tree: &mut Tree, place: u64) -> Option<&mut WindowGroup> {
     tree.workspaces
         .iter_mut()
         .flat_map(|workspace| &mut workspace.strips)
@@ -1928,7 +1928,7 @@ fn group_holding(tree: &mut Layout, place: u64) -> Option<&mut WindowGroup> {
 }
 
 /// The group `id` of `tree` , wherever it stands.
-fn group_mut(tree: &mut Layout, id: GroupId) -> Option<&mut WindowGroup> {
+fn group_mut(tree: &mut Tree, id: GroupId) -> Option<&mut WindowGroup> {
     tree.workspaces
         .iter_mut()
         .flat_map(|workspace| &mut workspace.strips)
@@ -1942,7 +1942,7 @@ fn group_mut(tree: &mut Layout, id: GroupId) -> Option<&mut WindowGroup> {
 /// window becomes a tab of it, in front (which is how a strip of several places is made: shell.md
 /// §2). A window the person pinned stays where it is unless they moved it themselves.
 fn move_place(
-    tree: &mut Layout,
+    tree: &mut Tree,
     place: u64,
     row: StripId,
     before: Option<u64>,
@@ -1950,9 +1950,9 @@ fn move_place(
     by_the_person: bool,
 ) -> Result<bool, String> {
     let Some((workspace, from, group, at)) = locate(tree, place) else {
-        return Err("that place is not in the arrangement".into());
+        return Err("that place is not in the layout".into());
     };
-    let taken = "that place is not in the arrangement";
+    let taken = "that place is not in the layout";
     let Some(held) = tree.workspaces.get_mut(workspace) else {
         return Err(taken.into());
     };
@@ -1968,7 +1968,7 @@ fn move_place(
     // A place moves within its workspace: a row of another one is no row of its own. A strip names
     // where the place lands, so a strip of another row names the row it stands in.
     let Some(row) = held.strips.iter().position(|held| held.id == row) else {
-        return Err("that row is not in the arrangement".into());
+        return Err("that row is not in the layout".into());
     };
     let row = strip
         .and_then(|strip| {
@@ -1995,7 +1995,7 @@ fn move_place(
     };
     let workspace_id = held.id();
     let Some(target) = held.strips.get_mut(row) else {
-        return Err("that row is not in the arrangement".into());
+        return Err("that row is not in the layout".into());
     };
     let groups = &mut target.window_groups;
     let into = groups
@@ -2059,7 +2059,7 @@ struct Placed<'a> {
 /// rather than in a strip of its own: how a person, an agent and the REPL open
 /// something as a tab of the strip they are in. Whether the layout changed.
 fn place_at(
-    tree: &mut Layout,
+    tree: &mut Tree,
     catalog: &Rc<RefCell<Catalog>>,
     asked: Placed<'_>,
 ) -> Result<bool, String> {
@@ -2163,20 +2163,20 @@ fn place_at(
     // It stands on the canvas, so the workspace shows its canvas: the person
     // sees what they placed. A place never covers one already there: it takes
     // the free space nearest the point it was asked for (`canvas.md` §6,
-    // `Arrangement::free_place_near`), so two places at one point, or two
+    // `Layout::free_place_near`), so two places at one point, or two
     // closer together than a frame is wide, stand clear of each other. The
     // frame it stands in is the size it asks for, so the free space is that
     // size.
     let (width, height, hugs) = canvas_size(asked.width, asked.height, asked.hugs);
-    let place = workspace.arrangement.free_place_near(
+    let place = workspace.layout.free_place_near(
         (clamp_coord(asked.x), clamp_coord(asked.y)),
         width,
         height,
         None,
     );
     let place = if hugs { place.hugging() } else { place };
-    workspace.arrangement.places.insert(asked.strip, place);
-    workspace.arrangement.kind = ArrangementKind::Canvas;
+    workspace.layout.places.insert(asked.strip, place);
+    workspace.layout.kind = LayoutKind::Canvas;
     Ok(true)
 }
 
@@ -2186,7 +2186,7 @@ fn place_at(
 /// back. Whether the layout changed; a place already showing that resource through that view is
 /// no change.
 fn show_at(
-    tree: &mut Layout,
+    tree: &mut Tree,
     catalog: &Rc<RefCell<Catalog>>,
     place: u64,
     resource: &str,
@@ -2204,7 +2204,7 @@ fn show_at(
     let Some(tab) = group_holding(tree, place)
         .and_then(|held| held.tabs.iter_mut().find(|tab| tab.id == place))
     else {
-        return Err("that place is not in the arrangement".into());
+        return Err("that place is not in the layout".into());
     };
     let view = target.chosen_view(view);
     // The window the place is shows the resource from now on: its app, the record `Place` writes
@@ -2237,7 +2237,7 @@ fn float_new(
     float: Option<FloatPlace>,
 ) {
     if let Some(float) = float {
-        workspace.arrangement.set_float(group, Some(float));
+        workspace.layout.set_float(group, Some(float));
     }
 }
 
@@ -2276,30 +2276,30 @@ fn clamp_side(value: i64) -> u32 {
 const PEER_MASK: u64 = tilo_desktop_model::PEER_ID_COUNTER_MASK;
 
 /// The verb `action` is, as its step names it.
-pub fn verb(action: &ArrangementAction) -> &'static str {
+pub fn verb(action: &LayoutAction) -> &'static str {
     match action {
-        ArrangementAction::Move { .. } => "move",
-        ArrangementAction::Resize { .. } => "resize",
-        ArrangementAction::Maximize { .. } => "maximize-strip",
-        ArrangementAction::Close { .. } => "close",
-        ArrangementAction::Activate { .. } => "activate",
-        ArrangementAction::Pin { .. } => "pin",
-        ArrangementAction::Position { .. } => "position",
-        ArrangementAction::Size { .. } => "size",
-        ArrangementAction::Place { .. } | ArrangementAction::PlaceFound { .. } => "place",
-        ArrangementAction::Open { .. } => "open",
-        ArrangementAction::Float { .. } => "float",
-        ArrangementAction::Snap { .. } => "snap-back",
-        ArrangementAction::Show { .. } => "show",
-        ArrangementAction::RetryQuery { .. } => "retry",
+        LayoutAction::Move { .. } => "move",
+        LayoutAction::Resize { .. } => "resize",
+        LayoutAction::Maximize { .. } => "maximize-strip",
+        LayoutAction::Close { .. } => "close",
+        LayoutAction::Activate { .. } => "activate",
+        LayoutAction::Pin { .. } => "pin",
+        LayoutAction::Position { .. } => "position",
+        LayoutAction::Size { .. } => "size",
+        LayoutAction::Place { .. } | LayoutAction::PlaceFound { .. } => "place",
+        LayoutAction::Open { .. } => "open",
+        LayoutAction::Float { .. } => "float",
+        LayoutAction::Snap { .. } => "snap-back",
+        LayoutAction::Show { .. } => "show",
+        LayoutAction::RetryQuery { .. } => "retry",
         // Refused before it is stepped: it names no change of the layout.
-        ArrangementAction::RetiredOpenInto { .. } => "retired",
+        LayoutAction::RetiredOpenInto { .. } => "retired",
     }
 }
 
-mod door;
+mod actions;
 
-pub use door::Door;
+pub use actions::LayoutActions;
 
 mod turns;
 use beside::Beside;

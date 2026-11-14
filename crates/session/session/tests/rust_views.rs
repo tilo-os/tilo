@@ -160,7 +160,7 @@ fn place(session: &mut Session, resource: &str) -> u64 {
     .unwrap()
     .clone();
     session
-        .invoke("shell:arrangement", "place", &arguments)
+        .invoke("shell:layout", "place", &arguments)
         .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
     place
 }

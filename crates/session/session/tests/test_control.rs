@@ -593,7 +593,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         "height": 360,
     });
     session
-        .invoke("shell:arrangement", "place", arguments.as_object().unwrap())
+        .invoke("shell:layout", "place", arguments.as_object().unwrap())
         .expect("the note is placed");
     assert!(
         reached(&mut session, |session| session.shell_says("Oat milk")),

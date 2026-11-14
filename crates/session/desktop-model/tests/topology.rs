@@ -257,13 +257,13 @@ tilo_test_env::scenario! {
         let mut tree = tree();
         {
             let ws = &mut tree.workspaces[0];
-            ws.arrangement
+            ws.layout
                 .places
                 .insert(10, CanvasPlace::new(0, 0, 720, 520));
-            ws.arrangement
+            ws.layout
                 .places
                 .insert(11, CanvasPlace::new(744, 0, 720, 520));
-            ws.arrangement.set_float(
+            ws.layout.set_float(
                 11,
                 Some(FloatPlace::new(FloatCorner::TopLeft, 20, 20, 640, 480)),
             );
@@ -271,10 +271,10 @@ tilo_test_env::scenario! {
         let closed = tree.close_tab(110).expect("group 11 holds its only tab");
         assert!(closed.group_removed);
         let ws = &tree.workspaces[0];
-        assert_eq!(ws.arrangement.place_of(11), None, "its place went with it");
-        assert_eq!(ws.arrangement.float_of(11), None, "and its float");
+        assert_eq!(ws.layout.place_of(11), None, "its place went with it");
+        assert_eq!(ws.layout.float_of(11), None, "and its float");
         assert!(
-            ws.arrangement.place_of(10).is_some(),
+            ws.layout.place_of(10).is_some(),
             "the windows left keep their places"
         );
     }
@@ -284,10 +284,10 @@ tilo_test_env::scenario! {
         let mut tree = tree();
         {
             let ws = &mut tree.workspaces[0];
-            ws.arrangement
+            ws.layout
                 .places
                 .insert(10, CanvasPlace::new(0, 0, 720, 520));
-            ws.arrangement
+            ws.layout
                 .places
                 .insert(11, CanvasPlace::new(744, 0, 720, 520));
         }
@@ -296,9 +296,9 @@ tilo_test_env::scenario! {
         let ws = &mut tree.workspaces[0];
         ws.strips[0].window_groups.push(group(12, &[120]));
         let strips = ws.strips.clone();
-        ws.arrangement.place_missing(&strips);
+        ws.layout.place_missing(&strips);
         assert_eq!(
-            ws.arrangement.place_of(12),
+            ws.layout.place_of(12),
             Some(CanvasPlace::new(744, 0, 720, 520)),
             "the next window stands where the closed one stood, not past a hole"
         );

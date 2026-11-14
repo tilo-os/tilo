@@ -11,7 +11,7 @@
 //! That is the one source. The session reads it on every pass, writes the
 //! record beside the window in the workspace's layout
 //! ([`crate::layout`]), places the window by it in the person's
-//! arrangement ([`tilo_session_core::arrangement`]) and answers what this device
+//! layout ([`tilo_session_core::layout`]) and answers what this device
 //! asks of it ([`tilo_desktop_policy::WindowNotes`]). No report from an app
 //! writes a note.
 //!
@@ -355,7 +355,7 @@ mod tests {
         assert_eq!(
             notes.of_workspace(workspace),
             [(12, "plan".to_owned())],
-            "the arrangement places each window by the record it shows, and a layout record notes only the windows of its workspace"
+            "the layout places each window by the record it shows, and a layout record notes only the windows of its workspace"
         );
         assert_eq!(notes.of_workspace(other), [(30, "budget".to_owned())]);
     }

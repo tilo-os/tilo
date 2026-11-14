@@ -365,10 +365,10 @@ pub(crate) struct Shared {
     pub(crate) clipboard: Rc<crate::clipboard::Clipboard>,
     /// The person's arrangement: the session this session holds, with history and
     /// undo (shell.md §2), and the app places its windows from it.
-    pub(crate) arrangement: Rc<RefCell<tilo_session_core::arrangement::Arrangement>>,
+    pub(crate) arrangement: Rc<RefCell<tilo_session_core::layout::Arrangement>>,
     /// Whether the person is mid-gesture or typing, as the compositor last
     /// said: what an arranging action that is not their own waits for.
-    pub(crate) underway: Rc<Cell<tilo_session_core::arrangement::Busy>>,
+    pub(crate) underway: Rc<Cell<tilo_session_core::layout::Busy>>,
     /// The person's settings, kept in step with their other devices.
     #[cfg(target_os = "linux")]
     pub(crate) settings: crate::settings_sync::SettingsSync,

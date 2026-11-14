@@ -214,7 +214,7 @@ fn with_chrome<R>(frame: &mut FrameHarness, visit: impl FnOnce(&mut DesktopChrom
 /// from the left of the work area.
 fn shell_with_card(windows: u64, group: u64, dx: i32) -> Layout {
     let mut tree = layout_tree(windows);
-    tree.workspaces[0].arrangement.set_float(
+    tree.workspaces[0].layout.set_float(
         group,
         Some(FloatPlace::new(FloatCorner::TopLeft, dx, 160, 360, 520)),
     );

@@ -348,7 +348,7 @@ pub(crate) enum FindAnswer {
     },
     /// Text typed on the canvas: the hits in the ranking's order, which the arrangement places
     /// through its own catalogue (never a second reading of what a place can show).
-    Canvas(tilo_session_core::arrangement::FindDone),
+    Canvas(tilo_session_core::layout::FindDone),
 }
 
 /// Answer `answer` with the hits a search has: a door's find as the resources they name, the
@@ -761,7 +761,7 @@ impl SessionSearch {
         needle: &str,
         workspace: Option<&str>,
         within: std::time::Duration,
-        done: tilo_session_core::arrangement::FindDone,
+        done: tilo_session_core::layout::FindDone,
     ) {
         self.find_off_loop(needle, workspace, within, FindAnswer::Canvas(done));
     }
@@ -1588,7 +1588,7 @@ pub(crate) fn found_all(
     // same resource ranks above it (an action on it), which is what typing the text stands. A row
     // that names a resource a place cannot show (`session`'s own places, a record no app publishes
     // as placeable) stands in the way of nothing, exactly as it does on the canvas.
-    let lead = tilo_session_core::arrangement::placed(&hits, text, shows);
+    let lead = tilo_session_core::layout::placed(&hits, text, shows);
     let mut out: Vec<Found> = Vec::new();
     for (at, hit) in hits.into_iter().enumerate() {
         let Some(found) = found_of(&hit) else {

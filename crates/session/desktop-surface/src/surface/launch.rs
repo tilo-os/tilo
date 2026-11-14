@@ -72,19 +72,15 @@ pub(super) fn open(
     // A window group the canvas does not place is a window neither the framed
     // canvas, the spaces canvas nor the traditional desktop draws: the shell a
     // person just opened an app on would look empty. The group takes a place
-    // as any other group does, by the same rule ([`Arrangement::place_missing`]).
+    // as any other group does, by the same rule ([`WorkspaceLayout::place_missing`]).
     if let Some(workspace) = shared
         .tree
         .workspaces
         .iter_mut()
         .find(|w| w.id() == workspace_id)
     {
-        let Workspace {
-            strips,
-            arrangement,
-            ..
-        } = workspace;
-        arrangement.place_missing(strips);
+        let Workspace { strips, layout, .. } = workspace;
+        layout.place_missing(strips);
     }
     // A window the app that opened it stands over the shell takes the place its
     // strip gives it, as the record keeps places: by its corner of the work

@@ -93,15 +93,15 @@ pub(super) fn publish_windows(link: &SessionLink, windows: &serde_json::Value) {
 
 /// What the session publishes for a part to draw: the shell, and the windows on it.
 pub(super) struct Staged {
-    pub(super) shell: ArrangementReading,
+    pub(super) shell: LayoutReading,
     pub(super) windows: serde_json::Value,
     /// The surface up over the windows (`none` at rest), and whether the switcher's panel shows.
     pub(super) here: String,
     pub(super) revealed: bool,
 }
 
-impl From<ArrangementReading> for Staged {
-    fn from(shell: ArrangementReading) -> Self {
+impl From<LayoutReading> for Staged {
+    fn from(shell: LayoutReading) -> Self {
         Self {
             shell,
             windows: serde_json::json!([]),
@@ -150,21 +150,21 @@ pub(super) fn reading_with_windows() -> Staged {
     let mut release = window("11", "Release planning", "Notes", "Main");
     release["focused"] = serde_json::json!(true);
     Staged {
-        shell: ArrangementReading {
+        shell: LayoutReading {
             person: "Pat".to_owned(),
-            rows: vec![ArrangementRowReading {
+            rows: vec![LayoutRowReading {
                 key: "r1".to_owned(),
                 workspace: "1".to_owned(),
                 name: "Main".to_owned(),
                 current: true,
-                ..ArrangementRowReading::default()
+                ..LayoutRowReading::default()
             }],
-            workspaces: vec![ArrangementWorkspaceReading {
+            workspaces: vec![LayoutWorkspaceReading {
                 key: "1".to_owned(),
                 name: "Home".to_owned(),
                 current: true,
             }],
-            ..ArrangementReading::default()
+            ..LayoutReading::default()
         },
         windows: serde_json::json!([release, window("12", "Inbox", "Mail", "Main")]),
         here: "none".to_owned(),

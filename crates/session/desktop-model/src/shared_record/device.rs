@@ -241,7 +241,7 @@ pub fn write(
         .collect();
     // How the workspace is arranged is this device's to say like its
     // strips: the kind, and the places and floats of the groups it writes.
-    shared.arrangement.kind = workspace.arrangement.kind;
+    shared.layout.kind = workspace.layout.kind;
     let written: HashSet<u64> = shared
         .strips
         .iter()
@@ -250,10 +250,10 @@ pub fn write(
         .collect();
     // A group this layout has no place for keeps the one the record gives it: the layout may not
     // have laid it out yet.
-    let mut places = of_written(&shared.arrangement.places, &written);
-    places.extend(of_written(&workspace.arrangement.places, &written));
-    shared.arrangement.places = places;
-    shared.arrangement.floats = of_written(&workspace.arrangement.floats, &written);
+    let mut places = of_written(&shared.layout.places, &written);
+    places.extend(of_written(&workspace.layout.places, &written));
+    shared.layout.places = places;
+    shared.layout.floats = of_written(&workspace.layout.floats, &written);
     let live = ids_of(&shared);
     if let Some(person) = writer.person {
         for id in live.iter().filter(|id| (writer.mine)(**id)) {
@@ -327,7 +327,7 @@ pub fn withdraw(
     super::write(doc, &desktop)
 }
 
-/// What this device writes of the arrangement's `places` or `floats`: the
+/// What this device writes of the layout's `places` or `floats`: the
 /// entries of the groups whose strip it writes.
 fn of_written<T: Copy>(map: &BTreeMap<u64, T>, written: &HashSet<u64>) -> BTreeMap<u64, T> {
     map.iter()
@@ -488,32 +488,32 @@ pub fn fold(doc: &AutoCommit, workspace: &mut Workspace, device: &str, kept: &Ke
         .collect();
     let recorded = ids_of(&record);
     keep_apart(&mut strips, &workspace.strips, &recorded, kept);
-    // The record's arrangement, with the places and floats of what this
+    // The record's layout, with the places and floats of what this
     // device keeps apart from it kept where this device has them.
-    let mut arrangement = record.arrangement;
+    let mut layout = record.layout;
     let shown: HashSet<u64> = strips
         .iter()
         .flat_map(|strip| &strip.window_groups)
         .map(|group| group.id)
         .collect();
-    for (group, place) in &workspace.arrangement.places {
+    for (group, place) in &workspace.layout.places {
         if shown.contains(group) {
-            arrangement.places.entry(*group).or_insert(*place);
+            layout.places.entry(*group).or_insert(*place);
         }
     }
     if kept.writing {
         // A window this device's layout floats still floats in what its write
         // records, and one it put back in its strip no longer does: the
         // write carries this device's word either way.
-        arrangement.floats.clone_from(&workspace.arrangement.floats);
+        layout.floats.clone_from(&workspace.layout.floats);
     } else {
-        for (group, float) in &workspace.arrangement.floats {
+        for (group, float) in &workspace.layout.floats {
             // A window the record does not hold yet is this device's, as its
             // strip is (`keep_apart`), and so is the float that came with
             // it: a float the record says nothing about on a window it does
             // hold is the record's, which said it stands in its strip.
             if shown.contains(group) && !recorded.contains(group) {
-                arrangement.floats.insert(*group, *float);
+                layout.floats.insert(*group, *float);
             }
         }
     }
@@ -522,8 +522,8 @@ pub fn fold(doc: &AutoCommit, workspace: &mut Workspace, device: &str, kept: &Ke
     if changed {
         workspace.strips = strips;
     }
-    if workspace.arrangement != arrangement {
-        workspace.arrangement = arrangement;
+    if workspace.layout != layout {
+        workspace.layout = layout;
         changed = true;
     }
     changed
@@ -538,9 +538,9 @@ fn recorded(doc: &AutoCommit, workspace: &Workspace) -> Option<Workspace> {
         None => {
             let mut empty = workspace.clone();
             empty.strips.clear();
-            empty.arrangement = crate::arrangement::Arrangement {
-                kind: workspace.arrangement.kind,
-                ..crate::arrangement::Arrangement::default()
+            empty.layout = crate::layout::WorkspaceLayout {
+                kind: workspace.layout.kind,
+                ..crate::layout::WorkspaceLayout::default()
             };
             Some(empty)
         }

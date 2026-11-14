@@ -86,7 +86,7 @@ pub fn origins_of(meta: &PackageMeta) -> Vec<&'static str> {
             continue;
         };
         // Only the origins the platform runs a connector for: the session's own kinds
-        // (`session.arrangement`) are written by the session, never by a process.
+        // (`session.layout`) are written by the session, never by a process.
         let connector = ["imap", "youtube"].into_iter().find(|name| *name == origin);
         if let Some(name) = connector
             && !origins.contains(&name)

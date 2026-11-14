@@ -115,7 +115,7 @@ fn place(session: &mut Session, resource: &str) -> String {
     .expect("an object")
     .clone();
     session
-        .invoke("shell:arrangement", "place", &arguments)
+        .invoke("shell:layout", "place", &arguments)
         .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
     place.to_string()
 }

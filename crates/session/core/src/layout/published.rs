@@ -11,7 +11,7 @@ use tilo_actions::{
 use tilo_desktop_model::{FloatCorner, FloatPlace, WorkspaceId};
 
 use super::{
-    ArrangementAction, DEFAULT_HEIGHT, DEFAULT_WIDTH, FLOAT_HEIGHT, FLOAT_INSET, FLOAT_WIDTH, Item,
+    LayoutAction, DEFAULT_HEIGHT, DEFAULT_WIDTH, FLOAT_HEIGHT, FLOAT_INSET, FLOAT_WIDTH, Item,
     OPERATION, PLACE_KIND, PlaceReading, RECORD_RESOURCE, RESOURCE, ROW_KIND, RowReading,
     STRIP_KIND, StripReading, Words,
 };
@@ -30,7 +30,7 @@ fn action_word(words: &Words, id: &str, argument: Option<&str>, source: &str) ->
 /// The person's layout actions, published as every other action is: a person's own drag, a
 /// script and an agent all change the layout through them, and the catalogue lists them for
 /// agents. What is already arranged is published per place, strip and row by
-/// [`Arrangement::resources`].
+/// [`Layout::resources`].
 #[must_use]
 pub fn resources(words: &Words) -> Vec<ResourceSpec> {
     vec![arrangement_resource(words), record_resource(words)]
@@ -44,7 +44,7 @@ pub(super) fn arrangement_resource(words: &Words) -> ResourceSpec {
             ResourceSpec::new(
                 RESOURCE,
                 "shell",
-                words("session-resource-layout", &[], "Layout"),
+                words("session-resource-layout", &[], "Tree"),
             ),
             ResourceSpec::with_action,
         )
@@ -58,7 +58,7 @@ pub(super) fn record_resource(words: &Words) -> ResourceSpec {
     ResourceSpec::new(
         RECORD_RESOURCE,
         "shell",
-        words("session-resource-layout-history", &[], "Layout history"),
+        words("session-resource-layout-history", &[], "Tree history"),
     )
     .with_action(
         step_action(words, "undo", "Undo the last layout change").for_audience(Audience::Agents),
@@ -70,7 +70,7 @@ pub(super) fn record_resource(words: &Words) -> ResourceSpec {
 
 /// The resource a place's own actions are published on, for the package the session describes: no
 /// key, so it stands for every place. A place's resource is named by the place's key
-/// ([`Arrangement::resources`]).
+/// ([`Layout::resources`]).
 #[must_use]
 pub fn place_kind_resource(words: &Words) -> ResourceSpec {
     place_actions("", words).into_iter().fold(
@@ -115,7 +115,7 @@ pub(super) fn place_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
                 ParamType::Boolean,
                 "Whether it is pinned",
             )],
-            move |args| ArrangementAction::Pin {
+            move |args| LayoutAction::Pin {
                 place: count_of(&pinned),
                 pinned: args.boolean("pinned").unwrap_or(true),
             },
@@ -124,7 +124,7 @@ pub(super) fn place_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
         position_action(key, words),
         size_action(key, words),
         action(words, "close", "Close a place", Vec::new(), move |_| {
-            ArrangementAction::Close {
+            LayoutAction::Close {
                 place: count_of(&closed),
             }
         })
@@ -134,7 +134,7 @@ pub(super) fn place_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
             "activate",
             "Bring a place in front of its strip",
             Vec::new(),
-            move |_| ArrangementAction::Activate {
+            move |_| LayoutAction::Activate {
                 place: count_of(&in_front),
             },
         )
@@ -169,7 +169,7 @@ pub(super) fn place_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
                 )
                 .of_resource_kind(PLACE_KIND),
             ],
-            move |args| ArrangementAction::Move {
+            move |args| LayoutAction::Move {
                 place: count_of(&moved),
                 row: named(args, "row", Item::Row).unwrap_or_default(),
                 before: named(args, "before", Item::Place),
@@ -203,7 +203,7 @@ fn position_action(key: &str, words: &Words) -> ActionSpec {
                 "Without x and y, it stands in the free space beside this: a place (`shell:place:<key>`) or the resource a place shows, by its address",
             ),
         ],
-        move |args| ArrangementAction::Position {
+        move |args| LayoutAction::Position {
             place: count_of(&positioned),
             x: args.integer("x").unwrap_or_default(),
             y: args.integer("y").unwrap_or_default(),
@@ -235,7 +235,7 @@ fn size_action(key: &str, words: &Words) -> ActionSpec {
                 "Its height in canvas pixels",
             ),
         ],
-        move |args| ArrangementAction::Size {
+        move |args| LayoutAction::Size {
             place: count_of(&sized),
             width: args.integer("width").unwrap_or(DEFAULT_WIDTH),
             height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
@@ -291,7 +291,7 @@ fn float_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
                     "Its height in canvas pixels",
                 ),
             ],
-            move |args| ArrangementAction::Float {
+            move |args| LayoutAction::Float {
                 place: count_of(&floating),
                 float: FloatPlace::new(
                     float_corner(args.text("corner")),
@@ -324,7 +324,7 @@ fn float_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
                 )
                 .of_resource_kind(PLACE_KIND),
             ],
-            move |args| ArrangementAction::Snap {
+            move |args| LayoutAction::Snap {
                 place: count_of(&snapping),
                 row: named(args, "row", Item::Row),
                 before: named(args, "before", Item::Place),
@@ -365,7 +365,7 @@ pub(super) fn strip_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
                 ParamType::Integer,
                 "Its width in per-mille of the row",
             )],
-            move |args| ArrangementAction::Resize {
+            move |args| LayoutAction::Resize {
                 strip: count_of(&resized),
                 permille: u32::try_from(args.integer("permille").unwrap_or(1)).unwrap_or(1),
             },
@@ -381,7 +381,7 @@ pub(super) fn strip_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
                 ParamType::Boolean,
                 "Whether it fills the shell",
             )],
-            move |args| ArrangementAction::Maximize {
+            move |args| LayoutAction::Maximize {
                 strip: count_of(&maximized),
                 maximized: args.boolean("on").unwrap_or(true),
             },
@@ -500,7 +500,7 @@ fn show_action(words: &Words) -> ActionSpec {
                 "The view it shows it through",
             ),
         ],
-        |args| ArrangementAction::Show {
+        |args| LayoutAction::Show {
             place: named(args, "place", Item::Place).unwrap_or_default(),
             resource: text(args, "resource"),
             view: args.text("view").unwrap_or_default().to_owned(),
@@ -525,7 +525,7 @@ fn retry_query_action(words: &Words) -> ActionSpec {
             )
             .of_resource_kind(PLACE_KIND),
         ],
-        |args| ArrangementAction::RetryQuery {
+        |args| LayoutAction::RetryQuery {
             place: named(args, "place", Item::Place).unwrap_or_default(),
         },
     )
@@ -652,7 +652,7 @@ fn place_action(words: &Words) -> ActionSpec {
                     float_side(args.integer("height"), FLOAT_HEIGHT),
                 )
             });
-            ArrangementAction::Place {
+            LayoutAction::Place {
                 workspace: workspace_text(args, "workspace"),
                 row: count(args, "row"),
                 strip: count(args, "strip"),
@@ -679,7 +679,7 @@ fn place_found_action(words: &Words) -> ActionSpec {
         "place-found",
         "Put what a text finds on the canvas, or into a strip as a tab",
         place_found_params(words),
-        |args| ArrangementAction::PlaceFound {
+        |args| LayoutAction::PlaceFound {
             text: text(args, "text"),
             view: args.text("view").unwrap_or_default().to_owned(),
             strip: args
@@ -816,7 +816,7 @@ fn open_action(words: &Words) -> ActionSpec {
                 "The resource whose place it stands beside, by its address; the place in front when left out",
             ),
         ],
-        |args| ArrangementAction::Open {
+        |args| LayoutAction::Open {
             resource: text(args, "resource"),
             view: args.text("view").unwrap_or_default().to_owned(),
             beside: text(args, "beside"),
@@ -825,7 +825,7 @@ fn open_action(words: &Words) -> ActionSpec {
     .with_did("opened")
 }
 
-/// An immediate effect action `id` the session answers itself: a step of the arrangement's history.
+/// An immediate effect action `id` the session answers itself: a step of the layout's history.
 #[expect(
     clippy::expect_used,
     reason = "the step action always serializes to JSON"
@@ -851,20 +851,20 @@ fn step_action(words: &Words, id: &'static str, label: &str) -> ActionSpec {
     spec
 }
 
-/// An immediate effect action `id` that builds an [`ArrangementAction`]. It is listed for agents and
+/// An immediate effect action `id` that builds an [`LayoutAction`]. It is listed for agents and
 /// scripts, never for a person to pick: a person arranges by dragging and through the window bar,
 /// which submit it by address, and a place's actions name no place a listing could tell apart
 /// (three windows were three identical "Stand a place" rows in search).
 #[expect(
     clippy::expect_used,
-    reason = "an arranging action always serializes to JSON"
+    reason = "an layout action always serializes to JSON"
 )]
 pub(super) fn action(
     words: &Words,
     id: &'static str,
     label: &str,
     params: Vec<ActionParam>,
-    build: impl Fn(&ActionArgs) -> ArrangementAction + Send + Sync + 'static,
+    build: impl Fn(&ActionArgs) -> LayoutAction + Send + Sync + 'static,
 ) -> ActionSpec {
     let mut spec = ActionSpec::typed_operation(
         id,
@@ -875,7 +875,7 @@ pub(super) fn action(
         params,
         move |args| {
             EncodedAction::encode_operation(OPERATION, &build(args))
-                .expect("an arranging action always serializes")
+                .expect("an layout action always serializes")
         },
     );
     spec.type_mut().contract = ActionContract {

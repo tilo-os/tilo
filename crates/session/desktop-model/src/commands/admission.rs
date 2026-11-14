@@ -107,7 +107,7 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
         | DesktopCommand::AssignPreset { .. }
         | DesktopCommand::GrantAppAction { .. }
         | DesktopCommand::RevokeAppAction { .. }
-        | DesktopCommand::SetArrangement { .. } => Ok(()),
+        | DesktopCommand::SetLayout { .. } => Ok(()),
     }
 }
 

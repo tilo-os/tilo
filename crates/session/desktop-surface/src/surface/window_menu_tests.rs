@@ -296,7 +296,7 @@ fn the_float_row_lifts_the_window_over_the_shell_and_puts_it_back() {
         handle.read(|tree| {
             tree.workspaces
                 .iter()
-                .any(|workspace| workspace.arrangement.float_of(route.group).is_some())
+                .any(|workspace| workspace.layout.float_of(route.group).is_some())
         })
     };
     let rect_of = |handle: &DesktopHandle, tab: TabId| {

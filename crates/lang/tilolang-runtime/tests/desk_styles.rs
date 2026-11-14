@@ -15,10 +15,10 @@ mod cases {
     const SESSION: &str = r#"{
         "app": "so.tilo.session",
         "types": [
-            {"id": "Arrangement", "name": "Arrangement", "origin": "session.arrangement", "fields": [
+            {"id": "Arrangement", "name": "Arrangement", "origin": "session.layout", "fields": [
                 {"id": "Arrangement.places", "name": "places", "type": "Collection<ArrangementPlace>"}
             ]},
-            {"id": "ArrangementPlace", "name": "ArrangementPlace", "origin": "session.arrangement_place", "fields": [
+            {"id": "ArrangementPlace", "name": "ArrangementPlace", "origin": "session.layout_place", "fields": [
                 {"id": "ArrangementPlace.key", "name": "key", "type": "Text"},
                 {"id": "ArrangementPlace.title", "name": "title", "type": "Text"}
             ]}
@@ -31,11 +31,11 @@ mod cases {
 
 use so.tilo.session as session
 
-type Arrangement (origin: session.arrangement) {
+type Arrangement (origin: session.layout) {
     places: Collection<ArrangementPlace>
 }
 
-type ArrangementPlace (origin: session.arrangement_place) {
+type ArrangementPlace (origin: session.layout_place) {
     key: Text
     title: Text
 }
@@ -303,11 +303,11 @@ view broken(a: shell.Arrangement) {
 
 use so.tilo.session as session
 
-type Arrangement (origin: session.arrangement) {{
+type Arrangement (origin: session.layout) {{
     places: Collection<ArrangementPlace>
 }}
 
-type ArrangementPlace (origin: session.arrangement_place) {{
+type ArrangementPlace (origin: session.layout_place) {{
     key: Text
     title: Text
 }}

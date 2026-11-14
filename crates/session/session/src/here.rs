@@ -14,7 +14,7 @@ impl Shared {
     /// The person's arrangement, with who else is here in the workspace in front as the plane lists
     /// them: what the shell's bar shows.
     #[cfg(target_os = "linux")]
-    pub(crate) fn arrangement_reading(&self) -> tilo_session_core::shell::ArrangementReading {
+    pub(crate) fn arrangement_reading(&self) -> tilo_session_core::shell::LayoutReading {
         let mut reading = self.arrangement.borrow().reading();
         if let Some(sync) = &self.sync {
             reading.people = self
@@ -25,12 +25,10 @@ impl Shared {
                     })
                 })
                 .into_iter()
-                .map(
-                    |person| tilo_session_core::shell::ArrangementPersonReading {
-                        key: person.id,
-                        name: person.label,
-                    },
-                )
+                .map(|person| tilo_session_core::shell::LayoutPersonReading {
+                    key: person.id,
+                    name: person.label,
+                })
                 .collect();
         }
         reading

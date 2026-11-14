@@ -1658,7 +1658,7 @@ impl crate::services::HostStepServices for TurnSteps {
             did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
-            address: tilo_actions::ActionAddress::new("shell:arrangement", "place"),
+            address: tilo_actions::ActionAddress::new("shell:layout", "place"),
             resource_kind: "shell".into(),
             resource_label: "The person's arrangement".into(),
             action_label: "Put a resource on the canvas".into(),
@@ -1783,7 +1783,7 @@ fn grant_the_arrangement(f: &Fixture, may: bool) {
         &TreePath::workspace(workspace_id().to_string()),
         tilo_actions::remote::session_actions::PROVIDER,
         "shell",
-        "shell:arrangement",
+        "shell:layout",
         None,
         "place",
     );
@@ -1819,7 +1819,7 @@ fn stray_invoke(
                 invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(invocation)),
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider: tilo_actions::remote::session_actions::PROVIDER.into(),
-                    address: tilo_actions::ActionAddress::new("shell:arrangement", "place"),
+                    address: tilo_actions::ActionAddress::new("shell:layout", "place"),
                 },
                 argument: tilo_actions::remote::InvokeArgument::None,
                 context: None,

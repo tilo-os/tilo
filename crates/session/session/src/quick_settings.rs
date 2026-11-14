@@ -545,7 +545,7 @@ const ARRANGEMENT_KIND: &str = "session.quick-settings";
 /// What the arrangement resource offers: the controls the panel shows.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "so.tilo.session.quick-settings")]
-pub(crate) enum ArrangementAction {
+pub(crate) enum LayoutAction {
     /// Show a control on the panel
     #[effect(own_device, idempotent)]
     ShowControl {
@@ -580,7 +580,7 @@ pub(crate) enum ArrangementAction {
 /// The arrangement resource: which controls the panel shows, read by the panel and by anyone else
 /// who asks.
 fn arrangement_resource() -> tilo_actions::ResourceSpec {
-    tilo_service::offer::<ArrangementAction>(
+    tilo_service::offer::<LayoutAction>(
         tilo_actions::ResourceSpec::new(
             ARRANGEMENT,
             ARRANGEMENT_KIND,
@@ -626,23 +626,23 @@ impl QuickSettingsService {
     }
 
     /// Carry `action` out on the person's arrangement, and keep it: whether it changed.
-    fn carry(&mut self, action: &ArrangementAction) -> Result<bool, tilo_actions::DoorError> {
+    fn carry(&mut self, action: &LayoutAction) -> Result<bool, tilo_actions::DoorError> {
         let mut arrangement = self.shown.borrow().clone();
         let changed = match action {
-            ArrangementAction::ShowControl { control } => {
+            LayoutAction::ShowControl { control } => {
                 tilo_quick_settings::host::show_control(&mut arrangement, control)
             }
-            ArrangementAction::HideControl { control } => {
+            LayoutAction::HideControl { control } => {
                 tilo_quick_settings::host::hide_control(&mut arrangement, control)
             }
-            ArrangementAction::MoveControl { control, before } => {
+            LayoutAction::MoveControl { control, before } => {
                 tilo_quick_settings::host::move_control(
                     &mut arrangement,
                     control,
                     before.as_deref(),
                 )
             }
-            ArrangementAction::ResetControls => {
+            LayoutAction::ResetControls => {
                 tilo_quick_settings::host::reset_controls(&mut arrangement)
             }
         };
@@ -685,12 +685,8 @@ impl tilo_service::Service for QuickSettingsService {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
-        let action = tilo_service::decode::<ArrangementAction>(
-            &self.resources(),
-            resource,
-            action,
-            arguments,
-        )?;
+        let action =
+            tilo_service::decode::<LayoutAction>(&self.resources(), resource, action, arguments)?;
         self.carry(&action)?;
         Ok(tilo_service::Started::Done(
             tilo_actions::ActionOutput::default(),
