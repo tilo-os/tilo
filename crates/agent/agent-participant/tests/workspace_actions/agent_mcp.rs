@@ -158,8 +158,10 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
             .narrated
             .iter()
             .filter(|(_, work)| {
+                // The run is an agent member: its actor key names the kind
+                // before the publisher.
                 run.as_ref()
-                    .is_some_and(|run| work.actor.by.key() == run.publisher)
+                    .is_some_and(|run| work.actor.by.key() == format!("agent:{}", run.publisher))
             })
             .filter(|(record, work)| {
                 work.action.id == "new-sheet"
