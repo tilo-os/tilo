@@ -2,16 +2,17 @@
 //!
 //! The migration writes each issue it brings into this app's own data area
 //! (`personal-data-incoming/issues`). Opening the tracker adds them through its own verbs:
-//! `create` with the description, status, assignee and the issue's page as its source, then
-//! `add-label`, `comment` for each message of its thread, `move-under` for its parent and `link`
-//! for the issues its relations name. An issue is known by its source page, so one the tracker
+//! `create` with the description, status, assignee, labels, the issue's page as its source and
+//! its origin (who opened it there, when, and the name it had there, `ENG-12`), then `comment`
+//! for each message of its thread with its own origin, `move-under` for its parent and `link` for
+//! the issues its relations name. An issue is known by its source page, so one the tracker
 //! already holds is left as the person has it; an entry is removed once its issue is in.
 
 use std::collections::BTreeMap;
 
 use serde_json::Value;
 use ui::application::HostContext;
-use ui::tilo_resource::{Id, NonBlank, Replica};
+use ui::tilo_resource::{Id, NonBlank, Origin, Replica};
 
 use crate::model::{Status, Tracker, tracker};
 
@@ -121,13 +122,21 @@ pub(crate) fn apply(
         replica
             .apply_confirmed(
                 Tracker::CREATE.with(crate::model::NewIssue {
-                    body: Some(described(entry)),
+                    body: Some(text(entry, "body").trim().to_owned()),
                     status,
                     assignee: entry
                         .get("assignee")
                         .and_then(Value::as_str)
                         .map(str::to_owned),
                     url: Some(text(entry, "url").to_owned()),
+                    origin: origin(
+                        entry.get("author"),
+                        entry,
+                        text(entry, "url"),
+                        Some(text(entry, "identifier")),
+                        text(entry, "created_at"),
+                        text(entry, "updated_at"),
+                    ),
                     ..crate::model::NewIssue::titled(title)
                 }),
             )
@@ -169,12 +178,26 @@ fn fill(
         .flatten()
     {
         let said = comment_text(comment);
+        let author = (!text(comment, "author").trim().is_empty()).then(|| {
+            serde_json::json!({"name": text(comment, "author"), "handle": comment.get("handle")})
+        });
+        let url = match text(comment, "url") {
+            "" => text(entry, "url"),
+            url => url,
+        };
         if let Some(said) = NonBlank::parse(&said) {
             replica
                 .apply_confirmed(Tracker::COMMENT.with(tracker::Comment {
                     issue: issue.clone(),
                     text: said,
-                    origin: None,
+                    origin: origin(
+                        author.as_ref(),
+                        entry,
+                        url,
+                        None,
+                        text(comment, "at"),
+                        text(comment, "updated_at"),
+                    ),
                 }))
                 .map_err(|error| error.to_string())?;
         }
@@ -222,38 +245,50 @@ fn fill(
     Ok(())
 }
 
-/// The description, ending with where the issue came from, so whoever reads it can open the
-/// original.
-fn described(entry: &Value) -> String {
-    let body = text(entry, "body").trim();
+/// Where an item of `entry` was first written: its author there (`{name, handle}`), the tool,
+/// its page, the name it had there and when it was written and last changed. `None` when the
+/// source does not say who wrote it.
+fn origin(
+    author: Option<&Value>,
+    entry: &Value,
+    url: &str,
+    reference: Option<&str>,
+    created: &str,
+    updated: &str,
+) -> Option<Origin> {
+    let author = author?;
+    let name = text(author, "name").trim();
+    if name.is_empty() {
+        return None;
+    }
+    let millis = |at: &str| {
+        chrono::DateTime::parse_from_rfc3339(at.trim())
+            .ok()
+            .map(|at| at.timestamp_millis())
+    };
+    let created_ms = millis(created);
     let source = match text(entry, "source") {
         "linear" => "Linear",
         other => other,
     };
-    let named = match text(entry, "identifier") {
-        "" => format!("Opened from {source}"),
-        identifier => format!("{identifier} on {source}"),
-    };
-    let link = format!("[{named}]({})", text(entry, "url"));
-    if body.is_empty() {
-        link
-    } else {
-        format!("{body}\n\n{link}")
+    let kept = |text: &str| (!text.trim().is_empty()).then(|| text.trim().to_owned());
+    Origin {
+        author: name.to_owned(),
+        handle: author.get("handle").and_then(Value::as_str).and_then(kept),
+        source: source.to_owned(),
+        url: kept(url),
+        reference: reference.and_then(kept),
+        created_ms,
+        updated_ms: millis(updated)
+            .filter(|updated| created_ms.is_none_or(|made| *updated >= made)),
     }
+    .checked()
+    .ok()
 }
 
-/// A comment as the thread keeps it: who wrote it on the source and when, then its words.
+/// A comment's words as the thread keeps them; who wrote it there and when is its origin.
 fn comment_text(comment: &Value) -> String {
-    let author = text(comment, "author").trim();
-    let day = text(comment, "at").get(..10).unwrap_or_default();
-    let said = text(comment, "text").trim();
-    // The thread shows a message as written, so who wrote it reads as plain words.
-    let head = match (author.is_empty(), day.is_empty()) {
-        (false, false) => format!("{author}, {day}: "),
-        (false, true) => format!("{author}: "),
-        _ => String::new(),
-    };
-    let mut whole = format!("{head}{said}");
+    let mut whole = text(comment, "text").trim().to_owned();
     if whole.chars().count() > crate::model::MAX_MESSAGE_CHARS {
         whole = whole
             .chars()
@@ -292,8 +327,11 @@ mod tests {
                 "ENG-1",
                 json!({
                     "status": "in-progress",
-                    "assignee": "person:Ada Lovelace",
+                    "assignee": "outside:Ada Lovelace",
                     "labels": ["Migration", "P1"],
+                    "author": {"name": "Grace Hopper", "handle": "grace@example.com"},
+                    "created_at": "2026-01-02T09:00:00.000Z",
+                    "updated_at": "2026-01-04T09:00:00.000Z",
                     "comments": [{"author": "Grace", "at": "2026-01-03T00:00:00.000Z", "text": "On it."}],
                     "links": ["https://tracker.example/acme/issue/ENG-2"]
                 }),
@@ -317,21 +355,33 @@ mod tests {
         let (first_id, first) = find("ENG-1");
         assert_eq!(first.title, "Issue ENG-1");
         let body = format!("{:?}", first.body);
-        assert!(
-            body.contains("About it.") && body.contains("https://tracker.example/acme/issue/ENG-1"),
-            "{body}"
+        assert!(body.contains("About it."), "{body}");
+        let origin = first.origin.clone().expect("who opened it there");
+        assert_eq!(origin.author, "Grace Hopper");
+        assert_eq!(origin.handle.as_deref(), Some("grace@example.com"));
+        assert_eq!(origin.source, "Linear");
+        assert_eq!(origin.reference.as_deref(), Some("ENG-1"));
+        assert_eq!(
+            origin.url.as_deref(),
+            Some("https://tracker.example/acme/issue/ENG-1")
         );
+        assert_eq!(origin.created_ms, Some(1_767_344_400_000));
         assert_eq!(first.status, Status::InProgress);
         assert_eq!(
             first.assignee.as_ref().map(|a| a.0.as_str()),
-            Some("person:Ada Lovelace")
+            Some("outside:Ada Lovelace")
         );
         assert!(
             first.labels.contains(&"Migration".to_owned())
                 && first.labels.contains(&"P1".to_owned())
         );
         let thread: Vec<String> = first.comments.iter().map(|(_, m)| m.text.clone()).collect();
-        assert_eq!(thread, ["Grace, 2026-01-03: On it."]);
+        assert_eq!(thread, ["On it."], "who wrote it and when is its origin");
+        let said = first.comments.iter().next().unwrap().1;
+        assert_eq!(
+            said.origin.as_ref().map(|origin| origin.author.as_str()),
+            Some("Grace")
+        );
         let (second_id, second) = find("ENG-2");
         assert_eq!(second.status, Status::Todo);
         assert_eq!(second.parent, Some(first_id));

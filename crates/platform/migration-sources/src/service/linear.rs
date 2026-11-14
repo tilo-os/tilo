@@ -1,8 +1,9 @@
 //! Linear as a migration source: its issues, through Linear's GraphQL API (`POST /graphql`
 //! with a personal API key in `Authorization`), grouped by team for the review.
 //!
-//! An issue keeps its title, description, state, labels, assignee, comments, the issues its
-//! relations name and its parent, and its page on Linear as the issue's source.
+//! An issue keeps its title, description, state, labels, assignee, priority, estimate, due
+//! date, team and project, who opened it and when, its comments with theirs, how it relates to
+//! the other issues and its parent, and its page on Linear as the issue's source.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,7 +11,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde_json::{Value, json};
 
 use super::http::{self, Key};
-use super::landing::{IncomingComment, IncomingIssue};
+use super::landing::{
+    IncomingAuthor, IncomingComment, IncomingGroup, IncomingIssue, IncomingRelation,
+};
 use super::{ReviewGroup, ReviewItem, ServiceError};
 
 const ISSUES: &str = r"
@@ -24,13 +27,20 @@ query TiloMigration($after: String) {
       description
       url
       createdAt
+      updatedAt
+      priority
+      estimate
+      dueDate
+      creator { name email }
       team { id key name }
+      project { id name }
       state { name type }
-      assignee { name }
+      assignee { name email }
       labels { nodes { name } }
       parent { id }
-      relations { nodes { relatedIssue { id } } }
-      comments(first: 100) { nodes { body createdAt user { name } } }
+      relations { nodes { type relatedIssue { id } } }
+      inverseRelations { nodes { type issue { id } } }
+      comments(first: 100) { nodes { body createdAt updatedAt url user { name email } } }
     }
   }
 }
@@ -236,7 +246,18 @@ fn incoming(issue: &Value, pages: &BTreeMap<&str, &str>) -> IncomingIssue {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|name| !name.is_empty())
-        .map(|name| format!("person:{name}"));
+        // Someone named on Linear need not be in the workspace: named, not a member.
+        .map(|name| format!("outside:{name}"));
+    let relations = relations(issue, pages);
+    let group = |pointer: &str| {
+        issue.pointer(pointer).and_then(|group| {
+            let key = text(group, "id");
+            (!key.is_empty()).then(|| IncomingGroup {
+                key: key.to_owned(),
+                name: text(group, "name").trim().to_owned(),
+            })
+        })
+    };
     IncomingIssue {
         source: "linear".into(),
         key: text(issue, "id").to_owned(),
@@ -253,21 +274,24 @@ fn incoming(issue: &Value, pages: &BTreeMap<&str, &str>) -> IncomingIssue {
         comments: nodes("/comments/nodes")
             .iter()
             .filter(|comment| !text(comment, "body").trim().is_empty())
-            .map(|comment| IncomingComment {
-                author: comment
-                    .pointer("/user/name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                at: text(comment, "createdAt").to_owned(),
-                text: text(comment, "body").to_owned(),
+            .map(|comment| {
+                let user = author(comment.get("user"));
+                IncomingComment {
+                    author: user
+                        .as_ref()
+                        .map(|user| user.name.clone())
+                        .unwrap_or_default(),
+                    handle: user.and_then(|user| user.handle),
+                    at: text(comment, "createdAt").to_owned(),
+                    updated_at: text(comment, "updatedAt").to_owned(),
+                    url: text(comment, "url").to_owned(),
+                    text: text(comment, "body").to_owned(),
+                }
             })
             .collect(),
-        links: nodes("/relations/nodes")
+        links: relations
             .iter()
-            .filter_map(|relation| relation.pointer("/relatedIssue/id").and_then(Value::as_str))
-            .filter_map(|related| pages.get(related))
-            .map(|page| (*page).to_owned())
+            .map(|relation| relation.page.clone())
             .collect(),
         parent: issue
             .pointer("/parent/id")
@@ -275,7 +299,108 @@ fn incoming(issue: &Value, pages: &BTreeMap<&str, &str>) -> IncomingIssue {
             .and_then(|parent| pages.get(parent))
             .map(|page| (*page).to_owned()),
         url: text(issue, "url").to_owned(),
+        author: author(issue.get("creator")),
+        created_at: text(issue, "createdAt").to_owned(),
+        updated_at: text(issue, "updatedAt").to_owned(),
+        team: group("/team"),
+        project: group("/project"),
+        priority: priority(issue.get("priority").and_then(Value::as_u64)),
+        estimate: issue
+            .get("estimate")
+            .and_then(Value::as_f64)
+            .filter(|points| points.is_finite() && *points >= 0.0)
+            .map(|points| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a finite, non-negative estimate, rounded and capped to whole points"
+                )]
+                let whole = points.round().min(f64::from(u32::MAX)) as u32;
+                whole
+            }),
+        due: issue
+            .get("dueDate")
+            .and_then(Value::as_str)
+            .filter(|due| !due.is_empty())
+            .map(str::to_owned),
+        relations,
     }
+}
+
+/// How `issue` relates to the reviewed issues (`pages`): the relations it names, and those
+/// other issues name with it, each once.
+fn relations(issue: &Value, pages: &BTreeMap<&str, &str>) -> Vec<IncomingRelation> {
+    let nodes = |pointer: &str| -> Vec<Value> {
+        issue
+            .pointer(pointer)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut relations: Vec<IncomingRelation> = Vec::new();
+    for relation in nodes("/relations/nodes") {
+        let kind = match text(&relation, "type") {
+            "blocks" => "blocks",
+            "duplicate" => "duplicate-of",
+            _ => "related",
+        };
+        if let Some(page) = relation
+            .pointer("/relatedIssue/id")
+            .and_then(Value::as_str)
+            .and_then(|related| pages.get(related))
+        {
+            relations.push(IncomingRelation {
+                kind: kind.into(),
+                page: (*page).to_owned(),
+            });
+        }
+    }
+    for relation in nodes("/inverseRelations/nodes") {
+        let kind = match text(&relation, "type") {
+            "blocks" => "blocked-by",
+            "duplicate" => "duplicated-by",
+            _ => "related",
+        };
+        if let Some(page) = relation
+            .pointer("/issue/id")
+            .and_then(Value::as_str)
+            .and_then(|related| pages.get(related))
+            && !relations.iter().any(|known| known.page == *page)
+        {
+            relations.push(IncomingRelation {
+                kind: kind.into(),
+                page: (*page).to_owned(),
+            });
+        }
+    }
+    relations
+}
+
+/// A Linear user (`creator`, a comment's `user`) as an author: their name, and their address
+/// as the handle.
+fn author(user: Option<&Value>) -> Option<IncomingAuthor> {
+    let user = user?;
+    let name = text(user, "name").trim();
+    if name.is_empty() {
+        return None;
+    }
+    let handle = text(user, "email").trim();
+    Some(IncomingAuthor {
+        name: name.to_owned(),
+        handle: (!handle.is_empty()).then(|| handle.to_owned()),
+    })
+}
+
+/// Linear's priority (0 none, 1 urgent … 4 low) by name.
+fn priority(level: Option<u64>) -> Option<String> {
+    let named = match level? {
+        1 => "urgent",
+        2 => "high",
+        3 => "medium",
+        4 => "low",
+        _ => return None,
+    };
+    Some(named.to_owned())
 }
 
 /// Linear's state type, as the tracker's status.

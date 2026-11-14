@@ -20,6 +20,31 @@ pub struct Picture {
     pub bytes: Vec<u8>,
 }
 
+/// Who wrote an item on the service: their name there, and their handle (an address or a user
+/// name) when the service gives one. Not a member of the destination: they need not have joined.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IncomingAuthor {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<String>,
+}
+
+/// A group an issue belongs to on the service: a Linear team or project.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IncomingGroup {
+    /// The service's id for it.
+    pub key: String,
+    pub name: String,
+}
+
+/// How an issue relates to another one: `blocks`, `blocked-by`, `duplicate-of`, `duplicated-by`
+/// or `related`, and the other issue's page.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IncomingRelation {
+    pub kind: String,
+    pub page: String,
+}
+
 /// A page for Notes: an Outline collection or document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IncomingPage {
@@ -35,14 +60,29 @@ pub struct IncomingPage {
     /// Where it is read on the service.
     pub url: String,
     pub pictures: Vec<Picture>,
+    /// Who wrote it there, when the service says.
+    pub author: Option<IncomingAuthor>,
+    /// When it was written and last changed there (RFC 3339); empty when the service does not
+    /// say.
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 /// One comment of an issue's thread.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IncomingComment {
     pub author: String,
+    /// The author's handle there (an address), when the service gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<String>,
     /// When it was written, as the service says it (RFC 3339).
     pub at: String,
+    /// When it last changed there (RFC 3339); empty when the service does not say.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub updated_at: String,
+    /// Its own page on the service, when it has one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
     pub text: String,
 }
 
@@ -71,6 +111,34 @@ pub struct IncomingIssue {
     pub parent: Option<String>,
     /// Its page on the service: the issue's source.
     pub url: String,
+    /// Who opened it there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<IncomingAuthor>,
+    /// When it was opened and last changed there (RFC 3339); empty when the service does not
+    /// say.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub updated_at: String,
+    /// The team it belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<IncomingGroup>,
+    /// The project it works towards, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<IncomingGroup>,
+    /// How urgent it is: none, urgent, high, medium or low.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+    /// How much work it is, in points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimate: Option<u32>,
+    /// When it is due (`2026-11-20`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due: Option<String>,
+    /// How it relates to the other reviewed issues, by their pages; `links` names the same
+    /// pages without how.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<IncomingRelation>,
 }
 
 /// Where a run's items go.
@@ -98,6 +166,12 @@ struct PageEntry<'a> {
     url: &'a str,
     /// Base64 of each picture's bytes.
     pictures: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    author: Option<&'a IncomingAuthor>,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    created_at: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    updated_at: &'a str,
 }
 
 #[derive(Serialize)]
@@ -165,6 +239,9 @@ impl Landing for InboxLanding {
                 .iter()
                 .map(|picture| engine.encode(&picture.bytes))
                 .collect(),
+            author: page.author.as_ref(),
+            created_at: &page.created_at,
+            updated_at: &page.updated_at,
         };
         let bytes = serde_json::to_vec(&entry).map_err(io::Error::other)?;
         self.write("so.tilo.notes", "pages", &page.source, &page.key, &bytes)

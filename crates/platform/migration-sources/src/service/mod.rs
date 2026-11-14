@@ -46,7 +46,10 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 pub use journal::{JournalState, ServiceJournal, valid_id};
-pub use landing::{InboxLanding, IncomingComment, IncomingIssue, IncomingPage, Landing};
+pub use landing::{
+    InboxLanding, IncomingAuthor, IncomingComment, IncomingGroup, IncomingIssue, IncomingPage,
+    IncomingRelation, Landing,
+};
 
 /// The account type a reviewed Outline key is kept under.
 pub const OUTLINE_TYPE: &str = "outline";
@@ -347,6 +350,24 @@ fn reach(
         .unwrap_or_default()
         .to_owned();
     Ok((account, server, key))
+}
+
+/// The connected mail account `account`: its settings as Mail keeps them, and the password the
+/// person typed, from the vault. The password is for handing straight to where it is kept next.
+///
+/// # Errors
+/// No such connected mail account, or the vault could not be read.
+pub fn mail_account(
+    config_root: &Path,
+    account: &str,
+) -> Result<(accounts::email::AccountConfig, Zeroizing<String>), ServiceError> {
+    let (stored, _, secret) = reach(config_root, account)?;
+    if ServiceKind::of_account(&stored) != Some(ServiceKind::Mail) {
+        return Err(ServiceError::Missing);
+    }
+    let config = accounts::email::AccountConfig::from_value(stored.config)
+        .map_err(|_| ServiceError::Missing)?;
+    Ok((config, secret))
 }
 
 /// What the connected source `account` holds now, every group chosen until the person says

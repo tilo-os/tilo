@@ -209,6 +209,9 @@ pub fn pages(
                 parent: None,
                 url: format!("{server}{}", text(collection, "url")),
                 pictures: Vec::new(),
+                author: author(collection),
+                created_at: text(collection, "createdAt").to_owned(),
+                updated_at: text(collection, "updatedAt").to_owned(),
             });
         }
         for document in source.documents.get(id).into_iter().flatten() {
@@ -237,6 +240,9 @@ pub fn pages(
                 .filter(|parent| chosen.contains(parent)),
                 url: format!("{server}{}", text(document, "url")),
                 pictures,
+                author: author(document),
+                created_at: text(document, "createdAt").to_owned(),
+                updated_at: text(document, "updatedAt").to_owned(),
             });
         }
     }
@@ -367,4 +373,19 @@ fn titled(title: &str) -> String {
 
 fn text<'a>(value: &'a Value, name: &str) -> &'a str {
     value.get(name).and_then(Value::as_str).unwrap_or_default()
+}
+
+/// Who wrote `item` on Outline: its `createdBy` user, by name, with their address as the
+/// handle when Outline shares it.
+fn author(item: &Value) -> Option<super::IncomingAuthor> {
+    let user = item.get("createdBy")?;
+    let name = text(user, "name").trim();
+    if name.is_empty() {
+        return None;
+    }
+    let handle = text(user, "email").trim();
+    Some(super::IncomingAuthor {
+        name: name.to_owned(),
+        handle: (!handle.is_empty()).then(|| handle.to_owned()),
+    })
 }
