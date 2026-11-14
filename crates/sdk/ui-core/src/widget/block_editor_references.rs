@@ -1321,6 +1321,7 @@ mod tests {
             edits: Some(Intent::new(fired, "b", "value")),
             name: String::new(),
             path: Vec::new(),
+            identity: None,
         }
     }
 

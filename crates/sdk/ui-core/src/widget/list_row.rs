@@ -1042,6 +1042,9 @@ pub struct ListRow {
     check_verb: Option<super::control_verb::ControlVerb<bool>>,
     check_binding: Option<crate::widget::binding::BoxedBinding<bool>>,
     check_action: Option<crate::widget::ActionEmitter<()>>,
+    /// What the box edits, when the app binds it to a field and gives it no action of its own: the
+    /// identity anyone looks it up by, as the host names the field.
+    check_identity: Option<String>,
     environment: crate::interaction::InteractionEnvironment,
     metrics: Option<RowMetrics>,
     theme: Option<Theme>,
@@ -1129,6 +1132,7 @@ impl ListRow {
             check_verb: None,
             check_binding: None,
             check_action: None,
+            check_identity: None,
             environment: crate::interaction::InteractionEnvironment::default(),
             metrics: None,
             theme: None,
@@ -3045,6 +3049,7 @@ impl Widget for ListRow {
                 .check_action
                 .as_ref()
                 .map(|action| action.binding().identity().encode())
+                .or_else(|| self.check_identity.clone())
             {
                 box_node.action = Some(identity);
             }

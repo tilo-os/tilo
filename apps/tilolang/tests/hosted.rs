@@ -80,6 +80,8 @@ const CHAT: &str = "so.tilo.lang.chat";
 const TODAY: &str = "so.tilo.lang.today";
 /// The notebook whose notes are signed: what a workspace of a person's own looks like.
 const SIGNED: &str = "so.tilo.lang.signed";
+/// The page whose one box edits a field and runs no action of its own.
+const FIELDBOX: &str = "so.tilo.lang.fieldbox";
 const VIEWPORT: (u32, u32) = (1280, 800);
 /// The longest a cost measurement waits for the host to be woken by the work it has off its
 /// frames.

@@ -42,6 +42,8 @@ impl super::Session {
         let root = view.root_tree().expect("the window's view");
         let mut page = Vec::new();
         content_nodes(&root, &mut page);
+        // A window with no shell of its own draws its page in the tree itself.
+        let page = if page.is_empty() { vec![&root] } else { page };
         page.iter()
             .find_map(|node| find(node, &editing))
             .unwrap_or_else(|| panic!("the window edits no {field:?}"))
@@ -460,4 +462,109 @@ fn card_record(session: &mut super::Session, title: &str) -> serde_json::Value {
     let mut found = None;
     walk(&root, title, &mut found);
     found.unwrap_or_else(|| panic!("the window shows no card called {title:?}"))
+}
+
+/// A box bound only to a field runs no action of its own and still says what it edits, as the
+/// field's own entry does: the kind of record, the one record, and the declared id of the field,
+/// in a box a view places itself and in a list row's leading column. A caller that names it so
+/// marks the field, where a press and a screen reader's activation do.
+#[test]
+fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identity() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = super::Session::open(super::FIELDBOX, "ada", super::Window::live);
+    assert_eq!(
+        session.field_value("done"),
+        Some(tilo_ui_host::Value::Bool(false)),
+        "the page starts with the box unmarked"
+    );
+    let shown = session.controls();
+    let editing = |id: &str| {
+        shown
+            .iter()
+            .filter_map(|control| control.doing.as_deref())
+            .filter_map(ui::tilo_actions::ActionAddress::parse)
+            .find(|address| address.action == id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the window shows no control that edits {id}: {:?}",
+                    shown
+                        .iter()
+                        .map(|control| (&control.name, &control.doing))
+                        .collect::<Vec<_>>()
+                )
+            })
+    };
+    let done = editing(&session.field_id("done"));
+    assert_eq!(
+        session.identity_named("Done"),
+        done.encode(),
+        "the box is listed, by what it edits"
+    );
+    let titled = editing(&session.field_id("title"));
+    assert_eq!(
+        (done.resource.as_str(), done.item.as_deref()),
+        (titled.resource.as_str(), titled.item.as_deref()),
+        "the box names the record the field's own entry names, the same way"
+    );
+    assert!(
+        session
+            .window
+            .app()
+            .press_window_control(&done.encode(), ui::window_targets::TargetAction::Activate),
+        "the window presses the control the identity names"
+    );
+    session.settle();
+    assert_eq!(
+        session.field_value("done"),
+        Some(tilo_ui_host::Value::Bool(true)),
+        "the press marked the field the box edits"
+    );
+    let answered = session.invoke_doing(&done.encode(), &serde_json::json!({}));
+    assert!(
+        matches!(
+            answered,
+            ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+        ),
+        "the door ran the edit the box names: {answered:?}"
+    );
+    assert_eq!(
+        session.field_value("done"),
+        Some(tilo_ui_host::Value::Bool(false)),
+        "and its press marked the field the other way"
+    );
+
+    // A task's row holds a box bound to a field of its own, with no action either.
+    let add = session.identity_doing("Page", "add");
+    let answered = session.invoke_doing(&add, &serde_json::json!({ "title": "Water the plants" }));
+    assert!(
+        matches!(
+            answered,
+            ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+        ),
+        "the door added a task: {answered:?}"
+    );
+    let boxed = session
+        .controls()
+        .into_iter()
+        .find(|control| control.name == "Mark Water the plants done")
+        .expect("the row shows its box");
+    let boxed = boxed
+        .doing
+        .expect("the row's box says which field it edits");
+    let address = ui::tilo_actions::ActionAddress::parse(&boxed)
+        .unwrap_or_else(|| panic!("{boxed} names a record and a field"));
+    assert_eq!(address.action, session.field_id("checked"));
+    assert!(
+        session
+            .window
+            .app()
+            .press_window_control(&boxed, ui::window_targets::TargetAction::Activate),
+        "the window presses the row's box by what it edits"
+    );
+    session.settle();
+    assert_eq!(
+        session.field_value("checked"),
+        Some(tilo_ui_host::Value::Bool(true)),
+        "the press marked the task's field"
+    );
 }

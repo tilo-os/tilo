@@ -712,6 +712,10 @@ pub struct Bound<T> {
     /// Where the bound value lives, for presence: collaborators at the same path see each other's
     /// carets and selections in it.
     pub path: Vec<crate::presence::PathSegment>,
+    /// What the value edits, as the identity anyone looks it up by: the kind of record, the one
+    /// record and the declared id of the field. `None` for a view's own state, and for a host whose
+    /// values answer to nothing but their names.
+    pub identity: Option<String>,
 }
 
 impl<T: Default + 'static> Default for Bound<T> {
@@ -721,6 +725,7 @@ impl<T: Default + 'static> Default for Bound<T> {
             edits: None,
             name: String::new(),
             path: Vec::new(),
+            identity: None,
         }
     }
 }

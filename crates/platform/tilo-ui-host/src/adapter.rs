@@ -205,6 +205,14 @@ impl Published {
         {
             return Some(self.naming(&invoked.resource, &invoked.action, &invoked.declared));
         }
+        Self::field_of(node)
+    }
+
+    /// What the field a bound control edits is, as the identity anyone looks it up by: the kind of
+    /// record it is of, the one record, and the declared id of the field. `None` for a control bound
+    /// to the view's own state. A control the view draws from the binding of a field (a list row's
+    /// box) says what it edits, where it runs no action of its own.
+    pub(crate) fn field_of(node: &UiNode) -> Option<String> {
         let binding = node.binding.as_ref()?;
         let (target, field) = binding.field()?;
         let kind = binding.kind.as_deref()?;
@@ -628,6 +636,7 @@ fn shown_value(
             edits: None,
             name: String::new(),
             path: Vec::new(),
+            identity: None,
         }
     }
     let given = node.props.get(name)?;
@@ -810,6 +819,7 @@ impl Source for NodeSource<'_> {
                 edits: None,
                 name: String::new(),
                 path: Vec::new(),
+                identity: None,
             }));
         };
         let named = match self.node.props.get("bind") {
@@ -828,6 +838,9 @@ impl Source for NodeSource<'_> {
         let called = binding.name.clone();
         let path = presence_path(self.node);
         let key = self.node.key.clone();
+        // Which field it edits, as the identity anyone looks it up by: a control drawn from the
+        // binding of a field (a row's box) says what it edits, where it runs no action of its own.
+        let mut identity = Published::field_of(self.node);
         Some(match ty {
             // A moment is held as its ISO text (or the day it names), a person as their identity,
             // and a case as its name: what its widget shows, and what an edit carries.
@@ -836,30 +849,35 @@ impl Source for NodeSource<'_> {
                 edits,
                 name: called,
                 path,
+                identity: identity.take(),
             }),
             Type::Bool => BoundValue::Bool(Bound {
                 state: self.reconciler.flag_state(&key),
                 edits,
                 name: called,
                 path,
+                identity: identity.take(),
             }),
             Type::Int => BoundValue::Int(Bound {
                 state: self.reconciler.count_state(&key),
                 edits,
                 name: called,
                 path,
+                identity: identity.take(),
             }),
             Type::Float => BoundValue::Float(Bound {
                 state: self.reconciler.number_state(&key),
                 edits,
                 name: called,
                 path,
+                identity: identity.take(),
             }),
             Type::RichText => BoundValue::Rich(Bound {
                 state: self.reconciler.rich_state(&key),
                 edits,
                 name: called,
                 path,
+                identity: identity.take(),
             }),
             _ => return None,
         })

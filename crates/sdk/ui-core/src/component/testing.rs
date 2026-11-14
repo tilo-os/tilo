@@ -146,6 +146,7 @@ pub(super) fn flag_bound(key: &str, on: bool, edits: Option<Intent>) -> BoundVal
         edits,
         name: key.to_owned(),
         path: Vec::new(),
+        identity: None,
     })
 }
 
@@ -155,6 +156,7 @@ pub(super) fn number_bound(key: &str, number: f64, edits: Option<Intent>) -> Bou
         edits,
         name: key.to_owned(),
         path: Vec::new(),
+        identity: None,
     })
 }
 
@@ -164,5 +166,6 @@ pub(super) fn text_bound(key: &str, value: &str, edits: Option<Intent>) -> Bound
         edits,
         name: key.to_owned(),
         path: Vec::new(),
+        identity: None,
     })
 }

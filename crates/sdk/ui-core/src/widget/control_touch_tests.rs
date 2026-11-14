@@ -122,6 +122,7 @@ impl Auto {
             edits: None,
             name: key.to_owned(),
             path: Vec::new(),
+            identity: None,
         };
         let props = crate::widget::AutocompleteProps {
             value: bound,

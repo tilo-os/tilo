@@ -235,6 +235,7 @@ impl ListRow {
         self.feel = motion.unwrap_or(crate::motion::Feel::Standard);
         self.dense = dense;
         self.check_binding = None;
+        self.check_identity = None;
         self.check_action = match check.clone() {
             // The app's own action for what a check is: the box holds it, so pressing the box
             // and an agent's invocation of the action are the one route.
@@ -246,6 +247,9 @@ impl ListRow {
             // agent, an undo) shows in the row rather than only in the state behind it.
             let (checked, binding) = crate::widget::binding::local(&bound.state);
             self.check_binding = Some(binding);
+            // A box the app gives no action of its own says which field it edits, as every other
+            // field-bound control does: an agent or a screen reader naming it reaches the field.
+            self.check_identity.clone_from(&bound.identity);
             let on_toggle: Box<dyn FnMut(bool)> = if check.is_none() {
                 Box::new(move |checked| {
                     bound.state.set(checked);

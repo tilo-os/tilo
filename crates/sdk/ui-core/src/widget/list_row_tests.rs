@@ -1825,6 +1825,7 @@ fn bound_row(state: &crate::LocalState<bool>, intents: &crate::Intents<Fired>) -
             edits: Some(Intent::new(intents, "milk", "check")),
             name: "Done".to_owned(),
             path: Vec::new(),
+            identity: None,
         }),
         ..ListRowProps::default()
     };
