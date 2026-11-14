@@ -5494,10 +5494,9 @@ default = false
 
 # The same two programs, for the checks that run them directly (e2e, page-tour, the tilo.sh
 # stack): the profile Cargo.toml's `lounge-gate` describes, which is release optimisation
-# without the whole-program link. A check starts from an empty build directory, so a run is the
-# whole graph taken from the compiler cache and then linked whole, which grows with every crate a
-# host that serves pages carries and which any change in that graph redoes — for a binary no check
-# reads the speed of.
+# without the whole-program link. A check starts from an empty build directory, so a run takes
+# every unit it reuses from the compiler cache, recompiles the crates the change touched and the
+# crates above them, and links whole — for a binary no check reads the speed of.
 [[check]]
 name = "lounge-gate-binaries"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -5506,7 +5505,11 @@ env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge-gate/binaries/**"]
 # A node's first run of this builds the whole graph from nothing through the compiler cache; after
-# that t books it from what it measured, and a change to one crate relinks.
+# that t books it from what it measured. A change to a leaf crate recompiles that crate and what
+# depends on it, and relinks; a change to a crate the programs carry recompiles everything above
+# it. That work is the check's own: each of these checks selects its own packages and cargo
+# resolves features per selection, so a crate two of them carry is a different unit in each
+# selection that reaches it, and only a unit their selections resolve alike is served to both.
 timeout_secs = 7200
 default = false
 
@@ -5562,9 +5565,11 @@ default = false
 
 # The tilo command an agent runs in e2e's setups, built as the relay beside it is (Cargo.toml's
 # `lounge-gate`: the release's code and opt-level without its whole-program link), from the same
-# compiler cache, so a change to the command relinks it in seconds. The static musl build a
-# release publishes is cli-x86_64's, which cli-rehearsal installs the way a person does: its build
-# from cold is no part of what a change to a page waits for.
+# compiler cache. A change to the command recompiles the crates above the change and relinks, not
+# the command alone, and what this selection resolves differently from the relay's is its own
+# units (`lounge-gate-binaries`). The static musl build a release publishes is cli-x86_64's, which
+# cli-rehearsal installs the way a person does: its build from cold is no part of what a change to
+# a page waits for.
 [[check]]
 name = "lounge-gate-cli"
 egress = { to = ["code.tilo.so:443"], pinned = true }
