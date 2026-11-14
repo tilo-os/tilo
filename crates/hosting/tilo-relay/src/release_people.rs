@@ -221,8 +221,7 @@ struct WaitListEntryStoredV1 {
 /// `state` holds no workspace record this build reads, or one of its files does
 /// not read: the export says which, and writes nothing.
 pub fn export(state: &Path) -> Result<People, String> {
-    let rooms = rooms_directory(state)?;
-    let record_path = one_record(&rooms)?;
+    let record_path = one_record(state)?;
     let record: Record =
         postcard::take_from_bytes(&std::fs::read(&record_path).map_err(saying(&record_path))?)
             .map(|(record, _)| record)
@@ -258,61 +257,96 @@ pub fn export(state: &Path) -> Result<People, String> {
     })
 }
 
-/// The directory the earlier release kept its workspaces' records in: it was
-/// handed the relay's state root, whose records live in `rooms/`; a deployment
-/// that named `rooms` or the record's own directory is read too.
-fn rooms_directory(state: &Path) -> Result<PathBuf, String> {
-    for candidate in [
-        state.join("relay").join("rooms"),
-        state.join("rooms"),
-        state.to_path_buf(),
-    ] {
-        if has_record(&candidate) {
-            return Ok(candidate);
+/// The workspace record the released relay kept under `state`: the one it
+/// was told to serve, named by the `room-id` file beside its state (the
+/// deployment passes it to the release's `--room-id-file`). A state holding
+/// exactly one record needs no such file; a state holding several is refused
+/// rather than guessed between.
+fn one_record(state: &Path) -> Result<PathBuf, String> {
+    let (records, served) = walk(state);
+    if let Some(served) = served {
+        if let Some(record) = records.iter().find(|record| record.served_as == served) {
+            return Ok(record.path.clone());
         }
+        return Err(format!(
+            "{} names the workspace {served}, and no record under {} is it",
+            state.display(),
+            state.display()
+        ));
     }
-    Err(format!(
-        "{} holds no workspace record: name the released relay's own state directory",
-        state.display()
-    ))
-}
-
-fn has_record(dir: &Path) -> bool {
-    std::fs::read_dir(dir).is_ok_and(|entries| {
-        entries.flatten().any(|entry| {
-            entry
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "room")
-        })
-    })
-}
-
-/// The one workspace record in `rooms`: the released relay kept the workspace
-/// it served there.
-fn one_record(rooms: &Path) -> Result<PathBuf, String> {
-    let records: Vec<PathBuf> = std::fs::read_dir(rooms)
-        .map_err(saying(rooms))?
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "room")
-        })
-        .collect();
     match records.as_slice() {
-        [record] => Ok(record.clone()),
-        [] => Err(format!("{} holds no workspace record", rooms.display())),
+        [record] => Ok(record.path.clone()),
+        [] => Err(format!(
+            "{} holds no workspace record: name the released relay's own state directory",
+            state.display()
+        )),
         many => Err(format!(
-            "{} holds {} workspace records ({}); this export reads one workspace",
-            rooms.display(),
+            "{} holds {} workspace records ({}); name the directory holding the one this \
+             relay served",
+            state.display(),
             many.len(),
             many.iter()
-                .filter_map(|path| path.file_name()?.to_str())
+                .map(FoundRecord::name)
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
     }
+}
+
+/// A workspace record found under the state, and the workspace it names.
+struct FoundRecord {
+    path: PathBuf,
+    served_as: String,
+}
+
+impl FoundRecord {
+    fn name(&self) -> String {
+        self.path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.served_as.clone())
+    }
+}
+
+/// Every workspace record under `state`, and the workspace the release was
+/// told to serve, from its `room-id` file.
+fn walk(state: &Path) -> (Vec<FoundRecord>, Option<String>) {
+    let mut pending = vec![(state.to_path_buf(), 0)];
+    let mut records = Vec::new();
+    let mut served = None;
+    while let Some((directory, depth)) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && depth < 4 {
+                pending.push((path, depth + 1));
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "room")
+            {
+                if let Some(served_as) = names(&path) {
+                    records.push(FoundRecord { path, served_as });
+                }
+            } else if path.file_name().is_some_and(|name| name == "room-id") {
+                served = std::fs::read_to_string(&path)
+                    .ok()
+                    .map(|id| id.trim().to_lowercase())
+                    .filter(|id| !id.is_empty());
+            }
+        }
+    }
+    (records, served)
+}
+
+/// The workspace a record serves, from the head of its bytes: its version,
+/// then its workspace.
+fn names(record: &Path) -> Option<String> {
+    let bytes = std::fs::read(record).ok()?;
+    let (_, rest) = postcard::take_from_bytes::<u32>(&bytes).ok()?;
+    let (workspace, _) = postcard::take_from_bytes::<String>(rest).ok()?;
+    Some(workspace.to_lowercase())
 }
 
 /// The record's durable peer state, whole: the parts it names inline, then the
@@ -359,15 +393,23 @@ fn workspace_document(durable: &[u8]) -> Result<Vec<u8>, String> {
         }
     };
     let (base, rest) = postcard::take_from_bytes::<u32>(rest).map_err(reading)?;
-    if base != 5 {
+    // Base 4 is the layout the earlier release wrote; 5 is the same fields,
+    // with the existing state the release's owner began under.
+    if base != 4 && base != 5 {
         return Err(format!(
-            "the durable peer state is in base {base}, and this export reads 5"
+            "the durable peer state is in base {base}, and this export reads 4 and 5"
         ));
     }
     let (_workspace, rest) = postcard::take_from_bytes::<String>(rest).map_err(reading)?;
     let (_owner, rest) = postcard::take_from_bytes::<[u8; 32]>(rest).map_err(reading)?;
     let (document, _) = postcard::take_from_bytes::<Option<Vec<u8>>>(rest).map_err(reading)?;
     document.ok_or_else(|| "the durable peer state holds no workspace document".to_owned())
+}
+
+/// Who redeemed an invitation, and the address its issuer named for them.
+struct Redemption {
+    person: [u8; 32],
+    email: Option<String>,
 }
 
 /// One address as the earlier release kept it, and the invitations it was
@@ -378,14 +420,15 @@ struct Kept {
     invites: Vec<[u8; 32]>,
 }
 
-/// The address each person came in at: an invitation that named them and an
-/// address, or an address on the wait list an invitation was mailed to that
-/// the person redeemed. The release kept no address for a person anywhere
-/// else.
+/// The address each person came in at. The release kept one only where it
+/// invited them at it: on an invitation the ledger still holds, or on the
+/// invitation a redeemed one leaves in its receipt (the ledger drops an
+/// invitation once it is redeemed), or on the wait-list entry an invitation
+/// was mailed to.
 fn addresses(
     invitations: &[InvitationRecord],
     wait_list: &[Kept],
-    redeemed: &std::collections::BTreeMap<[u8; 32], [u8; 32]>,
+    redeemed: &std::collections::BTreeMap<[u8; 32], Redemption>,
 ) -> std::collections::BTreeMap<[u8; 32], String> {
     let mut emails = std::collections::BTreeMap::new();
     for invitation in invitations {
@@ -397,31 +440,40 @@ fn addresses(
         let Ok(address) = tilo_relay_protocol::workspaces::contact_address(named) else {
             continue;
         };
-        let person = invitation
-            .grant
-            .recipient_user_public_key
-            .or_else(|| redeemed.get(&invitation.issued.invite_id).copied());
+        let person = invitation.grant.recipient_user_public_key.or_else(|| {
+            redeemed
+                .get(&invitation.issued.invite_id)
+                .map(|redemption| redemption.person)
+        });
         if let Some(person) = person {
             emails.entry(person).or_insert(address);
         }
     }
+    for redemption in redeemed.values() {
+        if let Some(address) = &redemption.email {
+            emails
+                .entry(redemption.person)
+                .or_insert_with(|| address.clone());
+        }
+    }
     for entry in wait_list {
-        let Some(person) = entry.invites.iter().find_map(|invite| redeemed.get(invite)) else {
+        let Some(redemption) = entry.invites.iter().find_map(|invite| redeemed.get(invite)) else {
             continue;
         };
         let Ok(address) = tilo_relay_protocol::workspaces::contact_address(&entry.waiting.contact)
         else {
             continue;
         };
-        emails.entry(*person).or_insert(address);
+        emails.entry(redemption.person).or_insert(address);
     }
     emails
 }
 
 /// Who redeemed each invitation the workspace holds a receipt for, by the
 /// invitation's id: the document keeps a receipt for every invitation that
-/// brought someone in.
-fn redeemed(document: &AutoCommit) -> std::collections::BTreeMap<[u8; 32], [u8; 32]> {
+/// brought someone in, with the invitation itself, whose grant names the
+/// address its issuer wrote for them.
+fn redeemed(document: &AutoCommit) -> std::collections::BTreeMap<[u8; 32], Redemption> {
     let mut people = std::collections::BTreeMap::new();
     let Ok(rows) = document.get_all(&ROOT, "invitation_receipts_v1") else {
         return people;
@@ -431,30 +483,25 @@ fn redeemed(document: &AutoCommit) -> std::collections::BTreeMap<[u8; 32], [u8; 
             continue;
         }
         for key in document.keys(&object) {
-            let Some([Ok(invite), Ok(person)]) = receipt(document, &object, &key) else {
+            let Some(row) = receipt(document, &object, &key) else {
                 continue;
             };
-            people.insert(invite, person);
+            people.insert(row.invite_id, row.redemption());
         }
     }
     people
 }
 
-/// The invitation id and the person a receipt names, as the document keeps
-/// it.
-fn receipt(
-    document: &AutoCommit,
-    object: &automerge::ObjId,
-    key: &str,
-) -> Option<[Result<[u8; 32], ()>; 2]> {
-    let (Value::Scalar(value), _) = document.get(object, key).ok().flatten()? else {
+/// A receipt as the document keeps it.
+fn receipt(document: &AutoCommit, object: &automerge::ObjId, key: &str) -> Option<ReceiptRow> {
+    let (value, _) = document.get(object, key).ok().flatten()?;
+    let Value::Scalar(value) = value else {
         return None;
     };
     let ScalarValue::Bytes(bytes) = value.as_ref() else {
         return None;
     };
-    let receipt: ReceiptRow = serde_json::from_slice(bytes).ok()?;
-    Some([Ok(receipt.invite_id), Ok(receipt.user_public_key)])
+    serde_json::from_slice(bytes).ok()
 }
 
 /// The name the workspace knew each device by, from the document's own rows.
@@ -507,6 +554,47 @@ struct IdentityRow {
 struct ReceiptRow {
     invite_id: [u8; 32],
     user_public_key: [u8; 32],
+    /// The signed invitation, in the release's text form: its grant names
+    /// the address its issuer wrote for the person.
+    #[serde(default)]
+    invitation: Option<String>,
+}
+
+impl ReceiptRow {
+    fn redemption(&self) -> Redemption {
+        Redemption {
+            person: self.user_public_key,
+            email: self
+                .invitation
+                .as_deref()
+                .and_then(invited_address)
+                .filter(|named| tilo_relay_protocol::workspaces::contact_address(named).is_ok()),
+        }
+    }
+}
+
+/// The address the invitation `text` names, if it names one: the release's
+/// text form is the signed invitation, base64url, whose grant carries the
+/// invitee's name.
+fn invited_address(text: &str) -> Option<String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text.trim())
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(text.trim()))
+        .ok()?;
+    let (invitation, _) = postcard::take_from_bytes::<SignedInvitation>(&bytes).ok()?;
+    invitation.grant.invitee_name
+}
+
+/// A signed invitation as the earlier release's text form holds it: its
+/// version, its grant, and its signature.
+#[derive(Deserialize)]
+struct SignedInvitation {
+    #[expect(dead_code, reason = "read to reach the fields after it")]
+    version: u32,
+    grant: InviteGrant,
+    #[expect(dead_code, reason = "read to reach the field after it")]
+    signature: Vec<u8>,
 }
 
 /// The workspace's people, its owner first: each person's root, the name the
@@ -900,11 +988,16 @@ mod tests {
     /// The durable peer state an earlier release wrote, with `document` as its
     /// workspace document.
     fn durable(envelope: u32, document: &[u8]) -> Vec<u8> {
+        durable_in(envelope, 5, document)
+    }
+
+    /// [`durable`] with its base version chosen: the earlier release wrote 4.
+    fn durable_in(envelope: u32, base: u32, document: &[u8]) -> Vec<u8> {
         let mut bytes = postcard::to_stdvec(&envelope).unwrap();
         if envelope != 4 {
             bytes.extend(postcard::to_stdvec(&4u32).unwrap());
         }
-        bytes.extend(postcard::to_stdvec(&5u32).unwrap());
+        bytes.extend(postcard::to_stdvec(&base).unwrap());
         bytes.extend(
             postcard::to_stdvec(&"9f9c1e1e-1a2b-4c3d-8e4f-0123456789ab".to_owned()).unwrap(),
         );
@@ -920,6 +1013,12 @@ mod tests {
         for envelope in [4, 5, 6] {
             assert_eq!(
                 workspace_document(&durable(envelope, b"the document")).unwrap(),
+                b"the document"
+            );
+        }
+        for base in [4, 5] {
+            assert_eq!(
+                workspace_document(&durable_in(5, base, b"the document")).unwrap(),
                 b"the document"
             );
         }
@@ -1043,5 +1142,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let refused = export(dir.path()).unwrap_err();
         assert!(refused.contains("no workspace record"), "{refused}");
+    }
+
+    #[test]
+    fn a_record_is_found_at_the_depth_a_release_kept_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let rooms = dir.path().join("relay").join("relay").join("rooms");
+        std::fs::create_dir_all(&rooms).unwrap();
+        let mut record = postcard::to_stdvec(&3u32).unwrap();
+        record.extend(
+            postcard::to_stdvec(&"74a479e4-757a-4efb-aa82-a9acf0c72d45".to_owned()).unwrap(),
+        );
+        std::fs::write(rooms.join("lounge.room"), &record).unwrap();
+        std::fs::write(rooms.join("other.room"), b"another workspace").unwrap();
+        std::fs::write(
+            dir.path().join("room-id"),
+            b"74a479e4-757a-4efb-aa82-a9acf0c72d45\n",
+        )
+        .unwrap();
+        assert_eq!(one_record(dir.path()).unwrap(), rooms.join("lounge.room"));
     }
 }

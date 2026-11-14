@@ -160,9 +160,12 @@ impl MailSink {
 }
 
 /// The Lounge as this checkout's image starts it, on `state`, its operator
-/// socket at `socket`, its door mailing through `mail` at `entry`.
+/// socket at `socket`, its door mailing through `mail` at `entry`. Its owner
+/// root is the one the release kept: the deployment mounts the same secret
+/// before and after the switch.
 fn start_release(
     state: &std::path::Path,
+    root: &std::path::Path,
     socket: &std::path::Path,
     key: &std::path::Path,
     entry: &str,
@@ -172,7 +175,7 @@ fn start_release(
     let log = std::env::var("TILO_UPGRADE_RELAY_LOG").unwrap_or_else(|_| "warn".to_owned());
     spawn_workspace(
         state,
-        &state.join("root"),
+        root,
         &state.join("secrets"),
         &[
             "--workspace-name",
@@ -339,7 +342,14 @@ fn the_people_a_release_kept_arrive_in_the_release_that_starts_fresh() {
     std::fs::write(&key, "re_local_sink").unwrap();
     let (mails, mail_url) = MailSink::start();
     let entry = "http://127.0.0.1:1/";
-    let mut workspace = start_release(&state.join("lounge"), &socket, &key, entry, &mail_url);
+    let mut workspace = start_release(
+        &state.join("lounge"),
+        &volume.join("root"),
+        &socket,
+        &key,
+        entry,
+        &mail_url,
+    );
     let started = started_or_why(&mut workspace);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
