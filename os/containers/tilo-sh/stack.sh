@@ -56,16 +56,20 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          invitation as production's does, lets them in, and
                          the workspace makes them an administrator; they
                          invite the others. Without KEY,
-                         the identity this computer's tilo command holds
-                         (tilo login --new-identity makes it, once), whose
-                         key it then approves: an export TILO_API_KEY=… line
-                         in $state/operator.env, with which
-                         tilo members invite -w Lounge prints an invite link.
+                         the stack's own operator identity (made once, kept
+                         in the stack's state, never this account's own tilo
+                         login), whose key it then approves: an export
+                         TILO_API_KEY=… line in $state/operator.env, with
+                         which stack.sh invite prints an invite link.
                          The Lounge names them by the identity's own name, or
                          by --name when given. It then prints a link to open in
                          the browser you use for the Lounge, which makes that
                          person an owner too. `up` declares the operator's
                          identity on its own (TILO_SH_OWNER=0 not)
+  stack.sh invite [WORKSPACE] [-- ARGS…]
+                         an invite link to WORKSPACE (the Lounge when none),
+                         made by the operator: tilo members invite with ARGS,
+                         e.g. -- --role editor
   stack.sh browser       a Chromium on a fresh profile, opened on the local site
   stack.sh check
                          bring the stack up and run the end-to-end check on it
@@ -506,6 +510,32 @@ start_mail() {
   done
 }
 
+# The tilo command as the stack's operator: an identity of its own, kept in
+# the stack's state. This account's own tilo login is somebody's real
+# identity, set up for their own Tilo (it may approve keys only from their
+# browser, and it names their own workspaces), so the stack never reads or
+# changes it.
+operator_tilo() {
+  local home=$state/operator
+  mkdir -p "$home/run"
+  chmod 700 "$home/run"
+  HOME=$home XDG_CONFIG_HOME=$home/.config XDG_DATA_HOME=$home/.local/share \
+    XDG_STATE_HOME=$home/.local/state XDG_CACHE_HOME=$home/.cache XDG_RUNTIME_DIR=$home/run \
+    "$(find_tilo)" "$@"
+}
+
+# invite [WORKSPACE] [-- ARGS…]: an invite link the operator makes.
+invite_link() {
+  local workspace=Lounge
+  if [[ $# -gt 0 && $1 != -- ]]; then workspace=$1; shift; fi
+  [[ ${1:-} != -- ]] || shift
+  [[ -s $state/operator.env ]] || declare_owner --no-link
+  (
+    eval "$(head -1 "$state/operator.env")"
+    TILO_API_URL=$api_origin operator_tilo members invite -w "$workspace" "$@"
+  )
+}
+
 # owner [KEY] [--name NAME] [--no-link]: declare the person whose user public
 # key (hex) is KEY an owner of the Lounge: its governance holds them as an
 # administrator by their root from now on, so the door lets them in without an
@@ -514,7 +544,7 @@ start_mail() {
 # person gets in to invite the others. The workspace answers at once, or says
 # why it did not.
 #
-# Without KEY it declares the identity this computer's tilo command holds,
+# Without KEY it declares the stack's operator identity (operator_tilo),
 # under the name that identity goes by, and then prints a link that makes the
 # browser someone opens it in an owner too: `--no-link` stops after the
 # identity, since `up` runs this with nobody there to open one.
@@ -534,30 +564,30 @@ declare_owner() {
     esac
     shift
   done
-  local tilo=''
+  local operator=''
   if [[ -z $key ]]; then
     local identity
-    tilo=$(find_tilo)
-    if identity=$("$tilo" login --new-identity --json 2>/dev/null); then
+    operator=1
+    if identity=$(operator_tilo login --new-identity --json 2>/dev/null); then
       key=$(printf '%s' "$identity" | json_field user_public_key)
       [[ -n $name ]] || name=$(printf '%s' "$identity" | json_field name)
     else
       # A tilo from before it answered JSON declares the key alone.
-      key=$("$tilo" login --new-identity) || die "the tilo command made no identity ($tilo login --new-identity)"
+      key=$(operator_tilo login --new-identity) || die 'the tilo command made no operator identity (tilo login --new-identity)'
     fi
   fi
   [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'owner KEY: the person'"'"'s user public key, 64 hex characters (a tab that opened the site names it in its localStorage key tilo-own-workspace-named:ORIGIN:KEY)'
   declare_owner_at_lounge "$key" "$name"
-  [[ -n $tilo ]] || return 0
+  [[ -n $operator ]] || return 0
   # The identity approves its own key, as its Tilo on the web would: the
   # door lets it in now that the workspace counts it an owner.
   if [[ ! -s $state/operator.env ]] || ! grep -q "# $key\$" "$state/operator.env"; then
     local made
-    made=$(TILO_API_URL=$api_origin "$tilo" keys create 'stack.sh operator') \
-      || die "the identity's key was not approved (TILO_API_URL=$api_origin $tilo keys create)"
+    made=$(TILO_API_URL=$api_origin operator_tilo keys create 'stack.sh operator') \
+      || die "the operator's key was not approved (tilo keys create against $api_origin)"
     (umask 077 && printf '%s\n# %s\n' "$made" "$key" > "$state/operator.env")
   fi
-  say "its key: eval \"\$(head -1 $state/operator.env)\"; then TILO_API_URL=$api_origin tilo members invite -w Lounge prints an invite link"
+  say 'its key is in operator.env; stack.sh invite prints an invite link'
   [[ -z $linked ]] || declare_owner_by_link
 }
 
@@ -1744,7 +1774,7 @@ down() {
     # account's user namespace: only that namespace removes them.
     podman_ unshare rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/owner" 2>/dev/null \
       || rm -rf "$state/relay" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/owner"
-    rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode" "$state/admission" "$state/operator.env"
+    rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode" "$state/admission" "$state/operator.env" "$state/operator"
     say "stopped, and its state is gone (builds kept in $native, images in $state/images)"
   else
     say "stopped; its state stays in $state (stack.sh down --wipe deletes it)"
@@ -1828,6 +1858,7 @@ case $cmd in
   logs) [[ -n ${1:-} ]] || die 'logs NAME: relay, tls, api, web, discord, releases, mail, bundle'; cat "$state/logs/$1.log" ;;
   mail) list_mail ;;
   owner) declare_owner "$@" ;;
+  invite) invite_link "$@" ;;
   browser) browser "$@" ;;
   check)
     exec bash "$here/check.sh" "$@" ;;
