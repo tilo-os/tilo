@@ -3,6 +3,9 @@
 
 use super::*;
 
+/// The app whose record the test writes: a record is published only under an application id.
+const APP: &str = "so.tilo.notes";
+
 /// A record's large state is stored in files of its own: a governance change
 /// that does not touch it writes the workspace file alone, a change of it
 /// replaces the parts it changed, and the workspace opens to what it committed.
@@ -30,7 +33,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     let mut candidate = workspace.peer().clone();
     candidate
         .publication_mut()
-        .publish_document("notes", "plan", large(), &key, SystemTime::now())
+        .publish_document(APP, "plan", large(), &key, SystemTime::now())
         .unwrap();
     workspace
         .commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
@@ -73,11 +76,11 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     // Changing it stores it anew and removes what no workspace file names.
     let mut candidate = workspace.peer().clone();
     let mut edited =
-        automerge::AutoCommit::load(&workspace.peer().document("notes", "plan").unwrap()).unwrap();
+        automerge::AutoCommit::load(&workspace.peer().document(APP, "plan").unwrap()).unwrap();
     edited.put(automerge::ROOT, "edited", true).unwrap();
     candidate
         .publication_mut()
-        .publish_document("notes", "plan", edited.save(), &key, SystemTime::now())
+        .publish_document(APP, "plan", edited.save(), &key, SystemTime::now())
         .unwrap();
     workspace
         .commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
@@ -93,8 +96,8 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
 
     let restored = GovernedWorkspace::open(workspace.path.clone(), &cert, None).unwrap();
     assert_eq!(
-        restored.peer().document("notes", "plan"),
-        workspace.peer().document("notes", "plan")
+        restored.peer().document(APP, "plan"),
+        workspace.peer().document(APP, "plan")
     );
     assert_eq!(restored.record.generation, workspace.record.generation);
 
