@@ -20,6 +20,8 @@ struct Seed {
     stranger: Person,
     listed_members: u32,
     invitation: String,
+    /// When that invitation lapses, as the release set it.
+    invitation_expires_at_ns: u64,
     chat_text: String,
     own_workspace: Own,
     wait_list: Waiting,
@@ -305,23 +307,7 @@ async fn the_owner_governs_it(plain: std::net::SocketAddr, seed: &Seed) {
         assert_eq!(role_of(member), Some(Role::Editor), "{}", member.name);
     }
 
-    let reply = administer(
-        &owner,
-        WorkspacesRequest::Pending {
-            workspace: seed.workspace.clone(),
-        },
-    )
-    .await;
-    let WorkspacesReply::Pending(pending) = reply else {
-        panic!("no invitations listed: {reply:?}");
-    };
-    assert!(
-        pending
-            .iter()
-            .any(|invitation| hex::encode(invitation.invite_id) == seed.invitation),
-        "the invitation {} left open is gone: {pending:?}",
-        seed.release
-    );
+    the_open_invitation_follows_its_lifetime(&owner, seed).await;
     let invited = administer(
         &owner,
         WorkspacesRequest::Invite {
@@ -366,6 +352,40 @@ async fn the_owner_governs_it(plain: std::net::SocketAddr, seed: &Seed) {
     owner.close();
 }
 
+/// The invitation the release left open is listed as long as it can be
+/// redeemed, at the lifetime the release gave it, and no longer once it
+/// lapsed.
+async fn the_open_invitation_follows_its_lifetime(owner: &tilo_session_client::Link, seed: &Seed) {
+    let reply = administer(
+        owner,
+        WorkspacesRequest::Pending {
+            workspace: seed.workspace.clone(),
+        },
+    )
+    .await;
+    let WorkspacesReply::Pending(pending) = reply else {
+        panic!("no invitations listed: {reply:?}");
+    };
+    let kept = pending
+        .iter()
+        .find(|invitation| hex::encode(invitation.invite_id) == seed.invitation);
+    if tilo_clock::unix_now_ns() < seed.invitation_expires_at_ns {
+        let kept = kept.unwrap_or_else(|| {
+            panic!(
+                "the invitation {} left open is gone: {pending:?}",
+                seed.release
+            )
+        });
+        assert_eq!(kept.expires_at_ns, seed.invitation_expires_at_ns);
+    } else {
+        assert!(
+            kept.is_none(),
+            "the invitation {} left open lapsed and is still listed: {pending:?}",
+            seed.release
+        );
+    }
+}
+
 /// The member who made a workspace of their own still has it.
 async fn the_member_keeps_their_own(plain: std::net::SocketAddr, seed: &Seed) {
     let maker = back_in(plain, seed, &seed.own_workspace.owner).await;
@@ -384,9 +404,62 @@ async fn the_member_keeps_their_own(plain: std::net::SocketAddr, seed: &Seed) {
     maker.close();
 }
 
-/// A member reads the chat as they wrote it, its channels as it had them.
+/// What a member writes into the chat after the upgrade.
+const WRITTEN_AFTER: &str = "written after the upgrade";
+
+/// A member reads the chat as they wrote it, its channels as it had them,
+/// and writes in it again; another member reads both.
 async fn the_member_reads_what_they_wrote(plain: std::net::SocketAddr, seed: &Seed) {
-    let reader = &seed.members[0];
+    let link = reads_what_was_written(plain, seed, &seed.members[0], None).await;
+    let (_, _, route) = chat_route(plain, &seed.workspace).await;
+    let landed = link
+        .engine()
+        .record(&route.cluster_id, &route.app_id, &route.record)
+        .unwrap()
+        .expect("the chat as the member holds it");
+    let mut chat = automerge::AutoCommit::load(&landed).unwrap();
+    let before = chat.get_heads();
+    automerge::transaction::Transactable::put(
+        &mut chat,
+        automerge::ROOT,
+        "written_after",
+        WRITTEN_AFTER,
+    )
+    .unwrap();
+    chat.commit();
+    link.write(
+        route,
+        &collab_types::DocumentMutation::Incremental(chat.save_after(&before)),
+    )
+    .unwrap();
+    let saved = std::sync::Mutex::new(link.barrier().unwrap());
+    let refused = wait_for(
+        "the member's new message to be committed",
+        || {
+            let committed = matches!(saved.lock().unwrap().try_recv(), Ok(Ok(())));
+            committed.then(|| link.status().failures)
+        },
+        || format!("{:?}", link.status()),
+    )
+    .await;
+    assert!(
+        refused.is_empty(),
+        "the member's new message was refused: {refused:?}"
+    );
+    link.close();
+
+    let other = reads_what_was_written(plain, seed, &seed.members[1], Some(WRITTEN_AFTER)).await;
+    other.close();
+}
+
+/// `reader`'s page in the Lounge once it read the chat: what was written
+/// before the upgrade, its channels, and `after`, what was written after it.
+async fn reads_what_was_written(
+    plain: std::net::SocketAddr,
+    seed: &Seed,
+    reader: &Person,
+    after: Option<&str>,
+) -> tilo_session_client::Link {
     let (host, host_cert, route) = chat_route(plain, &seed.workspace).await;
     let (key, cert) = reader.device();
     let link = page(host, key, cert, &host_cert);
@@ -394,7 +467,10 @@ async fn the_member_reads_what_they_wrote(plain: std::net::SocketAddr, seed: &Se
     let events = link.events();
     link.send(Cmd::Join(workspace_id)).unwrap();
     link.send(Cmd::OpenRoute(route.clone())).unwrap();
-    let chat = reads_the_chat(&link, &events, workspace_id, &route).await;
+    let chat = reads_the_chat(&link, &events, workspace_id, &route, |chat| {
+        written_after(chat).as_deref() == after
+    })
+    .await;
     let channels = {
         use tilo_resource::Resource as _;
         chat::Chat::read(&chat).map(|chat| {
@@ -423,19 +499,34 @@ async fn the_member_reads_what_they_wrote(plain: std::net::SocketAddr, seed: &Se
     assert_eq!(
         edited.as_deref(),
         Some(seed.chat_text.as_str()),
-        "what {} wrote",
+        "{} reads what was written before the upgrade",
         reader.name
     );
-    link.close();
+    assert_eq!(
+        written_after(&chat).as_deref(),
+        after,
+        "{} reads what was written after the upgrade",
+        reader.name
+    );
+    link
+}
+
+/// What a member wrote into the chat after the upgrade, as `chat` holds it.
+fn written_after(chat: &automerge::AutoCommit) -> Option<String> {
+    automerge::ReadDoc::get(chat, automerge::ROOT, "written_after")
+        .unwrap()
+        .and_then(|(value, _)| value.into_string().ok())
 }
 
 /// The chat as `link`'s page holds it once the host let it in and the record
-/// landed: what the host sent, read whether or not this build's Chat reads it.
+/// landed `whole`: what the host sent, read whether or not this build's Chat
+/// reads it.
 async fn reads_the_chat(
     link: &tilo_session_client::Link,
     events: &tilo_session_client::Events,
     workspace_id: tilo_relay_protocol::WorkspaceId,
     route: &tilo_peer_state::document_frame::DocumentRoute,
+    whole: impl Fn(&automerge::AutoCommit) -> bool + Sync,
 ) -> automerge::AutoCommit {
     let mut ready = false;
     let mut doc = None;
@@ -456,7 +547,7 @@ async fn reads_the_chat(
                     _ => {}
                 }
             }
-            (ready && doc.is_some()).then_some(())
+            (ready && doc.as_ref().is_some_and(&whole)).then_some(())
         },
         || format!("{:?}", link.status()),
     )

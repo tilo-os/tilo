@@ -334,17 +334,23 @@ mod release_seed {
             own_device(OWNER_DECLARED.0, OWNER_DECLARED.1),
         );
         step("the declared owner invites someone");
-        let invitation = govern(
+        let invited = govern(
             &runtime,
             (&owner, host),
             &workspace,
             workspace_id,
             "invite",
             serde_json::json!({"role": "editor", "invitee_name": "Cy"}),
-        )["invite"]
+        );
+        let invitation = invited["invite"]
             .as_str()
             .expect("the invitation's id")
             .to_owned();
+        // It lapses after the release's own default lifetime: the checkout's
+        // side lists it open only until then.
+        let invitation_expires_at_ns = invited["expires_at_ns"]
+            .as_u64()
+            .expect("when the invitation lapses");
         owner.close();
 
         // A member makes a workspace of their own beside the Lounge, and
@@ -496,6 +502,7 @@ mod release_seed {
             "stranger": {"seed": STRANGER.0, "name": STRANGER.1},
             "listed_members": members,
             "invitation": invitation,
+            "invitation_expires_at_ns": invitation_expires_at_ns,
             "own_workspace": {
                 "workspace": studio.workspace,
                 "workspace_id": studio.workspace_id,
