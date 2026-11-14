@@ -581,13 +581,18 @@ pub fn enter_page(
 }
 
 pub async fn ready(peers: &[&Link]) {
-    wait_for("sessions ready", || async {
-        peers
-            .iter()
-            .all(|peer| peer.snapshot().phase == "ready")
-            .then_some(())
-    })
-    .await;
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let snapshots: Vec<_> = peers.iter().map(|peer| peer.snapshot()).collect();
+        if snapshots.iter().all(|snapshot| snapshot.phase == "ready") {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for sessions ready: {snapshots:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// Wait until the host admitted `peer` to `workspace`: connected, subscribed
