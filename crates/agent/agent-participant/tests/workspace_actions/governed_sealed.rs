@@ -171,9 +171,11 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         .address
         .clone();
 
-    // The owner acts through the host on the sealed record.
+    // The owner acts through the host on the sealed record. The host answers
+    // as soon as it ran it, accepted while the change is saved, and is
+    // followed as a page follows it.
     let started = Instant::now();
-    let acted = page
+    let first = page
         .invoke(request(
             &provider,
             new_sheet.clone(),
@@ -181,6 +183,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         ))
         .await;
     let took = started.elapsed();
+    let acted = page.settle(first).await;
     eprintln!("workspace actions on a sealed record of a governed workspace: invoke {took:?}");
     assert!(
         matches!(acted.status, ReceiptStatus::Completed { .. }),
@@ -208,7 +211,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     // That member, an editor of the workspace, has the host make the edit as
     // theirs: it is saved sealed on the record's channel like the owner's.
     let theirs = member
-        .invoke(request(&provider, new_sheet, sheet_named("By the member")))
+        .invoke_settled(request(&provider, new_sheet, sheet_named("By the member")))
         .await;
     assert!(
         matches!(theirs.status, ReceiptStatus::Completed { .. }),
@@ -239,12 +242,12 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         wait_ms: None,
         appearance: None,
     };
-    let by_member = member.invoke(open(InvocationId::new())).await;
+    let by_member = member.invoke_settled(open(InvocationId::new())).await;
     assert!(
         matches!(by_member.status, ReceiptStatus::Completed { .. }),
         "an editor opens a new record through the host: {by_member:?}"
     );
-    let opened = page.invoke(open(InvocationId::new())).await;
+    let opened = page.invoke_settled(open(InvocationId::new())).await;
     let ReceiptStatus::Completed { output } = &opened.status else {
         panic!("the owner opens a new Sheets record through the host: {opened:?}");
     };

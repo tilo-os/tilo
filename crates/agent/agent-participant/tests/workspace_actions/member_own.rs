@@ -25,19 +25,21 @@ fn on_guild(workspace: &str, action: &str, arguments: serde_json::Value) -> Invo
     )
 }
 
-/// What `browser` gets back for `request`, waiting out a host still joining.
+/// What `browser` gets back for `request`: asked again while the host is still
+/// joining, and followed while it has it accepted.
 async fn answered(browser: &mut Browser, request: InvokeRequest) -> ReceiptStatus {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let mut attempt = request.clone();
         attempt.invocation = InvocationId::new();
-        match browser.invoke(attempt).await.status {
+        let receipt = browser.invoke(attempt).await;
+        match &receipt.status {
             ReceiptStatus::Rejected {
                 error: ActionHostError::Unavailable { .. },
             } if Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
-            status => return status,
+            _ => return browser.settle(receipt).await.status,
         }
     }
 }

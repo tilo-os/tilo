@@ -371,9 +371,15 @@ impl Page {
     /// while a change's save is still landing, and the invocation is observed
     /// until it ends.
     pub async fn invoke_settled(&mut self, request: InvokeRequest) -> InvocationReceipt {
-        let invocation = request.invocation;
+        let receipt = self.invoke(request).await;
+        self.settle(receipt).await
+    }
+
+    /// Follow `receipt` while the host has it accepted: the invocation is
+    /// observed until it ends.
+    pub async fn settle(&mut self, mut receipt: InvocationReceipt) -> InvocationReceipt {
+        let invocation = receipt.invocation;
         let deadline = tilo_test_env::hang_deadline();
-        let mut receipt = self.invoke(request).await;
         while matches!(receipt.status, ReceiptStatus::Accepted) {
             assert!(
                 Instant::now() < deadline,
