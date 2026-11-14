@@ -899,12 +899,10 @@ impl Session {
             seats: std::sync::Arc::clone(&seats),
             handle: handle.clone(),
             person: options.person.clone(),
-            signals: Rc::clone(&notice_signals),
             activities: Rc::clone(&activities),
             surfaces,
             sync: sync.clone(),
             notes: std::sync::Arc::clone(&notes),
-            notices: notices.clone(),
             tray: tray.clone(),
             engine: engine.clone(),
             // The invite sheet is the session's own surface: the desk asks for it here.

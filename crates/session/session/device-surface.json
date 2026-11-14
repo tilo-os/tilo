@@ -1705,6 +1705,215 @@
       ]
     },
     {
+      "kind": "notifications",
+      "label": "Notifications",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "dismiss",
+          "label": "Dismiss",
+          "description": "Dismiss a notification, or every one an app grouped",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "notification",
+              "required": false,
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "group",
+              "required": false,
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "act",
+          "label": "Choose an action",
+          "description": "Run one of a notification's own actions",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "notification",
+              "required": true,
+              "type": "int"
+            },
+            {
+              "name": "action",
+              "required": true,
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "clear",
+          "label": "Clear all",
+          "description": "Clear the centre, keeping what the person pinned",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "undo-clear",
+          "label": "Bring back the cleared notifications",
+          "description": "Bring back what the last Clear all took",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "open-notice",
+          "label": "Open",
+          "description": "Open one of the notifications the centre kept",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "notification",
+              "required": true,
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "id": "notify",
+          "label": "Post a notification",
+          "description": "Tell the person something, as an app's `notify` does: it rises as a banner and waits in the centre until they dismiss it",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "title",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "body",
+              "required": false,
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "from",
+              "required": false,
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "kind",
+              "required": false,
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "set-quiet",
+          "label": "Hold banners back",
+          "description": "Hold fresh banners back until turned off again",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "type": "bool"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "count",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "quiet",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "notices",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Notice"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "banner",
+          "stored": "value",
+          "type": {
+            "option": "int"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Notice",
+          "doc": "A notice the centre keeps.",
+          "fields": [
+            {
+              "name": "number",
+              "type": "int"
+            },
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "body",
+              "type": "text"
+            },
+            {
+              "name": "from",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": "text"
+            },
+            {
+              "name": "seen",
+              "type": "bool"
+            },
+            {
+              "name": "actions",
+              "type": {
+                "list": {
+                  "named": "NoticeAction"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "NoticeAction",
+          "doc": "One action a notice offers.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "kind": "desk",
       "label": "Desk",
       "version": 1,
@@ -1824,8 +2033,15 @@
         },
         {
           "id": "show-connect",
-          "label": "Show how an agent or another computer connects as the person: the setup their own card's",
+          "label": "Connect an agent or computer",
           "description": "Show how an agent or another computer connects as the person: the setup their own card's \"Connect an agent or computer\" opens. An app that lists what acts as them offers adding to it this way.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "show-pair-device",
+          "label": "Add a device",
+          "description": "Open the Add a device sheet: the link a new device of the person's becomes one of theirs, shown as a code its camera reads. An app that lists what acts as the person offers adding to it this way.",
           "kind": "outside",
           "params": []
         },
@@ -1889,78 +2105,6 @@
           ]
         },
         {
-          "id": "notify",
-          "label": "Tell the person something, as an app's `notify` does",
-          "description": "Tell the person something, as an app's `notify` does. It rises as a banner over the desk and waits in the centre until they dismiss it: the one way a script, an agent or the REPL posts the same notice an app's `notify` does, so what they say reaches the person the same way.",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "title",
-              "required": true,
-              "type": "text"
-            },
-            {
-              "name": "body",
-              "required": false,
-              "type": {
-                "option": "text"
-              }
-            },
-            {
-              "name": "from",
-              "required": false,
-              "type": {
-                "option": "text"
-              }
-            },
-            {
-              "name": "kind",
-              "required": false,
-              "type": {
-                "option": "text"
-              }
-            }
-          ]
-        },
-        {
-          "id": "clear-notices",
-          "label": "Clear notifications",
-          "description": "Clear the notification centre, which Undo puts back.",
-          "kind": "outside",
-          "params": []
-        },
-        {
-          "id": "dismiss-notice",
-          "label": "Dismiss notification",
-          "description": "Dismiss the notice `notice` of the centre, by its id.",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "notice",
-              "required": true,
-              "type": "text"
-            }
-          ]
-        },
-        {
-          "id": "act-on-notice",
-          "label": "Answer notification",
-          "description": "Run one of the choices the notice `notice` offers, by the key its sender gave it.",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "notice",
-              "required": true,
-              "type": "text"
-            },
-            {
-              "name": "action",
-              "required": true,
-              "type": "text"
-            }
-          ]
-        },
-        {
           "id": "walk-switcher",
           "label": "Switch windows",
           "description": "Open the window switcher, or walk it `steps` windows on. Alt+Tab walks the workspace's windows; Alt and the grave key the ones the app in front shows.",
@@ -2001,6 +2145,19 @@
           "description": "Go to the window the switcher's walk reached, and close the switcher.",
           "kind": "outside",
           "params": []
+        },
+        {
+          "id": "open-settings",
+          "label": "Open Settings",
+          "description": "Open Settings at the page `link` names (`settings://network`), through the desk's own search: what an app with no workspace of its own asks to send the person there.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "link",
+              "required": true,
+              "type": "text"
+            }
+          ]
         }
       ],
       "fields": [

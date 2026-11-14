@@ -240,17 +240,19 @@ pub(super) fn until_drawn(
 /// the session's own view of the lock, not the lock screen's app.
 const DREW_THE_LOCK_ITSELF: &str = "Lock screen did not start";
 
-/// The notices the desk holds, as its reading names them on the session's door: each one's key and
-/// its title.
-fn told(session: &Session, desk: &str) -> Vec<(String, String)> {
-    let reading = session.read(desk).expect("the session publishes its desk");
-    let notices: Vec<(String, String)> = reading["notices"]
+/// The notices the centre holds, as its reading names them on the session's door: each one's id
+/// and its title.
+fn told(session: &Session, centre: &str) -> Vec<(u64, String)> {
+    let reading = session
+        .read(centre)
+        .expect("the session publishes its notifications");
+    let notices: Vec<(u64, String)> = reading["notices"]
         .as_array()
-        .expect("the desk's reading lists its notices")
+        .expect("the centre's reading lists its notices")
         .iter()
         .map(|notice| {
             (
-                notice["key"].as_str().unwrap_or_default().to_owned(),
+                notice["number"].as_u64().unwrap_or_default(),
                 notice["title"].as_str().unwrap_or_default().to_owned(),
             )
         })
@@ -260,16 +262,11 @@ fn told(session: &Session, desk: &str) -> Vec<(String, String)> {
 
 /// The session drew the lock itself, and says so: the person comes back to a desk holding the one
 /// notice that tells them why. It is critical, so no time on screen takes it away, and the desk is
-/// the one they left only once they have taken it back — as the centre's Dismiss does, with the
-/// desk's own `dismiss-notice` .
+/// the one they left only once they have taken it back — as the centre's Dismiss does.
 #[track_caller]
 pub(super) fn take_back_the_notice_of_the_locks_own_view(session: &mut Session) {
-    pump(session, &mut [], |session, _| {
-        publisher(session, "dismiss-notice").is_some()
-    });
-    let desk = publisher(session, "dismiss-notice")
-        .expect("the unlocked desk offers to take a notice back");
-    let notices = told(session, &desk);
+    let centre = "session:notifications";
+    let notices = told(session, centre);
     let [(key, title)] = notices.as_slice() else {
         panic!("the session told the person one thing while it drew the lock: {notices:?}");
     };
@@ -279,16 +276,16 @@ pub(super) fn take_back_the_notice_of_the_locks_own_view(session: &mut Session) 
     );
     session
         .invoke(
-            &desk,
-            "dismiss-notice",
+            centre,
+            "dismiss",
             &serde_json::Map::from_iter([(
-                "notice".to_owned(),
-                serde_json::Value::String(key.clone()),
+                "notification".to_owned(),
+                serde_json::Value::from(*key),
             )]),
         )
-        .expect("the desk takes the notice back");
+        .expect("the centre takes the notice back");
     pump(session, &mut [], |session, _| {
-        told(session, &desk).is_empty()
+        told(session, centre).is_empty()
     });
 }
 

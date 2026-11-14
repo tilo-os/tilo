@@ -63,6 +63,15 @@ fn session() -> Session {
 }
 
 /// The desk as the session publishes it on its door: what an agent reads.
+fn centre(session: &Session) -> tilo_quick_settings::hosted::NotificationCentre {
+    serde_json::from_value(
+        session
+            .read("session:notifications")
+            .expect("the session publishes its notifications"),
+    )
+    .expect("the notifications read as the centre")
+}
+
 fn desk(session: &Session) -> DeskReading {
     serde_json::from_value(
         session
@@ -254,10 +263,10 @@ fn a_notice_rises_as_a_banner_and_opens_the_centre_in_every_style() {
     });
     for (key, style) in styles() {
         show_style(&mut session, key);
-        // The session posts a notice, as an agent or the REPL does: the desk's own `notify`.
+        // The session posts a notice, as an agent or the REPL does: the centre's own `notify`.
         session
             .invoke(
-                DESK_RESOURCE,
+                "session:notifications",
                 "notify",
                 &Map::from_iter([
                     ("title".to_owned(), Value::String("Tea is ready".to_owned())),
@@ -286,24 +295,24 @@ fn a_notice_rises_as_a_banner_and_opens_the_centre_in_every_style() {
         until(&mut session, |session| {
             session.shell_control("Tea is ready").is_some()
         });
-        // Dismiss takes it off the desk, through the desk's own `dismiss-notice`.
-        let id = desk(&session)
+        // Dismiss takes it off the screen, through the centre's own `dismiss`.
+        let id = centre(&session)
             .notices
             .iter()
             .find(|notice| notice.title == "Tea is ready")
             .map_or_else(
-                || panic!("{style}: the desk names the notice"),
-                |notice| notice.key.clone(),
+                || panic!("{style}: the centre names the notice"),
+                |notice| notice.number,
             );
         session
             .invoke(
-                DESK_RESOURCE,
-                "dismiss-notice",
-                &Map::from_iter([("notice".to_owned(), Value::String(id))]),
+                "session:notifications",
+                "dismiss",
+                &Map::from_iter([("notification".to_owned(), Value::from(id))]),
             )
             .unwrap();
         until(&mut session, |session| {
-            !desk(session)
+            !centre(session)
                 .notices
                 .iter()
                 .any(|notice| notice.title == "Tea is ready")

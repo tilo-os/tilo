@@ -941,40 +941,30 @@ fn resources_standing_as_content_stand_on_the_spaces_canvas() {
 
 // ----- A notice's line, as the banner says it ------------------------------------------------
 
-/// A notice the session wrote on the desk, and the banner pointed at it: `key`'s title, `body`
-/// and sender, as `session.notice` carries them.
-fn notice_shown(r: &Replica, key: &str, body: &str, origin: &str) {
-    let desk = r.host.root_record(APP, "4jk2lkpt").unwrap();
-    let meta = r.host.package(APP).unwrap().meta;
+/// A notice the session publishes as its banner: `number`'s title, `body` and sender.
+fn notice_shown(r: &Replica, number: u64, body: &str, from: &str) {
+    let centre = tilolang_tilo::runtime::ResourceRef::parse_id(
+        "session:notifications",
+        "so.tilo.device#Notifications",
+    )
+    .unwrap();
+    let reading = serde_json::json!({
+        "count": 1,
+        "notices": [{
+            "number": number,
+            "title": "You joined Lounge",
+            "body": body,
+            "from": from,
+            "kind": "info",
+            "seen": false,
+            "actions": [],
+        }],
+        "banner": number,
+    });
     r.host
         .runtime()
-        .apply_origin(
-            "session",
-            vec![
-                OriginWrite::Insert {
-                    owner: desk.clone(),
-                    field: "3vvnnztw".to_owned(),
-                    ty: "zk7pzrt2".to_owned(),
-                    fields: vec![
-                        ("key".to_owned(), Value::text(key)),
-                        ("title".to_owned(), Value::text("You joined Lounge")),
-                        ("body".to_owned(), Value::text(body)),
-                        ("origin_app".to_owned(), Value::text(origin)),
-                        ("kind".to_owned(), Value::text("info")),
-                        ("seen".to_owned(), Value::Bool(false)),
-                    ],
-                },
-                OriginWrite::Set {
-                    target: desk,
-                    fields: vec![(
-                        crate::fixtures::field_id(&meta, "Desk", "banner"),
-                        Value::text(key),
-                    )],
-                },
-            ],
-            None,
-        )
-        .expect("the session writes its own notice on the desk");
+        .set_reading(&centre, &reading.to_string())
+        .expect("the session publishes its notifications");
 }
 
 /// What the desk's banner shows under its title, as the desk lays it out: the notice's body and
@@ -1014,7 +1004,7 @@ fn a_banner_shows_the_parts_the_notice_has() {
     r.commit();
     notice_shown(
         &r,
-        "n-session",
+        1,
         "It is open now, with everything its people keep in it.",
         "",
     );
@@ -1028,7 +1018,7 @@ fn a_banner_shows_the_parts_the_notice_has() {
         "a notice with no sender names none"
     );
 
-    notice_shown(&r, "n-app", "From Ada", "Mail");
+    notice_shown(&r, 2, "From Ada", "Mail");
     r.commit();
     assert_eq!(
         banner_line_of(&r),
@@ -1036,7 +1026,7 @@ fn a_banner_shows_the_parts_the_notice_has() {
         "what it says, and who sent it"
     );
 
-    notice_shown(&r, "n-empty", "", "Mail");
+    notice_shown(&r, 3, "", "Mail");
     r.commit();
     assert_eq!(
         banner_line_of(&r),

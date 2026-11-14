@@ -7,6 +7,7 @@
 //! effects ([`crate::RowPart`]).
 
 use ui::icons::Icon;
+use ui::tilo_resource;
 
 /// What a row offers besides a press on its body.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -325,17 +326,70 @@ pub struct ClipboardCopy {
     pub from: Option<String>,
 }
 
-/// The notification centre, as the session publishes it: how many the person has not read, and why
-/// fresh ones are held back.
-/// The list itself is the shell's centre, which reads its own log; the panel shows the count that
-/// opens it, the same count the bar's bell shows.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// The notification centre, as the session publishes it.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    ui::tilo_resource::JsonSchema,
+)]
 pub struct NotificationCentre {
     /// How many the person has not read.
     pub count: usize,
-    /// Why fresh notifications are being held (Do Not Disturb, presenting,
-    /// a focus schedule); `None` while they show.
+    /// Why fresh notifications are held (Do Not Disturb, presenting, a focus schedule); `None`
+    /// while they show.
     pub quiet: Option<String>,
+    /// The notices the centre keeps, newest first.
+    #[serde(default)]
+    pub notices: Vec<Notice>,
+    /// The notice up as a banner now, by its id.
+    #[serde(default)]
+    pub banner: Option<u64>,
+}
+
+/// A notice the centre keeps.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    ui::tilo_resource::JsonSchema,
+)]
+pub struct Notice {
+    /// What the verbs name it by.
+    pub number: u64,
+    pub title: String,
+    pub body: String,
+    /// The app's name, or the agent's; empty for the session's own.
+    pub from: String,
+    /// `info`, `success`, `warning` or `error`.
+    pub kind: String,
+    pub seen: bool,
+    /// What its sender offers, in its sender's order.
+    pub actions: Vec<NoticeAction>,
+}
+
+/// One action a notice offers.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    ui::tilo_resource::JsonSchema,
+)]
+pub struct NoticeAction {
+    pub key: String,
+    pub label: String,
 }
 
 /// Formats whose copies are pictures.

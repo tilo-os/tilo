@@ -49,7 +49,7 @@ template view desk_around(d: Desk, front: Option<Arrangement>, traditional: Bool
             }
             if resting {
                 stack(gap: .tight, fill) {
-                    at_rest(d)
+                    at_rest()
                     content
                 }
             } else if d.here == "switcher" {
@@ -268,10 +268,10 @@ view top_bar(d: Desk, traditional: Bool) {
 /// desk at rest adds nothing to its bar's band: closed, it lays nothing out and draws nothing.
 /// A banner stands the desk's gutter in from the window's edge, as a surface does: its card is
 /// rounded, and a rounded card on the edge has its corners cut by it.
-view at_rest(d: Desk) {
-    if d.banner != "" {
+view at_rest() {
+    if (device.notifications.banner ?? -1) != -1 {
         stack(padding: .group) {
-            banner(d)
+            banner()
         }
     }
 }
@@ -290,7 +290,7 @@ view surface(d: Desk) {
         } else if d.here == "launcher" {
             launcher(d, fill)
         } else if d.here == "centre" {
-            notices(d, fill)
+            notices(fill)
         } else if d.here == "quick-settings" {
             quick_settings(d, fill)
         } else if d.here == "workspaces" {

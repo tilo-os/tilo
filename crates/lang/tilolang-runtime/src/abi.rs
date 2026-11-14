@@ -152,6 +152,7 @@ imports! {
     (JsonParse, "json_parse", "i", "i"),
     (JsonDecode, "json_decode", "iii", "i"),
     (JsonEncode, "json_encode", "i", "i"),
+    (StageReading, "stage_reading", "ii", ""),
     (TimeShift, "time_shift", "ili", "i"),
     (WallClock, "wall_clock", "i", "i"),
     (PrincipalNamed, "principal_named", "i", "i"),

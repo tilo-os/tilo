@@ -421,17 +421,12 @@ so-tilo-session-desk-issue-invitation = Make an invitation link
 so-tilo-session-desk-show-invite = Invite people
 so-tilo-session-desk-show-connect = Connect an agent or computer
 so-tilo-session-desk-show-pair-device = Add a device
-so-tilo-session-desk-notify = Post a notification
 so-tilo-session-desk-cancel-invitation = Cancel invitation
 so-tilo-session-desk-show-surface = Show or hide a panel
 so-tilo-session-desk-close-surface = Close panel
-so-tilo-session-desk-clear-notices = Clear notifications
-so-tilo-session-desk-dismiss-notice = Dismiss notification
-so-tilo-session-desk-act-on-notice = Answer notification
 so-tilo-session-desk-walk-switcher = Switch windows
 so-tilo-session-desk-select-switcher = Choose window in switcher
 so-tilo-session-desk-commit-switcher = Go to chosen window
-so-tilo-session-desk-show-app = Show the app
 so-tilo-session-desk-open-settings = Open Settings
 
 ## Actions
@@ -457,7 +452,8 @@ so-tilo-session-keyboard-type = Type text
 so-tilo-session-notifications-act = Choose an action
 so-tilo-session-notifications-clear = Clear all
 so-tilo-session-notifications-dismiss = Dismiss
-so-tilo-session-notifications-open = Open
+so-tilo-session-notifications-notify = Post a notification
+so-tilo-session-notifications-open-notice = Open
 so-tilo-session-notifications-set-quiet = Hold banners back
 so-tilo-session-notifications-undo-clear = Bring back the cleared notifications
 so-tilo-session-quick-settings-hide-control = Remove a control

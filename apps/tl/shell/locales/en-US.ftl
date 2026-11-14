@@ -24,9 +24,6 @@ d-5mipdtxu = Switcher scope
 d-foayl4ai = Spotlight
     .doc = What the person typed in the shell's search, which opens the launcher where they left off.
 
-d-wco4hiud = Banner
-    .doc = The notice shown as a banner over the desk now, by its id.
-
 d-7bs5q4ht = Clock
 
 d-rlrql4ir = Timer
@@ -55,8 +52,6 @@ d-gi7d6wct = Weekday
 
 d-5cs3vm3f = Date
 
-d-hj6eqjwk = Quiet
-
 d-c5k5ua2t = Workspace
 
 d-xpcwi5mg = Strip
@@ -77,10 +72,6 @@ d-prsypg4e = Dock covered
 
 d-twcpnt5t = Agents
 
-d-3vvnnztw = Notices
-
-d-lz6qs7zm = Notice actions
-
 d-5kokd6gv = Windows
 
 d-pdaqdidq = Tray
@@ -99,8 +90,6 @@ d-4jk2lkpt-filter-timer_paused = Timer paused
 d-4jk2lkpt-filter-timer_stopwatch = Timer stopwatch
 
 d-4jk2lkpt-filter-ask_open = Ask open
-
-d-4jk2lkpt-filter-quiet = Quiet
 
 d-4jk2lkpt-filter-bar_reached = Bar reached
 
@@ -300,40 +289,6 @@ d-p6gfsj72 = Seat
 d-labby3mp-filter-unseen = Unseen
 
 d-labby3mp-filter-seat = Seat
-
-d-zk7pzrt2 = Notice
-    .doc = Something a sender told the person here: an app, or the agent task that did.
-    .noun = { $count ->
-        [one] notice
-       *[other] notices
-    }
-
-d-jq4onnp4 = Key
-
-d-7snyky6u = Title
-
-d-wauytevp = Body
-
-d-nxunr2dc = Origin app
-
-d-bsp6shbm = Kind
-
-d-z67wqj3i = Seen
-
-d-zk7pzrt2-filter-seen = Seen
-
-d-7rjfrgeo = Notice action
-    .doc = One action a notice offers, as its sender named it.
-    .noun = { $count ->
-        [one] notice action
-       *[other] notice actions
-    }
-
-d-ohcc5fba = Notice
-
-d-mfyylqsl = Key
-
-d-6ehy2qwa = Label
 
 d-qhf2pyze = Arrangement
     .doc = The person's arrangement: what is open where.
@@ -1014,12 +969,6 @@ d-5giytccr = Open first
     .doc = Enter's work on a query: the first app the text finds opens, so typing "no" and pressing Enter opens Notes; a query that names no app is what search everywhere answers, as Enter has always done for what the desk's own rows do not hold.
 
 d-5giytccr-query = Query
-
-d-vjnksgzm = Seed waiting
-    .doc = Two notices a sender left and the person has not seen: what the shell stages on a desk it shows before the person has caught up, so the bar's bell has something to count.
-
-d-j4ax4otm = Seed notices
-    .doc = The desk's notices a scenario starts from: what apps and an agent said today.
 
 d-zm35wbjg = A workspace
     .doc = Adds a workspace, with one row, to `a`, and returns the row's key.

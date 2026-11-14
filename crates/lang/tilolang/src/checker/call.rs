@@ -212,6 +212,7 @@ impl Checker<'_> {
             "preview_rows" => return self.builtin_preview_rows(args, span),
             "entry_parts" => return self.builtin_entry_parts(args, span),
             "invoke" => return self.builtin_invoke(args, span),
+            "stage" => return self.builtin_stage(args, span),
             "query" => return self.builtin_query(args, span),
             "filters" => return self.builtin_filters(args, span),
             _ => {}
@@ -905,6 +906,61 @@ impl Checker<'_> {
             list_ty,
         );
         Ex::host(Imp::RichNew, vec![list], Ty::RichText)
+    }
+
+    /// `stage(device.sound, device.Sound(volume: 0.4))` in a scenario: the reading another app
+    /// publishes of its resource, as the scenario stands it in for that app.
+    fn builtin_stage(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if self.st.written != Written::Scenario {
+            self.err("E094", span, "`stage(resource, reading)` stands a reading in for the app that publishes it, which only a scenario does");
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let [
+            ast::Arg {
+                name: None,
+                value: target,
+            },
+            ast::Arg {
+                name: None,
+                value: reading,
+            },
+        ] = args
+        else {
+            self.err(
+                "E022",
+                span,
+                "`stage` takes a resource of another app and its reading: `stage(device.sound, device.Sound(volume: 0.4))`",
+            );
+            return Ex::error();
+        };
+        let target = self.expr(target, None);
+        let Ty::Record(key) = &target.ty else {
+            if !target.ty.is_error() {
+                self.err(
+                    "E020",
+                    span,
+                    "`stage` takes a resource of another app first",
+                );
+            }
+            return Ex::error();
+        };
+        if key.app == self.env.app {
+            self.err(
+                "E020",
+                span,
+                format!(
+                    "`{}` is this app's own: a scenario writes its fields",
+                    key.name
+                ),
+            );
+            return Ex::error();
+        }
+        let ty = target.ty.clone();
+        let reading = self.expr_as(reading, &ty);
+        Ex::host(Imp::StageReading, vec![target, reading], Ty::Unit)
     }
 
     fn builtin_person(&mut self, args: &[ast::Arg], span: Span) -> Ex {

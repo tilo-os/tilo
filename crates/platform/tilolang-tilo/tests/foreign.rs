@@ -192,3 +192,62 @@ fn the_same_reading_twice_changes_nothing() {
     assert!(!again, "a reading that did not change moves nothing");
     assert_eq!(view.poll_patches().unwrap(), Vec::new());
 }
+
+/// A scenario stands a reading in for the app that publishes it: a view over that app's resource
+/// reads what the scenario staged, records inside it included.
+#[test]
+fn a_scenario_stages_another_apps_reading() {
+    const STAGED: &str = r#"app test.staged "Staged"
+
+use so.tilo.device as device
+
+view centre(c: device.Notifications) {
+  text("{c.notices.count(n -> not n.seen)} {c.notices.first()?.title ?? ""}")
+}
+
+scenario "one waiting" {
+  stage(
+    device.notifications,
+    device.Notifications(
+      notices: [
+        device.Notice(number: 1, title: "Tea is ready", body: "", from: "", kind: "info", seen: false),
+      ],
+    ),
+  )
+}
+"#;
+    let doc = AutoCommit::new();
+    let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
+    let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
+    for meta in &metas {
+        host.runtime().load_foreign(meta.clone()).unwrap();
+    }
+    let compiled = tilolang::compile_package(STAGED, &IdsLock::new(), &metas)
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    let package = host.load_compiled(&compiled).unwrap();
+    let centre = tilolang_runtime::ResourceRef::parse_id(
+        "session:notifications",
+        "so.tilo.device#Notifications",
+    )
+    .unwrap();
+    host.runtime().set_reading(&centre, "{}").unwrap();
+    let scenario = package.meta.scenarios[0].action.clone();
+    host.runtime()
+        .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+        .unwrap_or_else(|why| panic!("the scenario runs: {why}"));
+    let view = package
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == "centre")
+        .unwrap()
+        .id
+        .clone();
+    let open = host.open_resource(&centre, Some(&view)).unwrap();
+    assert_eq!(
+        shown(&open),
+        Value::text("1 Tea is ready"),
+        "{:?}",
+        open.tree()
+    );
+}

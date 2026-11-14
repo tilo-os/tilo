@@ -63,6 +63,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("battery", "Battery", "power:battery"),
     ("power", "Power", "power"),
     ("displays", "Displays", "session:displays"),
+    ("notifications", "Notifications", "session:notifications"),
     ("desk", "Desk", "session:desk"),
 ];
 const SETTINGS_ROOTS: &[(&str, &str, &str)] = &[

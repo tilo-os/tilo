@@ -1354,13 +1354,18 @@ impl Core {
             other => trap(format!("expected a record, got {}", other.kind_name())),
         })?;
         let (_, info) = self.type_of_ref(&ty)?;
-        if info.field(&field).is_none() {
+        let Some(declared) = info.field(&field) else {
             return trap(format!(
                 "type `{}` has no field `{field}`; fields are: {}",
                 info.name,
                 info.field_names()
             ));
-        }
+        };
+        // A Bool crosses as an int; the record holds it as the Bool it is.
+        let v = match (&declared.ty, v) {
+            (Ty::Bool, Value::Int(held)) => Value::Bool(held != 0),
+            (_, v) => v,
+        };
         if let Value::Rec(rec) = self.frames.borrow_mut().get_mut(rec_h)? {
             rec.fields.insert(field, v);
         }

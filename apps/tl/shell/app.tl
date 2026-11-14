@@ -18,8 +18,6 @@ type Desk (origin: session.desk) {
     switcher_scope: Text merge register
     /// What the person typed in the shell's search, which opens the launcher where they left off.
     spotlight: Text merge register
-    /// The notice shown as a banner over the desk now, by its id.
-    banner: Text merge register
     clock: Text merge register
     /// The timer or stopwatch Clocks runs, by its name: its label, or `Timer` or `Stopwatch`
     /// when the app named none; empty when none floats.
@@ -38,7 +36,6 @@ type Desk (origin: session.desk) {
     ask_open: Bool
     weekday: Text merge register
     date: Text merge register
-    quiet: Bool
     workspace: Text merge register
     strip: Text merge register
     workspaces: Collection<Workspace>
@@ -52,8 +49,6 @@ type Desk (origin: session.desk) {
     dock_reached: Bool
     dock_covered: Bool
     agents: Collection<Agent>
-    notices: Collection<Notice>
-    notice_actions: Collection<NoticeAction>
     windows: Collection<Win>
     /// The running applications' tray items, in the order they registered.
     tray: Collection<TrayItem>
@@ -175,24 +170,6 @@ type Agent (origin: session.agent) {
     /// Whether it is seated at the person's agent door now, a client they admitted, rather
     /// than a run's own agent.
     seat: Bool
-}
-
-/// Something a sender told the person here: an app, or the agent task that did. How the centre
-/// counts, groups and marks them is this shell's; what a notice is stays its sender's.
-type Notice (origin: session.notice) {
-    key: Text merge register
-    title: Text merge register
-    body: Text merge register
-    origin_app: Text merge register
-    kind: Text merge register
-    seen: Bool
-}
-
-/// One action a notice offers, as its sender named it.
-type NoticeAction (origin: session.notice_action) {
-    notice: Text merge register
-    key: Text merge register
-    label: Text merge register
 }
 
 root arrangement: Arrangement
@@ -405,7 +382,7 @@ view bar_part(d: Desk, part: BarPart) {
             }
             network_status()
             battery_status()
-            bell(d)
+            bell()
             if d.person != "" {
                 ui.Avatar(name: d.person)
             }
@@ -513,15 +490,16 @@ view battery_status() {
 /// The count is the button's own (`count:`): it stands on the bell's top trailing corner and
 /// wholly inside the button's face, so the bar's own edge never cuts it and it covers neither
 /// the bell nor the control beside it.
-view bell(d: Desk) {
-    let name = if d.quiet { "Notifications silenced" } else { "Notifications" }
-    let waiting = unread(d)
+view bell() {
+    let quiet = (device.notifications.quiet ?? "") != ""
+    let name = if quiet { "Notifications silenced" } else { "Notifications" }
+    let waiting = unread()
     let label = if waiting == 0 {
         name
     } else if waiting == 1 { "{name}, 1 unread" } else { "{name}, {waiting} unread" }
     ui.Button(
         label,
-        icon: if d.quiet { .bell_off } else { .bell },
+        icon: if quiet { .bell_off } else { .bell },
         icon_only: true,
         role: .bar,
         count: waiting,

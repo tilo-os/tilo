@@ -54,7 +54,7 @@ view dock_run(s: Shell, d: Desk) {
                 ui.DragRun(axis: .horizontal) {
                     trailing: {
                         clock(d)
-                        bell(d)
+                        bell()
                     }
                     on drop(moved: DockItem, at: Int): place_item(s, moved, at)
                     for item in s.dock_items {

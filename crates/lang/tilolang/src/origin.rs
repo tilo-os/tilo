@@ -160,12 +160,6 @@ pub const KINDS: &[OriginKind] = &[
                 "Text",
                 "Today's month and day, in the person's language.",
             ),
-            field(
-                "quiet",
-                "Bool",
-                "Whether what the person is told now is held back from showing (Do Not Disturb, \
-                 presenting).",
-            ),
             field("workspace", "Text", "The name of the workspace in front."),
             field(
                 "strip",
@@ -199,25 +193,10 @@ pub const KINDS: &[OriginKind] = &[
                 "The person's agents here, and what each is on and did.",
             ),
             field(
-                "notices",
-                "Collection<session.notice>",
-                "What the person was told, newest first.",
-            ),
-            field(
-                "banner",
-                "Text",
-                "The notice shown as a banner over the desk now, by its id; empty for none.",
-            ),
-            field(
                 "spotlight",
                 "Text",
                 "What the person last typed in the shell's search, so the shell opens where they \
                  left off.",
-            ),
-            field(
-                "notice_actions",
-                "Collection<session.notice_action>",
-                "Each action a notice offers, naming the notice it is on, in its sender's order.",
             ),
             field(
                 "windows",
@@ -416,41 +395,6 @@ pub const KINDS: &[OriginKind] = &[
                 "Whether it is seated at the person's agent door now, a client they admitted, \
                  rather than a run's own agent.",
             ),
-        ],
-    },
-    OriginKind {
-        name: "session.notice",
-        doc: "Something a sender told the person at this device: an app, whatever language it is \
-              written in, or the agent task that did. Every app's telling meets here, so the \
-              device shows them as one. How they are counted, grouped and shown is the shell's: \
-              what a notice is stays the sender's.",
-        derived: true,
-        fields: &[
-            field("key", "Text", "The notice's id, as acting on it names it."),
-            field("title", "Text", "What happened, in a short sentence."),
-            field("body", "Text", "What it says, under the title."),
-            field(
-                "origin_app",
-                "Text",
-                "The app that sent it, or the agent's task.",
-            ),
-            field(
-                "kind",
-                "Text",
-                "Its kind: `info`, `success`, `warning` or `error`.",
-            ),
-            field("seen", "Bool", "Whether the person has seen it."),
-        ],
-    },
-    OriginKind {
-        name: "session.notice_action",
-        doc: "One action a notice offers, as its sender named it: a message's Reply, an \
-              import's Open.",
-        derived: true,
-        fields: &[
-            field("notice", "Text", "The notice it is on, by its id."),
-            field("key", "Text", "The key the sender answers by."),
-            field("label", "Text", "What it says, in the sender's words."),
         ],
     },
     OriginKind {

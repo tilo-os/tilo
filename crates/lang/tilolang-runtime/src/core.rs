@@ -375,6 +375,39 @@ impl Host for Core {
 }
 
 impl Core {
+    /// Take `json` as the reading of `target`, a resource of another app: the views that read it
+    /// run again. Whether it differs from the reading held.
+    pub(crate) fn take_reading(&self, target: &crate::value::ResourceRef, json: Json) -> bool {
+        let mut foreign = self.foreign.borrow_mut();
+        let first = foreign.generation(target) == 0;
+        if !foreign.set_reading(target, json) {
+            return false;
+        }
+        let generation = foreign.generation(target);
+        let known = foreign.known();
+        drop(foreign);
+        let seen = i64::try_from(generation).unwrap_or(i64::MAX);
+        let mut states = self.view_states.borrow_mut();
+        states.set(
+            crate::foreign::reading_key(target),
+            crate::value::Value::Int(seen),
+        );
+        // Any reading that comes in: a view call waiting on one it could not know runs again.
+        states.set(
+            crate::foreign::arrived_key(),
+            crate::value::Value::Int(seen),
+        );
+        // A resource known here for the first time: views that looked it up by id
+        // (`resource(id)`) and found nothing run again.
+        if first {
+            states.set(
+                crate::foreign::known_key(),
+                crate::value::Value::Int(i64::try_from(known).unwrap_or(i64::MAX)),
+            );
+        }
+        true
+    }
+
     /// The host clock's time now, or the epoch without one.
     pub(crate) fn clock_now(&self) -> String {
         self.clock
@@ -421,15 +454,15 @@ impl Core {
             ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmbed, RichEmpty,
             RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichTime, RowOpen, RunChanges,
             SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI,
-            Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq,
-            StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit,
-            StrStartsWith, StrToInt, StrTrim, StrUpper, StrWords, Suggest, Take, TimeClock,
-            TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke, TupleGetF,
-            TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions,
-            UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI,
-            UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer,
-            WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus, WebStatusText,
-            WebText, Withdraw, Word, WorkspaceMembers,
+            Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains,
+            StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace,
+            StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper, StrWords, Suggest,
+            Take, TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke,
+            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction,
+            UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
+            UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
+            Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
+            WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | StrWords | IntToStr | StrToInt | FloatToStr
@@ -481,7 +514,7 @@ impl Core {
             | WebText | BytesLength => self.web_import(imp, a),
             FilePart | FileSize | FileText | FileFiles => self.file_import(imp, a),
             FileOfText | FileOfBytes | FileAt | FileZip => self.file_make(imp, a),
-            JsonParse | JsonDecode | JsonEncode => self.json_import(imp, a),
+            JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt | ArgAt
             | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView

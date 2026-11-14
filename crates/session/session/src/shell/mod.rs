@@ -63,6 +63,7 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         tilo_session_power::battery_surface(),
         tilo_system_service::power_surface(),
         crate::displays::surface(),
+        crate::notifications::surface(),
         crate::desk_resource::surface(),
     ]
 }

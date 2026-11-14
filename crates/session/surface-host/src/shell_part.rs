@@ -45,9 +45,9 @@ pub use tilo_session_core::shell::{
     ARRANGEMENT_RESOURCE, AgentReading, AppReading, ArrangementPlaceReading,
     ArrangementQueryReading, ArrangementReading, ArrangementRefReading, ArrangementRowReading,
     ArrangementStripReading, ArrangementWorkspaceReading, Ask, AskReading, CHROME_RESOURCE,
-    DESK_RESOURCE, DeskReading, DeskStyleReading, NoticeActionReading, NoticeReading, ORIGIN,
-    PersonReading, SHELL_APP, SHELL_RECORD, ScreenEdges, TimerReading, TrayReading, WindowReading,
-    WindowRect, WorkspaceReading, reach_pad, screen_edges,
+    DESK_RESOURCE, DeskReading, DeskStyleReading, ORIGIN, PersonReading, SHELL_APP, SHELL_RECORD,
+    ScreenEdges, TimerReading, TrayReading, WindowReading, WindowRect, WorkspaceReading, reach_pad,
+    screen_edges,
 };
 
 mod host;
@@ -575,7 +575,6 @@ impl SessionOrigin {
             ("clock", text(&reading.clock)),
             ("weekday", text(&reading.weekday)),
             ("date", text(&reading.date)),
-            ("quiet", Value::Bool(reading.quiet)),
             ("workspace", text(&reading.workspace)),
             ("strip", text(&reading.strip)),
             // What the screen says of the edges a bar or dock that shows only sometimes follows.
@@ -591,7 +590,6 @@ impl SessionOrigin {
             ("switcher_revealed", Value::Bool(reading.switcher_revealed)),
             ("switcher_scope", text(&reading.switcher_scope)),
             ("spotlight", text(&reading.spotlight)),
-            ("banner", text(&reading.banner)),
             // The timer Clocks runs: its name and what it reads. Empty names mean no timer, so
             // the clock shows the time alone; paused and stopwatch say how to read it.
             ("timer", text(&reading.timer_name())),
@@ -707,37 +705,6 @@ impl SessionOrigin {
                     ("doing", text(&a.doing)),
                     ("mark", text(&a.mark)),
                     ("unseen", Value::Int(a.unseen)),
-                ]
-            },
-        ));
-        writes.extend(self.mirror.sync(
-            &reading.notices,
-            root,
-            field(desk, "notices").as_deref(),
-            kind("notice").ok(),
-            |n| n.key.clone(),
-            |n| {
-                vec![
-                    ("key", text(&n.key)),
-                    ("title", text(&n.title)),
-                    ("body", text(&n.body)),
-                    ("origin_app", text(&n.origin_app)),
-                    ("kind", text(&n.kind)),
-                    ("seen", Value::Bool(n.seen)),
-                ]
-            },
-        ));
-        writes.extend(self.mirror.sync(
-            &reading.notice_actions,
-            root,
-            field(desk, "notice_actions").as_deref(),
-            kind("notice_action").ok(),
-            |a| format!("{}:{}", a.notice, a.key),
-            |a| {
-                vec![
-                    ("notice", text(&a.notice)),
-                    ("key", text(&a.key)),
-                    ("label", text(&a.label)),
                 ]
             },
         ));

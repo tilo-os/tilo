@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use serde_json::Value as Json;
 
 use crate::abi::Imp;
-use crate::core::{Args, Core, HResult, trap};
+use crate::core::{Args, Core, HResult, ret_void, trap};
 use crate::engine::Wasm;
 use crate::meta::{Ty, TypeKey, parse_ty};
 use crate::registry::Registry;
@@ -45,6 +45,19 @@ impl Core {
                     Ok(json) => self.ret_h(Value::Text(json.to_string())),
                     Err(why) => trap(why),
                 }
+            }
+            Imp::StageReading => {
+                let target = self.ref_arg(a.h(0)?)?.target;
+                if !crate::foreign::is_foreign(&target) {
+                    return trap(format!(
+                        "`{}` is held here: a scenario writes its fields",
+                        target.id_string()
+                    ));
+                }
+                let value = self.val_whole(a.h(1)?)?;
+                let json = encode(&self.registry.borrow(), &value).or_else(trap)?;
+                self.take_reading(&target, json);
+                ret_void()
             }
             _ => trap("not a json import"),
         }

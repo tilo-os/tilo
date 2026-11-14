@@ -33,7 +33,7 @@ fn reading() -> DeskReading {
     }
 }
 
-use crate::shell_part::tests_support::{compiled, part_of, part_with};
+use crate::shell_part::tests_support::{compiled, part_of, part_with, publish_notices};
 
 fn part() -> (ShellPart, Rc<SessionLink>) {
     part_with(reading())
@@ -181,24 +181,28 @@ fn no_app_hands_the_session_a_string() {
 /// The centre up, with its search field, and nothing changing: the part draws no frame.
 /// The field reports itself dirty every frame, as a leaf does; that is no reason to draw.
 ///
-/// The centre's presses call the desk's own actions (`session.dismiss_notice(...)`): Clear all
-/// and a notice's Dismiss each reach the session as that action, at that press rather than at
-/// the next input.
+/// The centre's presses call the centre's own actions (`device.dismiss(device.notifications,
+/// ...)`): Clear all and a notice's Dismiss each reach the session as that action, at that press
+/// rather than at the next input.
 #[test]
-fn the_centre_draws_nothing_at_rest_and_a_press_in_it_hands_the_desk_its_notice_action() {
+fn the_centre_draws_nothing_at_rest_and_a_press_in_it_hands_the_session_its_notice_action() {
     let _settled = ui::motion::testing::settled();
     let (mut part, link) = part_with(DeskReading {
         here: "centre".to_owned(),
-        notices: vec![NoticeReading {
-            key: "1".to_owned(),
-            title: "Backup finished".to_owned(),
-            body: "12 GB safe".to_owned(),
-            origin_app: "Settings".to_owned(),
-            kind: "info".to_owned(),
-            seen: true,
-        }],
         ..reading()
     });
+    publish_notices(
+        &link,
+        &serde_json::json!([{
+            "number": 1,
+            "title": "Backup finished",
+            "body": "12 GB safe",
+            "from": "Settings",
+            "kind": "info",
+            "seen": true,
+            "actions": [],
+        }]),
+    );
     for _ in 0..8 {
         part.prepare_frame();
     }
@@ -230,14 +234,14 @@ fn the_centre_draws_nothing_at_rest_and_a_press_in_it_hands_the_desk_its_notice_
         served,
         vec![
             Ask {
-                resource: DESK_RESOURCE.to_owned(),
-                action: "dismiss-notice".to_owned(),
-                arguments: BTreeMap::from([("notice".to_owned(), "1".into())]),
+                resource: "session:notifications".to_owned(),
+                action: "dismiss".to_owned(),
+                arguments: BTreeMap::from([("notification".to_owned(), 1.into())]),
                 from: None,
             },
             Ask {
-                resource: DESK_RESOURCE.to_owned(),
-                action: "clear-notices".to_owned(),
+                resource: "session:notifications".to_owned(),
+                action: "clear".to_owned(),
                 arguments: BTreeMap::new(),
                 from: None,
             },
@@ -379,23 +383,29 @@ fn the_bars_faces_are_who_is_here_and_the_button_opens_the_roster() {
 /// of its frame budget; each must land in one turn.
 #[test]
 fn each_change_is_one_turn() {
-    type Change = (&'static str, fn(&mut DeskReading));
+    type Change = (&'static str, fn(&mut DeskReading, &SessionLink));
     let (mut part, link) = part();
     for _ in 0..4 {
         part.prepare_frame();
     }
     let mut now = reading();
     let changes: [Change; 3] = [
-        ("minute", |r| r.clock = "4:29 PM".to_owned()),
-        ("notification", |r| {
-            r.notices.push(NoticeReading {
-                key: "n1".to_owned(),
-                title: "Backup finished".to_owned(),
-                seen: false,
-                ..Default::default()
-            });
+        ("minute", |r, _| r.clock = "4:29 PM".to_owned()),
+        ("notification", |_, link| {
+            publish_notices(
+                link,
+                &serde_json::json!([{
+                    "number": 1,
+                    "title": "Backup finished",
+                    "body": "",
+                    "from": "",
+                    "kind": "info",
+                    "seen": false,
+                    "actions": [],
+                }]),
+            );
         }),
-        ("workspace switch", |r| {
+        ("workspace switch", |r, _| {
             r.workspace = "Studio".to_owned();
             // The reading lists the strip the bar shows first, so the switch moves the
             // mark on to the workspace after it.
@@ -407,7 +417,7 @@ fn each_change_is_one_turn() {
         }),
     ];
     for (name, change) in changes {
-        change(&mut now);
+        change(&mut now, &link);
         link.publish(now.clone());
         let before = part.work();
         part.prepare_frame();

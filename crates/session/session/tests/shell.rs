@@ -58,6 +58,15 @@ fn session() -> Session {
     session
 }
 
+fn centre(session: &Session) -> tilo_quick_settings::hosted::NotificationCentre {
+    serde_json::from_value(
+        session
+            .read("session:notifications")
+            .expect("the session publishes its notifications"),
+    )
+    .expect("the notifications read as the centre")
+}
+
 /// The desk as the session publishes it on its door: what an agent reads.
 fn desk(session: &Session) -> DeskReading {
     serde_json::from_value(
@@ -71,7 +80,7 @@ fn desk(session: &Session) -> DeskReading {
 /// How many notices the desk names the person has not seen: the count the shell's bell shows of
 /// the notices it reads.
 fn waiting(session: &Session) -> usize {
-    desk(session)
+    centre(session)
         .notices
         .iter()
         .filter(|notice| !notice.seen)
@@ -836,8 +845,8 @@ fn the_notification_centre_lists_a_notice_and_it_dismisses() {
         tilo_desktop_surface::notifications::Notification::new("Backup finished", "12 GB safe")
             .with_app_name("Settings"),
     );
-    until(&mut session, |session| !desk(session).notices.is_empty());
-    assert_eq!(desk(&session).notices[0].title, "Backup finished");
+    until(&mut session, |session| !centre(session).notices.is_empty());
+    assert_eq!(centre(&session).notices[0].title, "Backup finished");
     session
         .invoke(
             tilo_surface_host::shell_part::DESK_RESOURCE,
@@ -852,22 +861,22 @@ fn the_notification_centre_lists_a_notice_and_it_dismisses() {
     until(&mut session, |session| says(session, "Backup finished"));
     keep(&mut session, "shell-notification-centre");
     // Dismissing it, as the centre's own Dismiss does, takes it off the desk.
-    let id = desk(&session).notices[0].key.clone();
+    let id = centre(&session).notices[0].number;
     session
         .invoke(
-            tilo_surface_host::shell_part::DESK_RESOURCE,
-            "dismiss-notice",
-            &serde_json::Map::from_iter([("notice".to_owned(), serde_json::Value::String(id))]),
+            "session:notifications",
+            "dismiss",
+            &serde_json::Map::from_iter([("notification".to_owned(), serde_json::Value::from(id))]),
         )
         .unwrap();
-    until(&mut session, |session| desk(session).notices.is_empty());
+    until(&mut session, |session| centre(session).notices.is_empty());
 }
 
-/// The centre's own Dismiss, pressed in the shell's view: the action the view runs is the desk's
-/// `dismiss-notice` on the notice the row is for, so the shell's surfaces and an agent dismiss the
-/// same way.
+/// The centre's own Dismiss, pressed in the shell's view: the action the view runs is the centre's
+/// `dismiss` on the notice the row is for, so the shell's surfaces and an agent dismiss the same
+/// way.
 #[test]
-fn a_press_on_the_centres_dismiss_takes_the_notice_off_the_desk() {
+fn a_press_on_the_centres_dismiss_takes_the_notice_away() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     until(&mut session, |session| says(session, &desk(session).clock));
@@ -875,11 +884,14 @@ fn a_press_on_the_centres_dismiss_takes_the_notice_off_the_desk() {
         tilo_desktop_surface::notifications::Notification::new("Backup finished", "12 GB safe")
             .with_app_name("Settings"),
     );
-    until(&mut session, |session| !desk(session).notices.is_empty());
+    until(&mut session, |session| !centre(session).notices.is_empty());
     // A notice that arrives is unseen: the shell counts what the person has not seen, and its
     // bell says so.
     until(&mut session, |session| waiting(session) == 1);
-    assert!(!desk(&session).notices[0].seen, "a fresh notice is unseen");
+    assert!(
+        !centre(&session).notices[0].seen,
+        "a fresh notice is unseen"
+    );
     session
         .invoke(
             tilo_surface_host::shell_part::DESK_RESOURCE,
@@ -894,12 +906,12 @@ fn a_press_on_the_centres_dismiss_takes_the_notice_off_the_desk() {
     // The centre opened, so the person saw them: every notice is seen, and the count the bell
     // shows is none.
     until(&mut session, |session| {
-        waiting(session) == 0 && desk(session).notices.iter().all(|notice| notice.seen)
+        waiting(session) == 0 && centre(session).notices.iter().all(|notice| notice.seen)
     });
-    // The view draws each notice with its Dismiss; pressing it runs the desk's `dismiss-notice` on
-    // that notice, as any action on the desk runs.
+    // The view draws each notice with its Dismiss; pressing it runs the centre's `dismiss` on
+    // that notice.
     press(&mut session, "Dismiss");
-    until(&mut session, |session| desk(session).notices.is_empty());
+    until(&mut session, |session| centre(session).notices.is_empty());
     assert!(
         session.shell_refusals().is_empty(),
         "the centre's Dismiss reached the desk: {:?}",
@@ -2127,9 +2139,9 @@ fn moving_a_window_to_a_workspace_from_the_overview_carries_it_there() {
     );
 }
 
-/// The centre's Clear all empties it: the desk's `clear-notices` .
+/// The centre's Clear all empties it: the centre's `clear`.
 #[test]
-fn a_press_on_the_centres_clear_all_empties_the_desks_notices() {
+fn a_press_on_the_centres_clear_all_empties_it() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     until(&mut session, |session| says(session, &desk(session).clock));
@@ -2142,13 +2154,13 @@ fn a_press_on_the_centres_clear_all_empties_the_desks_notices() {
                 .with_app_name("Settings"),
         );
     }
-    until(&mut session, |session| desk(session).notices.len() == 2);
+    until(&mut session, |session| centre(session).notices.len() == 2);
     show(&mut session, "centre");
     until(&mut session, |session| {
         session.shell_control("Clear all").is_some()
     });
     press(&mut session, "Clear all");
-    until(&mut session, |session| desk(session).notices.is_empty());
+    until(&mut session, |session| centre(session).notices.is_empty());
     assert!(
         session.shell_refusals().is_empty(),
         "{:?}",

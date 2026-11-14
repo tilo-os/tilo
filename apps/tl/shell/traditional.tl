@@ -260,7 +260,7 @@ view traditional_bar(d: Desk) {
         }
         network_status()
         battery_status()
-        bell(d)
+        bell()
         if d.person != "" {
             ui.Avatar(name: d.person)
         }

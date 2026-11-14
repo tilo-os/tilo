@@ -459,28 +459,7 @@ impl Runtime {
                 target.id_string()
             )));
         }
-        let mut foreign = self.core.foreign.borrow_mut();
-        let first = foreign.generation(target) == 0;
-        if !foreign.set_reading(target, json) {
-            return Ok(false);
-        }
-        let generation = foreign.generation(target);
-        let known = foreign.known();
-        drop(foreign);
-        let seen = i64::try_from(generation).unwrap_or(i64::MAX);
-        let mut states = self.core.view_states.borrow_mut();
-        states.set(crate::foreign::reading_key(target), Value::Int(seen));
-        // Any reading that comes in: a view call waiting on one it could not know runs again.
-        states.set(crate::foreign::arrived_key(), Value::Int(seen));
-        // A resource known here for the first time: views that looked it up by id
-        // (`resource(id)`) and found nothing run again.
-        if first {
-            states.set(
-                crate::foreign::known_key(),
-                Value::Int(i64::try_from(known).unwrap_or(i64::MAX)),
-            );
-        }
-        Ok(true)
+        Ok(self.core.take_reading(target, json))
     }
 
     /// Evaluate an agent block as `principal`. A view renders and

@@ -166,6 +166,7 @@ imports! {
     JsonParse = "json_parse" ([H] -> [H]);
     JsonDecode = "json_decode" ([H, H, H] -> [H]);
     JsonEncode = "json_encode" ([H] -> [H]);
+    StageReading = "stage_reading" ([H, H] -> []);
     TimeShift = "time_shift" ([H, I64, I32] -> [H]);
     WallClock = "wall_clock" ([H] -> [H]);
     PrincipalNamed = "principal_named" ([H] -> [H]);

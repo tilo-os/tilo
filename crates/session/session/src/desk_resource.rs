@@ -21,14 +21,13 @@ use tilo_session_core::shell::DESK_RESOURCE;
 use tilo_session_core::shell::{self, DeskReading};
 
 use crate::desk_windows::{reaching, windows};
-use crate::notifications::NoticeSignals;
 
 /// What the desk's reading is made from ([`Desk::key`]): equal when the shell's views need not run
 /// again.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct DeskKey {
     /// The revisions, the minute, the signals and the names the reading is made of.
-    reading: (u64, i64, bool, u64, u64, u64, u64, u64, u64, String),
+    reading: (u64, i64, u64, u64, u64, u64, u64, String),
     /// The agents seated at the person's agent door.
     agents: u64,
     /// Whether the switcher's panel shows: it comes up on its own while Alt is held, with no
@@ -163,34 +162,6 @@ pub(crate) enum DeskEffect {
         #[param("The surface")]
         surface: String,
     },
-    /// Tell the person something, as an app's `notify` does.
-    /// It rises as a banner over the desk and waits in the centre until they dismiss it: the one
-    /// way a script, an agent or the REPL posts the same notice an app's `notify` does, so what
-    /// they say reaches the person the same way.
-    Notify {
-        #[param("What happened, in a short sentence")]
-        title: String,
-        #[param("What it says, under the title")]
-        body: Option<String>,
-        #[param("Who it is from: an app's name, or the agent's; empty for the session's own")]
-        from: Option<String>,
-        #[param("Its kind: `info`, `success`, `warning` or `error`")]
-        kind: Option<String>,
-    },
-    /// Clear the notification centre, which Undo puts back.
-    ClearNotices,
-    /// Dismiss the notice `notice` of the centre, by its id.
-    DismissNotice {
-        #[param("The notice, by its id")]
-        notice: String,
-    },
-    /// Run one of the choices the notice `notice` offers, by the key its sender gave it.
-    ActOnNotice {
-        #[param("The notice, by its id")]
-        notice: String,
-        #[param("The choice, by its key")]
-        action: String,
-    },
     /// Open the window switcher, or walk it `steps` windows on.
     /// Alt+Tab walks the workspace's windows; Alt and the grave key the ones the app in front
     /// shows.
@@ -212,12 +183,6 @@ pub(crate) enum DeskEffect {
     },
     /// Go to the window the switcher's walk reached, and close the switcher.
     CommitSwitcher,
-    /// Show the app `app` in its window of the strip in front, or a new
-    /// window: what following a link to what plays does.
-    ShowApp {
-        #[param("The app, by its id")]
-        app: String,
-    },
     /// Open Settings at the page `link` names (`settings://network`), through
     /// the desk's own search: what an app with no workspace of its own asks
     /// to send the person there.
@@ -411,7 +376,6 @@ pub(crate) struct Styles {
 pub(crate) struct Desk {
     pub(crate) handle: DesktopHandle,
     pub(crate) person: String,
-    pub(crate) signals: Rc<NoticeSignals>,
     /// The surfaces the desk shows over its windows, and where they stand.
     pub(crate) surfaces: Surfaces,
     /// Who is here, when this session takes part in the collaboration plane.
@@ -425,8 +389,6 @@ pub(crate) struct Desk {
     /// The running applications' tray items, when their watcher serves: the bar shows them,
     /// and the person's clicks go back through it.
     pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
-    /// The notification centre the reading lists, and what it last said.
-    pub(crate) notices: tilo_desktop_surface::DesktopNotifications,
     /// The agents the person admitted at its agent door: each works here as itself, and the bar
     /// shows it as its own presence.
     pub(crate) seats: std::sync::Arc<crate::agent_door::Seats>,
@@ -448,12 +410,10 @@ pub(crate) struct Shared {
     pub(crate) seats: std::sync::Arc<crate::agent_door::Seats>,
     pub(crate) handle: DesktopHandle,
     pub(crate) person: String,
-    pub(crate) signals: Rc<NoticeSignals>,
     pub(crate) activities: Rc<crate::chrome::Activities>,
     pub(crate) surfaces: Surfaces,
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
     pub(crate) notes: std::sync::Arc<crate::continuations::Continuations>,
-    pub(crate) notices: tilo_desktop_surface::DesktopNotifications,
     pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
     pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
@@ -468,12 +428,10 @@ pub(crate) fn desk_from(shared: Shared) -> impl Fn() -> Desk {
         seats: std::sync::Arc::clone(&shared.seats),
         handle: shared.handle.clone(),
         person: shared.person.clone(),
-        signals: Rc::clone(&shared.signals),
         activities: Rc::clone(&shared.activities),
         surfaces: shared.surfaces.clone(),
         sync: shared.sync.clone(),
         notes: std::sync::Arc::clone(&shared.notes),
-        notices: shared.notices.clone(),
         tray: shared.tray.clone(),
         engine: shared.engine.clone(),
         asks: Rc::clone(&shared.asks),
@@ -489,14 +447,12 @@ impl Desk {
             reading: (
                 self.handle.revision(),
                 ui::clock::local_now().timestamp().div_euclid(60),
-                self.signals.quiet(),
                 self.sync
                     .as_ref()
                     .map_or(0, |sync| sync.here().borrow().revision()),
                 self.activities.board().revision(),
                 self.handle.personal_ask_revision(),
                 self.tray.as_ref().map_or(0, |tray| tray.revision()),
-                self.notices.revision(),
                 self.surfaces.overlays.revision(),
                 self.surfaces.overlays.here(),
             ),
@@ -585,7 +541,6 @@ impl Desk {
             }),
             weekday: ui::format::weekday_short(chrono::Datelike::weekday(&now)),
             date: ui::format::month_day(now.date_naive()),
-            quiet: self.signals.quiet(),
             // A workspace is named the one way every reading of it names it: the name the person
             // gave, or the desk's own word for one they have not named yet.
             workspace: workspace_in_front(tree),
@@ -603,18 +558,8 @@ impl Desk {
             switcher_revealed: self.surfaces.overlays.revealed(instant),
             switcher_scope: self.surfaces.overlays.scope().name().to_owned(),
             spotlight: self.surfaces.overlays.spotlight(),
-            banner: self
-                .notices
-                .log()
-                .active()
-                .last()
-                .map(|notice| notice.id.to_string())
-                .unwrap_or_default(),
             windows: self.windows_reaching(tree, instant),
             agents: self.seats.readings(),
-            notices: notices(&self.notices),
-            notice_actions: notice_actions(&self.notices),
-            badges: self.signals.badges(),
             apps: crate::app_icons::app_lists_snapshot()
                 .map(|(_, lists)| {
                     lists
@@ -698,52 +643,6 @@ impl Desk {
                 .collect()
         })
     }
-}
-
-/// The notices the centre keeps, newest first, as the desk's reading names them: the banners still
-/// up and the ones retired into the centre.
-fn notices(notices: &tilo_desktop_surface::DesktopNotifications) -> Vec<shell::NoticeReading> {
-    let log = notices.log();
-    log.active()
-        .iter()
-        .chain(log.history().iter())
-        .rev()
-        .map(|notification| shell::NoticeReading {
-            key: notification.id.to_string(),
-            title: notification.title.clone(),
-            body: notification.body.clone(),
-            origin_app: notification.app_name.clone().unwrap_or_default(),
-            kind: match notification.severity {
-                tilo_desktop_surface::notifications::NotificationSeverity::Info => "info",
-                tilo_desktop_surface::notifications::NotificationSeverity::Warning => "warning",
-                tilo_desktop_surface::notifications::NotificationSeverity::Error => "error",
-            }
-            .to_owned(),
-            seen: !notices.is_unread(notification.id),
-        })
-        .collect()
-}
-
-/// Each action a notice offers, as its sender named it.
-fn notice_actions(
-    notices: &tilo_desktop_surface::DesktopNotifications,
-) -> Vec<shell::NoticeActionReading> {
-    let log = notices.log();
-    log.active()
-        .iter()
-        .chain(log.history().iter())
-        .rev()
-        .flat_map(|notification| {
-            notification
-                .actions
-                .iter()
-                .map(|(key, label)| shell::NoticeActionReading {
-                    notice: notification.id.to_string(),
-                    key: key.clone(),
-                    label: label.clone(),
-                })
-        })
-        .collect()
 }
 
 /// The name of the workspace in front, as every reading of a workspace names it.
@@ -1021,24 +920,19 @@ impl Desk {
     }
 
     /// What the desk carries out by handing it to what shows it: the surface over the windows,
-    /// showing an app, and opening Settings at the page a link names, which only the session's loop
-    /// can search for. Whether `effect` was one of these.
-    fn show(&self, effect: &DeskEffect) -> Result<bool, DoorError> {
+    /// and opening Settings at the page a link names, which only the session's loop can search
+    /// for. Whether `effect` was one of these.
+    fn show(&self, effect: &DeskEffect) -> bool {
         match effect {
             DeskEffect::ShowSurface { surface } => self.surfaces.toggle(surface),
-            DeskEffect::ShowApp { app } => {
-                self.handle
-                    .dispatch(ChromeEffect::ShowApp { app: app.clone() })
-                    .map_err(DoorError::Failed)?;
-            }
             DeskEffect::OpenSettings { link } => {
                 self.asks
                     .borrow_mut()
                     .push(DesktopAsk::OpenSettings(link.clone()));
             }
-            _ => return Ok(false),
+            _ => return false,
         }
-        Ok(true)
+        true
     }
 }
 
@@ -1046,50 +940,6 @@ impl Desk {
 /// of it ([`crate::session_package`]).
 pub(crate) fn desk_spec(label: String) -> ResourceSpec {
     offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label))
-}
-
-impl Desk {
-    /// The notification centre's effects: post a notice, clear the centre, run a notice's
-    /// action or dismiss one. `None` for any other effect.
-    fn notice_effect(&self, effect: &DeskEffect) -> Option<Result<Started, DoorError>> {
-        let id_of = |notice: &str| {
-            notice
-                .parse::<u64>()
-                .map_err(|_| DoorError::InvalidArguments(format!("`{notice}` is no notice's id")))
-        };
-        match effect {
-            DeskEffect::Notify {
-                title,
-                body,
-                from,
-                kind,
-            } => {
-                self.notices.post(notice(
-                    title,
-                    body.as_deref(),
-                    from.as_deref(),
-                    kind.as_deref(),
-                ));
-            }
-            DeskEffect::ClearNotices => {
-                self.notices.clear_all();
-            }
-            DeskEffect::ActOnNotice { notice, action } => match id_of(notice) {
-                Ok(id) => {
-                    self.notices.invoke_action(id, action);
-                }
-                Err(error) => return Some(Err(error)),
-            },
-            DeskEffect::DismissNotice { notice } => match id_of(notice) {
-                Ok(id) => {
-                    self.notices.dismiss_history(id);
-                }
-                Err(error) => return Some(Err(error)),
-            },
-            _ => return None,
-        }
-        Some(Ok(Started::Done(tilo_actions::ActionOutput::default())))
-    }
 }
 
 impl Service for Desk {
@@ -1126,9 +976,6 @@ impl Service for Desk {
         if let Some(answer) = self.invitation(&effect) {
             return answer;
         }
-        if let Some(answer) = self.notice_effect(&effect) {
-            return answer;
-        }
         if let DeskEffect::ShowInvite { workspace } = &effect {
             return self.show_invite(workspace.as_deref());
         }
@@ -1143,7 +990,7 @@ impl Service for Desk {
                 .choose_host_action(tilo_actions::remote::session_actions::CONNECT_AGENT);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
-        if self.show(&effect)? {
+        if self.show(&effect) {
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::StopAgent { agent } = &effect {
@@ -1198,28 +1045,6 @@ impl Service for Desk {
             })
             .map_err(DoorError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
-    }
-}
-
-/// The notice the desk's `notify` posts: its title and body, its kind as the centre's severity
-/// (`info` unless `warning` or `error`), and who it is from when that is named.
-fn notice(
-    title: &str,
-    body: Option<&str>,
-    from: Option<&str>,
-    kind: Option<&str>,
-) -> tilo_desktop_surface::notifications::Notification {
-    use tilo_desktop_surface::notifications::{Notification, NotificationSeverity};
-    let severity = match kind {
-        Some("warning") => NotificationSeverity::Warning,
-        Some("error") => NotificationSeverity::Error,
-        _ => NotificationSeverity::Info,
-    };
-    let notification = Notification::new(title.to_owned(), body.unwrap_or_default().to_owned())
-        .with_severity(severity);
-    match from.filter(|from| !from.is_empty()) {
-        Some(from) => notification.with_app_name(from),
-        None => notification,
     }
 }
 

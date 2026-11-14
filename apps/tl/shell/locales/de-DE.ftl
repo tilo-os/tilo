@@ -23,9 +23,6 @@ d-5mipdtxu = Bereich des Wechslers
 d-foayl4ai = Suche
     .doc = Was die Person in die Suche der Shell getippt hat, die den Launcher dort öffnet, wo sie aufgehört hat.
 
-d-wco4hiud = Banner
-    .doc = Der Hinweis, der jetzt als Banner über dem Schreibtisch steht, nach seiner Kennung.
-
 d-7bs5q4ht = Uhr
 
 d-rlrql4ir = Timer
@@ -54,8 +51,6 @@ d-gi7d6wct = Wochentag
 
 d-5cs3vm3f = Datum
 
-d-hj6eqjwk = Ruhe
-
 d-c5k5ua2t = Arbeitsbereich
 
 d-xpcwi5mg = Leiste
@@ -76,10 +71,6 @@ d-prsypg4e = Dock verdeckt
 
 d-twcpnt5t = Agenten
 
-d-3vvnnztw = Hinweise
-
-d-lz6qs7zm = Aktionen der Hinweise
-
 d-5kokd6gv = Fenster
 
 d-pdaqdidq = Infobereich
@@ -95,8 +86,6 @@ d-4jk2lkpt-filter-timer_paused = Timer pausiert
 d-4jk2lkpt-filter-timer_stopwatch = Timer Stoppuhr
 
 d-4jk2lkpt-filter-ask_open = Frage offen
-
-d-4jk2lkpt-filter-quiet = Ruhe
 
 d-4jk2lkpt-filter-bar_reached = Leiste erreicht
 
@@ -274,40 +263,6 @@ d-p6gfsj72 = Sitz
 d-labby3mp-filter-unseen = Ungesehen
 
 d-labby3mp-filter-seat = Sitz
-
-d-zk7pzrt2 = Hinweis
-    .doc = Etwas, das ein Absender der Person hier gesagt hat: eine App oder die Aufgabe, die es tat.
-    .noun = { $count ->
-        [one] Hinweis
-       *[other] Hinweise
-    }
-
-d-jq4onnp4 = Schlüssel
-
-d-7snyky6u = Titel
-
-d-wauytevp = Text
-
-d-nxunr2dc = Ursprungs-App
-
-d-bsp6shbm = Art
-
-d-z67wqj3i = Gesehen
-
-d-zk7pzrt2-filter-seen = Gesehen
-
-d-7rjfrgeo = Hinweisaktion
-    .doc = Eine Aktion, die ein Hinweis anbietet, wie ihr Absender sie nannte.
-    .noun = { $count ->
-        [one] Hinweisaktion
-       *[other] Hinweisaktionen
-    }
-
-d-ohcc5fba = Hinweis
-
-d-mfyylqsl = Schlüssel
-
-d-6ehy2qwa = Beschriftung
 
 d-qhf2pyze = Anordnung
     .doc = Die Anordnung der Person: was offen ist und wo.
@@ -912,12 +867,6 @@ d-aitkuflo = Eintrag öffnen
 d-aitkuflo-desk = Schreibtisch
 
 d-aitkuflo-key = App
-
-d-vjnksgzm = Wartendes anlegen
-    .doc = Zwei Hinweise, die ein Absender hinterließ und die Person nicht gesehen hat: was die Shell auf einem Schreibtisch bereitstellt, den sie zeigt, bevor die Person aufgeholt hat, damit die Glocke der Leiste etwas zu zählen hat.
-
-d-j4ax4otm = Hinweise anlegen
-    .doc = Die Hinweise des Schreibtischs, von denen ein Szenario ausgeht: was Apps und ein Agent heute gesagt haben.
 
 d-zm35wbjg = Ein Arbeitsbereich
     .doc = Fügt `a` einen Arbeitsbereich mit einer Zeile hinzu und gibt den Schlüssel der Zeile zurück.

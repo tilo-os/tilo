@@ -11,6 +11,15 @@ pub(super) fn publish_platform_roots(link: &SessionLink) {
     }
 }
 
+/// The notification centre the session publishes, holding `notices`.
+pub(super) fn publish_notices(link: &SessionLink, notices: &serde_json::Value) {
+    link.publish_reading(
+        "session:notifications",
+        "so.tilo.device#Notifications",
+        serde_json::json!({ "count": 0, "notices": notices }),
+    );
+}
+
 /// The four desk styles `so.tilo.shell` ships, as the session lists them: a view of the
 /// arrangement each, named by its doc line (shell.md §6).
 pub(super) fn shipped_styles() -> Vec<DeskStyleReading> {

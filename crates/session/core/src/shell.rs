@@ -113,26 +113,6 @@ pub struct AgentReading {
     pub seat: bool,
 }
 
-/// Something a sender told the person here: an app, or the agent task that did.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NoticeReading {
-    pub key: String,
-    pub title: String,
-    pub body: String,
-    pub origin_app: String,
-    /// `info`, `success`, `warning` or `error`.
-    pub kind: String,
-    pub seen: bool,
-}
-
-/// One action a notice offers, as its sender named it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NoticeActionReading {
-    pub notice: String,
-    pub key: String,
-    pub label: String,
-}
-
 /// A timer or stopwatch running in Clocks, as the bar's clock reads it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimerReading {
@@ -169,7 +149,6 @@ pub struct DeskReading {
     pub ask: Option<AskReading>,
     pub weekday: String,
     pub date: String,
-    pub quiet: bool,
     pub workspace: String,
     pub strip: String,
     pub workspaces: Vec<WorkspaceReading>,
@@ -189,25 +168,12 @@ pub struct DeskReading {
     /// What the person last typed in the shell's search.
     #[serde(default)]
     pub spotlight: String,
-    /// The notice shown as a banner over the desk now, by its id; empty for none.
-    #[serde(default)]
-    pub banner: String,
     /// The windows of every strip of the workspace in front, most recently used first.
     #[serde(default)]
     pub windows: Vec<WindowReading>,
     /// The person's agents here, and what each is on and did.
     #[serde(default)]
     pub agents: Vec<AgentReading>,
-    /// What the person was told, newest first.
-    #[serde(default)]
-    pub notices: Vec<NoticeReading>,
-    /// Each action a notice offers, naming the notice it is on, in its sender's order.
-    #[serde(default)]
-    pub notice_actions: Vec<NoticeActionReading>,
-    /// Each app's unread count as its badge shows it, by app id: read on the door (a dock, an
-    /// agent); no `session.desk` field holds it yet.
-    #[serde(default)]
-    pub badges: BTreeMap<String, u32>,
     /// The others here in the workspace in front: its collaborators.
     #[serde(default)]
     pub people: Vec<PersonReading>,

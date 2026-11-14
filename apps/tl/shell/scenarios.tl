@@ -260,7 +260,19 @@ scenario "an afternoon at the desk" {
             preview: "live",
         ),
     )
-    seed_notices(d)
+    stage(
+        device.notifications,
+        device.Notifications(
+            notices: [
+                mia_mention(),
+                threads_filed(),
+                release_moved(),
+                build_failed(),
+                notebook_shared(),
+                backup_done(),
+            ],
+        ),
+    )
 }
 
 /// The overview of that desk: the strips of the workspace in front, their windows as places.
@@ -1143,102 +1155,92 @@ scenario "the notification centre" {
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
     d.here = "centre"
-    d.notices.insert(
-        Notice(
-            key: "n7",
-            title: "Screenshot ready",
-            body: "The capture is in Pictures.",
-            origin_app: "Capture Studio",
-            kind: "info",
-            seen: true,
+    stage(
+        device.notifications,
+        device.Notifications(
+            notices: [
+                mia_mention(),
+                threads_filed(),
+                release_moved(),
+                build_failed(),
+                notebook_shared(),
+                backup_done(),
+                device.Notice(
+                    number: 7,
+                    title: "Screenshot ready",
+                    body: "The capture is in Pictures.",
+                    from: "Capture Studio",
+                    kind: "info",
+                    seen: true,
+                ),
+                device.Notice(
+                    number: 8,
+                    title: "Ada replied in Chat",
+                    body: "Let's ship Friday.",
+                    from: "Chat",
+                    kind: "info",
+                    seen: false,
+                ),
+                device.Notice(
+                    number: 9,
+                    title: "Your laptop is at 12%",
+                    body: "Plug it in to finish the backup.",
+                    from: "Power",
+                    kind: "warning",
+                    seen: true,
+                ),
+                device.Notice(
+                    number: 10,
+                    title: "Fieldwork filed 40 threads",
+                    body: "The mailbox is tidy.",
+                    from: "Fieldwork",
+                    kind: "info",
+                    seen: true,
+                ),
+                device.Notice(
+                    number: 11,
+                    title: "New member in Studio",
+                    body: "Sam Okafor joined.",
+                    from: "Studio",
+                    kind: "info",
+                    seen: true,
+                ),
+                device.Notice(
+                    number: 12,
+                    title: "The release board moved to Review",
+                    body: "Jo moved 6 tasks.",
+                    from: "Release 4.2",
+                    kind: "info",
+                    seen: false,
+                ),
+                device.Notice(
+                    number: 13,
+                    title: "Backup finished",
+                    body: "12 GB of changes are safe.",
+                    from: "Settings",
+                    kind: "info",
+                    seen: true,
+                ),
+                device.Notice(
+                    number: 14,
+                    title: "Calendar: Standup in 10 minutes",
+                    body: "Studio room.",
+                    from: "Calendar",
+                    kind: "info",
+                    seen: false,
+                ),
+                device.Notice(
+                    number: 15,
+                    title: "Fieldwork is waiting for you",
+                    body: "It asks which folder to archive.",
+                    from: "Fieldwork",
+                    kind: "warning",
+                    seen: false,
+                    actions: [device.NoticeAction(key: "open", label: "Answer")],
+                ),
+            ],
         ),
     )
-    d.notices.insert(
-        Notice(
-            key: "n8",
-            title: "Ada replied in Chat",
-            body: "Let's ship Friday.",
-            origin_app: "Chat",
-            kind: "info",
-            seen: false,
-        ),
-    )
-    d.notices.insert(
-        Notice(
-            key: "n9",
-            title: "Your laptop is at 12%",
-            body: "Plug it in to finish the backup.",
-            origin_app: "Power",
-            kind: "warning",
-            seen: true,
-        ),
-    )
-    d.notices.insert(
-        Notice(
-            key: "n10",
-            title: "Fieldwork filed 40 threads",
-            body: "The mailbox is tidy.",
-            origin_app: "Fieldwork",
-            kind: "info",
-            seen: true,
-        ),
-    )
-    d.notices.insert(
-        Notice(
-            key: "n11",
-            title: "New member in Studio",
-            body: "Sam Okafor joined.",
-            origin_app: "Studio",
-            kind: "info",
-            seen: true,
-        ),
-    )
-    d.notices.insert(
-        Notice(
-            key: "n12",
-            title: "The release board moved to Review",
-            body: "Jo moved 6 tasks.",
-            origin_app: "Release 4.2",
-            kind: "info",
-            seen: false,
-        ),
-    )
-    d.notices.insert(
-        Notice(
-            key: "n13",
-            title: "Backup finished",
-            body: "12 GB of changes are safe.",
-            origin_app: "Settings",
-            kind: "info",
-            seen: true,
-        ),
-    )
-    d.notices.insert(
-        Notice(
-            key: "n14",
-            title: "Calendar: Standup in 10 minutes",
-            body: "Studio room.",
-            origin_app: "Calendar",
-            kind: "info",
-            seen: false,
-        ),
-    )
-    d.notices.insert(
-        Notice(
-            key: "n15",
-            title: "Fieldwork is waiting for you",
-            body: "It asks which folder to archive.",
-            origin_app: "Fieldwork",
-            kind: "warning",
-            seen: false,
-        ),
-    )
-    seed_notices(d)
-    d.notice_actions.insert(NoticeAction(notice: "n1", key: "open", label: "Reply"))
-    d.notice_actions.insert(NoticeAction(notice: "n1", key: "later", label: "Later"))
-    d.notice_actions.insert(NoticeAction(notice: "n4", key: "open", label: "Open the run"))
-    d.notice_actions.insert(NoticeAction(notice: "n4", key: "retry", label: "Retry"))
-    d.notice_actions.insert(NoticeAction(notice: "n15", key: "open", label: "Answer"))
 }
 
 /// The centre with nothing new: every notice read, so its header says so and no row carries a
@@ -1248,38 +1250,41 @@ scenario "the notification centre, all read" {
     d.person = "Ada Lovelace"
     d.workspace = "Studio"
     d.here = "centre"
-    d.notices.insert(
-        Notice(
-            key: "n1",
-            title: "Mia mentioned you in Release planning",
-            body: "Can you check the launch date?",
-            origin_app: "Notes",
-            kind: "info",
-            seen: true,
+    stage(
+        device.notifications,
+        device.Notifications(
+            notices: [
+                device.Notice(
+                    number: 1,
+                    title: "Mia mentioned you in Release planning",
+                    body: "Can you check the launch date?",
+                    from: "Notes",
+                    kind: "info",
+                    seen: true,
+                    actions: [
+                        device.NoticeAction(key: "open", label: "Reply"),
+                        device.NoticeAction(key: "later", label: "Later"),
+                    ],
+                ),
+                device.Notice(
+                    number: 2,
+                    title: "Three threads filed",
+                    body: "Fieldwork filed 3 threads into Receipts.",
+                    from: "Fieldwork",
+                    kind: "info",
+                    seen: true,
+                ),
+                device.Notice(
+                    number: 3,
+                    title: "Release 4.2 moved to Review",
+                    body: "Jo moved the board on.",
+                    from: "Tasks",
+                    kind: "info",
+                    seen: true,
+                ),
+            ],
         ),
     )
-    d.notices.insert(
-        Notice(
-            key: "n2",
-            title: "Three threads filed",
-            body: "Fieldwork filed 3 threads into Receipts.",
-            origin_app: "Fieldwork",
-            kind: "info",
-            seen: true,
-        ),
-    )
-    d.notices.insert(
-        Notice(
-            key: "n3",
-            title: "Release 4.2 moved to Review",
-            body: "Jo moved the board on.",
-            origin_app: "Tasks",
-            kind: "info",
-            seen: true,
-        ),
-    )
-    d.notice_actions.insert(NoticeAction(notice: "n1", key: "open", label: "Reply"))
-    d.notice_actions.insert(NoticeAction(notice: "n1", key: "later", label: "Later"))
 }
 
 /// The quick settings over the desk, on a computer that publishes no sound, display or
@@ -1335,19 +1340,26 @@ scenario "a banner" {
             preview: "live",
         ),
     )
-    d.notices.insert(
-        Notice(
-            key: "n4",
-            title: "Build failed",
-            body: "The link check found 4 broken links.",
-            origin_app: "Forgejo",
-            kind: "error",
-            seen: false,
+    stage(
+        device.notifications,
+        device.Notifications(
+            notices: [
+                device.Notice(
+                    number: 4,
+                    title: "Build failed",
+                    body: "The link check found 4 broken links.",
+                    from: "Forgejo",
+                    kind: "error",
+                    seen: false,
+                    actions: [
+                        device.NoticeAction(key: "open", label: "Open the run"),
+                        device.NoticeAction(key: "retry", label: "Retry"),
+                    ],
+                ),
+            ],
+            banner: 4,
         ),
     )
-    d.banner = "n4"
-    d.notice_actions.insert(NoticeAction(notice: "n4", key: "open", label: "Open the run"))
-    d.notice_actions.insert(NoticeAction(notice: "n4", key: "retry", label: "Retry"))
 }
 
 /// The bar's status and who is here: the faces of the two people working alongside Ada, the
@@ -1362,7 +1374,7 @@ scenario "the bar's status" {
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
-    seed_waiting(d)
+    stage(device.notifications, waiting())
     d.people.insert(Person(key: "mia", name: "Mia Clayton"))
     d.people.insert(Person(key: "sam", name: "Sam Okafor"))
     seed(shell)
@@ -1385,52 +1397,6 @@ scenario "a person's menu" {
             unseen: 3,
         ),
     )
-}
-
-/// The desk's notices a scenario starts from: what apps and an agent said today.
-action seed_notices(d: Desk) -> Int {
-    seed_waiting(d)
-    d.notices.insert(
-        Notice(
-            key: "n3",
-            title: "Release 4.2 moved to Review",
-            body: "Jo moved the board on.",
-            origin_app: "Tasks",
-            kind: "info",
-            seen: true,
-        ),
-    )
-    d.notices.insert(
-        Notice(
-            key: "n4",
-            title: "Build failed",
-            body: "The link check found 4 broken links.",
-            origin_app: "Forgejo",
-            kind: "error",
-            seen: false,
-        ),
-    )
-    d.notices.insert(
-        Notice(
-            key: "n5",
-            title: "Ada shared a notebook",
-            body: "Launch checklist is now yours to edit.",
-            origin_app: "Chat",
-            kind: "info",
-            seen: true,
-        ),
-    )
-    d.notices.insert(
-        Notice(
-            key: "n6",
-            title: "Backup finished",
-            body: "Your laptop backed up 12 GB of changes.",
-            origin_app: "Settings",
-            kind: "success",
-            seen: true,
-        ),
-    )
-    return d.notices.len()
 }
 
 /// Adds a workspace, with one row, to `a`, and returns the row's key.
@@ -1854,7 +1820,7 @@ scenario "the traditional desktop" {
     d.clock = "4:28 PM"
     d.weekday = "Thursday"
     d.date = "October 30"
-    seed_waiting(d)
+    stage(device.notifications, waiting())
     d.workspace = "Studio"
     d.strip = "Drafts"
     d.here = "none"
@@ -2083,4 +2049,56 @@ fn channel_named(name: Text) -> Option<chat.TextChannel> {
         }
     }
     .none
+}
+
+/// A notice: a board moved on.
+fn release_moved() -> device.Notice {
+    return device.Notice(
+        number: 3,
+        title: "Release 4.2 moved to Review",
+        body: "Jo moved the board on.",
+        from: "Tasks",
+        kind: "info",
+        seen: true,
+    )
+}
+
+/// A notice: a failed build.
+fn build_failed() -> device.Notice {
+    return device.Notice(
+        number: 4,
+        title: "Build failed",
+        body: "The link check found 4 broken links.",
+        from: "Forgejo",
+        kind: "error",
+        seen: false,
+        actions: [
+            device.NoticeAction(key: "open", label: "Open the run"),
+            device.NoticeAction(key: "retry", label: "Retry"),
+        ],
+    )
+}
+
+/// A notice: a notebook shared.
+fn notebook_shared() -> device.Notice {
+    return device.Notice(
+        number: 5,
+        title: "Ada shared a notebook",
+        body: "Launch checklist is now yours to edit.",
+        from: "Chat",
+        kind: "info",
+        seen: true,
+    )
+}
+
+/// A notice: a backup done.
+fn backup_done() -> device.Notice {
+    return device.Notice(
+        number: 6,
+        title: "Backup finished",
+        body: "Your laptop backed up 12 GB of changes.",
+        from: "Settings",
+        kind: "success",
+        seen: true,
+    )
 }

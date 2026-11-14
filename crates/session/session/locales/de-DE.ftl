@@ -425,17 +425,12 @@ so-tilo-session-desk-issue-invitation = Einladungslink erstellen
 so-tilo-session-desk-show-invite = Personen einladen
 so-tilo-session-desk-show-connect = Agent oder Computer verbinden
 so-tilo-session-desk-show-pair-device = Gerät hinzufügen
-so-tilo-session-desk-notify = Benachrichtigung senden
 so-tilo-session-desk-cancel-invitation = Einladung zurückziehen
 so-tilo-session-desk-show-surface = Bereich ein- oder ausblenden
 so-tilo-session-desk-close-surface = Bereich schließen
-so-tilo-session-desk-clear-notices = Mitteilungen löschen
-so-tilo-session-desk-dismiss-notice = Mitteilung verwerfen
-so-tilo-session-desk-act-on-notice = Auf Mitteilung antworten
 so-tilo-session-desk-walk-switcher = Fenster wechseln
 so-tilo-session-desk-select-switcher = Fenster im Umschalter wählen
 so-tilo-session-desk-commit-switcher = Zum gewählten Fenster wechseln
-so-tilo-session-desk-show-app = App anzeigen
 so-tilo-session-desk-open-settings = Einstellungen öffnen
 
 ## Actions
@@ -461,7 +456,8 @@ so-tilo-session-keyboard-type = Text tippen
 so-tilo-session-notifications-act = Eine Aktion wählen
 so-tilo-session-notifications-clear = Alle löschen
 so-tilo-session-notifications-dismiss = Verwerfen
-so-tilo-session-notifications-open = Öffnen
+so-tilo-session-notifications-notify = Benachrichtigung senden
+so-tilo-session-notifications-open-notice = Öffnen
 so-tilo-session-notifications-set-quiet = Meldungen zurückhalten
 so-tilo-session-notifications-undo-clear = Die gelöschten Benachrichtigungen zurückholen
 so-tilo-session-quick-settings-hide-control = Ein Element entfernen

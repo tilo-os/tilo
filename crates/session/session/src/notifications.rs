@@ -308,15 +308,6 @@ impl NoticeSignals {
     pub(crate) fn badge(&self, app_id: &str) -> u32 {
         self.badges.borrow().get(app_id).copied().unwrap_or(0)
     }
-
-    pub(crate) fn badges(&self) -> BTreeMap<String, u32> {
-        self.badges
-            .borrow()
-            .iter()
-            .filter(|(_, count)| **count > 0)
-            .map(|(app, count)| (app.clone(), *count))
-            .collect()
-    }
 }
 
 /// Who a notification came from: the app the session sees in the sender's process (the one it shows
@@ -733,15 +724,60 @@ impl SessionNotifications {
         std::mem::take(&mut *self.opened.borrow_mut())
     }
 
-    /// The notification centre as the session publishes it: how many the person has not read, which
-    /// is what the bar's bell counts and the row that opens the centre shows. The list itself is the
-    /// shell's centre, which reads the desk's own log; what the panel needs is the count that opens
-    /// it.
+    /// The notification centre as the session publishes it.
     pub(crate) fn centre(&self) -> NotificationCentre {
+        let log = self.desktop.log();
+        let notices = log
+            .active()
+            .iter()
+            .chain(log.history().iter())
+            .rev()
+            .map(|notification| tilo_quick_settings::hosted::Notice {
+                number: notification.id,
+                title: notification.title.clone(),
+                body: notification.body.clone(),
+                from: notification.app_name.clone().unwrap_or_default(),
+                kind: match notification.severity {
+                    notifications::NotificationSeverity::Info => "info",
+                    notifications::NotificationSeverity::Warning => "warning",
+                    notifications::NotificationSeverity::Error => "error",
+                }
+                .to_owned(),
+                seen: !self.desktop.is_unread(notification.id),
+                actions: notification
+                    .actions
+                    .iter()
+                    .map(|(key, label)| tilo_quick_settings::hosted::NoticeAction {
+                        key: key.clone(),
+                        label: label.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
         NotificationCentre {
             count: self.desktop.unread(),
             quiet: self.quiet_status(),
+            notices,
+            banner: log.active().last().map(|notice| notice.id),
         }
+    }
+
+    /// Tell the person something, as an app's `notify` does: `kind` is the centre's severity
+    /// (`info` unless `warning` or `error`), and `from` who it is from when it is named.
+    pub(crate) fn post(&self, title: &str, body: &str, from: &str, kind: &str) {
+        use notifications::{Notification, NotificationSeverity};
+        let severity = match kind {
+            "warning" => NotificationSeverity::Warning,
+            "error" => NotificationSeverity::Error,
+            _ => NotificationSeverity::Info,
+        };
+        let notification =
+            Notification::new(title.to_owned(), body.to_owned()).with_severity(severity);
+        self.desktop.post(if from.is_empty() {
+            notification
+        } else {
+            notification.with_app_name(from)
+        });
     }
 
     /// Choose a retained notification in the centre, as the panel asks.
@@ -1158,10 +1194,23 @@ pub enum CentreAction {
     UndoClear,
     /// Open one of the notifications the centre kept
     #[effect(own_device)]
-    Open {
+    OpenNotice {
         /// The notification's id, as the rows carry it.
         #[param("The notification")]
         notification: u64,
+    },
+    /// Tell the person something, as an app's `notify` does: it rises as a banner and waits in
+    /// the centre until they dismiss it
+    #[effect(own_device)]
+    Notify {
+        #[param("What happened, in a short sentence")]
+        title: String,
+        #[param("What it says, under the title")]
+        body: Option<String>,
+        #[param("Who it is from: an app's name, or the agent's; empty for the session's own")]
+        from: Option<String>,
+        #[param("Its kind: `info`, `success`, `warning` or `error`")]
+        kind: Option<String>,
     },
     /// Hold fresh banners back until turned off again
     #[effect(own_device, idempotent)]
@@ -1170,6 +1219,15 @@ pub enum CentreAction {
         #[param("Whether to hold banners back")]
         on: bool,
     },
+}
+
+/// The centre as a view of another language reads it (`device.notifications`).
+#[must_use]
+pub fn surface() -> tilo_actions::surface::Surface {
+    tilo_resource::surface::reading_surface::<NotificationCentre, CentreAction>(
+        "notifications",
+        "Notifications",
+    )
 }
 
 /// The centre as the session's services publish it: what it keeps, why fresh banners are held, and
@@ -1204,7 +1262,7 @@ impl Service for Served {
                 "act" => t("session-notifications-act"),
                 "clear" => t("session-notifications-clear"),
                 "undo-clear" => t("session-notifications-undo-clear"),
-                "open" => t("session-notifications-open"),
+                "open-notice" => t("session-notifications-open"),
                 _ => continue,
             };
             spec.type_mut().label = label;
@@ -1248,9 +1306,20 @@ impl Service for Served {
                 .run_action(notification, &action),
             CentreAction::Clear => self.notifications.borrow().clear(),
             CentreAction::UndoClear => self.notifications.borrow().undo_clear(),
-            CentreAction::Open { notification } => {
+            CentreAction::OpenNotice { notification } => {
                 self.notifications.borrow().ask_open(notification);
             }
+            CentreAction::Notify {
+                title,
+                body,
+                from,
+                kind,
+            } => self.notifications.borrow().post(
+                &title,
+                body.as_deref().unwrap_or_default(),
+                from.as_deref().unwrap_or_default(),
+                kind.as_deref().unwrap_or_default(),
+            ),
             CentreAction::SetQuiet { on } => {
                 if let Err(error) = self.notifications.borrow().set_do_not_disturb(on) {
                     tracing::warn!(%error, "do not disturb was not kept");
