@@ -10,7 +10,7 @@ os/containers/tilo-sh/stack.sh up
 ```
 
 By default the stack runs this checkout's programs and web bundle as plain
-processes, built on the build server by rcargo in one command
+processes, built on a build server by a cargo drop-in in one command
 (`os/containers/tilo-sh/build-on-builder.sh`), in this checkout's build
 directory there, which stays from one bring-up to the next: every program in
 one incremental build of the release's code without its whole-program link
@@ -166,11 +166,12 @@ on the same machine.
 
 ## Other builds
 
-`TILO_SH_CARGO=<command>` builds with that cargo drop-in instead of rcargo. It
-must leave what it builds in `./target` as cargo would. A drop-in that also
+`TILO_SH_CARGO=<command>` builds with that cargo drop-in instead of the one
+`$CARGO` names, else `cargo` on this machine. It must leave what it builds in
+`./target` as cargo would. A drop-in that also
 runs a program on its builder and brings files of its target dir back
 (`<command> --fetch PATH exec PROGRAM ARGS…`) gets the builds in one command
-there, as rcargo does; with any other (`cargo`), the bundle's build script
+there; with any other (`cargo`), the bundle's build script
 binds and splits here and needs wasm-bindgen.
 
 `TILO_SH_BUNDLE` names a desktop bundle built elsewhere (`build.sh OUT --bundle

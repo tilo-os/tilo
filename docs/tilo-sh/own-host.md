@@ -30,9 +30,9 @@ eval "$(os/containers/tilo-sh/stack.sh env)"   # TILO_API_URL, TILO_SITE, and th
 
 That gives you, on loopback ports, the API the SDKs and agents use, the host your workspaces live on, and
 the page a person opens — the same programs the hosted product runs. It builds them from the checkout with
-rcargo where there is one, else with `cargo` on this machine, or with the cargo `TILO_SH_CARGO` names; it also wants `caddy` and `bubblewrap`, and says which is
-missing. Everything listens on `127.0.0.1`; `stack.sh status` says where, and `stack.sh logs <service>` says
-what happened.
+the cargo drop-in `TILO_SH_CARGO` names, else with `$CARGO`, else with this machine's `cargo`; it also
+wants `caddy` and `bubblewrap`, and says which is missing. Everything listens on `127.0.0.1`;
+`stack.sh status` says where, and `stack.sh logs <service>` says what happened.
 
 Then use it exactly as the hosted one:
 

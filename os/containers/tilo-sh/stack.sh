@@ -21,7 +21,8 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
   stack.sh up [--images] [--seed] [--discord] [--fresh]
       Start everything and print where it is. By default this checkout's
       programs and web bundle, built on the build server in a build
-      directory that stays (rcargo: a change recompiles what it touches,
+      directory that stays (a drop-in's build directory persists: a change
+      recompiles what it touches,
       incrementally, and only the files that changed come back), run as
       plain processes, each with its own state and runtime directory under
       the stack's state. TILO_SH_BUILD=t builds them with t's checks
@@ -112,7 +113,7 @@ Natively: the programs are Cargo's lounge-local build (the release's code and
 opt-level without its whole-program link, compiled incrementally) and the
 bundle build.sh's local one (the same for the desktop bundle, bound and split
 as the shipped one, without wasm-opt), both built on the build server by the
-cargo drop-in TILO_SH_CARGO names (default rcargo) in a build directory that
+cargo drop-in TILO_SH_CARGO names (default \$CARGO) in a build directory that
 stays, and only what changed brought back; a drop-in that runs no program
 there has the bundle bound and split here. TILO_SH_BUILD=t takes them from
 t's checks instead (tilo-sh-programs, lounge-gate; web-desktop-gate-bundle,
@@ -145,7 +146,8 @@ the registry.tilo.so/tilo/lounge@sha256:… production pins).
 TILO_SH_VM_HOST=0 leaves the VM host out where it could run (it runs as
 root through sudo). TILO_SH_OWNER=0 declares no owner on up.
 State: TILO_SH_STATE (default \${XDG_STATE_HOME:-~/.local/state}/tilo-sh-local).
-Needs rcargo (or the drop-in TILO_SH_CARGO names; with TILO_SH_BUILD=t,
+Needs a cargo drop-in that builds on a build server (TILO_SH_CARGO names it,
+else \$CARGO; with TILO_SH_BUILD=t,
 t), bwrap, curl and python3 (with a drop-in that runs no program on its
 build server, also wasm-bindgen for the bundle); with --images, t and podman
 (rootless is fine) instead of bwrap.
@@ -208,12 +210,9 @@ case $build in
   builder|t) ;;
   *) echo "tilo-sh: TILO_SH_BUILD is builder or t, not $build" >&2; exit 2 ;;
 esac
-# The cargo drop-in that builds: rcargo where there is one, else this
-# machine's cargo.
-cargo=${TILO_SH_CARGO:-}
-if [[ -z $cargo ]]; then
-  if command -v rcargo >/dev/null; then cargo=rcargo; else cargo=cargo; fi
-fi
+# The cargo drop-in that builds: the one TILO_SH_CARGO names, else $CARGO's,
+# else this machine's cargo.
+cargo=${TILO_SH_CARGO:-${CARGO:-cargo}}
 # The programs: the release's code and opt-level without the whole-program
 # link, so a change relinks in seconds instead of LTO's minutes. Built here
 # incrementally (Cargo.toml's lounge-local) into ./target, or by t's
@@ -961,8 +960,8 @@ build_programs() {
 }
 
 # Whether the cargo drop-in builds on a build server and runs a program there,
-# bringing files of its build directory back (`$cargo exec --fetch`, as
-# rcargo does): the builds then run there in one command (builder_build).
+# bringing files of its build directory back (`$cargo exec --fetch`): the
+# builds then run there in one command (builder_build).
 on_builder() {
   if [[ -z ${builder_capable:-} ]]; then
     local help

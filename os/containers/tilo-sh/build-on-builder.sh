@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The local stack's builds, run on the build server in one command (stack.sh
 # runs it there as `$TILO_SH_CARGO --fetch STAGE exec bash
-# os/containers/tilo-sh/build-on-builder.sh RUN STAGE …`, with rcargo by
-# default), in that checkout's build directory, which stays from one run to
-# the next, and staged in $CARGO_TARGET_DIR/STAGE for the one fetch to bring
-# back:
+# os/containers/tilo-sh/build-on-builder.sh RUN STAGE …`, with the drop-in
+# `TILO_SH_CARGO` names by default), in that checkout's build directory, which
+# stays from one run to the next, and staged in $CARGO_TARGET_DIR/STAGE for the
+# one fetch to bring back:
 #
 #   programs   the programs every service runs (Cargo's lounge-local:
 #              incremental, without the whole-program link), into
