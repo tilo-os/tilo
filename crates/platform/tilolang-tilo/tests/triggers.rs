@@ -381,6 +381,22 @@ tilo_test_env::scenario! {
             "a replica that does not govern the workspace runs none"
         );
     }
+
+    phase frames_over_a_record_that_did_not_move_take_nothing_in;
+    {
+        // The origin's store holds the trigger's change, which the record it is handed lacks:
+        // a frame over that record still has nothing to take in.
+        let (mut window, doc) = window("2026-10-27T12:00:00Z", true);
+        window.sync(Some(&doc));
+        let host = window.host().expect("the window opened");
+        host.wait_index();
+        window.sync(Some(&doc));
+        let merges = host.store().stats().merges;
+        for _ in 0..10 {
+            window.sync(Some(&doc));
+        }
+        assert_eq!(host.store().stats().merges, merges, "an idle window merges nothing");
+    }
 }
 
 #[test]

@@ -1463,9 +1463,11 @@ fn a_part_on_a_scaled_output_paints_at_that_scale() {
 /// published, then the settings' apply. The record changed and the view's own `is_stale` said so,
 /// but nothing it ran changed a tree, and the screen stayed on the strips (`stale=true`,
 /// `patches=0`) — the record change never marked the boundary that read it.
+///
+/// The shell's part on another display draws the change in its next frame, not a frame later.
 #[test]
 fn the_desks_preset_reaches_the_screen() {
-    let desk = super::tests_support::Staged {
+    let desk = || super::tests_support::Staged {
         desk: reading(),
         windows: serde_json::json!([{
             "key": "11",
@@ -1482,16 +1484,19 @@ fn the_desks_preset_reaches_the_screen() {
         here: "none".to_owned(),
         revealed: false,
     };
-    let (mut part, link) = super::tests_support::part_as(desk, None);
-    link.publish_arrangement(one_window_arrangement());
-    for _ in 0..6 {
-        part.prepare_frame();
+    let (mut part, link) = super::tests_support::part_as(desk(), None);
+    let (mut beside, beside_link) = super::tests_support::part_beside(&part, desk());
+    for (part, link) in [(&mut part, link), (&mut beside, beside_link)] {
+        link.publish_arrangement(one_window_arrangement());
+        for _ in 0..6 {
+            part.prepare_frame();
+        }
+        let labels = crate::Published::accessible_labels(part);
+        assert!(
+            labels.iter().any(|l| l == "Showing Strips"),
+            "the desk shows the strips: {labels:?}"
+        );
     }
-    let labels = crate::Published::accessible_labels(&mut part);
-    assert!(
-        labels.iter().any(|l| l == "Showing Strips"),
-        "the desk shows the strips: {labels:?}"
-    );
 
     part.run_action("apply", vec![serde_json::json!("windows_desktop")])
         .unwrap_or_else(|why| panic!("apply: {why}"));
@@ -1499,12 +1504,16 @@ fn the_desks_preset_reaches_the_screen() {
         part.prepare_frame();
     }
 
+    beside.prepare_frame();
+    for part in [&mut beside, &mut part] {
+        let labels = crate::Published::accessible_labels(part);
+        assert!(
+            !labels.iter().any(|l| l.starts_with("Showing ")),
+            "the traditional desktop's bar carries the window's commands, not the preset \
+             switch: {labels:?}"
+        );
+    }
     let labels = crate::Published::accessible_labels(&mut part);
-    assert!(
-        !labels.iter().any(|l| l.starts_with("Showing ")),
-        "the traditional desktop's bar carries the window's commands, not the preset switch: \
-         {labels:?}"
-    );
     assert!(
         labels.iter().any(|l| l == "Dock"),
         "the desktop's dock rides its foot: {labels:?}"

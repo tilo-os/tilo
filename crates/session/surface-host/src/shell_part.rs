@@ -961,7 +961,7 @@ pub struct ShellPart {
     cover: bool,
     /// The shell's record's heads the instance was last brought up to date with: a commit any
     /// part of the shell made reaches this one by them, so every display shows one shell.
-    seen_heads: Vec<String>,
+    seen_heads: Vec<ui::automerge::ChangeHash>,
     /// The previews the part's views name ([`ui::widget::WindowPreview`]), and which of the
     /// compositor's windows each is: the part hands the compositor every window's live picture
     /// where its view would draw it, and none for a window `windows` leaves out (one that may
@@ -1138,18 +1138,9 @@ impl ShellPart {
                 break;
             }
         }
-        // The seed moved the record: the part's next turn settles what it started (a view
-        // that read a bound field runs again), as any change of the record does.
-        self.instance.moved();
         // What the seed wrote is the shell's for every part: the heads here are the ones a
         // part made later finds and takes in.
-        self.seen_heads = self
-            .record
-            .borrow()
-            .committed_heads()
-            .iter()
-            .map(ToString::to_string)
-            .collect();
+        self.seen_heads = self.record.borrow().committed_heads();
     }
 
     /// Stand on this part's whole output: the desk is the screen, its bar and dock over the
@@ -1541,11 +1532,7 @@ impl ShellPart {
             {
                 let mut record = self.record.borrow_mut();
                 record.commit();
-                self.seen_heads = record
-                    .committed_heads()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect();
+                self.seen_heads = record.committed_heads();
             }
             let at = std::time::Instant::now();
             let record = self.record.borrow();
@@ -1601,24 +1588,9 @@ impl ShellPart {
         // A change another display's part of this shell committed reaches this one: the record
         // it shares moved on from the heads this instance saw, and it draws the shell as it is
         // now. Nothing else changed, so no other frame is owed.
-        let mut record_moved = false;
-        {
-            let heads: Vec<String> = self
-                .record
-                .borrow()
-                .committed_heads()
-                .iter()
-                .map(ToString::to_string)
-                .collect();
-            if heads != self.seen_heads {
-                self.seen_heads = heads;
-                self.instance.moved();
-                let record = self.record.borrow();
-                self.instance.sync(Some(&record));
-                record_moved = true;
-            }
-        }
-        if record_moved {
+        if self.record_moved() {
+            self.seen_heads = self.record.borrow().committed_heads();
+            self.instance.sync(Some(&self.record.borrow()));
             // The views that read a bound field run again in this turn, so the part draws the
             // shell's change now rather than a frame late.
             let mut at = std::time::Instant::now();
@@ -1738,13 +1710,7 @@ impl ShellPart {
     /// shell committed them, or a connection the session admits (a REPL, an agent) changed the
     /// record the shell's own actions are published on, and the part draws them next frame.
     fn record_moved(&self) -> bool {
-        let record = self.record.borrow();
-        let heads: Vec<String> = record
-            .committed_heads()
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        heads != self.seen_heads
+        self.record.borrow().committed_heads() != self.seen_heads
     }
 }
 

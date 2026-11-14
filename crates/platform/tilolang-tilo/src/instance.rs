@@ -407,9 +407,6 @@ pub struct Instance {
     rootless: bool,
     loading: bool,
     moved: bool,
-    /// Whether the record a window hands each frame moved since the store last took it in
-    /// ([`Self::moved`]): a frame over a record that did not move merges nothing.
-    record_moved: bool,
     /// Whether the package's migrations ran over the workspace record since the window opened.
     migrated: bool,
     /// Whether this replica is the workspace's origin, the one place the package's migrations run
@@ -510,7 +507,6 @@ impl Instance {
             rootless: false,
             loading: false,
             moved: false,
-            record_moved: true,
             migrated: false,
             origin: false,
             generation: 0,
@@ -826,13 +822,6 @@ impl Instance {
         self.stage_failed.take()
     }
 
-    /// The workspace record moved: what the views read may have changed, and outside effects may
-    /// wait.
-    pub fn moved(&mut self) {
-        self.moved = true;
-        self.record_moved = true;
-    }
-
     /// The person's environment changed — the language their window speaks, their formats, or
     /// the name the window calls someone: every view that shows what only the window knows shows
     /// it again, and no other boundary runs.
@@ -868,11 +857,9 @@ impl Instance {
     fn host_for(&mut self, doc: Option<&tilo_resource::Doc>, had: bool) -> Option<Host> {
         if let Some(host) = self.host.borrow().as_ref() {
             // An index built off the frame changes what every view reads, as a change does.
-            // The record the window hands is taken in when it moved, not on every frame.
-            let synced = match doc {
-                Some(doc) if std::mem::take(&mut self.record_moved) => host.sync_from(doc),
-                _ => false,
-            };
+            // The store takes in only what the record holds that it lacks: a frame over a
+            // record that did not move merges nothing.
+            let synced = doc.is_some_and(|doc| host.sync_from(doc));
             if synced | host.poll_index() {
                 self.moved = true;
             }

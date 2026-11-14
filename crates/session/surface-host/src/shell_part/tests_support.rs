@@ -190,7 +190,7 @@ pub(super) fn part_on(
     reading: impl Into<Staged>,
     size: (u32, u32),
 ) -> (ShellPart, Rc<SessionLink>) {
-    part_at(compiled(), reading, None, size)
+    part_at(compiled(), reading, None, size, None)
 }
 
 /// A part of its own over `reading` on one output `size` logical pixels big, running a copy of
@@ -200,7 +200,7 @@ pub(super) fn part_of(
     reading: impl Into<Staged>,
     size: (u32, u32),
 ) -> (ShellPart, Rc<SessionLink>) {
-    part_at(packages.to_vec(), reading, None, size)
+    part_at(packages.to_vec(), reading, None, size, None)
 }
 
 /// A part over `reading`, its outputs set, its wells reporting to `wells`.
@@ -208,16 +208,28 @@ pub(super) fn part_as(
     reading: impl Into<Staged>,
     wells: Option<ui::widget::Wells>,
 ) -> (ShellPart, Rc<SessionLink>) {
-    part_at(compiled(), reading, wells, (1280, 800))
+    part_at(compiled(), reading, wells, (1280, 800), None)
+}
+
+/// The part of the shell `first` is a part of on another display, over `reading`: it shares
+/// `first`'s record and finds it seeded.
+pub(super) fn part_beside(
+    first: &ShellPart,
+    reading: impl Into<Staged>,
+) -> (ShellPart, Rc<SessionLink>) {
+    let record = Some(Rc::clone(&first.record));
+    part_at(compiled(), reading, None, (1280, 800), record)
 }
 
 /// A part running `packages` over `reading` on one output `size` logical pixels big, its wells
-/// reporting to `wells`.
+/// reporting to `wells`: the first part of its shell, or one over the record `shared` another
+/// part made.
 fn part_at(
     packages: Vec<Compiled>,
     reading: impl Into<Staged>,
     wells: Option<ui::widget::Wells>,
     size: (u32, u32),
+    shared: Option<Rc<RefCell<tilo_resource::Doc>>>,
 ) -> (ShellPart, Rc<SessionLink>) {
     let app = packages
         .last()
@@ -237,8 +249,8 @@ fn part_at(
             packages,
             person: "Pat",
             link: Rc::clone(&link),
-            record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
-            seed: true,
+            seed: shared.is_none(),
+            record: shared.unwrap_or_default(),
         },
         1.0,
         std::sync::Arc::new(|| {}),

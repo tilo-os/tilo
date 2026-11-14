@@ -48,34 +48,43 @@ impl TiloStore {
     }
 
     /// Merge what `doc`, a copy of chunk `chunk` its caller writes, holds that the store's
-    /// document of it lacks. Whether anything moved.
+    /// document of it lacks. Whether anything moved. A copy whose heads the store already holds
+    /// has nothing to take in, and costs a look at its heads: a frame over a record that did not
+    /// move merges nothing.
     fn merge(&self, chunk: ChunkNo, doc: &Doc) -> bool {
+        let theirs = doc.committed_document();
+        let arrived = match self.held().chunks.held(chunk) {
+            Some(mine) => {
+                let mine = mine.committed_document();
+                if theirs
+                    .get_heads()
+                    .iter()
+                    .all(|head| mine.get_change_meta_by_hash(head).is_some())
+                {
+                    return false;
+                }
+                let have = mine.get_heads();
+                Some(
+                    if have
+                        .iter()
+                        .all(|head| theirs.get_change_meta_by_hash(head).is_some())
+                    {
+                        theirs.get_changes(&have)
+                    } else {
+                        theirs.get_changes_added(mine)
+                    },
+                )
+            }
+            None => None,
+        };
         {
             let mut inner = self.mutate();
             inner.stats.merges = inner.stats.merges.saturating_add(1);
         }
-        let theirs = doc.committed_document();
-        let arrived = {
-            let inner = self.held();
-            let Some(mine) = inner.chunks.held(chunk) else {
-                drop(inner);
-                return self
-                    .write_chunk(chunk, |mine| take(mine, theirs.get_changes(&[])))
-                    .1;
-            };
-            let mine = mine.committed_document();
-            let have = mine.get_heads();
-            if have == theirs.get_heads() {
-                return false;
-            }
-            if have
-                .iter()
-                .all(|head| theirs.get_change_meta_by_hash(head).is_some())
-            {
-                theirs.get_changes(&have)
-            } else {
-                theirs.get_changes_added(mine)
-            }
+        let Some(arrived) = arrived else {
+            return self
+                .write_chunk(chunk, |mine| take(mine, theirs.get_changes(&[])))
+                .1;
         };
         if arrived.is_empty() {
             return false;

@@ -855,13 +855,9 @@ fn settle(
         }
         commit(&host, person, record, &action)?;
         instance.answered(&address, None);
-        // The record moved under the instance, which takes it in only when told so.
-        instance.moved();
     }
-    // The steps are in the record now, and a window takes its record in when it moved: without
-    // saying so, the marks and catch-ups that read those steps would read the record as it stood
-    // before the scenario ran.
-    instance.moved();
+    // The steps are in the record now: the marks and catch-ups that read them read the record
+    // as it stands after the scenario ran.
     instance.sync(Some(record));
     Ok(())
 }
