@@ -151,9 +151,10 @@ impl Taken {
         !matches!(self, Self::Refused)
     }
 
-    /// Whether the step wrote: a refused one leaves the account's reason to be written too.
+    /// Whether the step wrote: a refused one left nothing of itself behind, and the reason its
+    /// account gives is written with the account's state.
     fn wrote(&self) -> bool {
-        !matches!(self, Self::Nothing)
+        matches!(self, Self::Wrote)
     }
 }
 
@@ -1472,15 +1473,14 @@ impl Origin for ImapOrigin {
             self.state = Some(state);
             self.reload = false;
         }
+        // What people changed is handed to the servers before what the servers say is taken in:
+        // an answer already on its way was read before the change was told, so taking it in
+        // first would put the change back. It is handed on whatever the workspace refuses of
+        // the sync, so a person's change never stays owed while a step waits.
+        polled.wrote |= self.push(cx.host, &cx.now);
         // What the workspace could not take last time, before anything newer: a step waits
         // until it is written, never behind newer mail.
         polled.wrote |= self.take_again(cx.host, &cx.now);
-        // What people changed is handed to the servers before what the servers say is taken in:
-        // an answer already on its way was read before the change was told, so taking it in
-        // first would put the change back.
-        if !self.reload {
-            polled.wrote |= self.push(cx.host, &cx.now);
-        }
         let events = self.take_events(cx.host, &cx.now);
         polled.wrote |= events.wrote;
         polled.settle |= events.settle;

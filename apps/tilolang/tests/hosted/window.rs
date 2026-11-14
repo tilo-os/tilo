@@ -981,3 +981,51 @@ fn approving_a_pressed_send_through_the_ask_bar_sends_the_letter_once() {
         "the record says it was delivered, so no device queues it again"
     );
 }
+
+// USER REQUIREMENT: a note the workspace cannot keep is said once, and the window waits for the
+// person's next step instead of trying again every frame: no spinning CPU, no drained battery.
+// Once the workspace takes changes again, the same press makes the note.
+#[test]
+fn a_note_the_workspace_cannot_keep_is_said_once_and_the_window_rests() {
+    let mut session = Session::notes();
+    session.settle();
+    let notes = session.titles().len();
+    let store = session.instance_host().store().clone();
+    let note = session
+        .instance_host()
+        .package(&session.app)
+        .expect("the notes package")
+        .meta
+        .type_named("Note")
+        .expect("Notes keeps notes")
+        .id
+        .clone();
+    store.fail_commits_adding(&note);
+    let plus = session.control(&session.doing("Notebook", "new_note"));
+    session.window.click_at(plus.0, plus.1);
+    // The host comes to rest: `settle` returns only once a turn reports no change.
+    session.settle();
+    let turns_at_rest = (0..5).filter(|_| session.host.turn()).count();
+    assert_eq!(
+        turns_at_rest, 0,
+        "the window rests while the workspace refuses"
+    );
+    assert_eq!(
+        session.titles().len(),
+        notes,
+        "no note stands that the workspace did not keep"
+    );
+    let said = ui::window_toolbar::notice().expect("the window says the note was not kept");
+    assert_eq!(said.kind, ui::widget::toast::ToastKind::Error, "{said:?}");
+    assert!(said.text.contains("refused"), "it says why: {said:?}");
+
+    store.take_commits();
+    let plus = session.control(&session.doing("Notebook", "new_note"));
+    session.window.click_at(plus.0, plus.1);
+    session.settle();
+    assert_eq!(
+        session.titles().len(),
+        notes + 1,
+        "the press makes the note now"
+    );
+}
